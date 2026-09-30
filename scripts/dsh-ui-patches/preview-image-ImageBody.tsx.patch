@@ -1,0 +1,43 @@
+--- a/packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx
++++ b/packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx
+@@ -1,12 +1,9 @@
+ /** Complete image bytes rendered in a shared zoom viewport. */
+ import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
+-import type { PropsLocale, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
+ import { pathPartsOf } from '@deepseek-ai/dsh-util-workspace-path'
+-import type { DocumentPreviewProps } from '../document/contract.ts'
+ import { LoadingIndicator } from '../LoadingIndicator.tsx'
+-import { hostFileOf } from '../rpc.ts'
+ import { ZoomViewport, zoomSurfaceClass } from '../zoom/ZoomViewport.tsx'
+-import { DEFAULT_ZOOM, type ZoomInjected, type ZoomStore } from '../zoom/store.ts'
++import { FIT_WIDTH as DEFAULT_ZOOM } from '../zoom/types.ts'
+ import type { ZoomLabels, ZoomPreference } from '../zoom/types.ts'
+ import type {} from './locales.ts'
+ import css from './ImageBody.module.css'
+@@ -25,7 +22,16 @@
+ type ImageMediaType = typeof IMAGE_MEDIA_TYPES[keyof typeof IMAGE_MEDIA_TYPES]
+ 
+ /** Standard document props plus the image renderer's dictionary. */
+-export type ImageBodyProps = DocumentPreviewProps & PropsLocale<'sidebarImage'> & PropsStore<ZoomStore> & ZoomInjected
++export type ImageBodyProps = {
++  content: { kind: 'bytes'; data: Uint8Array<ArrayBuffer> }
++  resourceAddress: string
++  t: (key: string, values?: Record<string, string | number>) => string
++  useTabInfo: () => { tab: { id: string; signal: AbortSignal } }
++  useStore: (select: (state: { byTab: Record<string, ZoomPreference> }) => ZoomPreference) => ZoomPreference
++  actions: { zoom: (id: string, value: ZoomPreference) => void }
++  retainTab: (id: string, signal: AbortSignal) => void
++  scrollportRef: (element: HTMLElement | null) => void
++}
+ 
+ type ImageSource =
+   | {
+@@ -57,7 +63,7 @@
+   const { content, resourceAddress, t } = props
+   const { tab } = props.useTabInfo()
+   const preference = props.useStore(state => state.byTab[tab.id] ?? DEFAULT_ZOOM)
+-  const path = useMemo(() => hostFileOf(resourceAddress).path, [resourceAddress])
++  const path = useMemo(() => resourceAddress, [resourceAddress])
+   const mediaType = imageMediaType(path)
+   const data = content.kind === 'bytes' ? content.data : undefined
+   const [source, setSource] = useState<ImageSource>()

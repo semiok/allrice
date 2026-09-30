@@ -18,7 +18,6 @@ export async function refreshManagedCloudEnvironments(workerId: string) {
     allowUploads: true,
     allowDownloads: true,
     allowHumanCredentials: true,
-    lifetimeMs: 600000,
   });
   const [compute, browser] = await Promise.all([
     (async () => {

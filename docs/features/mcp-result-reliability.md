@@ -1,0 +1,10 @@
+# MCP result and connection reliability
+
+Run `658d9cf5` completed after two pre-dispatch MCP failures. Its first list response was silently sliced at 20,000 characters; DSH's duplicated `content` / `value.content` also consumed that budget. The old receipts contain no finer connection diagnosis and remain unchanged.
+
+- Both native DSH and SDK adapters now remove exactly duplicated materialized values and return complete JSON. Oversized results produce an explicitly partial, bounded JSON preview, including a pagination instruction. Nested JSON text is still parseable. Distinct values and small error replies are preserved. The redacted full response remains the source of the evidence digest.
+- Transport diagnostics retain only phase, HTTP status or allowlisted network code, dispatch state and connection-attempt count. SDK messages, response bodies, URLs, headers and secrets are excluded. Diagnostics are persisted in operation evidence, including unknown outcomes.
+- A transient failure during initialize or tool discovery may reopen the connection once, after 500ms (or a short Retry-After). It rechecks authority and respects the original abort signal and deadline. Authorization, schema and protocol failures are not retried. Long Retry-After and pending OAuth authorization-code exchanges disable reconnect. Once tool invocation begins, no tool is replayed, regardless of error or cancellation.
+- Tool instructions and broker responses distinguish account roles from token repository/write permissions and branch rules. A read-only check must not claim the token's merge permission is verified or perform a write to test it.
+
+Validation covers actual synthetic HTTP through both transports, exact-once writes, exhausted reconnects, 401/403/429/503, Retry-After, cancellation, valid long-result previews, redaction, and durable database receipts. Dev verification uses the built adapter and a read-only view of the original Run; it does not merge GitHub PRs or rewrite the historical task.

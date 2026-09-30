@@ -13,6 +13,10 @@ import { z } from 'zod';
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { isPlatformAdmin } from './model-pool.ts';
+import {
+  CodexSubscriptionError,
+  readEnabledCodexSubscription,
+} from './codex-subscriptions.ts';
 
 const codexProviderId = '51000000-0000-4000-8000-000000000001';
 const codexConnectionId = '52000000-0000-4000-8000-000000000001';
@@ -21,6 +25,7 @@ const credentialReference = 'deployment:codex-default';
 interface FlowRow {
   id: string;
   connection_id: string;
+  subscription_slot: 1 | 2;
   state: ProviderAuthorizationFlow['state'];
   verification_uri: string | null;
   user_code: string | null;
@@ -50,6 +55,7 @@ function mapFlow(row: FlowRow) {
     id: row.id,
     provider: 'codex',
     connectionId: row.connection_id,
+    subscriptionSlot: row.subscription_slot,
     state: row.state,
     verificationUri: row.verification_uri,
     userCode: row.user_code,
@@ -71,6 +77,11 @@ export async function startCodexAuthorization(
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     await transaction`select pg_advisory_xact_lock(8182)`;
+    const [enabled] =
+      await transaction`select s.slot from allrice_codex_subscriptions s
+      join allrice_provider_status p on p.subscription_slot=s.slot and p.provider='codex'
+      where s.slot=${parsed.subscriptionSlot} and s.enabled and p.status='connected'`;
+    if (enabled) throw new CodexSubscriptionError('enabled_authorization');
     const valid = await transaction<{ id: string }[]>`
       select c.id
       from allrice_model_connections c
@@ -80,21 +91,21 @@ export async function startCodexAuthorization(
     `;
     if (!valid[0]) throw new DataAccessError('not_found');
     const active = await transaction<FlowRow[]>`
-      select id, connection_id, state, verification_uri, user_code,
+      select id, connection_id, subscription_slot, state, verification_uri, user_code,
         detail_code, expires_at, created_at, updated_at, completed_at
       from allrice_provider_authorization_flows
-      where connection_id = ${connectionId}
+      where connection_id = ${connectionId} and subscription_slot=${parsed.subscriptionSlot}
         and state in ('pending', 'running', 'awaiting_user')
       order by created_at desc limit 1
     `;
     if (active[0]) return mapFlow(active[0]);
     const rows = await transaction<FlowRow[]>`
       insert into allrice_provider_authorization_flows (
-        id, provider_id, connection_id, requested_by, expires_at
+        id, provider_id, connection_id, subscription_slot, requested_by, expires_at
       ) values (
-        ${randomUUID()}, ${codexProviderId}, ${connectionId}, ${requestedBy},
+        ${randomUUID()}, ${codexProviderId}, ${connectionId}, ${parsed.subscriptionSlot}, ${requestedBy},
         now() + interval '20 minutes'
-      ) returning id, connection_id, state, verification_uri, user_code,
+      ) returning id, connection_id, subscription_slot, state, verification_uri, user_code,
         detail_code, expires_at, created_at, updated_at, completed_at
     `;
     const row = rows[0];
@@ -107,7 +118,7 @@ export async function startCodexAuthorization(
         ${context.organizationId}, ${context.workspaceId}, ${requestedBy},
         'provider_authorization.start', 'model_connection', ${connectionId},
         'recorded', 'platform_admin', ${context.requestId},
-        ${transaction.json({ provider: 'codex', flowId: row.id })}
+        ${transaction.json({ provider: 'codex', flowId: row.id, subscriptionSlot: row.subscription_slot })}
       )
     `;
     return mapFlow(row);
@@ -117,15 +128,17 @@ export async function startCodexAuthorization(
 export async function getCodexAuthorization(
   context: RequestContext,
   flowId?: string,
+  subscriptionSlot?: 1 | 2,
 ) {
   await requirePlatformAdmin(context);
   const sql = getDatabase();
   const rows = await sql<FlowRow[]>`
-    select id, connection_id, state, verification_uri, user_code,
+    select id, connection_id, subscription_slot, state, verification_uri, user_code,
       detail_code, expires_at, created_at, updated_at, completed_at
     from allrice_provider_authorization_flows
     where provider_id = ${codexProviderId}
       ${flowId ? sql`and id = ${UuidSchema.parse(flowId)}` : sql``}
+      ${subscriptionSlot ? sql`and subscription_slot=${subscriptionSlot}` : sql``}
     order by created_at desc limit 1
   `;
   return rows[0] ? mapFlow(rows[0]) : null;
@@ -143,7 +156,7 @@ export async function cancelCodexAuthorization(
       completed_at = now(), updated_at = now()
     where id = ${UuidSchema.parse(flowId)} and provider_id = ${codexProviderId}
       and state in ('pending', 'running', 'awaiting_user')
-    returning id, connection_id, state, verification_uri, user_code,
+    returning id, connection_id, subscription_slot, state, verification_uri, user_code,
       detail_code, expires_at, created_at, updated_at, completed_at
   `;
   const row = rows[0];
@@ -156,7 +169,7 @@ export async function cancelCodexAuthorization(
       ${context.organizationId}, ${context.workspaceId}, ${canceledBy},
       'provider_authorization.cancel', 'model_connection',
       ${row.connection_id}, 'recorded', 'platform_admin', ${context.requestId},
-      ${sql.json({ provider: 'codex', flowId: row.id })}
+      ${sql.json({ provider: 'codex', flowId: row.id, subscriptionSlot: row.subscription_slot })}
     )
   `;
   return mapFlow(row);
@@ -202,7 +215,7 @@ export async function claimCodexAuthorizationFlow(workerId: string) {
         detail_code = 'worker_starting_device_authorization', updated_at = now()
       from candidate
       where flow.id = candidate.id
-      returning flow.id, flow.connection_id, flow.state,
+      returning flow.id, flow.connection_id, flow.subscription_slot, flow.state,
         flow.verification_uri, flow.user_code, flow.detail_code,
         flow.expires_at, flow.created_at, flow.updated_at, flow.completed_at
     `;
@@ -232,7 +245,7 @@ export async function publishCodexAuthorizationChallenge(input: {
       updated_at = now()
     where id = ${values.flowId} and claimed_by = ${values.workerId}
       and state in ('running', 'awaiting_user') and expires_at > now()
-    returning id, connection_id, state, verification_uri, user_code,
+    returning id, connection_id, subscription_slot, state, verification_uri, user_code,
       detail_code, expires_at, created_at, updated_at, completed_at
   `;
   return rows[0] ? mapFlow(rows[0]) : null;
@@ -272,7 +285,7 @@ export async function completeCodexAuthorization(input: {
         updated_at = now()
       where id = ${values.flowId} and claimed_by = ${values.workerId}
         and state in ('running', 'awaiting_user')
-      returning id, provider_id, connection_id, requested_by, state,
+      returning id, provider_id, connection_id, subscription_slot, requested_by, state,
         verification_uri, user_code, detail_code, expires_at, created_at,
         updated_at, completed_at
     `;
@@ -280,15 +293,15 @@ export async function completeCodexAuthorization(input: {
     if (!row) return null;
     await transaction`
       insert into allrice_provider_grants (
-        id, provider_id, connection_id, auth_mode, status,
+        id, provider_id, connection_id, subscription_slot, auth_mode, status,
         credential_reference, authorized_by, authorized_at,
         last_checked_at, detail_code
       ) values (
-        ${randomUUID()}, ${row.provider_id}, ${row.connection_id},
+        ${randomUUID()}, ${row.provider_id}, ${row.connection_id}, ${row.subscription_slot},
         'chatgpt_subscription', ${values.connected ? 'connected' : 'error'},
         ${credentialReference}, ${row.requested_by},
         ${values.connected ? new Date() : null}, now(), ${values.detailCode}
-      ) on conflict (connection_id) do update set
+      ) on conflict (connection_id, subscription_slot) do update set
         status = excluded.status,
         authorized_by = excluded.authorized_by,
         authorized_at = coalesce(excluded.authorized_at, allrice_provider_grants.authorized_at),
@@ -300,12 +313,18 @@ export async function completeCodexAuthorization(input: {
   });
 }
 
-export async function getCodexProviderGrant(context: RequestContext) {
+export async function getCodexProviderGrant(
+  context: RequestContext,
+  subscriptionSlot?: 1 | 2,
+) {
   await requirePlatformAdmin(context);
+  const slot = subscriptionSlot ?? (await readEnabledCodexSubscription());
+  if (slot === null) return null;
   const sql = getDatabase();
   const rows = await sql<
     {
       connection_id: string;
+      subscription_slot: 1 | 2;
       status: 'connected' | 'disconnected' | 'error';
       credential_reference: string;
       authorized_at: Date | null;
@@ -313,15 +332,16 @@ export async function getCodexProviderGrant(context: RequestContext) {
       detail_code: string | null;
     }[]
   >`
-    select connection_id, status, credential_reference, authorized_at,
+    select connection_id, subscription_slot, status, credential_reference, authorized_at,
       last_checked_at, detail_code
-    from allrice_provider_grants where provider_id = ${codexProviderId}
+    from allrice_provider_grants where provider_id = ${codexProviderId} and subscription_slot=${slot}
     order by updated_at desc limit 1
   `;
   const row = rows[0];
   return row
     ? ProviderGrantSchema.parse({
         connectionId: row.connection_id,
+        subscriptionSlot: row.subscription_slot,
         provider: 'codex',
         authMode: 'chatgpt_subscription',
         status: row.status,

@@ -55,15 +55,15 @@ export const capabilityLabels: Record<
       '请使用已授权 Bridge 上的独立浏览器核查【填写 URL 与目标】，不要使用个人 Chrome。涉及提交或修改时按我的工作方式执行；设备离线时停止等待，不转交云端。',
   },
   cloud_mcp: {
-    title: '应用连接',
+    title: '在线应用',
     description:
-      '告诉员工需要哪个应用，由员工连接并使用；私人账号需要你本人登录。',
+      '使用 GitHub、Linear 等在线应用，无需 Bridge。已有连接可直接复用，新增私人账号时由你本人登录。',
     prompt:
       '请连接【填写应用名称或服务地址】并完成【填写业务任务】。优先复用我的已有连接；需要登录或填写凭据时，提供专用连接入口，完成后继续本任务。不要让我把密码或令牌发到聊天中。',
   },
   local_mcp: {
-    title: '本地应用工具',
-    description: '通过已连接的电脑使用本地安装的应用服务。',
+    title: '本地应用工具（Bridge）',
+    description: '通过 Bridge 使用电脑上配置的应用服务，需保持电脑在线。',
     prompt:
       '请使用已授权的本地 MCP 工具完成【填写业务任务】，固定当前 Bridge、目录和版本，按我的工作方式执行；不要安装未知服务或迁移到云端。',
   },
@@ -141,6 +141,7 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     invalid_configuration:
       '配置无法通过校验；请联系管理员核对，不会按可用处理。',
   };
+
 export function capabilitySettingsHref(
   action: WorkspaceCapability['action'],
   workspaceId: string,

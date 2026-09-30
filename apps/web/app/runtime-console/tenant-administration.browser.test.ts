@@ -29,13 +29,20 @@ import { tenantValidationHttp } from '../../lib/tenant-administration/validation
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
 import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
-import { GET as employeeTestRuns } from '../api/v1/admin/platform-employees/[employeeId]/test-runs/route';
+import {
+  GET as employeeTestRuns,
+  POST as queueEmployeeTest,
+} from '../api/v1/admin/platform-employees/[employeeId]/test-runs/route';
 import {
   GET as employeeLifecycle,
   POST as employeeLifecycleAction,
 } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
-import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
+import {
+  savePlatformEmployeeDraft,
+  claimNextPlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+} from '../../../../packages/database/src/employees/platform-employees.ts';
 import {
   frozenPackageSkills,
   readFrozenSkillResource,
@@ -43,7 +50,7 @@ import {
 
 async function openIndependentTools(page: Page) {
   const section = page.locator('details').filter({
-    has: page.locator(':scope > summary', { hasText: '单独选择工具' }),
+    has: page.locator(':scope > summary', { hasText: '单独添加工具' }),
   });
   if ((await section.getAttribute('open')) === null)
     await section.locator(':scope > summary').click();
@@ -153,8 +160,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
             parts[4] === 'platform-employees'
               ? !parts[5]
                 ? await employeeDirectory(request)
-                : parts[6] === 'test-runs' && request.method === 'GET'
-                  ? await employeeTestRuns(request, {
+                : parts[6] === 'test-runs'
+                  ? await (
+                      request.method === 'POST'
+                        ? queueEmployeeTest
+                        : employeeTestRuns
+                    )(request, {
                       params: Promise.resolve({ employeeId: parts[5]! }),
                     })
                   : parts[6] === 'lifecycle'
@@ -889,7 +900,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           (employee: { id: string }) => employee.id === f.employeeId,
         );
       const original = await directory();
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
       await page
         .getByRole('checkbox', {
@@ -925,7 +936,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByRole('button')
         .filter({ hasText: 'MET151 MCP safety fixture' })
         .click();
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
       await page.getByRole('checkbox', { name: /云端 MCP 调用/ }).check();
       expect(
@@ -989,7 +1000,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByRole('button', { name: '安全', exact: true }).count(),
       ).toBe(0);
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await page
         .getByText('是否自动执行，由使用者在前台', { exact: false })
         .waitFor();
@@ -1000,6 +1011,88 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         (await directory()).currentDraft.definition.securityPolicy
           .deniedCapabilities,
       ).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+  it('queues draft tests in the platform environment by default and requires a chosen employee for company testing', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: { ...f.definition, name: 'Isolated preview fixture' },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(`${origin}/runtime-console?view=employees`);
+      await page
+        .getByRole('button')
+        .filter({ hasText: 'Isolated preview fixture' })
+        .click();
+      await page.getByRole('button', { name: '测试', exact: true }).click();
+      expect(
+        await page.getByLabel('测试环境', { exact: true }).inputValue(),
+      ).toBe('platform');
+      const submit = page.getByRole('button', {
+        name: '测试草稿',
+        exact: true,
+      });
+      await expect.poll(() => submit.isEnabled()).toBe(true);
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.request().method() === 'POST' &&
+            r.url().endsWith(`/${f.employeeId}/test-runs`),
+        ),
+        submit.click(),
+      ]);
+      expect(response.status()).toBe(202);
+      const queued = await response.json();
+      expect(queued.queued).toBe(true);
+      expect(queued.testRun.input).toMatchObject({
+        environment: 'platform',
+        ownerId: platform.user.id,
+      });
+      const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+      expect(claim?.id).toBe(queued.testRun.id);
+      expect(claim?.previewContext.organizationId).toBe(
+        platform.organizationId,
+      );
+      expect(
+        await fixture.db`select id from allrice_runs where organization_id=${f.organizationId}`,
+      ).toHaveLength(0);
+      await completePlatformEmployeeTestRun(queued.testRun.id, {
+        answer: 'Platform-only synthetic preview',
+        provider: 'openai-codex',
+        model: 'gpt-5.6-luna',
+        threadId: null,
+        usage: null,
+        events: [],
+        error: null,
+      });
+      await page
+        .getByText('Platform-only synthetic preview', { exact: true })
+        .waitFor();
+      await page
+        .getByText('平台测试 · 独立测试记录', { exact: true })
+        .waitFor();
+      await page
+        .getByLabel('测试环境', { exact: true })
+        .selectOption('company');
+      await page
+        .getByLabel('公司工作区', { exact: true })
+        .selectOption(f.workspaceId);
+      const people = page.getByLabel('测试使用的员工', { exact: true });
+      await expect.poll(() => people.locator('option').count()).toBe(2);
+      expect(await people.inputValue()).toBe('');
+      expect(await submit.isEnabled()).toBe(false);
+      await people.selectOption(f.ownerId);
+      expect(await submit.isEnabled()).toBe(true);
+      await page
+        .getByLabel('测试环境', { exact: true })
+        .selectOption('platform');
+      expect(await page.getByLabel('公司工作区', { exact: true }).count()).toBe(
+        0,
+      );
+      expect(await submit.isEnabled()).toBe(true);
     } finally {
       await context.close();
     }
@@ -1023,7 +1116,12 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByLabel('名称', { exact: true })
         .fill('Unsaved draft title');
       await page.getByRole('button', { name: '测试', exact: true }).click();
-      await page.getByLabel('测试使用的租户').selectOption(f.workspaceId);
+      expect(
+        await page.getByLabel('测试环境', { exact: true }).inputValue(),
+      ).toBe('platform');
+      expect(await page.getByLabel('公司工作区', { exact: true }).count()).toBe(
+        0,
+      );
       await page.getByText('还没有草稿测试记录。', { exact: true }).waitFor();
       expect(
         await page
@@ -1161,33 +1259,35 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await tab('技能');
       await skill(f.skillId).check();
       await skill(otherSkill.skillId).check();
-      await tab('工具');
-      const branches = page.locator('details').filter({
-        has: page.locator(':scope > summary strong', { hasText: 'p18-' }),
-      });
-      expect(await branches.count()).toBe(2);
-      expect(await branches.first().getAttribute('open')).toBeNull();
-      await branches.first().locator(':scope > summary').focus();
-      await page.keyboard.press('Enter');
-      await branches
-        .first()
-        .getByText('读取已冻结 Skill', { exact: true })
+      await tab('技能');
+      expect(
+        await page.getByRole('button', { name: '工具', exact: true }).count(),
+      ).toBe(0);
+      await page
+        .getByRole('region', { name: '基础能力', exact: true })
         .waitFor();
-      expect(await branches.first().getByRole('checkbox').count()).toBe(0);
-      // A shared dependency appears under each skill, without disabled controls.
-      await branches.nth(1).locator(':scope > summary').click();
-      await branches
-        .nth(1)
-        .getByText('读取已冻结 Skill', { exact: true })
-        .waitFor();
-      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      const branches = [f.skillId, otherSkill.skillId].map((id) =>
+        page
+          .getByRole('region', { name: `技能：p18-${id}`, exact: true })
+          .locator('details')
+          .first(),
+      );
+      for (const branch of branches) {
+        expect(await branch.getAttribute('open')).toBeNull();
+        await branch.locator(':scope > summary').focus();
+        await page.keyboard.press('Enter');
+        await branch.getByText('读取已冻结 Skill', { exact: true }).waitFor();
+        expect(await branch.getByRole('checkbox').count()).toBe(0);
+        expect(await branch.getByText(/用于：/).count()).toBeGreaterThan(0);
+      }
+      await openIndependentTools(page);
       expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
       expect(await tool('读取已冻结 Skill').isDisabled()).toBe(false);
       await tool('联网搜索').check();
       await save();
       await open();
-      await tab('工具');
-      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      await tab('技能');
+      await openIndependentTools(page);
       expect(await tool('联网搜索').isChecked()).toBe(true);
       expect(
         (await directory()).currentDraft.definition.capabilities
@@ -1197,6 +1297,20 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         path: '/tmp/met155-dependency-tools.png',
         fullPage: true,
       });
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page
+        .getByRole('region', { name: `技能：p18-${f.skillId}`, exact: true })
+        .scrollIntoViewIfNeeded();
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      await page.screenshot({
+        path: '/tmp/met155-unified-skills-mobile.png',
+        fullPage: true,
+      });
+      await page.setViewportSize({ width: 1440, height: 1050 });
       await publish();
       const first = await directory();
       const firstPublished = await f.revision(first.currentPublished.id);
@@ -1228,8 +1342,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
 
       await tab('技能');
       await skill(f.skillId).uncheck();
-      await tab('工具');
-      await page.locator('summary').filter({ hasText: '单独选择工具' }).click();
+      await tab('技能');
+      await openIndependentTools(page);
       expect(await tool('读取工作区文件').isChecked()).toBe(false);
       expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
       expect(
@@ -1240,7 +1354,8 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await open();
       await tab('技能');
       await skill(otherSkill.skillId).uncheck();
-      await tab('工具');
+      await tab('技能');
+      await openIndependentTools(page);
       expect(await tool('读取已冻结 Skill').isChecked()).toBe(false);
       expect(await tool('读取网页').isChecked()).toBe(false);
       expect(await tool('工作区文件列表').isChecked()).toBe(true);
@@ -1311,7 +1426,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         await palette.screenshot({
           path: process.env.ALLRICE_EMPLOYEE_COLORS_SCREENSHOT,
         });
-      await page.getByRole('button', { name: '工具', exact: true }).click();
+      await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
       await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
       await page.getByText('本地项目预览', { exact: true }).waitFor();

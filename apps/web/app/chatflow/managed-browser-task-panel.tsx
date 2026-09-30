@@ -40,7 +40,7 @@ export { hasManagedBrowserEvents };
 function statusLabel(status: ManagedBrowserTask['status']) {
   return (
     {
-      queued: '等待执行',
+      queued: '排队中 · 等待浏览器空位',
       running: '浏览中',
       succeeded: '已完成',
       failed: '未完成',
@@ -280,7 +280,9 @@ export function ManagedBrowserTaskPanel({
                 </ol>
               ) : active ? (
                 <p className={styles.browserTaskEmpty}>
-                  正在等待浏览器返回进度…
+                  {task.status === 'queued'
+                    ? '浏览器有空位后会自动开始，无需重新发送任务。'
+                    : '正在等待浏览器返回进度…'}
                 </p>
               ) : null}
 

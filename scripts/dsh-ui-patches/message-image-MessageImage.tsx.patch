@@ -1,0 +1,40 @@
+--- a/packages/client/ui-attachment/src/MessageImage.tsx
++++ b/packages/client/ui-attachment/src/MessageImage.tsx
+@@ -1,5 +1,5 @@
+ import { useCallback, useEffect, useMemo, useState } from 'react'
+-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
++import type { ImageAttachmentRef } from '../../message-image-cache'
+ import { IconLoadingOutlineRegular, IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+ import { ImageLightbox } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { ImageLightboxLabels } from '@deepseek-ai/dsh-client-ui-primitives'
+@@ -63,7 +63,8 @@
+ 
+ /** Intrinsic dimensions of one gallery entry; a preview's stay unknown until its intake probe resolved. */
+ function dimensionsOf(image: MessageImageSpec): { readonly width: number; readonly height: number } | undefined {
+-  if ('attachment' in image) return image.attachment
++  if ('attachment' in image) return image.attachment.width !== undefined && image.attachment.height !== undefined
++    ? { width: image.attachment.width, height: image.attachment.height } : undefined
+   return image.preview.width !== undefined && image.preview.height !== undefined
+     ? { width: image.preview.width, height: image.preview.height }
+     : undefined
+@@ -99,7 +100,8 @@
+   const [attempt, setAttempt] = useState(0)
+   const request = useCallback(() => { setAttempt(a => a + 1) }, [])
+   const close = useCallback(() => { setOpen(false) }, [])
+-  const dimensions = useMemo(() => dimensionsOf(image), [image])
++  const [measured, setMeasured] = useState<{ width: number; height: number }>()
++  const dimensions = useMemo(() => dimensionsOf(image) ?? measured, [image, measured])
+   const fit = useMemo(
+     () => {
+       if (variant !== 'single') return undefined
+@@ -157,7 +159,9 @@
+               {loadingThumbnail ? <IconLoadingOutlineRegular className={css.spinner} /> : labels.loading}
+             </span>
+           )
+-          : <img src={src} alt={label} style={fit === undefined ? undefined : { objectPosition: fit.objectPosition }} />}
++          : <img src={src} alt={label} onLoad={event => {
++            if (dimensions === undefined) setMeasured({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })
++          }} style={fit === undefined ? undefined : { objectPosition: fit.objectPosition }} />}
+       </button>
+       {open && src !== null && <ImageLightbox src={src} alt={label} labels={labels.lightbox} onClose={close} />}
+     </>

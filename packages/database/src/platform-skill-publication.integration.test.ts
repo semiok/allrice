@@ -151,7 +151,9 @@ async function fixture(legacySkillIds?: string[]) {
     // Queue through the real public API to capture its exact immutable inputs.
     // Only model completion is synthetic; this test never invokes a provider.
     const result = await queuePlatformEmployeeTestRun(employeeId, {
+      environment: 'company',
       workspaceId,
+      ownerId,
       prompt: 'Review the synthetic resource.',
     });
     expect(result.queued).toBe(true);
@@ -288,6 +290,10 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
       sessionId,
     };
     const original = await freezeSessionModelSnapshot(scope);
+    // Existing employee definitions retain their historical model; new runs
+    // inherit the current platform selection instead.
+    expect(original.model).toBe('gpt-6-luna');
+    expect(original.model).not.toBe(f.definition.modelPolicy.model);
     const legacy = {
       ...original,
       provider: 'gemini',
@@ -298,7 +304,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     const repaired = await freezeSessionModelSnapshot(scope);
     expect(repaired).toMatchObject({
       provider: 'openai-codex',
-      model: f.definition.modelPolicy.model,
+      model: 'gpt-6-luna',
       authMode: 'chatgpt_subscription',
       reasoningEffort: 'xhigh',
     });

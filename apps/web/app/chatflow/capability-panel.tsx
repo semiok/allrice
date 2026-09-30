@@ -9,20 +9,26 @@ import {
   capabilityStateLabels,
 } from './capability-catalog';
 import styles from './capability-panel.module.css';
+import { OnlineAppConnections } from './online-app-connections';
 
-const groups: { label: string; ids: WorkspaceCapabilityId[] }[] = [
+const groups: {
+  label: string;
+  description?: string;
+  ids: WorkspaceCapabilityId[];
+}[] = [
   {
     label: '云端能力',
     ids: ['report', 'cloud_command', 'cloud_browser', 'cloud_mcp'],
   },
   {
-    label: '本地能力',
+    label: 'Bridge 能力',
+    description:
+      '由已连接电脑上的 Bridge 提供，状态根据设备、运行环境和授权判断。',
     ids: [
       'local_files',
       'changeset',
       'local_command',
       'local_browser',
-      'local_mcp',
       'development',
     ],
   },
@@ -72,6 +78,9 @@ export function CapabilityContent({
               {group.label}
               <span>{group.ids.length} 项</span>
             </summary>
+            {group.description && (
+              <p className={styles.groupDescription}>{group.description}</p>
+            )}
             {group.ids.map((id) => {
               const label = capabilityLabels[id],
                 capability = data?.capabilities.find((c) => c.id === id);
@@ -133,23 +142,18 @@ export function CapabilityContent({
                       </button>
                     ) : null}
                     {id === 'cloud_mcp' && data && (
-                      <button type="button" onClick={onConnections}>
-                        已连接应用
-                      </button>
-                    )}
-                    {id === 'local_mcp' &&
-                      state !== 'ready' &&
-                      data?.capabilities.some(
-                        (c) => c.id === 'cloud_mcp' && c.state === 'ready',
-                      ) && (
-                        <button
-                          type="button"
-                          disabled={busy || loading}
-                          onClick={() => onCompose('cloud_mcp')}
-                        >
-                          让员工连接在线应用
+                      <>
+                        <OnlineAppConnections
+                          key={`${data.organizationId}/${data.workspaceId}/${data.viewerId}`}
+                          workspaceId={data.workspaceId}
+                          organizationId={data.organizationId}
+                          refreshKey={data.observedAt}
+                        />
+                        <button type="button" onClick={onConnections}>
+                          已连接应用
                         </button>
-                      )}
+                      </>
+                    )}
                     {capability?.reason === 'runner_missing' &&
                       id === 'local_command' &&
                       data?.capabilities.some(
@@ -192,7 +196,6 @@ export function CapabilityContent({
                         </ol>
                         {[
                           'local_command',
-                          'local_mcp',
                           'changeset',
                           'local_browser',
                         ].includes(id) && (

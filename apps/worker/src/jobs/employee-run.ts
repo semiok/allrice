@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
+  withPlatformImageTools,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
   RouteDecisionSchema,
@@ -28,6 +29,7 @@ import {
   recordRouteDecision,
   freezeRouteSubscriptionSnapshot,
   recordToolBrokerAudit,
+  recordConversationNativeContext,
   ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
@@ -343,6 +345,28 @@ export async function executeEmployeeRun({
       throw error;
     }
     await onHarnessEvent(event);
+    if (
+      event.type === 'native.event' &&
+      event.sourceEventType === 'session/projection'
+    ) {
+      const p = event.sourcePayload ?? {};
+      if (typeof p.contextWindow === 'number') {
+        // Persist while the lease is current, including turns that later fail.
+        // This is display telemetry; losing it must not fail task execution.
+        await recordConversationNativeContext({
+          ...ownership,
+          generation: runtime.generation,
+          contextWindow: p.contextWindow,
+          ...(typeof p.asOfSeq === 'number' ? { asOfSeq: p.asOfSeq } : {}),
+          ...(typeof p.pressureTokens === 'number'
+            ? { pressureTokens: p.pressureTokens }
+            : {}),
+          ...(typeof p.projectedTokens === 'number'
+            ? { projectedTokens: p.projectedTokens }
+            : {}),
+        }).catch(() => undefined);
+      }
+    }
   };
   try {
     const executionSnapshot = resolved.executionSnapshot;
@@ -378,23 +402,16 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.capabilitySnapshot
         : null;
-    const employeeToolNames =
+    const allowedToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
-        ? executionSnapshot.employee.definition.capabilityBindings.toolNames.filter(
-            (name) => !name.startsWith('image.'),
+        ? withPlatformImageTools(
+            executionSnapshot.employee.definition.capabilityBindings.toolNames,
+            resolved.grantedCapabilities,
+            executionSnapshot.schemaVersion === 2
+              ? executionSnapshot.modelSnapshot
+              : undefined,
           )
         : undefined;
-    const imageConfiguration =
-      executionSnapshot.schemaVersion === 2
-        ? executionSnapshot.modelSnapshot?.platformSettings?.configuration
-        : null;
-    const allowedToolNames =
-      employeeToolNames &&
-      imageConfiguration?.imagesEnabled &&
-      employeeToolNames.includes('workspace.export.create') &&
-      resolved.grantedCapabilities.includes('model:invoke')
-        ? [...employeeToolNames, 'image.generate', 'image.edit']
-        : employeeToolNames;
     const authorizedTools = riceToolDefinitionsForCapabilities(
       resolved.grantedCapabilities,
       allowedToolNames,

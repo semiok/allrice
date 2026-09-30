@@ -35,10 +35,17 @@ interface UseAttachmentsOptions {
   workspace: Workspace | null;
 }
 
+export interface WorkspaceFileAddResult {
+  addedIds: string[];
+  error?: string;
+}
+
 interface UseAttachmentsResult {
-  addWorkspaceFile: (file: WorkspaceFile) => Promise<void>;
+  addWorkspaceFiles: (
+    files: WorkspaceFile[],
+  ) => Promise<WorkspaceFileAddResult>;
   attachmentPreview: PendingAttachment | null;
-  clearPendingAttachments: () => void;
+  clearPendingAttachments: (retained?: ReadonlySet<string>) => void;
   deliverableVersions: DeliverableVersion[];
   fileInput: RefObject<HTMLInputElement | null>;
   filePickerOpen: boolean;
@@ -83,7 +90,7 @@ export function useAttachments({
   const [attachmentPreview, setAttachmentPreview] =
     useState<PendingAttachment | null>(null);
   const [uploadVisibility, setUploadVisibility] =
-    useState<Visibility>('private');
+    useState<Visibility>('workspace');
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [versionHistoryFile, setVersionHistoryFile] =
@@ -105,15 +112,36 @@ export function useAttachments({
     [],
   );
 
-  const clearPendingAttachments = useCallback(() => {
-    setPendingAttachments((current) => {
-      for (const attachment of current) {
-        if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl);
-      }
-      return [];
-    });
-    setAttachmentPreview(null);
-  }, []);
+  const clearPendingAttachments = useCallback(
+    (retained?: ReadonlySet<string>) => {
+      setPendingAttachments((current) => {
+        for (const attachment of current) {
+          if (attachment.previewUrl && !retained?.has(attachment.previewUrl))
+            URL.revokeObjectURL(attachment.previewUrl);
+        }
+        return [];
+      });
+      setAttachmentPreview(null);
+    },
+    [],
+  );
+
+  const changeUploadVisibility = useCallback(
+    (update: SetStateAction<Visibility>) => {
+      const next =
+        typeof update === 'function' ? update(uploadVisibility) : update;
+      setUploadVisibility(next);
+      // The selector applies to this draft. Existing stored files retain their ACL.
+      setPendingAttachments((current) =>
+        current.map((attachment) =>
+          attachment.persistedId
+            ? attachment
+            : { ...attachment, visibility: next },
+        ),
+      );
+    },
+    [uploadVisibility],
+  );
 
   const removePendingAttachment = useCallback((target: PendingAttachment) => {
     if (target.previewUrl) URL.revokeObjectURL(target.previewUrl);
@@ -137,6 +165,8 @@ export function useAttachments({
           fileName: attachment.fileName,
           mediaType: attachment.mediaType,
           sizeBytes: attachment.sizeBytes,
+          width: attachment.width,
+          height: attachment.height,
           ...(attachment.previewUrl
             ? { previewUrl: attachment.previewUrl }
             : {}),
@@ -181,6 +211,8 @@ export function useAttachments({
         );
         return {
           ...result.attachment,
+          width: attachment.width,
+          height: attachment.height,
           ...(attachment.previewUrl
             ? { previewUrl: attachment.previewUrl }
             : {}),
@@ -285,6 +317,17 @@ export function useAttachments({
         setError('每条消息的附件总大小不能超过 200 MB。');
         return;
       }
+      // Native DSH intake probes intrinsic dimensions before submission, so the
+      // local echo and admitted image share the same box.
+      for (const attachment of accepted) {
+        if (!attachment.previewUrl) continue;
+        const probe = new Image();
+        probe.onload = () => {
+          attachment.width = probe.naturalWidth;
+          attachment.height = probe.naturalHeight;
+        };
+        probe.src = attachment.previewUrl;
+      }
       if (accepted.length) {
         setPendingAttachments((current) => [...current, ...accepted]);
         setError(rejection);
@@ -349,44 +392,78 @@ export function useAttachments({
     [captureSelection, setError, tenantHeaders, workspace],
   );
 
-  const addWorkspaceFile = useCallback(
-    async (file: WorkspaceFile) => {
-      if (!workspace) return;
+  const addWorkspaceFiles = useCallback(
+    async (files: WorkspaceFile[]): Promise<WorkspaceFileAddResult> => {
+      const result: WorkspaceFileAddResult = { addedIds: [] };
+      if (!workspace)
+        return { ...result, error: '工作区尚未加载，请稍后重试。' };
+      const existing = pendingAttachmentsRef.current;
+      const existingIds = new Set(
+        existing.map((file) => file.persistedId ?? file.id),
+      );
+      const unique = [
+        ...new Map(files.map((file) => [file.id, file])).values(),
+      ];
+      const selected = unique.filter((file) => !existingIds.has(file.id));
+      if (existing.length + selected.length > 20)
+        return { ...result, error: '每条消息最多添加 20 个附件。' };
+      if (
+        [...existing, ...selected].reduce(
+          (sum, file) => sum + file.sizeBytes,
+          0,
+        ) >
+        200 * 1024 * 1024
+      )
+        return { ...result, error: '每条消息的附件总大小不能超过 200 MB。' };
       const action = sessionActions.begin('composer');
-      if (!action) return;
+      if (!action)
+        return { ...result, error: '当前消息正在处理，请稍后再添加附件。' };
       setBusy(true);
+      setError('');
       try {
         const sessionId = activeId ?? (await createSession());
-        if (!sessionId) return;
-        if (!activeId && !action.adoptCreatedSession(sessionId)) return;
-        if (!action.current()) return;
-        await readJson(
-          await fetch(
-            `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
+        if (!sessionId) return result;
+        if (!activeId && !action.adoptCreatedSession(sessionId)) return result;
+        for (const file of selected) {
+          if (!action.current()) return result;
+          await readJson(
+            await fetch(
+              `/api/v1/sessions/${sessionId}/attachments?workspaceId=${workspace.workspaceId}`,
+              {
+                method: 'PUT',
+                headers: {
+                  'content-type': 'application/json',
+                  ...tenantHeaders,
+                },
+                body: JSON.stringify({ objectId: file.id }),
+              },
+            ),
+          );
+          if (!action.current()) return result;
+          result.addedIds.push(file.id);
+          setPendingAttachments((current) => [
+            ...current.filter(
+              (item) => (item.persistedId ?? item.id) !== file.id,
+            ),
             {
-              method: 'PUT',
-              headers: { 'content-type': 'application/json', ...tenantHeaders },
-              body: JSON.stringify({ objectId: file.id }),
+              ...file,
+              persistedId: file.id,
+              status: 'ready',
+              visibility: file.visibility,
             },
-          ),
-        );
-        if (!action.current()) return;
-        setPendingAttachments((current) => [
-          ...current.filter((item) => item.id !== file.id),
-          {
-            ...file,
-            persistedId: file.id,
-            status: 'ready',
-            visibility: file.visibility,
-          },
-        ]);
-        setFilePickerOpen(false);
+          ]);
+        }
+        if (action.current()) setFilePickerOpen(false);
       } catch (cause) {
-        if (action.current())
-          setError(cause instanceof Error ? cause.message : '文件添加失败');
+        if (action.current()) {
+          result.error =
+            cause instanceof Error ? cause.message : '文件添加失败，请重试。';
+          setError(result.error);
+        }
       } finally {
         if (action.finish()) setBusy(false);
       }
+      return result;
     },
     [
       activeId,
@@ -400,7 +477,7 @@ export function useAttachments({
   );
 
   return {
-    addWorkspaceFile,
+    addWorkspaceFiles,
     attachmentPreview,
     clearPendingAttachments,
     deliverableVersions,
@@ -414,7 +491,7 @@ export function useAttachments({
     setAttachmentPreview,
     setFilePickerOpen,
     setPendingAttachments,
-    setUploadVisibility,
+    setUploadVisibility: changeUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
     uploadVisibility,

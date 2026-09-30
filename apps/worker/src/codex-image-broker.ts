@@ -1,9 +1,21 @@
 import {
   CodexImageReceiptSchema,
+  CodexImageFailureReceiptSchema,
+  type CodexImageFailureReceipt,
   type PlatformModelConfiguration,
 } from '@allrice/contracts';
 import { createCodexProviderClient } from './codex-search-broker.js';
 import { HandlerError } from './errors.js';
+
+export class CodexImageGenerationFailedError extends HandlerError {
+  constructor(readonly receipt: CodexImageFailureReceipt) {
+    super(
+      'IMAGE_GENERATION_FAILED',
+      '图片服务本次未能生成图片，未取得可交付图片。',
+      false,
+    );
+  }
+}
 
 export async function requestCodexImage(input: {
   configuration: PlatformModelConfiguration;
@@ -21,15 +33,18 @@ export async function requestCodexImage(input: {
   try {
     if (input.signal?.aborted)
       throw new HandlerError('IMAGE_CANCELED', '图片任务已取消', false);
-    return CodexImageReceiptSchema.parse(
-      await client.generateCodexImage({
-        workModel: input.configuration.workModel,
-        imageModel: input.configuration.imageModel,
-        prompt: input.prompt,
-        ...(input.source ? { source: input.source } : {}),
-      }),
-    );
+    const result = await client.generateCodexImage({
+      workModel: input.configuration.workModel,
+      imageModel: input.configuration.imageModel,
+      prompt: input.prompt,
+      ...(input.source ? { source: input.source } : {}),
+    });
+    const failure = CodexImageFailureReceiptSchema.safeParse(result);
+    if (failure.success)
+      throw new CodexImageGenerationFailedError(failure.data);
+    return CodexImageReceiptSchema.parse(result);
   } catch (error) {
+    if (error instanceof CodexImageGenerationFailedError) throw error;
     const message = error instanceof Error ? error.message : '';
     const code =
       [

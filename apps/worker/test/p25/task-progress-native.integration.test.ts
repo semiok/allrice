@@ -131,6 +131,12 @@ describe('MET153 actual native progress wire', () => {
           )
           .toBe(true);
         expect(model.requests).toHaveLength(decision === 'continue' ? 4 : 3);
+        const context = notices.filter((n) => n.method === 'session.context');
+        expect(context.length).toBeGreaterThan(0);
+        expect(context.at(-1)?.params.sessionId).toBe(session);
+        expect(context.at(-1)?.params.contextPressure).toEqual(
+          (await client.sessionProjection(session)).contextPressure,
+        );
         if (decision === 'continue')
           expect(JSON.stringify(notices)).toContain(
             'Synthetic final answer retained.',

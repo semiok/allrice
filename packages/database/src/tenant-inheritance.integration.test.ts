@@ -29,7 +29,10 @@ import {
   listAdminTenantMembers,
   updateAdminTenantMember,
 } from './tenant-administration.ts';
-import { recordManagedCloudEnvironment } from './tenant-employee-access.ts';
+import {
+  recordManagedCloudEnvironment,
+  synchronizeTenantEmployeeAccess,
+} from './tenant-employee-access.ts';
 import {
   getEmployeeWorkspace,
   createChatSession,
@@ -214,6 +217,77 @@ suite(
     async function workspace(context: RequestContext) {
       return getEmployeeWorkspace(context, context.workspaceId!);
     }
+
+    it('refreshes legacy automatic browser limits while preserving explicit restrictions', async () => {
+      const f = await setup();
+      await report();
+      const joined = await f.join();
+      const [grant] =
+        await fdb.db`select id,version from allrice_browser_control_grants where owner_id=${joined.user.id} and transport='cloud' and enabled`;
+      const legacy = {
+        ...browserProfile,
+        lifetimeMs: 600000,
+        maximumFileBytes: 1000000,
+      };
+      await fdb.db`update allrice_browser_control_grants set profile=${fdb.db.json(legacy)} where id=${grant!.id}`;
+      await report();
+      const [upgraded] =
+        await fdb.db`select id,profile,version from allrice_browser_control_grants where owner_id=${joined.user.id} and transport='cloud' order by created_at desc limit 1`;
+      expect(upgraded).toMatchObject({
+        version: 1,
+        profile: { lifetimeMs: 3600000, maximumFileBytes: 9000000 },
+      });
+      expect(upgraded!.id).not.toBe(grant!.id);
+      expect(
+        (
+          await fdb.db`select profile,version from allrice_browser_control_grants where id=${grant!.id}`
+        )[0],
+      ).toMatchObject({ profile: legacy, version: grant!.version });
+      await report();
+      expect(
+        await fdb.db`select id from allrice_browser_control_grants where owner_id=${joined.user.id} and transport='cloud'`,
+      ).toHaveLength(2);
+      await fdb.db`update allrice_browser_control_grants set profile=${fdb.db.json({ ...legacy, allowUploads: false })} where id=${upgraded!.id}`;
+      await report();
+      const [preserved] =
+        await fdb.db`select profile from allrice_browser_control_grants where id=${upgraded!.id}`;
+      expect(preserved!.profile.allowUploads).toBe(false);
+    });
+    it('refreshes an inherited employee version without making old conversations recent', async () => {
+      const f = await setup();
+      const session = await createChatSession(f.tenant.context, {
+        workspaceId: f.tenant.workspaceId,
+        title: 'Historical conversation',
+      });
+      const publishedVersion = session.employeeVersionId;
+      const legacyVersion =
+        await fdb.db`select v.id from allrice_employee_versions v join allrice_employee_assignments a on a.employee_id=v.employee_id where a.id=${session.employeeAssignmentId} and v.id<>${publishedVersion} limit 1`;
+      // A second immutable version represents an old session snapshot.
+      const oldVersion = legacyVersion[0]?.id ?? randomUUID();
+      if (!legacyVersion.length)
+        await fdb.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,provider_snapshot,config_checksum)
+          select ${oldVersion},organization_id,workspace_id,employee_id,version+100,name,model,system_prompt,capabilities,provider_snapshot,config_checksum from allrice_employee_versions where id=${publishedVersion}`;
+      const oldTime = '2026-08-01T00:00:00.000Z';
+      await fdb.db`update allrice_chat_sessions set employee_version_id=${oldVersion},updated_at=${oldTime} where id=${session.id}`;
+      await fdb.db.begin((tx) =>
+        synchronizeTenantEmployeeAccess(tx, {
+          organizationId: f.tenant.organizationId,
+          workspaceId: f.tenant.workspaceId,
+        }),
+      );
+      expect(
+        (
+          await getChatSessionHistory(
+            f.tenant.context,
+            f.tenant.workspaceId,
+            session.id,
+          )
+        ).session,
+      ).toMatchObject({
+        employeeVersionId: publishedVersion,
+        updatedAt: oldTime,
+      });
+    });
 
     it('updates managed compute capacity when the physical backend is resized', async () => {
       const f = await setup();

@@ -59,12 +59,16 @@ export const PromptImageAttachmentSchema = z
   .strict();
 export type PromptImageAttachment = z.infer<typeof PromptImageAttachmentSchema>;
 
+/** Shared transfer limit: the existing 12 MB base64 request holds 9 MB of bytes. */
+export const platformFileMaximumBytes = 9_000_000;
+export const platformFileMaximumBase64Characters = 12_000_000;
+
 export const CreateFileInputSchema = z
   .object({
     workspaceId: UuidSchema,
     category: StorageCategorySchema.default('uploads'),
     mediaType: z.string().min(1).max(255),
-    contentBase64: z.string().min(1).max(12_000_000),
+    contentBase64: z.string().min(1).max(platformFileMaximumBase64Characters),
     visibility: VisibilitySchema.default('private'),
     retentionUntil: TimestampSchema.nullable().default(null),
     immutable: z.boolean().default(false),

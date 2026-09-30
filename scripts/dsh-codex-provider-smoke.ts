@@ -5,12 +5,14 @@ import { randomUUID } from 'node:crypto';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../apps/worker/src/harness/dsh-distribution.js';
 import { DshProtocolClient } from '../apps/worker/src/harness/dsh-protocol-client.js';
+import { dshEgressEnvironment } from '../apps/worker/src/harness/dsh-egress-environment.js';
 
 const root = await mkdtemp(join(tmpdir(), 'allrice-dsh-codex-smoke-'));
 const platformHome = resolve(
   process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
 );
 
+const model = process.env.ALLRICE_DSH_CODEX_MODEL ?? 'gpt-6-luna';
 const sessionId = `dsh-${randomUUID()}`;
 const client = new DshProtocolClient({
   command: process.execPath,
@@ -20,13 +22,16 @@ const client = new DshProtocolClient({
   environment: {
     PATH: process.env.PATH ?? '/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
+    ...dshEgressEnvironment(),
     DSH_CORDIS_CONFIG: resolve('apps/worker/dsh/allrice-restricted.cordis.yml'),
     DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
     DSH_HOME: platformHome,
     DSH_CREDENTIALS_PATH: resolve(platformHome, '.credentials.yaml'),
     DSH_SESSION_ROOT: resolve(root, 'sessions'),
     DSH_CWD: root,
-    DSH_MODEL: 'gpt-5.6-luna',
+    DSH_MODEL: model,
+    DSH_CODEX_MODEL: model,
+    DSH_CODEX_REASONING_EFFORT: 'xhigh',
     DSH_REASONING_EFFORT: 'max',
     DSH_MAX_OUTPUT_TOKENS: '256',
     DSH_SYSTEM_PROMPT:
@@ -38,7 +43,7 @@ try {
   await client.initialize({
     cwd: root,
     provider: 'openai-codex',
-    model: 'gpt-5.6-luna',
+    model,
     maxTokens: 256,
     expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
   });
@@ -79,7 +84,7 @@ try {
     throw new Error('DSH Codex Provider returned an unexpected response');
   }
   process.stdout.write(
-    `${JSON.stringify({ status: 'ok', harness: 'dsh', provider: result.provider, model: 'gpt-5.6-luna' })}\n`,
+    `${JSON.stringify({ status: 'ok', harness: 'dsh', provider: result.provider, model })}\n`,
   );
 } finally {
   await client.close();

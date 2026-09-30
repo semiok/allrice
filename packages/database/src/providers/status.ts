@@ -4,9 +4,11 @@ import {
 } from '@allrice/contracts';
 
 import { getDatabase } from '../core/client.ts';
+import { readEnabledCodexSubscription } from './codex-subscriptions.ts';
 
 export async function recordCodexProviderStatus(
   statusInput: CodexProviderStatus,
+  subscriptionSlot: 1 | 2 = 1,
 ) {
   const status = CodexProviderStatusSchema.parse(statusInput);
   const sql = getDatabase();
@@ -18,14 +20,14 @@ export async function recordCodexProviderStatus(
   const quotaObserved = status.quota !== undefined;
   await sql`
     insert into allrice_provider_status as current_status (
-      provider, auth_mode, status, cli_version, detail_code, checked_at,
+      provider, subscription_slot, auth_mode, status, cli_version, detail_code, checked_at,
       updated_at, subscription_quota
     ) values (
-      'codex', 'chatgpt_subscription', ${status.status},
+      'codex', ${subscriptionSlot}, 'chatgpt_subscription', ${status.status},
       ${status.cliVersion}, ${status.detailCode},
       ${status.checkedAt ? new Date(status.checkedAt) : new Date()}, now(),
       ${status.quota ? sql.json(JSON.parse(JSON.stringify(status.quota))) : null}
-    ) on conflict (provider) do update set
+    ) on conflict (provider, subscription_slot) do update set
       status = case when excluded.checked_at > current_status.checked_at
         then excluded.status else current_status.status end,
       cli_version = case when excluded.checked_at > current_status.checked_at
@@ -105,8 +107,19 @@ export async function recordCodexProviderStatus(
   `;
 }
 
-export async function getCodexProviderStatus() {
+export async function getCodexProviderStatus(subscriptionSlot?: 1 | 2) {
   const sql = getDatabase();
+  const slot = subscriptionSlot ?? (await readEnabledCodexSubscription());
+  if (slot === null)
+    return CodexProviderStatusSchema.parse({
+      provider: 'codex',
+      authMode: 'chatgpt_subscription',
+      status: 'disconnected',
+      cliVersion: null,
+      detailCode: 'codex_subscriptions_disabled',
+      checkedAt: null,
+      quota: null,
+    });
   const rows = await sql<
     {
       status: CodexProviderStatus['status'];
@@ -117,7 +130,7 @@ export async function getCodexProviderStatus() {
     }[]
   >`
     select status, cli_version, detail_code, checked_at, subscription_quota
-    from allrice_provider_status where provider = 'codex'
+    from allrice_provider_status where provider = 'codex' and subscription_slot=${slot}
   `;
   const row = rows[0];
   return CodexProviderStatusSchema.parse({

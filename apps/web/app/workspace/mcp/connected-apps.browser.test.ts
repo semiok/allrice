@@ -121,7 +121,7 @@ suite('member connected-apps page', () => {
       }
     });
     try {
-      await page.goto(origin);
+      await page.goto(`${origin}/chatflow?session=${connectionId}`);
       await page.getByText('管理连接', { exact: true }).click();
       await page.getByRole('button', { name: '填写连接凭据' }).click();
       await page
@@ -156,6 +156,104 @@ suite('member connected-apps page', () => {
       await page.getByRole('button', { name: '删除连接' }).click();
       await expect.poll(() => page.locator('article').count()).toBe(0);
       expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  }, 20000);
+  it('offers GitHub token setup before platform OAuth exists and sends Linear through native account login', async () => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+    });
+    const page = await context.newPage();
+    const writes: Record<string, unknown>[] = [];
+    const connections: ReturnType<typeof McpConnectionSchema.parse>[] = [];
+    await page.route('**/api/v1/connections**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname.endsWith('/authorize')) {
+        await route.fulfill({
+          contentType: 'text/html',
+          body: '<p>Official account login</p>',
+        });
+        return;
+      }
+      if (route.request().method() === 'POST') {
+        const input = route.request().postDataJSON();
+        writes.push(input);
+        const github = input.appId === 'github';
+        const connection = McpConnectionSchema.parse({
+          id: github ? connectionId : '44444444-4444-4444-8444-444444444444',
+          definitionId: connectionId,
+          workspaceId,
+          name: github ? 'GitHub' : 'Linear',
+          endpoint: github
+            ? 'https://api.githubcopilot.com/mcp/'
+            : 'https://mcp.linear.app/mcp',
+          enabled: true,
+          managed: true,
+          shared: false,
+          revision: 1,
+          credentialConfigured: github,
+          credentialReference: 'synthetic',
+          discoveryState: github ? 'ready' : 'error',
+          loginState: github ? 'none' : 'redirect',
+          discoveryCode: github ? null : 'MCP_AUTH_REQUIRED',
+          checkedAt: null,
+          tools: [],
+        });
+        connections.push(connection);
+        await route.fulfill({ json: { connection } });
+      } else
+        await route.fulfill({
+          json: {
+            connections,
+            apps: {
+              github: { oauthReady: false },
+              linear: { oauthReady: true },
+            },
+          },
+        });
+    });
+    try {
+      await page.goto(`${origin}/chatflow?session=${connectionId}`);
+      await page
+        .getByRole('button', { name: '使用访问令牌连接', exact: true })
+        .click();
+      await page
+        .getByLabel('GitHub 访问令牌')
+        .fill('synthetic-github-personal-token');
+      expect(
+        await page.getByLabel('GitHub 访问令牌').getAttribute('type'),
+      ).toBe('password');
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      await page
+        .getByRole('button', { name: '保存并连接', exact: true })
+        .click();
+      await expect
+        .poll(() => page.locator('article').innerText())
+        .toContain('已连接');
+      expect(writes[0]).toEqual({
+        workspaceId,
+        appId: 'github',
+        method: 'token',
+        bearerToken: 'synthetic-github-personal-token',
+      });
+      expect(await page.locator('body').innerText()).not.toContain(
+        'synthetic-github-personal-token',
+      );
+      await page
+        .getByRole('button', { name: '连接 Linear', exact: true })
+        .click();
+      await page.waitForURL('**/api/v1/connections/authorize?**');
+      expect(writes[1]).toEqual({
+        workspaceId,
+        appId: 'linear',
+        method: 'oauth',
+        returnSessionId: connectionId,
+      });
     } finally {
       await context.close();
     }

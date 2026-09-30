@@ -126,3 +126,38 @@ it('does not retry lost native write replies and preserves authentication-requir
     await server.close();
   }
 });
+
+it('rejects invalid enum arguments locally without invoking native MCP', async () => {
+  const server = await startMcpAcceptanceService({ anonymous: true });
+  try {
+    const transport = createNativeMcpTransport({
+      fetchOverride: server.fetchOverride,
+    });
+    const input = {
+      endpoint: server.endpoint,
+      bearerToken: null,
+      signal: AbortSignal.timeout(10_000),
+      assertAuthorized: async () => {},
+    };
+    const tools = await transport.discover(input);
+    const tool = frozen({
+      ...tools[0]!,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fields: { type: 'array', items: { enum: ['id', 'name', 'status'] } },
+        },
+      },
+    });
+    await expect(
+      transport.invoke({ ...input, tool, arguments: { fields: ['state'] } }),
+    ).rejects.toMatchObject({
+      code: 'MCP_INVALID_SCHEMA',
+      message: expect.stringContaining('fields/0'),
+    });
+    expect(server.state.reads).toBe(0);
+    expect(server.state.calls).toBe(0);
+  } finally {
+    await server.close();
+  }
+});

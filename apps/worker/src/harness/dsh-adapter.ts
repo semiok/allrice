@@ -35,6 +35,7 @@ import type {
 import type { DshNotification } from './dsh-protocol-client.js';
 import {
   nativeEventView,
+  nativeContextView,
   record,
   shortText,
   sourceMetadata,
@@ -572,7 +573,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             id: toolCall.id,
             ok: true,
             content: toolResult.modelContent,
-          })}</allrice_tool_result>`;
+          })}</allrice_tool_result>\n\nContinue the original user request using this tool result. Any text emitted alongside the preceding tool envelope was not delivered to the user. Return a complete, self-contained answer incorporating the result and any corrections, not just an addendum to an unseen draft.`;
         } catch (error) {
           await emit({
             type: 'tool.failed',
@@ -848,6 +849,37 @@ export class DshHarnessAdapter implements HarnessAdapter {
     >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
+      if (notification.method === 'allrice.modelWait') {
+        const { callId, status } = notification.params;
+        if (
+          typeof callId !== 'string' ||
+          !/^[a-f0-9-]{36}$/i.test(callId) ||
+          !['started', 'completed', 'failed'].includes(String(status))
+        )
+          return;
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'lifecycle',
+          status: status as 'started' | 'completed' | 'failed',
+          label: '等待模型响应',
+          summary:
+            status === 'started'
+              ? '模型暂未返回新内容，正在等待响应。'
+              : status === 'completed'
+                ? '模型已恢复响应。'
+                : '模型响应中断或等待超时。',
+          sourceEventType: 'allrice/model-wait',
+          sourceEventId: `dsh:model-wait:${callId}:${status}:${randomUUID()}`,
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: { callId, status },
+        });
+        return;
+      }
+      if (notification.method === 'session.context') {
+        const view = nativeContextView(notification.params);
+        if (view) await input.onNative(view);
+        return;
+      }
       if (notification.method === 'session.user-question') {
         const questions = Array.isArray(notification.params.questions)
           ? notification.params.questions
@@ -957,6 +989,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const event = record(notification.params.event);
       const data = record(event?.data);
       if (!event || !data) return;
+      // Native compaction replaces context history, not execution activity.
+      if (record(event.surfaceOp)?.op === 'replace') return;
       const source = sourceMetadata(event);
       if (event.type === 'allrice/wait/checkpoint' && parking) {
         parkingQuestion = true;
@@ -1047,7 +1081,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   ? '搜索失败'
                   : '搜索完成'
                 : failed
-                  ? '工具执行失败'
+                  ? nativeToolFailureSummary(firstBlock?.content)
                   : '工具执行完成',
           ...source,
           sourcePayload: {
@@ -1336,4 +1370,30 @@ export class DshHarnessAdapter implements HarnessAdapter {
       input.signal.removeEventListener('abort', abort);
     }
   }
+}
+
+function nativeToolFailureSummary(content: unknown) {
+  const value =
+    typeof content === 'string'
+      ? content.slice(0, 4000)
+      : Array.isArray(content)
+        ? content
+            .slice(0, 4)
+            .map((block) => {
+              const item = record(block);
+              return item?.type === 'text' && typeof item.text === 'string'
+                ? item.text.slice(0, 1000)
+                : '';
+            })
+            .join(' ')
+        : '';
+  if (/非公开网络地址|不允许.*内部网络地址/.test(value))
+    return '网页地址解析异常，未能确认公开网络地址。';
+  if (/无法独立确认域名/.test(value))
+    return '网页域名解析暂时失败，请稍后重试。';
+  if (/childRunId|当前任务没有这个助手/.test(value))
+    return '没有可接收消息的助手，当前任务可直接继续。';
+  if (/WEB_TIMEOUT|网页读取超时/.test(value))
+    return '网页响应超时，请尝试其他来源。';
+  return '工具执行失败';
 }

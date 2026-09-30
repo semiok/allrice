@@ -325,3 +325,50 @@
   color: var(--ink);
   background: #191a1d;
 }
+
+.subscriptionAccounts {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+}
+.subscriptionSummary p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+.subscriptionAccount {
+  border: 1px solid var(--line, #34363b);
+  border-radius: 14px;
+  padding: 20px;
+  min-width: 0;
+}
+.subscriptionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.subscriptionHeader h3 {
+  margin: 0 0 8px;
+  overflow-wrap: anywhere;
+}
+.subscriptionHeader strong {
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--line, #34363b);
+}
+.subscriptionHeader strong[data-enabled='true'] {
+  color: #17824b;
+  background: #eaf8f0;
+}
+@media (max-width: 600px) {
+  .subscriptionAccount {
+    padding: 12px;
+  }
+}
+
+.subscriptionAccounts button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

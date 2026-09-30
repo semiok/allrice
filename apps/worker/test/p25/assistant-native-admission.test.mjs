@@ -1,10 +1,14 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QUOTA_EXCEEDED_CODE } from '@deepseek-ai/dsh-llm';
 import { createGovernedAssistantNativeRuntime } from '../../dsh/allrice-assistant-runtime.mjs';
 
 /** Unit seam only. Actual DSH/Google HTTP/PG rejection is separately covered by
  * assistant-gemini-production.integration.test.ts. No model or database here. */
-function fixture(settle = async () => ({ settled: true })) {
+afterEach(() => vi.useRealTimers());
+function fixture(
+  settle = async () => ({ settled: true }),
+  runtimeOptions = {},
+) {
   const listeners = new Map();
   const agent = {
     id: 'synthetic-native-id',
@@ -36,6 +40,7 @@ function fixture(settle = async () => ({ settled: true })) {
       tools: { guard: vi.fn(), register: vi.fn() },
     },
     bridge,
+    runtimeOptions,
   );
   runtime.bind({ nativeSessionId: agent.id, wireTools: [] });
   const signal = new globalThis.AbortController().signal;
@@ -71,6 +76,8 @@ function fixture(settle = async () => ({ settled: true })) {
   };
   return {
     bridge,
+    listeners,
+    agent,
     prepare,
     execute,
     runtime,
@@ -521,5 +528,55 @@ describe('bounded native assistant failure diagnostics', () => {
     expect(() => f.runtime.diagnostics({ nativeSessionId: 'unbound' })).toThrow(
       'assistant_native_unbound',
     );
+  });
+});
+
+it('terminates a hung native stream, preserves unknown usage, and does not replay it', async () => {
+  vi.useFakeTimers();
+  const onModelWait = vi.fn();
+  const f = fixture(
+    async () => ({ settled: true, tokenUsageObservational: true }),
+    { onModelWait },
+  );
+  await f.prepare();
+  const request = {
+    sessionId: f.agent.id,
+    provider: 'openai-codex',
+    model: 'gpt-6-luna',
+    maxTokens: 3754,
+    messages: [],
+    signal: new globalThis.AbortController().signal,
+  };
+  const stream = f.listeners.get('llm/stream')(request, () => ({
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next() {
+      return new Promise(() => {});
+    },
+    return() {
+      return new Promise(() => {});
+    },
+  }));
+  const result = stream.next();
+  const rejected = expect(result).rejects.toMatchObject({ code: 'TIMEOUT' });
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(onModelWait).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionId: f.agent.id, status: 'started' }),
+  );
+  await vi.advanceTimersByTimeAsync(240000);
+  await rejected;
+  const settlement = f.bridge.mock.calls.find(
+    ([method]) => method === 'model-settle',
+  )[1];
+  expect(settlement).not.toHaveProperty('inputTokens');
+  expect(settlement).not.toHaveProperty('outputTokens');
+  await expect(f.prepare()).rejects.toThrow(
+    'assistant_model_unknown_no_replay',
+  );
+  expect(f.diagnostics().failures[0]).toMatchObject({
+    code: 'TIMEOUT',
+    inputUsageKnown: false,
+    outputUsageKnown: false,
   });
 });

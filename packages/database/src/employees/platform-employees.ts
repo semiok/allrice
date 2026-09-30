@@ -1,4 +1,8 @@
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
+import {
+  PlatformPreviewContextError,
+  resolvePlatformPreviewContext,
+} from '../platform-employees/preview-context.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type postgres from 'postgres';
@@ -489,22 +493,34 @@ export async function queuePlatformEmployeeTestRun(
 ) {
   const employeeId = UuidSchema.parse(employeeIdInput);
   const parsed = CreatePlatformEmployeeTestRunInputSchema.parse(input);
-  if (!parsed.workspaceId) {
+  const sql = getDatabase();
+  let preview;
+  try {
+    preview = await sql.begin((tx) =>
+      resolvePlatformPreviewContext(tx, parsed, actorLabel, true),
+    );
+  } catch (error) {
+    if (!(error instanceof PlatformPreviewContextError)) throw error;
     return {
       queued: false as const,
       valid: false,
-      errors: ['请选择一个租户工作区作为预览环境。'],
+      errors: [error.message],
       warnings: [] as string[],
       runtimeProfile: null,
       revisionId: null,
       testRun: null,
     };
   }
+  const testInput = {
+    ...parsed,
+    environment: preview.environment,
+    workspaceId: preview.context.workspace_id,
+    ownerId: preview.context.owner_id,
+  };
   const compilation = await compilePlatformEmployee(employeeId, actorLabel);
   if (!compilation.valid || !compilation.runtimeProfile) {
     return { queued: false as const, ...compilation, testRun: null };
   }
-  const sql = getDatabase();
   const rows = await sql.begin(async (transaction) => {
     const revisions = await transaction<RevisionRow[]>`
       select id, employee_id, revision, status, definition, runtime_profile,
@@ -537,7 +553,7 @@ export async function queuePlatformEmployeeTestRun(
         frozen_package_checksum
       ) values (
         ${employeeId}, ${compilation.revisionId}, ${actorLabel}, 'queued',
-        ${transaction.json(parsed)},
+        ${transaction.json(testInput)},
         ${transaction.json(frozen.runtimeProfile)},
         ${transaction.json(frozen.definition)},
         ${transaction.json(frozen.nativeSkills)},
@@ -558,7 +574,9 @@ export async function queuePlatformEmployeeTestRun(
     details: {
       testRunId: row.id,
       revisionId: compilation.revisionId,
-      workspaceId: parsed.workspaceId,
+      environment: testInput.environment,
+      workspaceId: testInput.workspaceId,
+      ownerId: testInput.ownerId,
     },
   });
   return {
@@ -828,49 +846,35 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     const parsedInput = CreatePlatformEmployeeTestRunInputSchema.parse(
       row.input,
     );
-    if (!parsedInput.workspaceId) {
-      throw new Error('platform_employee_preview_workspace_required');
-    }
-    const previewRows = await transaction<
-      {
-        workspace_id: string;
-        workspace_name: string;
-        organization_id: string;
-        membership_id: string;
-        owner_id: string;
-        role: 'admin' | 'member' | 'viewer';
-      }[]
-    >`
-      select workspace.id as workspace_id, workspace.name as workspace_name,
-        workspace.organization_id, membership.id as membership_id,
-        membership.user_id as owner_id, membership.role
-      from allrice_workspaces workspace
-      join allrice_organizations organization
-        on organization.id = workspace.organization_id
-      join allrice_memberships membership
-        on membership.organization_id = workspace.organization_id
-        and (membership.workspace_id is null or membership.workspace_id = workspace.id)
-        and membership.active
-      join allrice_users actor
-        on actor.id = membership.user_id and actor.status = 'active'
-      left join allrice_bridge_devices bridge
-        on bridge.organization_id = workspace.organization_id
-        and bridge.workspace_id = workspace.id
-        and bridge.owner_id = membership.user_id
-        and bridge.revoked_at is null
-        and bridge.last_seen_at > now() - interval '45 seconds'
-      where workspace.id = ${parsedInput.workspaceId}
-        and workspace.archived_at is null
-        and organization.archived_at is null
-        and organization.slug <> 'allrice-platform'
-      order by (bridge.id is not null) desc,
-        case membership.role when 'admin' then 0 when 'member' then 1 else 2 end,
-        membership.created_at, membership.id
-      limit 1
-    `;
-    const previewContext = previewRows[0];
-    if (!previewContext) {
-      throw new Error('platform_employee_preview_workspace_unavailable');
+    let previewContext;
+    try {
+      ({ context: previewContext } = await resolvePlatformPreviewContext(
+        transaction,
+        parsedInput,
+        row.requested_by_label,
+      ));
+    } catch (error) {
+      if (!(error instanceof PlatformPreviewContextError)) throw error;
+      await transaction`update allrice_platform_employee_test_runs
+        set status='running',worker_id=${workerId},started_at=clock_timestamp(),timeout_at=clock_timestamp()
+        where id=${row.id} and status='queued'`;
+      await finalizePlatformEmployeeTestRunInTransaction(transaction, {
+        testRunId: row.id,
+        finalizedByLabel: 'platform-test-environment-validator',
+        output: PlatformEmployeeTestRunOutputSchema.parse({
+          answer: null,
+          provider: null,
+          model: null,
+          threadId: null,
+          usage: null,
+          events: [],
+          error: {
+            code: 'TEST_ENVIRONMENT_UNAVAILABLE',
+            message: error.message,
+          },
+        }),
+      });
+      return null;
     }
     const issuedAt = new Date();
     const expiresAt = platformEmployeeTestTimeoutAt(
@@ -1874,7 +1878,7 @@ export async function publishPlatformEmployee(
     if (compilation.runtimeProfile?.provider === 'openai-codex') {
       const statuses = await sql<{ status: string; checked_at: Date | null }[]>`
       select status, checked_at from allrice_provider_status
-      where provider = 'codex'
+      where provider = 'codex' and subscription_slot=(select slot from allrice_codex_subscriptions where enabled)
     `;
       const provider = statuses[0];
       if (
@@ -2024,7 +2028,7 @@ export async function publishPlatformEmployee(
       if (!rapidIteration) {
         const providers = await transaction<{ checked_at: Date }[]>`
       select checked_at from allrice_provider_status
-      where provider = 'codex' and status = 'connected'
+      where provider = 'codex' and subscription_slot=(select slot from allrice_codex_subscriptions where enabled) and status = 'connected'
         and checked_at >= clock_timestamp() - interval '120 seconds'
       for share
     `;

@@ -1,3 +1,4 @@
+import type { McpFailureKind } from '@allrice/contracts';
 import type {
   ChatFlowEventEnvelope,
   SaasCapabilityManifest,
@@ -77,6 +78,7 @@ export interface Workspace {
 }
 
 export interface Message {
+  applicationFailure?: McpFailureKind;
   workMethods?: WorkMethod[];
   id: string;
   role: 'user' | 'assistant' | 'system' | 'tool';
@@ -135,6 +137,8 @@ export interface Attachment {
   mediaType: string;
   sizeBytes: number;
   previewUrl?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface PendingAttachment extends Attachment {
@@ -170,6 +174,7 @@ export interface RunView {
   status: 'connecting' | 'running' | 'completed' | 'failed' | 'canceled';
   cursor: string | null;
   reconnects: number;
+  connectionError?: string;
   events: ChatFlowEventEnvelope[];
 }
 

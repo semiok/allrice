@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { withFixturePlatformAdministrator } from '../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
 import {
@@ -14,6 +17,64 @@ const integration =
     : describe.skip;
 integration('platform-wide model inheritance', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it('migrates only retired defaults to Luna/xhigh and preserves other configuration', async () => {
+    const f = await createAssistantFixtureDatabase();
+    try {
+      const migration = await readFile(
+        new URL('../migrations/0119_gpt6_platform_models.sql', import.meta.url),
+        'utf8',
+      );
+      const [initial] =
+        await f.db`select revision,configuration from allrice_platform_model_settings where singleton`;
+      assert.ok(initial);
+      expect(initial.configuration).toMatchObject({
+        workModel: 'gpt-6-luna',
+        reasoningEffort: 'xhigh',
+      });
+      for (const workModel of [
+        'gpt-5.6-luna',
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+        'gpt-5.3-codex-spark',
+      ]) {
+        const original = {
+          ...initial.configuration,
+          workModel,
+          reasoningEffort: 'low',
+          imageModel: 'auto',
+          imagesEnabled: true,
+          timeoutMs: 600_000,
+        };
+        await f.db`update allrice_platform_model_settings set configuration=${f.db.json(original)},revision=10 where singleton`;
+        await f.db.unsafe(migration);
+        const [next] =
+          await f.db`select revision,configuration from allrice_platform_model_settings where singleton`;
+        assert.ok(next);
+        const preserved = workModel === 'gpt-5.3-codex-spark';
+        expect(next.configuration).toEqual(
+          preserved
+            ? original
+            : {
+                ...original,
+                workModel: 'gpt-6-luna',
+                reasoningEffort: 'xhigh',
+              },
+        );
+        expect(next.revision).toBe(preserved ? 10 : 11);
+        await f.db.unsafe(migration);
+        expect(
+          (
+            await f.db`select revision from allrice_platform_model_settings where singleton`
+          )[0]?.revision,
+        ).toBe(next.revision);
+      }
+    } finally {
+      await f.close();
+    }
+  }, 40_000);
   it('freezes each Run, updates old sessions for the next Run, rejects stale/non-admin writes', async () => {
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
@@ -29,7 +90,7 @@ integration('platform-wide model inheritance', () => {
         expectedRevision: settings.revision,
         configuration: {
           ...settings.configuration,
-          workModel: 'gpt-5.5',
+          workModel: 'gpt-6-sol',
           imagesEnabled: true,
         },
       };
@@ -58,7 +119,7 @@ integration('platform-wide model inheritance', () => {
         sessionId: task.sessionId,
       });
       expect(next).toMatchObject({
-        model: 'gpt-5.5',
+        model: 'gpt-6-sol',
         provider: 'openai-codex',
         fallbackPolicy: 'disabled',
         resolvedFallbacks: [],

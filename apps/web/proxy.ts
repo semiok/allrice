@@ -18,6 +18,9 @@ import {
 } from './lib/portal/session';
 
 const publicPaths = new Set([
+  // Opaque state only relays to the originating tenant; that callback verifies
+  // its own live member session before exchanging a code.
+  '/api/v1/connections/github/callback',
   '/login',
   '/api/v1/auth/login',
   '/accept-invitation',

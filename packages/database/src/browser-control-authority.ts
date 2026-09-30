@@ -242,6 +242,16 @@ export async function currentBrowserWorkspace(
         and ((l.controller_lease_token is null and ${w.state}='starting') or l.lease_expires_at>clock_timestamp())
       for share of l,g,d`;
     if (!local) throw new RuntimePolicyError('browser_authority_unavailable');
+    const profile = BrowserProfileSchema.parse(w.profile);
+    const environment = w.target_metadata.environment as
+      { browserDefaultsVersion?: number } | undefined;
+    if (
+      (profile.lifetimeMs > 600000 ||
+        profile.maximumFileBytes > 2000000 ||
+        (profile.network === 'public_https' && local.persist_login)) &&
+      environment?.browserDefaultsVersion !== 1
+    )
+      throw new RuntimePolicyError('local_browser_upgrade_required');
     w.device_id = local.device_id;
     if (local.purpose === 'local_preview') {
       if (local.persist_login)

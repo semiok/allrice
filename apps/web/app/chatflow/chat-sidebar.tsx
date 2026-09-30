@@ -4,6 +4,7 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import {
   IconArchiveOutlineRegular,
   IconChevronRightOutlineRegular,
+  IconRefreshOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { AllriceBrand } from '../../components/allrice-brand';
@@ -23,6 +24,7 @@ import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatSidebarProps {
+  experienceEnabled?: boolean;
   capabilities: ReactNode;
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
@@ -44,6 +46,7 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({
+  experienceEnabled = false,
   capabilities,
   archive,
   activeId,
@@ -221,6 +224,36 @@ export function ChatSidebar({
             </button>
           </p>
         )}
+        {archive?.loadError && !collapsed && (
+          <div
+            className={archiveCss.loadNotice}
+            role="alert"
+            aria-label="会话列表状态"
+            aria-busy={archive.loading}
+          >
+            <div className={archiveCss.loadNoticeContent}>
+              <span className={archiveCss.loadNoticeTitle}>
+                {archive.loading ? '正在更新会话…' : '会话暂未更新'}
+              </span>
+              <span className={archiveCss.loadNoticeDescription}>
+                {archive.sessions.length ? '已保留最近会话' : '请稍后重试'}
+              </span>
+            </div>
+            <button
+              className={archiveCss.loadRetry}
+              type="button"
+              aria-label="重新加载会话列表"
+              onClick={archive.reload}
+              disabled={archive.loading}
+            >
+              <IconRefreshOutlineRegular
+                size={15}
+                className={archive.loading ? archiveCss.retrying : undefined}
+              />
+              <span>{archive.loading ? '更新中' : '重试'}</span>
+            </button>
+          </div>
+        )}
         <div className={sidebarUi.regionArea}>
           <EmployeeSidebar
             archive={archive}
@@ -240,6 +273,8 @@ export function ChatSidebar({
 
         <div className={sidebarUi.footArea}>
           <SidebarSettings
+            experienceEnabled={experienceEnabled}
+            sessionId={activeId ?? undefined}
             capabilities={capabilities}
             key={
               employeePreferenceKey(workspace) ??

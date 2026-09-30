@@ -10,9 +10,11 @@ export interface NativeExperienceItem {
   title: string;
   detail?: string;
   activityDetail?: string;
+  modelWait?: boolean;
   sequence: number;
   lastSequence?: number;
   toolName?: string;
+  operationId?: string;
   startedAt?: string;
   finishedAt?: string;
 }
@@ -23,6 +25,8 @@ function text(value: unknown) {
 
 function nativeKey(event: ChatFlowEventEnvelope, kind: NativeExperienceKind) {
   const native = event.sourceEvent?.payload ?? {};
+  if (event.sourceEvent?.type === 'allrice/model-wait' && text(native.callId))
+    return `model-wait:${event.runId}:${String(native.callId)}`;
   const turn = String(native.turn ?? '');
   const step = String(native.step ?? '');
   const chunk =
@@ -82,6 +86,9 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
       items.set(key, {
         id: key,
         kind: resolvedKind,
+        ...(event.sourceEvent?.type === 'allrice/model-wait'
+          ? { modelWait: true }
+          : {}),
         status:
           (event.payload.status as NativeExperienceItem['status']) ?? 'info',
         title: resolvedTitle,

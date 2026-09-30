@@ -36,7 +36,13 @@ PR3 adds real LibreOffice evaluation: tests independently expect `30*2=60`, a cr
 
 ## Calculation and page preview
 
-`workspace.export.create` checks all DOCX/XLSX/PPTX outputs automatically, including the legacy `content` path. Its `quality` response distinguishes `checked` from `unavailable`, returns actual formula results/error counts and explicitly labels layout as rendered, not visually reviewed. Rendering failures preserve the downloadable file and return an actionable limitation. Numerical results are not a business reconciliation verdict. The tenant workbench renders PNG pages and shows the formula results; it does not execute Office, PDF, HTML or external resources in the browser.
+Current sidebar previews use the [native DSH document readers](native-preview.md):
+Word/PowerPoint convert to PDF, spreadsheets use the native grid, and the selected
+original version remains unchanged. The PNG rendering and formula checks below
+describe the export-quality workflow and legacy preview payloads, not the current
+sidebar limits.
+
+`workspace.export.create` checks all DOCX/XLSX/PPTX outputs automatically, including the legacy `content` path. Its `quality` response distinguishes `checked` from `unavailable`, returns actual formula results/error counts and explicitly labels layout as rendered, not visually reviewed. Rendering failures preserve the downloadable file and return an actionable limitation. Numerical results are not a business reconciliation verdict. Historical PNG preview payloads remain readable.
 
 Web uses the existing authorized artifact content route and verifies stored length/hash before calling the renderer, then reauthorizes before returning any result. Previews come from the selected immutable version. The renderer cache requires the complete input bytes, is keyed by format/SHA-256 and bounded to 16 entries / 64 MB / ten minutes. It is disposable, has no new database table or storage category, and regenerates after restart. There are no extra preview files in the tenant file list. Original files retain existing storage quota and version enforcement.
 

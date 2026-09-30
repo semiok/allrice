@@ -3,15 +3,20 @@
 import { useState, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
+  mcpFailureCopy,
   type WorkbenchArtifact,
   type InteractionStatus,
 } from '@allrice/contracts';
 import { SessionReferenceChips } from './session-reference-picker';
 import type { AssistantTreeView } from '@allrice/database';
 
-import { projectWorkProgress } from '../../lib/chatflow/work-progress';
+import {
+  isReplyStreaming,
+  projectWorkProgress,
+} from '../../lib/chatflow/work-progress';
 
 import { AssistantMarkdown } from './assistant-markdown';
+import type { MessageImageSource } from './message-image-cache';
 import { MessageImageGallery } from './attachment-components';
 import type { Message, RunTrace, RunView } from './chatflow-types';
 import { BrowserWorkspacePanel } from './browser-workspace-panel';
@@ -36,8 +41,10 @@ import { AssistantMessageActions } from './message-feedback';
 import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
 import { feedbackTranslate } from './feedback-labels';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
+import { isMessageRunActive } from './run-view';
 
 interface ChatTranscriptProps {
+  messageImages?: MessageImageSource;
   streamingOutput?: boolean;
   atBottom: boolean;
   employeeName?: string;
@@ -61,6 +68,7 @@ interface ChatTranscriptProps {
 }
 
 export function ChatTranscript({
+  messageImages,
   streamingOutput = false,
   atBottom,
   employeeName = 'AI 员工',
@@ -125,10 +133,7 @@ export function ChatTranscript({
                   undefined)
                 : undefined;
               const traceEvents = messageRun?.events ?? trace?.events ?? [];
-              const messageIsRunning = messageRun
-                ? messageRun.status === 'running' ||
-                  messageRun.status === 'connecting'
-                : message.status === 'pending';
+              const messageIsRunning = isMessageRunActive(message, messageRun);
               const streamedText = messageRun
                 ? assistantDelta(messageRun.events)
                 : '';
@@ -147,6 +152,10 @@ export function ChatTranscript({
                 streamingOutput,
               );
               const responseText = progress.finalText;
+              const applicationFailure =
+                message.status === 'failed' && message.applicationFailure
+                  ? mcpFailureCopy[message.applicationFailure]
+                  : null;
 
               return (
                 <div
@@ -208,10 +217,10 @@ export function ChatTranscript({
                         <SessionReferenceChips
                           references={message.content.sessionReferences ?? []}
                         />
-                        {message.attachments?.length ? (
+                        {messageImages && message.attachments?.length ? (
                           <MessageImageGallery
                             attachments={message.attachments}
-                            tenantHeaders={tenantHeaders}
+                            source={messageImages}
                           />
                         ) : null}
                         <div
@@ -241,123 +250,165 @@ export function ChatTranscript({
                         <i aria-hidden="true" />
                         <span>{employeeName}</span>
                       </div>
-                      <WorkProcess
-                        items={progress.items}
-                        parts={progress.parts}
-                        artifacts={linkedArtifacts}
-                        onOpenArtifact={onOpenArtifact}
-                        timing={timing}
-                        running={messageIsRunning}
-                        streaming={streamingOutput && !!streamedText}
-                        failed={
-                          message.status === 'failed' ||
-                          messageRun?.status === 'failed'
-                        }
-                        canceled={messageRun?.status === 'canceled'}
-                        traceStatus={trace?.status}
-                        onRetry={() => {
-                          if (message.runId) void onLoadRunTrace(message.runId);
-                        }}
-                        assistantCount={assistantState?.children.length ?? 0}
-                        assistantAttention={
-                          assistantState?.attention.length ?? 0
-                        }
+                      <CloudOperationPanel
+                        runId={message.runId ?? ''}
+                        workspaceId={workspaceId}
+                        tenantHeaders={tenantHeaders}
+                        runActive={messageIsRunning}
                       >
-                        {assistantTree &&
-                        assistantState?.children.length &&
-                        onAssistantChanged &&
-                        onOpenArtifact ? (
-                          <AssistantRunPanel
-                            key={`${workspaceId}/${message.runId}`}
-                            tree={assistantTree}
-                            workspaceId={workspaceId}
-                            headers={tenantHeaders}
-                            onArtifact={onOpenArtifact}
-                            onChanged={onAssistantChanged}
-                          />
-                        ) : null}
-                      </WorkProcess>
-                      {message.runId && hasManagedBrowserEvents(traceEvents) ? (
-                        <ManagedBrowserTaskPanel
-                          runActive={messageIsRunning}
-                          runId={message.runId}
-                          tenantHeaders={tenantHeaders}
-                          workspaceId={workspaceId}
-                        />
-                      ) : null}
-                      {message.runId &&
-                        hasBrowserWorkspaceEvents(traceEvents) && (
-                          <BrowserWorkspacePanel
-                            refreshKey={browserRevisions[message.runId] ?? 0}
-                            runId={message.runId}
-                            workspaceId={workspaceId}
-                            tenantHeaders={tenantHeaders}
-                            runActive={messageIsRunning}
-                          />
-                        )}
-                      {message.runId && (
-                        <CloudOperationPanel
-                          runId={message.runId}
-                          workspaceId={workspaceId}
-                          tenantHeaders={tenantHeaders}
-                          runActive={messageIsRunning}
-                        />
-                      )}
-                      {localCommandsEnabled && message.runId && (
-                        <LocalCommandPanel
-                          onServiceChanged={() =>
-                            setBrowserRevisions((previous) => ({
-                              ...previous,
-                              [message.runId!]:
-                                (previous[message.runId!] ?? 0) + 1,
-                            }))
-                          }
-                          runId={message.runId}
-                          workspaceId={workspaceId}
-                          tenantHeaders={tenantHeaders}
-                          runActive={messageIsRunning}
-                        />
-                      )}
-                      {localMcpEnabled && message.runId && (
-                        <LocalMcpPanel
-                          runId={message.runId}
-                          workspaceId={workspaceId}
-                          tenantHeaders={tenantHeaders}
-                          runActive={messageIsRunning}
-                        />
-                      )}
-                      {responseText && !progress.parts ? (
-                        <div
-                          className={`${assistantUi.body} ${styles.assistantCopy}`}
-                          data-streaming={
-                            (messageIsRunning && !!streamedText) || undefined
-                          }
-                        >
-                          <AssistantMarkdown
-                            text={responseText}
-                            streaming={streamingOutput && messageIsRunning}
-                            artifacts={linkedArtifacts}
-                            onOpenArtifact={onOpenArtifact}
-                          />
-                        </div>
-                      ) : null}
-                      {message.content.budgetWarning &&
-                      message.status === 'failed' ? (
-                        <small role="status">
-                          答案已保留。本次任务超过平台内部预期 Token
-                          预算；真实用量已记录，这不代表 Codex 周额度耗尽。
-                        </small>
-                      ) : message.status === 'failed' ? (
-                        <small className={styles.failedMessage}>
-                          这次没有完成。
-                        </small>
-                      ) : null}
-                      {onOpenArtifact && message.runId ? (
-                        <ArtifactSummaryCards
-                          artifacts={linkedArtifacts}
-                          onOpen={onOpenArtifact}
-                        />
-                      ) : null}
+                        {({ operations, renderOperation, feedback }) => {
+                          const timeline = projectWorkProgress(
+                            traceEvents,
+                            fallbackText,
+                            messageIsRunning,
+                            streamingOutput,
+                            operations,
+                          );
+                          return (
+                            <>
+                              {feedback}
+                              <WorkProcess
+                                items={timeline.items}
+                                parts={timeline.parts}
+                                renderOperation={renderOperation}
+                                artifacts={linkedArtifacts}
+                                onOpenArtifact={onOpenArtifact}
+                                timing={timing}
+                                running={messageIsRunning}
+                                streaming={
+                                  streamingOutput &&
+                                  messageIsRunning &&
+                                  isReplyStreaming(traceEvents)
+                                }
+                                failed={
+                                  message.status === 'failed' ||
+                                  messageRun?.status === 'failed'
+                                }
+                                failureTitle={applicationFailure?.title}
+                                canceled={messageRun?.status === 'canceled'}
+                                traceStatus={trace?.status}
+                                onRetry={() => {
+                                  if (message.runId)
+                                    void onLoadRunTrace(message.runId);
+                                }}
+                                assistantCount={
+                                  assistantState?.children.length ?? 0
+                                }
+                                assistantAttention={
+                                  assistantState?.attention.length ?? 0
+                                }
+                              >
+                                {assistantTree &&
+                                assistantState?.children.length &&
+                                onAssistantChanged &&
+                                onOpenArtifact ? (
+                                  <AssistantRunPanel
+                                    key={`${workspaceId}/${message.runId}`}
+                                    tree={assistantTree}
+                                    workspaceId={workspaceId}
+                                    headers={tenantHeaders}
+                                    onArtifact={onOpenArtifact}
+                                    onChanged={onAssistantChanged}
+                                  />
+                                ) : null}
+                              </WorkProcess>
+                              {applicationFailure && (
+                                <p
+                                  className={styles.failedMessage}
+                                  role="status"
+                                >
+                                  本轮已结束。{applicationFailure.detail}
+                                </p>
+                              )}
+                              {message.runId &&
+                              hasManagedBrowserEvents(traceEvents) ? (
+                                <ManagedBrowserTaskPanel
+                                  runActive={messageIsRunning}
+                                  runId={message.runId}
+                                  tenantHeaders={tenantHeaders}
+                                  workspaceId={workspaceId}
+                                />
+                              ) : null}
+                              {message.runId &&
+                                hasBrowserWorkspaceEvents(traceEvents) && (
+                                  <BrowserWorkspacePanel
+                                    refreshKey={
+                                      browserRevisions[message.runId] ?? 0
+                                    }
+                                    runId={message.runId}
+                                    workspaceId={workspaceId}
+                                    tenantHeaders={tenantHeaders}
+                                    runActive={messageIsRunning}
+                                  />
+                                )}
+
+                              {localCommandsEnabled && message.runId && (
+                                <LocalCommandPanel
+                                  onServiceChanged={() =>
+                                    setBrowserRevisions((previous) => ({
+                                      ...previous,
+                                      [message.runId!]:
+                                        (previous[message.runId!] ?? 0) + 1,
+                                    }))
+                                  }
+                                  runId={message.runId}
+                                  workspaceId={workspaceId}
+                                  tenantHeaders={tenantHeaders}
+                                  runActive={messageIsRunning}
+                                />
+                              )}
+                              {localMcpEnabled && message.runId && (
+                                <LocalMcpPanel
+                                  runId={message.runId}
+                                  workspaceId={workspaceId}
+                                  tenantHeaders={tenantHeaders}
+                                  runActive={messageIsRunning}
+                                />
+                              )}
+                              {responseText && !timeline.parts ? (
+                                <div
+                                  className={`${assistantUi.body} ${styles.assistantCopy}`}
+                                  data-streaming={
+                                    (messageIsRunning && !!streamedText) ||
+                                    undefined
+                                  }
+                                >
+                                  <AssistantMarkdown
+                                    text={responseText}
+                                    streaming={
+                                      streamingOutput && messageIsRunning
+                                    }
+                                    artifacts={linkedArtifacts}
+                                    onOpenArtifact={onOpenArtifact}
+                                  />
+                                </div>
+                              ) : null}
+                              {message.content.budgetWarning &&
+                              message.status === 'failed' ? (
+                                <small role="status">
+                                  答案已保留。本次任务超过平台内部预期 Token
+                                  预算；真实用量已记录，这不代表 Codex
+                                  周额度耗尽。
+                                </small>
+                              ) : message.status === 'failed' &&
+                                !applicationFailure ? (
+                                <small className={styles.failedMessage}>
+                                  {message.errorCode ===
+                                  'ASSISTANT_EXECUTION_UNRESOLVED'
+                                    ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
+                                    : '这次没有完成。'}
+                                </small>
+                              ) : null}
+                              {onOpenArtifact && message.runId ? (
+                                <ArtifactSummaryCards
+                                  artifacts={linkedArtifacts}
+                                  onOpen={onOpenArtifact}
+                                />
+                              ) : null}
+                            </>
+                          );
+                        }}
+                      </CloudOperationPanel>
                       {!messageIsRunning && responseText && message.runId ? (
                         <AssistantMessageActions
                           messageId={message.id}
@@ -373,13 +424,15 @@ export function ChatTranscript({
             })}
 
           {recoverableRunView ? (
-            <button
-              className={styles.recover}
-              onClick={() => void onRecoverRun(recoverableRunView.runId)}
-              type="button"
-            >
-              重新连接并恢复执行记录
-            </button>
+            <div className={styles.connectionRetry} role="status">
+              <span>实时连接暂时中断</span>
+              <button
+                onClick={() => void onRecoverRun(recoverableRunView.runId)}
+                type="button"
+              >
+                重试
+              </button>
+            </div>
           ) : null}
         </div>
         {!atBottom ? (

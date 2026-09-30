@@ -95,6 +95,7 @@ function readableSummary(value?: string) {
 function classification(
   item: NativeExperienceItem,
 ): [WorkProcessCategory, string] {
+  if (item.modelWait) return ['think', '等待'];
   if (item.kind === 'think') return ['think', '思考'];
   if (item.kind === 'compaction') return ['organize', '整理'];
   if (item.kind === 'todo') return ['plan', '计划'];
@@ -119,16 +120,19 @@ function classification(
 export function summarizeWorkProcess(items: NativeExperienceItem[]) {
   const steps: WorkProcessStep[] = [...items]
     .sort((a, b) => a.sequence - b.sequence)
-    .filter((item) =>
-      ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
+    .filter(
+      (item) =>
+        item.modelWait ||
+        ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
     )
     .map((item) => {
       const [category, label] = classification(item);
-      const fallback =
-        item.kind === 'think'
+      const fallback = item.modelWait
+        ? '等待模型响应'
+        : item.kind === 'think'
           ? '分析任务与处理步骤'
           : item.kind === 'compaction'
-            ? '整理会话记录'
+            ? (readableSummary(item.title) ?? '整理会话记录')
             : item.kind === 'todo'
               ? '更新工作计划'
               : toolActivityLabel(
@@ -157,7 +161,8 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
   const active = [...items]
     .filter(
       (item) =>
-        ['tool', 'search'].includes(item.kind) &&
+        (item.modelWait ||
+          ['tool', 'search', 'compaction'].includes(item.kind)) &&
         ['started', 'updated'].includes(item.status),
     )
     .sort(
@@ -167,10 +172,14 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     steps,
     failed: steps.filter((step) => step.status === 'failed').length,
     active: active
-      ? toolActivityLabel(
-          active.toolName ?? active.title,
-          active.kind === 'search',
-        )
+      ? active.modelWait
+        ? '等待模型响应'
+        : active.kind === 'compaction'
+          ? '正在整理上下文'
+          : toolActivityLabel(
+              active.toolName ?? active.title,
+              active.kind === 'search',
+            )
       : undefined,
   };
 }
