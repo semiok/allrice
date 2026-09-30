@@ -41,6 +41,34 @@ describe('native Markdown SaaS delivery adaptation', () => {
     expect(markdownDeliveryText(text, files, true, origin)).toBe(text);
   });
 
+  it('repairs malformed Office links by their exact delivered filename, retaining native formatting', () => {
+    const broken = '/api/v1/files/2e8e0f0e-3fee-49a5-8d47-47-6c?name=QA';
+    expect(
+      markdownDeliveryText(
+        `[下载 **报告.md**](${broken})`,
+        files,
+        true,
+        origin,
+      ),
+    ).toBe(`[下载 **报告.md**](<${target}>)`);
+    expect(
+      markdownDeliveryText(
+        `[下载 报告.md](${broken})`,
+        [...files, ...files],
+        true,
+        origin,
+      ),
+    ).toBe(`[下载 报告.md](${broken})`);
+    expect(
+      markdownDeliveryText(
+        `\`[下载 报告.md](${broken})\``,
+        files,
+        true,
+        origin,
+      ),
+    ).toBe(`\`[下载 报告.md](${broken})\``);
+  });
+
   it('removes remote images even inside a rewritten file link', () => {
     const text = `[![封面](https://tracker.invalid/pixel)](${path})`;
     const adapted = markdownDeliveryText(text, files, false, origin);

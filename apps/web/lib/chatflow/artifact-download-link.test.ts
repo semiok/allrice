@@ -8,6 +8,7 @@ const artifacts = [
 describe('verified Artifact links, not model-invented download hosts', () => {
   it.each([
     path,
+    `/api/v1/files/${id}`,
     path.replaceAll('/', '\\/'),
     path.replaceAll('/', '\\\\/'),
     `https://allrice.example${path}`,
@@ -31,5 +32,19 @@ describe('verified Artifact links, not model-invented download hosts', () => {
   it('does not infer an artifact from a UUID alone', () => {
     const href = `https://allrice.example${path}`;
     expect(artifactDownloadLink(href, [])).toBe(href);
+  });
+  it('repairs the reported malformed local ID using an unambiguous delivery name', () => {
+    const href = '/api/v1/files/2e8e0f0e-3fee-49a5-8d47-47-6c?name=QA';
+    const label = `下载 ${artifacts[0]!.version.fileName}`;
+    expect(artifactDownloadLink(href, artifacts, label)).toBe(
+      `${path}?name=${encodeURIComponent(artifacts[0]!.version.fileName)}`,
+    );
+    for (const candidates of [[], [...artifacts, ...artifacts]])
+      expect(artifactDownloadLink(href, candidates, label)).toBe(href);
+    expect(artifactDownloadLink(href, artifacts, '下载报告')).toBe(href);
+    expect(artifactDownloadLink(href, artifacts)).toBe(href);
+    expect(
+      artifactDownloadLink(`https://external.test${href}`, artifacts, label),
+    ).toBe(`https://external.test${href}`);
   });
 });
