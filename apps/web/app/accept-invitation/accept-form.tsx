@@ -1,13 +1,17 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 
 export function AcceptInvitationForm({ token }: { token: string }) {
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => setReady(true), []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!ready || pending) return;
     setPending(true);
     setError('');
     const data = new FormData(event.currentTarget);
@@ -29,7 +33,7 @@ export function AcceptInvitationForm({ token }: { token: string }) {
 
   if (!token) return <p role="alert">邀请链接缺少 token。</p>;
   return (
-    <form onSubmit={submit} className="auth-form">
+    <form method="post" onSubmit={submit} className="auth-form">
       <label>
         姓名
         <input name="displayName" autoComplete="name" required />
@@ -45,7 +49,9 @@ export function AcceptInvitationForm({ token }: { token: string }) {
         />
       </label>
       {error ? <p role="alert">{error}</p> : null}
-      <button disabled={pending}>{pending ? '激活中…' : '接受邀请'}</button>
+      <button type="submit" disabled={!ready || pending}>
+        {!ready ? '准备激活…' : pending ? '激活中…' : '接受邀请'}
+      </button>
     </form>
   );
 }
