@@ -301,7 +301,8 @@ export function createAssistantWorkerBridge(
         if (
           !isProposal &&
           (riceToolRisk(name) === 'read_only' ||
-            (!isRoot && options.readOnlyTools.has(name)) ||
+            (options.readOnlyTools.has(name) &&
+              (!isRoot || name !== 'cloud.mcp.call')) ||
             isConfirmedToolFailure(error, {
               runId: instance.runId,
               callId,
