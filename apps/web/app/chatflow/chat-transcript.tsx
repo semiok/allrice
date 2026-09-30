@@ -3,6 +3,7 @@
 import { useState, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
+  nativeExecutionFailureText,
   mcpFailureCopy,
   type WorkbenchArtifact,
   type InteractionStatus,
@@ -140,8 +141,14 @@ export function ChatTranscript({
               const linkedArtifacts = artifacts.filter(
                 (a) => a.provenance.runId === message.runId,
               );
+              const nativeFailure =
+                message.status === 'failed'
+                  ? nativeExecutionFailureText(message.errorCode)
+                  : null;
               const fallbackText =
-                (message.status === 'failed' && !message.content.budgetWarning
+                (message.status === 'failed' &&
+                !message.content.budgetWarning &&
+                !nativeFailure
                   ? modelGovernanceFailureText(message.errorCode)
                   : null) ??
                 (message.status === 'pending' ? '' : message.content.text);
@@ -391,12 +398,13 @@ export function ChatTranscript({
                                   周额度耗尽。
                                 </small>
                               ) : message.status === 'failed' &&
-                                !applicationFailure ? (
+                                !applicationFailure &&
+                                responseText !== nativeFailure ? (
                                 <small className={styles.failedMessage}>
                                   {message.errorCode ===
                                   'ASSISTANT_EXECUTION_UNRESOLVED'
                                     ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
-                                    : '这次没有完成。'}
+                                    : (nativeFailure ?? '这次没有完成。')}
                                 </small>
                               ) : null}
                               {onOpenArtifact && message.runId ? (
