@@ -34,6 +34,63 @@ suite(
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     });
     afterEach(() => vi.unstubAllEnvs());
+    it.each([1, 0])(
+      'uses only the current attempt diagnosis for a masked disconnect (%s)',
+      async (attempt) => {
+        const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
+        try {
+          const task = await f.prepareOrdinaryTask(
+            'Synthetic masked disconnect; no model call.',
+          );
+          await appendJobEvent({
+            ...task.workflowLease,
+            type: 'turn.failed',
+            payload: {
+              attempt,
+              threadId: 'dsh-root',
+              assistantDiagnostics: {
+                version: 1,
+                truncated: false,
+                failures: [
+                  {
+                    nativeSessionId: 'dsh-root',
+                    callId: randomUUID(),
+                    phase: 'finish',
+                    code: 'TRANSPORT',
+                    stopKind: 'error',
+                    inputUsageKnown: false,
+                    outputUsageKnown: false,
+                    settlementConfirmed: true,
+                  },
+                ],
+              },
+            },
+          });
+          expect(
+            await failJob({
+              ...task.workflowLease,
+              code: 'DSH_UNKNOWN',
+              message: 'assistant_model_unknown_no_replay',
+              retryable: false,
+            }),
+          ).toEqual({ retrying: false });
+          const [message] =
+            await f.db`select m.content,m.error_code,j.attempt,j.status
+          from allrice_employee_runs e join allrice_messages m on m.id=e.assistant_message_id
+          join allrice_jobs j on j.run_id=e.run_id where e.run_id=${task.runId}`;
+          expect(message).toMatchObject({
+            error_code: 'DSH_UNKNOWN',
+            attempt: 1,
+            status: 'failed',
+          });
+          expect(message!.content.text).toContain(
+            attempt === 1 ? '模型连接中断' : 'Rice 暂时无法完成',
+          );
+        } finally {
+          await f.close();
+        }
+      },
+    );
     it('settles a model disconnect once and retains completed output and tool evidence', async () => {
       const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
       try {

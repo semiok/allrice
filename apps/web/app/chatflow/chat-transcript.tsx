@@ -4,6 +4,7 @@ import { useState, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
   nativeExecutionFailureText,
+  nativeExecutionDiagnosticFailureText,
   mcpFailureCopy,
   type WorkbenchArtifact,
   type InteractionStatus,
@@ -143,7 +144,16 @@ export function ChatTranscript({
               );
               const nativeFailure =
                 message.status === 'failed'
-                  ? nativeExecutionFailureText(message.errorCode)
+                  ? (nativeExecutionFailureText(message.errorCode) ??
+                    nativeExecutionDiagnosticFailureText(
+                      message.errorCode,
+                      traceEvents.findLast(
+                        (event) => event.type === 'turn.failed',
+                      )?.payload,
+                      traceEvents.findLast(
+                        (event) => event.type === 'run.failed',
+                      )?.payload.message,
+                    ))
                   : null;
               const fallbackText =
                 (message.status === 'failed' &&
@@ -151,7 +161,13 @@ export function ChatTranscript({
                 !nativeFailure
                   ? modelGovernanceFailureText(message.errorCode)
                   : null) ??
-                (message.status === 'pending' ? '' : message.content.text);
+                (message.status === 'pending'
+                  ? ''
+                  : nativeFailure &&
+                      message.content.text ===
+                        'Rice 暂时无法完成这次请求，请稍后重试。'
+                    ? nativeFailure
+                    : message.content.text);
               const progress = projectWorkProgress(
                 traceEvents,
                 fallbackText,

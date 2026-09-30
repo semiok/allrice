@@ -1,4 +1,5 @@
 import { createRef, type ComponentProps } from 'react';
+import { randomUUID } from 'node:crypto';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatTranscript } from './chat-transcript';
@@ -57,6 +58,89 @@ function render(
   );
 }
 describe('historical transcript capability gating', () => {
+  it.each(['Rice 暂时无法完成这次请求，请稍后重试。', '已查到四个 PR。'])(
+    'explains a masked disconnect while retaining completed content (%s)',
+    (text) => {
+      const html = render(
+        false,
+        [
+          {
+            ...messages[0]!,
+            status: 'failed',
+            errorCode: 'DSH_UNKNOWN',
+            content: { text },
+          },
+        ],
+        [],
+        {
+          runTraces: {
+            'run-0': {
+              status: 'loaded',
+              events: [
+                {
+                  schemaVersion: 3,
+                  eventId: 'failed-event',
+                  organizationId: 'org',
+                  workspaceId: 'workspace',
+                  conversationId: 'session',
+                  runId: 'run-0',
+                  generation: 1,
+                  cursor: 'run-0:1',
+                  harness: 'dsh',
+                  occurredAt: messages[0]!.createdAt,
+                  sourceEvent: null,
+                  sequence: 1,
+                  type: 'turn.failed',
+                  payload: {
+                    threadId: 'dsh-root',
+                    assistantDiagnostics: {
+                      version: 1,
+                      truncated: false,
+                      failures: [
+                        {
+                          nativeSessionId: 'dsh-root',
+                          callId: randomUUID(),
+                          phase: 'finish',
+                          code: 'TRANSPORT',
+                          stopKind: 'error',
+                          inputUsageKnown: false,
+                          outputUsageKnown: false,
+                          settlementConfirmed: true,
+                        },
+                      ],
+                    },
+                  },
+                },
+                {
+                  schemaVersion: 3,
+                  eventId: 'run-failed-event',
+                  organizationId: 'org',
+                  workspaceId: 'workspace',
+                  conversationId: 'session',
+                  runId: 'run-0',
+                  generation: 1,
+                  cursor: 'run-0:2',
+                  harness: 'dsh',
+                  occurredAt: messages[0]!.createdAt,
+                  sourceEvent: null,
+                  sequence: 2,
+                  type: 'run.failed',
+                  payload: {
+                    code: 'DSH_UNKNOWN',
+                    message: 'assistant_model_unknown_no_replay',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      );
+      expect(html).toContain('模型连接中断');
+      expect(html).not.toContain('Rice 暂时无法完成');
+      expect(html).not.toContain('这次没有完成。');
+      if (text === '已查到四个 PR。') expect(html).toContain(text);
+    },
+  );
   it('retains the completed reply and explains a subsequent model disconnect', () => {
     const html = render(false, [
       {

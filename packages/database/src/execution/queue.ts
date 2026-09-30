@@ -14,6 +14,7 @@ import {
   authorize,
   authorizeExecution,
   modelGovernanceFailureText,
+  nativeExecutionDiagnosticFailureText,
   type ExecutionContext,
   type EmployeeExecutionSnapshot,
   type Job,
@@ -950,7 +951,20 @@ async function transitionTerminal(
             candidate.type === citation.type && candidate.id === citation.id,
         ) === index,
     );
+    const [nativeFailure] =
+      input.runStatus === 'failed' && input.code === 'DSH_UNKNOWN'
+        ? await transaction<{ payload: Record<string, unknown> }[]>`
+          select payload from allrice_run_events where run_id=${job.run_id}
+            and organization_id=${job.organization_id} and workspace_id=${job.workspace_id}
+            and event_type='turn.failed' and payload->>'attempt'=${String(job.attempt)}
+          order by sequence desc limit 1`
+        : [];
     const failureText =
+      nativeExecutionDiagnosticFailureText(
+        input.code,
+        nativeFailure?.payload,
+        input.message,
+      ) ??
       modelGovernanceFailureText(input.code) ??
       (input.code === 'SKILL_ARTIFACT_MISSING'
         ? 'Rice 暂时无法使用已引用的 Skill：Skill 文件在本地存储中缺失。请重新安装或刷新该 Skill 后重试。'

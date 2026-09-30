@@ -2,9 +2,67 @@ import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import {
   modelGovernanceFailureText,
+  nativeExecutionDiagnosticFailureText,
   ReviewSubscriptionUsageBudgetInputSchema,
 } from './governance.ts';
 describe('unknown usage recovery presentation and input', () => {
+  it('explains a masked root failure without changing its code or accepting child/stale diagnoses', () => {
+    const root = 'dsh-synthetic-root';
+    const entry = {
+      nativeSessionId: root,
+      callId: randomUUID(),
+      phase: 'finish',
+      code: 'TRANSPORT',
+      stopKind: 'error',
+      inputUsageKnown: false,
+      outputUsageKnown: false,
+      settlementConfirmed: true,
+    };
+    const payload = {
+      threadId: root,
+      assistantDiagnostics: { version: 1, failures: [entry], truncated: false },
+    };
+    expect(
+      nativeExecutionDiagnosticFailureText(
+        'DSH_UNKNOWN',
+        payload,
+        'assistant_model_unknown_no_replay',
+      ),
+    ).toContain('模型连接中断');
+    expect(
+      nativeExecutionDiagnosticFailureText(
+        'ASSISTANT_BUDGET_EXHAUSTED',
+        payload,
+        'assistant_model_unknown_no_replay',
+      ),
+    ).toBeNull();
+    for (const patch of [
+      { failures: [{ ...entry, nativeSessionId: 'dsh-another-root' }] },
+      { failures: [{ ...entry, phase: 'usage', code: 'USAGE_INCOMPLETE' }] },
+      {
+        failures: [entry, { ...entry, callId: randomUUID(), code: 'UNKNOWN' }],
+      },
+      { failures: [{ ...entry, privateProviderText: 'secret' }] },
+      { truncated: true },
+    ])
+      expect(
+        nativeExecutionDiagnosticFailureText(
+          'DSH_UNKNOWN',
+          {
+            ...payload,
+            assistantDiagnostics: { ...payload.assistantDiagnostics, ...patch },
+          },
+          'assistant_model_unknown_no_replay',
+        ),
+      ).toBeNull();
+    expect(
+      nativeExecutionDiagnosticFailureText(
+        'DSH_UNKNOWN',
+        payload,
+        'unrelated_unknown',
+      ),
+    ).toBeNull();
+  });
   it.each([
     ['DSH_TRANSPORT', '模型连接中断'],
     ['DSH_TIMEOUT', '等待模型响应超时'],
