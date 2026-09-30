@@ -361,7 +361,7 @@ describe('historical transcript capability gating', () => {
         },
       ],
     );
-    for (const text of ['工作过程', '用时 40 分 12 秒'])
+    for (const text of ['工作过程', '用时 40分 12秒'])
       expect(html).toContain(text);
     expect(html).not.toContain('模型请求尝试');
     expect(html).not.toContain('策略来源');
@@ -433,7 +433,7 @@ describe('historical transcript capability gating', () => {
       },
     );
     expect(executing).toContain('执行中…');
-    expect(executing).toContain('查询实时行情');
+    expect(executing).not.toContain('查询实时行情');
     expect(executing).not.toContain('market.quote');
   });
   it('does not borrow another Run clock or invent timing for historical Runs', () => {

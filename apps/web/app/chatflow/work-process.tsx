@@ -10,12 +10,12 @@ import {
   IconGlobeOutlineRegular,
   IconBrowseOutlineRegular,
   IconEditOutlineRegular,
-  IconCodeOutlineRegular,
   IconApiOutlineRegular,
   IconAgentPresetOutlineRegular,
   IconPlanOutlineRegular,
   IconQuestionOutlineRegular,
-  IconSparkleRegular,
+  IconCordisPluginOutlineRegular,
+  IconSkillOutlineRegular,
   IconFolderOpenOutlineRegular,
   IconDataOutlineRegular,
   IconRefreshOutlineRegular,
@@ -39,15 +39,15 @@ const stepIcons: Record<WorkProcessCategory, ReactNode> = {
   read: <IconBrowseOutlineRegular />,
   find: <IconFolderOpenOutlineRegular />,
   write: <IconEditOutlineRegular />,
-  edit: <IconCodeOutlineRegular />,
+  edit: <IconEditOutlineRegular />,
   execute: <IconApiOutlineRegular />,
   browse: <IconBrowseOutlineRegular />,
-  skill: <IconSparkleRegular />,
+  skill: <IconSkillOutlineRegular />,
   collaborate: <IconAgentPresetOutlineRegular />,
   question: <IconQuestionOutlineRegular />,
   organize: <IconRefreshOutlineRegular />,
   plan: <IconPlanOutlineRegular />,
-  tool: <IconSparkleRegular />,
+  tool: <IconCordisPluginOutlineRegular />,
 };
 const noop = () => {};
 
@@ -134,9 +134,6 @@ export function WorkProcess({
     traceStatus === 'failed' ? '过程加载失败' : undefined,
     traceStatus === 'loading' && !process.steps.length
       ? '加载过程…'
-      : undefined,
-    microStatus && !waiting && process.active !== '正在整理上下文'
-      ? process.active
       : undefined,
     assistantCount
       ? `${assistantCount} 个助手${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
@@ -296,11 +293,7 @@ export function WorkProcess({
         }
       >
         <div className={styles.processDetails}>
-          <WorkProcessSteps
-            items={items}
-            running={running}
-            receiptsVisible={Boolean(renderOperation)}
-          />
+          <WorkProcessSteps items={items} running={running} />
           {traceStatus === 'failed' ? (
             <button
               className={styles.nativeTraceRetry}
@@ -341,11 +334,7 @@ function WorkProcessGroup({
   // Keep both at this process boundary, before any later assistant reply.
   return (
     <div className={styles.processReceipts}>
-      <NativeStepsGroup
-        items={items}
-        running={running}
-        receiptsVisible={Boolean(renderOperation)}
-      />
+      <NativeStepsGroup items={items} running={running} />
       {renderOperation &&
         items
           .filter((item) => item.operationId)
@@ -359,11 +348,9 @@ function WorkProcessGroup({
 function NativeStepsGroup({
   items,
   running,
-  receiptsVisible,
 }: {
   items: NativeExperienceItem[];
   running: boolean;
-  receiptsVisible: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const { steps } = summarizeWorkProcess(items);
@@ -382,11 +369,7 @@ function NativeStepsGroup({
         titleClassName={styles.processTitle}
       >
         <div className={styles.processDetails}>
-          <WorkProcessSteps
-            items={items}
-            running={running}
-            receiptsVisible={receiptsVisible}
-          />
+          <WorkProcessSteps items={items} running={running} />
         </div>
       </DisclosureRow>
     </section>
@@ -396,11 +379,9 @@ function NativeStepsGroup({
 function WorkProcessSteps({
   items,
   running,
-  receiptsVisible,
 }: {
   items: NativeExperienceItem[];
   running: boolean;
-  receiptsVisible: boolean;
 }) {
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
@@ -410,18 +391,13 @@ function WorkProcessSteps({
         const pending =
           ['started', 'updated'].includes(step.status) &&
           step.category !== 'plan';
-        const hasReceipt =
-          receiptsVisible &&
-          items.some((item) => item.id === step.id && item.operationId);
         const status =
           step.status === 'failed'
             ? `未成功${step.error ? `：${step.error}` : ''}`
             : step.status === 'info'
               ? '等待处理'
-              : pending
-                ? running
-                  ? '进行中'
-                  : '结果未确认'
+              : pending && !running
+                ? '结果未确认'
                 : undefined;
         return (
           <li
@@ -455,7 +431,7 @@ function WorkProcessSteps({
                 </>
               }
             />
-            {status && !(status === '进行中' && hasReceipt) ? (
+            {status ? (
               <small className={styles.processStepStatus}>{status}</small>
             ) : null}
           </li>

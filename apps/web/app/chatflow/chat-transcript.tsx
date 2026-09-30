@@ -307,7 +307,12 @@ export function ChatTranscript({
                                   message.status === 'failed' ||
                                   messageRun?.status === 'failed'
                                 }
-                                failureTitle={applicationFailure?.title}
+                                failureTitle={
+                                  message.applicationFailure ===
+                                  'result_unknown'
+                                    ? '结果待确认'
+                                    : applicationFailure?.title
+                                }
                                 canceled={messageRun?.status === 'canceled'}
                                 traceStatus={trace?.status}
                                 onRetry={() => {
