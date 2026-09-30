@@ -526,13 +526,24 @@ export function createAssistantWorkerBridge(
         return { ...dispatch, instance: child };
       }
       if (method === 'message') {
-        const childRunId = z.uuid().parse(args.childRunId);
+        const childId = z.uuid().safeParse(args.childRunId);
+        if (!childId.success)
+          return {
+            error: 'assistant_child_invalid',
+            message:
+              '没有可接收消息的助手。childRunId 必须使用已创建助手的真实编号；未安排助手时请直接继续当前任务。',
+          };
+        const childRunId = childId.data;
         if (
           !snapshot.instances.some(
             (i) => i.runId === childRunId && i.parentRunId === instance.runId,
           )
         )
-          throw Error('assistant_parent_denied');
+          return {
+            error: 'assistant_child_invalid',
+            message:
+              '当前任务没有这个助手，请使用本次 assistant.delegate 返回的直属助手编号，或直接继续当前任务。',
+          };
         await runtime.requestMessage(context, {
           runId: task.rootRunId,
           childRunId,
@@ -542,6 +553,12 @@ export function createAssistantWorkerBridge(
         return messageDispatch(callUuid);
       }
       if (method === 'report') {
+        if (instance.parentRunId === null)
+          return {
+            error: 'assistant_report_child_only',
+            message:
+              '汇报工具只供子助手向主员工交付结果。你是当前主员工，请直接向用户回复；需要继续研究时直接使用相应工具。',
+          };
         const { output, ...report } = args;
         const parsed = AssistantResultSchema.safeParse({
           ...report,

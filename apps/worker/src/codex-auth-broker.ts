@@ -1,4 +1,4 @@
-import { mkdir } from 'node:fs/promises';
+import { mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import type {
@@ -21,17 +21,14 @@ import {
   type DshNotification,
 } from './harness/dsh-protocol-client.js';
 
-function platformHome() {
-  return resolve(
-    process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
-  );
-}
+import { codexSubscriptionHome } from './codex-subscription-home.js';
 
-function runtimeEnvironment(root: string) {
-  const home = platformHome();
+function runtimeEnvironment(root: string, slot: 1 | 2) {
+  const home = codexSubscriptionHome(slot);
   return {
     PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
     LANG: process.env.LANG ?? 'C.UTF-8',
+    ALLRICE_CODEX_AUTH_TRANSPORT: '1',
     ...dshEgressEnvironment(),
     ...(process.env.ALLRICE_CODEX_QUOTA_COMMAND
       ? { ALLRICE_CODEX_QUOTA_COMMAND: process.env.ALLRICE_CODEX_QUOTA_COMMAND }
@@ -48,11 +45,11 @@ function runtimeEnvironment(root: string) {
     DSH_MODEL:
       process.env.ALLRICE_DSH_CODEX_MODEL ??
       process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-5.6-luna',
+      'gpt-6-luna',
     DSH_CODEX_MODEL:
       process.env.ALLRICE_DSH_CODEX_MODEL ??
       process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-5.6-luna',
+      'gpt-6-luna',
     DSH_OPENAI_COMPATIBLE_MODEL: 'allrice-unused',
     OPENAI_COMPATIBLE_BASE_URL: 'https://unused.invalid/v1',
     DSH_REASONING_EFFORT: 'max',
@@ -61,17 +58,21 @@ function runtimeEnvironment(root: string) {
   };
 }
 
-async function createAuthorizationClient(root: string) {
-  const home = platformHome();
+async function createAuthorizationClient(root: string, slot: 1 | 2) {
+  const home = codexSubscriptionHome(slot);
   await Promise.all([
     mkdir(root, { recursive: true, mode: 0o700 }),
     mkdir(home, { recursive: true, mode: 0o700 }),
   ]);
   const client = new DshProtocolClient({
     command: process.execPath,
-    args: [resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs')],
+    args: [
+      '--import',
+      resolve(import.meta.dirname, '../dsh/allrice-codex-auth-transport.mjs'),
+      resolve(import.meta.dirname, '../dsh/allrice-jsonrpc-runtime.mjs'),
+    ],
     cwd: root,
-    environment: runtimeEnvironment(root),
+    environment: runtimeEnvironment(root, slot),
     requestTimeoutMs: 300_000,
   });
   await client.initialize({
@@ -80,11 +81,23 @@ async function createAuthorizationClient(root: string) {
     model:
       process.env.ALLRICE_DSH_CODEX_MODEL ??
       process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-5.6-luna',
+      'gpt-6-luna',
     maxTokens: 256,
     expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
   });
   return client;
+}
+
+/** Persist only allowlisted reasons, never upstream OAuth payloads or tokens. */
+export function codexAuthorizationFailureCode(error: unknown) {
+  const message = error instanceof Error ? error.message : '';
+  if (/codex_authorization_network_unavailable|fetch failed/i.test(message))
+    return 'dsh_openai_codex_authorization_network_unavailable';
+  if (message.includes('codex_authorization_service_unavailable'))
+    return 'dsh_openai_codex_authorization_service_unavailable';
+  if (/device code request failed with status 429/i.test(message))
+    return 'dsh_openai_codex_authorization_rate_limited';
+  return 'dsh_openai_codex_authorization_failed';
 }
 
 export function parseDshAuthorizationChallenge(notification: DshNotification) {
@@ -115,12 +128,28 @@ export function codexQuotaObservation(raw: unknown, configured: boolean) {
 
 export async function probeDshCodexProvider(
   executionRoot: string,
+  slot: 1 | 2 = 1,
 ): Promise<CodexProviderStatus> {
   const checkedAt = new Date().toISOString();
+  if (
+    !(await stat(
+      resolve(codexSubscriptionHome(slot), '.credentials.yaml'),
+    ).catch(() => null))
+  )
+    return {
+      provider: 'codex',
+      authMode: 'chatgpt_subscription',
+      status: 'disconnected',
+      cliVersion: null,
+      detailCode: 'dsh_openai_codex_authorization_required',
+      checkedAt,
+      quota: null,
+    };
   let client: DshProtocolClient | null = null;
   try {
     client = await createAuthorizationClient(
-      resolve(executionRoot, 'provider-probe'),
+      resolve(executionRoot, 'provider-probe', String(slot)),
+      slot,
     );
     const status = await client.providerStatus();
     // Optional official account-RPC adapter. Failure to read allowance is not
@@ -161,10 +190,15 @@ async function runDeviceAuthorization(input: {
   executionRoot: string;
   signal: AbortSignal;
 }) {
-  const root = resolve(input.executionRoot, 'provider-authorization');
+  const slot = input.flow.subscriptionSlot ?? 1;
+  const root = resolve(
+    input.executionRoot,
+    'provider-authorization',
+    String(slot),
+  );
   let client: DshProtocolClient;
   try {
-    client = await createAuthorizationClient(root);
+    client = await createAuthorizationClient(root, slot);
   } catch {
     await completeCodexAuthorization({
       flowId: input.flow.id,
@@ -209,6 +243,12 @@ async function runDeviceAuthorization(input: {
   try {
     const result = await client.authorizeCodex();
     const connected = result.status === 'authorized';
+    // Publish the slot health before ending the flow: the admin stops polling
+    // on completion and activation must never see the previous account status.
+    await recordCodexProviderStatus(
+      await probeDshCodexProvider(input.executionRoot, slot),
+      slot,
+    );
     await completeCodexAuthorization({
       flowId: input.flow.id,
       workerId: input.workerId,
@@ -217,15 +257,20 @@ async function runDeviceAuthorization(input: {
         ? 'dsh_openai_codex_provider_ready'
         : 'dsh_openai_codex_authorization_canceled',
     });
-    await recordCodexProviderStatus(
-      await probeDshCodexProvider(input.executionRoot),
-    );
-  } catch {
+  } catch (error) {
+    if (cancellationRequested) return;
+    const detailCode = codexAuthorizationFailureCode(error);
+    console.warn('[Codex authorization] request failed', {
+      flowId: input.flow.id,
+      slot,
+      phase: challengePublished ? 'awaiting_user' : 'request_code',
+      detailCode,
+    });
     await completeCodexAuthorization({
       flowId: input.flow.id,
       workerId: input.workerId,
       connected: false,
-      detailCode: 'dsh_openai_codex_authorization_failed',
+      detailCode,
     });
   } finally {
     clearInterval(monitor);

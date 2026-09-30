@@ -1,3 +1,4 @@
+import { CodexSubscriptionError } from '@allrice/database';
 import { DataAccessError, EmployeeHubError } from '@allrice/database';
 
 import {
@@ -7,6 +8,13 @@ import {
 } from '../api-error-response';
 
 export function employeeHubErrorResponse(error: unknown) {
+  if (error instanceof CodexSubscriptionError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: error.message,
+      retryable: false,
+    });
   let status = 400;
   let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'EmployeeHub request validation failed';

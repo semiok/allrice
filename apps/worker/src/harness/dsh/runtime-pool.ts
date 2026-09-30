@@ -5,6 +5,10 @@ import { resolve, sep } from 'node:path';
 import { type DshExecutionSnapshot } from '@allrice/contracts';
 
 import { HandlerError } from '../../errors.js';
+import {
+  activeCodexSubscriptionHome,
+  codexSubscriptionHome,
+} from '../../codex-subscription-home.js';
 import type {
   HarnessExecutionInput,
   HarnessRuntimeProcessSnapshot,
@@ -192,9 +196,10 @@ export class DshRuntimePool {
         false,
       );
     }
-    const dshPlatformHome = resolve(
-      process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
-    );
+    const dshPlatformHome =
+      input.snapshot.route === 'openai-codex'
+        ? await activeCodexSubscriptionHome()
+        : codexSubscriptionHome(1);
     const dshCredentialsPath = resolve(dshPlatformHome, '.credentials.yaml');
     const credential =
       input.snapshot.route === 'openai-codex'
@@ -225,6 +230,7 @@ export class DshRuntimePool {
       .update(
         JSON.stringify({
           snapshot: input.snapshot,
+          codexSubscriptionHome: dshPlatformHome,
           runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
           systemInstructions: input.systemInstructions,
           taskProgress: !!input.input.progress,
@@ -285,7 +291,7 @@ export class DshRuntimePool {
       DSH_CODEX_MODEL:
         input.snapshot.route === 'openai-codex'
           ? input.snapshot.model
-          : 'gpt-5.6-luna',
+          : 'gpt-6-luna',
       DSH_OPENAI_COMPATIBLE_MODEL:
         input.snapshot.route === 'openai-compatible'
           ? input.snapshot.model

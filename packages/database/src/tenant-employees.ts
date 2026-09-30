@@ -65,7 +65,8 @@ export async function listAdminTenantEmployees(
       and d.organization_id=${organizationId} and d.workspace_id=${workspaceId}
     join allrice_platform_employee_revisions r on r.id=coalesce(p.current_published_revision_id,d.revision_id)
     left join allrice_platform_employee_revisions dr on dr.id=d.revision_id
-    where (p.status not in ('archived','disabled') and r.status='published') or d.id is not null
+    where (p.status not in ('archived','disabled') and r.status='published')
+      or (d.id is not null and (p.status<>'archived' or d.active))
     order by coalesce(d.active,false) desc,coalesce(d.is_default,false) desc,p.name,p.id`;
   return {
     organizationId,

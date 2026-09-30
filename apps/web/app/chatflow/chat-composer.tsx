@@ -1,9 +1,18 @@
 'use client';
 
+import { IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { SessionReference } from '@allrice/contracts';
 import { SessionReferenceChips } from './session-reference-picker';
 
 import type { MutableRefObject, RefObject, ReactNode } from 'react';
+import {
+  IconPlusOutlineRegular,
+  IconGlobeOutlineRegular,
+  IconFolderOpenOutlineRegular,
+  IconLinkOutlineRegular,
+  Menu,
+} from '@deepseek-ai/dsh-client-ui-primitives';
+import { ComposerSelect } from './composer-select';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 
@@ -32,10 +41,12 @@ interface ChatComposerProps {
   fileInput: RefObject<HTMLInputElement | null>;
   hero?: boolean;
   isRunning: boolean;
+  cancelPending?: boolean;
   localWorkspaceLabel?: string;
   localWorkspaceOnline: boolean;
   bridgeConnectionState: BridgeConnectionState;
   nativeContextStatus: History['nativeContextStatus'];
+  contextCompacting?: boolean;
   pendingAttachments: PendingAttachment[];
   uploadVisibility: Visibility;
   onAttachmentMenuOpenChange: (open: boolean) => void;
@@ -66,10 +77,12 @@ export function ChatComposer({
   fileInput,
   hero = false,
   isRunning,
+  cancelPending = false,
   localWorkspaceLabel,
   localWorkspaceOnline,
   bridgeConnectionState,
   nativeContextStatus,
+  contextCompacting = false,
   pendingAttachments,
   uploadVisibility,
   onAttachmentMenuOpenChange,
@@ -157,67 +170,74 @@ export function ChatComposer({
           ref={composerInput}
           value={draft}
         />
-        <div className={inputUi.row}>
+        <div className={`${inputUi.row} ${styles.composerRow}`}>
           <div className={`${inputUi.tools} ${styles.composerTools}`}>
             <div className={styles.attachmentMenuAnchor}>
-              <button
-                aria-expanded={attachmentMenuOpen}
-                aria-label="添加文件"
-                className={inputUi.add}
-                disabled={busy}
-                onClick={() => onAttachmentMenuOpenChange(!attachmentMenuOpen)}
-                type="button"
-              >
-                ＋
-              </button>
-              {attachmentMenuOpen ? (
-                <div className={styles.attachmentMenu} role="menu">
-                  {onOpenSessionReferences && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        onAttachmentMenuOpenChange(false);
-                        onOpenSessionReferences();
-                      }}
-                    >
-                      <span aria-hidden="true">＠</span>
-                      <span>
-                        <strong>引用会话</strong>
-                        <small>参考之前的工作内容</small>
-                      </span>
-                    </button>
-                  )}
+              <Menu
+                open={attachmentMenuOpen && !busy}
+                side="top"
+                align="start"
+                portal
+                listClassName={styles.composerAttachmentMenu}
+                onClose={() => onAttachmentMenuOpenChange(false)}
+                anchor={
                   <button
-                    onClick={() => {
-                      onAttachmentMenuOpenChange(false);
-                      void onOpenWorkspaceFiles();
-                    }}
-                    role="menuitem"
+                    aria-expanded={attachmentMenuOpen && !busy}
+                    aria-haspopup="menu"
+                    aria-label="添加文件"
+                    className={styles.composerAdd}
+                    disabled={busy}
+                    onClick={() =>
+                      onAttachmentMenuOpenChange(!attachmentMenuOpen)
+                    }
                     type="button"
                   >
-                    <span aria-hidden="true">◇</span>
-                    <span>
-                      <strong>从工作区添加</strong>
-                      <small>使用已有的工作区文件</small>
-                    </span>
+                    <IconPlusOutlineRegular size={19} aria-hidden="true" />
                   </button>
-                  <button
-                    onClick={() => {
-                      onAttachmentMenuOpenChange(false);
-                      fileInput.current?.click();
-                    }}
-                    role="menuitem"
-                    type="button"
-                  >
-                    <span aria-hidden="true">↑</span>
-                    <span>
-                      <strong>从本地上传</strong>
-                      <small>上传后选择私有或工作区公开</small>
-                    </span>
-                  </button>
-                </div>
-              ) : null}
+                }
+                items={[
+                  { type: 'label', id: 'heading', text: '添加到本轮' },
+                  ...(onOpenSessionReferences
+                    ? [
+                        {
+                          id: 'reference',
+                          label: '引用会话',
+                          icon: <IconLinkOutlineRegular size={20} />,
+                        },
+                      ]
+                    : []),
+                  {
+                    id: 'workspace',
+                    label: '从工作区添加',
+                    icon: <IconFolderOpenOutlineRegular size={20} />,
+                  },
+                  {
+                    id: 'upload',
+                    label: '从本地上传',
+                    icon: (
+                      <svg
+                        width="20"
+                        height="20"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m7 8 5-5 5 5M12 3v12M4 15v5h16v-5" />
+                      </svg>
+                    ),
+                  },
+                ]}
+                onSelect={(id) => {
+                  onAttachmentMenuOpenChange(false);
+                  if (id === 'reference') onOpenSessionReferences?.();
+                  else if (id === 'workspace') void onOpenWorkspaceFiles();
+                  else if (id === 'upload') fileInput.current?.click();
+                }}
+              />
               <input
                 accept=".docx,.xlsx,.pptx,.txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif"
                 hidden
@@ -232,27 +252,97 @@ export function ChatComposer({
               />
             </div>
             {assistantModeControl}
-            <select
+            <ComposerSelect
               aria-label="上传文件可见范围"
-              className={inputUi.select}
+              compact="visibility"
+              disabled={busy}
+              title={
+                uploadVisibility === 'workspace'
+                  ? '新上传的文件：工作区成员可见'
+                  : '新上传的文件：仅自己可见'
+              }
+              label={
+                uploadVisibility === 'workspace' ? (
+                  <>
+                    <span className={styles.composerVisibilityScope}>
+                      工作区
+                    </span>
+                    公开
+                  </>
+                ) : (
+                  '私有'
+                )
+              }
+              icon={
+                uploadVisibility === 'workspace' ? (
+                  <IconGlobeOutlineRegular size={16} />
+                ) : (
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <rect x="5" y="10" width="14" height="11" rx="3" />
+                    <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2" />
+                  </svg>
+                )
+              }
               onChange={(event) =>
                 onUploadVisibilityChange(event.target.value as Visibility)
               }
               value={uploadVisibility}
             >
-              <option value="private">保持私有</option>
               <option value="workspace">工作区公开</option>
-            </select>
+              <option value="private">私有 · 仅自己可见</option>
+            </ComposerSelect>
           </div>
           <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
             <button
-              aria-label="发送"
-              className={`${inputUi.primary} ${styles.employeeSend}`}
-              disabled={busy || !draft.trim()}
-              onClick={() => void onSendMessage()}
+              aria-label={
+                isRunning ? (cancelPending ? '正在停止' : '停止生成') : '发送'
+              }
+              title={
+                isRunning
+                  ? cancelPending
+                    ? '正在等待任务停止'
+                    : '停止本轮任务'
+                  : '发送消息'
+              }
+              className={`${inputUi.primary} ${isRunning ? styles.employeeStop : styles.employeeSend}`}
+              disabled={isRunning ? cancelPending : busy || !draft.trim()}
+              onClick={() => void (isRunning ? onCancelRun() : onSendMessage())}
               type="button"
             >
-              ↑
+              {isRunning ? (
+                <svg
+                  aria-hidden="true"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                >
+                  <rect x="1" y="1" width="14" height="14" rx="2" />
+                </svg>
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.65"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m5 12 7-7 7 7M12 19V5" />
+                </svg>
+              )}
             </button>
           </div>
         </div>
@@ -273,19 +363,30 @@ export function ChatComposer({
             <span aria-hidden="true" />
             {bridgeStatus.label}
           </button>
-          {nativeContextStatus ? (
+          {nativeContextStatus || contextCompacting ? (
             <span
-              title={`DSH 原生上下文投影：约 ${nativeContextStatus.usedTokens.toLocaleString()} / ${nativeContextStatus.contextWindowTokens.toLocaleString()} tokens`}
+              role="status"
+              title={
+                nativeContextStatus
+                  ? `${contextCompacting ? '正在整理上下文，完成后继续工作。' : ''}DSH 最近估算：约 ${nativeContextStatus.usedTokens.toLocaleString()} / ${nativeContextStatus.contextWindowTokens.toLocaleString()} tokens。自动整理会在窗口用满前触发；此百分比是占用量，不是压缩进度。`
+                  : 'DSH 正在整理上下文，完成后继续工作。'
+              }
             >
-              Session 上下文 {nativeContextStatus.percentage}%
+              {nativeContextStatus
+                ? `上下文占用 ${nativeContextStatus.percentage}%`
+                : ''}
+              {contextCompacting ? (
+                <span
+                  role="img"
+                  aria-label="正在整理上下文"
+                  className={styles.contextCompacting}
+                >
+                  <IconRefreshOutlineRegular />
+                </span>
+              ) : null}
             </span>
           ) : null}
         </div>
-        {isRunning ? (
-          <button onClick={() => void onCancelRun()} type="button">
-            停止本轮
-          </button>
-        ) : null}
       </div>
     </div>
   );

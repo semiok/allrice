@@ -1,3 +1,4 @@
+import type * as SubscriptionHome from '../codex-subscription-home.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -138,6 +139,50 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it.each([
+    ['dns', '网页地址解析异常，未能确认公开网络地址。'],
+    ['assistant', '没有可接收消息的助手，当前任务可直接继续。'],
+  ])(
+    'shows a fixed %s failure summary without raw provider contents',
+    async (cause, summary) => {
+      const events: HarnessEvent[] = [];
+      await createAdapter().execute(
+        executionInput({ prompt: `native-result-outcome:${cause}`, events }),
+      );
+      expect(
+        events.find((event) => event.type === 'tool.failed'),
+      ).toMatchObject({ summary });
+      expect(JSON.stringify(events)).not.toContain('secret-token');
+    },
+  );
+
+  it('forwards model wait lifecycle only from this session with valid statuses', async () => {
+    const events: HarnessEvent[] = [];
+    await createAdapter().execute(
+      executionInput({ prompt: 'model-wait-progress', events }),
+    );
+    const waiting = events.filter(
+      (event) =>
+        event.type === 'native.event' &&
+        event.sourceEventType === 'allrice/model-wait',
+    );
+    expect(waiting).toMatchObject([
+      {
+        type: 'native.event',
+        label: '等待模型响应',
+        presentation: 'lifecycle',
+        status: 'started',
+      },
+      {
+        type: 'native.event',
+        label: '等待模型响应',
+        presentation: 'lifecycle',
+        status: 'completed',
+      },
+    ]);
+    expect(waiting).toHaveLength(2);
+  });
+
   it('preserves native message boundaries, retry replacements and message-only replies before tools', async () => {
     const events: HarnessEvent[] = [];
     const result = await createAdapter().execute(
@@ -1065,4 +1110,12 @@ describe('DshHarnessAdapter', () => {
     );
     expect(after.answer).toBe('turn-2');
   });
+});
+
+vi.mock('../codex-subscription-home.js', async (original) => {
+  const actual = await original<typeof SubscriptionHome>();
+  return {
+    ...actual,
+    activeCodexSubscriptionHome: async () => actual.codexSubscriptionHome(1),
+  };
 });

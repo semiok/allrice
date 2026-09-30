@@ -9,6 +9,7 @@ import { AllriceMark } from '../../components/allrice-mark';
 
 import { OperationsSummary, OperationsResources } from './operations-resources';
 import { GovernanceConsole } from './governance-console';
+import { PlatformMcpSettingsPanel } from './platform-mcp-settings';
 import { OrganizationAdministration } from './organization-administration';
 import { OrganizationActivity } from './organization-activity';
 import { TenantFeedback } from './tenant-feedback';
@@ -170,6 +171,7 @@ export function RuntimeConsole() {
     | 'employees'
     | 'capabilities'
     | 'governance'
+    | 'apps'
     | 'tenants'
     | 'feedback'
   >('tenants');
@@ -199,6 +201,7 @@ export function RuntimeConsole() {
       requested === 'employees' ||
       requested === 'capabilities' ||
       requested === 'governance' ||
+      requested === 'apps' ||
       requested === 'tenants' ||
       requested === 'feedback'
     ) {
@@ -214,6 +217,7 @@ export function RuntimeConsole() {
         | 'employees'
         | 'capabilities'
         | 'governance'
+        | 'apps'
         | 'tenants'
         | 'feedback',
     ) => {
@@ -482,9 +486,13 @@ export function RuntimeConsole() {
         </button>
         <button
           aria-current={
-            ['capabilities', 'governance', 'runtimes', 'feedback'].includes(
-              view,
-            )
+            [
+              'capabilities',
+              'governance',
+              'apps',
+              'runtimes',
+              'feedback',
+            ].includes(view)
               ? 'page'
               : undefined
           }
@@ -493,7 +501,7 @@ export function RuntimeConsole() {
           平台设置
         </button>
       </nav>
-      {['capabilities', 'governance', 'runtimes', 'feedback'].includes(
+      {['capabilities', 'governance', 'apps', 'runtimes', 'feedback'].includes(
         view,
       ) && (
         <nav className={styles.viewNav} aria-label="平台设置">
@@ -508,6 +516,12 @@ export function RuntimeConsole() {
             onClick={() => selectView('governance')}
           >
             模型与用量
+          </button>
+          <button
+            aria-current={view === 'apps' ? 'page' : undefined}
+            onClick={() => selectView('apps')}
+          >
+            应用连接
           </button>
           <button
             aria-current={view === 'runtimes' ? 'page' : undefined}
@@ -539,6 +553,8 @@ export function RuntimeConsole() {
         <EmployeeProduction />
       ) : view === 'capabilities' ? (
         <CapabilitySourceView onOpenEmployees={() => selectView('employees')} />
+      ) : view === 'apps' ? (
+        <PlatformMcpSettingsPanel />
       ) : view === 'governance' ? (
         <GovernanceConsole />
       ) : (

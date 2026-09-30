@@ -3,8 +3,6 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { DataAccessError, resolveWorkspaceId } from '@allrice/database';
 import { getRequestContext } from '../../../lib/identity/session';
-import { ConnectedApps } from './connected-apps';
-import { LocalMcpSettings } from '../../runtime-console/local-mcp-settings';
 import styles from './connected-apps.module.css';
 
 export const dynamic = 'force-dynamic';
@@ -57,18 +55,6 @@ export default async function WorkspaceMcpPage({
         <p role="alert">当前账号没有此工作区的应用连接权限。</p>
       </main>
     );
-  return (
-    <main className={styles.page}>
-      <Link href="/chatflow">← 返回工作台</Link>
-      <h1>已连接应用</h1>
-      <ConnectedApps
-        workspaceId={workspaceId}
-        connectionId={(await searchParams)?.connectionId}
-      />
-      <details>
-        <summary>本地应用高级设置</summary>
-        <LocalMcpSettings workspaceId={workspaceId} />
-      </details>
-    </main>
-  );
+  // Keep old bookmarks and in-flight authorizations on the native settings surface.
+  redirect('/chatflow?settings=apps');
 }

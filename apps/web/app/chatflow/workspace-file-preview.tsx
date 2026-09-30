@@ -1,17 +1,17 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { ReadOnlyArtifactPreview } from './artifact-workbench';
+import {
+  NativeDocumentPreview,
+  hasSourcePreview,
+  hasNativeViewport,
+} from './native-document-preview';
 import {
   parseArtifactPreview,
   workbenchJson,
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { isToolResultFile } from '../../lib/chatflow/document-reader-model';
-import {
-  DocumentText,
-  DocumentToolbar,
-  DocumentVersions,
-} from './document-reader';
+import { DocumentToolbar, DocumentVersions } from './document-reader';
 import reader from './document-reader.module.css';
 import styles from './workbench.module.css';
 
@@ -26,14 +26,16 @@ export function WorkspaceFilePreview(props: {
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
   const [source, setSource] = useState(false);
+  const [interactive, setInteractive] = useState(false);
   const toolResult = isToolResultFile(props.title, props.objectId);
   const base = `/api/v1/files/${encodeURIComponent(props.objectId)}`;
-  const query = `?workspaceId=${encodeURIComponent(props.workspaceId)}`;
+  const query = `?workspaceId=${encodeURIComponent(props.workspaceId)}&name=${encodeURIComponent(props.title)}`;
   useEffect(() => {
     const controller = new AbortController();
     setError('');
     setPreview(null);
     setSource(false);
+    setInteractive(false);
     void workbenchJson(`${base}/preview${query}`, props.tenantHeaders, {
       signal: controller.signal,
     })
@@ -53,6 +55,9 @@ export function WorkspaceFilePreview(props: {
   return (
     <div className={reader.reader}>
       <DocumentToolbar
+        missingFonts={
+          preview?.kind === 'pdf' ? preview.missingFonts : undefined
+        }
         title={
           toolResult
             ? props.title.startsWith('tool-result-web-search-')
@@ -60,16 +65,28 @@ export function WorkspaceFilePreview(props: {
               : '工具记录'
             : props.title
         }
-        downloadUrl={`${base}/download${query}&name=${encodeURIComponent(props.title)}`}
+        downloadUrl={`${base}/download${query}`}
         actions={[
           { id: 'refresh', label: '刷新文件' },
-          ...(preview?.kind === 'text'
+          ...(preview?.kind === 'html'
+            ? [
+                {
+                  id: 'interactive',
+                  label: interactive ? '切换静态网页' : '切换交互网页',
+                },
+              ]
+            : []),
+          ...(hasSourcePreview(preview)
             ? [{ id: 'source', label: source ? '查看预览' : '查看源文本' }]
             : []),
         ]}
         onAction={(id) => {
           if (id === 'refresh') setAttempt((n) => n + 1);
           if (id === 'source') setSource((v) => !v);
+          if (id === 'interactive') {
+            setInteractive((value) => !value);
+            setSource(false);
+          }
         }}
       >
         {!toolResult ? (
@@ -82,24 +99,22 @@ export function WorkspaceFilePreview(props: {
         ) : null}
       </DocumentToolbar>
       <div
-        className={`${reader.content} ${preview?.kind === 'office' ? reader.officeContent : ''}`}
+        className={`${reader.content} ${hasNativeViewport(preview) && !source ? reader.officeContent : ''}`}
       >
         {error ? (
           <p className={styles.error} role="alert">
             {error}
           </p>
         ) : preview ? (
-          preview.kind === 'text' ? (
-            <DocumentText
-              text={preview.text}
-              fileName={props.title}
-              mediaType={preview.mediaType}
-              source={source}
-              toolResult={toolResult}
-            />
-          ) : (
-            <ReadOnlyArtifactPreview preview={preview} />
-          )
+          <NativeDocumentPreview
+            preview={preview}
+            fileName={props.title}
+            pageUrl={`${base}/preview${query}`}
+            headers={props.tenantHeaders}
+            source={source}
+            interactive={interactive}
+            toolResult={toolResult}
+          />
         ) : (
           <p role="status">正在加载文件预览…</p>
         )}

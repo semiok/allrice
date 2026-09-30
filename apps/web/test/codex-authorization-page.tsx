@@ -10,7 +10,15 @@ import '../app/dsh-upstream/base.css';
 import '../app/styles/base.css';
 function Fixture() {
   const [authorization, setAuthorization] = useState<CodexAuthorization | null>(
-    null,
+    location.search.includes('failed')
+      ? {
+          id: 'failed-flow',
+          state: 'failed',
+          userCode: null,
+          verificationUri: null,
+          detailCode: 'dsh_openai_codex_authorization_network_unavailable',
+        }
+      : null,
   );
   return (
     <main className={styles.embedded}>

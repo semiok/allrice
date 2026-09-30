@@ -193,13 +193,13 @@ function markdownList(items: readonly string[], fallback = '- 无') {
 
 const skillRoutingHints: Record<string, string> = {
   'browser-research':
-    '公开网页需要 JavaScript 渲染、等待元素、跟随公开链接、滚动或保存可复现页面证据时使用；普通检索和静态页面优先使用 web-research。',
+    '公开网页需要 JavaScript 渲染、只读交互或用户要求截图时使用，可直接打开已知链接；普通检索和静态页面读取使用 web-research，成功获取的内容无需再用浏览器重复读取。',
   'document-analysis':
     '用户上传或指定 PDF、Word、Excel、PPT、Markdown、文本或图片并要求读取、摘要、提取、对比或定位内容时使用。',
   'market-data':
     '用户询问股票、指数、ETF、汇率、加密货币或商品的价格、涨跌、历史走势和公开行情时优先使用，不以普通网页搜索代替结构化行情。',
   'research-synthesis':
-    '用户要求跨来源研究、核验争议事实、形成带引用的综合结论时使用；可协调网页与公众号研究能力。',
+    '用户要求跨来源比较、核验争议或综合多份资料时使用；复用已获取内容，缺什么再查什么，不强制同时搜索网页和公众号。单篇摘要和简单事实查询无需完整调研。',
   'structured-deliverable':
     '用户明确要求报告、方案、清单、可下载文件或结构化交付物时使用；普通聊天回答不要创建文件。',
   'governed-memory':
@@ -207,9 +207,9 @@ const skillRoutingHints: Record<string, string> = {
   'workflow-automation':
     '用户明确要求提醒、定时或未来执行工作时使用；不得因为“可能有用”而擅自创建自动化。',
   'web-research':
-    '用户询问新闻、近期事件、最新公开信息、动态事实或明确要求联网核实时使用。',
+    '普通公开网页和最新事实查询时使用；有网页链接直接 web_fetch，没有来源再 web_search。公众号链接使用 wechat-research，需要渲染或截图时使用 browser-research。',
   'wechat-research':
-    '用户提供微信公众号链接或要求查找、读取、研究公众号公开文章时使用。',
+    '读取或查找微信公众号公开文章时使用；有文章链接直接 wechat_article_read，只有主题或公众号名称时先搜索。跨来源比较和核验可使用 research-synthesis。',
   'workspace-briefing':
     '用户询问当前授权工作区、项目、文件、目录、Git 状态或希望结合工作区内容回答时使用。',
 };
@@ -312,7 +312,7 @@ export function buildEmployeeRuntimePackage(input: {
       '先读取目录中的简短说明，只有匹配任务时才加载完整 SKILL.md。',
       '多个 Skill 都必要时可以组合，但不得绕过工具授权或安全策略。',
       '简单问答不需要 Skill 时直接回答，不要为了展示能力而强行调用工具。',
-      '先选 Skill，再按该 SKILL.md 的步骤调用工具；不得只复述 Skill 名称而不执行。',
+      '需要专门流程时加载匹配的 Skill 并执行；单个明确操作可直接调用已授权工具。复用当前任务已获取的证据，不为展示流程而重复检索或加载无关 Skill。',
       '能力不可用时，准确说明缺少的是发布、租户授权、工具、Provider 还是运行环境。',
       ...(skills.some((skill) => skill.bundle)
         ? [

@@ -1,3 +1,4 @@
+import { UuidSchema } from '@allrice/contracts';
 import { createMcpStore } from '@allrice/database';
 import { requireRequestContext } from '../../../../../lib/identity/session';
 export const runtime = 'nodejs';
@@ -14,11 +15,14 @@ export async function GET(request: Request) {
       state: query.get('state') ?? '',
       code: query.get('code') ?? '',
     });
+    const destination = new URLSearchParams({ settings: 'apps' });
+    const sessionId = UuidSchema.safeParse(result.returnSessionId).data;
+    if (sessionId) destination.set('session', sessionId);
     return new Response(null, {
       status: 302,
       headers: {
         ...headers,
-        Location: `/workspace/mcp?workspaceId=${result.workspaceId}&connectionId=${result.connectionId}`,
+        Location: `/chatflow?${destination}`,
       },
     });
   } catch {

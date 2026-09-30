@@ -180,7 +180,15 @@ export const McpAgentInputSchema = z.union([
 export const MemberConnectionMutationSchema = z.discriminatedUnion('action', [
   z
     .object({
-      action: z.enum(['disconnect', 'reconnect', 'login', 'delete']),
+      action: z.literal('login'),
+      workspaceId: UuidSchema,
+      connectionId: UuidSchema,
+      returnSessionId: UuidSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.enum(['disconnect', 'reconnect', 'delete']),
       workspaceId: UuidSchema,
       connectionId: UuidSchema,
     })

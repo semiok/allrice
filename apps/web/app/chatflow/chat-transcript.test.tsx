@@ -3,7 +3,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ChatTranscript } from './chat-transcript';
 import type { Message } from './chatflow-types';
-import type { InteractionStatus } from '@allrice/contracts';
+import type {
+  ChatFlowEventEnvelope,
+  InteractionStatus,
+} from '@allrice/contracts';
 
 const panels = vi.hoisted(() => ({ local: vi.fn(), cloud: vi.fn() }));
 vi.mock('./local-command-panel', () => ({ LocalCommandPanel: panels.local }));
@@ -26,7 +29,14 @@ function render(
   overrides: Partial<ComponentProps<typeof ChatTranscript>> = {},
 ) {
   panels.local.mockReturnValue(null);
-  panels.cloud.mockReturnValue(null);
+  panels.cloud.mockImplementation(
+    ({ children }) =>
+      children?.({
+        operations: [],
+        renderOperation: () => null,
+        feedback: null,
+      }) ?? null,
+  );
   return renderToStaticMarkup(
     <ChatTranscript
       streamingOutput
@@ -48,6 +58,26 @@ function render(
 }
 describe('historical transcript capability gating', () => {
   afterEach(() => vi.clearAllMocks());
+
+  it.each(['completed', 'failed'] as const)(
+    'does not present settled %s history as running during a stale connection',
+    (status) => {
+      const html = render(false, [{ ...messages[0]!, status }], [], {
+        runViews: {
+          'run-0': {
+            runId: 'run-0',
+            status: 'connecting',
+            cursor: null,
+            reconnects: 1,
+            events: [],
+          },
+        },
+      });
+      expect(html).not.toContain('思考中');
+      expect(html).not.toContain('data-working="true"');
+      expect(html).not.toContain('重新连接并恢复执行记录');
+    },
+  );
 
   it('keeps the native footer clock: time today, date and time for older replies', () => {
     vi.useFakeTimers();
@@ -87,6 +117,84 @@ describe('historical transcript capability gating', () => {
     expect(html.match(/思考中…/g)).toHaveLength(1);
     expect(html).not.toContain('Rice');
     expect(html).not.toContain('助手任务');
+  });
+  it('shows native compaction while history is collapsed and clears it after completion or failure', () => {
+    const event = (
+      sequence: number,
+      status: 'started' | 'updated' | 'completed' | 'failed',
+      phase: string,
+    ): ChatFlowEventEnvelope => ({
+      schemaVersion: 3,
+      eventId: `compact-${sequence}`,
+      organizationId: 'org',
+      workspaceId: 'workspace',
+      conversationId: 'session',
+      runId: 'run-0',
+      generation: 1,
+      cursor: `run-0:${sequence}`,
+      harness: 'dsh',
+      occurredAt: messages[0]!.createdAt,
+      sequence,
+      sourceEvent: {
+        id: `dsh:${sequence}`,
+        type: `compaction/${phase}`,
+        occurredAt: messages[0]!.createdAt,
+        payload: phase === 'prune' ? {} : { compactionId: 'compact-1' },
+      },
+      type: 'harness.native',
+      payload: { presentation: 'compaction', status, label: '上下文整理' },
+    });
+    const show = (events: ChatFlowEventEnvelope[]) =>
+      render(
+        false,
+        [
+          {
+            ...messages[0]!,
+            status: 'pending',
+            content: { text: 'Rice 正在处理…' },
+          },
+        ],
+        undefined,
+        {
+          runViews: {
+            'run-0': {
+              runId: 'run-0',
+              status: 'running',
+              cursor: null,
+              reconnects: 0,
+              events,
+            },
+          },
+        },
+      );
+    const earlierReply: ChatFlowEventEnvelope = {
+      ...event(0, 'completed', 'end'),
+      type: 'assistant.text.delta',
+      sourceEvent: null,
+      payload: {
+        replyId: 'first',
+        text: '我先检查项目。',
+        textMode: 'replace',
+      },
+    };
+    const interleaved = show([earlierReply, event(1, 'started', 'start')]);
+    expect(interleaved.match(/正在整理上下文…/g)).toHaveLength(1);
+    expect(interleaved).not.toContain('回复中…');
+    expect(interleaved).toContain('我先检查项目。');
+    expect(interleaved).toContain('整理 · 1 项');
+    const events = [event(1, 'started', 'start')];
+    expect(show(events)).toContain('正在整理上下文…');
+    expect(show(events)).not.toContain('aria-expanded="true"');
+    events.push(event(2, 'updated', 'summary'));
+    expect(show(events)).toContain('正在整理上下文…');
+    for (const status of ['completed', 'failed'] as const) {
+      const html = show([...events, event(3, status, 'end')]);
+      expect(html).not.toContain('正在整理上下文…');
+      expect(html).toContain('思考中…');
+    }
+    expect(show([event(4, 'completed', 'prune')])).not.toContain(
+      '正在整理上下文…',
+    );
   });
   it('removes placeholder text and microstatus while streaming, but retains a cursor and actual output', () => {
     const html = render(
@@ -330,4 +438,34 @@ describe('historical transcript capability gating', () => {
       runActive: false,
     });
   });
+});
+
+it('keeps the saved answer and explains a failed GitHub call without looking active', () => {
+  const html = render(
+    false,
+    [
+      {
+        ...messages[0]!,
+        status: 'failed',
+        errorCode: 'ASSISTANT_EXECUTION_UNRESOLVED',
+        applicationFailure: 'github_merge_permission',
+        content: { text: 'Saved final explanation' },
+      },
+    ],
+    [],
+    {
+      runTraces: { 'run-0': { status: 'loaded', events: [] } },
+    },
+  );
+  expect(html).toContain('Saved final explanation');
+  expect(html).toContain('GitHub 权限不足');
+  expect(html.indexOf('本轮已结束')).toBeLessThan(
+    html.indexOf('Saved final explanation'),
+  );
+  expect(html.match(/本轮已结束/g)).toHaveLength(1);
+  expect(html).toContain('本轮已结束');
+  expect(html).toContain('Contents');
+  expect(html).not.toContain('部分调用的执行状态未能确认');
+  expect(html).not.toContain('data-working="true"');
+  expect(html).not.toContain('重新连接并恢复执行记录');
 });

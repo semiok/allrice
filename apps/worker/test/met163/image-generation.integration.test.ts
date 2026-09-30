@@ -5,8 +5,12 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { executeRiceTool } from '../../src/tool-broker.js';
-import { HandlerError } from '../../src/errors.js';
-import { requestCodexImage } from '../../src/codex-image-broker.js';
+import { HandlerError, isConfirmedToolFailure } from '../../src/errors.js';
+import {
+  requestCodexImage,
+  CodexImageGenerationFailedError,
+} from '../../src/codex-image-broker.js';
+import type * as CodexImageBroker from '../../src/codex-image-broker.js';
 import {
   listToolBrokerFiles,
   listImageOperations,
@@ -14,7 +18,8 @@ import {
   admitModelExecution,
 } from '@allrice/database';
 import { withFixturePlatformAdministrator } from '../../../../scripts/acceptance/runtime/fixture-platform-authority.ts';
-vi.mock('../../src/codex-image-broker.js', () => ({
+vi.mock('../../src/codex-image-broker.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof CodexImageBroker>()),
   requestCodexImage: vi.fn(),
 }));
 const png =
@@ -28,6 +33,102 @@ suite('image execution — isolated PostgreSQL and real file storage', () => {
     vi.unstubAllEnvs();
     vi.resetAllMocks();
   });
+  it.each(['confirmed', 'unknown'] as const)(
+    'preserves %s image failure evidence without replay or publishing',
+    async (mode) => {
+      vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+      vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+      const f = await createP27CodexWorkerFixture({
+        allowCiDatabase: true,
+        imageGeneration: true,
+      });
+      const storageRoot = await mkdtemp(
+        join(tmpdir(), 'met163-image-failure-'),
+      );
+      try {
+        const task = await f.prepareOrdinaryTask('Synthetic failed image');
+        const failure =
+          mode === 'confirmed'
+            ? new CodexImageGenerationFailedError({
+                status: 'failed',
+                requestId: 'synthetic-failed',
+                workModel: 'gpt-5.6-luna',
+                imageModel: 'gpt-image-2.5-flare',
+                usage: {
+                  inputTokens: 10,
+                  outputTokens: 2,
+                  cachedInputTokens: null,
+                },
+              })
+            : new HandlerError(
+                'IMAGE_RESULT_UNKNOWN',
+                'Incomplete response',
+                false,
+              );
+        vi.mocked(requestCodexImage).mockRejectedValue(failure);
+        const call = {
+          id: 'failed-image-call',
+          name: 'image.generate',
+          arguments: { prompt: 'synthetic', fileName: 'image.png' },
+        };
+        const input = {
+          context: task.execution.context,
+          sessionId: task.sessionId,
+          capabilities:
+            task.binding.executionSnapshot.capabilitySnapshot
+              .grantedCapabilities,
+          storageRoot,
+          managedBrowserJobLeaseToken: task.workflowLease.leaseToken,
+          call,
+        };
+        await expect(executeRiceTool(input)).rejects.toBe(failure);
+        const identity = {
+          runId: task.runId,
+          callId: call.id,
+          toolName: call.name,
+        };
+        expect(isConfirmedToolFailure(failure, identity)).toBe(
+          mode === 'confirmed',
+        );
+        expect(
+          isConfirmedToolFailure(failure, {
+            ...identity,
+            callId: 'foreign-call',
+          }),
+        ).toBe(false);
+        const [operation] =
+          await f.db`select status,error_code,usage,provider_request_id from allrice_image_operations where run_id=${task.runId}`;
+        expect(operation).toMatchObject({
+          status: mode === 'confirmed' ? 'failed' : 'unknown',
+          error_code: failure.code,
+          usage:
+            mode === 'confirmed'
+              ? failure instanceof CodexImageGenerationFailedError &&
+                failure.receipt.usage
+              : null,
+          provider_request_id: mode === 'confirmed' ? 'synthetic-failed' : null,
+        });
+        expect(await listToolBrokerFiles(input.context, 50)).toHaveLength(0);
+        await expect(
+          executeRiceTool({
+            ...input,
+            call: { ...call, id: 'duplicate-call' },
+          }),
+        ).rejects.toMatchObject({
+          code:
+            mode === 'confirmed'
+              ? 'IMAGE_GENERATION_FAILED'
+              : 'IMAGE_RESULT_UNKNOWN',
+        });
+        expect(requestCodexImage).toHaveBeenCalledTimes(1);
+      } finally {
+        await f.close();
+        await rm(storageRoot, { recursive: true, force: true });
+      }
+    },
+    60000,
+  );
   it('publishes immutable generated/edited images, rejects foreign sources, and never replays unknown or stale work', async () => {
     vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');

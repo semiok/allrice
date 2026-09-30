@@ -4,6 +4,7 @@ import { updateWorkAutomation } from './work-automation.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
+  SessionModelSnapshotSchema,
   type EmployeeExecutionSnapshot,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
@@ -54,6 +55,100 @@ integration(
     const authorityFixture = (
       options: Parameters<typeof createAssistantAuthorityFixture>[1] = {},
     ) => createAssistantAuthorityFixture(fixture.db, options);
+
+    const imageFixture = (
+      options: {
+        enabled?: boolean;
+        exportAllowed?: boolean;
+        writeAllowed?: boolean;
+        provider?: string;
+      } = {},
+    ) => {
+      const declared = [
+        ...selectedTools,
+        ...(options.exportAllowed === false ? [] : ['workspace.export.create']),
+      ];
+      return authorityFixture({
+        configure: false,
+        toolNames: declared,
+        allowedTools: [...declared, 'image.generate', 'image.edit'],
+        snapshot: (value, { sessionId }) => ({
+          ...value,
+          capabilitySnapshot: {
+            ...value.capabilitySnapshot,
+            grantedCapabilities:
+              value.capabilitySnapshot.grantedCapabilities.filter(
+                (c) => options.writeAllowed !== false || c !== 'storage:write',
+              ),
+          },
+          modelSnapshot: SessionModelSnapshotSchema.parse({
+            schemaVersion: 1,
+            sessionId,
+            employeeId: value.employee.id,
+            policyRevision: 1,
+            connectionId: randomUUID(),
+            modelCatalogEntryId: randomUUID(),
+            harness: 'dsh',
+            provider: options.provider ?? 'openai-codex',
+            authMode: 'chatgpt_subscription',
+            model: 'gpt-5.6-luna',
+            reasoningEffort: 'low',
+            credentialReference: 'deployment:synthetic-never-resolved',
+            baseUrl: null,
+            fallbackPolicy: 'disabled',
+            fallbackTargets: [],
+            frozenAt: value.createdAt,
+            platformSettings: {
+              revision: 1,
+              updatedAt: value.createdAt,
+              configuration: {
+                connectionId: randomUUID(),
+                workModel: 'gpt-5.6-luna',
+                reasoningEffort: 'low',
+                timeoutMs: 300000,
+                imageModel: 'auto',
+                imagesEnabled: options.enabled !== false,
+              },
+            },
+          }),
+        }),
+      });
+    };
+
+    it('admits platform image tools with assistants using frozen image/export authority, without republishing the employee', async () => {
+      const f = await imageFixture();
+      await expect(f.configure()).resolves.toBeDefined();
+      for (const phase of phases)
+        await expect(f.authorize(phase)).resolves.toBeUndefined();
+      await expect(f.authorize('tool', ['image.delete'])).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+      await f.setControls({
+        ...defaultControls(),
+        rules: [
+          ...defaultControls().rules,
+          { action: 'image.generate', effect: 'deny' },
+        ],
+      });
+      await expect(f.authorize('tool', ['image.generate'])).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+    });
+
+    it.each([
+      { enabled: false },
+      { exportAllowed: false },
+      { writeAllowed: false },
+      { provider: 'other' },
+    ])(
+      'rejects image tools when frozen authority is insufficient: %j',
+      async (options) => {
+        const f = await imageFixture(options);
+        await expect(f.configure()).rejects.toThrow(
+          'assistant_authority_denied',
+        );
+      },
+    );
 
     it('a member can turn off new assistant work and restore it without changing employee grants', async () => {
       const f = await authorityFixture();

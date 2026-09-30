@@ -1,5 +1,6 @@
 /** Real Chrome + React StrictMode + synthetic loopback HTTP. No DB/auth/model/Bridge. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Attachment, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -213,25 +214,44 @@ suite(
         running?: boolean;
         question?: boolean;
         delayHistoryB?: boolean;
+        immediateReply?: boolean;
+        longHistory?: boolean;
+        settled?: 'failed' | 'canceled';
+        width?: number;
+        workspaceFiles?: WorkspaceFile[];
       } = {},
     ) {
       const pending: Pending[] = [];
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
+      const uploaded = new Map<string, Attachment>();
       let releaseHistoryB!: () => void;
       const historyBGate = new Promise<void>((done) => {
         releaseHistoryB = done;
       });
       let assistantStatus = 'cancel_requested';
+      let showTiming = false;
       const messages: Record<string, ReturnType<typeof message>[]> = {
         [A]: [message('history-a', 'Existing A')],
         [B]: [message('history-b', 'Existing B')],
         [C]: [],
       };
-      if (options.running)
+      if (options.longHistory)
+        messages[A]!.unshift(
+          ...Array.from({ length: 20 }, (_, i) =>
+            message('old-' + i, 'Old paragraph. '.repeat(35), 'assistant'),
+          ),
+        );
+      if (options.running || options.settled)
         messages[A]!.push(
-          message('assistant-a', '', 'assistant', runId, 'pending'),
+          message(
+            'assistant-a',
+            '',
+            'assistant',
+            runId,
+            options.settled ? 'failed' : 'pending',
+          ),
         );
       const answer = (
         response: ServerResponse,
@@ -338,7 +358,7 @@ suite(
         }
         if (path === '/api/v1/files') {
           answer(response, {
-            files: [
+            files: options.workspaceFiles ?? [
               {
                 id: C,
                 fileName: 'workspace-source.txt',
@@ -372,7 +392,28 @@ suite(
           return;
         }
         if (path.endsWith('/interactions')) {
-          answer(response, { runtime: null, pendingActions: [], inputs: [] });
+          answer(response, {
+            runtime: null,
+            pendingActions: [],
+            inputs: [],
+            runTimings: showTiming
+              ? [
+                  {
+                    runId,
+                    timing: {
+                      activeMs: 4000,
+                      waitingMs: 0,
+                      wallMs: 4000,
+                      timeoutMs: 0,
+                      remainingMs: null,
+                      phase: 'active',
+                      sources: [],
+                      calls: null,
+                    },
+                  },
+                ]
+              : [],
+          });
           return;
         }
         if (path.endsWith('/timings')) {
@@ -429,9 +470,33 @@ suite(
         throw Error('Loopback fixture not listening');
       const origin = `http://127.0.0.1:${address.port}`;
       const context: BrowserContext = await browser.newContext({
-        viewport: { width: 1440, height: 1000 },
+        viewport: { width: options.width ?? 1440, height: 1000 },
+        hasTouch: (options.width ?? 1440) < 760,
+        ...(process.env.ALLRICE_TEST_DEV_STORAGE_STATE
+          ? { storageState: process.env.ALLRICE_TEST_DEV_STORAGE_STATE }
+          : {}),
       });
       const page: Page = await context.newPage();
+      let closing = false;
+      // Real Dev HTML/JS/CSS with only this page's API requests routed to the
+      // fixture. No company messages, file uploads, or model runs are created.
+      const liveOrigin = process.env.ALLRICE_TEST_DEV_ORIGIN;
+      if (liveOrigin) {
+        await page.route(`${liveOrigin}/api/v1/**`, async (route) => {
+          const url = new URL(route.request().url());
+          try {
+            const response = await route.fetch({
+              url: origin + url.pathname + url.search,
+              // The loopback server has no authentication; never forward the
+              // real Dev login cookie to a diagnostic transport.
+              headers: { 'content-type': 'application/json' },
+            });
+            await route.fulfill({ response });
+          } catch (error) {
+            if (!closing) throw error;
+          }
+        });
+      }
       page.setDefaultTimeout(4000);
       // Loading the development bundle can outlast interaction waits under CI load.
       page.setDefaultNavigationTimeout(15_000);
@@ -446,8 +511,13 @@ suite(
       const errors: string[] = [];
       page.on('pageerror', (error) => errors.push(error.message));
       try {
-        await page.goto(`${origin}/?session=${A}`);
-        await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
+        await page.goto(
+          liveOrigin
+            ? `${liveOrigin}/chatflow?session=${A}`
+            : `${origin}/?session=${A}`,
+        );
+        if ((options.width ?? 1440) >= 760)
+          await page.getByRole('treeitem', { name: /^Session B/ }).waitFor();
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
         await page.getByText('Existing A', { exact: true }).waitFor();
@@ -473,6 +543,21 @@ suite(
         writes,
         errors,
         releaseHistoryB,
+        showTiming() {
+          showTiming = true;
+        },
+        finishRun() {
+          for (const item of messages[A]!)
+            if (item.runId === runId) {
+              item.status = 'failed';
+              item.content.text = '';
+            }
+          for (const response of streams) {
+            response.end(
+              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence: 2, cursor: `${runId}:2`, type: 'run.canceled', payload: {} })}\n\n`,
+            );
+          }
+        },
         setAssistantStatus(value: string) {
           assistantStatus = value;
         },
@@ -499,7 +584,15 @@ suite(
           await page
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .fill(text);
-          await page.getByRole('button', { name: '发送', exact: true }).click();
+          const sendButton = page.getByRole('button', {
+            name: '发送',
+            exact: true,
+          });
+          if (await sendButton.count()) await sendButton.click();
+          else
+            await page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .press('Enter');
         },
         async waitPending(count: number) {
           await expect
@@ -540,6 +633,12 @@ suite(
               return;
             }
             if (p.path.endsWith('/attachments')) {
+              uploaded.set(C, {
+                id: C,
+                fileName: String(p.body.fileName),
+                mediaType: String(p.body.mediaType),
+                sizeBytes: 1,
+              });
               answer(p.response, {
                 attachment: {
                   id: C,
@@ -557,31 +656,311 @@ suite(
               });
               return;
             }
+            if (p.path.includes('/cancel')) {
+              answer(p.response, { accepted: true });
+              return;
+            }
             const id = p.path.split('/')[4]!;
-            const userMessage = message(`user-${index}`, String(p.body.text));
+            const userMessage = {
+              ...message(`user-${index}`, String(p.body.text)),
+              attachments: ((p.body.attachmentIds as string[]) ?? []).flatMap(
+                (id) => uploaded.get(id) ?? [],
+              ),
+            };
             const assistantMessage = message(
               `assistant-${index}`,
-              'Synthetic receipt',
+              options.immediateReply ? '' : 'Synthetic receipt',
               'assistant',
+              options.immediateReply ? runId : null,
+              options.immediateReply ? 'pending' : 'completed',
             );
             messages[id]?.push(userMessage, assistantMessage);
             answer(p.response, {
               run: { id: runId },
               fallbackRunId: null,
-              delivery: 'follow_up',
+              delivery: options.immediateReply ? 'immediate' : 'follow_up',
               userMessage,
               assistantMessage,
             });
           }
         },
         async close() {
+          closing = true;
           releaseHistoryB();
-          await context.close();
           server.closeAllConnections();
+          await page.unrouteAll({ behavior: 'ignoreErrors' });
+          await context.close();
           await new Promise<void>((done) => server.close(() => done()));
         },
       };
     }
+
+    async function imageDraft(page: Page) {
+      const data = await page.evaluate(() => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 640;
+        canvas.height = 320;
+        const ctx = canvas.getContext('2d')!;
+        ctx.fillStyle = '#ffd000';
+        ctx.fillRect(0, 0, 640, 320);
+        ctx.fillStyle = '#111';
+        ctx.fillText('Allrice image send', 20, 50);
+        return canvas.toDataURL('image/png');
+      });
+      await page.locator('input[type=file]').setInputFiles({
+        name: 'image-send.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from(data.split(',')[1]!, 'base64'),
+      });
+      await expect
+        .poll(() =>
+          page
+            .getByRole('img', { name: 'image-send.png', exact: true })
+            .evaluate(
+              (img: HTMLImageElement) =>
+                img.complete && img.naturalWidth === 640,
+            ),
+        )
+        .toBe(true);
+      return data;
+    }
+
+    it.each([1440, 390])(
+      'hands image previews from composer to transcript without waiting or blank frames at %ipx',
+      async (width) => {
+        const f = await fixture({
+          width,
+          uploadPending: true,
+          immediateReply: true,
+        });
+        let release!: () => void;
+        const signing = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let signs = 0;
+        try {
+          const data = await imageDraft(f.page);
+          const originalPreview = await f.page
+            .getByRole('img', { name: 'image-send.png', exact: true })
+            .getAttribute('src');
+          await f.page.route('**/api/v1/files/*/sign', async (route) => {
+            signs++;
+            await signing;
+            await route.fulfill({ json: { url: data } });
+          });
+          await f.send('检查图片连续显示');
+          await f.waitPending(1);
+          const image = f.page
+            .locator('[id^="message-"]')
+            .getByRole('img', { name: 'image-send.png', exact: true });
+          await image.waitFor();
+          expect(await image.getAttribute('src')).toBe(originalPreview);
+          expect(
+            await f.page.getByText('上传中', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .inputValue(),
+          ).toBe('');
+          const before = await image.boundingBox();
+          expect(before!.width / before!.height).toBeCloseTo(2, 1);
+          await f.page.evaluate(() => {
+            const state = {
+              running: true,
+              blanks: 0,
+              frames: 0,
+              failed: [] as unknown[],
+            };
+            Object.assign(window, { imageSendObservation: state });
+            const check = () => {
+              if (!state.running) return;
+              const img = document.querySelector<HTMLImageElement>(
+                '[id^="message-"] img[alt="image-send.png"]',
+              );
+              state.frames++;
+              if (!img || !img.complete || img.naturalWidth !== 640) {
+                state.blanks++;
+                state.failed.push({
+                  src: img?.src,
+                  complete: img?.complete,
+                  width: img?.naturalWidth,
+                  id: img?.closest('[id]')?.id,
+                });
+              }
+              requestAnimationFrame(check);
+            };
+            requestAnimationFrame(check);
+          });
+          await f.respond(0);
+          await f.waitPending(2);
+          expect(signs).toBe(0);
+          await f.respond(1);
+          await expect.poll(() => signs).toBe(1);
+          expect(await image.getAttribute('src')).toBe(originalPreview);
+          expect(
+            await f.page.getByText('正在加载图片…', { exact: true }).count(),
+          ).toBe(0);
+          const admitted = await image.boundingBox();
+          expect(admitted!.width).toBe(before!.width);
+          expect(admitted!.height).toBe(before!.height);
+          release();
+          await expect
+            .poll(() => image.getAttribute('src'))
+            .not.toBe(originalPreview);
+          await f.page.waitForFunction(
+            () =>
+              (
+                window as unknown as {
+                  imageSendObservation: { frames: number };
+                }
+              ).imageSendObservation.frames >= 15,
+          );
+          const observation = await f.page.evaluate(() => {
+            const state = (
+              window as unknown as {
+                imageSendObservation: {
+                  running: boolean;
+                  blanks: number;
+                  frames: number;
+                };
+              }
+            ).imageSendObservation;
+            state.running = false;
+            return state;
+          });
+          expect(observation, JSON.stringify(observation)).toMatchObject({
+            blanks: 0,
+          });
+          expect(signs).toBe(1); // acknowledgement + history refresh share the native cache.
+          expect(
+            f.writes.filter((path) => path.endsWith('/attachments')),
+          ).toHaveLength(1);
+          expect(
+            f.writes.filter((path) => path.endsWith('/messages')),
+          ).toHaveLength(1);
+          await image.click();
+          await f.page.getByRole('dialog', { name: '图片预览' }).waitFor();
+          await f.page.keyboard.press('Escape');
+          expect(
+            await f.page.getByRole('dialog', { name: '图片预览' }).count(),
+          ).toBe(0);
+          if (width === 390)
+            await f.page
+              .getByRole('button', { name: '展开侧边栏', exact: true })
+              .click();
+          await f.choose(B);
+          expect(
+            await f.page
+              .getByRole('img', { name: 'image-send.png', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(f.errors).toEqual([]);
+        } finally {
+          release();
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
+    it('restores image and text on upload failure, then retries the attachment', async () => {
+      const f = await fixture({ uploadPending: true });
+      try {
+        await imageDraft(f.page);
+        await f.send('上传失败后重试');
+        await f.waitPending(1);
+        await f.respond(0, false);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('上传失败后重试');
+        expect(
+          await f.page
+            .getByRole('group', { name: '待发送附件' })
+            .getByRole('img')
+            .evaluate(
+              (img: HTMLImageElement) =>
+                img.complete && img.naturalWidth === 640,
+            ),
+        ).toBe(true);
+        await f.page.getByRole('button', { name: '重试', exact: true }).click();
+        await f.send('上传失败后重试');
+        await f.waitPending(2);
+        expect(f.pending[1]!.path).toContain('/attachments');
+        expect(f.pending[1]!.body.contentBase64).toBe(
+          f.pending[0]!.body.contentBase64,
+        );
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    it('keeps an image submission in the pending queue during upload without creating another assistant turn', async () => {
+      const f = await fixture({ running: true, uploadPending: true });
+      try {
+        await imageDraft(f.page);
+        await f.send('图片排到下一轮');
+        await f.waitPending(1);
+        const queue = f.page.locator('[data-queue-dock]');
+        await queue.getByText(/图片排到下一轮/).waitFor();
+        expect(
+          await f.page.locator('[id^="message-optimistic-user:"]').count(),
+        ).toBe(0);
+        expect(
+          await f.page.locator('[id^="message-optimistic-assistant:"]').count(),
+        ).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    it('restores an image after failed message admission and retries without uploading it again', async () => {
+      const f = await fixture({ uploadPending: true, immediateReply: true });
+      try {
+        const data = await imageDraft(f.page);
+        await f.page.route('**/api/v1/files/*/sign', (route) =>
+          route.fulfill({ json: { url: data } }),
+        );
+        await f.send('保留图片重试');
+        await f.waitPending(1);
+        await f.respond(0);
+        await f.waitPending(2);
+        const clientId = f.pending[1]!.body.clientMessageId;
+        await f.respond(1, false);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('保留图片重试');
+        const rail = f.page.getByRole('group', { name: '待发送附件' });
+        expect(
+          await rail
+            .getByRole('img')
+            .evaluate(
+              (img: HTMLImageElement) =>
+                img.complete && img.naturalWidth === 640,
+            ),
+        ).toBe(true);
+        expect(
+          await f.page.locator('[id^="message-optimistic-user:"]').count(),
+        ).toBe(0);
+        await f.send('保留图片重试');
+        await f.waitPending(3);
+        expect(f.pending[2]!.path).toContain('/messages');
+        expect(f.pending[2]!.body.clientMessageId).toBe(clientId);
+        await f.respond(2);
+        expect(
+          f.writes.filter((path) => path.endsWith('/attachments')),
+        ).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
 
     it('never displays the previous conversation while loading and switches retained histories without HTTP', async () => {
       const f = await fixture({ delayHistoryB: true });
@@ -631,6 +1010,47 @@ suite(
         await f.close();
       }
     });
+
+    it.each([1440, 390])(
+      'keeps Rice identity anchored while the submitted turn receives its first status at %ipx',
+      async (width) => {
+        const f = await fixture({
+          immediateReply: true,
+          longHistory: true,
+          width,
+        });
+        try {
+          await f.send('A small greeting');
+          await f.waitPending(1);
+          const identity = () =>
+            f.page.locator('[data-working="true"] > div').first();
+          const geometry = () =>
+            f.page.evaluate(() => {
+              const node = document.querySelector('[data-working="true"]')!;
+              const identity = node.firstElementChild!;
+              const scroll = document.querySelector(
+                '[data-conversation-scroll]',
+              )!;
+              return {
+                top: identity.getBoundingClientRect().top,
+                height: node.getBoundingClientRect().height,
+                scroll: scroll.scrollTop,
+                content: node.textContent,
+              };
+            });
+          await identity().waitFor();
+          await f.page.waitForTimeout(100);
+          const before = await geometry();
+          await f.respond(0);
+          await f.page.waitForTimeout(500);
+          const after = await geometry();
+
+          expect(Math.abs(after.top - before.top)).toBeLessThan(1);
+        } finally {
+          await f.close();
+        }
+      },
+    );
 
     it('late successful A POST preserves B draft/attachments and never cancels or resumes A', async () => {
       const f = await fixture();
@@ -771,6 +1191,44 @@ suite(
       15_000,
     );
 
+    it.each([
+      { visibility: 'workspace', selectAfterAdding: false },
+      { visibility: 'private', selectAfterAdding: false },
+      { visibility: 'private', selectAfterAdding: true },
+    ] as const)(
+      'defaults uploads to workspace and honors $visibility (change after adding: $selectAfterAdding)',
+      async ({ visibility, selectAfterAdding }) => {
+        const f = await fixture({ uploadPending: true });
+        try {
+          const scope = f.page.getByRole('combobox', {
+            name: '上传文件可见范围',
+          });
+          expect(await scope.inputValue()).toBe('workspace');
+          if (selectAfterAdding) {
+            await f.page.locator('input[type=file]').setInputFiles({
+              name: 'scope.txt',
+              mimeType: 'text/plain',
+              buffer: Buffer.from('synthetic visibility check'),
+            });
+          }
+          if (visibility === 'private') await scope.selectOption('private');
+          await f.send(
+            '请读取附件',
+            selectAfterAdding ? undefined : 'scope.txt',
+          );
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/attachments');
+          expect(f.pending[0]!.body.visibility).toBe(visibility);
+          await f.respond(0);
+          await f.waitPending(2);
+          await f.respond(1);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
     it('navigation during attachment persistence does not submit the departed draft', async () => {
       const f = await fixture({ uploadPending: true });
       try {
@@ -821,11 +1279,429 @@ suite(
         await f.close();
       }
     }, 15_000);
+    it.each([390, 1440])(
+      'keeps the thinking row and composer stable across submit, timing and stop at %spx',
+      async (width) => {
+        const f = await fixture({ immediateReply: true, width });
+        try {
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('在吗');
+          await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .click();
+          await f.waitPending(1);
+          const identity = f.page
+            .locator('[class*="assistantIdentity"]')
+            .last();
+          await identity.waitFor();
+          const geometry = async () => {
+            const composer = await input.locator('..').boundingBox();
+            const author = await identity.boundingBox();
+            const process = await f.page
+              .getByRole('region', { name: '工作过程', exact: true })
+              .boundingBox();
+            return {
+              y: composer!.y,
+              height: composer!.height,
+              gap: composer!.y - author!.y,
+              processHeight: process!.height,
+            };
+          };
+          // Settle the ordinary new-message scroll, then measure only the state transition.
+          await f.page.waitForTimeout(350);
+          const submitting = await geometry();
+          expect(
+            await f.page
+              .getByRole('button', { name: '停止生成', exact: true })
+              .count(),
+          ).toBe(0);
+          await f.respond(0);
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .waitFor();
+          await f.page.waitForTimeout(150);
+          const running = await geometry();
+          f.showTiming();
+          await f.page.getByLabel('本轮运行时间', { exact: true }).waitFor();
+          const timed = await geometry();
+          if (process.env.ALLRICE_UI_EVIDENCE_DIR)
+            await f.page.screenshot({
+              path: `${process.env.ALLRICE_UI_EVIDENCE_DIR}/timed-${width}.png`,
+            });
+          for (const state of [running, timed]) {
+            expect(Math.abs(state.y - submitting.y)).toBeLessThanOrEqual(1);
+            expect(state.height).toBe(submitting.height);
+            expect(Math.abs(state.gap - submitting.gap)).toBeLessThanOrEqual(1);
+            expect(state.processHeight).toBe(submitting.processHeight);
+          }
+          await f.page
+            .getByRole('button', { name: '停止生成', exact: true })
+            .click();
+          await f.waitPending(2);
+          expect(
+            await f.page
+              .getByRole('button', { name: '正在停止', exact: true })
+              .isDisabled(),
+          ).toBe(true);
+          await f.respond(1);
+          f.finishRun();
+          await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .waitFor();
+          expect(await f.page.getByText('重新连接并恢复执行记录').count()).toBe(
+            0,
+          );
+          expect(
+            await f.page
+              .getByRole('link', { name: '经验沉淀', exact: true })
+              .count(),
+          ).toBe(0);
+          expect((await input.locator('..').boundingBox())!.height).toBe(
+            submitting.height,
+          );
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
+    it.each(['failed', 'canceled'] as const)(
+      'opens settled %s history without a stop control or reconnect action',
+      async (settled) => {
+        const f = await fixture({ settled });
+        try {
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .fill('尚未发送');
+          await f.page.evaluate(() =>
+            window.dispatchEvent(new Event('online')),
+          );
+          await f.page.waitForTimeout(150);
+          expect(
+            await f.page
+              .getByRole('button', { name: '停止生成', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(await f.page.getByText('重新连接并恢复执行记录').count()).toBe(
+            0,
+          );
+          expect(
+            f.reads.filter(
+              (url) => url.includes('/events') && !url.includes('format=json'),
+            ),
+          ).toEqual([]);
+          expect(f.writes).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
+    it('uses an opaque, readable attachment menu with keyboard and outside dismissal', async () => {
+      const f = await fixture();
+      try {
+        const add = f.page.getByRole('button', {
+          name: '添加文件',
+          exact: true,
+        });
+        await add.click();
+        const menu = f.page.getByRole('menu');
+        const item = menu.getByRole('menuitem', {
+          name: '从工作区添加',
+          exact: true,
+        });
+        const styles = await item.evaluate((el) => ({
+          size: getComputedStyle(el).fontSize,
+          height: el.getBoundingClientRect().height,
+        }));
+        expect(styles).toEqual({ size: '15px', height: 44 });
+        for (const selector of [
+          '[data-compact=mode]',
+          '[data-compact=visibility]',
+        ]) {
+          expect(
+            await f.page.locator(selector).evaluate((el) => ({
+              size: getComputedStyle(el).fontSize,
+              weight: getComputedStyle(el).fontWeight,
+            })),
+          ).toEqual({ size: '15px', weight: '400' });
+        }
+        const surface = await menu.evaluate((el) => ({
+          background: getComputedStyle(el).backgroundColor,
+          shadow: getComputedStyle(el).boxShadow,
+          border: getComputedStyle(el).borderTopWidth,
+        }));
+        expect(surface.background).not.toBe('rgba(0, 0, 0, 0)');
+        expect(surface.shadow).not.toBe('none');
+        expect(surface.border).toBe('1px');
+        if (process.env.ALLRICE_UI_EVIDENCE_DIR)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_UI_EVIDENCE_DIR}/attachment-menu.png`,
+          });
+        await f.page.keyboard.press('Escape');
+        expect(await menu.count()).toBe(0);
+        expect(await add.evaluate((el) => el === document.activeElement)).toBe(
+          true,
+        );
+        await add.click();
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息' })
+          .click({ position: { x: 500, y: 10 } });
+        expect(await menu.count()).toBe(0);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    const pickerFiles: WorkspaceFile[] = Array.from(
+      { length: 28 },
+      (_, index) => ({
+        id: `workspace-file-${index}`,
+        fileName: `tool-result-web-search-${index}-1cd48820-0024-4b22-b75b-46f7c05705c2.txt`,
+        mediaType: 'text/plain',
+        sizeBytes: 19000,
+        ownedByMe: true,
+        category: 'exports',
+        visibility: 'workspace',
+        deliverableVersion: 1,
+      }),
+    );
+    const openPicker = async (page: Page) => {
+      await page.getByRole('button', { name: '添加文件', exact: true }).click();
+      await page
+        .getByRole('menuitem', { name: '从工作区添加', exact: true })
+        .click();
+      const dialog = page.getByRole('dialog', {
+        name: '从工作区添加文件',
+        exact: true,
+      });
+      await dialog.waitFor();
+      return dialog;
+    };
+
+    it.each([1440, 390, 320])(
+      'workspace picker keeps selection while searching and its footer visible at %i px',
+      async (width) => {
+        const f = await fixture({ width, workspaceFiles: pickerFiles });
+        try {
+          const dialog = await openPicker(f.page);
+          const search = dialog.getByRole('searchbox', { name: '搜索文件名' });
+          expect(
+            await search.evaluate((el) => el === document.activeElement),
+          ).toBe(true);
+          expect(
+            await dialog
+              .getByRole('button', { name: '添加到本轮' })
+              .isDisabled(),
+          ).toBe(true);
+          await dialog.getByRole('checkbox').nth(0).check();
+          await search.fill('web-search-4-');
+          expect(await dialog.getByRole('checkbox').count()).toBe(1);
+          await dialog.getByRole('checkbox').check();
+          await search.fill('not-a-file');
+          expect(await dialog.getByText('没有找到匹配的文件').isVisible()).toBe(
+            true,
+          );
+          expect(await dialog.getByText('已选 2 项').isVisible()).toBe(true);
+          await search.fill('');
+          expect(await dialog.getByRole('checkbox').nth(0).isChecked()).toBe(
+            true,
+          );
+          expect(await dialog.getByRole('checkbox').nth(4).isChecked()).toBe(
+            true,
+          );
+          const list = dialog.getByRole('list', { name: '工作区文件' });
+          const layout = await dialog.evaluate((el) => ({
+            left: el.getBoundingClientRect().left,
+            right: el.getBoundingClientRect().right,
+            bottom: el.getBoundingClientRect().bottom,
+            overflow: el.scrollWidth > el.clientWidth,
+            background: getComputedStyle(el).backgroundColor,
+            footer: el.querySelector('footer')!.getBoundingClientRect().bottom,
+            nameSize: getComputedStyle(el.querySelector('[class*=fileName]')!)
+              .fontSize,
+            nameWeight: getComputedStyle(el.querySelector('[class*=fileName]')!)
+              .fontWeight,
+          }));
+          expect(layout.background).toBe('rgb(255, 255, 255)');
+          expect(layout.overflow).toBe(false);
+          expect(layout.left).toBeGreaterThanOrEqual(0);
+          expect(layout.right).toBeLessThanOrEqual(width);
+          expect(layout.footer).toBeLessThanOrEqual(layout.bottom);
+          expect(layout.nameSize).toBe('15px');
+          expect(layout.nameWeight).toBe('400');
+          await list.evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+          });
+          expect(
+            await dialog
+              .getByRole('button', { name: '添加到本轮' })
+              .isVisible(),
+          ).toBe(true);
+          await list.evaluate((el) => {
+            el.scrollTop = 0;
+          });
+          await dialog
+            .getByRole('button', {
+              name: `文件详情：${pickerFiles[0]!.fileName}`,
+            })
+            .click();
+          expect(
+            await dialog
+              .locator('p')
+              .getByText(pickerFiles[0]!.fileName, { exact: true })
+              .isVisible(),
+          ).toBe(true);
+          if (process.env.ALLRICE_UI_EVIDENCE_DIR)
+            await f.page.screenshot({
+              path: `${process.env.ALLRICE_UI_EVIDENCE_DIR}/workspace-picker-${width}.png`,
+            });
+          await f.page.keyboard.press('Escape');
+          expect(await dialog.count()).toBe(0);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20000,
+    );
+
+    it('batch workspace attachments retain successes and retry only the failed selection', async () => {
+      const f = await fixture({
+        uploadPending: true,
+        workspaceFiles: pickerFiles.slice(0, 2),
+      });
+      try {
+        const dialog = await openPicker(f.page);
+        await dialog.getByRole('checkbox').nth(0).check();
+        await dialog.getByRole('checkbox').nth(1).check();
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        await f.waitPending(1);
+        expect(
+          await dialog.getByRole('button', { name: '正在添加…' }).isDisabled(),
+        ).toBe(true);
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1, false);
+        expect(await dialog.getByRole('alert').textContent()).toContain(
+          'Synthetic old request failed',
+        );
+        expect(await dialog.getByRole('checkbox').nth(0).isDisabled()).toBe(
+          true,
+        );
+        expect(await dialog.getByRole('checkbox').nth(1).isChecked()).toBe(
+          true,
+        );
+        expect(await dialog.getByText('已选 1 项').isVisible()).toBe(true);
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        await f.waitPending(3);
+        expect(f.pending.map((p) => p.body.objectId)).toEqual([
+          pickerFiles[0]!.id,
+          pickerFiles[1]!.id,
+          pickerFiles[1]!.id,
+        ]);
+        await f.respond(2);
+        expect(await dialog.count()).toBe(0);
+        const reopened = await openPicker(f.page);
+        expect(await reopened.getByRole('checkbox').nth(0).isDisabled()).toBe(
+          true,
+        );
+        expect(await reopened.getByRole('checkbox').nth(1).isDisabled()).toBe(
+          true,
+        );
+        expect(
+          await reopened
+            .getByRole('button', { name: '添加到本轮' })
+            .isDisabled(),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
+
+    it('a new workspace-file batch creates only one session and preserves the selected files', async () => {
+      const f = await fixture({
+        uploadPending: true,
+        workspaceFiles: pickerFiles.slice(0, 2),
+      });
+      try {
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        const dialog = await openPicker(f.page);
+        await dialog.getByRole('checkbox').nth(0).check();
+        await dialog.getByRole('checkbox').nth(1).check();
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        await f.waitPending(1);
+        expect(f.pending[0]!.path).toBe('/api/v1/sessions');
+        await f.respond(0);
+        await f.waitPending(2);
+        await f.respond(1);
+        await f.waitPending(3);
+        await f.respond(2);
+        expect(f.writes).toEqual([
+          '/api/v1/sessions',
+          `/api/v1/sessions/${C}/attachments`,
+          `/api/v1/sessions/${C}/attachments`,
+        ]);
+        expect(await f.page.getByRole('dialog').count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
+
+    it('workspace file selection survives version history and rejects an oversized batch before writes', async () => {
+      const f = await fixture({ workspaceFiles: pickerFiles });
+      try {
+        await f.page.route('**/files/*/versions?*', (route) =>
+          route.fulfill({ json: { versions: [] } }),
+        );
+        const dialog = await openPicker(f.page);
+        await dialog.getByRole('checkbox').nth(0).check();
+        await dialog
+          .getByRole('button', {
+            name: `文件详情：${pickerFiles[0]!.fileName}`,
+          })
+          .click();
+        await dialog.getByRole('button', { name: '查看版本历史' }).click();
+        const history = f.page.getByRole('dialog', {
+          name: `${pickerFiles[0]!.fileName} 的版本历史`,
+        });
+        await history
+          .getByRole('button', { name: '关闭', exact: true })
+          .click();
+        expect(await dialog.getByRole('checkbox').nth(0).isChecked()).toBe(
+          true,
+        );
+        await dialog
+          .getByRole('button', {
+            name: `文件详情：${pickerFiles[0]!.fileName}`,
+          })
+          .click();
+        for (let i = 1; i < 21; i++)
+          await dialog.getByRole('checkbox').nth(i).check();
+        await dialog.getByRole('button', { name: '添加到本轮' }).click();
+        expect(await dialog.getByRole('alert').textContent()).toBe(
+          '每条消息最多添加 20 个附件。',
+        );
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
+
     it('late cancellation failure cannot poison another session or claim that work stopped', async () => {
       const f = await fixture({ running: true });
       try {
         await f.page
-          .getByRole('button', { name: '停止本轮', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .click();
         await f.waitPending(1);
         expect(f.pending[0]!.path).toContain(`${runId}/cancel`);
@@ -839,7 +1715,7 @@ suite(
         ).toBe(0);
         expect(
           await f.page
-            .getByRole('button', { name: '停止本轮', exact: true })
+            .getByRole('button', { name: '停止生成', exact: true })
             .count(),
         ).toBe(0);
         expect(f.writes).toHaveLength(1);
@@ -857,12 +1733,12 @@ suite(
           request.url().includes(`${runId}/cancel`),
         );
         await f.page
-          .getByRole('button', { name: '停止本轮', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .click();
         await failed;
         await f.page.getByText('Failed to fetch', { exact: true }).waitFor();
         await f.page
-          .getByRole('button', { name: '停止本轮', exact: true })
+          .getByRole('button', { name: '停止生成', exact: true })
           .waitFor();
         expect(f.errors).toEqual([]);
         expect(f.writes).toHaveLength(0);
@@ -975,18 +1851,23 @@ suite(
       }
     }, 15_000);
     it('a late workspace-file attachment cannot enter the next session or clear its sending owner', async () => {
-      const f = await fixture({ uploadPending: true });
+      const f = await fixture({
+        uploadPending: true,
+        workspaceFiles: pickerFiles.slice(0, 2),
+      });
       try {
         await f.page
           .getByRole('button', { name: '添加文件', exact: true })
           .click();
         await f.page.getByRole('menuitem', { name: /从工作区添加/ }).click();
+        await f.page.getByRole('checkbox').nth(0).check();
+        await f.page.getByRole('checkbox').nth(1).check();
         await f.page
           .getByRole('dialog')
-          .getByRole('button', { name: '添加', exact: true })
+          .getByRole('button', { name: '添加到本轮', exact: true })
           .click();
         await f.waitPending(1);
-        expect(f.pending[0]!.body).toEqual({ objectId: C });
+        expect(f.pending[0]!.body).toEqual({ objectId: pickerFiles[0]!.id });
         await f.page
           .getByRole('dialog')
           .getByRole('button', { name: '关闭', exact: true })
@@ -997,7 +1878,7 @@ suite(
         await f.respond(0);
         expect(
           await f.page
-            .getByText('workspace-source.txt', { exact: true })
+            .getByText(pickerFiles[0]!.fileName, { exact: true })
             .count(),
         ).toBe(0);
         expect(
@@ -1011,6 +1892,9 @@ suite(
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
         ).toBe('B owns current send');
+        expect(
+          f.writes.filter((path) => path.endsWith('/attachments')),
+        ).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();

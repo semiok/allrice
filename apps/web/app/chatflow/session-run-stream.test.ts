@@ -18,7 +18,7 @@ const flush = async () => {
 function history(
   sessionId: string,
   runId: string,
-  status: 'pending' | 'completed',
+  status: 'pending' | 'completed' | 'failed',
 ): History {
   return {
     session: {
@@ -366,5 +366,59 @@ describe('P26 selected Session transport lifetime (synthetic HTTP, no provider)'
     await blank.recoverRun('pending');
     expect(requests).toHaveLength(0);
     expect(blank.getSnapshot()).toEqual({ runViews: {}, runTraces: {} });
+  });
+  it.each(['failed', 'completed'] as const)(
+    'never reopens a %s run through recovery, even with stale pending history',
+    async (status) => {
+      const active = select('active');
+      active.restoreHistory(history('active', 'old', status));
+      requests[0]!.result.resolve(Response.json({ events: [] }));
+      await flush();
+      await active.recoverRun('old');
+      active.restoreHistory(history('active', 'old', 'pending'));
+      expect(requests).toHaveLength(1);
+      expect(requests[0]!.url).toContain('format=json');
+      expect(active.getSnapshot().runViews).toEqual({});
+    },
+  );
+  it('settled history aborts a stale stream and wins over late live events', async () => {
+    const active = select('active');
+    active.restoreHistory(history('active', 'old', 'pending'));
+    const body = open(0);
+    await flush();
+    active.restoreHistory(history('active', 'old', 'completed'));
+    expect(requests[0]!.signal.aborted).toBe(true);
+    body.send(event('old'));
+    body.close();
+    await flush();
+    expect(active.getSnapshot().runViews.old?.status).toBe('completed');
+    await active.recoverRun('old');
+    expect(requests.filter((r) => !r.url.includes('format=json'))).toHaveLength(
+      1,
+    );
+  });
+  it('bounds retries for clean stream disconnects and retries automatically on reconnect', async () => {
+    const active = select('active');
+    const pending = history('active', 'live', 'pending');
+    active.restoreHistory(pending);
+    for (let index = 0; index < 7; index++) {
+      open(index).close();
+      await flush();
+      await vi.advanceTimersByTimeAsync(3000);
+    }
+    expect(active.getSnapshot().runViews.live?.connectionError).toBeTruthy();
+    active.restoreHistory(pending);
+    expect(requests).toHaveLength(7);
+    active.recoverConnections();
+    expect(requests).toHaveLength(8);
+    const connected = open(7);
+    await flush();
+    expect(active.getSnapshot().runViews.live?.connectionError).toBeUndefined();
+    connected.send(event('live', 1, 'run.canceled'));
+    connected.close();
+    await flush();
+    await active.recoverRun('live');
+    expect(requests).toHaveLength(8);
+    expect(active.getSnapshot().runViews.live?.status).toBe('canceled');
   });
 });

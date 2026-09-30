@@ -1,19 +1,20 @@
 ---
 name: web-research
-description: 使用获准的网页搜索研究最新公开信息，核验重要事实，并提供附有来源的综合结论。适用于新闻、价格、近期事件、持续变化的事实、对比分析，以及任何需要联网搜索、核实、调查或引用来源的请求。
+description: 查询普通公开网页、新闻和最新事实，读取指定网页并提供来源。指定链接直接读取；公众号文章使用公众号调研，跨来源综合比较使用研究汇总，需要网页渲染或截图时使用浏览器调研。
 ---
 
 # Web Research
 
-Research current public information through the approved `web_search` tool and produce a concise, traceable answer.
+Find or read public web information through `web_search` and `web_fetch` and produce a concise, traceable answer.
 
 ## Workflow
 
-1. Identify the exact claim, entity, geography, and time window that require verification.
-2. Submit one to four focused searches. Prefer specific queries over one broad query.
-3. Inspect the returned evidence before answering. For an important or surprising claim, look for a second independent source when practical.
-4. Resolve conflicts by considering the source's authority, publication date, event date, and whether the page reports primary evidence.
-5. Answer in the user's language. Lead with the result, then include only the evidence needed to support it.
+- Given a public page URL, start with `web_fetch`; do not search for the same page first. For WeChat articles, use the available WeChat reading capability instead.
+- When no source is supplied, start with a focused `web_search` for the question and time window. Fetch relevant pages when the returned evidence is insufficient; do not fetch every search result automatically.
+- Reuse evidence already retrieved in this task. Add a search or independent source only to fill a material gap, resolve a conflict, or support a consequential claim. A request for one page's summary does not by itself require a broader investigation.
+- If evidence requires JavaScript rendering or the user requests a screenshot, use the available browser capability. Do not launch a browser after a successful fetch unless visual evidence is needed. A blocked or login-only page is not a reason to bypass access controls.
+- For a comparison or synthesis across sources, apply the research-synthesis workflow if available; carry forward the evidence already collected instead of restarting searches.
+- Answer in the user's language, leading with the result and linking the supporting sources. Stop when the requested question has sufficient evidence.
 
 ## Evidence Rules
 

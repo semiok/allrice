@@ -11,6 +11,21 @@
 .body > p:last-child {
   margin: 16px 0 0;
 }
+.connections {
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+.connections li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+}
+.connections li > :last-child {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
 .body button,
 .body a {
   border: 1px solid var(--dsw-alias-border-l2);
@@ -127,6 +142,14 @@
   font-size: 11px;
   color: var(--dsw-alias-label-secondary);
   font-weight: 400;
+}
+.groupDescription {
+  margin: 0;
+  padding: 12px 16px;
+  border-top: 1px solid var(--dsw-alias-border-primary);
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 .card {
   padding: 0;

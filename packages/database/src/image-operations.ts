@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   SessionModelSnapshotSchema,
   resolveImageModel,
+  withPlatformImageTools,
   type ExecutionContext,
   type ImageToolInput,
   type RequestContext,
@@ -31,11 +32,12 @@ export async function imageRunConfiguration(
   const snapshot = SessionModelSnapshotSchema.safeParse(run?.snapshot);
   if (
     !snapshot.success ||
-    snapshot.data.provider !== 'openai-codex' ||
-    !snapshot.data.platformSettings?.configuration.imagesEnabled ||
-    !run?.tools?.includes('workspace.export.create') ||
-    !run.capabilities?.includes('model:invoke') ||
-    !run.capabilities?.includes('storage:write')
+    !snapshot.data.platformSettings ||
+    !withPlatformImageTools(
+      run?.tools ?? [],
+      run?.capabilities ?? [],
+      snapshot.data,
+    ).includes('image.generate')
   )
     throw new DataAccessError('authorization_denied');
   return snapshot.data.platformSettings.configuration;
@@ -70,9 +72,15 @@ export async function claimImageOperation(input: {
     if (!job) throw new DataAccessError('authorization_denied');
     await tx`select pg_advisory_xact_lock(hashtextextended(${`image:${context.runId}`},0))`;
     const [existing] = await tx<
-      { id: string; input_digest: string; status: string; result: unknown }[]
+      {
+        id: string;
+        input_digest: string;
+        status: string;
+        result: unknown;
+        error_code: string | null;
+      }[]
     >`
-      select id,input_digest,status,result from allrice_image_operations where run_id=${context.runId}
+      select id,input_digest,status,result,error_code from allrice_image_operations where run_id=${context.runId}
         and (call_id=${input.callId} or input_digest=${digest})`;
     if (existing) {
       if (existing.input_digest !== digest)
@@ -82,6 +90,7 @@ export async function claimImageOperation(input: {
         execute: false,
         status: existing.status,
         result: existing.result,
+        errorCode: existing.error_code,
         configuration,
       };
     }
@@ -94,6 +103,7 @@ export async function claimImageOperation(input: {
       execute: true,
       status: 'running',
       result: null,
+      errorCode: null,
       configuration,
     };
   });
@@ -121,8 +131,10 @@ export async function finishImageOperation(input: {
   errorCode?: string;
 }) {
   const db = getDatabase();
-  await db`update allrice_image_operations set status=${input.status},result=${input.result ? db.json(input.result) : null},error_code=${input.errorCode ?? null},completed_at=now()
-    where id=${input.operationId} and run_id=${input.context.runId} and organization_id=${input.context.organizationId} and workspace_id=${input.context.workspaceId!} and status='running'`;
+  const rows =
+    await db`update allrice_image_operations set status=${input.status},result=${input.result ? db.json(input.result) : null},error_code=${input.errorCode ?? null},completed_at=now()
+    where id=${input.operationId} and run_id=${input.context.runId} and organization_id=${input.context.organizationId} and workspace_id=${input.context.workspaceId!} and status='running' returning id`;
+  return rows.length === 1;
 }
 
 export async function listImageOperations(context: RequestContext) {

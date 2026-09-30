@@ -12,14 +12,36 @@ import {
 } from '@allrice/contracts';
 import { isToolResultExport } from './document-reader-model';
 
+import {
+  documentPreviewLimits as limits,
+  previewImageMediaTypes,
+  base64WithinLimit,
+  type PreviewImageMediaType,
+  type SpreadsheetFormat,
+} from './document-preview-policy';
+export type TextPreview = {
+  kind: 'text';
+  text: string;
+  mediaType: string;
+  offset?: number;
+  lines?: number;
+  eof?: boolean;
+};
 export type ArtifactPreview =
   | OfficePreview
-  | { kind: 'pdf'; base64: string }
-  | { kind: 'text'; text: string; mediaType: string }
+  | {
+      kind: 'pdf';
+      base64: string;
+      converted?: boolean;
+      missingFonts?: string[];
+    }
+  | { kind: 'html'; base64: string }
+  | { kind: 'spreadsheet'; base64: string; format: SpreadsheetFormat }
+  | TextPreview
   | { kind: 'changeset'; changeset: ChangesetDocument }
   | {
       kind: 'image';
-      mediaType: 'image/png' | 'image/jpeg' | 'image/webp';
+      mediaType: PreviewImageMediaType;
       base64: string;
     }
   | { kind: 'download_only'; reason: string };
@@ -88,19 +110,59 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
   if (v.kind === 'office') return OfficePreviewSchema.parse(v);
   if (
     v.kind === 'pdf' &&
-    typeof v.base64 === 'string' &&
-    v.base64.length <= 10_666_668 &&
-    /^[A-Za-z0-9+/]*={0,2}$/.test(v.base64) &&
-    v.base64.length % 4 === 0
+    base64WithinLimit(
+      v.base64,
+      v.converted === true ? limits.officeOutputBytes : limits.fileBytes,
+    )
   )
-    return { kind: 'pdf', base64: v.base64 };
+    return {
+      kind: 'pdf',
+      base64: v.base64,
+      converted: v.converted === true,
+      missingFonts: Array.isArray(v.missingFonts)
+        ? v.missingFonts
+            .filter((f): f is string => typeof f === 'string')
+            .slice(0, 1000)
+        : [],
+    };
+  if (v.kind === 'html' && base64WithinLimit(v.base64, limits.fileBytes))
+    return { kind: 'html', base64: v.base64 };
+  if (
+    v.kind === 'spreadsheet' &&
+    ['xlsx', 'xls', 'csv', 'tsv'].includes(String(v.format)) &&
+    base64WithinLimit(v.base64, limits.excel.maxBytes)
+  )
+    return {
+      kind: 'spreadsheet',
+      base64: v.base64,
+      format: v.format as SpreadsheetFormat,
+    };
   if (
     v.kind === 'text' &&
     typeof v.text === 'string' &&
-    v.text.length <= 512_000 &&
+    v.text.length <= limits.pageBytes &&
+    new TextEncoder().encode(v.text).byteLength <= limits.pageBytes &&
     typeof v.mediaType === 'string'
-  )
-    return { kind: 'text', text: v.text, mediaType: v.mediaType };
+  ) {
+    if (
+      v.offset !== undefined &&
+      (!Number.isSafeInteger(v.offset) ||
+        Number(v.offset) < 1 ||
+        !Number.isSafeInteger(v.lines) ||
+        Number(v.lines) < 0 ||
+        Number(v.lines) > limits.pageLines ||
+        typeof v.eof !== 'boolean')
+    )
+      throw Error('文本分页格式无效');
+    return {
+      kind: 'text',
+      text: v.text,
+      mediaType: v.mediaType,
+      offset: v.offset as number | undefined,
+      lines: v.lines as number | undefined,
+      eof: v.eof as boolean | undefined,
+    };
+  }
   if (v.kind === 'changeset')
     return {
       kind: 'changeset',
@@ -108,14 +170,14 @@ export function parseArtifactPreview(input: unknown): ArtifactPreview {
     };
   if (
     v.kind === 'image' &&
-    ['image/png', 'image/jpeg', 'image/webp'].includes(String(v.mediaType)) &&
-    typeof v.base64 === 'string' &&
-    v.base64.length <= 684_000 &&
-    /^[A-Za-z0-9+/]*={0,2}$/.test(v.base64)
+    Object.values(previewImageMediaTypes).includes(
+      v.mediaType as PreviewImageMediaType,
+    ) &&
+    base64WithinLimit(v.base64, limits.fileBytes)
   )
     return {
       kind: 'image',
-      mediaType: v.mediaType as 'image/png' | 'image/jpeg' | 'image/webp',
+      mediaType: v.mediaType as PreviewImageMediaType,
       base64: v.base64,
     };
   if (

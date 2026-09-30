@@ -1,0 +1,45 @@
+--- a/packages/client/ui-conversation/src/client/conversation/historical-images.ts
++++ b/packages/client/ui-conversation/src/client/conversation/historical-images.ts
+@@ -1,9 +1,6 @@
+ /** Session-scoped durable image URL cache shared by Conversation targets. */
+-import type { Context } from '@deepseek-ai/cordis'
+-import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
+-import type { ISessions, SessionBinding } from '@deepseek-ai/dsh-api-session-controller/client'
+-import type { SessionId } from '@deepseek-ai/dsh-session/types'
+-import { bytesToBase64 } from '@deepseek-ai/dsh-util-crypto'
++import { decodeImage } from '../../message-image-cache'
++import type { Context, ImageAttachmentRef, ISessions, SessionBinding, SessionId } from '../../message-image-cache'
+ import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
+ 
+ interface ImageUrlEntry {
+@@ -106,18 +103,22 @@
+     attachment: ImageAttachmentRef,
+   ): Promise<string> {
+     return entry.binding.session.readAttachment(attachment.attachmentId)
+-      .then((result) => {
++      .then(async (result) => {
+         if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+         this.assertLive(key, entry)
+-        let url: string
+-        if (typeof URL.createObjectURL !== 'function') {
+-          url = `data:${result.value.attachment.mediaType};base64,${bytesToBase64(result.value.data)}`
+-        } else {
+-          const bytes = Uint8Array.from(result.value.data)
+-          url = URL.createObjectURL(new Blob([bytes.buffer], { type: result.value.attachment.mediaType }))
+-        }
++        const bytes = Uint8Array.from(result.value.data)
++        const url = URL.createObjectURL(new Blob([bytes.buffer], { type: result.value.attachment.mediaType }))
+         this.assertLive(key, entry)
+         this.urls.add(url)
++        try {
++          // Allrice HTTP bytes can complete between paints. Decode before
++          // retiring the local preview, keeping the native handoff continuous.
++          await decodeImage(url)
++          this.assertLive(key, entry)
++        } catch (error) {
++          this.releaseUrl(url)
++          throw error
++        }
+         const previous = entry.current
+         entry.current = url
+         if (previous !== undefined && previous !== url) this.releaseUrl(previous)

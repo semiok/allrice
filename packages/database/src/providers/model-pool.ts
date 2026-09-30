@@ -26,6 +26,7 @@ import {
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { readPlatformModelSettings } from './platform-model-settings.ts';
+import { requireEnabledCodexSubscription } from './codex-subscriptions.ts';
 
 const defaultProviderId = '51000000-0000-4000-8000-000000000001';
 const defaultConnectionId = '52000000-0000-4000-8000-000000000001';
@@ -646,6 +647,8 @@ async function resolveFrozenTarget(input: {
       and c.status = 'ready' and p.enabled and m.enabled
   `;
   const selection = rows[0];
+  if (selection && ['codex', 'openai-codex'].includes(selection.provider_key))
+    await requireEnabledCodexSubscription();
   if (!selection) throw new DataAccessError('grant_invalid');
   if (
     !modelProviderRuntimeSupported({

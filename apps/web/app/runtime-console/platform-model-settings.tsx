@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   PLATFORM_WORK_MODELS,
+  PLATFORM_WORK_MODEL_LABELS,
   type PlatformModelSettings,
 } from '@allrice/contracts';
 import styles from './governance-console.module.css';
@@ -72,7 +73,7 @@ export function PlatformModelSettingsPanel() {
             >
               {PLATFORM_WORK_MODELS.map((model) => (
                 <option key={model} value={model}>
-                  {model}
+                  {PLATFORM_WORK_MODEL_LABELS[model]}
                 </option>
               ))}
             </select>
@@ -97,7 +98,7 @@ export function PlatformModelSettingsPanel() {
               <option value="low">低</option>
               <option value="medium">中</option>
               <option value="high">高</option>
-              <option value="xhigh">超高</option>
+              <option value="xhigh">极高</option>
             </select>
           </label>
           <label>

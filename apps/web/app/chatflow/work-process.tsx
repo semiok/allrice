@@ -4,6 +4,7 @@ import { Children, useState, type ReactNode } from 'react';
 import { AssistantMarkdown } from './assistant-markdown';
 import type { WorkProgressPart } from '../../lib/chatflow/work-progress';
 import {
+  DisclosureRow,
   IconThinkOutlineRegular,
   IconSearchOutlineRegular,
   IconGlobeOutlineRegular,
@@ -25,7 +26,6 @@ import {
   summarizeWorkProcess,
   type WorkProcessCategory,
 } from '../../lib/chatflow/work-process';
-import { DisclosureRow } from './dsh-upstream/DisclosureRow';
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
 import { RunElapsedTime } from './run-timing';
@@ -59,6 +59,7 @@ export function WorkProcess({
   running,
   streaming,
   failed,
+  failureTitle,
   canceled,
   traceStatus,
   onRetry,
@@ -67,6 +68,7 @@ export function WorkProcess({
   children,
   artifacts,
   onOpenArtifact,
+  renderOperation,
   label = '工作过程',
 }: {
   items: NativeExperienceItem[];
@@ -75,6 +77,7 @@ export function WorkProcess({
   running: boolean;
   streaming: boolean;
   failed: boolean;
+  failureTitle?: string;
   canceled: boolean;
   traceStatus?: string;
   onRetry: () => void;
@@ -84,6 +87,7 @@ export function WorkProcess({
   artifacts?: readonly WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
   label?: string;
+  renderOperation?: (operationId: string) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
   const process = summarizeWorkProcess(items);
@@ -94,13 +98,17 @@ export function WorkProcess({
       ? timing?.resourceWaiting
         ? '等待计算资源…'
         : '等待处理…'
-      : process.active
-        ? '执行中…'
-        : streaming
-          ? '回复中…'
-          : '思考中…'
+      : process.active === '等待模型响应'
+        ? '等待模型响应…'
+        : process.active === '正在整理上下文'
+          ? '正在整理上下文…'
+          : process.active
+            ? '执行中…'
+            : streaming
+              ? '回复中…'
+              : '思考中…'
     : failed
-      ? '未完成'
+      ? (failureTitle ?? '未完成')
       : canceled
         ? '已停止'
         : '工作过程';
@@ -112,7 +120,9 @@ export function WorkProcess({
   const open = expandable && expanded;
   if (
     !expandable &&
+    !failureTitle &&
     !parts?.length &&
+    !items.some((item) => item.operationId && renderOperation) &&
     !timing &&
     !microStatus &&
     !assistantCount &&
@@ -125,7 +135,9 @@ export function WorkProcess({
     traceStatus === 'loading' && !process.steps.length
       ? '加载过程…'
       : undefined,
-    microStatus && !waiting ? process.active : undefined,
+    microStatus && !waiting && process.active !== '正在整理上下文'
+      ? process.active
+      : undefined,
     assistantCount
       ? `${assistantCount} 个助手${assistantAttention ? `，${assistantAttention} 个需关注` : ''}`
       : undefined,
@@ -133,60 +145,88 @@ export function WorkProcess({
     .filter(Boolean)
     .join(' · ');
   if (parts) {
+    // DSH keeps a live/failed turn open, then folds its process before the final
+    // answer. Native ProcessState already supplies the step/reply boundaries.
+    const final =
+      !running && parts.at(-1)?.kind === 'reply' ? parts.at(-1) : undefined;
+    const history = final ? parts.slice(0, -1) : parts;
+    const hasHistory =
+      history.length > 0 ||
+      Children.toArray(children).length > 0 ||
+      traceStatus === 'failed';
+    const canFold = !running && !failed && !canceled && hasHistory;
+    const showHistory = !canFold || expanded;
+    const renderPart = (part: WorkProgressPart, index: number) =>
+      part.kind === 'reply' ? (
+        <div
+          key={part.id}
+          className={styles.processReply}
+          data-work-reply={part.id}
+          hidden={!showHistory && part.id !== final?.id}
+        >
+          <AssistantMarkdown
+            onOpenArtifact={onOpenArtifact}
+            text={part.text}
+            streaming={streaming && running && index === parts.length - 1}
+            artifacts={artifacts}
+          />
+        </div>
+      ) : (
+        <div key={part.id} hidden={!showHistory}>
+          <WorkProcessGroup
+            items={part.items}
+            renderOperation={renderOperation}
+            running={running && !part.closed}
+          />
+        </div>
+      );
     return (
       <section className={styles.workProcess} aria-label={label}>
         <DisclosureRow
           icon={<IconThinkOutline14 />}
           title={title}
-          open={false}
-          expandable={false}
-          onToggle={noop}
+          running={running && !waiting}
+          open={canFold && expanded}
+          expandable={canFold}
+          expandOnRowClick
+          keepContentWhenOpen
+          onToggle={() => setExpanded((value) => !value)}
           rowClassName={styles.processHeader}
           collapsedContent={
-            timing ? (
-              <span className={styles.processTiming} aria-label="本轮运行时间">
-                用时 <RunElapsedTime timing={timing} running={running} />
-              </span>
-            ) : null
+            <>
+              {timing ? (
+                <>
+                  <span className={reasoning.separator} aria-hidden />
+                  <span
+                    className={styles.processTiming}
+                    aria-label="本轮运行时间"
+                  >
+                    用时 <RunElapsedTime timing={timing} running={running} />
+                  </span>
+                </>
+              ) : null}
+              {summary ? (
+                <>
+                  <span className={reasoning.separator} aria-hidden />
+                  <span className={reasoning.summary} title={summary}>
+                    {summary}
+                  </span>
+                </>
+              ) : null}
+            </>
           }
         />
         <div className={styles.processFlow}>
-          {parts.map((part, index) =>
-            part.kind === 'reply' ? (
-              <div
-                key={part.id}
-                className={styles.processReply}
-                data-work-reply={part.id}
-              >
-                <AssistantMarkdown
-                  onOpenArtifact={onOpenArtifact}
-                  text={part.text}
-                  streaming={running && index === parts.length - 1}
-                  artifacts={artifacts}
-                />
-              </div>
-            ) : (
-              <WorkProcess
-                key={part.id}
-                label="工作步骤"
-                items={part.items}
-                running={running && !part.closed}
-                streaming={false}
-                failed={false}
-                canceled={false}
-                onRetry={onRetry}
-                assistantCount={0}
-                assistantAttention={0}
-              />
-            ),
-          )}
+          {parts.map(renderPart)}
+          {traceStatus === 'failed' ? (
+            <button type="button" onClick={onRetry}>
+              过程加载失败，点击重试
+            </button>
+          ) : null}
+          {Children.toArray(children).length ? (
+            <div hidden={!showHistory}>{children}</div>
+          ) : null}
         </div>
-        {traceStatus === 'failed' ? (
-          <button type="button" onClick={onRetry}>
-            过程加载失败，点击重试
-          </button>
-        ) : null}
-        {children}
       </section>
     );
   }
@@ -198,6 +238,7 @@ export function WorkProcess({
       <DisclosureRow
         icon={<IconThinkOutline14 />}
         title={title}
+        running={microStatus && !waiting}
         open={open}
         expandable={expandable}
         expandOnRowClick
@@ -232,7 +273,11 @@ export function WorkProcess({
         }
       >
         <div className={styles.processDetails}>
-          <WorkProcessSteps items={items} running={running} />
+          <WorkProcessSteps
+            items={items}
+            running={running}
+            receiptsVisible={Boolean(renderOperation)}
+          />
           {traceStatus === 'failed' ? (
             <button
               className={styles.nativeTraceRetry}
@@ -247,6 +292,79 @@ export function WorkProcess({
         </div>
         {children}
       </DisclosureRow>
+      {renderOperation &&
+        items
+          .filter((item) => item.operationId)
+          .map((item) => (
+            <div key={item.id}>{renderOperation(item.operationId!)}</div>
+          ))}
+    </section>
+  );
+}
+
+/** Native disclosure for concrete step history; only the owning turn announces
+ * the current phase. Do not recursively render another turn-status header.
+ */
+function WorkProcessGroup({
+  items,
+  running,
+  renderOperation,
+}: {
+  items: NativeExperienceItem[];
+  running: boolean;
+  renderOperation?: (operationId: string) => ReactNode;
+}) {
+  // Receipts supplement the native summary; they must not replace its steps.
+  // Keep both at this process boundary, before any later assistant reply.
+  return (
+    <div className={styles.processReceipts}>
+      <NativeStepsGroup
+        items={items}
+        running={running}
+        receiptsVisible={Boolean(renderOperation)}
+      />
+      {renderOperation &&
+        items
+          .filter((item) => item.operationId)
+          .map((item) => (
+            <div key={item.id}>{renderOperation(item.operationId!)}</div>
+          ))}
+    </div>
+  );
+}
+
+function NativeStepsGroup({
+  items,
+  running,
+  receiptsVisible,
+}: {
+  items: NativeExperienceItem[];
+  running: boolean;
+  receiptsVisible: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const { steps } = summarizeWorkProcess(items);
+  if (!steps.length) return null;
+  const categories = [...new Set(steps.map((step) => step.label))].join('、');
+  return (
+    <section aria-label="工作步骤">
+      <DisclosureRow
+        icon={stepIcons[steps[0]!.category]}
+        title={`${categories} · ${steps.length} 项`}
+        open={open}
+        expandable
+        expandOnRowClick
+        onToggle={() => setOpen((value) => !value)}
+        rowClassName={styles.processHeader}
+      >
+        <div className={styles.processDetails}>
+          <WorkProcessSteps
+            items={items}
+            running={running}
+            receiptsVisible={receiptsVisible}
+          />
+        </div>
+      </DisclosureRow>
     </section>
   );
 }
@@ -254,9 +372,11 @@ export function WorkProcess({
 function WorkProcessSteps({
   items,
   running,
+  receiptsVisible,
 }: {
   items: NativeExperienceItem[];
   running: boolean;
+  receiptsVisible: boolean;
 }) {
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
@@ -266,6 +386,9 @@ function WorkProcessSteps({
         const pending =
           ['started', 'updated'].includes(step.status) &&
           step.category !== 'plan';
+        const hasReceipt =
+          receiptsVisible &&
+          items.some((item) => item.id === step.id && item.operationId);
         const status =
           step.status === 'failed'
             ? `未成功${step.error ? `：${step.error}` : ''}`
@@ -308,7 +431,7 @@ function WorkProcessSteps({
                 </>
               }
             />
-            {status ? (
+            {status && !(status === '进行中' && hasReceipt) ? (
               <small className={styles.processStepStatus}>{status}</small>
             ) : null}
           </li>

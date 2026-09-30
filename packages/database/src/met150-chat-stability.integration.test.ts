@@ -34,6 +34,64 @@ suite(
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     });
     afterEach(() => vi.unstubAllEnvs());
+    it.each([
+      'current',
+      'old-attempt',
+      'other-message',
+      'fragment',
+      'tool-progress',
+    ])(
+      'retains only a current whole native reply when settlement fails (%s)',
+      async (kind) => {
+        const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
+        try {
+          const task = await f.prepareOrdinaryTask(
+            'Synthetic reply retention; no model call.',
+          );
+          const [run] =
+            await f.db`select assistant_message_id from allrice_employee_runs where run_id=${task.runId}`;
+          await appendJobEvent({
+            ...task.workflowLease,
+            type: 'assistant.text.delta',
+            payload: {
+              text: 'GitHub 正常；Linear 有 3 个项目。',
+              messageId:
+                kind === 'other-message'
+                  ? randomUUID()
+                  : run!.assistant_message_id,
+              attempt: kind === 'old-attempt' ? 0 : 1,
+              sourceEventType:
+                kind === 'fragment' ? 'assistant/delta' : 'assistant/message',
+              textMode: kind === 'fragment' ? 'append' : 'replace',
+              nativePayload: {
+                interrupted: false,
+                contentTypes:
+                  kind === 'tool-progress' ? ['text', 'tool-call'] : ['text'],
+              },
+            },
+          });
+          await failJob({
+            ...task.workflowLease,
+            code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+            message: 'Synthetic ledger failure',
+            retryable: false,
+          });
+          const [message] =
+            await f.db`select content,status,error_code from allrice_messages where id=${run!.assistant_message_id}`;
+          expect(message).toMatchObject({
+            status: 'failed',
+            error_code: 'ASSISTANT_EXECUTION_UNRESOLVED',
+          });
+          expect(message!.content.text).toBe(
+            kind === 'current'
+              ? 'GitHub 正常；Linear 有 3 个项目。'
+              : 'Rice 暂时无法完成这次请求，请稍后重试。',
+          );
+        } finally {
+          await f.close();
+        }
+      },
+    );
     it('recovers only identity-proven, complete, same-attempt historical answers without rewriting accounting', async () => {
       const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
       try {

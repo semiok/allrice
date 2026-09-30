@@ -17,7 +17,10 @@
       "@allrice/contracts": ["packages/contracts/src/index.ts"],
       "@allrice/database": ["packages/database/src/index.ts"],
       "@allrice/storage": ["packages/storage/src/index.ts"],
-      "@allrice/office-runtime": ["packages/office-runtime/src/index.ts"]
+      "@allrice/office-runtime": ["packages/office-runtime/src/index.ts"],
+      "@allrice/office-runtime/preview": [
+        "packages/office-runtime/src/preview.ts"
+      ]
     },
     "resolveJsonModule": true,
     "rewriteRelativeImportExtensions": true,

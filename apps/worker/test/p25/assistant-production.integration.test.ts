@@ -75,6 +75,11 @@ integration(
           triedMissingReport = false;
         const model = await p24Fixture(async (request) => {
           const serialized = JSON.stringify(request.messages);
+          const exposedTools =
+            request.tools?.map((tool) => tool.function.name) ?? [];
+          if (serialized.includes('ROOT_PRIVATE'))
+            expect(exposedTools).not.toContain('assistant_report');
+          else expect(exposedTools).toContain('assistant_report');
           if (!serialized.includes('ROOT_PRIVATE')) {
             activeChildren++;
             maximumActiveChildren = Math.max(

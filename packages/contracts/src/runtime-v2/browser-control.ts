@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
+import { platformFileMaximumBytes } from '../storage.ts';
 
 /** Shared cloud/Bridge protocol, not a new execution authority. P21 implements cloud only. */
 export const browserControlVersion = 1;
@@ -68,8 +69,13 @@ export const BrowserProfileSchema = z
     allowUploads: z.boolean().default(false),
     allowDownloads: z.boolean().default(false),
     allowHumanCredentials: z.boolean().default(false),
-    lifetimeMs: z.number().int().min(10000).max(600000).default(300000),
-    maximumFileBytes: z.number().int().min(1).max(2000000).default(1000000),
+    lifetimeMs: z.number().int().min(10000).max(3_600_000).default(3_600_000),
+    maximumFileBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(platformFileMaximumBytes)
+      .default(platformFileMaximumBytes),
   })
   .strict()
   .refine((p) => new Set(p.origins).size === p.origins.length)

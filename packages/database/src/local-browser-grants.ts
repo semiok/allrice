@@ -54,9 +54,44 @@ export async function preparePairedBrowserGrant(
     return;
   // Pairing belongs to an active member, not necessarily a tenant administrator.
   await browserIdentity(tx, localBrowserPrincipal(device));
-  const [existing] = await tx`select grant_id from allrice_local_browser_grants
-    where device_id=${device.id} and purpose='public' limit 1`;
-  if (existing) return;
+  const [existing] =
+    await tx`select l.grant_id,l.persist_login,g.profile,g.enabled,g.revoked_at,
+    exists(select 1 from allrice_audit_events a where a.resource_id=l.grant_id
+      and a.action='local.browser.grant.installed' and a.reason='paired_device_prepared') as automatic
+    from allrice_local_browser_grants l join allrice_browser_control_grants g on g.id=l.grant_id
+    where l.device_id=${device.id} and l.purpose='public' order by l.created_at desc limit 1`;
+  const supportsDefaults = environment.browserDefaultsVersion === 1;
+  if (existing) {
+    const upgrade =
+      supportsDefaults &&
+      existing.automatic &&
+      existing.enabled &&
+      !existing.revoked_at &&
+      existing.profile.network === 'public_https' &&
+      !existing.persist_login &&
+      existing.profile.lifetimeMs === 300000 &&
+      existing.profile.maximumFileBytes === 1000000;
+    if (!upgrade) return;
+    // Heartbeats own the device lock. Defer an upgrade rather than waiting
+    // for a browser action that owns this grant and needs that device.
+    const [available] = await tx`select id from allrice_browser_control_grants
+      where id=${existing.grant_id} and enabled and revoked_at is null for update skip locked`;
+    if (!available) return;
+    // Profile identity is immutable. Retire the unused legacy generation and
+    // create a new default through the same pairing path below.
+    const [active] =
+      await tx`select browser_workspace_id from allrice_local_browser_workspaces
+      where grant_id=${existing.grant_id} and released_at is null limit 1`;
+    if (active) return;
+    const [retired] =
+      await tx`update allrice_browser_control_grants set enabled=false,revoked_at=clock_timestamp()
+      where id=${existing.grant_id} and enabled and revoked_at is null returning id`;
+    if (!retired) return;
+    await tx`update allrice_local_browser_grants set cleanup_requested_at=clock_timestamp() where grant_id=${existing.grant_id}`;
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+      values(${device.organizationId},${device.workspaceId},${device.ownerId},'local.browser.defaults.upgraded','browser_grant',${existing.grant_id},'recorded','paired_device_upgraded',
+        ${tx.json({ deviceId: device.id, clientVersion: environment.clientVersion })})`;
+  }
   const [target] = await tx`select id from allrice_execution_targets
     where organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
       and target_key=${`bridge.${device.id}`} and kind='rice_bridge' and state='online'`;
@@ -70,14 +105,17 @@ export async function preparePairedBrowserGrant(
     allowUploads: true,
     allowDownloads: true,
     allowHumanCredentials: true,
+    ...(!supportsDefaults
+      ? { lifetimeMs: 300000, maximumFileBytes: 1000000 }
+      : {}),
   });
   await tx`insert into allrice_browser_control_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled,transport)
     values(${id},${device.organizationId},${device.workspaceId},${device.ownerId},${target.id},1,${tx.json(profile)},true,'local')`;
   await tx`insert into allrice_local_browser_grants(grant_id,organization_id,workspace_id,owner_id,device_id,logical_profile_id,persist_login)
-    values(${id},${device.organizationId},${device.workspaceId},${device.ownerId},${device.id},${logicalId},false)`;
+    values(${id},${device.organizationId},${device.workspaceId},${device.ownerId},${device.id},${logicalId},${supportsDefaults})`;
   await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
     values(${device.organizationId},${device.workspaceId},${device.ownerId},'local.browser.grant.installed','browser_grant',${id},'recorded','paired_device_prepared',
-      ${tx.json({ deviceId: device.id, clientVersion: environment.clientVersion, persistLogin: false })})`;
+      ${tx.json({ deviceId: device.id, clientVersion: environment.clientVersion, persistLogin: supportsDefaults })})`;
 }
 export async function assertCurrentLocalBrowserDevice(
   tx: postgres.TransactionSql,
@@ -99,7 +137,7 @@ export const LocalBrowserGrantInputSchema = z
   .object({
     deviceId: UuidSchema,
     profile: BrowserProfileSchema,
-    persistLogin: z.boolean().default(false),
+    persistLogin: z.boolean().default(true),
   })
   .strict();
 export const LocalBrowserManagementInstallSchema =
@@ -117,14 +155,12 @@ export const LocalBrowserManagementRevokeSchema = z
 export async function installLocalBrowserGrant(
   ctx: RequestContext,
   raw: unknown,
-  db = getDatabase(),
+  db: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
   administration?: TenantManagementOptions,
 ) {
   if (!localBrowserEnabled())
     throw new RuntimePolicyError('local_browser_disabled');
   const input = LocalBrowserGrantInputSchema.parse(raw);
-  if (input.profile.network && input.persistLogin)
-    throw new RuntimePolicyError('local_browser_login_scope_required');
   for (const origin of input.profile.origins) {
     const denial = browserGrantOriginDenial(origin);
     if (denial) throw new RuntimePolicyError(denial);
@@ -134,7 +170,8 @@ export async function installLocalBrowserGrant(
   const organizationId = administration?.organizationId ?? ctx.organizationId,
     workspaceId = administration?.workspaceId ?? ctx.workspaceId,
     ownerId = administration?.subjectId ?? ctx.actor.id;
-  await db.begin(async (tx) => {
+  const begin = 'begin' in db ? db.begin.bind(db) : db.savepoint.bind(db);
+  await begin(async (tx: postgres.TransactionSql) => {
     if (administration)
       await requireTenantManagementScope(ctx, administration, tx);
     else await browserIdentity(tx, ctx);
@@ -146,6 +183,13 @@ export async function installLocalBrowserGrant(
         and d.owner_id=${ownerId} and d.revoked_at is null for update of d`;
     if (!device) throw new RuntimePolicyError('local_browser_device_denied');
     if (input.profile.network && device.metadata?.environment?.version !== 1)
+      throw new RuntimePolicyError('local_browser_upgrade_required');
+    if (
+      ((input.profile.network && input.persistLogin) ||
+        input.profile.lifetimeMs > 600000 ||
+        input.profile.maximumFileBytes > 2000000) &&
+      device.metadata?.environment?.browserDefaultsVersion !== 1
+    )
       throw new RuntimePolicyError('local_browser_upgrade_required');
     const [count] = await tx<
       { n: number }[]
@@ -198,10 +242,11 @@ export async function listLocalBrowserGrants(
 export async function revokeLocalBrowserGrant(
   ctx: RequestContext,
   id: string,
-  db = getDatabase(),
+  db: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
   administration?: TenantManagementOptions & { expectedVersion: number },
 ) {
-  return db.begin(async (tx) => {
+  const begin = 'begin' in db ? db.begin.bind(db) : db.savepoint.bind(db);
+  return begin(async (tx: postgres.TransactionSql) => {
     const organizationId = administration?.organizationId ?? ctx.organizationId,
       workspaceId = administration?.workspaceId ?? ctx.workspaceId,
       ownerId = administration?.subjectId ?? ctx.actor.id;
@@ -292,5 +337,46 @@ export async function acknowledgeLocalBrowserRevocation(
       cleanup_error_code=${input.confirmed ? null : LocalBrowserErrorCodeSchema.parse(input.errorCode ?? 'LOCAL_BROWSER_CLEANUP_PENDING')}
       where grant_id=${input.grantId}`;
     return { cleanupConfirmed: input.confirmed };
+  });
+}
+
+export const LocalBrowserLoginPreferencesSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    action: z.literal('login_preferences'),
+    grantId: UuidSchema,
+    rememberLogin: z.boolean(),
+  })
+  .strict();
+
+/** Reuse the existing grant installation and physical cleanup protocol. Rotate
+ * the profile even when the preference is unchanged (the clear-login action). */
+export async function updateLocalBrowserLoginPreferences(
+  ctx: RequestContext,
+  grantId: string,
+  rememberLogin: boolean,
+  db = getDatabase(),
+) {
+  return db.begin(async (tx) => {
+    await browserIdentity(tx, ctx);
+    const [current] =
+      await tx`select l.device_id,g.profile from allrice_local_browser_grants l
+      join allrice_browser_control_grants g on g.id=l.grant_id
+      join allrice_bridge_devices d on d.id=l.device_id
+      where l.grant_id=${UuidSchema.parse(grantId)} and l.organization_id=${ctx.organizationId}
+        and l.workspace_id=${ctx.workspaceId} and l.owner_id=${ctx.actor.id} and l.purpose='public'
+        and g.enabled and g.revoked_at is null and d.revoked_at is null for update of g`;
+    if (!current) throw new RuntimePolicyError('local_browser_grant_denied');
+    const replacement = await installLocalBrowserGrant(
+      ctx,
+      {
+        deviceId: current.device_id,
+        profile: BrowserProfileSchema.parse(current.profile),
+        persistLogin: rememberLogin,
+      },
+      tx,
+    );
+    await revokeLocalBrowserGrant(ctx, grantId, tx);
+    return replacement;
   });
 }

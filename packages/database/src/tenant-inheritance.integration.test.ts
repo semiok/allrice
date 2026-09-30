@@ -218,6 +218,41 @@ suite(
       return getEmployeeWorkspace(context, context.workspaceId!);
     }
 
+    it('refreshes legacy automatic browser limits while preserving explicit restrictions', async () => {
+      const f = await setup();
+      await report();
+      const joined = await f.join();
+      const [grant] =
+        await fdb.db`select id,version from allrice_browser_control_grants where owner_id=${joined.user.id} and transport='cloud' and enabled`;
+      const legacy = {
+        ...browserProfile,
+        lifetimeMs: 600000,
+        maximumFileBytes: 1000000,
+      };
+      await fdb.db`update allrice_browser_control_grants set profile=${fdb.db.json(legacy)} where id=${grant!.id}`;
+      await report();
+      const [upgraded] =
+        await fdb.db`select id,profile,version from allrice_browser_control_grants where owner_id=${joined.user.id} and transport='cloud' order by created_at desc limit 1`;
+      expect(upgraded).toMatchObject({
+        version: 1,
+        profile: { lifetimeMs: 3600000, maximumFileBytes: 9000000 },
+      });
+      expect(upgraded!.id).not.toBe(grant!.id);
+      expect(
+        (
+          await fdb.db`select profile,version from allrice_browser_control_grants where id=${grant!.id}`
+        )[0],
+      ).toMatchObject({ profile: legacy, version: grant!.version });
+      await report();
+      expect(
+        await fdb.db`select id from allrice_browser_control_grants where owner_id=${joined.user.id} and transport='cloud'`,
+      ).toHaveLength(2);
+      await fdb.db`update allrice_browser_control_grants set profile=${fdb.db.json({ ...legacy, allowUploads: false })} where id=${upgraded!.id}`;
+      await report();
+      const [preserved] =
+        await fdb.db`select profile from allrice_browser_control_grants where id=${upgraded!.id}`;
+      expect(preserved!.profile.allowUploads).toBe(false);
+    });
     it('refreshes an inherited employee version without making old conversations recent', async () => {
       const f = await setup();
       const session = await createChatSession(f.tenant.context, {

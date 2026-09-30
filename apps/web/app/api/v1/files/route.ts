@@ -8,6 +8,7 @@ import {
   markStorageReady,
   newStorageObjectId,
   listWorkspaceFiles,
+  getWorkspaceStorageUsage,
 } from '@allrice/database';
 
 import { getRequestContext } from '../../../../lib/identity/session';
@@ -22,6 +23,11 @@ export async function GET(request: Request) {
     if (!context) throw new DataAccessError('authentication_required');
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
+    if (new URL(request.url).searchParams.get('summary') === '1')
+      return Response.json(
+        await getWorkspaceStorageUsage(context, workspaceId),
+        { headers: { 'Cache-Control': 'private, no-store' } },
+      );
     return Response.json({
       files: await listWorkspaceFiles(context, workspaceId),
     });

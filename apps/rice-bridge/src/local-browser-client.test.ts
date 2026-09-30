@@ -254,4 +254,25 @@ describe('P22 real HTTP authority transport', () => {
       ),
     ).rejects.toThrow('LOCAL_BROWSER_AUTHORITY_UNAVAILABLE');
   });
+  it('transfers uploads above the legacy 2 MB cap using the platform file limit', async () => {
+    const bytes = Buffer.alloc(2_100_000, 65);
+    const client = await fixture(async (_req, res) => {
+      res.setHeader('content-type', 'application/octet-stream');
+      res.end(bytes);
+    });
+    const request = {
+      kind: 'take_input' as const,
+      workspaceId: randomUUID(),
+      controllerLeaseToken: randomUUID(),
+      operationId: randomUUID(),
+      operationLeaseToken: randomUUID(),
+      inputKind: 'upload' as const,
+    };
+    expect((await client.takeInput(request, 9_000_000)).equals(bytes)).toBe(
+      true,
+    );
+    await expect(client.takeInput(request, 9_000_001)).rejects.toThrow(
+      'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+    );
+  });
 });

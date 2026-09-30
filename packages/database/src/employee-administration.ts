@@ -144,7 +144,7 @@ export async function reviewEmployeePublication(
         '当前确切运行包缺少 24 小时内的成功试用，请到调试页完成试用。',
       );
     const [provider] =
-      await tx`select status from allrice_provider_status where provider='codex' and status='connected'
+      await tx`select status from allrice_provider_status where provider='codex' and subscription_slot=(select slot from allrice_codex_subscriptions where enabled) and status='connected'
       and checked_at >= clock_timestamp()-interval '120 seconds'`;
     if (
       !rapidIteration &&
