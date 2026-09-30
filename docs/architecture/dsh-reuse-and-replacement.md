@@ -416,3 +416,7 @@ WebUI 账本 `message-image-send` 记录三份原生文件及一个原生函数�
 验证：真实 Chromium/React 下阻塞上传及签名返回，检查文字/图片立即进入会话、确认和
 历史刷新过程无空白帧、图片比例稳定、原图预览可关闭、失败重试复用上传结果；覆盖
 桌面与手机宽度。缓存用例检查跨用户隔离、请求合并和离开会话后的 URL 回收。
+
+### `dsh-pi-ai-websocket-close-1006-v1`
+
+Run 917f3a15 exposed a pinned pi-ai classification gap: `WebSocket closed 1006` fell through to `PI_AI_ERROR`. The dependency patch maps that exact abnormal close to `TRANSPORT`, reusing DSH’s provider policy (at most two request retries) and existing assistant settlement checks. It does not retry authentication/policy failures, replay tool calls, or restart the whole prompt. After native recovery ends, Worker persists the original failure code as terminal and keeps existing results visible. Remove this patch when the pinned upstream includes equivalent classification.

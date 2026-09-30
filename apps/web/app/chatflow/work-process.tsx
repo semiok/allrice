@@ -192,11 +192,15 @@ export function WorkProcess({
           keepContentWhenOpen
           onToggle={() => setExpanded((value) => !value)}
           rowClassName={styles.processHeader}
+          titleClassName={styles.processTitle}
           collapsedContent={
             <>
               {timing ? (
                 <>
-                  <span className={reasoning.separator} aria-hidden />
+                  <span
+                    className={`${reasoning.separator} ${styles.processSeparator}`}
+                    aria-hidden
+                  />
                   <span
                     className={styles.processTiming}
                     aria-label="本轮运行时间"
@@ -207,8 +211,14 @@ export function WorkProcess({
               ) : null}
               {summary ? (
                 <>
-                  <span className={reasoning.separator} aria-hidden />
-                  <span className={reasoning.summary} title={summary}>
+                  <span
+                    className={`${reasoning.separator} ${styles.processSeparator}`}
+                    aria-hidden
+                  />
+                  <span
+                    className={`${reasoning.summary} ${styles.processSummary}`}
+                    title={summary}
+                  >
                     {summary}
                   </span>
                 </>
@@ -219,7 +229,11 @@ export function WorkProcess({
         <div className={styles.processFlow}>
           {parts.map(renderPart)}
           {traceStatus === 'failed' ? (
-            <button type="button" onClick={onRetry}>
+            <button
+              className={styles.nativeTraceRetry}
+              type="button"
+              onClick={onRetry}
+            >
               过程加载失败，点击重试
             </button>
           ) : null}
@@ -245,14 +259,17 @@ export function WorkProcess({
         keepContentWhenOpen
         rowClassName={`${reasoning.row} ${styles.processHeader}`}
         leadingClassName={reasoning.leading}
-        titleClassName={`${reasoning.title} ${microStatus ? styles.processStatus : ''}`}
+        titleClassName={`${reasoning.title} ${styles.processTitle} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}
         onToggle={() => setExpanded((value) => !value)}
         collapsedContent={
           <>
             {timing ? (
               <>
-                <span className={reasoning.separator} aria-hidden />
+                <span
+                  className={`${reasoning.separator} ${styles.processSeparator}`}
+                  aria-hidden
+                />
                 <span
                   className={styles.processTiming}
                   aria-label="本轮运行时间"
@@ -263,8 +280,14 @@ export function WorkProcess({
             ) : null}
             {summary ? (
               <>
-                <span className={reasoning.separator} aria-hidden />
-                <span className={reasoning.summary} title={summary}>
+                <span
+                  className={`${reasoning.separator} ${styles.processSeparator}`}
+                  aria-hidden
+                />
+                <span
+                  className={`${reasoning.summary} ${styles.processSummary}`}
+                  title={summary}
+                >
                   {summary}
                 </span>
               </>
@@ -356,6 +379,7 @@ function NativeStepsGroup({
         expandOnRowClick
         onToggle={() => setOpen((value) => !value)}
         rowClassName={styles.processHeader}
+        titleClassName={styles.processTitle}
       >
         <div className={styles.processDetails}>
           <WorkProcessSteps

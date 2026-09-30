@@ -57,6 +57,21 @@ function render(
   );
 }
 describe('historical transcript capability gating', () => {
+  it('retains the completed reply and explains a subsequent model disconnect', () => {
+    const html = render(false, [
+      {
+        ...messages[0]!,
+        status: 'failed',
+        errorCode: 'DSH_TRANSPORT',
+        content: { text: '已查到两项 CI 失败。' },
+      },
+    ]);
+    expect(html).toContain('已查到两项 CI 失败。');
+    expect(html).toContain('模型连接中断');
+    expect(html).toContain('任务没有整轮重跑');
+    expect(html).not.toContain('这次没有完成。');
+  });
+
   afterEach(() => vi.clearAllMocks());
 
   it.each(['completed', 'failed'] as const)(

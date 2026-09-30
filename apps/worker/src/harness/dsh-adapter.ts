@@ -1247,7 +1247,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
             typeof failure?.message === 'string'
               ? failure.message
               : 'DSH turn failed',
-            true,
+            // Native request recovery has already finished. A queue retry
+            // would replay the entire prompt and its completed tool calls.
+            false,
           );
         }
       }

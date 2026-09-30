@@ -38,6 +38,7 @@ async function runWire({
   probe = false,
   incomplete = false,
   stall = false,
+  failureMessage,
 } = {}) {
   const calls = [];
   const server = createServer((request, response) => {
@@ -74,6 +75,18 @@ async function runWire({
         return;
       }
       response.writeHead(200, { 'content-type': 'text/event-stream' });
+      if (failureMessage) {
+        response.end(
+          `data: ${JSON.stringify({
+            type: 'response.failed',
+            response: {
+              error: { message: failureMessage },
+            },
+          })}\n\n`,
+        );
+        return;
+      }
+
       for (const event of [
         {
           type: 'response.output_item.added',
@@ -283,6 +296,27 @@ async function runWire({
 describe.sequential(
   'pinned Codex output-bound wire evidence (offline only)',
   () => {
+    it.each([
+      ['WebSocket closed 1006', 'TRANSPORT'],
+      ['WebSocket closed 1006 synthetic-close', 'TRANSPORT'],
+      ['403 Forbidden', 'AUTH'],
+      ['400 invalid request', 'INVALID_REQUEST'],
+      ['WebSocket closed 1008', 'PI_AI_ERROR'],
+    ])(
+      'classifies %s through real pinned pi-ai and DSH without broad retries',
+      async (failureMessage, code) => {
+        const { calls, chunks } = await runWire({ failureMessage });
+        expect(calls).toHaveLength(1);
+        expect(chunks.at(-1)).toMatchObject({
+          type: 'finish',
+          reason: {
+            kind: 'error',
+            failure: { code },
+          },
+        });
+      },
+    );
+
     it('forwards DSH maxTokens to pi-ai but does not serialize a remote cap', async () => {
       const result = await runWire();
       expect(result.forwarded, JSON.stringify(result.chunks)).toHaveLength(1);

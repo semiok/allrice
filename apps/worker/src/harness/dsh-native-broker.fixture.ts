@@ -19,6 +19,8 @@ export async function nativeBrokerRoundtrip(input: {
   brokerArgs?: Record<string, unknown>;
   invalidArgs: Record<string, unknown>;
   invalidResultIncludes?: string;
+  /** Loopback-only transient provider failures after the first tool result. */
+  retryAfterTool?: number;
   inspectSchema?: (schema: Record<string, unknown>) => void;
   onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
@@ -33,7 +35,18 @@ export async function nativeBrokerRoundtrip(input: {
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.from(chunk));
       requests.push(JSON.parse(Buffer.concat(chunks).toString()));
-      const index = requests.length;
+      const requestIndex = requests.length;
+      const retries = input.retryAfterTool ?? 0;
+      if (requestIndex > 1 && requestIndex <= 1 + retries) {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            error: { message: '503 synthetic transient model failure' },
+          }),
+        );
+        return;
+      }
+      const index = requestIndex - (requestIndex > 1 ? retries : 0);
       if (index > 4) throw Error('synthetic provider call budget exceeded');
       const callsTool = index === 1 || index === 3;
       const common = {
@@ -124,10 +137,13 @@ export async function nativeBrokerRoundtrip(input: {
   });
   const session = `native-${randomUUID()}`;
   let completed = 0;
+  let nativeRetries = 0;
   client.subscribe((notice) => {
     const event = notice.params.event as { type?: string } | undefined;
     if (notice.method === 'session.event' && event?.type === 'turn/end')
       completed++;
+    if (notice.method === 'session.event' && event?.type === 'llm/retry')
+      nativeRetries++;
   });
   client.setRequestHandler(
     dshInboundToolHandler({
@@ -159,7 +175,9 @@ export async function nativeBrokerRoundtrip(input: {
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
     });
     await client.prompt(session, 'Invoke the selected native tool.');
-    await expect.poll(() => requests.length, { timeout: 15000 }).toBe(2);
+    await expect
+      .poll(() => requests.length, { timeout: 15000 })
+      .toBe(2 + (input.retryAfterTool ?? 0));
     await expect.poll(() => completed, { timeout: 15000 }).toBe(1);
     const tools = requests[0]!.tools as {
       function?: { name?: string; parameters?: Record<string, unknown> };
@@ -172,17 +190,24 @@ export async function nativeBrokerRoundtrip(input: {
         .parameters!,
     );
     expect(received).toHaveLength(1);
-    expect(JSON.stringify(requests[1])).toContain(
+    for (const request of requests.slice(1, 2 + (input.retryAfterTool ?? 0)))
+      expect(JSON.stringify(request)).toContain(
+        JSON.stringify(expectedModelContent).slice(1, -1),
+      );
+    expect(JSON.stringify(requests[1 + (input.retryAfterTool ?? 0)])).toContain(
       JSON.stringify(expectedModelContent).slice(1, -1),
     );
     await client.prompt(session, 'Reject invalid arguments before the Broker.');
-    await expect.poll(() => requests.length, { timeout: 15000 }).toBe(4);
+    await expect
+      .poll(() => requests.length, { timeout: 15000 })
+      .toBe(4 + (input.retryAfterTool ?? 0));
     await expect.poll(() => completed, { timeout: 15000 }).toBe(2);
     if (input.invalidResultIncludes)
-      expect(JSON.stringify(requests[3])).toContain(
-        input.invalidResultIncludes,
-      );
+      expect(
+        JSON.stringify(requests[3 + (input.retryAfterTool ?? 0)]),
+      ).toContain(input.invalidResultIncludes);
     expect(received).toHaveLength(1);
+    expect(nativeRetries).toBe(input.retryAfterTool ?? 0);
     expect(errors).toEqual([]);
   } finally {
     await client.close();

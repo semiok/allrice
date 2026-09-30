@@ -75,7 +75,7 @@ describe('Codex image transport', () => {
     });
     expect(request).toHaveBeenCalledTimes(1);
   });
-  it.each(['gpt-6-sol', 'gpt-6-luna'])(
+  it.each(['gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna'])(
     'forwards %s through image generation without substituting an old model',
     async (workModel) => {
       const request = vi.fn(async () => stream([output, completed]));

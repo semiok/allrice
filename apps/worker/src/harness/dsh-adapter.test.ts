@@ -139,6 +139,29 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it.each(['TRANSPORT', 'TIMEOUT', 'PI_AI_ERROR', 'AUTH'])(
+    'keeps terminal native %s failure without retrying the whole prompt',
+    async (code) => {
+      const events: HarnessEvent[] = [];
+      const adapter = createAdapter();
+      await expect(
+        adapter.execute(
+          executionInput({
+            prompt: `terminal-model-error:${code}`,
+            events,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: `DSH_${code}`, retryable: false });
+      expect(
+        events.filter((event) => event.type === 'tool.completed'),
+      ).toHaveLength(1);
+      expect(events.some((event) => event.type === 'assistant.completed')).toBe(
+        false,
+      );
+      expect(adapter.runtimeInventory()).toEqual([]);
+    },
+  );
+
   it.each([
     ['dns', '网页地址解析异常，未能确认公开网络地址。'],
     ['assistant', '没有可接收消息的助手，当前任务可直接继续。'],

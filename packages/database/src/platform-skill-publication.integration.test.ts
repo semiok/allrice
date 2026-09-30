@@ -292,7 +292,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     const original = await freezeSessionModelSnapshot(scope);
     // Existing employee definitions retain their historical model; new runs
     // inherit the current platform selection instead.
-    expect(original.model).toBe('gpt-6-luna');
+    expect(original.model).toBe('gpt-6.1-sol');
     expect(original.model).not.toBe(f.definition.modelPolicy.model);
     const legacy = {
       ...original,
@@ -304,7 +304,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     const repaired = await freezeSessionModelSnapshot(scope);
     expect(repaired).toMatchObject({
       provider: 'openai-codex',
-      model: 'gpt-6-luna',
+      model: 'gpt-6.1-sol',
       authMode: 'chatgpt_subscription',
       reasoningEffort: 'xhigh',
     });

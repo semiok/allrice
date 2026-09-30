@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { HandlerError } from '../../errors.js';
 import {
   AssistantRunConfigurationSchema,
   AssistantPriceSnapshotSchema,
@@ -186,7 +187,11 @@ export function productionAssistantController(input: {
                 checkpoints,
               });
           }
-        throw Error('assistant_recovery_required_no_replay');
+        throw new HandlerError(
+          'DSH_RECOVERY_REQUIRED',
+          '原执行记录尚不能安全恢复，任务没有自动重跑；请查看保留的内容与执行记录。',
+          false,
+        );
       }
       const [row] = await db<
         {
