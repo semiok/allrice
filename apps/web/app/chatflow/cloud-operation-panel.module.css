@@ -4,6 +4,64 @@
   margin: 16px 0;
   min-width: 0;
 }
+.feedbackError,
+.readFeedback {
+  margin: 6px 0;
+  font-size: 13px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.feedbackError {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  color: var(--dsw-alias-state-error-primary, #c24747);
+}
+.readFeedback {
+  color: var(--dsw-alias-label-secondary, #68717e);
+}
+.feedbackError .readRetry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #68717e);
+  font: inherit;
+  font-size: 13px;
+  line-height: 22px;
+  cursor: pointer;
+}
+.feedbackError .readRetry:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+.feedbackError .readRetry:focus-visible {
+  outline: 2px solid var(--dsw-alias-button-info-fill, #3b82f6);
+  outline-offset: 2px;
+}
+.feedbackError .readRetry:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.readRetrySpinner {
+  display: inline-flex;
+  animation: statusSpin 1s linear infinite;
+}
+@media (pointer: coarse) {
+  .feedbackError .readRetry {
+    min-height: 44px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .readRetrySpinner {
+    animation: none;
+  }
+}
 .card {
   container-type: inline-size;
   --cloud-accent: var(--employee-start, #3b82f6);

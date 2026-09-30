@@ -46,7 +46,7 @@ describe('Cloud/MCP approval presentation', () => {
       ['running', '执行中'],
       ['succeeded', '成功'],
       ['failed', '失败'],
-      ['unknown', '结果待核实'],
+      ['unknown', '结果待确认'],
       ['cancel_requested', '停止待确认'],
       ['dispatched', '待确认'],
     ] as const) {

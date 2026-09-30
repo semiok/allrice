@@ -1753,7 +1753,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         operation.snapshot.status = 'unknown';
         await card
           .locator('header')
-          .getByText('结果待核实', { exact: true })
+          .getByText('结果待确认', { exact: true })
           .waitFor();
         expect(
           await card
@@ -4481,6 +4481,91 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it('offers a bounded read retry only after a status read failure and preserves unknown outcomes', async () => {
+    const f = await fixture();
+    let reads = 0,
+      writes = 0,
+      failing = true,
+      hold = false;
+    let finishRead: (() => Promise<void>) | undefined;
+    const unknown = {
+      nativeCallId: 'missing-result',
+      createdAt: now,
+      snapshot: {
+        status: 'unknown',
+        binding: {
+          action: 'cloud.mcp.call',
+          attempt: { operationId: id(9890) },
+        },
+      },
+      enabled: true,
+      mcpAuthorization: { available: true, reason: 'available' },
+      proposal: {
+        kind: 'mcp',
+        endpoint: 'https://example.test/mcp',
+        tool: 'mcp__app__list_pull_requests',
+        arguments: {},
+        risk: 'read',
+      },
+      approval: null,
+      result: null,
+    };
+    try {
+      await f.page.route(
+        '**/api/v1/runtime/cloud-operations?**',
+        async (route) => {
+          if (route.request().method() !== 'GET') {
+            writes++;
+            return route.abort();
+          }
+          reads++;
+          if (failing) return route.fulfill({ status: 503, json: {} });
+          const finish = () =>
+            route.fulfill({ json: { operations: [unknown] } });
+          if (hold) {
+            await new Promise<void>((resolve) => {
+              finishRead = async () => {
+                await finish();
+                resolve();
+              };
+            });
+          } else await finish();
+        },
+      );
+      await f.page.reload();
+      const retry = f.page.getByRole('button', { name: '重试读取操作状态' });
+      await retry.waitFor();
+      const firstReads = reads;
+      expect(
+        await retry.evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('13px');
+      await retry.click();
+      await expect.poll(() => reads).toBe(firstReads + 1);
+      await expect.poll(() => retry.isEnabled()).toBe(true);
+      expect(
+        await f.page.getByText('操作状态读取失败', { exact: true }).isVisible(),
+      ).toBe(true);
+      failing = false;
+      hold = true;
+      await retry.click();
+      await expect.poll(() => Boolean(finishRead)).toBe(true);
+      expect(await retry.isDisabled()).toBe(true);
+      expect(await retry.innerText()).toBe('读取中…');
+      await finishRead!();
+      await f.page
+        .getByText('已读取最新状态，结果仍待确认。', { exact: true })
+        .waitFor();
+      expect(await retry.count()).toBe(0);
+      expect(
+        await f.page.getByRole('button', { name: '刷新操作状态' }).count(),
+      ).toBe(0);
+      expect(unknown.snapshot.status).toBe('unknown');
+      expect(writes).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('ticks elapsed time every second between server samples, including waits, and settles to the final receipt', async () => {
     const f = await fixture({ running: true });
     try {
@@ -4503,7 +4588,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       const timing = f.page.getByLabel('本轮运行时间', { exact: true });
       await timing.waitFor();
-      expect(await timing.innerText()).toBe('用时 17 秒');
+      expect(await timing.innerText()).toBe('用时 17秒');
       const motion = () =>
         f.page.evaluate(() => {
           const reply = document.querySelector(
@@ -4536,13 +4621,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.emulateMedia({ reducedMotion: 'no-preference' });
       for (const seconds of [18, 19, 20]) {
         await f.page.clock.runFor(1000);
-        await expect.poll(() => timing.innerText()).toBe(`用时 ${seconds} 秒`);
+        await expect.poll(() => timing.innerText()).toBe(`用时 ${seconds}秒`);
       }
       // Server updates do not reset the display interval or make it run backwards.
       f.state.runTimings[0]!.timing.phase = 'waiting';
       f.state.runTimings[0]!.timing.wallMs = 19000;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
+      await expect.poll(() => timing.innerText()).toBe('用时 22秒');
       // The local clock can tick before the server phase receipt commits.
       await expect
         .poll(async () => (await motion()).map((item) => item.name))
@@ -4551,15 +4636,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.runTimings[0]!.timing.phase = 'terminal';
       f.state.runTimings[0]!.timing.wallMs = 22500;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('用时 22 秒');
+      await expect.poll(() => timing.innerText()).toBe('用时 22秒');
       await f.page.clock.runFor(5000);
-      expect(await timing.innerText()).toBe('用时 22 秒');
+      expect(await timing.innerText()).toBe('用时 22秒');
       f.state.runTimings[0]!.timing.phase = 'queued';
       f.state.runTimings[0]!.timing.wallMs = 0;
       await f.page.reload();
       await timing.waitFor();
       await f.page.clock.runFor(3000);
-      expect(await timing.innerText()).toBe('用时 0 秒');
+      expect(await timing.innerText()).toBe('用时 0秒');
     } finally {
       await f.close();
     }
@@ -4594,7 +4679,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await timing.waitFor();
         expect(await process.getByRole('button').count()).toBe(0);
         expect(await process.locator('[aria-expanded]').count()).toBe(0);
-        expect(await timing.innerText()).toContain('用时 22 秒');
+        expect(await timing.innerText()).toContain('用时 22秒');
         expect(await process.innerText()).not.toContain('累计等待');
         expect(await timing.count()).toBe(1);
         expect(await process.innerText()).not.toContain('模型请求');
@@ -4602,8 +4687,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.runTimings[0]!.timing.wallMs = 2412460;
         await expect
           .poll(() => timing.innerText(), { timeout: 5000 })
-          .toContain('用时 40 分 12 秒');
-        expect(await timing.innerText()).toContain('用时 40 分 12 秒');
+          .toContain('用时 40分 12秒');
+        expect(await timing.innerText()).toContain('用时 40分 12秒');
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -4624,7 +4709,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await timing.waitFor();
         expect(await process.getByRole('button').count()).toBe(0);
         expect(await process.locator('[aria-expanded]').count()).toBe(0);
-        expect(await timing.innerText()).toContain('用时 40 分 12 秒');
+        expect(await timing.innerText()).toContain('用时 40分 12秒');
         f.state.runTimings = [];
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
       } finally {

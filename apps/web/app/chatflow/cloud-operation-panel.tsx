@@ -8,6 +8,7 @@ import {
   IconCopyOutlineRegular,
   IconFlatListOutlineRegular,
   IconLoadingOutlineRegular,
+  IconRefreshOutlineRegular,
   IconSlidersTwoOutlineRegular,
   IconWarningOutlineRegular,
   Tooltip,
@@ -99,7 +100,7 @@ export function cloudOperationCompactStatus(op: CloudOperationView) {
     case 'cancel_requested':
       return '停止待确认';
     case 'unknown':
-      return '结果待核实';
+      return '结果待确认';
     case 'canceled':
       return '已取消';
     case 'partial':
@@ -595,12 +596,16 @@ export function CloudOperationPanel({
   }) => ReactNode;
 }) {
   const [operations, setOperations] = useState<CloudOperationView[]>([]),
-    [error, setError] = useState(''),
+    [loadError, setLoadError] = useState(''),
+    [actionError, setActionError] = useState(''),
+    [retrying, setRetrying] = useState(false),
+    [readUpdated, setReadUpdated] = useState(false),
     [busy, setBusy] = useState(false),
     [pendingDecision, setPendingDecision] = useState<Decision | null>(null),
     [cancellationRunId, setCancellationRunId] = useState<string | null>(null),
     [revision, setRevision] = useState(0);
   const responses = useRef(new Map<string, unknown>());
+  const manualRetry = useRef(false);
   const api = `/api/v1/runtime/cloud-operations?workspaceId=${encodeURIComponent(workspaceId)}&runId=${encodeURIComponent(runId)}`,
     headerKey = JSON.stringify(tenantHeaders);
   const active = cloudOperationsNeedPolling(runActive, operations);
@@ -615,17 +620,22 @@ export function CloudOperationPanel({
           cache: 'no-store',
           signal: controller.signal,
         });
-        if (!response.ok) throw Error('云端操作状态读取失败，请刷新重试。');
+        if (!response.ok) throw Error('operation_status_unavailable');
         const data = (await response.json()) as {
           operations: CloudOperationView[];
         };
         if (!controller.signal.aborted) {
           setOperations(data.operations);
-          setError('');
+          setLoadError('');
+          if (manualRetry.current) setReadUpdated(true);
         }
-      } catch (error) {
-        if (!controller.signal.aborted)
-          setError(error instanceof Error ? error.message : '读取失败');
+      } catch {
+        if (!controller.signal.aborted) setLoadError('操作状态读取失败');
+      } finally {
+        if (!controller.signal.aborted && manualRetry.current) {
+          manualRetry.current = false;
+          setRetrying(false);
+        }
       }
       if (active && !controller.signal.aborted)
         timer = setTimeout(() => void load(), 1500);
@@ -641,7 +651,7 @@ export function CloudOperationPanel({
     if (busy || (decision !== 'cancel' && !request)) return;
     setBusy(true);
     setPendingDecision(decision);
-    setError('');
+    setActionError('');
     try {
       let body: unknown = { runId, action: 'cancel' };
       if (request && decision !== 'cancel') {
@@ -684,7 +694,7 @@ export function CloudOperationPanel({
       if (decision === 'cancel') setCancellationRunId(runId);
       setRevision((value) => value + 1);
     } catch (error) {
-      setError(
+      setActionError(
         error instanceof Error ? error.message : '提交失败，请核实当前状态。',
       );
       setRevision((value) => value + 1);
@@ -693,28 +703,50 @@ export function CloudOperationPanel({
       setPendingDecision(null);
     }
   }
+  const readFeedback = readUpdated
+    ? operations.some((op) => op.snapshot.status === 'unknown')
+      ? '已读取最新状态，结果仍待确认。'
+      : '操作状态已更新。'
+    : '';
   const feedback = (
     <>
-      {error && (
-        <p role="alert">
-          {error}{' '}
+      {actionError && (
+        <p className={styles.feedbackError} role="alert">
+          {actionError}
+        </p>
+      )}
+      {loadError && (
+        <p className={styles.feedbackError} role="alert">
+          <span>{loadError}</span>
           <button
+            className={styles.readRetry}
             type="button"
-            onClick={() => setRevision((value) => value + 1)}
+            aria-label="重试读取操作状态"
+            aria-busy={retrying}
+            disabled={retrying}
+            onClick={() => {
+              manualRetry.current = true;
+              setRetrying(true);
+              setReadUpdated(false);
+              setRevision((value) => value + 1);
+            }}
           >
-            刷新状态
+            {retrying ? (
+              <span className={styles.readRetrySpinner} aria-hidden="true">
+                <IconLoadingOutlineRegular size={14} />
+              </span>
+            ) : (
+              <IconRefreshOutlineRegular size={14} />
+            )}
+            {retrying ? '读取中…' : '重试'}
           </button>
         </p>
       )}
-      {!runActive &&
-        operations.some((op) => op.snapshot.status === 'unknown') && (
-          <button
-            type="button"
-            onClick={() => setRevision((value) => value + 1)}
-          >
-            刷新操作状态
-          </button>
-        )}
+      {readFeedback && !loadError && (
+        <p className={styles.readFeedback} role="status">
+          {readFeedback}
+        </p>
+      )}
     </>
   );
   const renderOperation = (operationId: string) => {
@@ -737,7 +769,8 @@ export function CloudOperationPanel({
     ) : null;
   };
   if (children) return children({ operations, renderOperation, feedback });
-  if (!operations.length && !error) return null;
+  if (!operations.length && !loadError && !actionError && !readFeedback)
+    return null;
   return (
     <section className={styles.root} aria-label="云端计算与 MCP 操作审批">
       {feedback}
