@@ -12,7 +12,7 @@ const platformHome = resolve(
   process.env.ALLRICE_DSH_PLATFORM_HOME ?? '.local/dsh-platform',
 );
 
-const model = process.env.ALLRICE_DSH_CODEX_MODEL ?? 'gpt-6-luna';
+const model = process.env.ALLRICE_DSH_CODEX_MODEL ?? 'gpt-6.1-sol';
 const sessionId = `dsh-${randomUUID()}`;
 const client = new DshProtocolClient({
   command: process.execPath,

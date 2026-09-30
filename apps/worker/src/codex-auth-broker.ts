@@ -45,11 +45,11 @@ function runtimeEnvironment(root: string, slot: 1 | 2) {
     DSH_MODEL:
       process.env.ALLRICE_DSH_CODEX_MODEL ??
       process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-6-luna',
+      'gpt-6.1-sol',
     DSH_CODEX_MODEL:
       process.env.ALLRICE_DSH_CODEX_MODEL ??
       process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-6-luna',
+      'gpt-6.1-sol',
     DSH_OPENAI_COMPATIBLE_MODEL: 'allrice-unused',
     OPENAI_COMPATIBLE_BASE_URL: 'https://unused.invalid/v1',
     DSH_REASONING_EFFORT: 'max',
@@ -81,7 +81,7 @@ async function createAuthorizationClient(root: string, slot: 1 | 2) {
     model:
       process.env.ALLRICE_DSH_CODEX_MODEL ??
       process.env.ALLRICE_CODEX_MODEL ??
-      'gpt-6-luna',
+      'gpt-6.1-sol',
     maxTokens: 256,
     expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
   });

@@ -291,7 +291,7 @@ export class DshRuntimePool {
       DSH_CODEX_MODEL:
         input.snapshot.route === 'openai-codex'
           ? input.snapshot.model
-          : 'gpt-6-luna',
+          : 'gpt-6.1-sol',
       DSH_OPENAI_COMPATIBLE_MODEL:
         input.snapshot.route === 'openai-compatible'
           ? input.snapshot.model

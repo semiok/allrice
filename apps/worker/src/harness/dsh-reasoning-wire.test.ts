@@ -6,9 +6,13 @@ import { resolve, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 
 describe('actual DSH provider reasoning configuration (offline)', () => {
-  it.each(['low', 'medium', 'high'])(
-    'keeps Codex %s reasoning and rejects retired Gemini',
-    async (effort) => {
+  it.each(
+    ['gpt-5.6-luna', 'gpt-6.1-sol'].flatMap((model) =>
+      ['low', 'medium', 'high', 'xhigh'].map((effort) => ({ model, effort })),
+    ),
+  )(
+    'keeps Codex $model $effort reasoning and rejects retired Gemini',
+    async ({ model, effort }) => {
       const root = await mkdtemp(join(tmpdir(), 'allrice-reasoning-wire-'));
       try {
         const { stdout } = await promisify(execFile)(
@@ -30,7 +34,7 @@ describe('actual DSH provider reasoning configuration (offline)', () => {
               ),
               DSH_GEMINI_MODEL: 'gemini-3.8-flash',
               DSH_GEMINI_REASONING_EFFORT: effort,
-              DSH_CODEX_MODEL: 'gpt-5.6-luna',
+              DSH_CODEX_MODEL: model,
               DSH_CODEX_REASONING_EFFORT: effort,
               GEMINI_API_KEY: 'synthetic-offline-key',
               HTTP_PROXY: 'http://127.0.0.1:1',
