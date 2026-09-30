@@ -1261,6 +1261,7 @@ integration(
             ...job.workflowLease,
             type,
             payload: {
+              attempt: job.execution.job.attempt,
               source: 'dsh',
               threadId,
               turnId,
@@ -1345,7 +1346,13 @@ integration(
           {
             ...job.workflowLease,
             type: 'turn.failed',
-            payload: { source: 'dsh', threadId, turnId, generation: 1 },
+            payload: {
+              attempt: job.execution.job.attempt,
+              source: 'dsh',
+              threadId,
+              turnId,
+              generation: 1,
+            },
           },
         ]);
         noNativeAccess();

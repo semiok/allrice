@@ -56,6 +56,23 @@ function failureCode(value) {
   return diagnosticCodes.has(code) ? code : 'UNKNOWN';
 }
 
+// Text/reasoning framing alone is not output. Keep tool identities, full end
+// blocks and malformed/unknown content conservative, even without deltas.
+function hasModelOutput(chunk) {
+  if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')
+    return typeof chunk.text !== 'string' || chunk.text.length > 0;
+  if (chunk.type === 'tool-call-delta') return true;
+  if (chunk.type === 'block-start')
+    return !['text', 'reasoning'].includes(chunk.blockType);
+  if (chunk.type === 'block-end') {
+    const block = chunk.block;
+    return ['text', 'reasoning'].includes(block?.type)
+      ? typeof block.text !== 'string' || block.text.length > 0
+      : true;
+  }
+  return false;
+}
+
 // Match the existing AssistantResult field bounds; never truncate serialized
 // JSON or forward a child's last tool call/reasoning as its governed result.
 function settlementContent(childId, result) {
@@ -538,14 +555,7 @@ export function createGovernedAssistantNativeRuntime(
               stopKind,
             );
         }
-        if (
-          chunk.type === 'text-delta' ||
-          chunk.type === 'reasoning-delta' ||
-          chunk.type === 'tool-call-delta' ||
-          chunk.type === 'block-start' ||
-          chunk.type === 'block-end'
-        )
-          observedOutput = true;
+        if (hasModelOutput(chunk)) observedOutput = true;
         yield chunk;
       }
     } catch (error) {

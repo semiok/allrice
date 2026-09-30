@@ -1,6 +1,35 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { AssistantFailureDiagnosticsSchema } from './assistant-diagnostics.ts';
+
+/** Presentation only: never change retry, authorization, usage or Run status. */
+export function nativeExecutionDiagnosticFailureText(
+  code: string | null | undefined,
+  payload: unknown,
+  message: unknown,
+): string | null {
+  if (code !== 'DSH_UNKNOWN' || message !== 'assistant_model_unknown_no_replay')
+    return null;
+  const parsed = z
+    .object({
+      threadId: z.string().regex(/^dsh-[a-zA-Z0-9_.-]{1,196}$/),
+      assistantDiagnostics: AssistantFailureDiagnosticsSchema,
+    })
+    .safeParse(payload);
+  if (!parsed.success || parsed.data.assistantDiagnostics.truncated)
+    return null;
+  const failure = parsed.data.assistantDiagnostics.failures.findLast(
+    (item) => item.nativeSessionId === parsed.data.threadId,
+  );
+  if (
+    !failure ||
+    !['finish', 'stream'].includes(failure.phase) ||
+    failure.stopKind !== 'error'
+  )
+    return null;
+  return nativeExecutionFailureText(`DSH_${failure.code}`);
+}
 
 /** Fixed native failure copy; caller may retain a complete reply alongside it. */
 export function nativeExecutionFailureText(

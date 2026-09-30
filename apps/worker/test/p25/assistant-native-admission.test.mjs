@@ -87,6 +87,74 @@ function fixture(
 }
 
 describe('governed native model admission recovery', () => {
+  it.each(['text', 'reasoning'])(
+    'lets native retry an empty %s block without fabricating usage',
+    async (blockType) => {
+      const f = fixture(async () => ({
+        settled: true,
+        tokenUsageObservational: true,
+      }));
+      await f.prepare();
+      await f.execute(
+        { inputTokens: 0, outputTokens: 0 },
+        false,
+        { kind: 'error', failure: { code: 'TRANSPORT' } },
+        [
+          { type: 'block-start', index: 0, blockType },
+          { type: `${blockType}-delta`, index: 0, text: '' },
+          { type: 'block-end', index: 0, block: { type: blockType, text: '' } },
+        ],
+      );
+      await expect(f.prepare()).resolves.toEqual({ maxTokens: 3754 });
+      await f.execute({ inputTokens: 21, outputTokens: 7 });
+      const settled = f.bridge.mock.calls.filter(
+        ([method]) => method === 'model-settle',
+      );
+      expect(settled).toHaveLength(2);
+      expect(settled[0][1]).not.toHaveProperty('inputTokens');
+      expect(settled[0][1]).not.toHaveProperty('outputTokens');
+      expect(settled[0][1].callId).not.toBe(settled[1][1].callId);
+    },
+  );
+
+  it.each([
+    [{ type: 'reasoning-delta', text: 'partial thought' }],
+    [{ type: 'block-start', index: 0, blockType: 'tool-call' }],
+    [
+      {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'text', text: 'partial reply' },
+      },
+    ],
+    [
+      {
+        type: 'block-end',
+        index: 0,
+        block: { type: 'tool-call', id: 'call', name: 'write', arguments: {} },
+      },
+    ],
+    [{ type: 'block-start', index: 0, blockType: 'unknown' }],
+  ])('keeps actual or ambiguous output unreplayable (%j)', async (chunk) => {
+    const f = fixture(async () => ({
+      settled: true,
+      tokenUsageObservational: true,
+    }));
+    await f.prepare();
+    await f.execute(
+      undefined,
+      false,
+      { kind: 'error', failure: { code: 'TRANSPORT' } },
+      [chunk],
+    );
+    await expect(f.prepare()).rejects.toThrow(
+      'assistant_model_unknown_no_replay',
+    );
+    expect(
+      f.bridge.mock.calls.filter(([method]) => method === 'model-dispatch'),
+    ).toHaveLength(1);
+  });
+
   it('admits native compaction without agent/request and settles it before the next ordinary model call', async () => {
     const f = fixture();
     await f.execute(

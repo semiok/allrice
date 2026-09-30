@@ -9,3 +9,21 @@ After DSH emits a terminal turn failure, Worker preserves its code and ends that
 The transcript explains model disconnection, model timeout or unsafe recovery. A complete reply already delivered before failure remains visible with the failure explanation. If there is no complete reply, the saved message contains the explanation and points to the existing work-process records; no result is invented from tool content.
 
 Validation uses real pinned pi-ai/DSH against synthetic loopback responses, native retries after an MCP result, terminal adapter failures, isolated PostgreSQL receipts and transcript rendering. It verifies two native retries, one completed tool invocation, original terminal codes, preserved complete output and no queue retry. Public Dev verification inspects the original run read-only and tests the new presentation through browser-local response fixtures, without executing its historical GitHub task.
+
+Run `4123cf6f` completed four GitHub reads, then received an empty reasoning
+`block-start`, synthetic zero usage and `TRANSPORT` / `WebSocket closed 1006`.
+The framing marker incorrectly counted as output and blocked the native retry
+with `assistant_model_unknown_no_replay`.
+
+Empty text/reasoning framing and empty deltas now leave that call eligible for
+DSH's existing bounded retry after confirmed observational subscription
+settlement. Nonempty content, tool identities, full nonempty end blocks,
+unknown content types and missing settlement acknowledgements keep the existing
+guard. Unknown usage stays unknown and every retry gets a distinct call ID.
+
+For that exact masked error, the saved message and transcript can explain the
+latest owned root's structured diagnostic. This projection never changes error
+codes, Run state, accounting or replay permission. New saved messages require
+the diagnosis's current attempt; historical transcript display uses recorded
+events without rewriting history. Child, malformed, truncated and unrelated
+diagnoses are ignored. Complete replies and tool results remain visible.

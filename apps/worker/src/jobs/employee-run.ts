@@ -1555,6 +1555,7 @@ export async function executeEmployeeRun({
           threadId: runtime.threadId,
           turnId: runtime.activeTurnId,
           generation: runtime.generation,
+          attempt: execution.job.attempt,
           ...(assistantDiagnostics?.failures.length
             ? { assistantDiagnostics }
             : {}),
