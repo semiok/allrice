@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { loginDestination } from '../../lib/portal/login-destination';
 
 export function LoginForm(props: {
@@ -9,9 +9,13 @@ export function LoginForm(props: {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [pending, setPending] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => setReady(true), []);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!ready || pending) return;
     setPending(true);
     setError('');
     const data = new FormData(event.currentTarget);
@@ -53,7 +57,7 @@ export function LoginForm(props: {
   }
 
   return (
-    <form onSubmit={submit} className="auth-form">
+    <form method="post" onSubmit={submit} className="auth-form">
       <label>
         {props.bootstrap?.homePath === '/runtime-console'
           ? '管理员账号'
@@ -102,8 +106,12 @@ export function LoginForm(props: {
         </span>
       </label>
       {error ? <p role="alert">{error}</p> : null}
-      <button type="submit" disabled={pending} className="auth-submit">
-        {pending ? '登录中…' : '登录'}
+      <button
+        type="submit"
+        disabled={!ready || pending}
+        className="auth-submit"
+      >
+        {!ready ? '准备登录…' : pending ? '登录中…' : '登录'}
         {!pending && (
           <svg
             width="18"

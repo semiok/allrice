@@ -5425,7 +5425,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const f = await fixture({ artifacts: true, width });
       try {
         const path = `/api/v1/files/${artifact(10).object.id}/download`;
-        f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[原始来源](https://example.org/source)`;
+        f.state.reply = `[下载报告](https://allrice.example${path}?name=wrong)\n\n[下载 report-10.md](/api/v1/files/broken-id?name=wrong)\n\n[原始来源](https://example.org/source)`;
         await f.page.reload();
         const link = f.page.getByRole('link', {
           name: '下载报告',
@@ -5434,6 +5434,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await expect
           .poll(() => link.getAttribute('href'))
           .toBe(`${origin}${path}?name=report-10.md`);
+        const repaired = f.page.getByRole('link', {
+          name: '下载 report-10.md',
+          exact: true,
+        });
+        expect(await repaired.getAttribute('href')).toBe(
+          `${origin}${path}?name=report-10.md`,
+        );
         // Native Markdown opens HTTP links without navigating away from the chat.
         expect(await link.getAttribute('target')).toBe('_blank');
         expect(await link.getAttribute('rel')).toBe('noopener noreferrer');
@@ -5475,6 +5482,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await expect
           .poll(() => link.getAttribute('href'))
           .toBe(`https://allrice.example${path}?name=wrong`);
+        expect(await repaired.count()).toBe(0);
       } finally {
         await f.close();
       }

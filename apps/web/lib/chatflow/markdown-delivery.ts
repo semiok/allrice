@@ -5,6 +5,14 @@ import { artifactDownloadLink } from './artifact-download-link';
 
 type RootContent = ReturnType<typeof fromMarkdown>['children'][number];
 
+function linkLabel(node: RootContent): string {
+  if ('children' in node)
+    return node.children
+      .map((child) => linkLabel(child as RootContent))
+      .join('');
+  return 'value' in node && typeof node.value === 'string' ? node.value : '';
+}
+
 /** Only the settled document needs SaaS URL adaptation. Streaming text goes
  * directly to DSH's incremental parser, without a second whole-text parse.
  */
@@ -38,7 +46,11 @@ export function markdownDeliveryText(
       return;
     }
     if (origin && (node.type === 'link' || node.type === 'definition')) {
-      const resolved = artifactDownloadLink(node.url, artifacts);
+      const resolved = artifactDownloadLink(
+        node.url,
+        artifacts,
+        node.type === 'link' ? linkLabel(node) : undefined,
+      );
       if (
         resolved?.startsWith('/api/v1/files/') &&
         artifacts.some((a) =>
