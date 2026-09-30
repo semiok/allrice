@@ -103,6 +103,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-session-references.mjs",
       "reason": "Adapt server-authorized frozen Allrice message text to the native SessionReferenceResolver. Use an isolated query port and native pre-step durable context; no runtime journal discovery, new tools or additional model loop. Platform ACL, input idempotency, visibility and queued-start rechecks remain authoritative."
+    },
+    {
+      "id": "dsh-pi-ai-websocket-close-1006-v1",
+      "issue": "Run 917f3a15",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "compatibility-fix",
+      "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
+      "reason": "Classify the exact pi-ai abnormal WebSocket close 1006 as TRANSPORT so existing bounded native request retries can continue from saved tool results. Other unknown errors, auth and policy failures remain nonretryable. No whole-turn replay or new retry loop."
     }
   ]
 }

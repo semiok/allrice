@@ -282,6 +282,31 @@ lines.on('line', (line) => {
     notify('session.status', { sessionId, status: 'idle' });
     return;
   }
+  if (prompt.includes('terminal-model-error:')) {
+    const code = prompt.match(/terminal-model-error:([A-Z_]+)/)[1];
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 0,
+      callId: 'read-once',
+      name: 'read',
+      arguments: {},
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 0,
+      callId: 'read-once',
+      message: { toolCallId: 'read-once', content: [] },
+    });
+    event(sessionId, 'turn/end', {
+      turn,
+      reason: {
+        kind: 'error',
+        error: { code, message: 'synthetic model failure' },
+      },
+    });
+    notify('session.status', { sessionId, status: 'idle' });
+    return;
+  }
   if (prompt.includes('crash after acknowledgement')) {
     event(sessionId, 'assistant/chunk', {
       turn,

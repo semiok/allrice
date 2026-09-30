@@ -34,6 +34,68 @@ suite(
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     });
     afterEach(() => vi.unstubAllEnvs());
+    it('settles a model disconnect once and retains completed output and tool evidence', async () => {
+      const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
+      try {
+        const task = await f.prepareOrdinaryTask(
+          'Synthetic disconnect; no model call.',
+        );
+        const [run] =
+          await f.db`select assistant_message_id from allrice_employee_runs where run_id=${task.runId}`;
+        await appendJobEvent({
+          ...task.workflowLease,
+          type: 'tool.completed',
+          payload: {
+            name: 'cloud.mcp.call',
+            toolCallId: 'read-once',
+            attempt: 1,
+            summary: '已读取 CI 状态',
+          },
+        });
+        await appendJobEvent({
+          ...task.workflowLease,
+          type: 'assistant.text.completed',
+          payload: {
+            text: '已查到两项 CI 失败。',
+            messageId: run!.assistant_message_id,
+            attempt: 1,
+            nativePayload: { interrupted: false, contentTypes: ['text'] },
+          },
+        });
+        expect(
+          await failJob({
+            ...task.workflowLease,
+            code: 'DSH_TRANSPORT',
+            message: 'Synthetic model disconnect',
+            retryable: false,
+          }),
+        ).toEqual({ retrying: false });
+        const [job] =
+          await f.db`select status,attempt,last_error_code from allrice_jobs where run_id=${task.runId}`;
+        expect(job).toMatchObject({
+          status: 'failed',
+          attempt: 1,
+          last_error_code: 'DSH_TRANSPORT',
+        });
+        const [message] =
+          await f.db`select content,status,error_code from allrice_messages where id=${run!.assistant_message_id}`;
+        expect(message).toMatchObject({
+          status: 'failed',
+          error_code: 'DSH_TRANSPORT',
+          content: { text: '已查到两项 CI 失败。' },
+        });
+        const events =
+          await f.db`select event_type from allrice_run_events where run_id=${task.runId}`;
+        expect(
+          events.filter((event) => event.event_type === 'tool.completed'),
+        ).toHaveLength(1);
+        expect(
+          events.some((event) => event.event_type === 'run.retrying'),
+        ).toBe(false);
+      } finally {
+        await f.close();
+      }
+    });
     it.each([
       'current',
       'old-attempt',
