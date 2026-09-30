@@ -1753,7 +1753,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         operation.snapshot.status = 'unknown';
         await card
           .locator('header')
-          .getByText('结果待核实', { exact: true })
+          .getByText('结果待确认', { exact: true })
           .waitFor();
         expect(
           await card
