@@ -25,6 +25,7 @@ const limits = z
   .strict();
 export const CloudNativeArgumentsSchema = z
   .object({
+    language: z.enum(['javascript', 'python']).optional(),
     script: z
       .string()
       .min(1)
@@ -72,7 +73,7 @@ export const CloudNativeArgumentsSchema = z
                       char.charCodeAt(0) < 32 || char === '/' || char === '\\',
                   ),
               ),
-            format: z.enum(['json', 'csv', 'txt']),
+            format: z.enum(['json', 'csv', 'txt', 'png']),
           })
           .strict(),
       )
@@ -87,6 +88,23 @@ export const CloudNativeArgumentsSchema = z
         code: 'custom',
         message: 'Exactly one of script or frozenScript is required',
       });
+    if (value.language !== undefined && value.frozenScript !== undefined)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Frozen scripts retain their Node runtime',
+      });
+    for (const output of value.outputs ?? []) {
+      if (
+        output.format === 'png' &&
+        (value.language !== 'python' ||
+          !output.path.toLowerCase().endsWith('.png') ||
+          !output.fileName.toLowerCase().endsWith('.png'))
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'PNG requires Python and .png names',
+        });
+    }
     for (const files of [value.inputs ?? [], value.outputs ?? []]) {
       const paths = files.map((file) => file.path);
       if (
@@ -108,7 +126,7 @@ export const cloudNativeTools = [
     canonicalName: 'cloud.process.execute',
     wireName: 'cloud_process_execute',
     description:
-      'Propose and await exact approval to run a Node 22 script in a no-network SaaS gVisor sandbox. Supply exactly one of script or frozenScript. For a frozen Skill task prefer frozenScript:{skill,path}: the server resolves exact bytes from this Run, do not copy/rewrite the script. Only explicitly selected uploaded object copies are inputs; no Bridge or host access. Approval binds resolved exact script, objects/checksums, outputs and limits. A proposal is not execution success.',
+      'Run an exact approved script in the existing no-network SaaS gVisor sandbox. Omit language to retain Node 22; language:"python" selects fixed Python 3.11, Matplotlib/Agg, pandas, openpyxl, Pillow and Noto CJK fonts for Chinese charts. Read only explicitly selected input/ CSV/XLSX copies, treat missing/nonnumeric values explicitly, and save actual output/ PNG bytes with format:"png" and .png path/fileName. The trusted platform decoder validates PNG before returning an immutable objectId/checksum/versionId for native preview/download or embedding through the same Office Skill. Supply exactly one of inline script or frozenScript; frozenScript:{skill,path} retains the original Run-frozen Node bytes. No Bridge, host files or network access. Approval binds exact language/script, objects/checksums, outputs and limits. A proposal is not execution success.',
     timeoutMs: 180000,
     isConcurrencySafe: false,
     validateArguments(args) {
@@ -116,10 +134,16 @@ export const cloudNativeTools = [
       return args;
     },
     parameters: {
+      language: {
+        type: 'string',
+        enum: ['javascript', 'python'],
+        description:
+          'Optional runtime for inline script. Omit to preserve Node; use python for CJK charts. Frozen script references stay Node.',
+      },
       script: {
         type: 'string',
         description:
-          'Inline JavaScript ES module, at most 100000 characters. Omit when using frozenScript.',
+          'Inline JavaScript ES module or Python selected by language, at most 100000 characters. Read input/ copies; write declared files beneath output/. Omit when using frozenScript.',
       },
       frozenScript: {
         type: 'object',
@@ -167,7 +191,7 @@ export const cloudNativeTools = [
             format: {
               type: 'string',
               required: true,
-              enum: ['json', 'csv', 'txt'],
+              enum: ['json', 'csv', 'txt', 'png'],
             },
           },
         },

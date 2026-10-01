@@ -44,6 +44,7 @@ export type CloudOperationView = {
   proposal:
     | {
         kind: 'cloud';
+        language?: CloudCommand['arguments']['language'];
         script: string;
         inputs: CloudCommand['arguments']['inputs'];
         outputs: CloudCommand['arguments']['outputs'];
@@ -228,6 +229,9 @@ export async function listCloudRuntimeOperations(
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),
         proposal: {
           kind: 'cloud',
+          ...(payload.arguments.language
+            ? { language: payload.arguments.language }
+            : {}),
           script: payload.arguments.script,
           inputs: payload.arguments.inputs,
           outputs: payload.arguments.outputs,

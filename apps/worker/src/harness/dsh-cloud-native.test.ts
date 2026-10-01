@@ -23,3 +23,23 @@ it('P15 cloud tool uses actual DSH native JSON-RPC, preserves structured argumen
     invalidArgs: { script: 'not executed', limits: { timeoutMs: 60001 } },
   });
 }, 45000);
+
+it('Python PNG declarations use the same DSH native broker and reject invalid binary outputs before execution', async () => {
+  await nativeBrokerRoundtrip({
+    canonicalName: 'cloud.process.execute',
+    wireName: 'cloud_process_execute',
+    args: {
+      language: 'python',
+      script:
+        'import matplotlib.pyplot as plt\nplt.savefig("output/中文图表.png")',
+      outputs: [
+        { path: '中文图表.png', fileName: '中文图表.png', format: 'png' },
+      ],
+    },
+    invalidArgs: {
+      language: 'python',
+      script: 'not executed',
+      limits: { artifactBytes: 4000001 },
+    },
+  });
+}, 45000);

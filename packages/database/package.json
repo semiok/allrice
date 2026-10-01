@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@allrice/contracts": "workspace:*",
+    "@allrice/storage": "workspace:*",
     "postgres": "^3.4.7",
     "zod": "^4.4.3"
   }

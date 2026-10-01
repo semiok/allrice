@@ -2,6 +2,7 @@ import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   CloudCommandSchema,
   CloudExecutionProfileSchema,
+  cloudRuntimeImage,
   RuntimeActionBindingSchema,
   EmployeeExecutionSnapshotSchema,
   runtimeContractEqual,
@@ -23,6 +24,9 @@ export function cloudCommandBinding(
   return {
     executableDigest: digest({
       runtime: payload.runtime,
+      ...(payload.arguments.language
+        ? { language: payload.arguments.language }
+        : {}),
       script: payload.arguments.script,
     }),
     argumentsDigest: digest([]),
@@ -119,7 +123,8 @@ export async function checkCloudBindingAuthority(
   if (
     digest(payload) !== binding.inputDigest ||
     !runtimeContractEqual(cloudCommandBinding(payload), binding.command) ||
-    payload.imageDigest !== profile.imageDigest ||
+    payload.imageDigest !==
+      cloudRuntimeImage(profile.imageDigest, payload.arguments.language) ||
     binding.baseline.length !== payload.arguments.inputs.length ||
     binding.dataScope.length !== payload.arguments.inputs.length
   )

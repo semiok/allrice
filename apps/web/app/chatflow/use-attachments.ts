@@ -257,17 +257,19 @@ export function useAttachments({
             ? file.type
             : '') ||
           (officeType ? officeMediaTypes[officeType] : '') ||
-          (lowerName.endsWith('.md')
-            ? 'text/markdown'
-            : lowerName.endsWith('.txt')
-              ? 'text/plain'
-              : lowerName.endsWith('.json')
-                ? 'application/json'
-                : lowerName.endsWith('.pdf')
-                  ? 'application/pdf'
-                  : lowerName.endsWith('.gif')
-                    ? 'image/gif'
-                    : '');
+          (lowerName.endsWith('.csv')
+            ? 'text/csv'
+            : lowerName.endsWith('.md')
+              ? 'text/markdown'
+              : lowerName.endsWith('.txt')
+                ? 'text/plain'
+                : lowerName.endsWith('.json')
+                  ? 'application/json'
+                  : lowerName.endsWith('.pdf')
+                    ? 'application/pdf'
+                    : lowerName.endsWith('.gif')
+                      ? 'image/gif'
+                      : '');
         const supportedImage = [
           'image/png',
           'image/jpeg',
@@ -276,6 +278,7 @@ export function useAttachments({
         ].includes(mediaType);
         const supportedDocument = [
           'text/plain',
+          'text/csv',
           'text/markdown',
           'application/json',
           'application/pdf',
@@ -283,7 +286,7 @@ export function useAttachments({
         ].includes(mediaType);
         if (!supportedImage && !supportedDocument) {
           rejection =
-            '支持 Word（DOCX）、Excel（XLSX）、PPT（PPTX）、PDF、图片、TXT、MD 和 JSON。';
+            '支持 Word（DOCX）、Excel（XLSX）、CSV、PPT（PPTX）、PDF、图片、TXT、MD 和 JSON。';
           continue;
         }
         const sizeLimit = supportedImage ? 20 * 1024 * 1024 : 8_000_000;
