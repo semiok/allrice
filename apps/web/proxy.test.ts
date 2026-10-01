@@ -76,6 +76,72 @@ describe('Rice Bridge portal boundary', () => {
 });
 
 describe('portal authentication response boundary', () => {
+  it('passes cookie-less binary transfer requests to device token and lease validation', () => {
+    const id = '11111111-2222-4333-8444-555555aaaaaa';
+    for (const host of ['allrice.bplabs.xyz', 'allrice-snow.bplabs.xyz']) {
+      for (const kind of ['command', 'operation']) {
+        const path = `/api/v1/bridge/device/file-transfers/${kind}/${id}`;
+        for (const [method, query] of [
+          ['GET', '?action=authorize'],
+          ['GET', '?action=download'],
+          ['POST', ''],
+        ]) {
+          const request = new NextRequest(`https://${host}${path}${query}`, {
+            method,
+            headers: {
+              host,
+              authorization: 'Bearer synthetic-device-token',
+              'x-allrice-lease': '22222222-2222-4222-8222-222222222222',
+            },
+          });
+          expect(request.cookies.size).toBe(0);
+          const response = proxy(request);
+          expect(response.status).toBe(200);
+          expect(response.headers.get('x-middleware-next')).toBe('1');
+          expect(response.headers.get('location')).toBeNull();
+        }
+        expect(isBridgeDeviceApiPath(path.replace(id, id.toUpperCase()))).toBe(
+          true,
+        );
+      }
+    }
+  });
+
+  it('keeps malformed transfers and user pairing management behind portal login', () => {
+    const id = '11111111-2222-4333-8444-555555aaaaaa';
+    const prefix = '/api/v1/bridge/device/file-transfers';
+    const paths = [
+      prefix,
+      `${prefix}/command`,
+      `${prefix}/commands/${id}`,
+      `${prefix}/COMMAND/${id}`,
+      `${prefix}/unknown/${id}`,
+      `${prefix}/command/not-a-uuid`,
+      `${prefix}/command/11111111-2222-0333-8444-555555aaaaaa`,
+      `${prefix}/command/11111111-2222-4333-7444-555555aaaaaa`,
+      `${prefix}/command/11111111-2222-4333-8444-555555aaaaag`,
+      `${prefix}/command/${id.replaceAll('-', '')}`,
+      `${prefix}/command/${id}a`,
+      `${prefix}/command/${id}/extra`,
+      `${prefix}/operation/${id}/extra`,
+      `/api/v1/bridge/device/file-transfers-extra/command/${id}`,
+      '/api/v1/bridge/pairings',
+      '/api/v1/bridge/devices',
+      `/api/v1/bridge/devices/${id}/settings`,
+      `/api/v1/bridge/devices/${id}/workspace-selection`,
+      '/api/v1/bridge/files',
+    ];
+    for (const path of paths) {
+      expect(isBridgeDeviceApiPath(path)).toBe(false);
+      for (const host of ['allrice.bplabs.xyz', 'allrice-snow.bplabs.xyz']) {
+        const request = new NextRequest(`https://${host}${path}`, {
+          headers: { host, authorization: 'Bearer synthetic-device-token' },
+        });
+        expect(proxy(request).status).toBe(401);
+      }
+    }
+  });
+
   it('passes signed file reads to token validation but keeps signing behind login', () => {
     const host = 'allrice.bplabs.xyz';
     const file = '/api/v1/files/11111111-1111-4111-8111-111111111111';
