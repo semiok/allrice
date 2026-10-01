@@ -398,6 +398,7 @@ export async function resourceStatus(
     workspaceId: string;
     scope: 'tenant' | 'user' | 'employee' | 'provider';
     scopeId: string;
+    excludingRunId?: string;
   },
   sql: GovernanceSql = getDatabase(),
 ) {
@@ -442,6 +443,7 @@ export async function resourceStatus(
           select count(*)::integer as count from allrice_jobs
           where organization_id = ${input.organizationId}
             and status in ('claimed', 'running', 'waiting_approval')
+            and (${input.excludingRunId ?? null}::uuid is null or run_id<>${input.excludingRunId ?? null})
         `
       : input.scope === 'user'
         ? await sql<{ count: number }[]>`
@@ -450,14 +452,17 @@ export async function resourceStatus(
               and workspace_id = ${input.workspaceId}
               and owner_id = ${input.scopeId}
               and status in ('claimed', 'running', 'waiting_approval')
+              and (${input.excludingRunId ?? null}::uuid is null or run_id<>${input.excludingRunId ?? null})
           `
         : input.scope === 'employee'
           ? await sql<{ count: number }[]>`
-              select count(*)::integer as count from allrice_employee_runs
-              where organization_id = ${input.organizationId}
-                and workspace_id = ${input.workspaceId}
-                and (execution_snapshot -> 'employee' ->> 'id')::uuid = ${input.scopeId}
-                and status in ('queued', 'running')
+              select count(*)::integer as count from allrice_employee_runs e
+              join allrice_jobs j on j.run_id=e.run_id
+              where e.organization_id = ${input.organizationId}
+                and e.workspace_id = ${input.workspaceId}
+                and (e.execution_snapshot -> 'employee' ->> 'id')::uuid = ${input.scopeId}
+                and j.status in ('claimed', 'running', 'waiting_approval')
+                and (${input.excludingRunId ?? null}::uuid is null or e.run_id<>${input.excludingRunId ?? null})
             `
           : await sql<{ count: number }[]>`
               select count(distinct j.id)::integer as count
@@ -467,6 +472,7 @@ export async function resourceStatus(
                 and j.workspace_id = ${input.workspaceId}
                 and d.model_connection_id = ${input.scopeId}
                 and j.status in ('claimed', 'running', 'waiting_approval')
+                and (${input.excludingRunId ?? null}::uuid is null or j.run_id<>${input.excludingRunId ?? null})
             `;
   const defaults = defaultResourceLimits[input.scope];
   const limits = limitRows[0];
@@ -649,6 +655,16 @@ export async function admitModelExecution(input: {
       billing?.subscription === true ? 'subscription' : 'token_metered',
       values.requestedTokens,
     );
+    // The Worker already claimed this Run. Exclude only its verified identity
+    // from the other active slots; otherwise a limit of three rejects Run three.
+    // Queued followups also consume no execution slot until they are claimed.
+    const admittingRun = input.runId
+      ? ((
+          await transaction`select id from allrice_runs where id=${UuidSchema.parse(input.runId)}
+          and organization_id=${values.organizationId} and workspace_id=${values.workspaceId}
+          and owner_id=${values.userId}`
+        )[0]?.id as string | undefined)
+      : undefined;
     const resources = await Promise.all(
       scopes.map(([scope, scopeId]) =>
         resourceStatus(
@@ -657,6 +673,7 @@ export async function admitModelExecution(input: {
             workspaceId: values.workspaceId,
             scope,
             scopeId,
+            excludingRunId: admittingRun,
           },
           transaction,
         ),

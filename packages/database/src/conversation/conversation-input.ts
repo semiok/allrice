@@ -7,6 +7,7 @@ import { z } from 'zod';
 import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from '../core/client.ts';
+import { refreshTaskClock } from '../task-clock.ts';
 
 const TurnIdSchema = z.string().trim().min(1).max(255);
 
@@ -231,6 +232,7 @@ export async function consumeConversationSteer(input: {
           completed_at = now(), updated_at = now()
       where id = ${command.followup_run_id} and state = 'queued'
     `;
+    await refreshTaskClock(transaction, command.followup_run_id);
     await transaction`
       update allrice_employee_runs
       set status = 'canceled', error_code = 'STEER_CONSUMED',
@@ -317,6 +319,7 @@ export async function cancelUnadoptedSteers(
       completed_at=now(),updated_at=now() where run_id=${row.run_id} and status='queued'`;
     await tx`update allrice_runs set state='canceled',error_code='INPUT_NOT_ADOPTED',completed_at=now(),updated_at=now()
       where id=${row.run_id} and state='queued'`;
+    await refreshTaskClock(tx, row.run_id);
     await tx`update allrice_employee_runs set status='canceled',error_code='INPUT_NOT_ADOPTED',completed_at=now()
       where run_id=${row.run_id} and status='queued'`;
     await tx`update allrice_messages set status='failed',error_code='INPUT_NOT_ADOPTED',completed_at=now(),

@@ -24,6 +24,12 @@ Use `workspace_file_list` to obtain exact storage object IDs and checksums (atta
 6. Inspect returned `quality` and `nativeExecution` results. Correct formula errors before calling a workbook complete. Formula evaluation does not verify business inputs. Rendering does not mean a human or model reviewed the layout. Preserve uncertainty and report actual unchecked items without blocking a usable download.
 7. Return only real tool-provided filenames and download links, with a short result explanation. For another revision, use the returned object ID/checksum as an input. `changeSummary` explains the change; `sourceObjectId` maintains the source/version relationship.
 
+## Targeted revisions
+
+Use the upstream library's normal load → change → save → reopen workflow. Make only the requested edits. Validate relevant public properties (cell values/types, formulas, `style_id`, sheet names, merged ranges, row heights, column widths and chart counts) rather than serializing every internal object. `RowDimension` has no `to_tree()`; `NamedStyle.to_tree()` is not a supported round-trip comparison. Avoid private internals and a whole-workbook serialization framework for a single-cell edit. The adapter already runs upstream package checks and formula recalculation.
+
+When the user reuploads an unchanged previous deliverable, use the **uploaded object** as `python.sourceObjectId` and an input. To create its next version, set top-level `parentObjectId` to the exact previous deliverable object ID. Allrice verifies the authorized upload's checksum matches that version and preserves both source identities; a different upload starts a new series. Never call an older download the new revision if export failed.
+
 ## Quality and other formats
 
 - For existing workbooks, load with `data_only=False`; preserve cell types, formulas, sheets, charts and formatting. For readable spreadsheet previews, set each sheet's print area and fit-to-page settings, including chart bounds. An oversized chart must not spill onto a nearly empty extra page. Setting fitToWidth/fitToHeight alone is insufficient: also set `sheet.sheet_properties.pageSetUpPr.fitToPage = True`. For each sheet with a new chart, set `sheet.page_setup.fitToWidth = 1`, `sheet.page_setup.fitToHeight = 0`, and a print area that contains the entire chart and relevant cells. Check returned page count against the intended layout; if a chart-only sliver appears, correct the print settings and export a revision. Verify totals, units and source values separately.

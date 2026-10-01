@@ -135,24 +135,45 @@ describe('governed native model admission recovery', () => {
       },
     ],
     [{ type: 'block-start', index: 0, blockType: 'unknown' }],
-  ])('keeps actual or ambiguous output unreplayable (%j)', async (chunk) => {
+  ])(
+    'leaves explicit failed-response recovery to native DSH (%j)',
+    async (chunk) => {
+      const f = fixture(async () => ({
+        settled: true,
+        tokenUsageObservational: true,
+      }));
+      await f.prepare();
+      await f.execute(
+        undefined,
+        false,
+        { kind: 'error', failure: { code: 'TRANSPORT' } },
+        [chunk],
+      );
+      await expect(f.prepare()).resolves.toEqual({ maxTokens: 3754 });
+      // Only new model admission; this adapter never calls or replays the tool.
+      expect(f.bridge.mock.calls.some(([method]) => method === 'tool')).toBe(
+        false,
+      );
+      expect(
+        f.bridge.mock.calls.filter(([method]) => method === 'model-dispatch'),
+      ).toHaveLength(1);
+    },
+  );
+
+  it('keeps partial output without a terminal provider receipt unreplayable', async () => {
     const f = fixture(async () => ({
       settled: true,
       tokenUsageObservational: true,
     }));
     await f.prepare();
-    await f.execute(
-      undefined,
-      false,
-      { kind: 'error', failure: { code: 'TRANSPORT' } },
-      [chunk],
-    );
+    await expect(
+      f.execute(undefined, Error('connection dropped'), undefined, [
+        { type: 'reasoning-delta', text: 'partial thought' },
+      ]),
+    ).rejects.toThrow('connection dropped');
     await expect(f.prepare()).rejects.toThrow(
       'assistant_model_unknown_no_replay',
     );
-    expect(
-      f.bridge.mock.calls.filter(([method]) => method === 'model-dispatch'),
-    ).toHaveLength(1);
   });
 
   it('admits native compaction without agent/request and settles it before the next ordinary model call', async () => {
@@ -265,18 +286,6 @@ describe('governed native model admission recovery', () => {
       { settled: false, tokenUsageObservational: true },
       'TRANSPORT',
       [],
-    ],
-    [
-      'partial output',
-      { settled: true, tokenUsageObservational: true },
-      'TRANSPORT',
-      [{ type: 'text-delta', text: 'partial' }],
-    ],
-    [
-      'tool output',
-      { settled: true, tokenUsageObservational: true },
-      'TRANSPORT',
-      [{ type: 'tool-call-delta' }],
     ],
     [
       'authentication',

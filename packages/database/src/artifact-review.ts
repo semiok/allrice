@@ -640,6 +640,7 @@ export async function publishWorkbenchArtifact(
             context,
             input.sourceFile,
             input.sessionId,
+            input.parentObjectId,
           )
         : undefined;
       if (

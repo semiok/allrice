@@ -189,6 +189,7 @@ export async function assertToolBrokerSourceFile(
   context: ExecutionContext,
   sourceInput: ArtifactSourceFile,
   sessionId?: string,
+  requestedParentObjectId?: string,
 ) {
   const source = ArtifactSourceFileSchema.parse(sourceInput);
   const [row] = await tx<(ResourceRow & { checksum: string })[]>`
@@ -207,9 +208,25 @@ export async function assertToolBrokerSourceFile(
       and workspace_id=${context.workspaceId ?? null}
       and owner_id=${context.policySnapshot.subjectId} and session_id=${sessionId ?? null}
   `;
-  // An uploaded/shared template starts a new series; our own current-session
-  // deliverable continues its existing immutable version chain.
-  return { source, parentObjectId: version?.object_id };
+  // A user may download a version and upload the identical file for editing.
+  // Retain the upload as the real source while continuing the explicitly chosen
+  // current-session version. Never attach an unrelated or changed upload by name.
+  const [reuploadedParent] =
+    !version && requestedParentObjectId && sessionId
+      ? await tx<{ object_id: string }[]>`
+          select v.object_id from allrice_deliverable_versions v
+          join allrice_storage_objects o on o.id=v.object_id
+          where v.object_id=${UuidSchema.parse(requestedParentObjectId)}
+            and v.organization_id=${context.organizationId}
+            and v.workspace_id=${context.workspaceId ?? null}
+            and v.owner_id=${context.policySnapshot.subjectId}
+            and v.session_id=${sessionId} and o.state='ready'
+            and o.checksum=${source.checksum} for share of o`
+      : [];
+  return {
+    source,
+    parentObjectId: version?.object_id ?? reuploadedParent?.object_id,
+  };
 }
 
 export function createToolBrokerExportObject(input: {
@@ -310,6 +327,7 @@ export async function registerToolBrokerExport(
           input.context,
           input.sourceFile,
           input.sessionId,
+          input.parentObjectId,
         )
       : undefined;
     if (

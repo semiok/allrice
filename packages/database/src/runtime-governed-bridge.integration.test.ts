@@ -1412,6 +1412,74 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       await database`select id from allrice_storage_objects where id=${failedObject.id}`,
     ).toHaveLength(0);
   });
+  it('continues an identical reuploaded document version while preserving upload provenance and rejecting changed bytes or foreign parents', async () => {
+    const f = await officeFixture(),
+      original = await f.publish();
+    const source = createToolBrokerExportObject({
+      context: f.execution,
+      mediaType: original.object.mediaType,
+      sizeBytes: original.object.sizeBytes,
+      checksum: original.object.checksum,
+    });
+    const bytes = await readArtifactBytes(f.storage, original.object);
+    await f.storage.put(source, new Blob([Uint8Array.from(bytes)]).stream());
+    await database`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable)
+      values(${source.id},${source.organizationId},${source.workspaceId},${source.ownerId},${source.key},'uploads',${source.mediaType},${source.sizeBytes},${source.checksum},'private','ready',false)`;
+    const input = {
+      context: f.execution,
+      sessionId: f.sessionId,
+      callId: 'reuploaded-revision',
+      kind: 'document' as const,
+      fileName: 'fixture.txt',
+      format: 'text' as const,
+      bytes: Buffer.from('changed only requested content'),
+      mediaType: 'text/plain',
+      sourceFile: { objectId: source.id, checksum: source.checksum },
+      parentObjectId: original.object.id,
+    };
+    const revised = await publishWorkbenchArtifact(input, f.storage, database);
+    expect(revised.version).toMatchObject({
+      version: 2,
+      seriesId: original.version.seriesId,
+      parentObjectId: original.object.id,
+    });
+    expect(await readArtifactBytes(f.storage, original.object)).toEqual(bytes);
+    expect(await readArtifactBytes(f.storage, source)).toEqual(bytes);
+    const [audit] =
+      await database`select metadata from allrice_audit_events where resource_id=${revised.id} and action='artifact.source'`;
+    expect(audit!.metadata.sourceFile).toEqual(input.sourceFile);
+    const put = vi.spyOn(f.storage, 'put');
+    const other = await officeFixture(),
+      foreign = await other.publish();
+    put.mockClear();
+    await expect(
+      publishWorkbenchArtifact(
+        {
+          ...input,
+          callId: 'foreign-parent',
+          parentObjectId: foreign.object.id,
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('version_changed');
+    await database`update allrice_storage_objects set checksum=${digest('different uploaded bytes')} where id=${source.id}`;
+    await expect(
+      publishWorkbenchArtifact(
+        {
+          ...input,
+          callId: 'changed-upload',
+          sourceFile: {
+            ...input.sourceFile,
+            checksum: digest('different uploaded bytes'),
+          },
+        },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('version_changed');
+    expect(put).not.toHaveBeenCalled();
+  });
   it.each([
     'restore',
     'partial',
@@ -2009,6 +2077,61 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
         }),
     };
   }
+  it.each(['missing', 'idle'])(
+    'queues rapid followups before the first Worker acquires a %s runtime, and advances after a startup failure',
+    async (state) => {
+      const f = await queuedFixture();
+      if (state === 'missing')
+        await database`delete from allrice_conversation_runtimes where session_id=${f.sessionId}`;
+      else
+        await database`update allrice_conversation_runtimes set state='idle',active_run_id=null,active_turn_id=null,worker_id=null where session_id=${f.sessionId}`;
+      await database`update allrice_runs set state='queued' where id=${f.run}`;
+      await database`update allrice_jobs set status='queued',worker_id=null,lease_token=null,claimed_at=null,heartbeat_at=null,lease_expires_at=null where run_id=${f.run}`;
+      const first = await f.send('rapid first'),
+        second = await f.send('rapid second');
+      expect(first.delivery).toBe('follow_up');
+      expect(second.delivery).toBe('follow_up');
+      const initial = await claimNextJob(randomUUID(), 30_000);
+      expect(
+        (
+          await database`select run_id from allrice_jobs where id=${initial!.id}`
+        )[0]!.run_id,
+      ).toBe(f.run);
+      expect(await claimNextJob(randomUUID(), 30_000)).toBeNull();
+      // No native runtime existed to emit release. A terminal startup receipt
+      // must still let the existing scheduler claim exactly one FIFO successor.
+      await database`update allrice_runs set state='failed' where id=${f.run}`;
+      await database`update allrice_jobs set status='failed' where run_id=${f.run}`;
+      const successor = await claimNextJob(randomUUID(), 30_000);
+      expect(
+        (
+          await database`select run_id from allrice_jobs where id=${successor!.id}`
+        )[0]!.run_id,
+      ).toBe(first.run.id);
+      expect(await claimNextJob(randomUUID(), 30_000)).toBeNull();
+      await database`update allrice_runs set state='succeeded' where id=${first.run.id}`;
+      await database`update allrice_jobs set status='succeeded' where run_id=${first.run.id}`;
+      const last = await claimNextJob(randomUUID(), 30_000);
+      expect(
+        (
+          await database`select run_id from allrice_jobs where id=${last!.id}`
+        )[0]!.run_id,
+      ).toBe(second.run.id);
+    },
+  );
+  it('waits for native runtime release even if the earlier Run already has a terminal receipt', async () => {
+    const f = await queuedFixture();
+    const sent = await f.send('wait for native release');
+    await database`update allrice_runs set state='failed' where id=${f.run}`;
+    await database`update allrice_jobs set status='failed' where run_id=${f.run}`;
+    expect(await claimNextJob(randomUUID(), 30_000)).toBeNull();
+    await f.release();
+    const job = await claimNextJob(randomUUID(), 30_000);
+    expect(
+      (await database`select run_id from allrice_jobs where id=${job!.id}`)[0]
+        ?.run_id,
+    ).toBe(sent.run.id);
+  });
   it('QueueDock persists FIFO, hides future turns, cancels a removed message and releases the next after editing the head', async () => {
     const f = await queuedFixture();
     const first = await f.send('queued first');
@@ -2163,6 +2286,10 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const [job] =
       await database`select status from allrice_jobs where run_id=${sent.run.id}`;
     expect(job!.status).toBe('canceled');
+    const [clock] =
+      await database`select phase,completed_at from allrice_task_clocks where run_id=${sent.run.id}`;
+    expect(clock?.phase).toBe('terminal');
+    expect(clock?.completed_at).not.toBeNull();
   });
   it('P10 persists strict input identity, native adoption and cancels expired steer without creating a later task', async () => {
     const f = await artifactFixture(riceManifest());
@@ -2269,6 +2396,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const [job] =
       await database`select status from allrice_jobs where run_id=${late.fallbackRunId!}`;
     expect(job!.status).toBe('canceled');
+    for (const runId of [sent.fallbackRunId!, late.fallbackRunId!]) {
+      const [clock] =
+        await database`select phase,completed_at from allrice_task_clocks where run_id=${runId}`;
+      expect(clock?.phase).toBe('terminal');
+      expect(clock?.completed_at).not.toBeNull();
+    }
     await expect(
       sendChatMessage(f.context, f.context.workspaceId!, f.sessionId, {
         ...input,

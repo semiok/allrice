@@ -128,7 +128,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     .map((item) => {
       const [category, label] = classification(item);
       const fallback = item.modelWait
-        ? '等待模型响应'
+        ? (readableSummary(item.title) ?? '等待模型响应')
         : item.kind === 'think'
           ? '分析任务与处理步骤'
           : item.kind === 'compaction'
@@ -173,7 +173,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     failed: steps.filter((step) => step.status === 'failed').length,
     active: active
       ? active.modelWait
-        ? '等待模型响应'
+        ? (readableSummary(active.title) ?? '等待模型响应')
         : active.kind === 'compaction'
           ? '正在整理上下文'
           : toolActivityLabel(

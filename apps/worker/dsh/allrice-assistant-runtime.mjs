@@ -614,14 +614,15 @@ export function createGovernedAssistantNativeRuntime(
         }
       }
       // Usage uncertainty does not imply execution uncertainty. A normal native
-      // finish (or a retryable empty failure) may continue under a NEW call ID
+      // finish (or an explicit retryable provider failure) may continue under a NEW call ID
       // after the execution receipt is durably acknowledged. Keep unknown usage
-      // unknown; missing ACKs and ambiguous partial failures remain unreplayable.
+      // unknown. Native DSH owns recovery of partial model output; no tool is
+      // replayed here, and each tool's independent execution receipt stays intact.
+      // Missing ACKs and streams with no terminal provider receipt remain blocked.
       const observedUsageOnly =
         acknowledgement?.tokenUsageObservational === true &&
         (['stop', 'tool-calls'].includes(stopKind) ||
-          (!observedOutput &&
-            stopKind === 'error' &&
+          (stopKind === 'error' &&
             retryableModelFailures.has(modelFailureCode)));
       if (
         acknowledgement?.settled === true &&

@@ -129,6 +129,29 @@ integration(
         database.db,
       );
     }
+    it('admits the claimed Run without double-counting its slot, while preserving the limit for another Run', async () => {
+      const f = await fixture();
+      await database.db`insert into allrice_model_resource_limits(id,organization_id,scope_type,scope_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms)
+        values(${randomUUID()},${f.a.org},'user',${f.a.user},10000,10000000,1,3600000)`;
+      const resources = await admitModelExecution({
+        ...f.admission,
+        runId: f.a.rootRunId,
+      });
+      expect(resources.find((r) => r.scope === 'user')?.activeRuns).toBe(0);
+      await expect(
+        admitModelExecution({ ...f.admission, runId: f.nextRunId }),
+      ).rejects.toMatchObject({
+        code: 'MODEL_RESOURCE_CONCURRENCY_EXCEEDED',
+        scope: 'user',
+      });
+      const foreign = await fixture();
+      await expect(
+        admitModelExecution({ ...f.admission, runId: foreign.a.rootRunId }),
+      ).rejects.toMatchObject({
+        code: 'MODEL_RESOURCE_CONCURRENCY_EXCEEDED',
+        scope: 'user',
+      });
+    });
     async function unknownProjection(
       f: Awaited<ReturnType<typeof fixture>>,
       decisionId?: string,
