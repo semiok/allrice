@@ -231,10 +231,12 @@ describe('P22 local controller with durable outbox and strict authority port', (
       await claimStarted;
       expect(observedSignal).toBeInstanceOf(AbortSignal);
       expect(f.controller.hasActiveWork).toBe(true);
+      expect(f.controller.hasActiveBrowser).toBe(false);
       shutdown.abort();
       await running;
       expect(observedSignal?.aborted).toBe(true);
       expect(f.controller.hasActiveWork).toBe(false);
+      expect(f.controller.hasActiveBrowser).toBe(false);
       expect(f.startDriver).not.toHaveBeenCalled();
       expect(f.authority.start).not.toHaveBeenCalled();
     } finally {
@@ -410,17 +412,20 @@ describe('P22 local controller with durable outbox and strict authority port', (
       await started;
       acquiring = false;
       expect(f.controller.hasActiveWork).toBe(true);
+      expect(f.controller.hasActiveBrowser).toBe(false);
       expect(await f.controller.pollOnce()).toBe(false);
     } finally {
       release();
     }
     await pending;
     expect(f.controller.hasActiveWork).toBe(true);
+    expect(f.controller.hasActiveBrowser).toBe(true);
     await f.controller.pollOnce();
     expect(f.authority.next).not.toHaveBeenCalled();
     expect(f.driver.close).not.toHaveBeenCalled();
     await f.controller.stop();
     expect(f.controller.hasActiveWork).toBe(false);
+    expect(f.controller.hasActiveBrowser).toBe(false);
   });
   it('startup with unconfirmed process cleanup never acknowledges a clean stop or starts another instance', async () => {
     const f = await fixture();

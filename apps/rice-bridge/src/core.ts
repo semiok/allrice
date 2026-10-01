@@ -441,6 +441,7 @@ async function startSession(
       : undefined;
   let runnerAvailable = false;
   let browserHasActiveWork = () => false;
+  let browserHasActiveBrowser = () => false;
   let fileFacts = await probeBridgeFiles(config);
   let browserVersion: string | undefined;
   let runnerProfile:
@@ -471,7 +472,7 @@ async function startSession(
       phase,
       files: fileFacts,
       activeForeground: state.activeForeground,
-      activeBrowsers: browserHasActiveWork() ? 1 : 0,
+      activeBrowsers: browserHasActiveBrowser() ? 1 : 0,
       operationLedgerEnabled,
       browserVersion,
       runner: runnerProfile,
@@ -493,7 +494,7 @@ async function startSession(
         await import('./local-process-manager.js')
       ).activeLocalProcessCount(journal);
     }
-    state.activeBrowsers = browserHasActiveWork() ? 1 : 0;
+    state.activeBrowsers = browserHasActiveBrowser() ? 1 : 0;
     state.workspaceLabels = config.grants.map((grant) => grant.label);
     publish();
   };
@@ -743,6 +744,7 @@ async function startSession(
       },
     });
     browserHasActiveWork = () => controller.hasActiveWork;
+    browserHasActiveBrowser = () => controller.hasActiveBrowser;
     browserTask = controller.run(commandAbort.signal).catch(() => {
       browserStopUnconfirmed = true;
       console.warn('LOCAL_BROWSER_CLEANUP_PENDING');
