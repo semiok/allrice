@@ -1,0 +1,48 @@
+# Local managed payload only. Existing cloud/frozen runtime images are unchanged.
+# The build script supplies a minimal context with independently verified wheels/debs.
+ARG PYTHON_RUNTIME_BASE=python:3.11.13-slim-bookworm@sha256:86adf8dbadc3d6e82ee5dd2c74bec2e1c2467cdad47886280501df722372d2e1
+FROM ${PYTHON_RUNTIME_BASE} AS payload-build
+COPY inputs/apt.lock.json /opt/allrice-build/apt.lock.json
+COPY inputs/debs/ /opt/allrice-build/debs/
+COPY infra/managed-python/prepare-image.py /opt/allrice-build/prepare-image.py
+RUN python3 -I /opt/allrice-build/prepare-image.py apt \
+    && dpkg --install /opt/allrice-build/debs/*.deb \
+    && python3 -c 'from pathlib import Path; [p.unlink() for p in Path("/usr/share/fonts/opentype/noto").glob("*") if p.name != "NotoSansCJK-Regular.ttc"]' \
+    && rm -rf /opt/allrice-build/debs
+COPY inputs/requirements.lock /opt/allrice-build/requirements.lock
+COPY inputs/wheels/ /opt/allrice-build/wheels/
+RUN python3 -m venv /opt/python \
+    && /opt/python/bin/pip install --no-cache-dir --no-index --only-binary=:all: \
+       --find-links=/opt/allrice-build/wheels --require-hashes \
+       -r /opt/allrice-build/requirements.lock \
+    && /opt/python/bin/pip check \
+    && rm -rf /opt/allrice-build/wheels
+COPY skills/office/scripts/check_office.py /opt/dsh-office/scripts/check_office.py
+COPY skills/office/references/LICENSE.dsh /opt/allrice/licenses/DSH-Office-LICENSE
+COPY infra/managed-python/licenses/Python-3.11.13.txt /opt/allrice/licenses/Python-LICENSE
+COPY infra/managed-python/licenses/source.lock.json infra/managed-python/licenses/et-xmlfile-2.0.0-LICENSE infra/managed-python/licenses/openpyxl-3.1.5-LICENSE /opt/allrice/licenses/
+COPY infra/python-charts/check_png.py infra/python-charts/prepare.py /opt/allrice-python/
+COPY infra/python-charts/matplotlibrc /opt/python/mplconfig/matplotlibrc
+RUN cp /opt/allrice-build/requirements.lock /opt/allrice/requirements.lock \
+    && cp /opt/allrice-build/apt.lock.json /opt/allrice/apt.lock.json \
+    && cp /opt/allrice-build/prepare-image.py /opt/allrice/probe.py \
+    && ln -s /opt/python /opt/office \
+    && ln -s /opt/dsh-office/scripts/check_office.py /opt/allrice/check_office.py \
+    && ln -s /opt/allrice-python/check_png.py /opt/allrice/check_png.py \
+    && MPLCONFIGDIR=/opt/python/mplconfig MPLBACKEND=Agg \
+       /opt/python/bin/python -I /opt/allrice-python/prepare.py \
+    && MPLCONFIGDIR=/opt/python/mplconfig MPLBACKEND=Agg \
+       /opt/python/bin/python -I /opt/allrice-build/prepare-image.py runtime \
+    && chmod -R a+rX /opt/allrice /opt/allrice-python /opt/dsh-office /opt/python/mplconfig \
+    && chmod -R a-w /opt/allrice /opt/allrice-python /opt/dsh-office /opt/python/mplconfig \
+    && rm -rf /opt/allrice-build
+FROM ${PYTHON_RUNTIME_BASE}
+# Download archives and build-only probes remain in the previous stage.
+COPY --from=payload-build /opt/ /opt/
+COPY --from=payload-build /usr/share/fonts/opentype/noto/ /usr/share/fonts/opentype/noto/
+LABEL xyz.bplabs.allrice.runtime.profile="managed-python-v1" \
+      xyz.bplabs.allrice.runtime.python="3.11.13" \
+      xyz.bplabs.allrice.runtime.matplotlib="3.10.6" \
+      xyz.bplabs.allrice.runtime.png-checker="pillow-11.3.0"
+ENV PYTHONDONTWRITEBYTECODE=1 MPLBACKEND=Agg
+USER 65532:65532

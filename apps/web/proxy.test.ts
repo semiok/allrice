@@ -1,11 +1,51 @@
 import { NextRequest } from 'next/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { isBridgeDeviceApiPath, proxy } from './proxy.js';
+import {
+  isBridgeDeviceApiPath,
+  isBridgeRuntimeAssetPath,
+  proxy,
+} from './proxy.js';
 import { createPortalSession } from './lib/portal/session';
 import { resolvePortal } from './lib/portal/config';
 
 describe('Rice Bridge portal boundary', () => {
+  it('exempts only fixed read-only runtime software URLs', () => {
+    vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
+    try {
+      const valid = `/api/v1/bridge/runtime-assets/v1/linux-amd64/${'a'.repeat(64)}.docker.tar.gz`;
+      expect(isBridgeRuntimeAssetPath(valid)).toBe(true);
+      for (const host of ['allrice.bplabs.xyz', 'allrice-admin.bplabs.xyz']) {
+        for (const method of ['GET', 'HEAD']) {
+          const response = proxy(
+            new NextRequest(`https://${host}${valid}`, {
+              method,
+              headers: { host },
+            }),
+          );
+          expect(response.status).toBe(200);
+        }
+        expect(
+          proxy(
+            new NextRequest(`https://${host}${valid}`, {
+              method: 'POST',
+              headers: { host },
+            }),
+          ).status,
+        ).toBe(401);
+      }
+      for (const invalid of [
+        valid + '/extra',
+        valid.replace('amd64', 'x64'),
+        valid.replace('v1/', 'v2/'),
+        valid.replace('a'.repeat(64), 'not-a-hash'),
+        '/api/v1/bridge/runtime-assets/v1/linux-amd64/../.env',
+      ])
+        expect(isBridgeRuntimeAssetPath(invalid)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('lets device-credential routes reach their Bearer-token handlers', () => {
     expect(isBridgeDeviceApiPath('/api/v1/bridge/device/pair')).toBe(true);
     expect(

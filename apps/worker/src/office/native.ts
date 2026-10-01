@@ -3,6 +3,7 @@ import {
   CloudCommandInputSchema,
   NativeOfficeExportSchema,
   type DeliveryFormat,
+  type ExecutionLocation,
 } from '@allrice/contracts';
 import {
   getDatabase,
@@ -18,6 +19,7 @@ import { HandlerError } from '../errors.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import { readOfficeBytes } from './export.js';
 import { OfficePackage, officeError, officeMediaTypes } from './package.js';
+import { executeManagedOffice } from './managed-python.js';
 
 /** Execute upstream's Python workflow, then return bytes to the existing
  * managed export/version/quality pipeline. No document-editing engine here. */
@@ -25,12 +27,42 @@ export async function generateNativeOfficeExport(
   input: RiceToolExecutionInput,
   format: DeliveryFormat,
   value: unknown,
+  location?: ExecutionLocation,
 ) {
   if (format !== 'docx' && format !== 'xlsx' && format !== 'pptx')
     officeError('Python Office 交付须使用 docx、xlsx 或 pptx');
   const native = NativeOfficeExportSchema.parse(value);
   if (native.inputs.length && !input.capabilities.includes('storage:read'))
     officeError('读取 Office 输入文件需要文件读取能力');
+  const choice = await executeManagedOffice(input, format, native, location);
+  if (choice.location === 'local') {
+    const source = native.inputs.find(
+      (f) => f.objectId === native.sourceObjectId,
+    );
+    return {
+      bytes: choice.bytes,
+      mediaType: officeMediaTypes[format],
+      extension: `.${format}`,
+      sourceFile: source
+        ? { objectId: source.objectId, checksum: source.checksum }
+        : undefined,
+      warnings: undefined,
+      changes: undefined,
+      cloudQualityAllowed: !choice.localOnly,
+      nativeExecution: {
+        status: 'checked' as const,
+        upstream: '@deepseek-ai/dsh-skill-office@0.1.7-alpha.2',
+        output: `${choice.result.stdout}\n${choice.result.stderr}`.slice(-6000),
+        executionLocation: 'local' as const,
+        executionReason: choice.reason,
+        operationId: choice.operationId,
+        profileVersion: choice.result.profileVersion,
+        imageId: choice.result.imageId,
+        stopped: choice.result.stopped,
+        artifactsCollected: true,
+      },
+    };
+  }
   const storage = new LocalStorageAdapter(input.storageRoot);
   const files = [];
   let size = 0;
@@ -107,10 +139,13 @@ export async function generateNativeOfficeExport(
         : undefined,
       warnings: undefined,
       changes: undefined,
+      cloudQualityAllowed: true,
       nativeExecution: {
         status: 'checked' as const,
         upstream: '@deepseek-ai/dsh-skill-office@0.1.7-alpha.2',
         output: result.output.slice(-6000),
+        executionLocation: 'cloud' as const,
+        executionReason: choice.reason,
       },
     };
   } catch (error) {

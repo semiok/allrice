@@ -24,6 +24,23 @@ import { confirmToolFailure, HandlerError } from '../../errors.js';
 import { stringValue } from '../input-values.js';
 import type { RiceToolHandler } from '../types.js';
 
+function requiresOfficeQuality(request: string | undefined, format: string) {
+  return (request ?? '')
+    .slice(0, 12000)
+    .split(/[。！？\n；;，,]/)
+    .some((clause) => {
+      if (/无需|不需要|不用|不要|不必|no need|do not|don['’]t/i.test(clause))
+        return false;
+      if (!/必须|务必|强制|一定要|\bmust\b|\brequired?\b/i.test(clause))
+        return false;
+      return (
+        /渲染|页面预览|排版预览|\brender(?:ing)?\b|\bpreview\b/i.test(clause) ||
+        (format === 'xlsx' &&
+          /重算|重新计算|公式计算|recalculat(?:e|ion)/i.test(clause))
+      );
+    });
+}
+
 export const createWorkspaceExport: RiceToolHandler = async ({
   input,
   arguments: args,
@@ -38,6 +55,12 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   const format = DeliveryFormatSchema.parse(stringValue(args.format, 'format'));
   const hasOffice = args.office !== undefined;
   const hasPython = args.python !== undefined;
+  if (args.location !== undefined && !hasPython)
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      '执行位置仅适用于 python 原生 Office 工作流。',
+      false,
+    );
   if (
     [hasOffice, hasPython, args.content !== undefined].filter(Boolean)
       .length !== 1
@@ -84,25 +107,28 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   }
   const generated = hasPython
-    ? await generateNativeOfficeExport(input, format, python).catch(
-        (error: unknown) => {
-          // The native sandbox has stopped and rejected the document. No managed
-          // file publication has started. DSH may correct the script in a new call.
-          // Transport/cleanup errors remain unknown; never infer from retryability.
-          if (
-            error instanceof HandlerError &&
-            ['OFFICE_DOCUMENT_INVALID', 'OFFICE_RUNTIME_UNAVAILABLE'].includes(
-              error.code,
-            )
+    ? await generateNativeOfficeExport(
+        input,
+        format,
+        python,
+        args.location as 'auto' | 'local' | 'cloud' | undefined,
+      ).catch((error: unknown) => {
+        // The native sandbox has stopped and rejected the document. No managed
+        // file publication has started. DSH may correct the script in a new call.
+        // Transport/cleanup errors remain unknown; never infer from retryability.
+        if (
+          error instanceof HandlerError &&
+          ['OFFICE_DOCUMENT_INVALID', 'OFFICE_RUNTIME_UNAVAILABLE'].includes(
+            error.code,
           )
-            confirmToolFailure(error, {
-              runId: input.context.runId,
-              callId: input.call.id,
-              toolName: input.call.name,
-            });
-          throw error;
-        },
-      )
+        )
+          confirmToolFailure(error, {
+            runId: input.context.runId,
+            callId: input.call.id,
+            toolName: input.call.name,
+          });
+        throw error;
+      })
     : hasOffice
       ? await generateOfficeExport(input, format, args.office)
       : {
@@ -118,9 +144,41 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       false,
     );
   const officeType = officeFormat(generated.mediaType);
+  const localQualityOnly =
+    'cloudQualityAllowed' in generated &&
+    generated.cloudQualityAllowed === false;
   const checked = officeType
-    ? await checkOfficeExport(generated.bytes, officeType)
+    ? localQualityOnly
+      ? {
+          bytes: generated.bytes,
+          quality: {
+            status: 'unavailable' as const,
+            reason:
+              '本地生成已验证；本地公式重算与页面预览尚未就绪，按任务的数据限制未外发到云端。',
+          },
+          warnings: [
+            '公式未重算、页面未渲染；生成通过不代表公式计算或排版已经检查。',
+          ],
+        }
+      : await checkOfficeExport(generated.bytes, officeType)
     : undefined;
+  if (
+    hasPython &&
+    checked?.quality.status === 'unavailable' &&
+    requiresOfficeQuality(input.userRequest, format)
+  ) {
+    const error = new HandlerError(
+      'OFFICE_QUALITY_UNAVAILABLE',
+      '生成已经停止并通过文件校验，但任务明确要求的公式重算或页面渲染尚不可用；未发布正式成果。',
+      false,
+    );
+    confirmToolFailure(error, {
+      runId: input.context.runId,
+      callId: input.call.id,
+      toolName: input.call.name,
+    });
+    throw error;
+  }
   if (checked && checked.bytes.length > 8_000_000)
     throw new HandlerError(
       'TOOL_FILE_TOO_LARGE',

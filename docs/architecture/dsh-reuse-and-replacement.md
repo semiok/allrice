@@ -32,6 +32,18 @@
 
 Office 仍复用单一 Skill 中固定的 `@deepseek-ai/dsh-skill-office@0.1.7-alpha.2` 原生指引与检查器。本轮便携 Python/原生任务实验只为 PR4 确定适配，不把 Python 包环境称作 OS 沙箱，不报告本地 Office 已可用。当前只交付 macOS 路径，Windows 暂缓。实验、架构实测与 Dev 验证见 [PR1 原生 Office 实验](met164-pr1-native-office-experiment.md)；未实测架构不记为验收完成。
 
+### 2026-10-02 · MET164 PR4 受管本地 Office
+
+单一 Office Skill 继续使用固定 `@deepseek-ai/dsh-skill-office@0.1.7-alpha.2` 的原生 DOCX/XLSX/PPTX 指引与原字节 `check_office.py`。`workspace.export.create` 的 Python 路径增加 `location: auto/local/cloud`；默认在当前员工电脑的 Office 环境实际就绪时本地生成，准备中或忙碌沿用既有等待，明确缺项才云端补位。内容导出与旧结构化 Office 参数保持原语义，不接受被忽略的位置参数。
+
+Allrice 新增的是 Bridge 执行适配：由现有准备流程管理固定 Colima/Lima/Docker CLI、Linux guest 与同源 Python 软件包，复用 OperationLedger、冻结 Run、原 Tool Broker 调用、租约、取消、原字节文件传输及现有成果版本。用户不用另装 Python 或 Docker。私有虚拟机不挂载宿主业务目录；输入按已授权文件对象复制，成果在物理停止后校验并上传。同一未知操作只对账，不重新执行脚本或自动换端。
+
+这项权限来自发布版本的原工具及 Bridge 读写配置，并在新 Run 冻结；实际运行状态不能替代授权。它使用独立的受管运行环境授权，不借用业务目录或 Node 执行授权。正常发布补齐缺失规则，已有明确拒绝、用户暂停与历史冻结配置保留。
+
+当前固定原生软件包仅包含已验证的 macOS Intel 路径；M 系列没有本地运行验收时如实报告缺项，Windows 继续暂缓。生成、公式计算与页面渲染分别报告事实。本地生成不表示公式已重算或排版已审核；允许云端质量检查时仅检查同一成果字节，不重复生成。要求只在本地处理时不外发成果，必须满足的质量要求不可用则明确说明未完成。
+
+固定软件包来源、许可证和重建方法见 [受管 Python 软件包](../../infra/managed-python/README.md)。实际客户端、Dev 页面与文件验证单独记录；软件包构建成功或预检通过不等于已交付。
+
 ### Office 复盘与纠正方向
 
 MET-157 前期复用了上游指南，却主要通过 Allrice 自定义结构化接口重新实现文档操作。在没有先完成原生对照的情况下扩大自有实现，增加了开发和验证成本，也限制了页眉修改、追加格式化内容、条件格式、原图表更新和新增幻灯片等操作。这是需要纠正的实施选择，不能作为后续 Skill 的默认接入模板。

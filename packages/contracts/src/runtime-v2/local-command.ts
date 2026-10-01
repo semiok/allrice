@@ -11,6 +11,7 @@ import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
 import { RuntimeLocalMcpPayloadSchema } from './local-mcp.ts';
 import { RuntimeLocalServiceConfigSchema } from './local-service.ts';
+import { RuntimeLocalPythonPayloadSchema } from './local-python.ts';
 import {
   RuntimeDependencyPreparationSchema,
   RuntimeDependencyPreparationResultSchema,
@@ -161,6 +162,7 @@ export const RuntimeBridgePayloadSchema = z.union([
   RuntimeLocalCommandSchema,
   RuntimeChangesetSchema,
   RuntimeLocalMcpPayloadSchema,
+  RuntimeLocalPythonPayloadSchema,
 ]);
 export type RuntimeBridgePayload = z.infer<typeof RuntimeBridgePayloadSchema>;
 

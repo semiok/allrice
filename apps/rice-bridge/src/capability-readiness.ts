@@ -10,6 +10,7 @@ import {
   type BridgeEnvironment,
   type BridgeReadinessCapability,
   type BridgeReadinessState,
+  type RuntimeLocalPythonProfile,
 } from '@allrice/contracts';
 import type { BridgeConfig } from './config.js';
 
@@ -78,6 +79,11 @@ export function projectBridgeCapabilityReadiness(input: {
     features?: string[];
   };
   errors?: Partial<Record<'browser' | 'sandbox', string>>;
+  managedPython?: {
+    state: 'ready' | 'preparing' | 'paused' | 'unsupported';
+    profile?: RuntimeLocalPythonProfile;
+    reason?: string;
+  };
   observedAt?: string;
 }) {
   const env = input.environment,
@@ -90,8 +96,7 @@ export function projectBridgeCapabilityReadiness(input: {
     missing: string[] = [],
     extra: Record<string, string> = {},
   ) => {
-    const absentImplementation =
-      capability === 'local.office' || !input.nativeMac;
+    const absentImplementation = !input.nativeMac;
     if (
       !absentImplementation &&
       (env.paused || input.phase === 'stopping' || input.phase === 'stopped')
@@ -112,6 +117,7 @@ export function projectBridgeCapabilityReadiness(input: {
     });
   };
   for (const capability of BridgeCapabilities) {
+    if (capability === 'local.python.execute') continue;
     const write =
       capability === 'local.fs.write' ||
       capability === 'local.fs.mkdir' ||
@@ -234,10 +240,59 @@ export function projectBridgeCapabilityReadiness(input: {
       ['local_mcp_runtime'],
       runnerVersions,
     );
-  // The PR1 experiment is evidence for PR4, never a shipped execution capability.
-  add('local.office', 'unsupported', 'office_not_implemented', [
-    'office_local_adapter',
-  ]);
+  const managed = input.managedPython,
+    profile = managed?.profile;
+  const pythonVersions: Record<string, string> = profile
+    ? {
+        backend: profile.backend,
+        image: profile.imageId,
+        architecture: profile.architecture,
+        python: profile.pythonVersion,
+        profile: String(profile.profileVersion),
+        packages: profile.packagesChecksum,
+        officeChecker: profile.officeCheckerChecksum,
+        pngChecker: profile.pngCheckerChecksum,
+        font: profile.fontChecksum,
+      }
+    : {};
+  for (const capability of ['local.office', 'local.python'] as const) {
+    const state =
+      managed?.state === 'ready' && input.activeForeground
+        ? 'busy'
+        : (managed?.state ?? 'unsupported');
+    const reason =
+      state === 'busy'
+        ? 'local_busy'
+        : (managed?.reason ??
+          (state === 'ready'
+            ? 'ready'
+            : state === 'preparing'
+              ? 'runtime_preparing'
+              : state === 'paused'
+                ? 'capability_paused'
+                : 'office_not_implemented'));
+    add(
+      capability,
+      state,
+      reason,
+      state === 'unsupported' ? [reason] : [],
+      pythonVersions,
+    );
+  }
+  add(
+    'local.office.formulas',
+    'unsupported',
+    'office_formula_runtime_not_prepared',
+    ['formula_runtime'],
+    pythonVersions,
+  );
+  add(
+    'local.office.preview',
+    'unsupported',
+    'office_preview_runtime_not_prepared',
+    ['render_runtime'],
+    pythonVersions,
+  );
   return BridgeCapabilityReadinessListSchema.parse(reports);
 }
 

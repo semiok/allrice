@@ -19,6 +19,7 @@ export type EmployeeToolService =
   | 'local_preview'
   | 'cloud_runner';
 type ToolRequirements = {
+  managedOffice?: boolean;
   requiredTools?: readonly AllRiceToolName[];
   // Existing proposal-only configurations remain readable. These additional
   // tools are assembled for the complete workflow, not new execution grants.
@@ -34,6 +35,13 @@ type ToolRequirements = {
 /** Static composition over the existing Broker manifest. Runtime readiness
  * and authorization remain facts supplied by their existing owners. */
 const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
+  'workspace.export.create': {
+    // The native Office adapter delegates this exact published tool. A managed
+    // runtime is not a business folder or the separate Node command tool.
+    policyActions: ['local.python.execute'],
+    services: ['workbench'],
+    managedOffice: true,
+  },
   'assistant.development': {
     requiredTools: [
       'assistant.delegate',
@@ -361,13 +369,13 @@ export function assembleEmployeeCapabilities(
     ]),
   );
   const bridgeTools = tools.filter((tool) => tool.target === 'bridge');
-  const bridgeAccess = bridgeTools.some(
-    (tool) => tool.capability !== 'storage:read',
-  )
-    ? 'read_write'
-    : bridgeTools.length && definition.securityPolicy.bridgeAccess === 'none'
-      ? 'read_only'
-      : definition.securityPolicy.bridgeAccess;
+  const bridgeAccess =
+    bridgeTools.some((tool) => tool.capability !== 'storage:read') ||
+    tools.some((tool) => tool.requirements.managedOffice)
+      ? 'read_write'
+      : bridgeTools.length && definition.securityPolicy.bridgeAccess === 'none'
+        ? 'read_only'
+        : definition.securityPolicy.bridgeAccess;
   return {
     ...definition,
     capabilities: {

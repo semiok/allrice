@@ -29,6 +29,8 @@ import {
 } from './journal.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
+import type { LocalPythonRunner } from './local-python-runner.js';
+import { localPythonHttpTransport } from './local-python-client.js';
 import { LocalMcpRunner, validateLocalMcpTools } from './local-mcp-runner.js';
 import { readLocalMcpCredential } from './local-mcp-credentials.js';
 import {
@@ -46,6 +48,7 @@ export class RuntimeBridgeOperationClient {
       token: string;
       journal: BridgeJournal;
       runner?: LocalCommandRunner;
+      pythonRunner?: LocalPythonRunner;
       signal?: AbortSignal;
       // Test seams retain the real filesystem journal and HTTP adapter.
       execute?: typeof executeLocalCommand;
@@ -122,6 +125,25 @@ export class RuntimeBridgeOperationClient {
 
   async pollOnce() {
     if (this.input.signal?.aborted) return false;
+    if (this.input.pythonRunner)
+      for (const dispatch of await this.input.journal.unknownLocalPythonOperations()) {
+        if (dispatch.payload.capability !== 'local.python.execute') continue;
+        const { operationId, attemptId } = dispatch.snapshot.binding.attempt;
+        try {
+          const result = await this.input.pythonRunner.recover(
+            attemptId,
+            dispatch.payload,
+          );
+          if (result) {
+            await this.input.journal.reconcileLocalPython(operationId, result);
+            await this.input.pythonRunner
+              .cleanup(attemptId, result.containerId, dispatch.payload)
+              .catch(() => undefined);
+          }
+        } catch {
+          /* Retain immutable unknown evidence; no script or upload replay. */
+        }
+      }
     if (this.input.runner) {
       const mcpRunner = new LocalMcpRunner(this.input.runner);
       for (const dispatch of await this.input.journal.unknownLocalMcpOperations()) {
@@ -164,6 +186,7 @@ export class RuntimeBridgeOperationClient {
         supportsClaimRecovery: true,
         supportsChangeset: true,
         supportsBinaryFiles: true,
+        ...(this.input.pythonRunner ? { supportsManagedPython: true } : {}),
         ...(this.input.runner
           ? {
               supportsLocalCommand: true,
@@ -205,6 +228,7 @@ export class RuntimeBridgeOperationClient {
       );
       return;
     }
+    const python = dispatch.payload.capability === 'local.python.execute';
     const grant = config.grants.find(
       (item) => item.id === dispatch.snapshot.binding.execution.grantId,
     );
@@ -212,11 +236,12 @@ export class RuntimeBridgeOperationClient {
       ? await realpath(grant.rootPath).catch(() => null)
       : null;
     if (
-      !grant ||
-      !root ||
-      grant.rootFingerprint !== dispatch.grantRootFingerprint ||
-      createHash('sha256').update(root).digest('hex') !==
-        dispatch.grantRootFingerprint
+      !python &&
+      (!grant ||
+        !root ||
+        grant.rootFingerprint !== dispatch.grantRootFingerprint ||
+        createHash('sha256').update(root).digest('hex') !==
+          dispatch.grantRootFingerprint)
     ) {
       await journal.outcome(operationId, {
         status: 'failed',
@@ -226,8 +251,24 @@ export class RuntimeBridgeOperationClient {
       });
       return;
     }
+    if (
+      python &&
+      (!this.input.pythonRunner ||
+        dispatch.grantRootFingerprint !==
+          createHash('sha256')
+            .update(`allrice-managed-python-v1:${config.deviceId}`)
+            .digest('hex'))
+    ) {
+      await journal.outcome(operationId, {
+        status: 'failed',
+        effects: 'none',
+        summary: '固定私有运行环境授权与本机不匹配',
+        errorCode: 'MANAGED_RUNTIME_GRANT_MISMATCH',
+      });
+      return;
+    }
     try {
-      journal.assertWorkspace(root);
+      if (!python) journal.assertWorkspace(root!);
     } catch {
       await journal.outcome(operationId, {
         status: 'failed',
@@ -302,6 +343,10 @@ export class RuntimeBridgeOperationClient {
       );
       return;
     }
+    if (dispatch.payload.capability === 'local.python.execute') {
+      await this.executePython(dispatch);
+      return;
+    }
     if (isLocalFilePayload(dispatch.payload)) {
       const channel = localFileHttpTransport({
         server: config.server,
@@ -313,7 +358,7 @@ export class RuntimeBridgeOperationClient {
       });
       let applied = false;
       try {
-        const output = await executeLocalFile(root, dispatch.payload, {
+        const output = await executeLocalFile(root!, dispatch.payload, {
           ...channel,
           signal: this.input.signal,
           chooseFile: this.input.chooseFile,
@@ -381,7 +426,7 @@ export class RuntimeBridgeOperationClient {
           await localProcessManager({
             ...this.input,
             runner: this.input.runner,
-          }).start(dispatch, root);
+          }).start(dispatch, root!);
         } catch {
           await journal.outcome(operationId, {
             status: 'failed',
@@ -392,18 +437,18 @@ export class RuntimeBridgeOperationClient {
         }
         return;
       }
-      await this.executeProcess(dispatch, root);
+      await this.executeProcess(dispatch, root!);
       return;
     }
     if (
       dispatch.payload.capability === 'local.mcp.discover' ||
       dispatch.payload.capability === 'local.mcp.call'
     ) {
-      await this.executeMcp(dispatch, root);
+      await this.executeMcp(dispatch, root!);
       return;
     }
     if (dispatch.payload.capability === 'local.fs.changeset') {
-      const result = await executeChangeset(root, dispatch.payload, {
+      const result = await executeChangeset(root!, dispatch.payload, {
         checkpoint: (index, file) =>
           journal.changesetCheckpoint(operationId, index, file),
         authorize: async () => {
@@ -477,7 +522,7 @@ export class RuntimeBridgeOperationClient {
     let result: Awaited<ReturnType<typeof executeLocalCommand>>;
     try {
       result = await (this.input.execute ?? executeLocalCommand)(
-        root,
+        root!,
         dispatch.payload,
       );
     } catch {
@@ -516,6 +561,106 @@ export class RuntimeBridgeOperationClient {
           'Operation completed; output exceeded the journal limit and was omitted',
         output: { truncated: true, reason: 'output_limit' },
       });
+    }
+  }
+
+  private async executePython(dispatch: RuntimeBridgeDispatch) {
+    if (
+      dispatch.payload.capability !== 'local.python.execute' ||
+      !this.input.pythonRunner
+    )
+      throw Error('LOCAL_PYTHON_UNAVAILABLE');
+    const { pythonRunner: runner, journal, config, token } = this.input;
+    const { operationId, attemptId } = dispatch.snapshot.binding.attempt;
+    const body = {
+      contractVersion: 1,
+      attempt: dispatch.snapshot.binding.attempt,
+      leaseToken: dispatch.leaseToken,
+    };
+    try {
+      const result = await runner.execute(dispatch.payload, {
+        attemptId,
+        signal: this.input.signal,
+        transport: localPythonHttpTransport({
+          server: config.server,
+          token,
+          id: operationId,
+          leaseToken: dispatch.leaseToken,
+        }),
+        maintainLease: async () => {
+          if (this.input.signal?.aborted) return false;
+          try {
+            const current = await this.request<{
+              snapshot: unknown;
+              leaseExpiresAt: string;
+            }>({
+              server: config.server,
+              path: `${runtimeBridgeOperationPath}/${operationId}/heartbeat`,
+              method: 'POST',
+              token,
+              body,
+              maximumResponseBytes: 200_000,
+              timeoutMs: 2500,
+            });
+            const snapshot = RuntimeOperationSnapshotSchema.parse(
+              current.snapshot,
+            );
+            return (
+              snapshot.status === 'running' &&
+              snapshot.cancelRequestId === null &&
+              runtimeContractEqual(
+                snapshot.binding,
+                dispatch.snapshot.binding,
+              ) &&
+              Date.parse(current.leaseExpiresAt) > Date.now()
+            );
+          } catch {
+            return false;
+          }
+        },
+      });
+      if (['canceled', 'lease_lost'].includes(result.reason))
+        await journal.stopped(
+          operationId,
+          result,
+          `本地 Python 已物理停止（${result.reason}）`,
+        );
+      else
+        await journal.outcome(operationId, {
+          status:
+            result.reason === 'exited' && result.exitCode === 0
+              ? 'succeeded'
+              : 'failed',
+          effects: 'none',
+          output: result,
+          summary: `本地 ${result.purpose === 'office' ? 'Office' : 'Python'} 已停止；${result.artifacts.length} 个原始字节输出已验证并上传`,
+        });
+      await runner
+        .cleanup(attemptId, result.containerId, dispatch.payload)
+        .catch(() => undefined);
+    } catch (error) {
+      const notExecuted =
+        error instanceof LocalCommandError &&
+        [
+          'TOOLCHAIN_CHANGED',
+          'ISOLATION_UNAVAILABLE',
+          'UNSAFE_DAEMON_SOCKET',
+          'INPUT_VERSION_CHANGED',
+          'INPUT_LIMIT',
+          'INPUT_DOWNLOAD_UNAVAILABLE',
+          'EXECUTION_REVOKED',
+        ].includes(error.code);
+      if (notExecuted)
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: '本地 Python 在执行前校验失败，未执行或换端',
+          errorCode: error.code,
+        });
+      else
+        await journal.uncertain(operationId, 'receipt_missing', {
+          summary: '本地 Python 停止或字节收集结果待对账；不自动重放或换端',
+        });
     }
   }
 

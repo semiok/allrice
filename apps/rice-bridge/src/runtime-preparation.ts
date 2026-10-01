@@ -15,6 +15,7 @@ import { nativeSandboxConfig } from './sandbox-settings.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import { bridgeVersion } from './version.js';
+import type { ManagedPythonSandbox } from './managed-python-sandbox.js';
 
 export function sandboxLaunchEnvironment(binary: string): NodeJS.ProcessEnv {
   return {
@@ -162,10 +163,19 @@ export async function bridgePreviewState(
 
 /** Preflight remains the authority after preparation; neither a resumed VM nor
  * a completed download alone is advertised as ready. */
-export async function prepareLocalSandbox(
+export function prepareLocalSandbox(
   runner: LocalCommandRunner,
   signal: AbortSignal,
+): ReturnType<LocalCommandRunner['preflight']>;
+export function prepareLocalSandbox(
+  runner: ManagedPythonSandbox,
+  signal: AbortSignal,
+): ReturnType<ManagedPythonSandbox['prepareManaged']>;
+export async function prepareLocalSandbox(
+  runner: LocalCommandRunner | ManagedPythonSandbox,
+  signal: AbortSignal,
 ) {
+  if ('prepareManaged' in runner) return runner.prepareManaged(signal);
   try {
     return await runner.preflight();
   } catch (error) {

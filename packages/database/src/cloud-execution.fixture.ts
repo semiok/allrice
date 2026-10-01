@@ -5,6 +5,7 @@ import type postgres from 'postgres';
 import {
   ExecutionContextSchema,
   EmployeeExecutionSnapshotSchema,
+  PlatformEmployeeDefinitionSchema,
   cloudToolchainImageV1,
   type DshExecutionSnapshot,
   type DshNativeSkillSnapshot,
@@ -12,6 +13,11 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
+import {
+  employeeManifest,
+  employeeManifestChecksum,
+} from './employees/employee-config.ts';
+import { freezeManagedOfficeBinding } from './employees/managed-python-binding.ts';
 import {
   createCloudCommandOperation,
   installCloudExecutionGrant,
@@ -36,6 +42,10 @@ export async function createCloudExecutionFixture(
     localBrowser?: boolean;
     localPreview?: boolean;
     localProcess?: boolean;
+    managedOffice?: {
+      bridgeAccess?: 'none' | 'read_only' | 'read_write';
+      freezeBinding?: boolean;
+    };
     /** Test-only initial values: persisted once, never mutate a frozen Run. */
     dsh?: {
       provider: DshExecutionSnapshot;
@@ -119,15 +129,77 @@ export async function createCloudExecutionFixture(
             ]
           : []),
       ];
+  const nativeCandidate = options.managedOffice
+    ? employeeManifest({
+        key: 'p15',
+        name: 'P15 synthetic Office',
+        description: 'Synthetic only',
+        toolNames: ['workspace.export.create'],
+      })
+    : null;
+  const nativeManifest =
+    nativeCandidate?.schemaVersion === 2 ? nativeCandidate : null;
+  const platformId = randomUUID(),
+    revisionId = randomUUID();
+  const publication = nativeManifest
+    ? PlatformEmployeeDefinitionSchema.parse({
+        schemaVersion: 1,
+        key: `p15-${platformId}`,
+        name: 'P15 synthetic Office',
+        description: 'Synthetic only',
+        appearance: nativeManifest.appearance,
+        identity: {
+          ...nativeManifest.identity,
+          expressionStyle: 'structured',
+          outputLanguage: 'zh-CN',
+        },
+        systemPrompt: nativeManifest.systemPrompt,
+        modelPolicy: {
+          provider: 'openai-codex',
+          model: 'synthetic',
+          reasoningEffort: 'low',
+          timeoutMs: 300000,
+          fallbackModels: [],
+          credentialReference: 'test:never-resolved',
+          baseUrl: null,
+        },
+        capabilities: {
+          nativeSkillIds: [],
+          workflowRevisionIds: [],
+          knowledgeRevisionIds: [],
+          toolNames: ['workspace.export.create'],
+          connectorRefs: [],
+        },
+        securityPolicy: {
+          ...nativeManifest.securityPolicy,
+          bridgeAccess: options.managedOffice?.bridgeAccess ?? 'read_write',
+        },
+      })
+    : null;
+  const definitionChecksum = nativeManifest
+    ? employeeManifestChecksum(nativeManifest)
+    : digest('p15');
+  const managedPython =
+    nativeManifest && options.managedOffice?.freezeBinding !== false
+      ? freezeManagedOfficeBinding({
+          manifest: nativeManifest,
+          grantedCapabilities: ['storage:read', 'storage:write'],
+          publication: {
+            revisionId,
+            checksum: digest(publication),
+            definition: publication,
+          },
+        })
+      : undefined;
   const frozen = EmployeeExecutionSnapshotSchema.parse({
-    schemaVersion: 1,
+    schemaVersion: nativeManifest ? 2 : 1,
     employee: {
       id: employee,
       versionId: version,
       key: 'p15',
       revision: 1,
-      definitionChecksum: digest('p15'),
-      definition: {
+      definitionChecksum,
+      definition: nativeManifest ?? {
         schemaVersion: 1,
         key: 'p15',
         name: 'P15 synthetic',
@@ -165,11 +237,20 @@ export async function createCloudExecutionFixture(
       grantedCapabilities: capabilities,
       bindings: {
         skillVersionIds: [],
-        toolNames,
+        toolNames: nativeManifest ? ['workspace.export.create'] : toolNames,
         knowledgeScopes: ['workspace'],
         workflowIds: [],
+        ...(managedPython ? { managedPython } : {}),
       },
       skillBindings: [],
+      ...(nativeManifest
+        ? {
+            agentSkills: [],
+            workflows: [],
+            knowledge: [],
+            resolvedForActorId: user,
+          }
+        : {}),
     },
     tenantContext: {
       organizationId: org,
@@ -185,22 +266,26 @@ export async function createCloudExecutionFixture(
     createdAt: now,
   });
   await db.begin(async (tx) => {
+    if (publication) {
+      await tx`insert into allrice_platform_employees(id,employee_key,name,description,status) values(${platformId},${publication.key},${publication.name},'Synthetic only','published')`;
+      await tx`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,checksum,published_at) values(${revisionId},${platformId},1,'published',${tx.json(publication)},${digest(publication)},clock_timestamp())`;
+    }
     await tx`insert into allrice_users(id,email,display_name,password_hash) values(${user},${`${user}@example.test`},'P15 synthetic','not-login')`;
     await tx`insert into allrice_organizations(id,slug,name) values(${org},${`p15-${org}`},'P15 synthetic')`;
     await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'test','P15 synthetic')`;
     await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${org},${workspace},${user},'admin')`;
     await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policy},${org},${user},1,${tx.json(policyPayload)},clock_timestamp()+interval '1 hour')`;
-    await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},${tx.json(options.localPreview || options.localProcess ? { employeeVersionId: version } : {})},'{}')`;
+    await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},${tx.json(options.localPreview || options.localProcess || nativeManifest ? { employeeVersionId: version } : {})},'{}')`;
     await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p15','P15')`;
-    await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${workspace},${employee},1,'P15','synthetic','synthetic','[]',${digest('p15')},'{}')`;
+    await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${workspace},${employee},1,'P15','synthetic','synthetic','[]',${definitionChecksum},${tx.json(nativeManifest ?? {})})`;
     await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id) values(${assignment},${org},${workspace},${employee},${version},${user})`;
     await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id) values(${session},${org},${workspace},${user},'P15 synthetic',${assignment},${version})`;
     const um = randomUUID(),
       am = randomUUID();
     await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content) values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),(${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;
     await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot,native_skills) values(${run},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(options.dsh?.provider ?? {})},${tx.json(options.dsh?.prompt ?? {})},${tx.json(JSON.parse(JSON.stringify(frozen)))},${tx.json(options.dsh?.skills ?? [])})`;
-    await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id) values(${org},${workspace},${session},${user},1,${digest('p15')},'running',${run},${worker})`;
-    await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt) values(${job},${org},${workspace},${user},${run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes',${options.browserControl ? 1 : 0})`;
+    await tx`insert into allrice_conversation_runtimes(organization_id,workspace_id,session_id,owner_id,thread_generation,config_checksum,state,active_run_id,worker_id) values(${org},${workspace},${session},${user},1,${definitionChecksum},'running',${run},${worker})`;
+    await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt) values(${job},${org},${workspace},${user},${run},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker},${randomUUID()},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes',${options.browserControl || nativeManifest ? 1 : 0})`;
     await tx`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities) values(${target},${org},${workspace},'cloud.p15','cloud_sandbox','P15 gVisor','online',${tx.json(['process.execute', 'artifacts.write', ...(options.browserControl ? ['browser.navigate'] : [])])})`;
   });
   const execution = ExecutionContextSchema.parse({

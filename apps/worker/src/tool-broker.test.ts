@@ -92,6 +92,7 @@ import type * as Database from '@allrice/database';
 import { HandlerError, isConfirmedToolFailure } from './errors.js';
 import * as marketData from './market-data.js';
 import * as nativeOffice from './office/native.js';
+import * as officeQuality from './office/quality.js';
 
 function executionContext(): ExecutionContext {
   const organizationId = randomUUID();
@@ -826,6 +827,108 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(publishWorkbenchArtifact).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ['生成包含公式的工作簿。', false],
+    ['无需重算公式，生成工作簿。', false],
+    ['不要重算公式。', false],
+    ['必须重算公式后交付。', true],
+    ['务必重新计算所有公式。', true],
+    ['强制渲染页面后交付。', true],
+  ])(
+    'local Python Office honors an explicit quality requirement without cloud disclosure: %s',
+    async (userRequest, required) => {
+      const generated = await createOffice({
+        kind: 'xlsx',
+        sheets: [
+          {
+            name: '汇总',
+            columns: [{ header: '数值' }, { header: '公式' }],
+            rows: [[12, { formula: 'A2*2' }]],
+          },
+        ],
+      });
+      const generate = vi
+        .spyOn(nativeOffice, 'generateNativeOfficeExport')
+        .mockResolvedValue({
+          ...generated,
+          sourceFile: undefined,
+          changes: undefined,
+          warnings: undefined,
+          cloudQualityAllowed: false,
+          nativeExecution: {
+            status: 'checked',
+            upstream: 'native-test',
+            output: '',
+            executionLocation: 'local',
+            executionReason: 'explicit_local',
+            operationId: randomUUID(),
+            profileVersion: 1,
+            imageId: `sha256:${'a'.repeat(64)}`,
+            stopped: true,
+            artifactsCollected: true,
+          },
+        });
+      const quality = vi.spyOn(officeQuality, 'checkOfficeExport');
+      workbenchEnabled.mockReturnValue(true);
+      publishWorkbenchArtifact.mockResolvedValue({
+        id: randomUUID(),
+        object: {
+          id: randomUUID(),
+          mediaType: generated.mediaType,
+          sizeBytes: generated.bytes.length,
+        },
+        version: {
+          seriesId: randomUUID(),
+          version: 1,
+          parentObjectId: null,
+          changeSummary: null,
+        },
+      });
+      const input = {
+        context: executionContext(),
+        sessionId: randomUUID(),
+        storageRoot: 'unused-local-quality-mocked-port',
+        capabilities: ['storage:write'] as 'storage:write'[],
+        userRequest,
+        call: {
+          id: randomUUID(),
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: '汇总.xlsx',
+            format: 'xlsx',
+            location: 'local',
+            python: { script: 'native fixture', inputs: [] },
+          },
+        },
+      };
+      try {
+        if (required) {
+          const error = await executeRiceTool(input).catch((error) => error);
+          expect(error).toMatchObject({ code: 'OFFICE_QUALITY_UNAVAILABLE' });
+          expect(
+            isConfirmedToolFailure(error, {
+              runId: input.context.runId,
+              callId: input.call.id,
+              toolName: input.call.name,
+            }),
+          ).toBe(true);
+          expect(publishWorkbenchArtifact).not.toHaveBeenCalled();
+        } else {
+          const result = await executeRiceTool(input);
+          expect(JSON.parse(result.modelContent)).toMatchObject({
+            quality: { status: 'unavailable' },
+            nativeExecution: { executionLocation: 'local', stopped: true },
+          });
+          expect(publishWorkbenchArtifact).toHaveBeenCalledOnce();
+        }
+        expect(quality).not.toHaveBeenCalled();
+      } finally {
+        generate.mockRestore();
+        quality.mockRestore();
+      }
+    },
+  );
+
   it('preserves nested Office revision metadata and rejects conflicting summaries before execution', async () => {
     const generated = await createOffice({
       kind: 'docx',
@@ -839,10 +942,13 @@ describe('Codex hosted search Tool Broker integration', () => {
         sourceFile: undefined,
         changes: undefined,
         warnings: undefined,
+        cloudQualityAllowed: true,
         nativeExecution: {
           status: 'checked',
           upstream: 'native-test',
           output: '',
+          executionLocation: 'cloud',
+          executionReason: 'legacy_cloud_snapshot',
         },
       });
     workbenchEnabled.mockReturnValue(true);
@@ -934,10 +1040,13 @@ describe('Codex hosted search Tool Broker integration', () => {
           sourceFile: undefined,
           changes: undefined,
           warnings: undefined,
+          cloudQualityAllowed: true,
           nativeExecution: {
             status: 'checked',
             upstream: 'native-test',
             output: '',
+            executionLocation: 'cloud',
+            executionReason: 'legacy_cloud_snapshot',
           },
         });
       else

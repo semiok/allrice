@@ -47,6 +47,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
     supportsBinaryFiles?: boolean;
+    supportsManagedPython?: boolean;
     recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
   }): Promise<{
     snapshot: Snapshot;
@@ -109,6 +110,40 @@ class HttpProblem extends Error {
   }
 }
 
+export interface ManagedRuntimeGrant {
+  id: string;
+  deviceId: string;
+  rootFingerprint: string;
+  runtimeGeneration: number;
+  revokedAt: string | null;
+  profileVersion: 1;
+}
+
+function operationGrant(
+  device: BridgeDevice,
+  grants: BridgeFolderGrant[],
+  managed: ManagedRuntimeGrant | null | undefined,
+  snapshot: Snapshot,
+) {
+  const execution = snapshot.binding.execution;
+  if (snapshot.binding.action === 'local.python.execute') {
+    return managed &&
+      !managed.revokedAt &&
+      managed.profileVersion === 1 &&
+      managed.deviceId === device.id &&
+      managed.id === execution.grantId &&
+      managed.runtimeGeneration === execution.grantVersion
+      ? managed
+      : undefined;
+  }
+  return grants.find(
+    (grant) =>
+      grant.id === execution.grantId &&
+      !grant.revokedAt &&
+      grant.deviceId === device.id,
+  );
+}
+
 async function boundedJson(request: Request, maximum = 550_000) {
   if (request.headers.get('content-type')?.split(';')[0] !== 'application/json')
     throw new HttpProblem(415, 'JSON_REQUIRED');
@@ -135,9 +170,11 @@ async function boundedJson(request: Request, maximum = 550_000) {
 
 export function createRuntimeBridgeHttpHandler(input: {
   enabled: () => boolean;
-  authenticate: (
-    token: string,
-  ) => Promise<{ device: BridgeDevice; grants: BridgeFolderGrant[] }>;
+  authenticate: (token: string) => Promise<{
+    device: BridgeDevice;
+    grants: BridgeFolderGrant[];
+    managedRuntimeGrant?: ManagedRuntimeGrant | null;
+  }>;
   // Must include current admission. Do not construct a permissive production ledger.
   ledgerForDevice: (device: BridgeDevice) => Promise<RuntimeBridgeLedgerPort>;
 }) {
@@ -150,7 +187,8 @@ export function createRuntimeBridgeHttpHandler(input: {
       if (!input.enabled()) throw new HttpProblem(404, 'FEATURE_DISABLED');
       const token = getBridgeDeviceToken(request);
       if (!token) throw new HttpProblem(401, 'DEVICE_UNAUTHORIZED');
-      const { device, grants } = await input.authenticate(token);
+      const { device, grants, managedRuntimeGrant } =
+        await input.authenticate(token);
       if (device.revokedAt || device.status === 'revoked')
         throw new HttpProblem(401, 'DEVICE_UNAUTHORIZED');
       // B1 accepts only workspace-scoped (projectId=null) operations. A future
@@ -176,6 +214,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsLocalMcp',
                 'supportsChangeset',
                 'supportsBinaryFiles',
+                'supportsManagedPython',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
                 'supportsChangesetCandidate',
@@ -191,6 +230,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsChangeset !== 'boolean') ||
           ('supportsBinaryFiles' in selection &&
             typeof selection.supportsBinaryFiles !== 'boolean') ||
+          ('supportsManagedPython' in selection &&
+            typeof selection.supportsManagedPython !== 'boolean') ||
           ('supportsProjectDiagnostics' in selection &&
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
@@ -209,6 +250,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           leaseMs: 120_000,
           supportsLocalCommand: selection.supportsLocalCommand === true,
           supportsBinaryFiles: selection.supportsBinaryFiles === true,
+          supportsManagedPython: selection.supportsManagedPython === true,
           supportsLocalMcp: selection.supportsLocalMcp === true,
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
@@ -226,16 +268,18 @@ export function createRuntimeBridgeHttpHandler(input: {
             : {}),
         });
         if (!lease) return json({ dispatch: null });
-        const grant = grants.find(
-          (item) =>
-            item.id === lease.snapshot.binding.execution.grantId &&
-            !item.revokedAt &&
-            item.deviceId === device.id,
+        const grant = operationGrant(
+          device,
+          grants,
+          managedRuntimeGrant,
+          lease.snapshot,
         );
         if (
           !grant ||
           lease.snapshot.binding.execution.deviceId !== device.id ||
-          !lease.bridgePayload
+          !lease.bridgePayload ||
+          (lease.snapshot.binding.action === 'local.python.execute' &&
+            lease.bridgePayload.capability !== 'local.python.execute')
         )
           throw new HttpProblem(409, 'DISPATCH_SCOPE_MISMATCH');
         return json({
@@ -276,11 +320,11 @@ export function createRuntimeBridgeHttpHandler(input: {
         );
       }
       if (action === 'start') {
-        const grant = grants.find(
-          (item) =>
-            item.id === snapshot.binding.execution.grantId &&
-            !item.revokedAt &&
-            item.deviceId === device.id,
+        const grant = operationGrant(
+          device,
+          grants,
+          managedRuntimeGrant,
+          snapshot,
         );
         if (!grant) throw new HttpProblem(403, 'GRANT_REVOKED');
         const body = RuntimeBridgeStartSchema.parse(
