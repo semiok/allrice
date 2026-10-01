@@ -1,4 +1,4 @@
-import { DataAccessError } from '@allrice/database';
+import { DataAccessError, IdentityError } from '@allrice/database';
 import { SignedAccessError } from '@allrice/storage';
 
 import {
@@ -6,8 +6,10 @@ import {
   type ApiProblemCode,
   isRequestValidationError,
 } from '../api-error-response';
+import { executionErrorResponse } from '../execution/responses';
 
 export function storageErrorResponse(error: unknown) {
+  if (error instanceof IdentityError) return executionErrorResponse(error);
   let status = 400;
   let code: ApiProblemCode = 'VALIDATION_FAILED';
   let message = 'Storage request validation failed';
