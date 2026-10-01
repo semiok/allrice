@@ -1,0 +1,22 @@
+{
+  "contractVersion": 1,
+  "architecture": "arm64",
+  "baseImage": "python:3.11.13-slim-bookworm@sha256:18ce9b03d18802119f4f9270d10a1ceb45d0acb768c305b7fbbd7c6b5b5a020b",
+  "basePackages": {
+    "gcc-12-base": "12.2.0-14+deb12u1",
+    "libgcc-s1": "12.2.0-14+deb12u1",
+    "libstdc++6": "12.2.0-14+deb12u1"
+  },
+  "packages": [
+    {
+      "name": "fonts-noto-cjk",
+      "version": "1:20220127+repack1-1",
+      "architecture": "all",
+      "fileName": "fonts-noto-cjk_20220127+repack1-1_all.deb",
+      "url": "https://deb.debian.org/debian/pool/main/f/fonts-noto-cjk/fonts-noto-cjk_20220127+repack1-1_all.deb",
+      "sha256": "4a2515eb6db3978b897fef9709ed0d2b1f4c6c4df4d83d6c4ef65f71f1b1f502",
+      "sizeBytes": 56547048,
+      "source": "https://packages.debian.org/bookworm/all/fonts-noto-cjk/download"
+    }
+  ]
+}

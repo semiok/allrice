@@ -473,7 +473,7 @@ suite('MET164 real local choice and existing durable admission', () => {
         ),
       ).toMatchObject({
         state: 'unsupported',
-        reason: 'office_not_implemented',
+        reason: 'readiness_not_reported',
       });
     },
   );

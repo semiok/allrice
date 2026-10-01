@@ -15,6 +15,8 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { SessionModelSnapshotSchema } from './models.ts';
 import { FrozenMcpToolSchema } from './mcp.ts';
 import { LocalMcpSnapshotSchema } from './local-mcp.ts';
+import { ChecksumSchema } from './runs.ts';
+import { ManagedPythonPurposeSchema } from './runtime-v2/local-python.ts';
 import {
   MemoryClassSchema,
   MemoryLifecycleStateSchema,
@@ -153,6 +155,32 @@ export const EmployeeCapabilityBindingsSchema = z
     workflowIds: z.array(UuidSchema).max(32),
   })
   .strict();
+
+/** Server-frozen delegation derived from an exact immutable publication. */
+export const FrozenManagedPythonBindingSchema = z
+  .object({
+    contractVersion: z.literal(1),
+    profileVersion: z.literal(1),
+    purposes: z
+      .array(ManagedPythonPurposeSchema)
+      .min(1)
+      .max(2)
+      .refine((purposes) => new Set(purposes).size === purposes.length),
+    publication: z
+      .object({ revisionId: UuidSchema, checksum: ChecksumSchema })
+      .strict(),
+  })
+  .strict();
+export type FrozenManagedPythonBinding = z.infer<
+  typeof FrozenManagedPythonBindingSchema
+>;
+
+// No defaults: old Runs retain their original authority. Editable manifests and
+// the V1 contract cannot accept a model/admin-supplied runtime delegation.
+export const FrozenEmployeeCapabilityBindingsSchema =
+  EmployeeCapabilityBindingsSchema.extend({
+    managedPython: FrozenManagedPythonBindingSchema.optional(),
+  }).strict();
 
 export const EmployeeSecurityPolicySchema = z
   .object({
@@ -510,7 +538,7 @@ export const EmployeeExecutionSnapshotV2Schema =
       .object({
         declaredCapabilities: z.array(SkillCapabilitySchema).max(16),
         grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
-        bindings: EmployeeCapabilityBindingsSchema,
+        bindings: FrozenEmployeeCapabilityBindingsSchema,
         skillBindings: z.array(FrozenEmployeeSkillBindingSchema).max(32),
         agentSkills: z.array(FrozenAgentSkillBindingSchema).max(32),
         workflows: z.array(FrozenWorkflowBindingSchema).max(32),

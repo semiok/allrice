@@ -367,7 +367,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.export.create',
     description:
-      '根据用户明确要求，将最终内容保存为当前工作区的 Markdown、纯文本、HTML、JSON、Word、Excel、PowerPoint 或 PDF 正式交付文件，并返回下载链接。只写入 AllRice 托管存储，不写本地电脑。',
+      '根据用户明确要求，将最终内容保存为当前工作区的 Markdown、纯文本、HTML、JSON、Word、Excel、PowerPoint 或 PDF 正式交付文件，并返回下载链接。原生 Office 生成默认优先使用就绪的 Rice Bridge，成果统一保存到 AllRice 托管存储。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -395,7 +395,13 @@ export const riceToolDefinitions = [
         python: {
           ...z.toJSONSchema(NativeOfficeExportSchema),
           description:
-            'Office 默认路径：执行 DSH 原生 Python 文档流程。最小入参 {"fileName":"报告.xlsx","format":"xlsx","python":{"script":"...","inputs":[]}}。新文件省略 sourceObjectId（也接受 null）；修改说明优先放外层 changeSummary。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查、公式重算、预览与版本交付。与 content/旧版 office 三选一。',
+            'Office 默认路径：执行 DSH 原生 Python 文档流程。最小入参 {"fileName":"报告.xlsx","format":"xlsx","python":{"script":"...","inputs":[]}}。新文件省略 sourceObjectId（也接受 null）；修改说明优先放外层 changeSummary。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查和版本交付，公式重算与预览按实际质量能力处理。与 content/旧版 office 三选一。',
+        },
+        location: {
+          type: 'string',
+          enum: ['auto', 'local', 'cloud'],
+          description:
+            '仅适用于 python 原生 Office。默认 auto：已授权且就绪的本地 Bridge 优先，无法使用本地时按用户数据约束选择云端。local 必须在本地执行，不能静默改到云端；cloud 必须符合当前数据授权。模型不能指定设备、镜像或运行路径。',
         },
         office: {
           ...z.toJSONSchema(OfficeExportSchema),

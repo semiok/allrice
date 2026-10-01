@@ -1,9 +1,16 @@
 import { z } from 'zod';
-import { LocalFileVersionSchema, UuidSchema } from '@allrice/contracts';
+import {
+  LocalFileVersionSchema,
+  RuntimeLocalPythonArtifactMetadataSchema,
+  UuidSchema,
+} from '@allrice/contracts';
 import {
   localFileTransferAuthority,
   readLocalFileDownload,
   storeLocalFileUpload,
+  localPythonTransferAuthority,
+  readLocalPythonInput,
+  storeLocalPythonArtifact,
   DataAccessError,
 } from '@allrice/database';
 import { getBridgeDeviceToken } from '../../../../../../../../lib/bridge/request';
@@ -26,6 +33,42 @@ async function identity(request: Request, route: Route) {
 export async function GET(request: Request, route: Route) {
   try {
     const i = await identity(request, route);
+    const url = new URL(request.url);
+    if (url.searchParams.has('objectId')) {
+      if (i.kind !== 'operation' || !i.token)
+        throw new DataAccessError('authorization_denied');
+      const objectId = UuidSchema.parse(url.searchParams.get('objectId'));
+      const action = z
+        .enum(['download', 'authorize'])
+        .parse(url.searchParams.get('action'));
+      if (action === 'download') {
+        const { object } = await readLocalPythonInput(
+          i.token,
+          i.id,
+          i.leaseToken,
+          objectId,
+        );
+        return new Response(await getStorageAdapter().get(object), {
+          headers: {
+            'content-type': 'application/octet-stream',
+            'content-length': String(object.sizeBytes),
+            'x-allrice-checksum': object.checksum,
+            'cache-control': 'private, no-store',
+          },
+        });
+      }
+      await localPythonTransferAuthority(
+        i.token,
+        i.id,
+        i.leaseToken,
+        objectId,
+        'authorize',
+      );
+      return Response.json(
+        { authorized: true },
+        { headers: { 'cache-control': 'private, no-store' } },
+      );
+    }
     if (new URL(request.url).searchParams.get('action') === 'download') {
       const object = await readLocalFileDownload(
         i.token,
@@ -62,6 +105,26 @@ export async function POST(request: Request, route: Route) {
       !request.body
     )
       throw new DataAccessError('authorization_denied');
+    const url = new URL(request.url);
+    if (url.searchParams.has('objectId')) {
+      if (i.kind !== 'operation' || !i.token)
+        throw new DataAccessError('authorization_denied');
+      const artifact = await storeLocalPythonArtifact({
+        token: i.token,
+        id: i.id,
+        leaseToken: i.leaseToken,
+        objectId: UuidSchema.parse(url.searchParams.get('objectId')),
+        metadata: RuntimeLocalPythonArtifactMetadataSchema.parse(
+          JSON.parse(decodeURIComponent(header)),
+        ),
+        stream: request.body,
+        storage: getStorageAdapter(),
+      });
+      return Response.json(
+        { artifact },
+        { headers: { 'cache-control': 'private, no-store' } },
+      );
+    }
     const metadata = z
       .object({
         version: LocalFileVersionSchema,

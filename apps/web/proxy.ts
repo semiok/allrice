@@ -62,6 +62,12 @@ export function isBridgeDeviceApiPath(pathname: string) {
   );
 }
 
+export function isBridgeRuntimeAssetPath(pathname: string) {
+  return /^\/api\/v1\/bridge\/runtime-assets\/v1\/linux-(amd64|arm64)\/[a-f0-9]{64}\.docker\.tar\.gz$/.test(
+    pathname,
+  );
+}
+
 export function proxy(request: NextRequest) {
   const destination = legacyPortalNavigation(request);
   if (destination) {
@@ -87,6 +93,10 @@ export function proxy(request: NextRequest) {
     // This exact read-only endpoint authenticates its own scoped sync token.
     request.nextUrl.pathname === '/api/v1/internal/runtime-capabilities' ||
     publicPaths.has(request.nextUrl.pathname) ||
+    // Immutable public software; the handler checks the fixed release whitelist
+    // and real bytes. No member data or arbitrary filesystem URL is exposed.
+    (['GET', 'HEAD'].includes(request.method) &&
+      isBridgeRuntimeAssetPath(request.nextUrl.pathname)) ||
     // Downloads validate their own scoped, expiring storage token. The sign
     // endpoint remains protected by the current database session.
     (['GET', 'HEAD'].includes(request.method) &&

@@ -21,6 +21,9 @@ export const BridgeReadinessCapabilitySchema = z.enum([
   'local.development',
   'local.mcp',
   'local.office',
+  'local.python',
+  'local.office.formulas',
+  'local.office.preview',
 ]);
 export type BridgeReadinessCapability = z.infer<
   typeof BridgeReadinessCapabilitySchema

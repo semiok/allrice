@@ -16,6 +16,8 @@ import {
   RuntimeUsageObservationSchema,
   RuntimeLocalServiceEventSchema,
   RuntimeLocalCommandResultSchema,
+  RuntimeLocalPythonResultSchema,
+  localPythonResultMatchesPayload,
   UuidSchema,
   advanceRuntimeOperation,
   isTerminalRuntimeOperationStatus,
@@ -324,6 +326,7 @@ async function cancelOperationRows(
         (row.bridge_payload !== null &&
           [
             'local.process.execute',
+            'local.python.execute',
             'local.fs.changeset',
             'local.mcp.discover',
             'local.mcp.call',
@@ -924,6 +927,7 @@ export function createRuntimeOperationLedger(options: {
       supportsBackgroundServices?: boolean;
       supportsChangeset?: boolean;
       supportsBinaryFiles?: boolean;
+      supportsManagedPython?: boolean;
       recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
@@ -940,7 +944,7 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
-          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => input.supportsBinaryFiles || !name.startsWith('local.file.')), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
+          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => name !== 'local.python.execute' && (input.supportsBinaryFiles || !name.startsWith('local.file.'))), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsManagedPython ? ['local.python.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {
@@ -1390,6 +1394,35 @@ export function createRuntimeOperationLedger(options: {
               )
                 throw new RuntimeLedgerError('invalid_state');
             }
+            if (payload.capability === 'local.python.execute') {
+              const result = RuntimeLocalPythonResultSchema.safeParse(
+                (content.evidence as { output?: unknown } | null)?.output,
+              );
+              const success =
+                content.signal.type === 'operation.outcome' &&
+                content.signal.result.status === 'succeeded';
+              if (
+                (success &&
+                  (!result.success ||
+                    result.data.reason !== 'exited' ||
+                    result.data.exitCode !== 0)) ||
+                (result.success &&
+                  !localPythonResultMatchesPayload(payload, result.data)) ||
+                (content.signal.type === 'operation.outcome' &&
+                  content.signal.result.effects !== 'none') ||
+                (content.signal.type === 'operation.stopped' &&
+                  content.signal.effects !== 'none')
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              if (result.success)
+                for (const file of result.data.artifacts) {
+                  const [stored] =
+                    await tx`select id from allrice_storage_objects where id=${file.objectId}
+                  and organization_id=${row.snapshot.binding.task.scope.organizationId} and workspace_id=${row.snapshot.binding.task.scope.workspaceId}
+                  and owner_id=${row.snapshot.binding.requestedBy.id} and state='ready' and checksum=${file.checksum} and size_bytes=${file.sizeBytes} and media_type=${file.mediaType}`;
+                  if (!stored) throw new RuntimeLedgerError('invalid_state');
+                }
+            }
           }
           // A finite service may be stopped locally (Bridge shutdown/lease
           // loss) before the server saw a stop request. Preserve the targeted
@@ -1420,6 +1453,21 @@ export function createRuntimeOperationLedger(options: {
                 !['canceled', 'lease_lost'].includes(result.data.reason) ||
                 result.data.containerId !== service?.container_id ||
                 result.data.imageDigest !== payload.arguments.imageDigest
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              await append(tx, row, {
+                type: 'operation.cancel_requested',
+                requestId: input.receiptId,
+              });
+            } else if (payload.capability === 'local.python.execute') {
+              const result = RuntimeLocalPythonResultSchema.safeParse(
+                (input.evidence as { output?: unknown } | null)?.output,
+              );
+              if (
+                !result.success ||
+                content.signal.effects !== 'none' ||
+                !['canceled', 'lease_lost'].includes(result.data.reason) ||
+                !localPythonResultMatchesPayload(payload, result.data)
               )
                 throw new RuntimeLedgerError('invalid_state');
               await append(tx, row, {

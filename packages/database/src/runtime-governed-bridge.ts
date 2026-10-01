@@ -4,6 +4,9 @@ import { randomUUID } from 'node:crypto';
 import {
   RuntimeBridgePayloadSchema,
   RuntimeLocalCommandProfileSchema,
+  RuntimeLocalPythonProfileSchema,
+  localPythonProfileMatchesRelease,
+  managedPythonPayloadForPlatform,
   BridgeDeviceSchema,
   EmployeeExecutionSnapshotSchema,
   isLocalCommandProfileForPlatform,
@@ -27,6 +30,10 @@ import { assertLocalMcpAuthority } from './local-mcp-connections.ts';
 import { localMcpCommandBinding } from './local-mcp-execution.ts';
 import { readArtifact } from './artifact-review.ts';
 import { assertLocalCommandCandidate } from './local-command-candidate.ts';
+import {
+  assertLocalPythonDelegation,
+  localPythonCommandBinding,
+} from './local-python-execution.ts';
 import {
   localCommandBinding,
   localCommandEnabled,
@@ -183,6 +190,8 @@ export function createGovernedBridgePolicyOptions(
         throw new RuntimePolicyError('assistant_authority_changed');
       const command =
         payload.capability === 'local.process.execute' ? payload : null;
+      const python =
+        payload.capability === 'local.python.execute' ? payload : null;
       const binaryFile = payload.capability.startsWith('local.file.');
       const mcp =
         payload.capability === 'local.mcp.discover' ||
@@ -198,7 +207,7 @@ export function createGovernedBridgePolicyOptions(
           !(persisted?.agentInstanceId ?? initial?.assistant?.runId)) ||
         binding.execution.deviceId !== device.id ||
         binding.execution.targetKind !== 'rice_bridge' ||
-        (!command && !mcp && binding.command !== null) ||
+        (!command && !mcp && !python && binding.command !== null) ||
         binding.dataScope.length ||
         binding.baseline.length
       )
@@ -213,6 +222,7 @@ export function createGovernedBridgePolicyOptions(
           'local.git.status',
           'local.git.diff',
           'local.process.execute',
+          'local.python.execute',
           'local.fs.changeset',
           'local.mcp.discover',
           'local.mcp.call',
@@ -234,14 +244,25 @@ export function createGovernedBridgePolicyOptions(
       >`select platform,capabilities,last_seen_at,revoked_at from allrice_bridge_devices
         where id=${device.id} and organization_id=${device.organizationId}
           and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} for share`;
-      const [grant] = await tx<
-        {
-          id: string;
-          root_fingerprint: string;
-          runtime_generation: number;
-          revoked_at: Date | null;
-        }[]
-      >`select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_folder_grants
+      const [grant] = python
+        ? await tx<
+            {
+              id: string;
+              root_fingerprint: string;
+              runtime_generation: number;
+              revoked_at: Date | null;
+            }[]
+          >`select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_managed_runtime_grants
+        where id=${binding.execution.grantId} and device_id=${device.id} and organization_id=${device.organizationId}
+          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and profile_version=1 for share`
+        : await tx<
+            {
+              id: string;
+              root_fingerprint: string;
+              runtime_generation: number;
+              revoked_at: Date | null;
+            }[]
+          >`select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_folder_grants
         where id=${binding.execution.grantId} and device_id=${device.id}
           and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
           and owner_id=${device.ownerId} for share`;
@@ -273,6 +294,7 @@ export function createGovernedBridgePolicyOptions(
         currentDevice.revoked_at ||
         (!command &&
           !mcp &&
+          !python &&
           !changeset &&
           !currentDevice.capabilities.includes(payload.capability)) ||
         (changeset && !currentDevice.capabilities.includes('local.fs.write')) ||
@@ -281,13 +303,16 @@ export function createGovernedBridgePolicyOptions(
         !target ||
         target.kind !== 'rice_bridge' ||
         target.state !== 'online' ||
-        (!command && !mcp && !target.capabilities.includes(targetCapability))
+        (!command &&
+          !mcp &&
+          !python &&
+          !target.capabilities.includes(targetCapability))
       )
         throw new RuntimePolicyError('bridge_authority_changed');
 
       const settings = bridgeSettingsView(target.metadata).settings;
       if (
-        ((command || mcp) && !settings.localCommand) ||
+        ((command || mcp || python) && !settings.localCommand) ||
         (command?.arguments.candidate && !settings.development)
       )
         throw new RuntimePolicyError('bridge_authority_changed');
@@ -310,6 +335,31 @@ export function createGovernedBridgePolicyOptions(
         throw new RuntimePolicyError('bridge_authority_changed');
 
       let profileReportedAt: Date | null = null;
+      if (python) {
+        const [reported] = await tx<
+          { profile: unknown; reported_at: Date }[]
+        >`select profile,reported_at from allrice_bridge_managed_python_profiles
+          where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} for share`;
+        const profile = RuntimeLocalPythonProfileSchema.safeParse(
+            reported?.profile,
+          ),
+          release = managedPythonPayloadForPlatform(currentDevice.platform);
+        if (
+          !reported ||
+          !profile.success ||
+          !profile.data.available ||
+          !profile.data.stopConfirmed ||
+          !profile.data.purposes.includes(python.arguments.purpose) ||
+          !release ||
+          !localPythonProfileMatchesRelease(profile.data, release) ||
+          python.arguments.imageId !== profile.data.imageId ||
+          python.arguments.architecture !== profile.data.architecture ||
+          python.arguments.profileVersion !== profile.data.profileVersion ||
+          device.platform !== currentDevice.platform
+        )
+          throw new RuntimePolicyError('bridge_authority_changed');
+        profileReportedAt = reported.reported_at;
+      }
       if (command || mcp) {
         if (
           !localCommandEnabled() ||
@@ -387,7 +437,7 @@ export function createGovernedBridgePolicyOptions(
           (employee?.employee_version_id ?? null)
       )
         throw new RuntimePolicyError('bridge_authority_changed');
-      if (command || mcp || binaryFile) {
+      if (command || mcp || binaryFile || python) {
         // Permissions come from the Run's frozen employee snapshot, not a
         // client-supplied action or the employee's mutable current definition.
         const frozen = EmployeeExecutionSnapshotSchema.safeParse(
@@ -403,7 +453,7 @@ export function createGovernedBridgePolicyOptions(
             run.policy_snapshot_id ||
           frozen.data.assignment.userId !== device.ownerId ||
           !frozen.data.capabilitySnapshot.bindings.toolNames.includes(
-            payload.capability,
+            python ? python.arguments.origin.toolName : payload.capability,
           ) ||
           !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
             binaryFile && payload.capability === 'local.file.inspect'
@@ -418,6 +468,14 @@ export function createGovernedBridgePolicyOptions(
             ))
         )
           throw new RuntimePolicyError('bridge_authority_changed');
+        if (python)
+          await assertLocalPythonDelegation(
+            tx,
+            device,
+            binding,
+            python,
+            employee?.execution_snapshot,
+          );
         if (mcp) {
           if (frozen.data.schemaVersion !== 2)
             throw new RuntimePolicyError('bridge_authority_changed');
@@ -547,7 +605,7 @@ export function createGovernedBridgePolicyOptions(
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
       const job =
-        command || mcp || changeset || binaryFile
+        command || mcp || changeset || binaryFile || python
           ? (
               await tx<
                 {
@@ -569,14 +627,14 @@ export function createGovernedBridgePolicyOptions(
         !currentDevice.last_seen_at ||
         currentDevice.last_seen_at.getTime() <= clock.now.getTime() - 90_000 ||
         currentDevice.last_seen_at > clock.now ||
-        ((command || mcp || changeset || binaryFile) &&
+        ((command || mcp || changeset || binaryFile || python) &&
           (!job ||
             job.status !== 'running' ||
             job.cancel_requested_at ||
             !job.lease_expires_at ||
             job.lease_expires_at <= clock.now ||
             job.timeout_at <= clock.now ||
-            ((command || mcp) &&
+            ((command || mcp || python) &&
               (!profileReportedAt ||
                 profileReportedAt.getTime() <= clock.now.getTime() - 90_000 ||
                 profileReportedAt > clock.now))))
@@ -615,7 +673,7 @@ export function createGovernedBridgePolicyOptions(
           grantVersion: grant.runtime_generation,
           scopeDigest: `sha256:${grant.root_fingerprint}`,
           workCopy:
-            command || mcp
+            command || mcp || python
               ? { id: binding.attempt.operationId, kind: 'local_copy' }
               : { id: grant.id, kind: 'in_place' },
         },
@@ -625,7 +683,9 @@ export function createGovernedBridgePolicyOptions(
           ? localCommandBinding(command)
           : mcp
             ? localMcpCommandBinding(mcp)
-            : null,
+            : python
+              ? localPythonCommandBinding(python)
+              : null,
         baseline: [],
         dataScope: [],
       });

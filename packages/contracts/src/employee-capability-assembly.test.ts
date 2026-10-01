@@ -203,6 +203,41 @@ it('publishing selected tools enables their rules while retaining unrelated rest
   });
 });
 
+it('assembles the existing Office export tool without requiring a Node command tool', () => {
+  const input = definition();
+  input.capabilities.toolNames = ['workspace.export.create'];
+  const result = assembleEmployeeCapabilities(input, []);
+  expect(result.securityPolicy.bridgeAccess).toBe('read_write');
+  expect(result.capabilities.toolNames).toEqual(['workspace.export.create']);
+  const current = {
+    version: 1,
+    enabled: true,
+    mode: 'execute',
+    rules: [{ action: 'local.process.execute', effect: 'deny' }],
+  };
+  expect(
+    employeePublicationPolicy(current, result.capabilities.toolNames, 2, true)
+      .rules,
+  ).toEqual([
+    { action: 'local.process.execute', effect: 'deny' },
+    { action: 'local.python.execute', effect: 'allow' },
+  ]);
+  expect(
+    employeePublicationPolicy(
+      {
+        ...current,
+        rules: [
+          ...current.rules,
+          { action: 'local.python.execute', effect: 'deny' },
+        ],
+      },
+      result.capabilities.toolNames,
+      2,
+      true,
+    ).rules,
+  ).toContainEqual({ action: 'local.python.execute', effect: 'deny' });
+});
+
 it.each([
   [[], 'none'],
   [['local.fs.read'], 'read_only'],

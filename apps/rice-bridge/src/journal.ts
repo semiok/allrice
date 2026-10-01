@@ -22,6 +22,9 @@ import {
   RuntimeBridgeReceiptSchema,
   RuntimeBridgeOutputSchema,
   RuntimeLocalCommandResultSchema,
+  RuntimeLocalPythonResultSchema,
+  localPythonResultMatchesPayload,
+  type RuntimeLocalPythonResult,
   ChangesetFileResultSchema,
   type ChangesetFileResult,
   type RuntimeLocalCommandResult,
@@ -875,6 +878,66 @@ export class BridgeJournal {
     return rows.map((row) =>
       RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
     );
+  }
+
+  async unknownLocalPythonOperations() {
+    await this.guard();
+    return this.database
+      .prepare(
+        "SELECT dispatch FROM entries WHERE state='unknown' AND json_extract(dispatch,'$.payload.capability')='local.python.execute' ORDER BY rowid LIMIT 16",
+      )
+      .all()
+      .map((row) =>
+        RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
+      );
+  }
+
+  async reconcileLocalPython(
+    operationId: string,
+    input: RuntimeLocalPythonResult,
+  ) {
+    await this.guard();
+    const result = RuntimeLocalPythonResultSchema.parse(input);
+    return this.transaction(() => {
+      const row = this.entry(operationId),
+        dispatch = RuntimeBridgeDispatchSchema.parse(JSON.parse(row.dispatch));
+      if (
+        row.state !== 'unknown' ||
+        dispatch.payload.capability !== 'local.python.execute' ||
+        !localPythonResultMatchesPayload(dispatch.payload, result)
+      )
+        throw new BridgeJournalError('JOURNAL_RECOVERY_MISMATCH');
+      const evidence = {
+        summary: `本地 Python 已物理停止（${result.reason}）；只核对结果，未重跑`,
+        output: result,
+      };
+      const ref = {
+        id: randomUUID(),
+        recordedAt: new Date().toISOString(),
+        digest: bridgeDigest(evidence),
+      };
+      const receipt = this.append(
+        row,
+        ['canceled', 'lease_lost'].includes(result.reason)
+          ? { type: 'operation.stopped', effects: 'none', evidence: ref }
+          : {
+              type: 'operation.outcome',
+              result: {
+                status:
+                  result.reason === 'exited' && result.exitCode === 0
+                    ? 'succeeded'
+                    : 'failed',
+                effects: 'none',
+                evidence: ref,
+              },
+            },
+        evidence,
+      );
+      this.database
+        .prepare("UPDATE entries SET state='completed' WHERE operation_id=?")
+        .run(operationId);
+      return receipt;
+    });
   }
 
   /** Finite lifecycle outbox for ended/recovering services. Live services own

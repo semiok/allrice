@@ -11,6 +11,8 @@ import {
   BridgeProtocolVersion,
   BridgeCommandSchema,
   BridgeWorkspaceSelectionRequestSchema,
+  managedPythonPayloadForPlatform,
+  type RuntimeLocalPythonProfile,
   BridgeSettingsCommandSchema,
   type BridgeSettingsCommand,
   PairBridgeDeviceResponseSchema,
@@ -529,6 +531,28 @@ async function startSession(
         })
       : undefined;
   let runnerAvailable = false;
+  const pythonRelease = managedPythonPayloadForPlatform(
+    `macos-${process.arch}`,
+  );
+  const managedSandbox =
+    operationLedgerEnabled &&
+    optedIn &&
+    process.platform === 'darwin' &&
+    pythonRelease?.nativeSupported
+      ? new (await import('./managed-python-sandbox.js')).ManagedPythonSandbox(
+          config,
+          pythonRelease,
+        )
+      : undefined;
+  let pythonAvailable = false;
+  let pythonProfile: RuntimeLocalPythonProfile | undefined;
+  let pythonState: 'ready' | 'preparing' | 'paused' | 'unsupported' =
+    managedSandbox ? 'preparing' : optedIn ? 'unsupported' : 'paused';
+  let pythonReason = managedSandbox
+    ? 'runtime_preparing'
+    : optedIn
+      ? 'UNSUPPORTED_NATIVE_PLATFORM'
+      : 'capability_paused';
   let browserHasActiveWork = () => false;
   let browserHasActiveBrowser = () => false;
   let fileFacts = await probeBridgeFiles(config);
@@ -566,6 +590,15 @@ async function startSession(
       browserVersion,
       runner: runnerProfile,
       errors: readinessErrors,
+      managedPython: {
+        state: capabilitySettings.settings.localCommand
+          ? pythonState
+          : 'paused',
+        profile: pythonProfile,
+        reason: capabilitySettings.settings.localCommand
+          ? pythonReason
+          : 'capability_paused',
+      },
     });
   const publish = () => {
     state.environment!.readiness = capabilityReadiness();
@@ -736,6 +769,62 @@ async function startSession(
           }
         })(),
       ]);
+      // Same preparation lifecycle; this fixed private VM is separate from
+      // the existing Node VM and never inherits business folder mounts.
+      if (managedSandbox && capabilitySettings.settings.localCommand) {
+        pythonAvailable = false;
+        try {
+          if (state.activeForeground) {
+            if (pythonProfile) {
+              await managedSandbox.runner.preflight(commandAbort.signal, false);
+              await bridgeRequest({
+                server: config.server,
+                path: '/api/v1/bridge/device/runtime-profile',
+                method: 'POST',
+                token,
+                body: pythonProfile,
+                maximumResponseBytes: 4096,
+                timeoutMs: 5000,
+                signal: commandAbort.signal,
+              });
+              pythonAvailable = true;
+              pythonState = 'ready';
+              pythonReason = 'ready';
+            }
+          } else {
+            if (!pythonProfile) {
+              pythonState = 'preparing';
+              pythonReason = 'runtime_preparing';
+              publish();
+            }
+            const profile = await prepareLocalSandbox(
+              managedSandbox,
+              commandAbort.signal,
+            );
+            commandAbort.signal.throwIfAborted();
+            await bridgeRequest({
+              server: config.server,
+              path: '/api/v1/bridge/device/runtime-profile',
+              method: 'POST',
+              token,
+              body: profile,
+              maximumResponseBytes: 4096,
+              timeoutMs: 5000,
+              signal: commandAbort.signal,
+            });
+            pythonProfile = profile;
+            pythonAvailable = true;
+            pythonState = 'ready';
+            pythonReason = 'ready';
+          }
+        } catch (error) {
+          pythonState = 'unsupported';
+          pythonReason = readinessErrorCode(
+            error,
+            'managed_python_unavailable',
+          );
+        }
+      }
       environment.preview = await bridgePreviewState(config, environment).catch(
         () => 'unavailable',
       );
@@ -759,6 +848,7 @@ async function startSession(
     if (!stopping)
       void heartbeat().catch(() => {
         runnerAvailable = false;
+        pythonAvailable = false;
         state.phase = 'offline';
         publish();
       });
@@ -898,6 +988,9 @@ async function startSession(
               journal,
               chooseFile: options.chooseFile ?? chooseLocalFile,
               runner: runnerAvailable ? runner : undefined,
+              pythonRunner: pythonAvailable
+                ? managedSandbox?.runner
+                : undefined,
               signal: commandAbort.signal,
               acquiring: () => !options.drainSignal?.aborted,
               request: currentTransport()?.request,
@@ -997,6 +1090,7 @@ async function startSession(
       await (
         await import('./local-process-manager.js')
       ).stopLocalProcesses(journal);
+    await managedSandbox?.stop();
     if (journal) {
       const flushSignal = AbortSignal.timeout(5000);
       await new (

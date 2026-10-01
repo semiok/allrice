@@ -101,3 +101,4 @@ export {
   githubMcpOAuthReady,
   McpSettingsConflict,
 } from './platform-mcp-settings.ts';
+export * from './local-python-execution.ts';

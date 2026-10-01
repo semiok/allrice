@@ -47,6 +47,7 @@ export const runtimeGovernedActions = [
   'local.file.open',
   'local.file.reveal',
   'local.process.execute',
+  'local.python.execute',
   'local.fs.changeset',
   'cloud.process.execute',
   'cloud.mcp.call',
@@ -142,6 +143,7 @@ export function runtimePolicyActionDecision(
   if (
     [
       'local.process.execute',
+      'local.python.execute',
       'local.fs.changeset',
       'cloud.process.execute',
       'cloud.mcp.call',

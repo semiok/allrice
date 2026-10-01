@@ -63,12 +63,24 @@ export function bridgeCapabilityReadinessView(
         ? 'preview'
         : capability === 'local.development'
           ? 'development'
-          : capability === 'local.process' || capability === 'local.mcp'
+          : [
+                'local.process',
+                'local.mcp',
+                'local.office',
+                'local.python',
+                'local.office.formulas',
+                'local.office.preview',
+              ].includes(capability)
             ? 'sandbox'
             : null;
   if (
     !reported &&
-    capability !== 'local.office' &&
+    ![
+      'local.office',
+      'local.python',
+      'local.office.formulas',
+      'local.office.preview',
+    ].includes(capability) &&
     !capability.startsWith('local.file.')
   ) {
     const old = kind ? environment?.[kind] : 'ready';
@@ -90,10 +102,7 @@ export function bridgeCapabilityReadinessView(
         : kind === 'sandbox' || kind === 'preview'
           ? settings.localCommand
           : true;
-  if (capability === 'local.office') {
-    state = 'unsupported';
-    reason = 'office_not_implemented';
-  } else if (!online) {
+  if (!online) {
     state = 'offline';
     reason = 'bridge_offline';
   } else if (environment?.paused || !enabled) {

@@ -45,6 +45,7 @@ export function workAutomationGroup(
       'local.file.reveal',
       'local.fs.changeset',
       'local.process.execute',
+      'local.python.execute',
       'local.mcp.discover',
       'local.mcp.call',
       'local.browser.act',

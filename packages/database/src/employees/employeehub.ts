@@ -1,6 +1,7 @@
 import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
 import { readEmployeeOrganizationContext } from './organization-context.ts';
 import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
+import { freezeManagedOfficeBinding } from './managed-python-binding.ts';
 import {
   isPlatformAdmin,
   requirePlatformAdmin,
@@ -1202,6 +1203,33 @@ export async function prepareEmployeeRunBinding(input: {
       ? manifest.data.capabilityBindings.toolNames
       : undefined,
   );
+  // Tenant assignment pointers change on publication. Freeze the exact revision
+  // now so dispatch can verify its immutable checksum without following a newer
+  // draft, assignment, or revision when this Run resumes.
+  const [publication] = await sql<
+    { revision_id: string; checksum: string; definition: unknown }[]
+  >`
+    select r.id as revision_id, r.checksum, r.definition
+    from allrice_platform_employee_tenant_assignments p
+    join allrice_platform_employee_revisions r
+      on r.id = p.revision_id and r.employee_id = p.employee_id
+    where p.organization_id = ${input.context.organizationId}
+      and p.workspace_id = ${input.workspaceId}
+      and p.tenant_employee_id = ${assignment.employee_id}
+      and p.tenant_employee_version_id = ${assignment.id}
+      and p.active and r.status = 'published'
+  `;
+  const managedPython = freezeManagedOfficeBinding({
+    manifest: manifest.data,
+    grantedCapabilities,
+    publication: publication
+      ? {
+          revisionId: publication.revision_id,
+          checksum: publication.checksum,
+          definition: publication.definition,
+        }
+      : null,
+  });
   const profiles = await sql<{ profile: unknown; display_name: string }[]>`
     select coalesce(p.profile, jsonb_build_object(
         'schemaVersion', 1,
@@ -1410,6 +1438,7 @@ export async function prepareEmployeeRunBinding(input: {
         grantedCapabilities,
         bindings: {
           ...capabilityBindings(manifest.data),
+          ...(managedPython ? { managedPython } : {}),
           skillVersionIds,
           knowledgeScopes: [
             ...new Set(
