@@ -264,7 +264,7 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     });
   });
 
-  it('keeps Bridge record compatibility at v1/v2 and current pairing/heartbeat at v2', () => {
+  it('accepts legacy Bridge v1/v2 while current clients emit v2', () => {
     expect(BridgeProtocolVersion).toBe(2);
     expect(BridgeProtocolVersionSchema.safeParse(1).success).toBe(true);
     expect(BridgeProtocolVersionSchema.safeParse(2).success).toBe(true);
@@ -280,7 +280,24 @@ describe('P01 additive contracts preserve the production wire contract', () => {
         }).success,
       ).toBe(true);
     }
-    for (const protocolVersion of [1, 3]) {
+    for (const protocolVersion of [1, 2]) {
+      expect(
+        PairBridgeDeviceInputSchema.safeParse({
+          code: 'ABCD1234',
+          name: 'Synthetic Bridge',
+          platform: 'macos-x64',
+          protocolVersion,
+          capabilities: bridgeCapabilities,
+        }).success,
+      ).toBe(true);
+      expect(
+        HeartbeatBridgeDeviceInputSchema.safeParse({
+          protocolVersion,
+          capabilities: bridgeCapabilities,
+        }).success,
+      ).toBe(true);
+    }
+    for (const protocolVersion of [0, 3]) {
       expect(
         PairBridgeDeviceInputSchema.safeParse({
           code: 'ABCD1234',
@@ -299,7 +316,7 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     }
     expect(
       HeartbeatBridgeDeviceInputSchema.parse({
-        protocolVersion: 2,
+        protocolVersion: BridgeProtocolVersion,
         capabilities: bridgeCapabilities,
       }),
     ).toEqual({ protocolVersion: 2, capabilities: bridgeCapabilities });

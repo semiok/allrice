@@ -82,13 +82,13 @@ suite('MET164 real local choice and existing durable admission', () => {
     );
   const environment = async (
     f: Awaited<ReturnType<typeof fixture>>,
-    browser: 'ready' | 'preparing' | 'paused' | 'unavailable',
+    browser: 'ready' | 'busy' | 'preparing' | 'paused' | 'unavailable',
   ) => {
     await database.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}',${database.db.json(
       {
         version: 1,
         clientVersion: 'synthetic-readiness',
-        browser,
+        browser: browser === 'busy' ? 'ready' : browser,
         sandbox: 'unavailable',
         preview: 'unavailable',
         paused: false,
@@ -96,7 +96,12 @@ suite('MET164 real local choice and existing durable admission', () => {
           {
             capability: 'local.browser',
             state: browser === 'unavailable' ? 'unsupported' : browser,
-            reason: browser === 'ready' ? 'ready' : `browser_${browser}`,
+            reason:
+              browser === 'ready'
+                ? 'ready'
+                : browser === 'busy'
+                  ? 'local_busy'
+                  : `browser_${browser}`,
             missing: [],
             versions: {
               bridge: 'synthetic-readiness',
@@ -170,6 +175,85 @@ suite('MET164 real local choice and existing durable admission', () => {
       await database.db`select id from allrice_managed_browser_tasks where run_id=${f.run}`,
     ).toHaveLength(0);
   });
+  it('adopts the same live local workspace without waiting on itself, while another call stays queued', async () => {
+    const f = await fixture();
+    await cloud(f);
+    await environment(f, 'ready');
+    const a = await admission(f);
+    const first = await selectBrowserExecution(a, database.db);
+    const w = await createLocalBrowserWorkspace(
+      { ...a, grantId: first.grantId!, commonIntent: true },
+      database.db,
+    );
+    expect(await selectBrowserExecution(a, database.db)).toMatchObject({
+      choice: {
+        location: 'local',
+        status: 'execute',
+        reason: 'bound_execution',
+      },
+      workspaceId: w.id,
+      deviceId: f.device.id,
+      grantId: f.localGrant.grantId,
+    });
+    await environment(f, 'busy');
+    expect(await selectBrowserExecution(a, database.db)).toMatchObject({
+      choice: {
+        location: 'local',
+        status: 'execute',
+        reason: 'bound_execution',
+      },
+      workspaceId: w.id,
+    });
+    expect(
+      await createLocalBrowserWorkspace(
+        { ...a, grantId: f.localGrant.grantId, commonIntent: true },
+        database.db,
+      ),
+    ).toMatchObject({ id: w.id });
+    expect(
+      await selectBrowserExecution(await admission(f), database.db),
+    ).toMatchObject({
+      choice: { location: 'local', status: 'wait', reason: 'local_busy' },
+    });
+    expect(
+      await database.db`select id from allrice_browser_workspaces where run_id=${f.run}`,
+    ).toHaveLength(1);
+    expect(
+      await database.db`select id from allrice_managed_browser_tasks where run_id=${f.run}`,
+    ).toHaveLength(0);
+  });
+  it.each(['closed', 'close_pending', 'expired'])(
+    'keeps a %s same-call workspace bound and unavailable rather than re-admitting it',
+    async (state) => {
+      const f = await fixture();
+      await cloud(f);
+      const a = await admission(f);
+      await selectBrowserExecution(a, database.db);
+      const w = await createLocalBrowserWorkspace(
+        { ...a, grantId: f.localGrant.grantId, commonIntent: true },
+        database.db,
+      );
+      if (state === 'expired')
+        await database.db`update allrice_browser_workspaces set expires_at=clock_timestamp()-interval '1 second' where id=${w.id}`;
+      else
+        await database.db`update allrice_browser_workspaces set state=${state},desired_control='closed' where id=${w.id}`;
+      expect(await selectBrowserExecution(a, database.db)).toMatchObject({
+        choice: {
+          location: 'local',
+          status: 'unavailable',
+          reason: 'bound_execution',
+        },
+        workspaceId: w.id,
+        deviceId: f.device.id,
+      });
+      expect(
+        await database.db`select id from allrice_browser_workspaces where run_id=${f.run}`,
+      ).toHaveLength(1);
+      expect(
+        await database.db`select id from allrice_managed_browser_tasks where run_id=${f.run}`,
+      ).toHaveLength(0);
+    },
+  );
   it('falls back only for missing capability/offline, and refuses local inputs even when flags are omitted', async () => {
     const f = await fixture();
     await cloud(f);

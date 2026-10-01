@@ -126,10 +126,22 @@ export async function selectBrowserExecution(
     if (prior && prior.metadata.requestDigest !== requestDigest)
       throw new RuntimePolicyError('idempotency_conflict');
     const [existing] = await tx<
-      { transport: 'local' | 'cloud'; state: string }[]
+      {
+        transport: 'local' | 'cloud';
+        state: string;
+        device_id: string | null;
+        grant_id: string;
+        active: boolean;
+      }[]
     >`
-      select transport,state from allrice_browser_workspaces where id=${id} and organization_id=${ctx.organizationId}
-        and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} and run_id=${input.context.runId}`;
+      select w.transport,w.state,l.device_id,w.grant_id,
+        w.state in ('starting','agent','human') and w.desired_control<>'closed' and w.expires_at>clock_timestamp() as active
+      from allrice_browser_workspaces w left join allrice_local_browser_workspaces l on l.browser_workspace_id=w.id
+        and l.organization_id=w.organization_id and l.workspace_id=w.workspace_id and l.owner_id=w.owner_id
+      where w.id=${id} and w.organization_id=${ctx.organizationId}
+        and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id} and w.run_id=${input.context.runId}`;
+    const boundDevice =
+      existing?.device_id ?? prior?.metadata.deviceId ?? run.local_device;
     const devices =
       localBrowserEnabled() && run.local_tool
         ? await tx<
@@ -145,7 +157,8 @@ export async function selectBrowserExecution(
           >`select d.id,d.protocol_version,
       coalesce(d.last_seen_at between clock_timestamp()-interval '90 seconds' and clock_timestamp(),false) and t.state='online' as online,
       coalesce(t.metadata,'{}'::jsonb) as metadata,g.id as grant_id,g.profile,
-      exists(select 1 from allrice_local_browser_workspaces w where w.grant_id=g.id and w.released_at is null) as busy
+      exists(select 1 from allrice_local_browser_workspaces w where w.grant_id=g.id and w.released_at is null
+        and w.browser_workspace_id<>${id}) as busy
       from allrice_bridge_devices d join allrice_execution_targets t on t.target_key='bridge.'||d.id::text
         and t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.kind='rice_bridge'
       left join allrice_local_browser_grants l on l.device_id=d.id and l.organization_id=d.organization_id
@@ -153,7 +166,8 @@ export async function selectBrowserExecution(
       left join allrice_browser_control_grants g on g.id=l.grant_id and g.organization_id=l.organization_id
         and g.workspace_id=l.workspace_id and g.owner_id=l.owner_id and g.transport='local' and g.enabled and g.revoked_at is null
       where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${ctx.actor.id}
-        and d.revoked_at is null and (${prior?.metadata.deviceId ?? run.local_device}::uuid is null or d.id=${prior?.metadata.deviceId ?? run.local_device}::uuid)
+        and d.revoked_at is null and (${boundDevice}::uuid is null or d.id=${boundDevice}::uuid)
+        and (${existing?.grant_id ?? null}::uuid is null or g.id=${existing?.grant_id ?? null}::uuid)
       order by d.last_seen_at desc nulls last`
         : [];
     const candidates = devices.map((d) => {
@@ -172,6 +186,14 @@ export async function selectBrowserExecution(
       )
         state = 'unsupported';
       if (!d.grant_id && state === 'ready') state = 'unsupported';
+      // Reading/adopting this call's existing workspace needs no new profile.
+      // A busy heartbeat includes our own live browser; never wait on ourselves.
+      if (
+        existing?.active &&
+        existing.transport === 'local' &&
+        state === 'busy'
+      )
+        state = 'ready';
       if (d.busy && state === 'ready') state = 'busy';
       return { ...d, state };
     });
@@ -202,22 +224,29 @@ export async function selectBrowserExecution(
     const boundLocation =
       existing?.transport ??
       (oldChoice?.location === 'none' ? undefined : oldChoice?.location);
-    const choice = resolveExecutionChoice({
-      location,
-      local: device?.state ?? null,
-      cloudAvailable,
-      localInputs,
-      boundLocation,
-      outcomeUnknown: existing?.state === 'unknown',
-    });
+    const choice: ExecutionChoice =
+      existing && !existing.active && existing.state !== 'unknown'
+        ? {
+            location: existing.transport,
+            status: 'unavailable',
+            reason: 'bound_execution',
+          }
+        : resolveExecutionChoice({
+            location,
+            local: device?.state ?? null,
+            cloudAvailable,
+            localInputs,
+            boundLocation,
+            outcomeUnknown: existing?.state === 'unknown',
+          });
     if (!prior && choice.status !== 'unavailable')
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
         values(${ctx.organizationId},${ctx.workspaceId},${ctx.actor.id},'execution.location','browser_workspace',${id},'recorded',${choice.reason},
         ${tx.json({ requestDigest, choice, deviceId: choice.location === 'local' ? (device?.id ?? null) : null, callId: input.callId, runId: input.context.runId, localInputs: !!localInputs })})`;
     return {
       choice,
-      deviceId: device?.id ?? null,
-      grantId: device?.grant_id ?? null,
+      deviceId: existing?.device_id ?? device?.id ?? null,
+      grantId: existing?.grant_id ?? device?.grant_id ?? null,
       deadlineAt: run.timeout_at.toISOString(),
       workspaceId: id,
       selectionReason: prior?.reason ?? choice.reason,
