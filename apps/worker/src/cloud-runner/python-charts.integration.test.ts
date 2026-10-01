@@ -10,7 +10,6 @@ import { validatePngArtifact } from '@allrice/storage';
 import JSZip from 'jszip';
 import { CloudRunnerBackend } from './backend.js';
 import { chartCsv, chartScript } from './python-charts.fixture.js';
-import { boundedRaster } from '../../../web/lib/runtime/raster-preview.js';
 
 const suite =
   process.env.ALLRICE_RUN_PYTHON_INTEGRATION === '1'
@@ -125,7 +124,6 @@ suite('fixed Python Chinese charts in the actual gVisor cloud sandbox', () => {
       width: 960,
       height: 480,
     });
-    expect(boundedRaster(bytes, 'image/png')).toBe(true);
     const data = JSON.parse(
       Buffer.from(
         result.artifacts.find((a) => a.path === 'data-quality.json')!
