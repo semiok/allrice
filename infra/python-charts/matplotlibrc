@@ -1,0 +1,5 @@
+backend: Agg
+font.family: Noto Sans CJK JP
+axes.unicode_minus: True
+text.usetex: False
+savefig.dpi: 120

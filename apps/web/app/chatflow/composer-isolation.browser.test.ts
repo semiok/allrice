@@ -1311,6 +1311,53 @@ suite(
       15_000,
     );
 
+    it.each(['text/csv', 'application/octet-stream', ''])(
+      'uploads Chinese CSV bytes and sends its attachment through the actual composer with browser MIME %j',
+      async (mimeType) => {
+        const f = await fixture({ uploadPending: true });
+        const csv = Buffer.from(
+          '\uFEFF编号,分类,金额\n00123,办公费用,1250.5\n00456,退款,-200\n00789,缺失,\n',
+        );
+        try {
+          const input = f.page.locator('input[type=file]');
+          expect(await input.getAttribute('accept')).toContain('.csv');
+          // Playwright's file payload infers text/csv when MIME is empty.
+          // Use the browser File API to exercise a genuinely absent MIME.
+          const admittedType = await input.evaluate(
+            (element, file) => {
+              const transfer = new DataTransfer();
+              transfer.items.add(
+                new File([file.text], file.name, { type: file.mimeType }),
+              );
+              (element as HTMLInputElement).files = transfer.files;
+              const type = transfer.files[0]!.type;
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+              return type;
+            },
+            { name: '中文图表 样本.csv', text: csv.toString(), mimeType },
+          );
+          expect(admittedType).toBe(mimeType);
+          expect(f.pending).toHaveLength(0);
+          await f.send('请绘制中文费用图表');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/attachments');
+          expect(f.pending[0]!.body.mediaType).toBe('text/csv');
+          expect(f.pending[0]!.body.fileName).toBe('中文图表 样本.csv');
+          expect(
+            Buffer.from(f.pending[0]!.body.contentBase64 as string, 'base64'),
+          ).toEqual(csv);
+          await f.respond(0);
+          await f.waitPending(2);
+          expect(f.pending[1]!.path).toContain('/messages');
+          expect(f.pending[1]!.body.attachmentIds).toEqual([C]);
+          await f.respond(1);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
     it.each([
       { visibility: 'workspace', selectAfterAdding: false },
       { visibility: 'private', selectAfterAdding: false },

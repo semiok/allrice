@@ -449,7 +449,11 @@ export function CloudOperationCard({
               <>
                 <OperationDetail
                   title="执行脚本"
-                  meta="Node.js"
+                  meta={
+                    proposal.language === 'python'
+                      ? 'Python 3.11'
+                      : 'Node.js 22'
+                  }
                   icon={<IconCodeOutlineRegular size={16} />}
                   open={!!pending}
                 >

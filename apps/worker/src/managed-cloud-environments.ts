@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   BrowserProfileSchema,
   CloudExecutionProfileSchema,
+  cloudPythonImageV1,
   runtimeFeatureEnabled,
 } from '@allrice/contracts';
 import { recordManagedCloudEnvironment } from '@allrice/database';
@@ -32,9 +33,27 @@ export async function refreshManagedCloudEnvironments(workerId: string) {
         const verified = await backend.preflight();
         const capacity = await backend.capacity();
         if (capacity.slots === 0) throw Error('cloud_resources_insufficient');
+        // Separate runtime readiness must not rewrite the legacy grant profile
+        // or invalidate a frozen Node operation. Execution probes it again.
+        let python;
+        try {
+          await backend.preflight(cloudPythonImageV1);
+          python = {
+            available: true,
+            imageDigest: cloudPythonImageV1,
+            reason: null,
+          };
+        } catch {
+          python = {
+            available: false,
+            imageDigest: cloudPythonImageV1,
+            reason: 'platform_python_preparing',
+          };
+        }
         return {
           available: true,
           reason: null,
+          python,
           profile: CloudExecutionProfileSchema.parse({
             ...verified,
             runtimeVersion: 'release-20260831.0',

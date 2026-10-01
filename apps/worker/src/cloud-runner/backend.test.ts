@@ -22,6 +22,49 @@ const command = (script: string, extra: Record<string, unknown> = {}) =>
     network: 'none',
   });
 describe('P15 cloud contract fail-closed', () => {
+  it('recognizes watchdog deadline stops from Docker time without guessing or overriding cancellation/unknown', async () => {
+    const deadline = Date.now() + 5000;
+    const container = {
+      Id: '1'.repeat(64),
+      Config: {
+        Labels: {
+          'xyz.bplabs.allrice.cloud.deadline': String(deadline),
+        },
+      },
+      HostConfig: { Runtime: 'runsc' },
+      State: {
+        Running: false,
+        ExitCode: 137,
+        OOMKilled: false,
+        Status: 'exited',
+        FinishedAt: new Date(deadline + 100).toISOString(),
+      },
+    };
+    class StoppedBackend extends CloudRunnerBackend {
+      override async inspect() {
+        return container;
+      }
+      override async call() {
+        return Buffer.alloc(0);
+      }
+    }
+    const backend = new StoppedBackend();
+    const collect = (
+      reason: 'completed' | 'canceled' | 'unknown' = 'completed',
+    ) => backend.collect(randomUUID(), command('0'), Date.now(), reason);
+    expect((await collect()).reason).toBe('deadline');
+    expect((await collect('canceled')).reason).toBe('canceled');
+    expect((await collect('unknown')).reason).toBe('unknown');
+    container.State.FinishedAt = new Date(deadline - 1).toISOString();
+    expect((await collect()).reason).toBe('failed');
+    container.State.FinishedAt = new Date(deadline + 100).toISOString();
+    container.Config.Labels['xyz.bplabs.allrice.cloud.deadline'] = 'unknown';
+    expect((await collect()).reason).toBe('failed');
+    container.Config.Labels['xyz.bplabs.allrice.cloud.deadline'] =
+      String(deadline);
+    container.State.OOMKilled = true;
+    expect((await collect()).reason).toBe('oom');
+  });
   it('rejects unsafe or overlapping input/output paths', () => {
     for (const path of ['../secret', '/etc/passwd', 'a/../b', 'a\\b'])
       expect(() =>

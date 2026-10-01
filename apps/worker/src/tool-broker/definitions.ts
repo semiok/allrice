@@ -119,7 +119,7 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.process.execute',
     description:
-      '提交后按成员工作方式自动执行或请求确认，在隔离云端运行 Node 22 脚本。script 与 frozenScript 二选一；Skill 任务优先用 frozenScript:{skill,path} 引用当前 Run 冻结脚本，由平台保留完整原始字节。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT。执行前显示精确脚本、输入和输出范围。',
+      '提交后按成员工作方式自动执行或请求确认，在隔离云端运行脚本。不传 language 时保持 Node 22；language:"python" 使用固定 Python 3.11、Matplotlib、pandas、openpyxl、Pillow、Noto CJK 字体和 Agg，可读取 input/ 下的已授权 CSV/XLSX 数据并将中文图表保存到 output/ 下。script 与 frozenScript 二选一；frozenScript:{skill,path} 保持当前 Run 冻结的 Node 脚本原始字节。只读取显式选定的已上传文件，禁止联网，不操作客户端文件；可交付 JSON/CSV/TXT，Python 还可声明 format:"png"、.png path/fileName，平台完整检查后返回真实 PNG 的 objectId/checksum/versionId，供原生成果预览下载或同一个 Office Skill 嵌入 Word/PPT。缺失数据应显式处理，不伪造数值。执行前显示精确脚本、输入和输出范围。',
     inputSchema: z.toJSONSchema(CloudToolInputSchema, {
       unrepresentable: 'any',
     }),
