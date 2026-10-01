@@ -4,6 +4,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   BridgeDeviceSchema,
   BridgeCommandPayloadSchema,
+  LocalFilePayloadSchema,
+  LocalFileToolArguments,
+  localFileMaximumBytes,
+  type LocalFilePayload,
   type BridgeCommandPayload,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
@@ -22,6 +26,8 @@ import {
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
 
 import { getDatabase } from './core/client.ts';
+import { getToolBrokerFile } from './execution/tool-broker.ts';
+import { localFileObjectReference } from './local-files.ts';
 import { taskDeadlineOpen, linkTaskOperationCall } from './task-clock.ts';
 import {
   getWorkbenchArtifact,
@@ -65,10 +71,12 @@ async function createLocalBridgeToolOperation(
   input: {
     context: ExecutionContext;
     arguments: unknown;
-    file?: Extract<
-      BridgeCommandPayload,
-      { capability: 'local.fs.write' | 'local.fs.mkdir' }
-    >;
+    file?:
+      | Extract<
+          BridgeCommandPayload,
+          { capability: 'local.fs.write' | 'local.fs.mkdir' }
+        >
+      | LocalFilePayload;
     callId: string;
     /** Internal Worker provenance only; deliberately absent from the public
      * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
@@ -411,6 +419,76 @@ export function createLocalFileOperation(
     file.arguments.expectedSha256 ??= null;
   return createLocalBridgeToolOperation(
     { context: input.context, arguments: null, callId: input.callId, file },
+    database,
+  );
+}
+
+export async function createLocalBinaryFileOperation(
+  input: {
+    context: ExecutionContext;
+    capability: keyof typeof LocalFileToolArguments;
+    arguments: unknown;
+    callId: string;
+  },
+  database: Database = getDatabase(),
+) {
+  const args = LocalFileToolArguments[input.capability].parse(input.arguments);
+  let payload: LocalFilePayload;
+  if (input.capability === 'local.file.save') {
+    const save = LocalFileToolArguments['local.file.save'].parse(args);
+    const file = await getToolBrokerFile(input.context, save.objectId);
+    if (
+      file.object.checksum !== save.checksum ||
+      file.object.sizeBytes > localFileMaximumBytes
+    )
+      throw new RuntimePolicyError('bridge_authority_changed');
+    const [version] = await database<
+      { id: string; version: number; file_name: string }[]
+    >`
+      select id,version,file_name from allrice_deliverable_versions where object_id=${file.object.id} and organization_id=${input.context.organizationId}
+        and workspace_id=${input.context.workspaceId} order by created_at desc limit 1`;
+    payload = LocalFilePayloadSchema.parse({
+      capability: input.capability,
+      arguments: {
+        path: args.path,
+        object: {
+          ...localFileObjectReference(file.object, file.fileName),
+          deliverableVersionId: version?.id ?? null,
+          deliverableVersion: version?.version ?? null,
+        },
+      },
+    });
+  } else if (input.capability === 'local.file.import') {
+    const imported = LocalFileToolArguments['local.file.import'].parse(args);
+    payload = LocalFilePayloadSchema.parse({
+      capability: input.capability,
+      arguments: {
+        ...imported,
+        object: {
+          objectId: id(
+            `local.file.import:${input.context.runId}:${input.callId}:input`,
+          ),
+          checksum: imported.expected.checksum,
+          sizeBytes: imported.expected.sizeBytes,
+          mediaType: imported.expected.mediaType,
+          fileName: args.path.split('/').at(-1),
+          deliverableVersionId: null,
+          deliverableVersion: null,
+        },
+      },
+    });
+  } else
+    payload = LocalFilePayloadSchema.parse({
+      capability: input.capability,
+      arguments: args,
+    });
+  return createLocalBridgeToolOperation(
+    {
+      context: input.context,
+      arguments: null,
+      callId: input.callId,
+      file: payload,
+    },
     database,
   );
 }

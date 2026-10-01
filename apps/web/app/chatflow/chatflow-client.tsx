@@ -459,6 +459,9 @@ export function ChatFlowClient({
     setUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
+    uploadFromBridge,
+    cancelBridgeUpload,
+    bridgeUploadStatus,
     uploadVisibility,
     versionHistoryFile,
     versionHistoryLoading,
@@ -1134,6 +1137,9 @@ export function ChatFlowClient({
       }}
       onSendMessage={sendMessage}
       onUploadAttachments={uploadAttachments}
+      onUploadFromBridge={uploadFromBridge}
+      onCancelBridgeUpload={cancelBridgeUpload}
+      bridgeUploadStatus={bridgeUploadStatus}
       onUploadVisibilityChange={setUploadVisibility}
       pendingAttachments={
         visibleSubmission

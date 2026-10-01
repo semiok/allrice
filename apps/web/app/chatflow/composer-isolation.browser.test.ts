@@ -243,6 +243,7 @@ suite(
     async function fixture(
       options: {
         uploadPending?: boolean;
+        bridgeFiles?: boolean;
         running?: boolean;
         question?: boolean;
         delayHistoryB?: boolean;
@@ -404,7 +405,25 @@ suite(
           return;
         }
         if (path === '/api/v1/bridge/devices') {
-          answer(response, { devices: [] });
+          answer(response, {
+            devices: options.bridgeFiles
+              ? [
+                  {
+                    id: runId,
+                    name: 'Synthetic Mac',
+                    status: 'online',
+                    folderGrants: [{ id: childId, label: '合成目录' }],
+                    readiness: [
+                      {
+                        capability: 'local.file.select',
+                        state: 'ready',
+                        reason: 'ready',
+                      },
+                    ],
+                  },
+                ]
+              : [],
+          });
           return;
         }
         if (path === '/api/v1/files') {
@@ -688,6 +707,49 @@ suite(
             }
             if (p.path === '/api/v1/sessions') {
               answer(p.response, { session: session(C) });
+              return;
+            }
+            if (p.path === '/api/v1/bridge/files') {
+              uploaded.set(C, {
+                id: C,
+                fileName: 'Bridge 原始资料.xlsx',
+                mediaType:
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                sizeBytes: 8,
+              });
+              const file = {
+                checksum: `sha256:${'a'.repeat(64)}`,
+                version: `sha256:${'b'.repeat(64)}`,
+                sizeBytes: 8,
+                mediaType:
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+              };
+              answer(p.response, {
+                id: runId,
+                status: 'succeeded',
+                summary: 'uploaded',
+                errorCode: null,
+                cancelRequested: false,
+                deviceId: runId,
+                folderGrantId: childId,
+                output: {
+                  contractVersion: 1,
+                  status: 'uploaded',
+                  path: 'Bridge 原始资料.xlsx',
+                  file,
+                  object: {
+                    objectId: C,
+                    fileName: 'Bridge 原始资料.xlsx',
+                    checksum: file.checksum,
+                    sizeBytes: file.sizeBytes,
+                    mediaType: file.mediaType,
+                    deliverableVersionId: null,
+                    deliverableVersion: null,
+                  },
+                  platformUploaded: true,
+                  localSaved: false,
+                },
+              });
               return;
             }
             if (p.path.endsWith('/attachments')) {
@@ -2311,6 +2373,105 @@ suite(
         await f.close();
       }
     }, 15_000);
+    it('native Bridge upload sends the existing object once and keeps a late upload out of another Session', async () => {
+      const f = await fixture({ bridgeFiles: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
+          .click();
+        await f.waitPending(1);
+        expect(f.pending[0]!.body).toMatchObject({
+          action: 'select',
+          sessionId: A,
+          deviceId: runId,
+          folderGrantId: childId,
+        });
+        await f.respond(0);
+        await f.page
+          .getByText('Bridge 原始资料.xlsx', { exact: true })
+          .waitFor();
+        await f.send('Use uploaded original');
+        await f.waitPending(2);
+        expect(f.pending[1]!.body.attachmentIds).toEqual([C]);
+        await f.respond(1);
+        expect(f.writes).toEqual([
+          '/api/v1/bridge/files',
+          `/api/v1/sessions/${A}/messages`,
+        ]);
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
+          .click();
+        await f.waitPending(3);
+        await f.choose(B);
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息' })
+          .fill('Session B draft');
+        await f.respond(2);
+        expect(
+          await f.page
+            .getByText('Bridge 原始资料.xlsx', { exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('Session B draft');
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .isDisabled(),
+        ).toBe(false);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
+    it('native Bridge import preserves the idempotency key through created Session and a lost response', async () => {
+      const f = await fixture({ bridgeFiles: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '新的工作', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
+          .click();
+        await f.waitPending(1);
+        expect(f.pending[0]!.path).toBe('/api/v1/sessions');
+        await f.respond(0);
+        await f.waitPending(2);
+        expect(f.pending[1]!.body.sessionId).toBe(C);
+        const key = f.pending[1]!.body.idempotencyKey;
+        await f.respond(1, false);
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
+          .click();
+        await f.waitPending(3);
+        expect(f.pending[2]!.body.idempotencyKey).toBe(key);
+        expect(f.writes.filter((p) => p === '/api/v1/sessions')).toHaveLength(
+          1,
+        );
+        await f.respond(2);
+        await f.page
+          .getByText('Bridge 原始资料.xlsx', { exact: true })
+          .waitFor();
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 20000);
     it('a normally-created session adopts the sending owner and submits its first attachment/message once', async () => {
       const f = await fixture();
       try {

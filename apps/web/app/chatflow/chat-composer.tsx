@@ -71,6 +71,9 @@ interface ChatComposerProps {
   onRetryAttachment: (attachment: PendingAttachment) => void;
   onSendMessage: () => void | Promise<void>;
   onUploadAttachments: (files: FileList | File[]) => void;
+  onUploadFromBridge?: () => void | Promise<void>;
+  onCancelBridgeUpload?: () => void | Promise<void>;
+  bridgeUploadStatus?: string | null;
   onUploadVisibilityChange: (visibility: Visibility) => void;
 }
 
@@ -113,6 +116,9 @@ export function ChatComposer({
   onRetryAttachment,
   onSendMessage,
   onUploadAttachments,
+  onUploadFromBridge,
+  onCancelBridgeUpload,
+  bridgeUploadStatus,
   onUploadVisibilityChange,
 }: ChatComposerProps) {
   const bridgeStatus = bridgeComposerStatus(
@@ -123,6 +129,16 @@ export function ChatComposer({
   return (
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
       {error ? <div className={inputUi.notice}>{error}</div> : null}
+      {bridgeUploadStatus ? (
+        <div className={inputUi.notice} role="status">
+          {bridgeUploadStatus}{' '}
+          {busy && onCancelBridgeUpload && (
+            <button type="button" onClick={() => void onCancelBridgeUpload()}>
+              取消电脑上传
+            </button>
+          )}
+        </div>
+      ) : null}
       <div className={inputUi.card}>
         <SessionReferenceChips
           references={sessionReferences}
@@ -243,6 +259,15 @@ export function ChatComposer({
                     label: '从工作区添加',
                     icon: <IconFolderOpenOutlineRegular size={20} />,
                   },
+                  ...(onUploadFromBridge
+                    ? [
+                        {
+                          id: 'bridge-file',
+                          label: '通过我的电脑选择文件',
+                          icon: <IconFolderOpenOutlineRegular size={20} />,
+                        },
+                      ]
+                    : []),
                   {
                     id: 'upload',
                     label: '从本地上传',
@@ -267,6 +292,7 @@ export function ChatComposer({
                   onAttachmentMenuOpenChange(false);
                   if (id === 'reference') onOpenSessionReferences?.();
                   else if (id === 'workspace') void onOpenWorkspaceFiles();
+                  else if (id === 'bridge-file') void onUploadFromBridge?.();
                   else if (id === 'upload') fileInput.current?.click();
                 }}
               />

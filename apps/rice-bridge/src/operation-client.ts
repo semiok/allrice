@@ -15,6 +15,12 @@ import {
 import { bridgeRequest } from './client.js';
 import type { BridgeConfig } from './config.js';
 import { executeLocalCommand } from './executor.js';
+import { executeLocalFile, LocalFileError } from './local-files.js';
+import {
+  localFileHttpTransport,
+  isLocalFilePayload,
+  flushLocalFileCommands,
+} from './local-file-client.js';
 import { executeChangeset } from './changeset-executor.js';
 import {
   BridgeJournalError,
@@ -46,6 +52,10 @@ export class RuntimeBridgeOperationClient {
       request?: typeof bridgeRequest;
       onActivity?: (active: boolean) => void;
       acquiring?: () => boolean;
+      chooseFile?: (
+        root: string,
+        signal?: AbortSignal,
+      ) => Promise<string | null>;
     },
   ) {
     input.journal.assertIdentity(input.config.server, input.config.deviceId);
@@ -81,6 +91,10 @@ export class RuntimeBridgeOperationClient {
   }
 
   async flush() {
+    await flushLocalFileCommands({
+      ...this.input,
+      server: this.input.config.server,
+    });
     await flushLocalServiceEvents(this.input);
     for (const chunk of await this.input.journal.pendingOutput()) {
       await this.deliverOutput(chunk);
@@ -149,6 +163,7 @@ export class RuntimeBridgeOperationClient {
       body: {
         supportsClaimRecovery: true,
         supportsChangeset: true,
+        supportsBinaryFiles: true,
         ...(this.input.runner
           ? {
               supportsLocalCommand: true,
@@ -285,6 +300,67 @@ export class RuntimeBridgeOperationClient {
         { reason: 'bridge_paused' },
         'Bridge 已停止；此操作未执行',
       );
+      return;
+    }
+    if (isLocalFilePayload(dispatch.payload)) {
+      const channel = localFileHttpTransport({
+        server: config.server,
+        token,
+        kind: 'operation',
+        id: operationId,
+        leaseToken: dispatch.leaseToken,
+        signal: this.input.signal,
+      });
+      let applied = false;
+      try {
+        const output = await executeLocalFile(root, dispatch.payload, {
+          ...channel,
+          signal: this.input.signal,
+          chooseFile: this.input.chooseFile,
+        });
+        applied = ['saved', 'uploaded', 'opened', 'revealed'].includes(
+          output.status,
+        );
+        await journal.outcome(operationId, {
+          status: 'succeeded',
+          effects: ['saved', 'uploaded', 'opened', 'revealed'].includes(
+            output.status,
+          )
+            ? 'applied'
+            : 'none',
+          output,
+          summary:
+            output.status === 'saved'
+              ? '已按原始字节保存到电脑'
+              : output.status === 'uploaded'
+                ? '已上传选定版本原始字节，可作为现有附件读取'
+                : '本地文件版本/系统动作已核验',
+        });
+      } catch (error) {
+        if (applied || (error instanceof LocalFileError && error.unknown))
+          await journal.uncertain(operationId, 'receipt_missing', {
+            summary: '文件操作结果待对账，不自动重做',
+          });
+        else if (
+          error instanceof LocalFileError &&
+          error.code === 'FILE_CANCELED'
+        )
+          await journal.stopped(
+            operationId,
+            { reason: error.code },
+            '文件操作取消，尚未提交文件',
+          );
+        else
+          await journal.outcome(operationId, {
+            status: 'failed',
+            effects: 'none',
+            summary: '文件操作未完成，请重新选择当前版本或检查目录权限',
+            errorCode:
+              error instanceof LocalFileError
+                ? error.code
+                : 'LOCAL_FILE_FAILED',
+          });
+      }
       return;
     }
     if (dispatch.payload.capability === 'local.process.execute') {

@@ -9,6 +9,12 @@ export const BridgeReadinessCapabilitySchema = z.enum([
   'local.fs.mkdir',
   'local.git.status',
   'local.git.diff',
+  'local.file.inspect',
+  'local.file.import',
+  'local.file.save',
+  'local.file.open',
+  'local.file.reveal',
+  'local.file.select',
   'local.browser',
   'local.process',
   'local.preview',
@@ -46,7 +52,7 @@ export type BridgeCapabilityReadiness = z.infer<
 >;
 export const BridgeCapabilityReadinessListSchema = z
   .array(BridgeCapabilityReadinessSchema)
-  .max(16)
+  .max(32)
   .refine(
     (items) =>
       new Set(items.map((item) => item.capability)).size === items.length,

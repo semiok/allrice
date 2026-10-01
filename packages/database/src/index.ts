@@ -12,6 +12,7 @@ export * from './workspace.ts';
 export * from './workspace-readiness.ts';
 export * from './experience.ts';
 export * from './bridge.ts';
+export * from './local-files.ts';
 export * from './bridge-settings.ts';
 export * from './browser-execution-choice.ts';
 export * from './bridge-connections.ts';

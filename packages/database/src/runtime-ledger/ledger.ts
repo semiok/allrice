@@ -4,6 +4,9 @@ import {
   BridgeCapabilities,
   BrowserCommandSchema,
   RuntimeBridgePayloadSchema,
+  LocalFilePayloadSchema,
+  LocalFileResultSchema,
+  localFileResultMatchesPayload,
   RuntimeAttemptRefSchema,
   RuntimeOperationEventSchema,
   RuntimeOperationSignalSchema,
@@ -920,6 +923,7 @@ export function createRuntimeOperationLedger(options: {
       supportsChangesetCandidate?: boolean;
       supportsBackgroundServices?: boolean;
       supportsChangeset?: boolean;
+      supportsBinaryFiles?: boolean;
       recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
     }) {
       const scope = RuntimeScopeSchema.parse(input.scope),
@@ -936,7 +940,7 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
-          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities, ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
+          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => input.supportsBinaryFiles || !name.startsWith('local.file.')), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {
@@ -1332,6 +1336,29 @@ export function createRuntimeOperationLedger(options: {
             const payload = RuntimeBridgePayloadSchema.parse(
               row.bridge_payload,
             );
+            if (
+              payload.capability.startsWith('local.file.') &&
+              content.signal.type === 'operation.outcome' &&
+              content.signal.result.status === 'succeeded'
+            ) {
+              const filePayload = LocalFilePayloadSchema.parse(payload);
+              const evidence = content.evidence as { output?: unknown } | null;
+              const output = LocalFileResultSchema.parse(evidence?.output);
+              if (
+                !localFileResultMatchesPayload(filePayload, output) ||
+                content.signal.result.effects !==
+                  (output.status === 'inspected' ? 'none' : 'applied')
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              if (output.status === 'uploaded') {
+                const [stored] =
+                  await tx`select id from allrice_storage_objects where id=${output.object!.objectId}
+                  and organization_id=${row.snapshot.binding.task.scope.organizationId} and workspace_id=${row.snapshot.binding.task.scope.workspaceId}
+                  and owner_id=${row.snapshot.binding.requestedBy.id} and state='ready' and checksum=${output.file.checksum}
+                  and size_bytes=${output.file.sizeBytes} and media_type=${output.file.mediaType}`;
+                if (!stored) throw new RuntimeLedgerError('invalid_state');
+              }
+            }
             if (
               payload.capability === 'local.process.execute' &&
               payload.arguments.candidate

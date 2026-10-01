@@ -14,6 +14,11 @@ import type { DatabaseSync } from 'node:sqlite';
 
 import {
   RuntimeBridgeDispatchSchema,
+  BridgeCommandSchema,
+  CompleteBridgeCommandInputSchema,
+  LocalFileResultSchema,
+  type BridgeCommand,
+  type LocalFileResult,
   RuntimeBridgeReceiptSchema,
   RuntimeBridgeOutputSchema,
   RuntimeLocalCommandResultSchema,
@@ -175,6 +180,11 @@ export class BridgeJournal {
         database.exec(`
         BEGIN IMMEDIATE;
         CREATE TABLE IF NOT EXISTS identity (singleton INTEGER PRIMARY KEY CHECK(singleton=1), server TEXT NOT NULL, device_id TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS file_commands (
+          command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, command TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN ('executing','completed','unknown')),
+          receipt TEXT, delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))
+        );
         CREATE TABLE IF NOT EXISTS entries (
           operation_id TEXT PRIMARY KEY,
           fingerprint TEXT NOT NULL,
@@ -234,6 +244,30 @@ export class BridgeJournal {
           { server, deviceId: input.deviceId },
           input.limits ?? { entries: 1_000, bytes: 128 * 1024 * 1024 },
         );
+        // A lost direct-user file action is never executed again. Only known
+        // durable receipts are redelivered after restart.
+        for (const row of database
+          .prepare(
+            "SELECT command_id,command FROM file_commands WHERE state='executing'",
+          )
+          .all()) {
+          const command = BridgeCommandSchema.parse(
+            JSON.parse(String(row.command)),
+          );
+          database
+            .prepare(
+              "UPDATE file_commands SET state='unknown',receipt=? WHERE command_id=?",
+            )
+            .run(
+              JSON.stringify({
+                leaseToken: command.leaseToken,
+                status: 'unknown',
+                summary: 'Bridge 已重启，文件操作结果待核实，不自动重做',
+                errorCode: 'FILE_RESULT_UNKNOWN',
+              }),
+              String(row.command_id),
+            );
+        }
         // The exclusive OS lock proves a previous live owner cannot still be using
         // this journal. It says nothing about external effects: never replay them.
         for (const row of database
@@ -340,6 +374,121 @@ export class BridgeJournal {
     ) {
       throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
     }
+  }
+
+  async beginFileCommand(input: BridgeCommand) {
+    await this.guard();
+    const command = BridgeCommandSchema.parse(input);
+    this.assertIdentity(this.identity.server, command.deviceId);
+    if (!command.payload.capability.startsWith('local.file.'))
+      throw new BridgeJournalError('JOURNAL_INVALID_DISPATCH');
+    const fingerprint = bridgeDigest(command);
+    return this.transaction(() => {
+      const prior = this.database
+        .prepare('SELECT fingerprint FROM file_commands WHERE command_id=?')
+        .get(command.id);
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
+        return false;
+      }
+      const count = Number(
+        this.database
+          .prepare('SELECT count(*) AS count FROM file_commands')
+          .get()?.count ?? 0,
+      );
+      if (count >= this.limits.entries)
+        throw new BridgeJournalError('JOURNAL_FULL');
+      this.database
+        .prepare(
+          "INSERT INTO file_commands(command_id,fingerprint,command,state) VALUES(?,?,?,'executing')",
+        )
+        .run(command.id, fingerprint, JSON.stringify(command));
+      return true;
+    });
+  }
+
+  async completeFileCommand(command: BridgeCommand, input: unknown) {
+    await this.guard();
+    const receipt = CompleteBridgeCommandInputSchema.parse(input);
+    if (
+      receipt.leaseToken !== command.leaseToken ||
+      Buffer.byteLength(JSON.stringify(receipt)) > 16_384
+    )
+      throw new BridgeJournalError('JOURNAL_RESULT_TOO_LARGE');
+    this.transaction(() => {
+      const row = this.database
+        .prepare(
+          'SELECT fingerprint,receipt FROM file_commands WHERE command_id=?',
+        )
+        .get(command.id);
+      if (!row || row.fingerprint !== bridgeDigest(command))
+        throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
+      const body = JSON.stringify(receipt);
+      if (row.receipt && row.receipt !== body)
+        throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
+      this.database
+        .prepare(
+          'UPDATE file_commands SET state=?,receipt=? WHERE command_id=?',
+        )
+        .run(
+          receipt.status === 'unknown' ? 'unknown' : 'completed',
+          body,
+          command.id,
+        );
+    });
+  }
+
+  async fileCommandCheckpoint(command: BridgeCommand, input: LocalFileResult) {
+    const output = LocalFileResultSchema.parse(input);
+    await this.completeFileCommand(command, {
+      leaseToken: command.leaseToken,
+      status: 'succeeded',
+      output,
+      summary:
+        output.status === 'saved'
+          ? '已按原始字节保存到电脑'
+          : output.status === 'uploaded'
+            ? '文件原始字节已上传'
+            : '电脑已接收文件打开/定位动作',
+    });
+  }
+
+  async pendingFileCommands() {
+    await this.guard();
+    return this.database
+      .prepare(
+        'SELECT command_id,receipt FROM file_commands WHERE delivered=0 AND receipt IS NOT NULL ORDER BY rowid LIMIT 16',
+      )
+      .all()
+      .map((row) => ({
+        id: String(row.command_id),
+        receipt: CompleteBridgeCommandInputSchema.parse(
+          JSON.parse(String(row.receipt)),
+        ),
+      }));
+  }
+
+  async acknowledgeFileCommand(id: string) {
+    await this.guard();
+    this.transaction(() => {
+      this.database
+        .prepare(
+          'UPDATE file_commands SET delivered=1 WHERE command_id=? AND receipt IS NOT NULL',
+        )
+        .run(id);
+      // The authoritative server never reclaims completed commands. Retain a
+      // bounded recent cache; unresolved or unacknowledged facts are never pruned.
+      const retain = Math.max(
+        1,
+        Math.min(100, Math.floor(this.limits.entries / 4)),
+      );
+      this.database
+        .prepare(
+          "DELETE FROM file_commands WHERE delivered=1 AND state='completed' AND rowid NOT IN (SELECT rowid FROM file_commands WHERE delivered=1 AND state='completed' ORDER BY rowid DESC LIMIT ?)",
+        )
+        .run(retain);
+    });
   }
 
   assertWorkspace(root: string) {
@@ -607,12 +756,16 @@ export class BridgeJournal {
     return {
       pendingReceipts: Number(
         this.database
-          .prepare('SELECT count(*) AS n FROM outbox WHERE delivered=0')
+          .prepare(
+            'SELECT (SELECT count(*) FROM outbox WHERE delivered=0)+(SELECT count(*) FROM file_commands WHERE delivered=0 AND receipt IS NOT NULL) AS n',
+          )
           .get()?.n ?? 0,
       ),
       unknownOperations: Number(
         this.database
-          .prepare("SELECT count(*) AS n FROM entries WHERE state='unknown'")
+          .prepare(
+            "SELECT (SELECT count(*) FROM entries WHERE state='unknown')+(SELECT count(*) FROM file_commands WHERE state='unknown') AS n",
+          )
           .get()?.n ?? 0,
       ),
     };

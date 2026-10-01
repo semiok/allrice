@@ -18,7 +18,7 @@ import { basename, dirname, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 
 import {
-  BridgeCommandPayloadSchema,
+  LegacyBridgeCommandPayloadSchema,
   type BridgeCommandPayload,
 } from '@allrice/contracts';
 
@@ -98,7 +98,10 @@ export async function resolveAuthorizedPath(root: string, requested: string) {
   return { rootReal, candidateReal };
 }
 
-async function resolveAuthorizedWriteTarget(root: string, requested: string) {
+export async function resolveAuthorizedWriteTarget(
+  root: string,
+  requested: string,
+) {
   const rootReal = await realpath(root);
   const candidate = resolve(rootReal, requested);
   if (
@@ -484,7 +487,7 @@ export async function executeLocalCommand(
   root: string,
   payloadInput: BridgeCommandPayload,
 ) {
-  const payload = BridgeCommandPayloadSchema.parse(payloadInput);
+  const payload = LegacyBridgeCommandPayloadSchema.parse(payloadInput);
   if (payload.capability === 'local.fs.list') {
     const output = await listFiles(
       root,

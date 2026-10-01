@@ -37,6 +37,9 @@ describe('Bridge per-capability facts', () => {
     expect(reports.find((r) => r.capability === 'local.fs.read')).toMatchObject(
       { state: 'ready' },
     );
+    expect(
+      reports.find((r) => r.capability === 'local.file.save'),
+    ).toMatchObject({ state: 'ready', versions: { binaryFiles: '1' } });
     expect(reports.find((r) => r.capability === 'local.browser')).toMatchObject(
       { state: 'ready', versions: { chromium: '140.0.0' } },
     );

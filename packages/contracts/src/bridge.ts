@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { BridgeCapabilityReadinessListSchema } from './execution-choice.ts';
+import { LocalFilePayloadSchema } from './local-files.ts';
 
 export const BridgeProtocolVersion = 2 as const;
 
@@ -21,6 +22,12 @@ export const BridgeCapabilitySchema = z.enum([
   'local.fs.mkdir',
   'local.git.status',
   'local.git.diff',
+  'local.file.inspect',
+  'local.file.import',
+  'local.file.save',
+  'local.file.open',
+  'local.file.reveal',
+  'local.file.select',
 ]);
 export type BridgeCapability = z.infer<typeof BridgeCapabilitySchema>;
 
@@ -45,81 +52,91 @@ const RelativePathSchema = z
     message: 'bridge paths cannot traverse parent directories',
   });
 
-export const BridgeCommandPayloadSchema = z.discriminatedUnion('capability', [
-  z
-    .object({
-      capability: z.literal('local.fs.list'),
-      arguments: z
-        .object({
-          path: RelativePathSchema.default('.'),
-          limit: z.number().int().min(1).max(200).default(100),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      capability: z.literal('local.fs.search'),
-      arguments: z
-        .object({
-          path: RelativePathSchema.default('.'),
-          query: z.string().trim().min(1).max(500),
-          limit: z.number().int().min(1).max(100).default(30),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      capability: z.literal('local.fs.read'),
-      arguments: z
-        .object({
-          path: RelativePathSchema,
-          maxBytes: z.number().int().min(1).max(200_000).default(200_000),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      capability: z.literal('local.fs.write'),
-      arguments: z
-        .object({
-          path: RelativePathSchema,
-          content: z.string().max(200_000),
-          expectedSha256: z
-            .string()
-            .regex(/^sha256:[a-f0-9]{64}$/)
-            .nullable()
-            .optional(),
-        })
-        .strict(),
-    })
-    .strict(),
-  z
-    .object({
-      capability: z.literal('local.fs.mkdir'),
-      arguments: z.object({ path: RelativePathSchema }).strict(),
-    })
-    .strict(),
-  z
-    .object({
-      capability: z.literal('local.git.status'),
-      arguments: z.object({ path: RelativePathSchema.default('.') }).strict(),
-    })
-    .strict(),
-  z
-    .object({
-      capability: z.literal('local.git.diff'),
-      arguments: z
-        .object({
-          path: RelativePathSchema.default('.'),
-          staged: z.boolean().default(false),
-          maxBytes: z.number().int().min(1).max(200_000).default(200_000),
-        })
-        .strict(),
-    })
-    .strict(),
+export const LegacyBridgeCommandPayloadSchema = z.discriminatedUnion(
+  'capability',
+  [
+    z
+      .object({
+        capability: z.literal('local.fs.list'),
+        arguments: z
+          .object({
+            path: RelativePathSchema.default('.'),
+            limit: z.number().int().min(1).max(200).default(100),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        capability: z.literal('local.fs.search'),
+        arguments: z
+          .object({
+            path: RelativePathSchema.default('.'),
+            query: z.string().trim().min(1).max(500),
+            limit: z.number().int().min(1).max(100).default(30),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        capability: z.literal('local.fs.read'),
+        arguments: z
+          .object({
+            path: RelativePathSchema,
+            maxBytes: z.number().int().min(1).max(200_000).default(200_000),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        capability: z.literal('local.fs.write'),
+        arguments: z
+          .object({
+            path: RelativePathSchema,
+            content: z.string().max(200_000),
+            expectedSha256: z
+              .string()
+              .regex(/^sha256:[a-f0-9]{64}$/)
+              .nullable()
+              .optional(),
+          })
+          .strict(),
+      })
+      .strict(),
+    z
+      .object({
+        capability: z.literal('local.fs.mkdir'),
+        arguments: z.object({ path: RelativePathSchema }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        capability: z.literal('local.git.status'),
+        arguments: z.object({ path: RelativePathSchema.default('.') }).strict(),
+      })
+      .strict(),
+    z
+      .object({
+        capability: z.literal('local.git.diff'),
+        arguments: z
+          .object({
+            path: RelativePathSchema.default('.'),
+            staged: z.boolean().default(false),
+            maxBytes: z.number().int().min(1).max(200_000).default(200_000),
+          })
+          .strict(),
+      })
+      .strict(),
+  ],
+);
+export type LegacyBridgeCommandPayload = z.infer<
+  typeof LegacyBridgeCommandPayloadSchema
+>;
+export const BridgeCommandPayloadSchema = z.union([
+  LegacyBridgeCommandPayloadSchema,
+  LocalFilePayloadSchema,
 ]);
 export type BridgeCommandPayload = z.infer<typeof BridgeCommandPayloadSchema>;
 
@@ -307,6 +324,7 @@ export const BridgeCommandStatusSchema = z.enum([
   'failed',
   'expired',
   'canceled',
+  'unknown',
 ]);
 export type BridgeCommandStatus = z.infer<typeof BridgeCommandStatusSchema>;
 
@@ -327,7 +345,7 @@ export type BridgeCommand = z.infer<typeof BridgeCommandSchema>;
 export const CompleteBridgeCommandInputSchema = z
   .object({
     leaseToken: UuidSchema,
-    status: z.enum(['succeeded', 'failed']),
+    status: z.enum(['succeeded', 'failed', 'unknown', 'canceled']),
     output: z.unknown().optional(),
     summary: z.string().trim().min(1).max(500),
     errorCode: z.string().trim().min(1).max(120).optional(),

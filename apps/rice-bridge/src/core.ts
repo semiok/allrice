@@ -38,6 +38,7 @@ import {
   type BridgeConfig,
 } from './config.js';
 import { LocalExecutionError, executeLocalCommand } from './executor.js';
+import type { BridgeJournal } from './journal.js';
 import {
   nativeSandboxConfig,
   sandboxOptIn,
@@ -235,6 +236,93 @@ async function complete(
   }
 }
 
+async function completeLocalFileCommand(
+  config: BridgeConfig,
+  token: string,
+  command: BridgeCommand,
+  journal: BridgeJournal,
+  options: StartOptions,
+  signal: AbortSignal,
+) {
+  const { executeLocalFile, LocalFileError } = await import('./local-files.js');
+  const { localFileHttpTransport, isLocalFilePayload, flushLocalFileCommands } =
+    await import('./local-file-client.js');
+  if (!isLocalFilePayload(command.payload))
+    throw Error('LOCAL_FILE_INVALID_COMMAND');
+  if (!(await journal.beginFileCommand(command))) {
+    await flushLocalFileCommands({
+      server: config.server,
+      token,
+      journal,
+      signal,
+    });
+    return;
+  }
+  const grant = config.grants.find((g) => g.id === command.folderGrantId);
+  try {
+    if (!grant) throw new LocalFileError('GRANT_NOT_FOUND');
+    const root = await realpath(grant.rootPath);
+    if (
+      createHash('sha256').update(root).digest('hex') !== grant.rootFingerprint
+    )
+      throw new LocalFileError('FOLDER_CHANGED');
+    journal.assertWorkspace(root);
+    const channel = localFileHttpTransport({
+      server: config.server,
+      token,
+      kind: 'command',
+      id: command.id,
+      leaseToken: command.leaseToken,
+      signal,
+    });
+    const output = await executeLocalFile(root, command.payload, {
+      ...channel,
+      signal,
+      chooseFile: options.chooseFile ?? chooseLocalFile,
+      checkpoint: (output) => journal.fileCommandCheckpoint(command, output),
+    });
+    if (output.status === 'inspected')
+      await journal.fileCommandCheckpoint(command, output);
+  } catch (error) {
+    await journal.completeFileCommand(command, {
+      leaseToken: command.leaseToken,
+      status:
+        error instanceof LocalFileError && error.unknown
+          ? 'unknown'
+          : error instanceof LocalFileError && error.code === 'FILE_CANCELED'
+            ? 'canceled'
+            : 'failed',
+      summary: '本地文件操作未完成；请查看具体原因，未知结果不得重做',
+      errorCode:
+        error instanceof LocalFileError ? error.code : 'LOCAL_FILE_FAILED',
+    });
+  }
+  await flushLocalFileCommands({
+    server: config.server,
+    token,
+    journal,
+    signal,
+  });
+}
+
+async function chooseLocalFile(root: string, signal?: AbortSignal) {
+  if (platform() !== 'darwin') return null;
+  try {
+    const result = await execFileAsync(
+      '/usr/bin/osascript',
+      [
+        '-e',
+        'on run argv\nreturn POSIX path of (choose file with prompt "选择已授权文件夹内要上传的文件" default location (POSIX file (item 1 of argv)))\nend run',
+        root,
+      ],
+      { signal, timeout: 300_000 },
+    );
+    return result.stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function chooseWorkspaceFolder() {
   if (platform() !== 'darwin') {
     throw new Error('Native workspace selection requires macOS');
@@ -343,6 +431,7 @@ type StartOptions = {
       | 'BRIDGE_STOPPED',
   ) => void;
   chooseWorkspace?: () => Promise<string>;
+  chooseFile?: (root: string, signal?: AbortSignal) => Promise<string | null>;
 };
 
 export async function start(options: StartOptions = {}) {
@@ -807,6 +896,7 @@ async function startSession(
               config,
               token,
               journal,
+              chooseFile: options.chooseFile ?? chooseLocalFile,
               runner: runnerAvailable ? runner : undefined,
               signal: commandAbort.signal,
               acquiring: () => !options.drainSignal?.aborted,
@@ -854,11 +944,18 @@ async function startSession(
           ({ config, token } = await credentials(await readConfig()));
           state.activeForeground = 1;
           publish();
-          await complete(
-            config,
-            token,
-            BridgeCommandSchema.parse(response.command),
-          );
+          const command = BridgeCommandSchema.parse(response.command);
+          if (command.payload.capability.startsWith('local.file.')) {
+            if (!journal) throw Error('LOCAL_FILE_JOURNAL_UNAVAILABLE');
+            await completeLocalFileCommand(
+              config,
+              token,
+              command,
+              journal,
+              options,
+              commandAbort.signal,
+            );
+          } else await complete(config, token, command);
           state.activeForeground = 0;
           await updateFacts();
         } else {

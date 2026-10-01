@@ -113,10 +113,13 @@ export function projectBridgeCapabilityReadiness(input: {
   };
   for (const capability of BridgeCapabilities) {
     const write =
-      capability === 'local.fs.write' || capability === 'local.fs.mkdir';
+      capability === 'local.fs.write' ||
+      capability === 'local.fs.mkdir' ||
+      capability === 'local.file.save';
     const git = capability.startsWith('local.git.');
     const missing =
-      write && !input.operationLedgerEnabled
+      (write || capability.startsWith('local.file.')) &&
+      !input.operationLedgerEnabled
         ? ['operation_ledger_disabled']
         : !input.files.folder
           ? [input.files.folderReason]
@@ -136,7 +139,12 @@ export function projectBridgeCapabilityReadiness(input: {
         ? 'platform_unsupported'
         : (missing[0] ?? (input.activeForeground ? 'local_busy' : 'ready')),
       missing,
-      git && input.files.gitVersion ? { git: input.files.gitVersion } : {},
+      {
+        ...(git && input.files.gitVersion
+          ? { git: input.files.gitVersion }
+          : {}),
+        ...(capability.startsWith('local.file.') ? { binaryFiles: '1' } : {}),
+      },
     );
   }
   const runtime = (

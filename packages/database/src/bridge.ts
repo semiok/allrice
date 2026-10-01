@@ -26,6 +26,10 @@ import {
   type ExecutionContext,
   type RequestContext,
   BridgeReadinessCapabilitySchema,
+  LocalFilePayloadSchema,
+  LocalFileResultSchema,
+  localFileResultMatchesPayload,
+  canonicalRuntimeBridgeJson,
 } from '@allrice/contracts';
 
 import { DataAccessError } from './data.ts';
@@ -175,11 +179,13 @@ function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
 
 function executionTargetCapabilities(capabilities: BridgeCapability[]) {
   return [
-    ...(capabilities.some((item) => item.startsWith('local.fs.'))
+    ...(capabilities.some(
+      (item) => item.startsWith('local.fs.') || item.startsWith('local.file.'),
+    )
       ? (['files.read'] as const)
       : []),
     ...(capabilities.some((item) =>
-      ['local.fs.write', 'local.fs.mkdir'].includes(item),
+      ['local.fs.write', 'local.fs.mkdir', 'local.file.save'].includes(item),
     )
       ? (['files.write'] as const)
       : []),
@@ -465,7 +471,7 @@ export async function listBridgeDevices(
       (exists(select 1 from allrice_bridge_commands c where c.device_id=d.id and c.status in ('claimed','running'))
         or exists(select 1 from allrice_runtime_operations o where o.organization_id=d.organization_id and o.workspace_id=d.workspace_id
           and o.snapshot->'binding'->'execution'->>'deviceId'=d.id::text and o.snapshot->>'status' in ('granted','running')
-          and (o.snapshot->'binding'->>'action' like 'local.fs.%' or o.snapshot->'binding'->>'action' in ('local.process.execute','local.mcp.discover','local.mcp.call')))) as foreground_busy,
+          and (o.snapshot->'binding'->>'action' like 'local.fs.%' or o.snapshot->'binding'->>'action' like 'local.file.%' or o.snapshot->'binding'->>'action' in ('local.process.execute','local.mcp.discover','local.mcp.call')))) as foreground_busy,
       exists(select 1 from allrice_local_browser_workspaces l where l.device_id=d.id and l.released_at is null) as browser_busy
     from allrice_bridge_devices d
     left join allrice_execution_targets t on t.organization_id=d.organization_id
@@ -512,6 +518,7 @@ export async function listBridgeDevices(
             : {}),
           ...(device.status === 'online' &&
           (capability.startsWith('local.fs.') ||
+            capability.startsWith('local.file.') ||
             capability.startsWith('local.git.')) &&
           !device.capabilities.includes(capability as BridgeCapability)
             ? {
@@ -522,6 +529,7 @@ export async function listBridgeDevices(
             : {}),
           ...(device.status === 'online' &&
           (capability.startsWith('local.fs.') ||
+            capability.startsWith('local.file.') ||
             capability.startsWith('local.git.')) &&
           !grantsByDevice.get(row.id)?.length
             ? {
@@ -893,6 +901,7 @@ export async function claimNextBridgeCommand(token: string) {
         select id from allrice_bridge_commands
         where device_id = ${device.id} and status = 'queued'
           and timeout_at > now()
+          and capability=any(${device.capabilities})
         order by created_at for update skip locked limit 1
       )
       update allrice_bridge_commands command
@@ -926,6 +935,29 @@ export async function completeBridgeCommand(
     throw new BridgeDataError('result_too_large');
   }
   const sql = getDatabase();
+  const [bound] = await sql<
+    { capability: string; arguments: unknown }[]
+  >`select capability,arguments from allrice_bridge_commands
+    where id=${commandId} and device_id=${device.id} and lease_token=${parsed.leaseToken}`;
+  if (
+    bound?.capability.startsWith('local.file.') &&
+    parsed.status === 'succeeded'
+  ) {
+    const payload = LocalFilePayloadSchema.parse({
+      capability: bound.capability,
+      arguments: bound.arguments,
+    });
+    const output = LocalFileResultSchema.parse(parsed.output);
+    if (!localFileResultMatchesPayload(payload, output))
+      throw new BridgeDataError('idempotency_conflict');
+    if (output.status === 'uploaded') {
+      const [stored] =
+        await sql`select id from allrice_storage_objects where id=${output.object!.objectId} and organization_id=${device.organization_id}
+        and workspace_id=${device.workspace_id} and owner_id=${device.owner_id} and state='ready' and checksum=${output.file.checksum}
+        and size_bytes=${output.file.sizeBytes} and media_type=${output.file.mediaType}`;
+      if (!stored) throw new BridgeDataError('command_unavailable');
+    }
+  }
   const rows = await sql<CommandRow[]>`
     update allrice_bridge_commands set
       status = ${parsed.status}, result = ${sql.json(toJsonValue(parsed.output ?? null))},
@@ -933,12 +965,36 @@ export async function completeBridgeCommand(
       completed_at = now(), updated_at = now()
     where id = ${commandId} and device_id = ${device.id}
       and lease_token = ${parsed.leaseToken}
-      and status in ('claimed', 'running') and timeout_at > now()
+      and ((status in ('claimed', 'running') and timeout_at > now())
+        or (capability like 'local.file.%' and status in ('claimed','running','unknown','canceled','expired')))
     returning id, device_id, folder_grant_id, capability, arguments, status,
       lease_token, created_at, timeout_at, result, summary, error_code
   `;
   const row = rows[0];
-  if (!row) throw new BridgeDataError('lease_lost');
+  if (!row) {
+    // Durable file receipts may be redelivered after the response was lost.
+    // Exact comparison cannot change a completed command or lend its lease.
+    const [prior] = await sql<
+      {
+        status: string;
+        result: unknown;
+        summary: string;
+        error_code: string | null;
+      }[]
+    >`
+      select status,result,summary,error_code from allrice_bridge_commands where id=${commandId}
+        and device_id=${device.id} and capability like 'local.file.%' and lease_token=${parsed.leaseToken}`;
+    if (
+      prior &&
+      prior.status === parsed.status &&
+      canonicalRuntimeBridgeJson(prior.result) ===
+        canonicalRuntimeBridgeJson(parsed.output ?? null) &&
+      prior.summary === parsed.summary &&
+      prior.error_code === (parsed.errorCode ?? null)
+    )
+      return { status: prior.status };
+    throw new BridgeDataError('lease_lost');
+  }
   await audit({
     organizationId: device.organization_id,
     workspaceId: device.workspace_id,
