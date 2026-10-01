@@ -232,14 +232,16 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     ).toBe(false);
   });
 
-  it('keeps legacy executor capabilities and adds only implemented binary-file actions', () => {
+  it('keeps legacy executor capabilities and adds implemented file and managed Python capabilities', () => {
     expect(BridgeCapabilitySchema.options).toEqual([
       ...bridgeCapabilities,
       ...localFileCapabilities,
+      'local.python.execute',
     ]);
     expect(BridgeCapabilities).toEqual([
       ...bridgeCapabilities,
       ...localFileCapabilities,
+      'local.python.execute',
     ]);
     const inspect = {
       capability: 'local.file.inspect',

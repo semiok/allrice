@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.4.0",
-  "contentChecksum": "sha256:7dd4ca166d34bf9333c6ce4d6cd23b9873f197416db3be19673bdc992de06269",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=7dd4ca166d34bf9333c6ce4d6cd23b9873f197416db3be19673bdc992de06269",
+  "version": "1.5.0",
+  "contentChecksum": "sha256:a25c8441bf6cf6cc13b184155e5f8a06d0266c22b9f4cf6f453fd8beb0031fc1",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=a25c8441bf6cf6cc13b184155e5f8a06d0266c22b9f4cf6f453fd8beb0031fc1",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "MET-166 Python charts with native-first Office integration",
+  "reviewedBy": "MET-164 managed local-first native Office",
   "resources": [
     {
       "path": "references/LICENSE.dsh",
@@ -61,5 +61,5 @@
       "name": "workspace.export.create"
     }
   ],
-  "checksum": "sha256:6934708ec8e5042737865e017ea03f673a708104cf19a91a5e3b5597b400c4c6"
+  "checksum": "sha256:6f7318bfcf551e00b7a0c880bcb60602eb80af797284a53e0185cd9624d05542"
 }
