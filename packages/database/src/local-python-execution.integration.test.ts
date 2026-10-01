@@ -7,10 +7,13 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   BridgeDeviceSchema,
+  EmployeeDefinitionSchema,
+  EmployeeExecutionSnapshotSchema,
   RuntimeLocalPythonPayloadSchema,
   RuntimeLocalPythonProfileSchema,
   RuntimeLocalPythonResultSchema,
   managedPythonPayloadForPlatform,
+  runtimeContractEqual,
 } from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
@@ -30,7 +33,9 @@ import {
   localPythonTransferAuthority,
   readLocalPythonInput,
   storeLocalPythonArtifact,
+  assertLocalPythonDelegation,
 } from './local-python-execution.ts';
+import { employeeManifestChecksum } from './employees/employee-config.ts';
 import { waitForLocalAdmission } from '../../../apps/worker/src/tool-broker/handlers/local-admission.ts';
 import * as client from './core/client.ts';
 
@@ -376,6 +381,96 @@ suite(
       await expect(create(denied)).rejects.toMatchObject({
         code: 'unavailable',
       });
+    });
+
+    it('admits the unchanged published manifest after JSONB parsing for an ordinary member, while rejecting changed frozen permissions', async () => {
+      const f = await fixture({
+        memberRole: 'member',
+        managedOffice: { manifestOrder: 'reversed' },
+      });
+      const [row] = await database.db<
+        {
+          execution_snapshot: unknown;
+          manifest: unknown;
+          config_checksum: string;
+          role: string;
+        }[]
+      >`select e.execution_snapshot,v.manifest,v.config_checksum,m.role
+        from allrice_employee_runs e
+        join allrice_employee_versions v on v.id=e.employee_version_id
+          and v.organization_id=e.organization_id and v.workspace_id=e.workspace_id
+        join allrice_memberships m on m.organization_id=e.organization_id
+          and m.workspace_id=e.workspace_id and m.user_id=e.owner_id
+        where e.run_id=${f.run}`;
+      const frozen = EmployeeExecutionSnapshotSchema.parse(
+          row!.execution_snapshot,
+        ),
+        stored = EmployeeDefinitionSchema.parse(row!.manifest);
+      expect(row!.role).toBe('member');
+      expect(f.execution.policySnapshot.memberships[0]!.role).toBe('member');
+      expect(frozen.employee.definitionChecksum).toBe(row!.config_checksum);
+      expect(employeeManifestChecksum(frozen.employee.definition)).not.toBe(
+        row!.config_checksum,
+      );
+      expect(runtimeContractEqual(frozen.employee.definition, stored)).toBe(
+        true,
+      );
+      // The native Python path remains usable with the existing Node gate OFF.
+      const p = payload(f),
+        created = await create(f, p),
+        ledger = createGovernedBridgeOperationLedger(f.device, {
+          database: database.db,
+        }),
+        claim = await ledger.claimNextBridgeOperation({
+          scope: created.snapshot.binding.task.scope,
+          deviceId: f.device.id,
+          supportsManagedPython: true,
+          leaseMs: 30_000,
+        });
+      expect(claim?.snapshot.binding.action).toBe('local.python.execute');
+      expect(claim?.snapshot.binding.task.runId).toBe(f.run);
+
+      if (frozen.employee.definition.schemaVersion !== 2)
+        throw Error('managed Office fixture requires a V2 definition');
+      const changed = EmployeeExecutionSnapshotSchema.parse({
+        ...frozen,
+        employee: {
+          ...frozen.employee,
+          // Retain the real version/checksum but attempt to add an ungranted tool.
+          definition: {
+            ...frozen.employee.definition,
+            capabilityBindings: {
+              ...frozen.employee.definition.capabilityBindings,
+              toolNames: [
+                ...frozen.employee.definition.capabilityBindings.toolNames,
+                'local.process.execute',
+              ],
+            },
+          },
+        },
+      });
+      expect(changed.employee.definitionChecksum).toBe(row!.config_checksum);
+      const changedChecksum = EmployeeExecutionSnapshotSchema.parse({
+        ...changed,
+        employee: {
+          ...changed.employee,
+          definitionChecksum: employeeManifestChecksum(
+            changed.employee.definition,
+          ),
+        },
+      });
+      for (const rejected of [changed, changedChecksum])
+        await expect(
+          database.db.begin((tx) =>
+            assertLocalPythonDelegation(
+              tx,
+              f.device,
+              created.snapshot.binding,
+              p,
+              rejected,
+            ),
+          ),
+        ).rejects.toMatchObject({ code: 'bridge_authority_changed' });
     });
 
     it('authorizes only its declared bytes, rejects fabricated collection, then settles actual stored bytes exactly once', async () => {
