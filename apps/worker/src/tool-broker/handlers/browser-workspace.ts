@@ -10,7 +10,12 @@ import {
   cloudStableId,
   linkTaskOperationCall,
   getDatabase,
+  createLocalBrowserWorkspace,
+  selectBrowserExecution,
+  executionResourceObserver,
+  RuntimePolicyError,
 } from '@allrice/database';
+import { resolveExecutionChoice } from '@allrice/contracts';
 import { BrowserWorkspaceToolInputSchema } from '../../browser-control/tool-input.js';
 import {
   startBrowserWorkspaceController,
@@ -27,12 +32,22 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
     ctx = browserPrincipal(input.context);
   if (!input.managedBrowserJobAttempt || !input.managedBrowserJobLeaseToken)
     throw Error('BROWSER_JOB_LEASE_REQUIRED');
+  const assertOwned = async (id: string) => {
+    const w = await readCurrentBrowserWorkspace(ctx, id);
+    if (w.transport === 'cloud')
+      ownedBrowserController(id, input.context.jobId, input.context.worker.id);
+    else if (
+      w.run_id !== input.context.runId ||
+      w.job_id !== input.context.jobId ||
+      w.worker_id !== input.context.worker.id ||
+      w.job_attempt !== input.managedBrowserJobAttempt ||
+      w.job_lease_token !== input.managedBrowserJobLeaseToken
+    )
+      throw Error('LOCAL_BROWSER_RUN_MISMATCH');
+    return w;
+  };
   if (args.command === 'close') {
-    ownedBrowserController(
-      args.workspaceId,
-      input.context.jobId,
-      input.context.worker.id,
-    );
+    const workspace = await assertOwned(args.workspaceId);
     await requestBrowserControl(ctx, args.workspaceId, {
       requestId: randomUUID(),
       expectedFence: args.fence,
@@ -44,27 +59,101 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
       modelContent: JSON.stringify({
         requested: true,
         confirmedStopped: false,
+        executionLocation: workspace.transport,
+        executionReason: 'bound_execution',
       }),
     };
   }
   let payload;
+  let executionReason = 'bound_execution';
   if (args.command === 'open') {
-    let w = await createBrowserWorkspace({
+    const admission = {
       context: input.context,
       callId: input.call.id,
       url: args.url,
       jobAttempt: input.managedBrowserJobAttempt,
       jobLeaseToken: input.managedBrowserJobLeaseToken,
+      location: args.location,
+      requireLocalInputs: args.requireLocalInputs,
+    };
+    const observer = executionResourceObserver({
+      context: input.context,
+      leaseToken: input.managedBrowserJobLeaseToken,
+      attemptId: cloudStableId(
+        `browser-admission:${input.context.runId}:${input.call.id}`,
+      ),
+      callId: input.call.id,
     });
-    startBrowserWorkspaceController(w, {
-      storage: new LocalStorageAdapter(input.storageRoot),
-      ...(input.signal ? { signal: input.signal } : {}),
-    });
+    let waiting = false;
+    const wait = async (reason: 'local_busy' | 'local_preparing') => {
+      await observer.observe({ stage: waiting ? 'waiting' : 'queued', reason });
+      waiting = true;
+      await delay(500, undefined, { signal: input.signal });
+    };
+    let w;
+    try {
+      for (;;) {
+        input.signal?.throwIfAborted();
+        const selection = await selectBrowserExecution(admission);
+        executionReason = selection.selectionReason;
+        if (selection.choice.status === 'reconcile')
+          throw Error('BROWSER_RECONCILIATION_REQUIRED');
+        if (selection.choice.status === 'unavailable')
+          throw Error(
+            `BROWSER_EXECUTION_UNAVAILABLE:${selection.choice.reason}`,
+          );
+        if (selection.choice.status === 'wait') {
+          await wait(
+            selection.choice.reason === 'local_busy'
+              ? 'local_busy'
+              : 'local_preparing',
+          );
+          continue;
+        }
+        try {
+          w =
+            selection.choice.location === 'local'
+              ? await createLocalBrowserWorkspace({
+                  ...admission,
+                  grantId: selection.grantId!,
+                  commonIntent: true,
+                })
+              : await createBrowserWorkspace(admission);
+          break;
+        } catch (error) {
+          if (
+            !(error instanceof RuntimePolicyError) ||
+            !['local_browser_preparing', 'local_browser_profile_busy'].includes(
+              error.code,
+            )
+          )
+            throw error;
+          // Retry admission of the same bound call, never a browser action.
+          await wait(
+            error.code === 'local_browser_preparing'
+              ? 'local_preparing'
+              : 'local_busy',
+          );
+        }
+      }
+      if (waiting) await observer.observe({ stage: 'completed' });
+    } catch (error) {
+      if (waiting)
+        await observer
+          .observe({ stage: input.signal?.aborted ? 'canceled' : 'failed' })
+          .catch(() => undefined);
+      throw error;
+    }
+    if (w.transport === 'cloud')
+      startBrowserWorkspaceController(w, {
+        storage: new LocalStorageAdapter(input.storageRoot),
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
     const until = Date.now() + 20000;
     while (w.acknowledged_fence !== w.control_fence && Date.now() < until) {
       if (input.signal?.aborted) throw Error('BROWSER_CANCELED');
       await delay(100);
-      w = await readCurrentBrowserWorkspace(ctx, w.id);
+      w = await assertOwned(w.id);
     }
     if (w.state !== 'agent' || w.acknowledged_fence !== w.control_fence)
       throw Error('BROWSER_CONTROLLER_NOT_READY');
@@ -78,11 +167,7 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
       action: { type: 'navigate', url: args.url },
     };
   } else {
-    ownedBrowserController(
-      args.workspaceId,
-      input.context.jobId,
-      input.context.worker.id,
-    );
+    await assertOwned(args.workspaceId);
     payload = {
       version: 1,
       workspaceId: args.workspaceId,
@@ -111,8 +196,16 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
     input.signal,
   );
   return {
-    summary: '浏览器操作结果已记录',
+    summary: `${op.workspace.transport === 'local' ? '本地' : '云端'}浏览器操作结果已记录`,
     modelContent: JSON.stringify({
+      executionChoice: resolveExecutionChoice({
+        local: 'ready',
+        cloudAvailable: true,
+        boundLocation: op.workspace.transport,
+      }),
+      executionLocation: op.workspace.transport,
+      executionReason,
+      deviceId: op.workspace.device_id,
       workspaceId: op.workspace.id,
       profileId: op.workspace.profile_id,
       fence: op.workspace.control_fence,

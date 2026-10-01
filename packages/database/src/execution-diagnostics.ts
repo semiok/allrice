@@ -17,7 +17,14 @@ const Event = z
       'cleaned',
     ]),
     reason: z
-      .enum(['sandbox_capacity', 'memory_pressure', 'fair_queue', 'none'])
+      .enum([
+        'sandbox_capacity',
+        'memory_pressure',
+        'fair_queue',
+        'local_busy',
+        'local_preparing',
+        'none',
+      ])
       .default('none'),
     backendId: z.string().max(160).optional(),
     capacity: z.number().int().min(0).max(32).optional(),
@@ -76,7 +83,8 @@ export function executionResourceObserver(
       const [first] = await db<{ id: string }[]>`
         select w.id from allrice_task_resource_waits w
         join allrice_jobs j on j.id=w.job_id and j.worker_id=w.worker_id and j.lease_token=w.lease_token
-        where w.state='waiting' and j.status='running' and j.cancel_requested_at is null
+        where w.state='waiting' and w.reason not in ('local_busy','local_preparing')
+          and j.status='running' and j.cancel_requested_at is null
           and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
         order by (select count(*) from allrice_task_resource_waits a join allrice_jobs aj on aj.id=a.job_id
           where a.organization_id=w.organization_id and a.state='executing' and aj.status='running'

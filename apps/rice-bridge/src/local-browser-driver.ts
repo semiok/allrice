@@ -99,6 +99,7 @@ export const localBrowserLaunchArguments = Object.freeze([
 ]);
 
 export type LocalBrowserDriver = Omit<BrowserDriver, 'close'> & {
+  version?: string;
   close: (disposition: 'completed' | 'revoked' | 'lost') => Promise<void>;
   checkpoint: () => Promise<void>;
 };
@@ -323,6 +324,7 @@ export async function startLocalBrowserDriver(input: {
       proxy.close,
     );
     return {
+      version: browser.version(),
       observe: renderer.observe,
       perform: renderer.perform,
       close,

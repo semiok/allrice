@@ -87,6 +87,7 @@ export async function probeLocalBrowser(
   try {
     signal.throwIfAborted();
     await driver.observe(1);
+    return driver.version;
   } finally {
     await driver.close('completed');
   }
@@ -136,9 +137,11 @@ export async function resumeExistingSandbox(
 export async function prepareBridgeBrowser(
   config: BridgeConfig,
   signal: AbortSignal,
+  onVersion?: (version: string) => void,
 ) {
   if (!(await localBrowserOptIn(config))) return 'paused' as const;
-  await probeLocalBrowser(config, signal);
+  const version = await probeLocalBrowser(config, signal);
+  if (version) onVersion?.(version);
   return 'ready' as const;
 }
 

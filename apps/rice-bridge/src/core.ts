@@ -45,6 +45,11 @@ import {
 } from './sandbox-settings.js';
 import { bridgeVersion } from './version.js';
 import {
+  probeBridgeFiles,
+  projectBridgeCapabilityReadiness,
+  readinessErrorCode,
+} from './capability-readiness.js';
+import {
   initialBridgeEnvironment,
   prepareBridgeBrowser,
   bridgePreviewState,
@@ -435,6 +440,12 @@ async function startSession(
         })
       : undefined;
   let runnerAvailable = false;
+  let browserHasActiveWork = () => false;
+  let fileFacts = await probeBridgeFiles(config);
+  let browserVersion: string | undefined;
+  let runnerProfile:
+    Awaited<ReturnType<NonNullable<typeof runner>['preflight']>> | undefined;
+  const readinessErrors: Partial<Record<'browser' | 'sandbox', string>> = {};
   const state: BridgeRuntimeState = {
     phase: 'connecting',
     workspaceLabels: config.grants.map((grant) => grant.label),
@@ -451,11 +462,28 @@ async function startSession(
         : 'paused',
     },
   };
-  const publish = () =>
+  const capabilityReadiness = (phase = state.phase) =>
+    projectBridgeCapabilityReadiness({
+      environment: state.environment!,
+      nativeMac:
+        process.platform === 'darwin' &&
+        ['arm64', 'x64'].includes(process.arch),
+      phase,
+      files: fileFacts,
+      activeForeground: state.activeForeground,
+      activeBrowsers: browserHasActiveWork() ? 1 : 0,
+      operationLedgerEnabled,
+      browserVersion,
+      runner: runnerProfile,
+      errors: readinessErrors,
+    });
+  const publish = () => {
+    state.environment!.readiness = capabilityReadiness();
     options.onState?.({
       ...state,
       workspaceLabels: [...state.workspaceLabels],
     });
+  };
   const updateFacts = async () => {
     if (journal) {
       const facts = await journal.diagnosticCounts();
@@ -494,6 +522,8 @@ async function startSession(
       capabilitySettings = await localCapabilitySettings(config);
       state.environment!.settings = capabilitySettings.settings;
       state.environment!.settingsRevision = capabilitySettings.revision;
+      fileFacts = await probeBridgeFiles(config);
+      publish();
       const response = await bridgeRequest<{ settings?: unknown }>({
         server: config.server,
         path: '/api/v1/bridge/device/heartbeat',
@@ -502,7 +532,10 @@ async function startSession(
         body: {
           protocolVersion: BridgeProtocolVersion,
           capabilities: BridgeCapabilities,
-          environment: state.environment,
+          environment: {
+            ...state.environment,
+            readiness: capabilityReadiness('online'),
+          },
         },
         timeoutMs: 5000,
       });
@@ -543,10 +576,18 @@ async function startSession(
           if (Date.now() - lastBrowserProbe < 60_000) return;
           lastBrowserProbe = Date.now();
           try {
+            if (environment.browser !== 'ready') {
+              environment.browser = 'preparing';
+              publish();
+            }
             environment.browser = await prepareBridgeBrowser(
               config,
               commandAbort.signal,
+              (version) => {
+                browserVersion = version;
+              },
             );
+            delete readinessErrors.browser;
           } catch (error) {
             if (
               error instanceof Error &&
@@ -554,12 +595,19 @@ async function startSession(
             )
               browserStopUnconfirmed = true;
             environment.browser = 'unavailable';
+            readinessErrors.browser = readinessErrorCode(
+              error,
+              'browser_unavailable',
+            );
           }
         })(),
         (async () => {
           runnerAvailable = false;
           if (!runner) {
             environment.sandbox = optedIn ? 'unavailable' : 'paused';
+            readinessErrors.sandbox = optedIn
+              ? 'sandbox_not_installed'
+              : 'capability_paused';
             return;
           }
           try {
@@ -569,6 +617,8 @@ async function startSession(
             } catch (error) {
               if (Date.now() - lastSandboxResume < 60_000) throw error;
               lastSandboxResume = Date.now();
+              environment.sandbox = 'preparing';
+              publish();
               profile = await prepareLocalSandbox(runner, commandAbort.signal);
             }
             commandAbort.signal.throwIfAborted();
@@ -583,9 +633,15 @@ async function startSession(
               signal: commandAbort.signal,
             });
             runnerAvailable = true;
+            runnerProfile = profile;
+            delete readinessErrors.sandbox;
             environment.sandbox = 'ready';
-          } catch {
+          } catch (error) {
             environment.sandbox = 'unavailable';
+            readinessErrors.sandbox = readinessErrorCode(
+              error,
+              'sandbox_unavailable',
+            );
             options.onNotice?.('SANDBOX_UNAVAILABLE');
           }
         })(),
@@ -634,7 +690,6 @@ async function startSession(
   };
   let browserTask: Promise<void> | null = null;
   let runtimeReady = false;
-  let browserHasActiveWork = () => false;
   let browserStopUnconfirmed = false;
   try {
     const [

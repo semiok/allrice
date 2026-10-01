@@ -4,6 +4,9 @@ import {
   UpdateBridgeSettingsSchema,
   UuidSchema,
   type BridgeSettings,
+  type BridgeReadinessCapability,
+  type BridgeReadinessState,
+  type BridgeCapabilityReadiness,
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
@@ -34,6 +37,75 @@ export function bridgeSettingsView(metadata: Record<string, unknown> = {}) {
     pending,
     supported: !!environment?.settings,
     environment,
+  };
+}
+
+/** Compatibility projection over the last report and revisioned owner choices.
+ * It is discovery, not authority. Legacy clients keep their existing paths. */
+export function bridgeCapabilityReadinessView(
+  metadata: Record<string, unknown>,
+  capability: BridgeReadinessCapability,
+  online = true,
+): Pick<
+  BridgeCapabilityReadiness,
+  'state' | 'reason' | 'missing' | 'versions'
+> {
+  const { environment, settings, pending } = bridgeSettingsView(metadata);
+  const reported = environment?.readiness?.find(
+    (item) => item.capability === capability,
+  );
+  let state: BridgeReadinessState = reported?.state ?? 'unsupported';
+  let reason = reported?.reason ?? 'readiness_not_reported';
+  const kind =
+    capability === 'local.browser'
+      ? 'browser'
+      : capability === 'local.preview'
+        ? 'preview'
+        : capability === 'local.development'
+          ? 'development'
+          : capability === 'local.process' || capability === 'local.mcp'
+            ? 'sandbox'
+            : null;
+  if (!reported && capability !== 'local.office') {
+    const old = kind ? environment?.[kind] : 'ready';
+    state =
+      old === 'ready'
+        ? 'ready'
+        : old === 'preparing'
+          ? 'preparing'
+          : old === 'paused'
+            ? 'paused'
+            : 'unsupported';
+    reason = `legacy_${old ?? 'unreported'}`;
+  }
+  const enabled =
+    kind === 'browser'
+      ? settings.localBrowser
+      : kind === 'development'
+        ? settings.development && settings.localCommand
+        : kind === 'sandbox' || kind === 'preview'
+          ? settings.localCommand
+          : true;
+  if (capability === 'local.office') {
+    state = 'unsupported';
+    reason = 'office_not_implemented';
+  } else if (!online) {
+    state = 'offline';
+    reason = 'bridge_offline';
+  } else if (environment?.paused || !enabled) {
+    state = 'paused';
+    reason = 'capability_paused';
+  } else if (kind && pending) {
+    state = 'preparing';
+    reason = 'settings_pending';
+  }
+  return {
+    state,
+    reason,
+    missing: reported?.missing ?? [],
+    versions:
+      reported?.versions ??
+      (environment?.clientVersion ? { bridge: environment.clientVersion } : {}),
   };
 }
 

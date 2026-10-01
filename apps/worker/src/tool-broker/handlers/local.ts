@@ -9,21 +9,25 @@ import {
 import {
   BridgeCommandPayloadSchema,
   RuntimeLocalServiceControlSchema,
+  resolveExecutionChoice,
 } from '@allrice/contracts';
 
 import type { RiceToolHandler } from '../types.js';
 import { LocalStorageAdapter } from '@allrice/storage';
+import { waitForLocalAdmission } from './local-admission.js';
 
 export const executeControlledLocalCommand: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
-  const operation = await createLocalCommandOperation({
-    context: input.context,
-    arguments: args,
-    callId: input.call.id,
-    storage: new LocalStorageAdapter(input.storageRoot),
-  }).catch((error: unknown) => {
+  const operation = await waitForLocalAdmission(input, () =>
+    createLocalCommandOperation({
+      context: input.context,
+      arguments: args,
+      callId: input.call.id,
+      storage: new LocalStorageAdapter(input.storageRoot),
+    }),
+  ).catch((error: unknown) => {
     if (
       !(error instanceof RuntimePolicyError) ||
       error.code !== 'local_runner_unavailable'
@@ -37,17 +41,25 @@ export const executeControlledLocalCommand: RiceToolHandler = async ({
         status: 'environment_unavailable',
         executed: false,
         source: 'rice-bridge',
-        recoveryTool: 'cloud.process.execute',
+        executionChoice: resolveExecutionChoice({
+          location: 'local',
+          local: 'unsupported',
+          cloudAvailable: false,
+          localInputs: true,
+        }),
+        executionLocation: 'local',
         nextAction:
-          '若任务不依赖本机进程，使用已有 cloud.process.execute 完成计算，并明确告诉用户在云端执行。所需本地文件必须来自用户为当前任务选择的输入，通过既有文件工具读取/上传，不能自动上传整个目录。依赖本机服务、项目预览或本地开发审查的任务，提示 Bridge 重新检查并准备环境，不能声称已等价执行。原有工具权限、具体动作批准与 Diff 回写继续生效。',
+          '当前明确绑定的本机环境不可用，请查看 Bridge 的具体缺项并恢复环境。不得自动上传本地文件或迁移本次调用；用户明确允许云端且输入已获授权时，可在新的工具调用中使用已有云端能力。',
       }),
-      summary: '本地计算环境暂不可用，通用计算可转由云端完成',
+      summary: '本地计算环境暂不可用，本次调用未执行',
     };
   const result = await waitLocalCommandOperation(operation, input.signal);
   return {
     modelContent: JSON.stringify({
       ...result,
       source: 'rice-bridge',
+      executionLocation: 'local',
+      executionReason: 'explicit_local',
       workCopy: 'local_isolated_copy',
       sourceDirectoryModified: false,
     }),
@@ -87,16 +99,20 @@ export const executeLocalBridgeTool: RiceToolHandler = async ({
     input.call.name === 'local.fs.write' ||
     input.call.name === 'local.fs.mkdir'
   ) {
-    const operation = await createLocalFileOperation({
-      context: input.context,
-      payload: { capability: input.call.name, arguments: args },
-      callId: input.call.id,
-    });
+    const operation = await waitForLocalAdmission(input, () =>
+      createLocalFileOperation({
+        context: input.context,
+        payload: { capability: input.call.name, arguments: args },
+        callId: input.call.id,
+      }),
+    );
     const result = await waitLocalCommandOperation(operation, input.signal);
     return {
       modelContent: JSON.stringify({
         ...result,
         source: 'rice-bridge',
+        executionLocation: 'local',
+        executionReason: 'local_inputs_required',
         localWorkspace: operation.workspaceLabel,
       }),
       summary: `${operation.workspaceLabel} · 文件操作 ${result.status}`,
@@ -113,6 +129,8 @@ export const executeLocalBridgeTool: RiceToolHandler = async ({
   return {
     modelContent: JSON.stringify({
       source: 'rice-bridge',
+      executionLocation: 'local',
+      executionReason: 'local_inputs_required',
       localWorkspace: bridge.workspaceLabel,
       output: bridge.output,
     }),

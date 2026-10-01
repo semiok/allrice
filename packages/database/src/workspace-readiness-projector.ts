@@ -5,6 +5,7 @@ import {
   type WorkspaceCapability,
   type WorkspaceCapabilityId,
   type RuntimePolicyControls,
+  type BridgeReadinessState,
 } from '@allrice/contracts';
 
 export interface ReadinessFacts {
@@ -24,6 +25,7 @@ export interface ReadinessFacts {
     development?: string;
     paused?: boolean;
   };
+  localReadiness?: Partial<Record<WorkspaceCapabilityId, BridgeReadinessState>>;
   folder: boolean;
   runner: boolean;
   developmentRunner: boolean;
@@ -217,17 +219,25 @@ export function projectWorkspacePrerequisites(
         add('device_offline', 'bridge_offline', 'user', 'bridge');
       if (f.preparation?.paused)
         add('device_offline', 'device_paused', 'user', 'bridge');
+      const realState = f.localReadiness?.[id];
+      if (realState === 'busy')
+        add('busy', 'environment_busy', 'user', 'compose');
+      if (realState === 'paused')
+        add('paused', 'device_paused', 'user', 'bridge');
+      if (realState === 'unsupported')
+        add('unsupported', 'runtime_unsupported', 'user', 'bridge');
       const preparation =
-        id === 'local_browser'
+        realState ??
+        (id === 'local_browser'
           ? f.preparation?.browser
           : id === 'development'
             ? (f.preparation?.development ?? f.preparation?.sandbox)
             : id === 'local_command'
               ? f.preparation?.sandbox
-              : undefined;
+              : undefined);
       if (preparation === 'preparing')
         add('preparing', 'environment_preparing', 'user', 'guide');
-      if (preparation === 'paused')
+      if (preparation === 'paused' && !realState)
         add('device_offline', 'device_paused', 'user', 'bridge');
       if (id === 'local_browser' && preparation === 'unavailable')
         add('needs_configuration', 'browser_unavailable', 'user', 'bridge');

@@ -5,6 +5,8 @@ const reasons: Record<string, string> = {
   sandbox_capacity: '等待计算资源',
   memory_pressure: '执行节点内存紧张',
   fair_queue: '等待其他租户领取后轮转',
+  local_busy: '等待本机已有任务释放资源',
+  local_preparing: '等待本机环境准备完成',
   model_response: '等待模型响应',
   none: '无资源等待',
 };

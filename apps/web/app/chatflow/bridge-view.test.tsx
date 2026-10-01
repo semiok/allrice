@@ -2,7 +2,7 @@ import type { ComponentProps } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { ChatComposer } from './chat-composer';
-import { projectBridgeView } from './bridge-view';
+import { projectBridgeView, bridgeCapabilityRows } from './bridge-view';
 import type { BridgeDevice } from './chatflow-types';
 
 const device = (
@@ -57,6 +57,40 @@ function render(
 }
 
 describe('Bridge connection and local workspace presentation', () => {
+  it('shows preparation and absent Office separately from connected presence', () => {
+    const current = device('online', true);
+    current.readiness = [
+      {
+        capability: 'local.browser',
+        state: 'preparing',
+        reason: 'runtime_preparing',
+        missing: [],
+        versions: { bridge: 'fixture' },
+        observedAt: current.lastSeenAt,
+      },
+      {
+        capability: 'local.office',
+        state: 'unsupported',
+        reason: 'office_not_implemented',
+        missing: ['office_local_adapter'],
+        versions: { bridge: 'fixture' },
+        observedAt: current.lastSeenAt,
+      },
+    ];
+    expect(projectBridgeView([current]).bridgeConnectionState).toBe('online');
+    expect(bridgeCapabilityRows(current)).toMatchObject([
+      {
+        capability: 'local.browser',
+        stateLabel: '准备中',
+        reason: '正在准备运行环境，新任务等待本机。',
+      },
+      {
+        capability: 'local.office',
+        stateLabel: '尚未就绪',
+        reason: '本地 Office 执行尚未交付；现有云端 Office 可用。',
+      },
+    ]);
+  });
   it('distinguishes occupancy from active compression even below 100 percent', () => {
     const nativeContextStatus = {
       source: 'dsh' as const,

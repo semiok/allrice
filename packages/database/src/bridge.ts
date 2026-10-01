@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { preparePairedBrowserGrant } from './local-browser-grants.ts';
+import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
 
 import {
   BridgeCommandPayloadSchema,
@@ -24,6 +25,7 @@ import {
   type BridgeWorkspaceSelectionRequest,
   type ExecutionContext,
   type RequestContext,
+  BridgeReadinessCapabilitySchema,
 } from '@allrice/contracts';
 
 import { DataAccessError } from './data.ts';
@@ -57,6 +59,9 @@ interface DeviceRow {
   created_at: Date;
   revoked_at: Date | null;
   client_version?: string | null;
+  metadata?: Record<string, unknown>;
+  foreground_busy?: boolean;
+  browser_busy?: boolean;
 }
 
 interface GrantRow {
@@ -104,6 +109,7 @@ export class BridgeDataError extends Error {
       | 'grant_missing'
       | 'command_unavailable'
       | 'lease_lost'
+      | 'idempotency_conflict'
       | 'result_too_large',
   ) {
     super(code);
@@ -455,7 +461,12 @@ export async function listBridgeDevices(
   const rows = await sql<DeviceRow[]>`
     select d.id, d.organization_id, d.workspace_id, d.owner_id, d.name, d.platform,
       d.protocol_version, d.capabilities, d.last_seen_at, d.created_at, d.revoked_at,
-      t.metadata->'environment'->>'clientVersion' as client_version
+      t.metadata->'environment'->>'clientVersion' as client_version, t.metadata,
+      (exists(select 1 from allrice_bridge_commands c where c.device_id=d.id and c.status in ('claimed','running'))
+        or exists(select 1 from allrice_runtime_operations o where o.organization_id=d.organization_id and o.workspace_id=d.workspace_id
+          and o.snapshot->'binding'->'execution'->>'deviceId'=d.id::text and o.snapshot->>'status' in ('granted','running')
+          and (o.snapshot->'binding'->>'action' like 'local.fs.%' or o.snapshot->'binding'->>'action' in ('local.process.execute','local.mcp.discover','local.mcp.call')))) as foreground_busy,
+      exists(select 1 from allrice_local_browser_workspaces l where l.device_id=d.id and l.released_at is null) as browser_busy
     from allrice_bridge_devices d
     left join allrice_execution_targets t on t.organization_id=d.organization_id
       and t.workspace_id=d.workspace_id and t.kind='rice_bridge'
@@ -479,10 +490,51 @@ export async function listBridgeDevices(
     current.push(mapGrant(row));
     grantsByDevice.set(row.device_id, current);
   }
-  return rows.map((row) => ({
-    ...mapDevice(row),
-    folderGrants: grantsByDevice.get(row.id) ?? [],
-  }));
+  return rows.map((row) => {
+    const device = mapDevice(row);
+    return {
+      ...device,
+      folderGrants: grantsByDevice.get(row.id) ?? [],
+      readiness: BridgeReadinessCapabilitySchema.options.map((capability) => {
+        const observed = bridgeCapabilityReadinessView(
+          row.metadata ?? {},
+          capability,
+          device.status === 'online',
+        );
+        return {
+          capability,
+          ...observed,
+          ...(observed.state === 'ready' &&
+          (capability === 'local.browser'
+            ? row.browser_busy
+            : row.foreground_busy)
+            ? { state: 'busy', reason: 'local_busy' }
+            : {}),
+          ...(device.status === 'online' &&
+          (capability.startsWith('local.fs.') ||
+            capability.startsWith('local.git.')) &&
+          !device.capabilities.includes(capability as BridgeCapability)
+            ? {
+                state: 'unsupported',
+                reason: 'capability_not_advertised',
+                missing: [capability],
+              }
+            : {}),
+          ...(device.status === 'online' &&
+          (capability.startsWith('local.fs.') ||
+            capability.startsWith('local.git.')) &&
+          !grantsByDevice.get(row.id)?.length
+            ? {
+                state: 'unsupported',
+                reason: 'folder_missing',
+                missing: ['folder_grant'],
+              }
+            : {}),
+          observedAt: device.lastSeenAt,
+        };
+      }),
+    };
+  });
 }
 
 export async function heartbeatBridgeDevice(token: string, input?: unknown) {
@@ -924,14 +976,50 @@ export async function dispatchBridgeCommand(input: {
   const workspaceId = input.context.workspaceId;
   if (!workspaceId) throw new BridgeDataError('device_offline');
   const ownerId = input.context.policySnapshot.subjectId;
+  if (!input.idempotencyKey || input.idempotencyKey.length > 255)
+    throw new BridgeDataError('idempotency_conflict');
   const timeoutMs = Math.min(
     Math.max(input.timeoutMs ?? 30_000, 5_000),
     60_000,
   );
   const sql = getDatabase();
-  const targets = await sql<
-    { device_id: string; grant_id: string; grant_label: string }[]
-  >`
+  const [prior] = await sql<
+    {
+      id: string;
+      device_id: string;
+      grant_id: string;
+      grant_label: string;
+      workspace_id: string;
+      owner_id: string;
+      capability: BridgeCapability;
+      arguments: unknown;
+    }[]
+  >`select c.id,c.device_id,c.folder_grant_id as grant_id,g.label as grant_label,
+      c.workspace_id,c.owner_id,c.capability,c.arguments from allrice_bridge_commands c
+      join allrice_bridge_folder_grants g on g.id=c.folder_grant_id
+    where c.organization_id=${input.context.organizationId} and c.idempotency_key=${input.idempotencyKey}`;
+  const assertSameCall = (command: {
+    workspace_id: string;
+    owner_id: string;
+    capability: BridgeCapability;
+    arguments: unknown;
+  }) => {
+    const old = BridgeCommandPayloadSchema.safeParse({
+      capability: command.capability,
+      arguments: command.arguments,
+    });
+    if (
+      command.workspace_id !== workspaceId ||
+      command.owner_id !== ownerId ||
+      !old.success ||
+      JSON.stringify(old.data) !== JSON.stringify(payload)
+    )
+      throw new BridgeDataError('idempotency_conflict');
+  };
+  if (prior) assertSameCall(prior);
+  const targets = prior
+    ? [prior]
+    : await sql<{ device_id: string; grant_id: string; grant_label: string }[]>`
     select d.id as device_id, g.id as grant_id, g.label as grant_label
     from allrice_bridge_devices d
     join lateral (
@@ -947,21 +1035,50 @@ export async function dispatchBridgeCommand(input: {
       and ${payload.capability} = any(d.capabilities)
     order by d.last_seen_at desc limit 1
   `;
-  const target = targets[0];
+  let target = targets[0];
   if (!target) throw new BridgeDataError('device_offline');
-  const rows = await sql<{ id: string }[]>`
+  const rows = prior
+    ? [prior]
+    : await sql<
+        {
+          id: string;
+          device_id: string;
+          grant_id: string;
+          workspace_id: string;
+          owner_id: string;
+          capability: BridgeCapability;
+          arguments: unknown;
+        }[]
+      >`
     insert into allrice_bridge_commands (
       organization_id, workspace_id, owner_id, device_id, folder_grant_id,
       capability, arguments, idempotency_key, timeout_at
     ) values (
       ${input.context.organizationId}, ${workspaceId}, ${ownerId},
       ${target.device_id}, ${target.grant_id}, ${payload.capability},
-      ${sql.json(toJsonValue(payload.arguments))}, ${input.idempotencyKey.slice(0, 255)},
+      ${sql.json(toJsonValue(payload.arguments))}, ${input.idempotencyKey},
       now() + (${timeoutMs} * interval '1 millisecond')
     ) on conflict (organization_id, idempotency_key) do update set
       updated_at = allrice_bridge_commands.updated_at
-    returning id
+    returning id,device_id,folder_grant_id as grant_id,workspace_id,owner_id,capability,arguments
   `;
+  const recorded = rows[0]!;
+  assertSameCall(recorded);
+  if (
+    !prior &&
+    (recorded.device_id !== target.device_id ||
+      recorded.grant_id !== target.grant_id)
+  ) {
+    // A concurrent delivery may already have bound this same call to another
+    // device. Notify/read that original binding instead of selecting again.
+    const [bound] = await sql<
+      { device_id: string; grant_id: string; grant_label: string }[]
+    >`
+      select c.device_id,c.folder_grant_id as grant_id,g.label as grant_label from allrice_bridge_commands c
+      join allrice_bridge_folder_grants g on g.id=c.folder_grant_id where c.id=${recorded.id}`;
+    if (!bound) throw new BridgeDataError('command_unavailable');
+    target = bound;
+  }
   const commandId = rows[0]!.id;
   await sql`select pg_notify('allrice_bridge_commands', ${target.device_id})`;
   await audit({
