@@ -20,12 +20,17 @@ import { CloudToolInputSchema } from '../cloud-runner/tool-input.js';
 import { BrowserWorkspaceToolInputSchema } from '../browser-control/tool-input.js';
 import { LocalBrowserToolInputSchema } from '../browser-control/local-tool-input.js';
 import { LocalPreviewOpenInputSchema } from '@allrice/contracts';
+import { localFileToolDefinitions } from './local-file-definitions.js';
 
 export type RiceToolRisk = AllRiceToolRisk;
 
 // Visibility is not authorization. Native DSH selects these adapters, but every
 // invocation requires its own durable exact-input approval before execution.
 export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
+  'local.file.import',
+  'local.file.save',
+  'local.file.open',
+  'local.file.reveal',
   'local.process.execute',
   'browser.workspace',
   'local.browser.workspace',
@@ -430,6 +435,7 @@ export const riceToolDefinitions = [
       additionalProperties: false,
     },
   },
+  ...localFileToolDefinitions,
   {
     name: 'local.fs.search',
     description:
@@ -597,6 +603,10 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (!definition.name.startsWith('local.file.') ||
+        (allowed?.has(definition.name) &&
+          runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
+          runtimeFeatureEnabled('ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED'))) &&
       (!definition.name.startsWith('image.') ||
         (allowed?.has(definition.name) &&
           capabilities.includes('model:invoke') &&

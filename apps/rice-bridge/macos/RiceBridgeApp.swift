@@ -21,6 +21,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var coreReady = false
     private var pairing = false
     private var menuOpen = false
+    private var filePicker: (id: String, panel: NSOpenPanel)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if let bundle = Bundle.main.bundleIdentifier,
@@ -143,7 +144,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
                   object["v"] as? Int == 1,
                   let type = object["type"] as? String,
-                  ["state", "response", "picker", "fatal", "protocolError"].contains(type) else {
+                  ["state", "response", "picker", "pickerCancel", "fatal", "protocolError"].contains(type) else {
                 protocolFailure(); return
             }
             DispatchQueue.main.async { self.consume(object) }
@@ -175,7 +176,11 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             callback?(object)
         case "picker":
             guard let id = object["pickerId"] as? String, id.count <= 80 else { return }
-            chooseFolder(pickerId: id)
+            if object["kind"] as? String == "file", let root = object["root"] as? String, root.count <= 4096 {
+                chooseFile(pickerId: id, root: root)
+            } else { chooseFolder(pickerId: id) }
+        case "pickerCancel":
+            if let id = object["pickerId"] as? String, filePicker?.id == id { filePicker?.panel.cancel(nil) }
         case "fatal", "protocolError":
             coreReady = false
             pairing = false
@@ -517,6 +522,21 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let path = response == .OK ? panel.url?.path : nil
             if let id = pickerId { self.action("picker", fields: ["pickerId": id, "path": path as Any? ?? NSNull()]) }
             else if let path = path { self.action("workspace", fields: ["path": path]) }
+        }
+    }
+
+    private func chooseFile(pickerId: String, root: String) {
+        let panel = NSOpenPanel()
+        filePicker = (pickerId, panel)
+        panel.canChooseFiles = true; panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.directoryURL = URL(fileURLWithPath: root, isDirectory: true)
+        panel.prompt = "上传选定文件"
+        panel.message = "选择已授权文件夹内的文件。确认后原始字节会上传为当前对话附件（最多 9 MB）。"
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { response in
+            if self.filePicker?.id == pickerId { self.filePicker = nil }
+            let path = response == .OK ? panel.url?.path : nil
+            self.action("picker", fields: ["pickerId": pickerId, "path": path as Any? ?? NSNull()])
         }
     }
 

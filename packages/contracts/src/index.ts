@@ -35,6 +35,7 @@ export * from './tenant-administration.ts';
 export * from './organization-administration.ts';
 export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';
+export * from './local-files.ts';
 export * from './execution-choice.ts';
 export * from './capabilities.ts';
 export * from './chatflow.ts';

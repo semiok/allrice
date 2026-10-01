@@ -66,7 +66,11 @@ export function bridgeCapabilityReadinessView(
           : capability === 'local.process' || capability === 'local.mcp'
             ? 'sandbox'
             : null;
-  if (!reported && capability !== 'local.office') {
+  if (
+    !reported &&
+    capability !== 'local.office' &&
+    !capability.startsWith('local.file.')
+  ) {
     const old = kind ? environment?.[kind] : 'ready';
     state =
       old === 'ready'

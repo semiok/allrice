@@ -39,6 +39,10 @@ export function workAutomationGroup(
     [
       'local.fs.write',
       'local.fs.mkdir',
+      'local.file.import',
+      'local.file.save',
+      'local.file.open',
+      'local.file.reveal',
       'local.fs.changeset',
       'local.process.execute',
       'local.mcp.discover',

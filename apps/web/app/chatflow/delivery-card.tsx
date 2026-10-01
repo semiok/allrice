@@ -10,6 +10,7 @@ import { artifactKindLabel } from '../../lib/chatflow/workbench-model';
 import { PresentedFileCard } from './dsh-upstream/deliverables/PresentedFileCard';
 import styles from './workbench.module.css';
 import imageStyles from './image-delivery.module.css';
+import { LocalArtifactFileDialog } from './local-file-actions';
 
 /** Native DSH presentation; file access remains the existing authenticated API. */
 export function DeliveryCard({
@@ -20,6 +21,7 @@ export function DeliveryCard({
   onOpen: (id: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [localDialog, setLocalDialog] = useState(false);
   const name = artifact.version.fileName;
   const [failed, setFailed] = useState(false);
   const isImage = ['image/png', 'image/jpeg', 'image/webp'].includes(
@@ -59,10 +61,12 @@ export function DeliveryCard({
             items={[
               { id: 'preview', label: '侧栏预览' },
               { id: 'download', label: '下载文件' },
+              { id: 'local-save', label: '保存到电脑 / 打开' },
             ]}
             onSelect={(id) => {
               setOpen(false);
               if (id === 'preview') onOpen(artifact.id);
+              if (id === 'local-save') setLocalDialog(true);
               if (id === 'download') {
                 const link = document.createElement('a');
                 link.href = `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(name)}`;
@@ -80,8 +84,9 @@ export function DeliveryCard({
       }
     />
   );
-  if (!isImage) return card;
-  return (
+  const view = !isImage ? (
+    card
+  ) : (
     <div className={imageStyles.root}>
       <button
         type="button"
@@ -103,5 +108,16 @@ export function DeliveryCard({
       </button>
       {card}
     </div>
+  );
+  return (
+    <>
+      {view}
+      {localDialog && (
+        <LocalArtifactFileDialog
+          artifact={artifact}
+          onClose={() => setLocalDialog(false)}
+        />
+      )}
+    </>
   );
 }

@@ -183,6 +183,7 @@ export function createGovernedBridgePolicyOptions(
         throw new RuntimePolicyError('assistant_authority_changed');
       const command =
         payload.capability === 'local.process.execute' ? payload : null;
+      const binaryFile = payload.capability.startsWith('local.file.');
       const mcp =
         payload.capability === 'local.mcp.discover' ||
         payload.capability === 'local.mcp.call'
@@ -246,9 +247,12 @@ export function createGovernedBridgePolicyOptions(
           and owner_id=${device.ownerId} for share`;
       const targetCapability = payload.capability.startsWith('local.git.')
         ? 'git.read'
-        : ['local.fs.write', 'local.fs.mkdir', 'local.fs.changeset'].includes(
-              payload.capability,
-            )
+        : [
+              'local.fs.write',
+              'local.fs.mkdir',
+              'local.fs.changeset',
+              'local.file.save',
+            ].includes(payload.capability)
           ? 'files.write'
           : 'files.read';
       const [target] = await tx<
@@ -383,7 +387,7 @@ export function createGovernedBridgePolicyOptions(
           (employee?.employee_version_id ?? null)
       )
         throw new RuntimePolicyError('bridge_authority_changed');
-      if (command || mcp) {
+      if (command || mcp || binaryFile) {
         // Permissions come from the Run's frozen employee snapshot, not a
         // client-supplied action or the employee's mutable current definition.
         const frozen = EmployeeExecutionSnapshotSchema.safeParse(
@@ -402,7 +406,9 @@ export function createGovernedBridgePolicyOptions(
             payload.capability,
           ) ||
           !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
-            'storage:write',
+            binaryFile && payload.capability === 'local.file.inspect'
+              ? 'storage:read'
+              : 'storage:write',
           ) ||
           (command?.arguments.dependencies?.packages.some(
             (p) => !p.archivePath,
@@ -541,7 +547,7 @@ export function createGovernedBridgePolicyOptions(
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
       const job =
-        command || mcp || changeset
+        command || mcp || changeset || binaryFile
           ? (
               await tx<
                 {
@@ -563,7 +569,7 @@ export function createGovernedBridgePolicyOptions(
         !currentDevice.last_seen_at ||
         currentDevice.last_seen_at.getTime() <= clock.now.getTime() - 90_000 ||
         currentDevice.last_seen_at > clock.now ||
-        ((command || mcp || changeset) &&
+        ((command || mcp || changeset || binaryFile) &&
           (!job ||
             job.status !== 'running' ||
             job.cancel_requested_at ||

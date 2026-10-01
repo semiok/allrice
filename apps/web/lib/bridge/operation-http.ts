@@ -46,6 +46,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsChangesetCandidate?: boolean;
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
+    supportsBinaryFiles?: boolean;
     recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
   }): Promise<{
     snapshot: Snapshot;
@@ -174,6 +175,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsLocalCommand',
                 'supportsLocalMcp',
                 'supportsChangeset',
+                'supportsBinaryFiles',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
                 'supportsChangesetCandidate',
@@ -187,6 +189,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsLocalMcp !== 'boolean') ||
           ('supportsChangeset' in selection &&
             typeof selection.supportsChangeset !== 'boolean') ||
+          ('supportsBinaryFiles' in selection &&
+            typeof selection.supportsBinaryFiles !== 'boolean') ||
           ('supportsProjectDiagnostics' in selection &&
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
@@ -204,6 +208,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           deviceId: device.id,
           leaseMs: 120_000,
           supportsLocalCommand: selection.supportsLocalCommand === true,
+          supportsBinaryFiles: selection.supportsBinaryFiles === true,
           supportsLocalMcp: selection.supportsLocalMcp === true,
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,

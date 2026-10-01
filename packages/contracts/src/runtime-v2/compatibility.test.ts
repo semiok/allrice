@@ -4,6 +4,8 @@ import {
   BridgeCapabilities,
   BridgeCapabilitySchema,
   BridgeCommandPayloadSchema,
+  LegacyBridgeCommandPayloadSchema,
+  localFileCapabilities,
   BridgeCommandStatusSchema,
   BridgeProtocolVersion,
   BridgeProtocolVersionSchema,
@@ -230,9 +232,23 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     ).toBe(false);
   });
 
-  it('does not advertise capabilities an existing Bridge executor cannot execute', () => {
-    expect(BridgeCapabilitySchema.options).toEqual(bridgeCapabilities);
-    expect(BridgeCapabilities).toEqual(bridgeCapabilities);
+  it('keeps legacy executor capabilities and adds only implemented binary-file actions', () => {
+    expect(BridgeCapabilitySchema.options).toEqual([
+      ...bridgeCapabilities,
+      ...localFileCapabilities,
+    ]);
+    expect(BridgeCapabilities).toEqual([
+      ...bridgeCapabilities,
+      ...localFileCapabilities,
+    ]);
+    const inspect = {
+      capability: 'local.file.inspect',
+      arguments: { path: '报告.pdf' },
+    };
+    expect(BridgeCommandPayloadSchema.safeParse(inspect).success).toBe(true);
+    expect(LegacyBridgeCommandPayloadSchema.safeParse(inspect).success).toBe(
+      false,
+    );
     expect(BridgeCommandStatusSchema.options).toEqual([
       'queued',
       'claimed',
@@ -241,11 +257,13 @@ describe('P01 additive contracts preserve the production wire contract', () => {
       'failed',
       'expired',
       'canceled',
+      'unknown',
     ]);
     for (const capability of [
       'local.command.execute',
       'local.shell',
       'local.process.start',
+      'local.office',
     ]) {
       expect(BridgeCapabilitySchema.safeParse(capability).success).toBe(false);
       expect(

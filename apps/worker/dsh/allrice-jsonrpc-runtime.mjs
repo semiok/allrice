@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
 import { localMcpNativeTools } from './allrice-local-mcp-native-tools.mjs';
+import { localFileNativeTools } from './allrice-local-file-native-tools.mjs';
 import { browserWorkspaceNativeTools } from './allrice-browser-workspace-native-tools.mjs';
 import { readCodexSubscriptionQuota } from './allrice-codex-subscription-quota.mjs';
 
@@ -62,6 +63,7 @@ const brokerNativeTools = [
   ...browserWorkspaceNativeTools,
   ...mcpNativeTools,
   ...localMcpNativeTools,
+  ...localFileNativeTools,
   ...cloudNativeTools,
   ...skillNativeTools,
   ...reconciliationNativeTools,

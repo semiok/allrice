@@ -20,6 +20,12 @@ import type {
   WorkspaceFile,
 } from './chatflow-types';
 import { fileToBase64, readJson } from './chatflow-utils';
+import {
+  localFileStatus,
+  waitLocalFileCommand,
+  type LocalFileCommandView,
+} from './local-file-actions';
+import type { BridgeDevice } from './chatflow-types';
 import type { createSessionActions } from './session-actions';
 import type { createSessionSelection } from './session-selection';
 
@@ -63,6 +69,9 @@ interface UseAttachmentsResult {
   setUploadVisibility: Dispatch<SetStateAction<Visibility>>;
   setVersionHistoryFile: Dispatch<SetStateAction<WorkspaceFile | null>>;
   uploadAttachments: (files: FileList | File[]) => void;
+  uploadFromBridge: () => Promise<void>;
+  cancelBridgeUpload: () => Promise<void>;
+  bridgeUploadStatus: string | null;
   uploadVisibility: Visibility;
   versionHistoryFile: WorkspaceFile | null;
   versionHistoryLoading: boolean;
@@ -91,6 +100,19 @@ export function useAttachments({
     useState<PendingAttachment | null>(null);
   const [uploadVisibility, setUploadVisibility] =
     useState<Visibility>('workspace');
+  const [bridgeFileCommand, setBridgeFileCommand] =
+    useState<LocalFileCommandView | null>(null);
+  const bridgeImportKey = useRef<{ scope: string; key: string } | null>(null);
+  useEffect(() => {
+    setBridgeFileCommand(null);
+    // Keep the idempotency key through our own draft→created Session transition.
+    if (
+      !bridgeImportKey.current?.scope.startsWith(
+        `${workspace?.workspaceId}/${activeId}/`,
+      )
+    )
+      bridgeImportKey.current = null;
+  }, [activeId, workspace?.workspaceId]);
   const [workspaceFiles, setWorkspaceFiles] = useState<WorkspaceFile[]>([]);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [versionHistoryFile, setVersionHistoryFile] =
@@ -122,6 +144,7 @@ export function useAttachments({
         return [];
       });
       setAttachmentPreview(null);
+      setBridgeFileCommand(null);
     },
     [],
   );
@@ -361,6 +384,132 @@ export function useAttachments({
     }
   }, [captureSelection, setError, tenantHeaders, workspace]);
 
+  const uploadFromBridge = useCallback(async () => {
+    if (!workspace || busy) return;
+    if (pendingAttachmentsRef.current.length >= 20) {
+      setError('每条消息最多添加 20 个附件。');
+      return;
+    }
+    const action = sessionActions.begin('composer');
+    if (!action) return;
+    setBusy(true);
+    setError('');
+    setBridgeFileCommand(null);
+    try {
+      const sessionId = activeId ?? (await createSession());
+      if (
+        !sessionId ||
+        (!activeId && !action.adoptCreatedSession(sessionId)) ||
+        !action.current()
+      )
+        return;
+      const { devices } = await readJson<{ devices: BridgeDevice[] }>(
+        await fetch(
+          `/api/v1/bridge/devices?workspaceId=${workspace.workspaceId}`,
+          { headers: tenantHeaders, cache: 'no-store' },
+        ),
+      );
+      if (!action.current()) return;
+      const device = devices.find(
+        (d) =>
+          d.status === 'online' &&
+          d.folderGrants.length &&
+          d.readiness?.some(
+            (r) =>
+              r.capability === 'local.file.select' &&
+              ['ready', 'busy', 'preparing'].includes(r.state),
+          ),
+      );
+      const grant = device?.folderGrants.at(-1);
+      if (!device || !grant)
+        throw Error('请连接支持文件交接的 Mac，并先在“我的电脑”选择目录。');
+      const scope = `${workspace.workspaceId}/${sessionId}/${device.id}/${grant.id}`;
+      if (bridgeImportKey.current?.scope !== scope)
+        bridgeImportKey.current = { scope, key: crypto.randomUUID() };
+      const command = await readJson<LocalFileCommandView>(
+        await fetch('/api/v1/bridge/files', {
+          method: 'POST',
+          headers: { ...tenantHeaders, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            workspaceId: workspace.workspaceId,
+            deviceId: device.id,
+            folderGrantId: grant.id,
+            sessionId,
+            idempotencyKey: bridgeImportKey.current.key,
+            action: 'select',
+          }),
+        }),
+      );
+      if (!action.current()) return;
+      const terminal = await waitLocalFileCommand(
+        command,
+        workspace.workspaceId,
+        tenantHeaders,
+        (value) => {
+          if (action.current()) setBridgeFileCommand(value);
+        },
+      );
+      if (!action.current()) return;
+      if (
+        terminal.status !== 'succeeded' ||
+        terminal.output?.status !== 'uploaded' ||
+        !terminal.output.object
+      ) {
+        if (terminal.status !== 'unknown') bridgeImportKey.current = null;
+        throw Error(localFileStatus(terminal));
+      }
+      const file = terminal.output.object;
+      setPendingAttachments((current) =>
+        current.some((a) => a.persistedId === file.objectId)
+          ? current
+          : [
+              ...current,
+              {
+                id: file.objectId,
+                persistedId: file.objectId,
+                fileName: file.fileName,
+                mediaType: file.mediaType,
+                sizeBytes: file.sizeBytes,
+                visibility: 'private',
+                status: 'ready',
+              },
+            ],
+      );
+      bridgeImportKey.current = null;
+    } catch (cause) {
+      if (action.current())
+        setError(cause instanceof Error ? cause.message : '电脑文件上传未完成');
+    } finally {
+      if (action.finish()) setBusy(false);
+    }
+  }, [
+    activeId,
+    busy,
+    createSession,
+    sessionActions,
+    setBusy,
+    setError,
+    tenantHeaders,
+    workspace,
+  ]);
+
+  const cancelBridgeUpload = useCallback(async () => {
+    if (!bridgeFileCommand || !workspace) return;
+    const scope = captureSelection();
+    try {
+      const command = await readJson<LocalFileCommandView>(
+        await fetch(
+          `/api/v1/bridge/files/${bridgeFileCommand.id}?workspaceId=${workspace.workspaceId}`,
+          { method: 'POST', headers: tenantHeaders },
+        ),
+      );
+      if (scope.current()) setBridgeFileCommand(command);
+    } catch {
+      if (scope.current())
+        setError('电脑取消请求未确认，请检查连接或在原生文件窗口取消。');
+    }
+  }, [bridgeFileCommand, captureSelection, setError, tenantHeaders, workspace]);
+
   const openVersionHistory = useCallback(
     async (file: WorkspaceFile) => {
       if (
@@ -497,6 +646,11 @@ export function useAttachments({
     setUploadVisibility: changeUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
+    uploadFromBridge,
+    cancelBridgeUpload,
+    bridgeUploadStatus: bridgeFileCommand
+      ? localFileStatus(bridgeFileCommand)
+      : null,
     uploadVisibility,
     versionHistoryFile,
     versionHistoryLoading,

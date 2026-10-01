@@ -1,4 +1,5 @@
 import { generateImage } from './handlers/image.js';
+import { executeLocalFileTool } from './handlers/local-files.js';
 import { HandlerError } from '../errors.js';
 import type { riceToolDefinitions } from './definitions.js';
 import { createAutomation } from './handlers/automation.js';
@@ -124,6 +125,11 @@ export const riceToolHandlerRegistry = Object.freeze({
   'market.history': registration('research', researchHandler('market.history')),
   'workspace.export.create': registration('delivery', createWorkspaceExport),
   'local.fs.list': registration('local_bridge', executeLocalBridgeTool),
+  'local.file.inspect': registration('local_bridge', executeLocalFileTool),
+  'local.file.import': registration('local_bridge', executeLocalFileTool),
+  'local.file.save': registration('local_bridge', executeLocalFileTool),
+  'local.file.open': registration('local_bridge', executeLocalFileTool),
+  'local.file.reveal': registration('local_bridge', executeLocalFileTool),
   'local.process.execute': registration(
     'local_bridge',
     executeControlledLocalCommand,

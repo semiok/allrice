@@ -1,0 +1,38 @@
+.body {
+  display: grid;
+  gap: 14px;
+}
+.body label {
+  display: grid;
+  gap: 6px;
+}
+.body input,
+.body select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid var(--border-color, #dedede);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+}
+.body p {
+  margin: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.actions button {
+  padding: 8px 12px;
+  border: 1px solid var(--border-color, #dedede);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

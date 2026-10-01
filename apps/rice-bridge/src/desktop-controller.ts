@@ -151,6 +151,7 @@ export async function runDesktopController() {
       ...(code ? { code } : {}),
     });
   const cancelPicker = () => {
+    if (picker) send({ type: 'pickerCancel', pickerId: picker.id });
     picker?.reject(Error('DESKTOP_PICKER_CANCELED'));
     picker = null;
   };
@@ -266,6 +267,28 @@ export async function runDesktopController() {
           picker = { id, resolve, reject };
           send({ type: 'picker', pickerId: id });
         }),
+      chooseFile: (root, signal) =>
+        new Promise<string>((resolve, reject) => {
+          if (closing || abort?.signal.aborted || signal?.aborted || picker)
+            return reject(Error('DESKTOP_PICKER_CANCELED'));
+          const id = randomUUID();
+          const cancel = () => {
+            if (picker?.id === id) cancelPicker();
+          };
+          picker = {
+            id,
+            resolve: (path) => {
+              signal?.removeEventListener('abort', cancel);
+              resolve(path);
+            },
+            reject: (error) => {
+              signal?.removeEventListener('abort', cancel);
+              reject(error);
+            },
+          };
+          signal?.addEventListener('abort', cancel, { once: true });
+          send({ type: 'picker', pickerId: id, kind: 'file', root });
+        }).catch(() => null),
     })
       .catch((error: unknown) => {
         runtimeFailed = true;
