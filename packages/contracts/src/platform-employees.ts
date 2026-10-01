@@ -5,6 +5,7 @@ import { EmployeeRuntimePackageSchema } from './employees.ts';
 import { HarnessEventSchema } from './harness.ts';
 import { employeeModelPolicyProblem } from './employee-model-settings.ts';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
+import { TaskSuggestionsSchema } from './task-suggestions.ts';
 
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
   'dsh-0.1.5-rc.3-a4c74a9' as const;
@@ -39,6 +40,7 @@ export const PlatformEmployeeDefinitionSchema = z
     key: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().min(1).max(1_000),
+    taskSuggestions: TaskSuggestionsSchema.optional(),
     appearance: z
       .object({
         avatarType: z.enum(['initials', 'emoji', 'image']),

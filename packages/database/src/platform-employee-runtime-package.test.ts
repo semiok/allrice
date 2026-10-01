@@ -14,6 +14,7 @@ import type { PlatformEmployeeDefinition } from '@allrice/contracts';
 
 import { employeeManifest } from './employee-config.js';
 import { frozenPackageSkills } from './skill-bundles.ts';
+import { projectEmployeeTaskSuggestions } from './employees/task-suggestions.ts';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -97,6 +98,7 @@ const skills = [
 it('keeps legacy definition bytes and runtime identity independent of tool selection provenance', () => {
   const legacy = PlatformEmployeeDefinitionSchema.parse(definition);
   expect(Object.hasOwn(legacy.capabilities, 'explicitToolNames')).toBe(false);
+  expect(Object.hasOwn(legacy, 'taskSuggestions')).toBe(false);
   expect(legacy).toEqual(definition);
   const original = buildEmployeeRuntimePackage({
     revision: 7,
@@ -109,6 +111,87 @@ it('keeps legacy definition bytes and runtime identity independent of tool selec
     buildEmployeeRuntimePackage({ revision: 7, definition: edited, skills }),
   ).toEqual(original);
   expect(frozenPackageSkills(original)).toHaveLength(1);
+});
+
+it('keeps task display metadata out of runtime package/checksum and system prompt', () => {
+  const original = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition,
+    skills,
+  });
+  const edited = {
+    ...definition,
+    taskSuggestions: [
+      {
+        id: 'unique-display-marker',
+        title: '仅展示标题',
+        template: '仅展示草稿 unique-display-marker',
+      },
+    ],
+  };
+  expect(
+    buildEmployeeRuntimePackage({ revision: 7, definition: edited, skills }),
+  ).toEqual(original);
+  expect(
+    runtimePackageSystemPrompt({
+      platformPolicy: edited.systemPrompt,
+      runtimePackage: original,
+    }),
+  ).not.toContain('unique-display-marker');
+  expect(PlatformEmployeeDefinitionSchema.parse(definition)).toEqual(
+    definition,
+  );
+});
+
+it('projects Office formats only from the actual frozen native Skill and granted export tools', () => {
+  const tools = [
+    'workspace.skill.read',
+    'workspace.document.read',
+    'workspace.export.create',
+  ];
+  const officeDefinition = {
+    ...definition,
+    key: 'office',
+    name: 'Office',
+    capabilities: { ...definition.capabilities, toolNames: tools },
+  };
+  const officeSkills = [
+    { ...skills[0]!, name: 'office', required_tool_refs: tools },
+  ];
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: officeDefinition,
+    skills: officeSkills,
+  });
+  const manifest = employeeManifest({
+    key: 'office',
+    name: 'Office',
+    description: 'Synthetic Office',
+    runtimePackage,
+    toolNames: tools,
+  });
+  const projected = projectEmployeeTaskSuggestions(manifest);
+  expect(projected.map((task) => task.id)).toEqual(
+    expect.arrayContaining([
+      'office-word-report',
+      'office-excel-table',
+      'office-ppt-report',
+      'office-word-notice',
+      'office-research-report',
+    ]),
+  );
+  expect(JSON.stringify(projected)).not.toMatch(
+    /requires|nativeSkillIds|toolNames|securityPolicy|runtimePackage/,
+  );
+  if (manifest.schemaVersion !== 2) throw Error('expected v2');
+  manifest.capabilityBindings.toolNames = tools.filter(
+    (tool) => tool !== 'workspace.export.create',
+  );
+  expect(
+    projectEmployeeTaskSuggestions(manifest).some((task) =>
+      task.id.startsWith('office-'),
+    ),
+  ).toBe(false);
 });
 
 function validFrozenExecutionSnapshot() {

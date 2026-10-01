@@ -1,0 +1,125 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  min-width: 0;
+}
+.trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-text-secondary, #626774);
+  padding: 6px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.trigger:hover,
+.common button:hover {
+  background: var(--dsw-alias-hover, #edf0f3);
+}
+.trigger:focus-visible,
+.common button:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand, #6d82e5);
+  outline-offset: 1px;
+}
+.trigger:disabled,
+.common button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.menu {
+  width: min(350px, calc(100vw - 24px));
+  max-height: min(520px, 70dvh);
+}
+.item {
+  display: grid;
+  gap: 4px;
+  white-space: normal;
+  padding: 2px 0;
+}
+.item strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+.item small,
+.parameters p,
+.mobileItem small {
+  font-size: 12px;
+  color: var(--dsw-alias-text-tertiary, #787e89);
+  line-height: 1.5;
+}
+.common {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  min-width: 0;
+}
+.common button {
+  min-width: 0;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  border: 1px solid var(--dsw-alias-border, #e4e7ec);
+  border-radius: 14px;
+  background: transparent;
+  color: var(--dsw-alias-text-secondary, #626774);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.modal {
+  width: min(460px, calc(100vw - 24px));
+  max-height: min(620px, calc(100dvh - 32px));
+}
+.modalContent {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.parameters {
+  display: grid;
+  gap: 14px;
+}
+.parameters label {
+  display: grid;
+  gap: 7px;
+  font-size: 13px;
+}
+.parameters input,
+.parameters select {
+  min-width: 0;
+  width: 100%;
+  padding: 9px 10px;
+  font: inherit;
+}
+.mobileItem {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid var(--dsw-alias-border, #e4e7ec);
+  border-radius: 9px;
+  text-align: left;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+@media (max-width: 640px) {
+  .common {
+    gap: 4px;
+  }
+  .common button {
+    max-width: 76px;
+    padding-inline: 6px;
+  }
+  .parameters input,
+  .parameters select {
+    font-size: 16px;
+  }
+}

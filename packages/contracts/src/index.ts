@@ -40,6 +40,7 @@ export * from './capabilities.ts';
 export * from './chatflow.ts';
 export * from './common.ts';
 export * from './employees.ts';
+export * from './task-suggestions.ts';
 export * from './employee-colors.ts';
 export * from './experience.ts';
 export * from './employee-model-settings.ts';

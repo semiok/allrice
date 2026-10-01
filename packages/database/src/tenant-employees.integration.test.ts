@@ -20,7 +20,11 @@ import {
   sendChatMessage,
 } from './workspace/service.ts';
 import { prepareEmployeeRunBinding } from './employees/employeehub.ts';
-import { archivePlatformEmployee } from './employees/platform-employees.ts';
+import {
+  archivePlatformEmployee,
+  savePlatformEmployeeDraft,
+  publishPlatformEmployee,
+} from './employees/platform-employees.ts';
 import { listOrganizationAiAssignments } from './organization-employee-assignments.ts';
 
 const suite =
@@ -153,6 +157,121 @@ suite(
       expect(
         await fixture.db`select id from allrice_memberships where organization_id=${f.tenant.organizationId} and user_id=${f.admin.user.id}`,
       ).toHaveLength(0);
+    });
+
+    it('publishes task metadata through all assignments and uses the same effective version on the next real send without changing old frozen Runs', async () => {
+      const f = await setup();
+      await f.change('assign');
+      const before = await getEmployeeWorkspace(
+        f.tenant.context,
+        f.tenant.workspaceId,
+      );
+      const assignment = before.employees[0]!;
+      const session = await createChatSession(f.tenant.context, {
+        workspaceId: f.tenant.workspaceId,
+        employeeAssignmentId: assignment.id,
+        title: 'Recommendation publication',
+      });
+      const old = await sendChatMessage(
+        f.tenant.context,
+        f.tenant.workspaceId,
+        session.id,
+        {
+          text: 'Original task',
+          clientMessageId: randomUUID(),
+          deliveryMode: 'follow_up',
+        },
+      );
+      const [frozenRun] =
+        await fixture.db`select employee_version_id, execution_snapshot, prompt_snapshot from allrice_employee_runs where run_id=${old.run!.id}`;
+      const [frozenVersion] =
+        await fixture.db`select manifest, config_checksum from allrice_employee_versions where id=${assignment.currentVersion.id}`;
+      const tasks = [
+        {
+          id: 'review-installed-skill',
+          title: '检查已装配资料',
+          template: '整理最近 {{days}} 天的资料。',
+          slots: [{ name: 'days', label: '天数', defaultValue: '7' }],
+          requires: {
+            toolNames: ['workspace.skill.read'],
+            nativeSkillIds: [f.source.skillId],
+          },
+          preparation: ['files' as const],
+        },
+      ];
+      const saved = await savePlatformEmployeeDraft(f.source.employeeId, {
+        definition: { ...f.source.definition, taskSuggestions: tasks },
+        expectedRevisionId: f.source.revisionId,
+      });
+      await f.source.preview();
+      const publication = await publishPlatformEmployee(f.source.employeeId, {
+        scope: 'assigned',
+        expectedRevisionId: saved!.currentDraft!.id,
+      });
+      expect(publication.valid).toBe(true);
+      expect(publication.workspaceIds).toEqual(
+        expect.arrayContaining([f.source.workspaceId, f.tenant.workspaceId]),
+      );
+      // Exercise a historical Session that still carries its original pin.
+      await fixture.db`update allrice_chat_sessions set employee_version_id=${assignment.currentVersion.id} where id=${session.id}`;
+      const workspace = await getEmployeeWorkspace(
+        f.tenant.context,
+        f.tenant.workspaceId,
+      );
+      const effective = workspace.employees[0]!.currentVersion;
+      expect(effective.id).not.toBe(assignment.currentVersion.id);
+      expect(effective.taskSuggestions).toEqual([
+        {
+          id: tasks[0]!.id,
+          title: tasks[0]!.title,
+          template: tasks[0]!.template,
+          slots: tasks[0]!.slots,
+          preparation: ['files'],
+        },
+      ]);
+      expect(effective.manifest).not.toHaveProperty('taskSuggestions');
+      expect(
+        workspace.sessions.find((item) => item.id === session.id)!
+          .employeeVersionId,
+      ).toBe(assignment.currentVersion.id);
+      expect(
+        (
+          await fixture.db`select employee_version_id from allrice_chat_sessions where id=${session.id}`
+        )[0]!.employee_version_id,
+      ).toBe(assignment.currentVersion.id);
+      expect(
+        (
+          await fixture.db`select employee_version_id, execution_snapshot, prompt_snapshot from allrice_employee_runs where run_id=${old.run!.id}`
+        )[0],
+      ).toEqual(frozenRun);
+      expect(
+        (
+          await fixture.db`select manifest, config_checksum from allrice_employee_versions where id=${assignment.currentVersion.id}`
+        )[0],
+      ).toEqual(frozenVersion);
+      const sent = await sendChatMessage(
+        f.tenant.context,
+        f.tenant.workspaceId,
+        session.id,
+        {
+          text: '整理最近 7 天的资料。',
+          clientMessageId: randomUUID(),
+          deliveryMode: 'follow_up',
+        },
+      );
+      const [next] =
+        await fixture.db`select employee_version_id, execution_snapshot, prompt_snapshot from allrice_employee_runs where run_id=${sent.run!.id}`;
+      expect(next!.employee_version_id).toBe(effective.id);
+      expect(next!.execution_snapshot.employee.versionId).toBe(effective.id);
+      expect(next!.prompt_snapshot.systemPrompt).not.toContain(
+        'review-installed-skill',
+      );
+      const other = await principal();
+      expect(
+        (await getEmployeeWorkspace(other.context, other.workspaceId)).employees
+          .flatMap((employee) => employee.currentVersion.taskSuggestions ?? [])
+          .some((task) => task.id === 'review-installed-skill'),
+      ).toBe(false);
     });
     it('serializes duplicate assignments without new versions, duplicate assignments or audit entries', async () => {
       const f = await setup();

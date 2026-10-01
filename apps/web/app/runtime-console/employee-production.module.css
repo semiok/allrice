@@ -14,6 +14,53 @@
   text-underline-offset: 3px;
 }
 
+.taskSuggestions {
+  margin-top: 24px;
+}
+.taskSuggestions p {
+  color: #bfc4ca;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.taskSuggestion {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #34383d;
+  border-radius: 12px;
+}
+.taskSuggestion > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.taskSuggestion > small {
+  display: block;
+  margin-bottom: 12px;
+  color: #bfc4ca;
+  overflow-wrap: anywhere;
+}
+.taskSlot {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid #34383d;
+  border-radius: 8px;
+  min-width: 0;
+}
+.taskChecks {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+.taskChecks label {
+  overflow-wrap: anywhere;
+}
+.taskActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
 .employeeColors {
   min-width: 0;
   margin: 0 0 24px;

@@ -11,6 +11,7 @@ import type {
   WorkMethod,
   BridgeReadinessCapability,
   BridgeReadinessState,
+  TaskSuggestionDisplay,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -33,6 +34,7 @@ export interface Session {
 
 export interface EmployeeVersion {
   id: string;
+  taskSuggestions?: TaskSuggestionDisplay[];
   manifest: {
     name: string;
     description?: string;
