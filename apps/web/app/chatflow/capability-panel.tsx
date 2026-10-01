@@ -95,6 +95,7 @@ export function CapabilityContent({
                   'browser_unavailable',
                   'runner_missing',
                   'candidate_runner_missing',
+                  'runtime_unsupported',
                 ].includes(capability.reason);
               return (
                 <details

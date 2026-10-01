@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { BridgeCapabilityReadinessListSchema } from './execution-choice.ts';
 
 export const BridgeProtocolVersion = 2 as const;
 
@@ -171,7 +172,7 @@ export const PairBridgeDeviceInputSchema = z
       .regex(/^[A-Fa-f0-9]{4}-?[A-Fa-f0-9]{4}$/),
     name: z.string().trim().min(1).max(120),
     platform: BridgePlatformSchema,
-    protocolVersion: z.literal(BridgeProtocolVersion),
+    protocolVersion: BridgeProtocolVersionSchema,
     capabilities: z.array(BridgeCapabilitySchema).min(1).max(16),
   })
   .strict();
@@ -220,13 +221,14 @@ export const BridgeEnvironmentSchema = z
     development: z
       .enum(['preparing', 'ready', 'paused', 'unavailable'])
       .optional(),
+    readiness: BridgeCapabilityReadinessListSchema.optional(),
   })
   .strict();
 export type BridgeEnvironment = z.infer<typeof BridgeEnvironmentSchema>;
 
 export const HeartbeatBridgeDeviceInputSchema = z
   .object({
-    protocolVersion: z.literal(BridgeProtocolVersion),
+    protocolVersion: BridgeProtocolVersionSchema,
     capabilities: z.array(BridgeCapabilitySchema).min(1).max(16),
     environment: BridgeEnvironmentSchema.optional(),
   })

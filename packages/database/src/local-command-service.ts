@@ -17,7 +17,9 @@ import {
   type ExecutionContext,
   type RuntimeOperationSnapshot,
   type StoragePort,
+  resolveExecutionChoice,
 } from '@allrice/contracts';
+import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
 
 import { getDatabase } from './core/client.ts';
 import { taskDeadlineOpen, linkTaskOperationCall } from './task-clock.ts';
@@ -184,27 +186,68 @@ async function createLocalBridgeToolOperation(
       runtime_generation: number;
       label: string;
       profile: unknown;
+      metadata: Record<string, unknown>;
+      profile_fresh: boolean;
     }[]
   >`select json_build_object('id',d.id,'organizationId',d.organization_id,'workspaceId',d.workspace_id,'ownerId',d.owner_id,
       'name',d.name,'platform',d.platform,'protocolVersion',d.protocol_version,'capabilities',d.capabilities,'status','online',
       'lastSeenAt',d.last_seen_at,'createdAt',d.created_at,'revokedAt',d.revoked_at) as device,
-      t.id as target_id,g.id as grant_id,g.root_fingerprint,g.runtime_generation,g.label,p.profile
+      t.id as target_id,g.id as grant_id,g.root_fingerprint,g.runtime_generation,g.label,p.profile,t.metadata,
+      coalesce(p.reported_at>clock_timestamp()-interval '90 seconds',false) as profile_fresh
     from allrice_bridge_devices d
     left join allrice_bridge_runtime_profiles p on p.device_id=d.id and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
     join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.state='online'
     join lateral (select * from allrice_bridge_folder_grants where device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null order by created_at desc limit 1) g on true
     where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${owner} and d.revoked_at is null
       and (${candidateTargetId}::uuid is null or t.id=${candidateTargetId}::uuid)
-      and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds' and (${!!input.file} or p.reported_at>clock_timestamp()-interval '90 seconds')
+      and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds'
     order by d.last_seen_at desc limit 1`;
   if (!target) throw new RuntimePolicyError('local_runner_unavailable');
   const device = BridgeDeviceSchema.parse(target.device);
+  const profileParsed = RuntimeLocalCommandProfileSchema.safeParse(
+    target.profile,
+  );
+  const readiness = bridgeCapabilityReadinessView(
+    target.metadata,
+    input.file?.capability ?? 'local.process',
+  );
+  const legacyReady =
+    !input.file &&
+    !target.metadata.environment &&
+    profileParsed.success &&
+    profileParsed.data.available;
+  const choice = resolveExecutionChoice({
+    location: 'local',
+    local: legacyReady ? 'ready' : readiness.state,
+    cloudAvailable: false,
+    localInputs: true,
+  });
+  // Same-call retries read the existing operation/receipts even when its work
+  // makes the device busy; they never create a second attempt.
+  const key = input.assistant
+    ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
+    : `${input.file ? input.file.capability : 'local-command'}:${ctx.runId}:${input.callId}`;
+  const operationId = id(key);
+  const [prior] =
+    await database`select id from allrice_runtime_operations where id=${operationId}
+    and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId}`;
+  if (!prior && choice.status === 'wait')
+    throw new RuntimePolicyError(
+      choice.reason === 'local_busy'
+        ? 'local_runner_busy'
+        : 'local_runner_preparing',
+    );
+  if (choice.status === 'unavailable')
+    throw new RuntimePolicyError('local_runner_unavailable');
   const profile = input.file
     ? null
-    : RuntimeLocalCommandProfileSchema.parse(target.profile);
+    : profileParsed.success
+      ? profileParsed.data
+      : null;
   if (
     !input.file &&
-    (!profile?.available ||
+    (!target.profile_fresh ||
+      !profile?.available ||
       !isLocalCommandProfileForPlatform(device.platform, profile))
   )
     throw new RuntimePolicyError('local_runner_unavailable');
@@ -234,10 +277,6 @@ async function createLocalBridgeToolOperation(
   // envelope; do not enlarge transport limits for a code proposal.
   if (candidate && Buffer.byteLength(JSON.stringify(payload)) > 480_000)
     throw new RuntimePolicyError('candidate_payload_too_large');
-  const key = input.assistant
-    ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
-    : `${input.file ? payload.capability : 'local-command'}:${ctx.runId}:${input.callId}`;
-  const operationId = id(key);
   const task = {
     scope: {
       organizationId: ctx.organizationId,

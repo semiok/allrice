@@ -93,6 +93,9 @@ export const capabilityLabels: Record<
 export const capabilityStateLabels = {
   ready: '可用',
   preparing: '正在准备',
+  busy: '本机忙碌',
+  paused: '已暂停',
+  unsupported: '尚未就绪',
   needs_configuration: '需要配置',
   needs_authorization: '需要授权',
   device_offline: '设备离线',
@@ -119,6 +122,9 @@ export const capabilityReasons: Record<WorkspaceCapability['reason'], string> =
     folder_missing: '电脑已连接。选择需要交给员工处理的文件夹即可。',
     environment_preparing:
       'Bridge 正在自动准备环境，稍后刷新即可查看结果；其他已就绪能力可继续使用。',
+    environment_busy: '本机正在处理已有任务，新任务等待本机释放资源。',
+    runtime_unsupported:
+      '当前电脑缺少此能力所需条件，可在「我的电脑」查看具体缺项。',
     device_paused:
       '此能力已暂停。请在「设置 → 我的电脑」中开启；如果整台 Bridge 已暂停，请在本机恢复连接。',
     browser_unavailable:

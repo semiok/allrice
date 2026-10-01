@@ -18,6 +18,7 @@ import {
 import type { useBridge } from './use-bridge';
 import dialog from './compact-dialog.module.css';
 import css from './bridge-dialog.module.css';
+import { bridgeCapabilityRows } from './bridge-view';
 
 export function BridgeDialog({
   bridge,
@@ -105,6 +106,23 @@ export function BridgeDialog({
                       : '离线'}
                 </span>
               </div>
+              {bridge.bridgeStatusKnown && device.readiness ? (
+                <div className={css.capabilities} aria-label="电脑能力状态">
+                  {bridgeCapabilityRows(device).map((row) => (
+                    <div key={row.capability} className={css.capability}>
+                      <strong>{row.label}</strong>
+                      <span>{row.stateLabel}</span>
+                      <small>{row.reason}</small>
+                      {row.version && (
+                        <details className={css.capabilityVersion}>
+                          <summary>版本信息</summary>
+                          <small>{row.version}</small>
+                        </details>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {online ? (
                 <div className={css.folder}>
                   <span className={css.folderIcon} aria-hidden="true">

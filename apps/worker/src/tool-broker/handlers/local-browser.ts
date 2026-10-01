@@ -14,6 +14,7 @@ import {
 import { LocalBrowserToolInputSchema } from '../../browser-control/local-tool-input.js';
 import { waitBrowserOperationResult } from '../../browser-control/controller.js';
 import type { RiceToolHandler } from '../types.js';
+import { waitForLocalAdmission } from './local-admission.js';
 
 /** Dispatch only. The Bridge drives local I/O under the existing Run/ledger;
  * no local Agent loop, folder permission or fallback cloud execution is created. */
@@ -29,6 +30,8 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
     !input.managedBrowserJobLeaseToken
   )
     throw Error('LOCAL_BROWSER_JOB_LEASE_REQUIRED');
+  const jobAttempt = input.managedBrowserJobAttempt;
+  const jobLeaseToken = input.managedBrowserJobLeaseToken;
   const assertOwned = async (id: string) => {
     const w = await readCurrentBrowserWorkspace(ctx, id);
     if (
@@ -61,14 +64,16 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
   }
   let payload;
   if (args.command === 'open') {
-    let w = await createLocalBrowserWorkspace({
-      context: input.context,
-      callId: input.call.id,
-      grantId: args.grantId,
-      url: args.url,
-      jobAttempt: input.managedBrowserJobAttempt,
-      jobLeaseToken: input.managedBrowserJobLeaseToken,
-    });
+    let w = await waitForLocalAdmission(input, () =>
+      createLocalBrowserWorkspace({
+        context: input.context,
+        callId: input.call.id,
+        grantId: args.grantId,
+        url: args.url,
+        jobAttempt,
+        jobLeaseToken,
+      }),
+    );
     const until = Date.now() + 20000;
     while (w.acknowledged_fence !== w.control_fence && Date.now() < until) {
       if (input.signal?.aborted) throw Error('LOCAL_BROWSER_CANCELED');
@@ -119,6 +124,8 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
     summary: '本地浏览器操作结果已记录',
     modelContent: JSON.stringify({
       target: 'local',
+      executionLocation: 'local',
+      executionReason: 'explicit_local',
       deviceId: op.workspace.device_id,
       workspaceId: op.workspace.id,
       profileId: op.workspace.profile_id,

@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { bridgeSettingsView } from './bridge-settings.ts';
+import {
+  bridgeSettingsView,
+  bridgeCapabilityReadinessView,
+} from './bridge-settings.ts';
 import type postgres from 'postgres';
 import {
   BrowserProfileSchema,
@@ -59,13 +62,17 @@ export async function createLocalBrowserWorkspace(
     url: string;
     jobAttempt: number;
     jobLeaseToken: string;
+    /** Trusted common browser.workspace adapter; not a public grant override. */
+    commonIntent?: boolean;
   },
   db = getDatabase(),
 ) {
   if (!localBrowserEnabled())
     throw new RuntimePolicyError('local_browser_disabled');
   const ctx = browserPrincipal(input.context),
-    id = cloudStableId(`local-browser:${input.context.runId}:${input.callId}`);
+    id = cloudStableId(
+      `${input.commonIntent ? 'browser' : 'local-browser'}:${input.context.runId}:${input.callId}`,
+    );
   const url = BrowserUrlSchema.parse(input.url),
     grantId = UuidSchema.parse(input.grantId);
   if (!input.callId || input.callId.length > 255)
@@ -76,6 +83,7 @@ export async function createLocalBrowserWorkspace(
     callId: input.callId,
     grantId,
     url,
+    ...(input.commonIntent ? { commonIntent: true } : {}),
   });
   await db.begin(async (tx) => {
     await browserIdentity(tx, ctx);
@@ -100,6 +108,7 @@ export async function createLocalBrowserWorkspace(
         and j.status='running' and j.worker_id=${input.context.worker.id} and j.lease_token=${input.jobLeaseToken} and j.attempt=${input.jobAttempt}
         and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null
         and e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'local.browser.workspace'
+        and (${!input.commonIntent} or e.execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? 'browser.workspace')
         and e.execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ? 'network:outbound'
       for share of e,r,c,j,a`;
     if (!run)
@@ -120,10 +129,19 @@ export async function createLocalBrowserWorkspace(
         and g.enabled and g.revoked_at is null and g.transport='local' and l.cleanup_requested_at is null and l.purpose='public'
         and d.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'
         and t.kind='rice_bridge' and t.state='online' and t.target_key='bridge.'||d.id::text
-        and (g.profile->>'network' is null or (t.metadata->'environment'->>'version'='1' and t.metadata->'environment'->>'browser'='ready'))
-        and (t.metadata->'environment' is null or t.metadata->'environment'='null'::jsonb or t.metadata->'environment'->>'browser'='ready')
+        and (g.profile->>'network' is null or t.metadata->'environment'->>'version'='1')
       for update of g,l`;
     if (!grant || !bridgeSettingsView(grant.metadata).settings.localBrowser)
+      throw new RuntimePolicyError('local_browser_grant_denied');
+    const readiness = bridgeCapabilityReadinessView(
+      grant.metadata,
+      'local.browser',
+    );
+    if (readiness.state === 'preparing')
+      throw new RuntimePolicyError('local_browser_preparing');
+    if (readiness.state === 'busy')
+      throw new RuntimePolicyError('local_browser_profile_busy');
+    if (grant.metadata.environment && readiness.state !== 'ready')
       throw new RuntimePolicyError('local_browser_grant_denied');
     const profile = BrowserProfileSchema.parse(grant.profile);
     if (!browserOriginAllowed(url, profile) || browserGrantOriginDenial(url))

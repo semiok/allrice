@@ -9,6 +9,8 @@ import type {
   EmployeeAccentColor,
   SessionReference,
   WorkMethod,
+  BridgeReadinessCapability,
+  BridgeReadinessState,
 } from '@allrice/contracts';
 
 import type { EmployeeProfileDetailsData } from './employee-profile-details';
@@ -163,6 +165,14 @@ export interface BridgeDevice {
   clientVersion?: string | null;
   status: 'online' | 'offline' | 'revoked';
   lastSeenAt: string | null;
+  readiness?: Array<{
+    capability: BridgeReadinessCapability;
+    state: BridgeReadinessState;
+    reason: string;
+    missing: string[];
+    versions: Record<string, string>;
+    observedAt: string | null;
+  }>;
   folderGrants: Array<{
     id: string;
     label: string;

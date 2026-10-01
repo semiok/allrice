@@ -1,6 +1,9 @@
 import { isPlatformAdmin } from './platform-authority.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
-import { bridgeSettingsView } from './bridge-settings.ts';
+import {
+  bridgeSettingsView,
+  bridgeCapabilityReadinessView,
+} from './bridge-settings.ts';
 import {
   BrowserProfileSchema,
   CloudExecutionProfileSchema,
@@ -13,6 +16,9 @@ import {
   WorkspaceReadinessSchema,
   isLocalCommandProfileForPlatform,
   type RequestContext,
+  type BridgeReadinessCapability,
+  type WorkspaceCapabilityId,
+  type BridgeReadinessState,
 } from '@allrice/contracts';
 import {
   requireTenantManagementScope,
@@ -334,6 +340,43 @@ async function readWorkspaceReadiness(
               preparations.length === devices.filter((d) => d.online).length,
           }
         : undefined,
+      localReadiness: Object.fromEntries(
+        (
+          [
+            ['local_files', 'local.fs.read'],
+            ['changeset', 'local.fs.write'],
+            ['local_command', 'local.process'],
+            ['local_browser', 'local.browser'],
+            ['local_mcp', 'local.mcp'],
+            ['development', 'local.development'],
+          ] as [WorkspaceCapabilityId, BridgeReadinessCapability][]
+        ).flatMap(([id, capability]) => {
+          // A legacy report follows the unchanged prerequisite projection.
+          const reports = devices
+            .filter(
+              (d) =>
+                d.online &&
+                BridgeEnvironmentSchema.safeParse(d.environment).data
+                  ?.readiness,
+            )
+            .map(
+              (d) =>
+                bridgeCapabilityReadinessView(d.metadata ?? {}, capability)
+                  .state,
+            );
+          const state = (
+            [
+              'ready',
+              'busy',
+              'preparing',
+              'paused',
+              'unsupported',
+              'offline',
+            ] as BridgeReadinessState[]
+          ).find((candidate) => reports.includes(candidate));
+          return state ? [[id, state]] : [];
+        }),
+      ),
       governedLocalReads: runtimeFeatureEnabled(
         'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
       ),
