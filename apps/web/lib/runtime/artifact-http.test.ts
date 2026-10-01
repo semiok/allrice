@@ -1,7 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as DatabaseModule from '@allrice/database';
-import { ArtifactReviewError } from '@allrice/database';
+import {
+  ArtifactReviewError,
+  DataAccessError,
+  IdentityError,
+} from '@allrice/database';
 import { artifactHttp } from './artifact-http';
 
 const ports = vi.hoisted(() => ({
@@ -14,6 +18,7 @@ const ports = vi.hoisted(() => ({
   address: vi.fn(),
   read: vi.fn(),
   render: vi.fn(),
+  adapter: vi.fn(),
   storage: { get: vi.fn() },
 }));
 vi.mock('@allrice/office-runtime/preview', () => ({
@@ -21,7 +26,7 @@ vi.mock('@allrice/office-runtime/preview', () => ({
 }));
 vi.mock('../identity/session', () => ({ getRequestContext: ports.context }));
 vi.mock('../storage/runtime', () => ({
-  getStorageAdapter: () => ports.storage,
+  getStorageAdapter: ports.adapter,
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof DatabaseModule>()),
@@ -46,6 +51,13 @@ const request = (body?: unknown, origin = 'http://localhost') =>
     headers: { origin, 'content-type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
+const expectPrivateHeaders = (response: Response) => {
+  expect(response.headers.get('cache-control')).toBe('private, no-store');
+  expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+  expect(response.headers.get('content-security-policy')).toContain(
+    "default-src 'none'",
+  );
+};
 describe('authenticated workbench HTTP boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -64,6 +76,7 @@ describe('authenticated workbench HTTP boundary', () => {
     });
     ports.feedback.mockResolvedValue([]);
     ports.read.mockResolvedValue(Buffer.from('hello'));
+    ports.adapter.mockReturnValue(ports.storage);
     ports.storage.get.mockImplementation(async () =>
       new Blob(['hello']).stream(),
     );
@@ -87,6 +100,77 @@ describe('authenticated workbench HTTP boundary', () => {
       ).status,
     ).toBe(403);
     expect(ports.save).not.toHaveBeenCalled();
+  });
+  it.each([
+    ['authentication_failed', 401, 'AUTHENTICATION_REQUIRED'],
+    ['tenant_context_invalid', 403, 'AUTHORIZATION_DENIED'],
+    ['authorization_denied', 403, 'AUTHORIZATION_DENIED'],
+  ] as const)(
+    'returns the identity denial for %s before accessing any artifact or storage',
+    async (code, status, problemCode) => {
+      ports.context.mockRejectedValue(new IdentityError(code));
+      for (const action of ['list', 'content'] as const) {
+        const response = await artifactHttp(request(), action, sessionId, id);
+        expect(response.status).toBe(status);
+        expectPrivateHeaders(response);
+        expect(await response.json()).toMatchObject({
+          error: { code: problemCode, retryable: false },
+        });
+      }
+      for (const port of [
+        ports.list,
+        ports.get,
+        ports.feedback,
+        ports.save,
+        ports.address,
+        ports.read,
+        ports.render,
+        ports.adapter,
+        ports.storage.get,
+      ])
+        expect(port).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    ['authorization_denied', 403, 'AUTHORIZATION_DENIED'],
+    ['not_found', 404, 'RESOURCE_NOT_FOUND'],
+  ] as const)(
+    'preserves the storage %s response without returning content',
+    async (code, status, problemCode) => {
+      ports.storage.get.mockRejectedValueOnce(new DataAccessError(code));
+      const response = await artifactHttp(request(), 'content', sessionId, id);
+      expect(response.status).toBe(status);
+      expectPrivateHeaders(response);
+      const result = await response.json();
+      expect(result).toMatchObject({
+        error: { code: problemCode, retryable: false },
+      });
+      expect(JSON.stringify(result)).not.toContain('hello');
+      expect(ports.get).toHaveBeenCalledTimes(1);
+      expect(ports.storage.get).toHaveBeenCalledTimes(1);
+      expect(ports.feedback).not.toHaveBeenCalled();
+      expect(ports.render).not.toHaveBeenCalled();
+    },
+  );
+  it('discards content when the post-read authorization check is denied', async () => {
+    const object = {
+      mediaType: 'text/plain',
+      sizeBytes: 5,
+      checksum: 'sha256:' + createHash('sha256').update('hello').digest('hex'),
+    };
+    ports.get
+      .mockResolvedValueOnce({ id, kind: 'document', object })
+      .mockRejectedValueOnce(new DataAccessError('authorization_denied'));
+    const response = await artifactHttp(request(), 'content', sessionId, id);
+    expect(response.status).toBe(403);
+    expectPrivateHeaders(response);
+    const result = await response.json();
+    expect(result).toMatchObject({
+      error: { code: 'AUTHORIZATION_DENIED', retryable: false },
+    });
+    expect(JSON.stringify(result)).not.toContain('hello');
+    expect(ports.storage.get).toHaveBeenCalledTimes(1);
+    expect(ports.get).toHaveBeenCalledTimes(2);
   });
   it('rejects route/body identity mismatch, invalid cursors and oversized input', async () => {
     expect(
@@ -291,9 +375,12 @@ describe('authenticated workbench HTTP boundary', () => {
     expect(ports.address).not.toHaveBeenCalled();
   });
   it('does not reflect database diagnostics', async () => {
-    ports.get.mockRejectedValueOnce(new Error('SECRET_BACKEND_CONFIG'));
+    ports.get.mockRejectedValueOnce(
+      Object.assign(new Error('SECRET_BACKEND_CONFIG'), { code: '42P01' }),
+    );
     const response = await artifactHttp(request(), 'detail', sessionId, id);
     expect(response.status).toBe(500);
+    expectPrivateHeaders(response);
     expect(await response.text()).toBe('{"code":"ARTIFACT_UNAVAILABLE"}');
   });
   it('records preview failure codes without recording backend secrets', async () => {

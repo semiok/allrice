@@ -1,5 +1,7 @@
 import {
   ArtifactReviewError,
+  DataAccessError,
+  IdentityError,
   workbenchEnabled,
   listWorkbenchArtifacts,
   getWorkbenchArtifact,
@@ -14,6 +16,7 @@ import {
 } from '@allrice/contracts';
 import { getRequestContext } from '../identity/session';
 import { sameOriginBrowserWrite } from '../identity/request-origin';
+import { executionErrorResponse } from '../execution/responses';
 import { getStorageAdapter } from '../storage/runtime';
 import { readStaticArtifactPreview } from './static-artifact-preview';
 import { reportPreviewFailure } from './preview-diagnostics';
@@ -149,6 +152,12 @@ export async function artifactHttp(
       { headers },
     );
   } catch (error) {
+    if (error instanceof IdentityError || error instanceof DataAccessError) {
+      const response = executionErrorResponse(error);
+      for (const [name, value] of Object.entries(headers))
+        response.headers.set(name, value);
+      return response;
+    }
     const code =
       error instanceof ArtifactReviewError
         ? error.code
