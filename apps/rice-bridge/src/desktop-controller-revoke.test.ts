@@ -41,7 +41,9 @@ type Frame = {
   v: number;
   type: string;
   id?: string;
+  pickerId?: string;
   ok?: boolean;
+  code?: string;
   data?: Record<string, unknown>;
   state?: Record<string, unknown>;
 };
@@ -64,6 +66,9 @@ async function fixture(configDeleted: boolean) {
   let current: BridgeConfig | null = configuration(oldDevice);
   const starts: string[] = [];
   const stops: string[] = [];
+  let chooseFile:
+    | ((root: string, signal?: AbortSignal) => Promise<string | null>)
+    | undefined;
   ports.config.mockImplementation(async () => {
     if (!current)
       throw Object.assign(Error('synthetic missing config'), {
@@ -81,7 +86,9 @@ async function fixture(configDeleted: boolean) {
     (options: {
       signal: AbortSignal;
       onState: (state: BridgeRuntimeState) => void;
+      chooseFile?: typeof chooseFile;
     }) => {
+      chooseFile = options.chooseFile;
       const deviceId = current!.deviceId;
       starts.push(deviceId);
       const state: BridgeRuntimeState = {
@@ -175,7 +182,10 @@ async function fixture(configDeleted: boolean) {
       await done;
       expect(starts).toEqual(stops);
       expect(JSON.stringify(frames)).not.toContain(syntheticToken);
-      expect(JSON.stringify(frames)).not.toContain(syntheticPath);
+      // Only the private picker IPC carries its authorized native root.
+      expect(
+        JSON.stringify(frames.filter((frame) => frame.type !== 'picker')),
+      ).not.toContain(syntheticPath);
       expect(ports.grant).not.toHaveBeenCalled();
     } finally {
       stdin.mockRestore();
@@ -214,8 +224,64 @@ async function fixture(configDeleted: boolean) {
       };
     });
   };
-  return { request, close, starts, frames, completeNextRevoke };
+  const pickFile = (signal?: AbortSignal) => {
+    if (!chooseFile) throw Error('SYNTHETIC_PICKER_UNAVAILABLE');
+    return chooseFile(syntheticPath, signal);
+  };
+  return { request, close, starts, frames, completeNextRevoke, pickFile };
 }
+
+it('keeps canceled picker IDs invalid without affecting the next user cancel or selection', async () => {
+  const app = await fixture(false);
+  try {
+    const canceled = new AbortController();
+    const canceledChoice = app.pickFile(canceled.signal);
+    const oldPicker = app.frames.findLast((frame) => frame.type === 'picker')!;
+    canceled.abort();
+    expect(await canceledChoice).toBeNull();
+    expect(
+      app.frames.findLast((frame) => frame.type === 'pickerCancel'),
+    ).toMatchObject({
+      pickerId: oldPicker.pickerId,
+    });
+    expect(
+      await app.request('picker', { pickerId: oldPicker.pickerId, path: null }),
+    ).toMatchObject({ ok: false, code: 'DESKTOP_REQUEST_INVALID' });
+
+    const userCancel = app.pickFile();
+    const nextPicker = app.frames.findLast((frame) => frame.type === 'picker')!;
+    expect(nextPicker.pickerId).not.toBe(oldPicker.pickerId);
+    expect(
+      await app.request('picker', { pickerId: oldPicker.pickerId, path: null }),
+    ).toMatchObject({ ok: false, code: 'DESKTOP_REQUEST_INVALID' });
+    expect(
+      await app.request('picker', {
+        pickerId: nextPicker.pickerId,
+        path: null,
+      }),
+    ).toMatchObject({ ok: true });
+    expect(await userCancel).toBeNull();
+
+    const confirmed = app.pickFile();
+    const finalPicker = app.frames.findLast(
+      (frame) => frame.type === 'picker',
+    )!;
+    expect(
+      await app.request('picker', {
+        pickerId: finalPicker.pickerId,
+        path: `${syntheticPath}/中文 空格.xlsx`,
+      }),
+    ).toMatchObject({ ok: true });
+    expect(await confirmed).toBe(`${syntheticPath}/中文 空格.xlsx`);
+    expect((await app.request('status')).data).toMatchObject({
+      mode: 'running',
+      connection: 'online',
+      errorCode: null,
+    });
+  } finally {
+    await app.close();
+  }
+}, 5000);
 
 it('reports unpaired plus pending cleanup and an explicit partial-success response when config was removed', async () => {
   const app = await fixture(true);

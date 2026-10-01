@@ -180,7 +180,10 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 chooseFile(pickerId: id, root: root)
             } else { chooseFolder(pickerId: id) }
         case "pickerCancel":
-            if let id = object["pickerId"] as? String, filePicker?.id == id { filePicker?.panel.cancel(nil) }
+            if let id = object["pickerId"] as? String, let picker = filePicker, picker.id == id {
+                filePicker = nil
+                picker.panel.cancel(nil)
+            }
         case "fatal", "protocolError":
             coreReady = false
             pairing = false
@@ -534,7 +537,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         panel.message = "选择已授权文件夹内的文件。确认后原始字节会上传为当前对话附件（最多 9 MB）。"
         NSApp.activate(ignoringOtherApps: true)
         panel.begin { response in
-            if self.filePicker?.id == pickerId { self.filePicker = nil }
+            guard self.filePicker?.id == pickerId else { return }
+            self.filePicker = nil
             let path = response == .OK ? panel.url?.path : nil
             self.action("picker", fields: ["pickerId": pickerId, "path": path as Any? ?? NSNull()])
         }
