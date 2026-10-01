@@ -17,6 +17,7 @@ import {
   renderTaskSuggestion,
   type PreparedComposerDraft,
 } from '../../lib/chatflow/composer-draft';
+import { taskSuggestionPreparations } from '../../lib/chatflow/task-preparation';
 import { capabilityReasons } from './capability-catalog';
 import css from './task-suggestions.module.css';
 
@@ -171,15 +172,10 @@ export function TaskSuggestions({
     ].join(' · ');
   }
   function preparationEntries(tasks: TaskSuggestionDisplay[]): MenuEntry[] {
-    return [...new Set(tasks.flatMap((task) => task.preparation ?? []))]
-      .filter((id) => {
-        if (id === 'files') return true;
-        const capability = readiness?.capabilities.find(
-          (item) => item.id === (id === 'bridge' ? 'local_files' : 'cloud_mcp'),
-        );
-        return capability?.state !== 'ready';
-      })
-      .map((id) => ({ id: `prepare:${id}`, label: preparationLabels[id] }));
+    return taskSuggestionPreparations(tasks, readiness).map((id) => ({
+      id: `prepare:${id}`,
+      label: preparationLabels[id],
+    }));
   }
   function menuSelect(id: string) {
     if (id === 'page:more') {
