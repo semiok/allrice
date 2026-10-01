@@ -51,6 +51,10 @@ export function isBridgeDeviceApiPath(pathname: string) {
     /^\/api\/v1\/bridge\/device\/operations\/[0-9a-f-]{36}\/(start|heartbeat|output|receipts|service)$/.test(
       pathname,
     ) ||
+    // Binary transfers validate their own device token, lease and live owner.
+    /^\/api\/v1\/bridge\/device\/file-transfers\/(command|operation)\/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(
+      pathname,
+    ) ||
     /^\/api\/v1\/bridge\/device\/commands\/[^/]+\/complete$/.test(pathname) ||
     /^\/api\/v1\/bridge\/device\/workspace-selections\/[^/]+\/complete$/.test(
       pathname,
