@@ -6,9 +6,9 @@ import {
   storeLocalFileUpload,
   DataAccessError,
 } from '@allrice/database';
-import { getBridgeDeviceToken } from '../../../../../../../../lib/bridge/request.js';
-import { bridgeErrorResponse } from '../../../../../../../../lib/bridge/responses.js';
-import { getStorageAdapter } from '../../../../../../../../lib/storage/runtime.js';
+import { getBridgeDeviceToken } from '../../../../../../../../lib/bridge/request';
+import { bridgeErrorResponse } from '../../../../../../../../lib/bridge/responses';
+import { getStorageAdapter } from '../../../../../../../../lib/storage/runtime';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';

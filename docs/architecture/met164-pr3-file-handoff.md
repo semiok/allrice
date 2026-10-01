@@ -6,7 +6,7 @@ PR3 复用附件、StorageObject/StoragePort、`getToolBrokerFile`、Workbench/D
 
 - 发送前附件菜单“通过我的电脑选择文件”使用 Mac 原生文件窗口。确认前不上传，取消/超时/撤销授权会关闭窗口。已上传的原始字节进入当前用户的已有附件与对话引用。
 - 成果卡菜单“保存到电脑 / 打开”使用原有 DSH 卡片和对话框。用户选择当前 Mac 的已授权目录和文件名；保存读取原 StorageObject，保留 DeliverableVersion 与原始字节。Finder 定位和默认应用打开复核当前文件版本。
-- 员工工具为 `local.file.inspect/import/save/open/reveal`。调用沿用真实运行中的 Run/job、冻结配置、目录授权代次、当前权限、时限、计量和 v2 收据。原始文件交接不依赖 Office/Python 或 VM profile。
+- 员工工具为 `local.file.inspect/import/save/open/reveal`。五项在 DSH 原生工具注册表接入已有 Broker，模型可见声明复用同一严格参数契约；调用沿用真实运行中的 Run/job、冻结配置、目录授权代次、当前权限、时限、计量和 v2 收据。原始文件交接不依赖 Office/Python 或 VM profile。
 - 终态成果和发送前附件没有运行中的 Run；它们复用已有用户 Bridge command 队列，以同一个 byte executor 和持久 SQLite journal 执行。没有伪造 Run 或延长 runtime deadline。
 
 `inspected` 只证明当前文件内容与身份；`uploaded` 证明经过服务端实际 size/SHA256 校验的对象已 ready 且可下载；`saved` 证明文件已原子创建并同步到授权目录；`opened/revealed` 只证明 macOS 接收默认应用/Finder 动作，不证明用户已读。平台下载可用与本机已保存分开显示。

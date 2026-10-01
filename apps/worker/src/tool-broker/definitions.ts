@@ -42,7 +42,6 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
-  ...localFileToolDefinitions,
   ...(['delegate', 'message', 'report', 'stop', 'development'] as const).map(
     (action) => ({
       name: `assistant.${action}` as const,
@@ -436,6 +435,7 @@ export const riceToolDefinitions = [
       additionalProperties: false,
     },
   },
+  ...localFileToolDefinitions,
   {
     name: 'local.fs.search',
     description:
