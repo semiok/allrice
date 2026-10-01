@@ -1,6 +1,10 @@
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { z } from 'zod';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
+import {
+  TaskSuggestionDisplaySchema,
+  TaskSuggestionsSchema,
+} from './task-suggestions.ts';
 
 import {
   FrozenAgentSkillBindingSchema,
@@ -261,6 +265,7 @@ export const EmployeeDefinitionSchema = z
     description: z.string().min(1).max(1_000),
     appearance: EmployeeAppearanceSchema,
     applicableScenarios: z.array(z.string().trim().min(1).max(300)).max(24),
+    taskSuggestions: TaskSuggestionsSchema.optional(),
     isDefaultRice: z.boolean(),
     identity: EmployeeIdentitySchema,
     systemPrompt: z.string().min(1).max(100_000),
@@ -306,6 +311,7 @@ export const EmployeeVersionSnapshotSchema = z
     employeeId: UuidSchema,
     version: z.number().int().positive(),
     manifest: EmployeeManifestSchema,
+    taskSuggestions: z.array(TaskSuggestionDisplaySchema).max(8).optional(),
     configChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
     publishedAt: TimestampSchema,
   })

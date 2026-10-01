@@ -1,7 +1,13 @@
 'use client';
 
 import { IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives';
-import type { SessionReference } from '@allrice/contracts';
+import type {
+  SessionReference,
+  TaskSuggestionDisplay,
+  WorkspaceReadiness,
+} from '@allrice/contracts';
+import { TaskSuggestions } from './task-suggestions';
+import type { PreparedComposerDraft } from '../../lib/chatflow/composer-draft';
 import { SessionReferenceChips } from './session-reference-picker';
 
 import type { MutableRefObject, RefObject, ReactNode } from 'react';
@@ -27,6 +33,12 @@ import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatComposerProps {
+  taskSuggestions?: TaskSuggestionDisplay[];
+  taskScope?: string;
+  compact?: boolean;
+  taskReadiness?: WorkspaceReadiness | null;
+  onPrepareTask?: (prepared: PreparedComposerDraft) => void;
+  onTaskPreparation?: (preparation: 'files' | 'bridge' | 'connections') => void;
   sessionReferences?: SessionReference[];
   onOpenSessionReferences?: () => void;
   onRemoveSessionReference?: (id: string) => void;
@@ -63,6 +75,12 @@ interface ChatComposerProps {
 }
 
 export function ChatComposer({
+  taskSuggestions,
+  taskScope,
+  compact = false,
+  taskReadiness = null,
+  onPrepareTask,
+  onTaskPreparation,
   sessionReferences = [],
   onOpenSessionReferences,
   onRemoveSessionReference,
@@ -170,6 +188,20 @@ export function ChatComposer({
           ref={composerInput}
           value={draft}
         />
+        {taskSuggestions && onPrepareTask && onTaskPreparation && (
+          <TaskSuggestions
+            key={taskScope}
+            suggestions={taskSuggestions}
+            draft={draft}
+            busy={busy}
+            hero={hero}
+            compact={compact}
+            attachmentCount={pendingAttachments.length}
+            readiness={taskReadiness}
+            onPrepare={onPrepareTask}
+            onPreparation={onTaskPreparation}
+          />
+        )}
         <div className={`${inputUi.row} ${styles.composerRow}`}>
           <div className={`${inputUi.tools} ${styles.composerTools}`}>
             <div className={styles.attachmentMenuAnchor}>

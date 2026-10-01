@@ -1,5 +1,6 @@
 import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
 import { readEmployeeOrganizationContext } from './organization-context.ts';
+import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
 import {
   isPlatformAdmin,
   requirePlatformAdmin,
@@ -291,14 +292,28 @@ function legacyManifest(row: EmployeeVersionRow): EmployeeManifest {
 
 function versionSnapshot(row: EmployeeVersionRow) {
   const parsed = EmployeeManifestSchema.safeParse(row.manifest);
+  const manifest = parsed.success ? parsed.data : legacyManifest(row);
   return EmployeeVersionSnapshotSchema.parse({
     id: row.id,
     employeeId: row.employee_id,
     version: row.version,
-    manifest: parsed.success ? parsed.data : legacyManifest(row),
+    manifest,
+    taskSuggestions: projectEmployeeTaskSuggestions(manifest),
     configChecksum: row.config_checksum,
     publishedAt: row.published_at.toISOString(),
   });
+}
+
+function publicVersionSnapshot(row: EmployeeVersionRow) {
+  const snapshot = versionSnapshot(row);
+  // Only the capability-filtered display projection goes to the tenant UI.
+  // Stored references stay in the immutable manifest for platform governance.
+  if (snapshot.manifest.schemaVersion === 2) {
+    const manifest = { ...snapshot.manifest };
+    delete manifest.taskSuggestions;
+    return { ...snapshot, manifest };
+  }
+  return snapshot;
 }
 
 const privateEmployeeFields = new Set([
@@ -451,10 +466,10 @@ export async function listEmployeeHub(
           assignedBy: assignment.assigned_by,
           assignedAt: assignment.assigned_at.toISOString(),
           memoryCount: memoryCountByEmployee.get(assignment.employee_id) ?? 0,
-          currentVersion: versionSnapshot(assignment),
+          currentVersion: publicVersionSnapshot(assignment),
           versions: versions
             .filter((version) => version.employee_id === assignment.employee_id)
-            .map(versionSnapshot),
+            .map(publicVersionSnapshot),
         }),
       ),
     ),
@@ -471,7 +486,7 @@ export async function listEmployeeHub(
           employeeId: entry.employee_id,
           employeeKey: entry.employee_key,
           status: entry.status,
-          currentVersion: versionSnapshot(entry),
+          currentVersion: publicVersionSnapshot(entry),
           assignedUserIds: entry.assigned_user_ids,
         }),
       ),
@@ -750,7 +765,7 @@ export async function publishEmployeeVersion(
         ${transaction.json({ checksum, skillVersionIds, partnerProfile: manifest.partnerProfile, stableVersionId })}
       )
     `;
-    return versionSnapshot(version);
+    return redactEmployeeSecrets(publicVersionSnapshot(version));
   });
 }
 
@@ -1024,7 +1039,7 @@ export async function assignEmployeeVersion(
       ${sql.json({ employeeVersionId: update.employeeVersionId })}
     )
   `;
-  return versionSnapshot(row);
+  return redactEmployeeSecrets(publicVersionSnapshot(row));
 }
 
 export async function setDefaultEmployee(

@@ -38,6 +38,7 @@ import {
 } from '@allrice/contracts';
 
 import { employeeManifest } from './employee-config.ts';
+import { taskSuggestionConfigurationErrors } from './task-suggestions.ts';
 import { frozenPackageSkills, validateSkillBundle } from '../skill-bundles.ts';
 import { getDatabase } from '../core/client.ts';
 import { platformSkillReplacements } from '../platform-content/replacements.ts';
@@ -1264,6 +1265,7 @@ export async function compilePlatformEmployee(
     const modelProblem = employeeModelPolicyProblem(definition.modelPolicy);
     if (modelProblem) errors.push(modelProblem);
     errors.push(...employeeToolConfigurationErrors(definition));
+    errors.push(...taskSuggestionConfigurationErrors(definition));
     const skills =
       definition.capabilities.nativeSkillIds.length === 0
         ? []
@@ -1433,6 +1435,9 @@ function tenantManifest(
     description: definition.description,
     role: definition.identity.role,
     appearance: definition.appearance,
+    ...(definition.taskSuggestions !== undefined
+      ? { taskSuggestions: definition.taskSuggestions }
+      : {}),
     behaviorRules: definition.identity.behaviorRules,
     safetyBoundaries: definition.identity.safetyBoundaries,
     identity: {

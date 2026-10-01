@@ -18,6 +18,7 @@ import {
   type EmployeeUserProfile,
   type EmployeeUserProfilePolicy,
   type PartnerProfile,
+  type TaskSuggestion,
 } from '@allrice/contracts';
 
 export function applyEmployeeUserProfilePolicy(
@@ -114,6 +115,7 @@ export function employeeManifest(input: {
     accentColor?: EmployeeAccentColor;
   };
   applicableScenarios?: string[];
+  taskSuggestions?: TaskSuggestion[];
   behaviorRules?: string[];
   safetyBoundaries?: string[];
   identity?: EmployeeIdentity;
@@ -243,6 +245,9 @@ export function employeeManifest(input: {
       '信息整理',
       '使用已授权能力完成工作',
     ],
+    ...(input.taskSuggestions !== undefined
+      ? { taskSuggestions: input.taskSuggestions }
+      : {}),
     isDefaultRice: input.key === riceEmployeeKey,
     identity,
     systemPrompt:

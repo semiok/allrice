@@ -58,6 +58,11 @@ import { useWorkbenchResize, WorkbenchSplitter } from './workbench-splitter';
 import { useWorkspaceReadiness } from './use-workspace-readiness';
 import { CapabilityContent } from './capability-panel';
 import { capabilityLabels } from './capability-catalog';
+import {
+  appendComposerDraft,
+  prepareComposerText,
+  type PreparedComposerDraft,
+} from '../../lib/chatflow/composer-draft';
 import workbenchUi from './workbench.module.css';
 import { AttachmentPreviewDialog } from './attachment-preview-dialog';
 import type { Attachment, Message, QueuedMessage } from './chatflow-types';
@@ -1019,8 +1024,63 @@ export function ChatFlowClient({
   const { localWorkspaceOnline, localWorkspaceLabel, bridgeConnectionState } =
     projectBridgeView(bridgeDevices, bridgeStatusKnown);
 
+  // Like readiness.basis=next_task, use the assignment's effective next version.
+  // An existing Session/Run is never rebound merely to display these tasks.
+  const suggestionVersion = activeEmployee?.currentVersion;
+  const taskScope = `${settingsScope}/${activeId}/${activeEmployee?.id}/${suggestionVersion?.id}`;
+  function prepareDraft(prepared: PreparedComposerDraft) {
+    if (busy || composing.current) return;
+    const selection = captureSelection();
+    let insertion = appendComposerDraft(draft, prepared);
+    setDraft((current) => {
+      insertion = appendComposerDraft(current, prepared);
+      return insertion.text;
+    });
+    requestAnimationFrame(() => {
+      const textarea = composerInput.current;
+      if (
+        !selection.current() ||
+        !textarea ||
+        textarea.value !== insertion.text
+      )
+        return;
+      resizeComposerTextarea(textarea);
+      textarea.focus({ preventScroll: true });
+      textarea.setSelectionRange(
+        insertion.selectionStart,
+        insertion.selectionEnd,
+      );
+    });
+  }
+
   const renderComposer = (hero = false) => (
     <ChatComposer
+      taskSuggestions={suggestionVersion?.taskSuggestions ?? []}
+      taskScope={taskScope}
+      compact={layout.compact}
+      taskReadiness={
+        readiness.data?.employeeVersionId === suggestionVersion?.id
+          ? readiness.data
+          : null
+      }
+      onPrepareTask={prepareDraft}
+      onTaskPreparation={(preparation) => {
+        if (preparation === 'files') {
+          const selection = captureSelection();
+          setAttachmentMenuOpen(true);
+          requestAnimationFrame(() => {
+            if (selection.current())
+              fileInput.current?.parentElement
+                ?.querySelector<HTMLButtonElement>(
+                  'button[aria-label="添加文件"]',
+                )
+                ?.focus({ preventScroll: true });
+          });
+        } else if (preparation === 'bridge') {
+          setSettings(null);
+          void loadBridgeDevices(true);
+        } else setSettings({ scope: settingsScope, section: 'apps' });
+      }}
       sessionReferences={sessionReferences}
       onOpenSessionReferences={() => setReferencePickerOpen(true)}
       onRemoveSessionReference={(id) =>
@@ -1166,13 +1226,9 @@ export function ChatFlowClient({
                 return;
               const prompt = capabilityLabels[id].prompt;
               if (!prompt) return;
-              // Never overwrite an existing draft or send on the user's behalf.
-              setDraft((current) =>
-                current.trim() ? `${current}\n\n${prompt}` : prompt,
-              );
+              prepareDraft(prepareComposerText(prompt));
               setSettings(null);
               if (layout.compact) setSidebarCollapsed(true);
-              requestAnimationFrame(() => composerInput.current?.focus());
             }}
           />
         }

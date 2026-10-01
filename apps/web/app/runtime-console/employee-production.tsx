@@ -20,6 +20,7 @@ import {
 
 import styles from './employee-production.module.css';
 import { EmployeeSkills } from './employee-skills';
+import { EmployeeTaskSuggestions } from './employee-task-suggestions';
 
 type Employee = PlatformEmployeeSummary;
 
@@ -878,30 +879,42 @@ export function EmployeeProduction() {
 
   if (tab === 'basic') {
     panel = (
-      <div className={styles.grid}>
-        <Field
-          label="名称"
-          value={draft.name}
-          onChange={(value) => update(['name'], value)}
+      <>
+        <div className={styles.grid}>
+          <Field
+            label="名称"
+            value={draft.name}
+            onChange={(value) => update(['name'], value)}
+          />
+          <Field
+            label="员工 Key"
+            value={draft.key}
+            onChange={(value) => update(['key'], value)}
+          />
+          <Field
+            label="简介"
+            value={draft.description}
+            multiline
+            wide
+            onChange={(value) => update(['description'], value)}
+          />
+          <Field
+            label="头像内容"
+            value={draft.appearance.avatarValue}
+            onChange={(value) => update(['appearance', 'avatarValue'], value)}
+          />
+        </div>
+        <EmployeeTaskSuggestions
+          value={draft.taskSuggestions}
+          toolNames={draft.capabilities.toolNames}
+          skills={(directory?.skills ?? []).filter((skill) =>
+            draft.capabilities.nativeSkillIds.includes(skill.id),
+          )}
+          onChange={(taskSuggestions) =>
+            update(['taskSuggestions'], taskSuggestions)
+          }
         />
-        <Field
-          label="员工 Key"
-          value={draft.key}
-          onChange={(value) => update(['key'], value)}
-        />
-        <Field
-          label="简介"
-          value={draft.description}
-          multiline
-          wide
-          onChange={(value) => update(['description'], value)}
-        />
-        <Field
-          label="头像内容"
-          value={draft.appearance.avatarValue}
-          onChange={(value) => update(['appearance', 'avatarValue'], value)}
-        />
-      </div>
+      </>
     );
   } else if (tab === 'persona') {
     const accent = resolveEmployeeAccent(

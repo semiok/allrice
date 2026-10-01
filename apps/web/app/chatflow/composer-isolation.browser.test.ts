@@ -1,9 +1,15 @@
 /** Real Chrome + React StrictMode + synthetic loopback HTTP. No DB/auth/model/Bridge. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import {
+  workspaceCapabilityIds,
+  type TaskSuggestionDisplay,
+  type WorkspaceReadiness,
+} from '@allrice/contracts';
 import type { Attachment, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import type {
@@ -136,6 +142,13 @@ suite(
     let browser: Browser;
     let javascript: Uint8Array;
     let css: Uint8Array;
+    const recommendationTimings: {
+      chrome: string;
+      platform: string;
+      viewport: number;
+      ms: number | null;
+      samples: number;
+    }[] = [];
     beforeAll(async () => {
       const build = createRequire(require.resolve('tsx'))('esbuild').build;
       const baseline = process.env.ALLRICE_P26_BASELINE === '1';
@@ -206,6 +219,25 @@ suite(
     }, 60_000);
     afterAll(async () => {
       await browser?.close();
+      if (recommendationTimings.length) {
+        const directory = resolve(
+          root,
+          '.local/met168-recommendation-evidence',
+        );
+        await mkdir(directory, { recursive: true });
+        await writeFile(
+          resolve(directory, 'click-to-draft.json'),
+          JSON.stringify(
+            {
+              observedAt: new Date().toISOString(),
+              headless: true,
+              measurements: recommendationTimings,
+            },
+            null,
+            2,
+          ) + '\n',
+        );
+      }
     });
 
     async function fixture(
@@ -219,6 +251,8 @@ suite(
         settled?: 'failed' | 'canceled';
         width?: number;
         workspaceFiles?: WorkspaceFile[];
+        taskSuggestions?: TaskSuggestionDisplay[];
+        readiness?: WorkspaceReadiness['capabilities'];
       } = {},
     ) {
       const pending: Pending[] = [];
@@ -310,6 +344,7 @@ suite(
             workspace: {
               organizationId: A,
               workspaceId: B,
+              ...(options.readiness ? { viewerId: C } : {}),
               canAdminister: false,
               sessions: [session(A), session(B)],
               sessionModels: [A, B].map((sessionId) => ({
@@ -327,7 +362,8 @@ suite(
                   isDefault: true,
                   versions: [],
                   currentVersion: {
-                    id: 'version',
+                    id: options.readiness ? C : 'version',
+                    taskSuggestions: options.taskSuggestions ?? [],
                     manifest: {
                       name: 'Rice',
                       runtimePolicy: { harness: 'dsh', provider: 'gemini' },
@@ -352,6 +388,21 @@ suite(
           });
           return;
         }
+        if (path === '/api/v1/workspace/readiness' && options.readiness) {
+          answer(response, {
+            schemaVersion: 1,
+            organizationId: A,
+            workspaceId: B,
+            viewerId: C,
+            sessionId: url.searchParams.get('sessionId'),
+            employeeVersionId: C,
+            canAdminister: false,
+            observedAt: now,
+            basis: 'next_task',
+            capabilities: options.readiness,
+          });
+          return;
+        }
         if (path === '/api/v1/bridge/devices') {
           answer(response, { devices: [] });
           return;
@@ -369,6 +420,13 @@ suite(
                 deliverableVersion: null,
               },
             ],
+          });
+          return;
+        }
+        if (path === '/api/v1/sessions' && options.taskSuggestions) {
+          answer(response, {
+            sessions: [session(A), session(B)],
+            nextCursor: null,
           });
           return;
         }
@@ -1399,6 +1457,446 @@ suite(
       },
       15_000,
     );
+
+    const weeklyTask: TaskSuggestionDisplay = {
+      id: 'weekly-summary',
+      title: '整理周报',
+      template: '整理最近 {{days}} 天的工作，输出{{format}}。',
+      slots: [
+        {
+          name: 'days',
+          label: '天数',
+          defaultValue: '7',
+          options: ['7', '30'],
+        },
+        { name: 'format', label: '用途', defaultValue: '科研👩‍🔬总结' },
+      ],
+      preparation: ['files'],
+    };
+    async function selectSuggestion(page: Page, title: string, width = 1440) {
+      await page.getByRole('button', { name: '推荐任务', exact: true }).click();
+      if (width < 760)
+        await page
+          .getByRole('dialog', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: new RegExp(`^${title}`) })
+          .click();
+      else
+        await page
+          .getByRole('menuitem', { name: new RegExp(`^${title}`) })
+          .click();
+    }
+    it.each([1440, 390])(
+      'recommendation fills a default task locally with selection and no request at %ipx',
+      async (width) => {
+        const f = await fixture({ width, taskSuggestions: [weeklyTask] });
+        try {
+          const expected = '整理最近 7 天的工作，输出科研👩‍🔬总结。';
+          await f.page.evaluate(
+            ({ expected }) => {
+              const timing = { ms: null as number | null };
+              Object.assign(window, { taskDraftTiming: timing });
+              document.addEventListener(
+                'click',
+                (event) => {
+                  const button = (event.target as HTMLElement).closest(
+                    'button',
+                  );
+                  if (!button?.textContent?.startsWith('整理周报')) return;
+                  const start = performance.now();
+                  const observe = () => {
+                    if (
+                      document.querySelector<HTMLTextAreaElement>(
+                        'textarea[aria-label="给 Rice 的消息"]',
+                      )?.value === expected
+                    )
+                      timing.ms = performance.now() - start;
+                    else requestAnimationFrame(observe);
+                  };
+                  requestAnimationFrame(observe);
+                },
+                { capture: true, once: false },
+              );
+            },
+            { expected },
+          );
+          await selectSuggestion(f.page, weeklyTask.title, width);
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await expect.poll(() => input.inputValue()).toBe(expected);
+          expect(
+            await input.evaluate((element: HTMLTextAreaElement) =>
+              element.value.slice(element.selectionStart, element.selectionEnd),
+            ),
+          ).toBe('7');
+          expect(
+            await input.evaluate(
+              (element) => document.activeElement === element,
+            ),
+          ).toBe(true);
+          const latency = await f.page.evaluate(
+            () =>
+              (window as unknown as { taskDraftTiming: { ms: number | null } })
+                .taskDraftTiming.ms,
+          );
+          expect(latency).not.toBeNull();
+          recommendationTimings.push({
+            chrome: await browser.version(),
+            platform: `${process.platform}/${process.arch}`,
+            viewport: width,
+            ms: latency,
+            samples: 1,
+          });
+          expect(f.writes).toEqual([]);
+          expect(f.pending).toEqual([]);
+          expect(f.errors).toEqual([]);
+          await input.press('Shift+Enter');
+          expect(await input.inputValue()).toContain('\n');
+          await input.press('Enter');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toBe(`/api/v1/sessions/${A}/messages`);
+          expect(f.pending[0]!.body.text).not.toContain('{{');
+          expect(f.writes).toHaveLength(1);
+        } finally {
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
+    it('recommendation appends while preserving a real attachment and session reference, including during a running turn', async () => {
+      const f = await fixture({ running: true, taskSuggestions: [weeklyTask] });
+      try {
+        await f.page.locator('input[type=file]').setInputFiles({
+          name: 'research.txt',
+          mimeType: 'text/plain',
+          buffer: Buffer.from('Synthetic input'),
+        });
+        await f.page.getByText('research.txt', { exact: true }).waitFor();
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '引用会话', exact: true })
+          .click();
+        const picker = f.page.getByRole('dialog', { name: '引用会话' });
+        await picker.getByRole('button', { name: /Session B/ }).click();
+        await picker.getByRole('button', { name: '完成', exact: true }).click();
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        const original = '[原文] {{保留}}\n\n已有草稿 🚀';
+        await input.fill(original);
+        const beforeWrites = [...f.writes];
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        expect(
+          await f.page
+            .getByText('常用任务 · 追加到草稿', { exact: true })
+            .count(),
+        ).toBe(1);
+        await f.page.getByRole('menuitem', { name: /^整理周报/ }).click();
+        const expected = `${original}\n\n整理最近 7 天的工作，输出科研👩‍🔬总结。`;
+        await expect.poll(() => input.inputValue()).toBe(expected);
+        expect(
+          await f.page.getByText('research.txt', { exact: true }).count(),
+        ).toBe(1);
+        expect(
+          await f.page
+            .getByRole('button', { name: '移除引用：Session B' })
+            .count(),
+        ).toBe(1);
+        expect(f.writes).toEqual(beforeWrites);
+        await input.press('Enter');
+        await f.waitPending(1);
+        expect(f.pending[0]!.body.text).toBe(expected);
+        expect(f.pending[0]!.body.attachmentIds).toEqual([C]);
+        expect(f.pending[0]!.body.sessionReferenceIds).toEqual([B]);
+        expect(f.pending[0]!.body.deliveryMode).toBe('follow_up');
+      } finally {
+        await f.close();
+      }
+    }, 20_000);
+
+    it.each([1440, 390])(
+      'recommendation parameter Modal protects IME/Enter and restores focus at %ipx',
+      async (width) => {
+        const task: TaskSuggestionDisplay = {
+          id: 'make-plan',
+          title: '制定研究计划',
+          template: '围绕{{目标}}制定{{days}}天计划，再核对{{目标}}。',
+          slots: [
+            { name: '目标', label: '研究目标', required: true },
+            {
+              name: 'days',
+              label: '天数',
+              defaultValue: '7',
+              options: ['7', '30'],
+            },
+          ],
+        };
+        const f = await fixture({ width, taskSuggestions: [task] });
+        try {
+          await selectSuggestion(f.page, task.title, width);
+          const dialog = f.page.getByRole('dialog', {
+            name: task.title,
+            exact: true,
+          });
+          const goal = dialog.getByRole('textbox', {
+            name: '研究目标',
+            exact: true,
+          });
+          await goal.evaluate((element) => {
+            element.dispatchEvent(
+              new CompositionEvent('compositionstart', { bubbles: true }),
+            );
+            element.dispatchEvent(
+              new KeyboardEvent('keydown', {
+                key: 'Enter',
+                keyCode: 229,
+                isComposing: true,
+                bubbles: true,
+              }),
+            );
+            element.dispatchEvent(
+              new CompositionEvent('compositionend', { bubbles: true }),
+            );
+          });
+          await goal.press('Enter');
+          expect(await dialog.count()).toBe(1);
+          expect(f.writes).toEqual([]);
+          await f.page.keyboard.press('Escape');
+          await expect.poll(() => dialog.count()).toBe(0);
+          expect(
+            await f.page
+              .getByRole('button', { name: '推荐任务', exact: true })
+              .evaluate((element) => document.activeElement === element),
+          ).toBe(true);
+          await selectSuggestion(f.page, task.title, width);
+          await goal.fill('蛋白质研究 🧬');
+          await dialog
+            .getByRole('combobox', { name: '天数', exact: true })
+            .selectOption('30');
+          await dialog
+            .getByRole('button', { name: '填写草稿', exact: true })
+            .click();
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await expect
+            .poll(() => input.inputValue())
+            .toBe('围绕蛋白质研究 🧬制定30天计划，再核对蛋白质研究 🧬。');
+          expect(
+            await input.evaluate((element: HTMLTextAreaElement) =>
+              element.value.slice(element.selectionStart, element.selectionEnd),
+            ),
+          ).toBe('蛋白质研究 🧬');
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
+    it('recommendation preserves scroll/header geometry and closes old parameter state when switching Session', async () => {
+      const task: TaskSuggestionDisplay = {
+        id: 'plan',
+        title: '研究方案',
+        template: '研究{{目标}}。',
+        slots: [{ name: '目标', label: '目标', required: true }],
+      };
+      const f = await fixture({ taskSuggestions: [task], longHistory: true });
+      try {
+        const header = f.page.getByRole('heading', { level: 1 });
+        const scroll = f.page.locator('[data-conversation-scroll]');
+        await scroll.evaluate((element) => {
+          element.scrollTop = 300;
+        });
+        await f.page.waitForTimeout(50);
+        const scrollBefore = await scroll.evaluate(
+          (element) => element.scrollTop,
+        );
+        const before = await header.boundingBox();
+        await selectSuggestion(f.page, task.title);
+        expect(await header.boundingBox()).toEqual(before);
+        expect(await scroll.evaluate((element) => element.scrollTop)).toBe(
+          scrollBefore,
+        );
+        await f.page
+          .getByRole('textbox', { name: '目标', exact: true })
+          .fill('旧会话参数');
+        await f.page
+          .getByRole('treeitem', { name: /^Session B/ })
+          .evaluate((element: HTMLElement) => element.click());
+        await expect.poll(() => header.textContent()).toContain('Session B');
+        expect(
+          await f.page.getByRole('dialog', { name: task.title }).count(),
+        ).toBe(0);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('');
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    it('recommendation exposes real file/Bridge preparation without hiding a task or making a mutation', async () => {
+      const task: TaskSuggestionDisplay = {
+        id: 'local-project',
+        title: '梳理代码',
+        template: '只读梳理已选项目目录。',
+        readiness: ['local_files'],
+        preparation: ['files', 'bridge'],
+      };
+      const f = await fixture({ taskSuggestions: [task] });
+      try {
+        await selectSuggestion(f.page, task.title);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe(task.template);
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '添加资料', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '从工作区添加', exact: true })
+          .waitFor();
+        expect(
+          await f.page
+            .getByRole('button', { name: '添加文件', exact: true })
+            .evaluate((element) => document.activeElement === element),
+        ).toBe(true);
+        await f.page.keyboard.press('Escape');
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '连接与管理电脑', exact: true })
+          .click();
+        await f.page
+          .getByRole('dialog', { name: '我的电脑', exact: true })
+          .waitFor();
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+
+    it.each([
+      { filesReady: true, browserReady: false },
+      { filesReady: false, browserReady: true },
+    ])(
+      'recommendation uses browser preparation with filesReady=$filesReady/browserReady=$browserReady',
+      async ({ filesReady, browserReady }) => {
+        const task: TaskSuggestionDisplay = {
+          id: 'read-browser',
+          title: '读取本地页面',
+          template: '只读查看本地浏览器中的页面。',
+          readiness: ['local_browser'],
+          preparation: ['bridge'],
+        };
+        const readiness: WorkspaceReadiness['capabilities'] =
+          workspaceCapabilityIds.map((id) => {
+            const state =
+              id === 'local_browser' && !browserReady
+                ? 'paused'
+                : id === 'local_files' && !filesReady
+                  ? 'needs_configuration'
+                  : 'ready';
+            return {
+              id,
+              state,
+              reason:
+                state === 'paused'
+                  ? 'device_paused'
+                  : state === 'needs_configuration'
+                    ? 'folder_missing'
+                    : 'ready',
+              target: 'local',
+              responsibleRole: 'user',
+              action: 'compose',
+              releaseEnabled: true,
+              authorization: 'normal_policy',
+            };
+          });
+        const f = await fixture({ taskSuggestions: [task], readiness });
+        try {
+          await f.page
+            .getByRole('button', { name: '推荐任务', exact: true })
+            .click();
+          const preparation = f.page.getByRole('menuitem', {
+            name: '连接与管理电脑',
+            exact: true,
+          });
+          if (browserReady)
+            await expect.poll(() => preparation.count()).toBe(0);
+          else {
+            // This hint proves that the real readiness response was parsed,
+            // rather than passing against the initial unknown state.
+            await f.page
+              .getByRole('menuitem', { name: /读取本地页面.*暂停/ })
+              .waitFor();
+            expect(await preparation.count()).toBe(1);
+          }
+          await f.page.getByRole('menuitem', { name: /^读取本地页面/ }).click();
+          expect(
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .inputValue(),
+          ).toBe(task.template);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+
+    it('recommendation shows at most five tasks per group and keeps all eight stable IDs selectable', async () => {
+      const tasks: TaskSuggestionDisplay[] = Array.from(
+        { length: 8 },
+        (_, index) => ({
+          id: index === 7 ? 'more' : `task-${index}`,
+          title: index === 7 ? '科研分析' : `任务 ${index + 1}`,
+          template: `草稿 ${index + 1}`,
+        }),
+      );
+      const f = await fixture({ taskSuggestions: tasks });
+      try {
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        expect(await f.page.getByRole('menuitem').count()).toBe(6);
+        expect(
+          await f.page
+            .getByRole('menuitem', { name: '科研分析', exact: true })
+            .count(),
+        ).toBe(0);
+        await f.page
+          .getByRole('menuitem', { name: '更多任务（3）', exact: true })
+          .click();
+        expect(await f.page.getByRole('menuitem').count()).toBe(4);
+        await f.page
+          .getByRole('menuitem', { name: '科研分析', exact: true })
+          .click();
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('草稿 8');
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
 
     it('uses an opaque, readable attachment menu with keyboard and outside dismissal', async () => {
       const f = await fixture();
