@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
   BridgeDeviceSchema,
+  EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
   ExecutionChoiceSchema,
   ExecutionLocationSchema,
@@ -44,7 +45,6 @@ import {
 import { linkTaskOperationCall } from './task-clock.ts';
 import { bridgeDeviceStatus, BridgeDataError } from './bridge.ts';
 import { RuntimeLedgerError } from './runtime-ledger/types.ts';
-import { employeeManifestChecksum } from './employees/employee-config.ts';
 import {
   DataAccessError,
   createStorageMetadata,
@@ -398,13 +398,16 @@ export async function assertLocalPythonDelegation(
     !runtimeContractEqual(binding.command, localPythonCommandBinding(payload))
   )
     throw new RuntimePolicyError('bridge_authority_changed');
-  const [version] =
-    await tx`select id from allrice_employee_versions where id=${f.employee.versionId} and employee_id=${f.employee.id}
-    and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum}`;
+  const [version] = await tx<{ id: string; manifest: unknown }[]>`
+    select id,manifest from allrice_employee_versions where id=${f.employee.versionId} and employee_id=${f.employee.id}
+    and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum} for share`;
+  const manifest = EmployeeDefinitionSchema.safeParse(version?.manifest);
   if (
     !version ||
-    employeeManifestChecksum(f.employee.definition) !==
-      f.employee.definitionChecksum
+    !manifest.success ||
+    // Preserve the immutable published checksum. JSONB/parser key order is
+    // not another publication and cannot reproduce JSON.stringify's bytes.
+    !runtimeContractEqual(manifest.data, f.employee.definition)
   )
     throw new RuntimePolicyError('bridge_authority_changed');
   const publication = f.capabilitySnapshot.bindings.managedPython!.publication;
