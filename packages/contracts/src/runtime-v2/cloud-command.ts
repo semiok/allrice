@@ -6,7 +6,21 @@ import { isRuntimeRelativePath } from './policy.ts';
 /** P15 fixed server-side runtime. Never inherited from a Bridge profile. */
 export const cloudToolchainImageV1 =
   'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5';
+/** Additional approved runtime, not a replacement for frozen Node commands. */
+export const cloudPythonImageV1 =
+  'sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e';
 export const cloudBackendV1 = 'cloud-gvisor-v1' as const;
+export const CloudCommandLanguageSchema = z.enum(['javascript', 'python']);
+export type CloudCommandLanguage = z.infer<typeof CloudCommandLanguageSchema>;
+
+/** An existing approved execution profile admits both platform runtimes. The
+ * exact selected image is frozen in the operation; models cannot supply it. */
+export function cloudRuntimeImage(
+  profileImage: typeof cloudToolchainImageV1,
+  language?: CloudCommandLanguage,
+) {
+  return language === 'python' ? cloudPythonImageV1 : profileImage;
+}
 const path = z.string().max(240).refine(isRuntimeRelativePath);
 export const CloudCommandLimitsSchema = z
   .object({
@@ -21,6 +35,8 @@ export const CloudCommandLimitsSchema = z
   .strict();
 export const CloudCommandInputSchema = z
   .object({
+    // Do not materialize a default: legacy command bytes/digests stay identical.
+    language: CloudCommandLanguageSchema.optional(),
     script: z
       .string()
       .min(1)
@@ -51,7 +67,7 @@ export const CloudCommandInputSchema = z
                   ),
                 'Invalid file name',
               ),
-            format: z.enum(['json', 'csv', 'txt']),
+            format: z.enum(['json', 'csv', 'txt', 'png']),
           })
           .strict(),
       )
@@ -68,6 +84,19 @@ export const CloudCommandInputSchema = z
   })
   .strict()
   .superRefine((v, ctx) => {
+    for (const [index, output] of v.outputs.entries()) {
+      if (
+        output.format === 'png' &&
+        (v.language !== 'python' ||
+          !output.path.toLowerCase().endsWith('.png') ||
+          !output.fileName.toLowerCase().endsWith('.png'))
+      )
+        ctx.addIssue({
+          code: 'custom',
+          path: ['outputs', index],
+          message: 'PNG requires the Python runtime and .png output names',
+        });
+    }
     for (const files of [v.inputs, v.outputs]) {
       const paths = files.map((f) => f.path);
       if (
@@ -88,11 +117,21 @@ export const CloudCommandSchema = z
     capability: z.literal('cloud.process.execute'),
     arguments: CloudCommandInputSchema,
     backend: z.literal(cloudBackendV1),
-    imageDigest: z.literal(cloudToolchainImageV1),
+    imageDigest: z.union([
+      z.literal(cloudToolchainImageV1),
+      z.literal(cloudPythonImageV1),
+    ]),
     runtime: z.literal('runsc'),
     network: z.literal('none'),
   })
-  .strict();
+  .strict()
+  .superRefine((command, ctx) => {
+    if (
+      command.imageDigest !==
+      cloudRuntimeImage(cloudToolchainImageV1, command.arguments.language)
+    )
+      ctx.addIssue({ code: 'custom', message: 'cloud runtime/image mismatch' });
+  });
 export type CloudCommand = z.infer<typeof CloudCommandSchema>;
 export const CloudExecutionProfileSchema = z
   .object({

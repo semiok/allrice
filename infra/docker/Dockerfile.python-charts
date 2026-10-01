@@ -1,0 +1,22 @@
+FROM node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS node-runtime
+FROM python:3.11.13-slim-bookworm@sha256:cec9aa7aa96eea4fa036e9b82be1e6b325f2e3707f462d885868df51ec0a4b47
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+RUN apt-get update && apt-cache policy fonts-noto-cjk && apt-get install -y --no-install-recommends \
+      fonts-noto-cjk=1:20220127+repack1-1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY infra/python-charts/requirements.lock /opt/allrice-python/requirements.lock
+RUN python3 -m venv /opt/python \
+    && /opt/python/bin/pip install --no-cache-dir --only-binary=:all: \
+       --require-hashes -r /opt/allrice-python/requirements.lock \
+    && /opt/python/bin/pip check
+COPY infra/python-charts/check_png.py infra/python-charts/prepare.py /opt/allrice-python/
+COPY infra/python-charts/matplotlibrc /opt/python/mplconfig/matplotlibrc
+RUN MPLCONFIGDIR=/opt/python/mplconfig MPLBACKEND=Agg \
+      /opt/python/bin/python -I /opt/allrice-python/prepare.py \
+    && chmod -R a-w /opt/allrice-python /opt/python/mplconfig
+LABEL xyz.bplabs.allrice.runtime.language="python" \
+      xyz.bplabs.allrice.runtime.python="3.11.13" \
+      xyz.bplabs.allrice.runtime.matplotlib="3.10.6" \
+      xyz.bplabs.allrice.runtime.png-checker="pillow-11.3.0"
+ENV PYTHONDONTWRITEBYTECODE=1 MPLBACKEND=Agg
+USER 65532:65532

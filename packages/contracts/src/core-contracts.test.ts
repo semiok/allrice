@@ -356,12 +356,13 @@ describe('storage contracts', () => {
       fileName: 'notes.txt',
       contentBase64: 'YWxscmljZQ==',
     };
-    expect(
-      CreateSessionAttachmentInputSchema.parse({
-        ...base,
-        mediaType: 'text/plain',
-      }).mediaType,
-    ).toBe('text/plain');
+    for (const mediaType of ['text/plain', 'text/csv'])
+      expect(
+        CreateSessionAttachmentInputSchema.parse({
+          ...base,
+          mediaType,
+        }).mediaType,
+      ).toBe(mediaType);
     expect(() =>
       CreateSessionAttachmentInputSchema.parse({
         ...base,

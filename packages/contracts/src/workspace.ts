@@ -315,6 +315,7 @@ export const CreateSessionAttachmentInputSchema = z
   .object({
     fileName: z.string().trim().min(1).max(255),
     mediaType: z.enum([
+      'text/csv',
       'text/plain',
       'text/markdown',
       'application/json',

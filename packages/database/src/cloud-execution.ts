@@ -5,6 +5,7 @@ import {
   CloudCommandInputSchema,
   CloudCommandSchema,
   CloudExecutionProfileSchema,
+  cloudRuntimeImage,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   StorageObjectSchema,
@@ -18,6 +19,10 @@ import {
   type CloudCommand,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import {
+  validatePngArtifact,
+  type PngArtifactValidation,
+} from '@allrice/storage';
 import {
   requireTenantManagementScope,
   type TenantManagementOptions,
@@ -162,7 +167,7 @@ export async function createCloudCommandOperation(
       capability: 'cloud.process.execute',
       arguments: args,
       backend: profile.backend,
-      imageDigest: profile.imageDigest,
+      imageDigest: cloudRuntimeImage(profile.imageDigest, args.language),
       runtime: profile.runtime,
       network: 'none',
     });
@@ -350,7 +355,11 @@ export async function publishCloudOperationArtifacts(
     context: ExecutionContext;
     binding: RuntimeActionBinding;
     payload: CloudCommand;
-    artifacts: { path: string; contentBase64: string }[];
+    artifacts: {
+      path: string;
+      contentBase64: string;
+      png?: PngArtifactValidation;
+    }[];
   },
   storage: StoragePort,
   database: Database = getDatabase(),
@@ -406,21 +415,32 @@ export async function publishCloudOperationArtifacts(
       fileName: string;
       versionId: string;
     }[] = [];
+    let artifactBytes = 0;
     for (const output of payload.arguments.outputs) {
       const artifact = input.artifacts.find((a) => a.path === output.path);
       if (!artifact) throw new RuntimePolicyError('cloud_artifact_missing');
       const bytes = Buffer.from(artifact.contentBase64, 'base64');
-      if (bytes.length > payload.arguments.limits.artifactBytes)
+      artifactBytes += bytes.length;
+      if (artifactBytes > payload.arguments.limits.artifactBytes)
         throw new RuntimePolicyError('cloud_artifact_limit');
+      if (output.format === 'png') {
+        try {
+          validatePngArtifact(bytes, artifact.png);
+        } catch {
+          throw new RuntimePolicyError('cloud_artifact_invalid');
+        }
+      }
       const object = StorageObjectSchema.parse({
         ...createToolBrokerExportObject({
           context: ctx,
           mediaType:
-            output.format === 'json'
-              ? 'application/json'
-              : output.format === 'csv'
-                ? 'text/csv'
-                : 'text/plain',
+            output.format === 'png'
+              ? 'image/png'
+              : output.format === 'json'
+                ? 'application/json'
+                : output.format === 'csv'
+                  ? 'text/csv'
+                  : 'text/plain',
           sizeBytes: bytes.length,
           checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
         }),
@@ -440,7 +460,12 @@ export async function publishCloudOperationArtifacts(
           context: ctx,
           sessionId: binding.task.chatSessionId!,
           fileName: output.fileName,
-          format: output.format === 'json' ? 'json' : 'text',
+          format:
+            output.format === 'png'
+              ? 'png'
+              : output.format === 'json'
+                ? 'json'
+                : 'text',
           object,
         },
         tx,

@@ -9,6 +9,8 @@ import { promisify } from 'node:util';
 import type { Duplex } from 'node:stream';
 import {
   cloudToolchainImageV1,
+  cloudPythonImageV1,
+  cloudRuntimeImage,
   SandboxResourcesSchema,
   CloudCommandSchema,
   CloudCommandInputSchema,
@@ -16,6 +18,10 @@ import {
   type CloudCommand,
 } from '@allrice/contracts';
 import type { ExecutionDiagnosticEvent } from '@allrice/database';
+import {
+  validatePngArtifact,
+  type PngArtifactValidation,
+} from '@allrice/storage';
 import { officeSandboxImage } from '../office/runtime.js';
 
 export class CloudRunnerError extends Error {}
@@ -32,7 +38,11 @@ export type CloudRunResult = {
     | 'failed'
     | 'unknown';
   output: string;
-  artifacts: { path: string; contentBase64: string }[];
+  artifacts: {
+    path: string;
+    contentBase64: string;
+    png?: PngArtifactValidation;
+  }[];
   elapsedMs: number;
 };
 type Container = {
@@ -44,6 +54,7 @@ type Container = {
     ExitCode: number;
     OOMKilled: boolean;
     Status: string;
+    FinishedAt?: string;
   };
 };
 const attemptLabel = 'xyz.bplabs.allrice.cloud.attempt';
@@ -127,9 +138,11 @@ const finish=code=>process.stdout.write('',()=>process.exit(code));
 const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>32_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{resolve(JSON.parse(text.slice(0,end)))}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),65000).unref()});
 fs.mkdirSync('/tmp/work/input',{recursive:true}); fs.mkdirSync('/tmp/work/output');
 for(const file of input.files){ const p='/tmp/work/input/'+file.path; fs.mkdirSync(p.slice(0,p.lastIndexOf('/')),{recursive:true}); fs.writeFileSync(p,Buffer.from(file.contentBase64,'base64'),{mode:0o400}); }
-const main=input.office?'/tmp/work/main.py':'/tmp/work/main.mjs';
+const python=!input.office&&input.language==='python';
+if(python){fs.cpSync('/opt/python/mplconfig','/tmp/work/.mplconfig',{recursive:true});fs.chmodSync('/tmp/work/.mplconfig',0o700);for(const name of fs.readdirSync('/tmp/work/.mplconfig'))fs.chmodSync('/tmp/work/.mplconfig/'+name,0o600);}
+const main=input.office||python?'/tmp/work/main.py':'/tmp/work/main.mjs';
 fs.writeFileSync(main,input.script,{mode:0o400});
-const child=cp.spawn(input.office?'/opt/office/bin/python':'/usr/local/bin/node',[main],{cwd:'/tmp/work',env:{PATH:'/opt/office/bin:/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',HOME:'/tmp/work',TMPDIR:'/tmp',PYTHONDONTWRITEBYTECODE:'1',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1'},stdio:['ignore','pipe','pipe']});
+const child=cp.spawn(input.office?'/opt/office/bin/python':python?'/opt/python/bin/python':'/usr/local/bin/node',[main],{cwd:'/tmp/work',env:{PATH:(python?'/opt/python/bin:':'')+'/opt/office/bin:/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',HOME:'/tmp/work',TMPDIR:'/tmp',PYTHONDONTWRITEBYTECODE:'1',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1',...(python?{MPLBACKEND:'Agg',MPLCONFIGDIR:'/tmp/work/.mplconfig',XDG_CACHE_HOME:'/tmp/work/.cache'}:{})},stdio:['ignore','pipe','pipe']});
 let bytes=0,overflow=false;
 for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{ bytes+=chunk.length; if(bytes>input.outputBytes){overflow=true; child.kill('SIGKILL');}else console.log(JSON.stringify({type:'output',data:chunk.toString('base64')})); });
 const timer=setTimeout(()=>{child.kill('SIGKILL');process.exit(124)},Math.max(1,input.deadline-Date.now()));
@@ -149,7 +162,14 @@ child.on('close',(code,signal)=>{try{
       if(check.status!==0||bytes>input.outputBytes)throw Error('office_check: exitCode='+check.status+' signal='+(check.signal??'none')+' error='+(check.error?.code??'none'));
     }
     const b=fs.readFileSync(p);total+=b.length;if(total>input.artifactBytes)throw Error('limit');
-    console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64')}));
+    let png;
+    if(file.format==='png'){
+      if(!python)throw Error('png_runtime');
+      const check=cp.spawnSync('/opt/python/bin/python',['-I','/opt/allrice-python/check_png.py'],{input:b,timeout:Math.max(1,input.deadline-Date.now()),maxBuffer:1024,env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8',PYTHONDONTWRITEBYTECODE:'1'}});
+      if(check.status!==0)throw Error('png_check');
+      png=JSON.parse(check.stdout.toString('utf8'));
+    }
+    console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64'),...(png?{png}:{})}));
   }
   clearTimeout(timer);finish(overflow?122:(code??125));
 }catch(error){clearTimeout(timer);console.log(JSON.stringify({type:'output',data:Buffer.from('Sandbox output validation failed: '+String(error.message).slice(0,1000)+'\n').toString('base64')}));finish(123)}});
@@ -226,7 +246,11 @@ export class CloudRunnerBackend {
     return data.length ? (JSON.parse(data.toString()) as T) : (null as T);
   }
   async preflight(imageDigest = cloudToolchainImageV1) {
-    if (![cloudToolchainImageV1, officeSandboxImage].includes(imageDigest))
+    if (
+      ![cloudToolchainImageV1, cloudPythonImageV1, officeSandboxImage].includes(
+        imageDigest,
+      )
+    )
       throw new CloudRunnerError('CLOUD_TOOLCHAIN_CHANGED');
     const stat = await lstat(await realpath(this.socketPath));
     if (
@@ -443,7 +467,22 @@ export class CloudRunnerBackend {
         artifactSize += Buffer.byteLength(v.data, 'base64');
         if (artifactSize > command.arguments.limits.artifactBytes)
           throw new CloudRunnerError('CLOUD_ARTIFACT_LIMIT');
-        artifacts.push({ path: v.path, contentBase64: v.data });
+        const declaration = command.arguments.outputs.find(
+          (o) => o.path === v.path,
+        )!;
+        let png: PngArtifactValidation | undefined;
+        if (declaration.format === 'png') {
+          try {
+            png = validatePngArtifact(Buffer.from(v.data, 'base64'), v.png);
+          } catch {
+            throw new CloudRunnerError('CLOUD_ARTIFACT_INVALID');
+          }
+        }
+        artifacts.push({
+          path: v.path,
+          contentBase64: v.data,
+          ...(png ? { png } : {}),
+        });
       }
     }
     if (c.State.OOMKilled) reason = 'oom';
@@ -453,6 +492,20 @@ export class CloudRunnerBackend {
     )
       reason = 'output_limit';
     else if (c.State.ExitCode === 124) reason = 'deadline';
+    // The independent VM watchdog can stop at its bound before the host clock
+    // reaches it. Use Docker's physical finish time, not elapsed host time;
+    // preserve explicit cancellation/unknown outcomes and never guess on 137.
+    else if (
+      reason === 'completed' &&
+      c.State.ExitCode === 137 &&
+      Number(c.Config.Labels['xyz.bplabs.allrice.cloud.deadline']) > 0 &&
+      Number.isFinite(
+        Number(c.Config.Labels['xyz.bplabs.allrice.cloud.deadline']),
+      ) &&
+      Date.parse(c.State.FinishedAt ?? '') >=
+        Number(c.Config.Labels['xyz.bplabs.allrice.cloud.deadline'])
+    )
+      reason = 'deadline';
     else if (c.State.ExitCode !== 0 && reason === 'completed')
       reason = 'failed';
     if (
@@ -484,7 +537,13 @@ export class CloudRunnerBackend {
     },
   ): Promise<CloudRunResult> {
     const command = CloudCommandSchema.parse(commandInput);
-    return this.executeScript(command.arguments, files, options, false);
+    return this.executeScript(
+      command.arguments,
+      files,
+      options,
+      false,
+      command.imageDigest,
+    );
   }
 
   /** Managed Office export reuses the same isolated execution lifecycle. Its
@@ -497,7 +556,7 @@ export class CloudRunnerBackend {
   ) {
     const parsed = CloudCommandInputSchema.parse(args);
     parsed.limits.artifactBytes = 8_000_000;
-    return this.executeScript(parsed, files, options, true);
+    return this.executeScript(parsed, files, options, true, officeSandboxImage);
   }
 
   private async executeScript(
@@ -505,6 +564,7 @@ export class CloudRunnerBackend {
     files: { path: string; contentBase64: string }[],
     options: Parameters<CloudRunnerBackend['execute']>[2],
     office: boolean,
+    imageDigest: string,
   ): Promise<CloudRunResult> {
     const queuedAt = Date.now();
     await options.observe?.({ stage: 'queued', reason: 'sandbox_capacity' });
@@ -514,7 +574,7 @@ export class CloudRunnerBackend {
     try {
       reservation = await this.acquireSlot(
         options,
-        office ? officeSandboxImage : cloudToolchainImageV1,
+        imageDigest,
         (args.limits.memoryMiB + 128) * 1024 ** 2,
       );
       await options.observe?.({
@@ -530,6 +590,7 @@ export class CloudRunnerBackend {
             (await reservation!.valid()) && options.maintainLease(),
         },
         office,
+        imageDigest,
       );
       await options.observe?.({
         stage:
@@ -733,13 +794,15 @@ export class CloudRunnerBackend {
     files: { path: string; contentBase64: string }[],
     options: Parameters<CloudRunnerBackend['execute']>[2],
     office: boolean,
+    imageDigest = office
+      ? officeSandboxImage
+      : cloudRuntimeImage(cloudToolchainImageV1, args.language),
   ): Promise<CloudRunResult> {
     const command = { arguments: args },
       { attemptId } = options,
       startedAt = Date.now();
     if (!uuid.test(attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
-    const imageDigest = office ? officeSandboxImage : cloudToolchainImageV1;
     await this.preflight(imageDigest);
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
@@ -777,6 +840,7 @@ export class CloudRunnerBackend {
       JSON.stringify({
         files,
         office,
+        language: args.language,
         script: command.arguments.script,
         outputs: command.arguments.outputs,
         artifactBytes: limits.artifactBytes,

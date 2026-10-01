@@ -502,6 +502,9 @@ importers:
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@allrice/storage':
+        specifier: workspace:*
+        version: link:../storage
       postgres:
         specifier: ^3.4.7
         version: 3.4.9
