@@ -807,6 +807,7 @@ integration(
           ].join('\n'),
         );
         expect(state.admit).toHaveBeenCalledExactlyOnceWith({
+          runId: f.rootRunId,
           organizationId: f.org,
           workspaceId: f.workspace,
           userId: f.user,
