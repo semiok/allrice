@@ -4,7 +4,7 @@ import { documentDeliveryGuard } from './document-delivery.js';
 const call = (format: string) => ({
   id: format,
   name: 'workspace.export.create',
-  arguments: { format },
+  arguments: { format, fileName: `report.${format}` },
 });
 describe('document delivery outcome', () => {
   it('keeps a failed document revision incomplete even when a reply or another format succeeds', async () => {
@@ -38,5 +38,21 @@ describe('document delivery outcome', () => {
       ),
     ).rejects.toThrow();
     expect(() => guard.assertComplete()).not.toThrow();
+  });
+  it('does not let another file of the same format disguise a missing revision', async () => {
+    const guard = documentDeliveryGuard();
+    await expect(
+      guard.execute(call('xlsx'), async () => {
+        throw Error('revision failed');
+      }),
+    ).rejects.toThrow();
+    await guard.execute(
+      {
+        ...call('xlsx'),
+        arguments: { format: 'xlsx', fileName: 'other.xlsx' },
+      },
+      async () => ({ objectId: 'other' }),
+    );
+    expect(() => guard.assertComplete()).toThrow('report.xlsx');
   });
 });

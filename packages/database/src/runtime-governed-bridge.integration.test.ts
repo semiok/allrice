@@ -2119,6 +2119,19 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       ).toBe(second.run.id);
     },
   );
+  it('waits for native runtime release even if the earlier Run already has a terminal receipt', async () => {
+    const f = await queuedFixture();
+    const sent = await f.send('wait for native release');
+    await database`update allrice_runs set state='failed' where id=${f.run}`;
+    await database`update allrice_jobs set status='failed' where run_id=${f.run}`;
+    expect(await claimNextJob(randomUUID(), 30_000)).toBeNull();
+    await f.release();
+    const job = await claimNextJob(randomUUID(), 30_000);
+    expect(
+      (await database`select run_id from allrice_jobs where id=${job!.id}`)[0]
+        ?.run_id,
+    ).toBe(sent.run.id);
+  });
   it('QueueDock persists FIFO, hides future turns, cancels a removed message and releases the next after editing the head', async () => {
     const f = await queuedFixture();
     const first = await f.send('queued first');

@@ -848,6 +848,8 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
           -- instead of depending solely on native turn-completion callbacks.
           select 1 from allrice_conversation_followups f
           where f.run_id=candidate.run_id and f.mode='follow_up' and f.state='queued'
+            and not exists (select 1 from allrice_conversation_runtimes runtime
+              where runtime.session_id=f.session_id and runtime.state='running')
             and not exists (
               select 1 from allrice_employee_runs e
               join allrice_runs r on r.id=e.run_id

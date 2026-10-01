@@ -3,7 +3,7 @@ import type { HarnessToolCall } from '../harness/adapter.js';
 
 /** Tracks actual export receipts, not the model's prose or an older download. */
 export function documentDeliveryGuard() {
-  const formats = new Map<string, boolean>();
+  const files = new Map<string, boolean>();
   return {
     async execute<T>(
       call: HarnessToolCall,
@@ -14,17 +14,20 @@ export function documentDeliveryGuard() {
         typeof call.arguments.format === 'string'
           ? call.arguments.format
           : null;
+      const file = format
+        ? `${String(call.arguments.fileName ?? format)} (${format})`
+        : null;
       try {
         const result = await execute();
-        if (format) formats.set(format, true);
+        if (file) files.set(file, true);
         return result;
       } catch (error) {
-        if (format) formats.set(format, false);
+        if (file) files.set(file, false);
         throw error;
       }
     },
     assertComplete() {
-      const missing = [...formats]
+      const missing = [...files]
         .filter(([, completed]) => !completed)
         .map(([format]) => format);
       if (missing.length)
