@@ -27,6 +27,13 @@ function nativeKey(event: ChatFlowEventEnvelope, kind: NativeExperienceKind) {
   const native = event.sourceEvent?.payload ?? {};
   if (event.sourceEvent?.type === 'allrice/model-wait' && text(native.callId))
     return `model-wait:${event.runId}:${String(native.callId)}`;
+  if (
+    ['llm/retry', 'llm/retry-started'].includes(
+      event.sourceEvent?.type ?? '',
+    ) &&
+    text(native.retryId)
+  )
+    return `model-retry:${event.runId}:${String(native.retryId)}`;
   const turn = String(native.turn ?? '');
   const step = String(native.step ?? '');
   const chunk =
@@ -59,6 +66,20 @@ function toolKey(event: ChatFlowEventEnvelope) {
 export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
   const items = new Map<string, NativeExperienceItem>();
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
+    if (
+      event.type === 'assistant.text.delta' ||
+      event.type === 'assistant.text.completed' ||
+      (event.type === 'harness.native' &&
+        event.payload.presentation === 'think')
+    ) {
+      for (const item of items.values()) {
+        if (item.modelWait && ['started', 'updated'].includes(item.status)) {
+          item.status = 'completed';
+          item.lastSequence = event.sequence;
+          item.finishedAt = event.occurredAt;
+        }
+      }
+    }
     if (event.type === 'harness.native') {
       const kind = event.payload.presentation as NativeExperienceKind;
       if (
@@ -86,7 +107,9 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
       items.set(key, {
         id: key,
         kind: resolvedKind,
-        ...(event.sourceEvent?.type === 'allrice/model-wait'
+        ...(['allrice/model-wait', 'llm/retry', 'llm/retry-started'].includes(
+          event.sourceEvent?.type ?? '',
+        )
           ? { modelWait: true }
           : {}),
         status:

@@ -436,9 +436,28 @@ export async function enqueueRun(
             options.conversationDelivery.expectedGeneration)
       )
         throw new ArtifactReviewError('input_turn_changed');
-      if (runtime?.state === 'running' && runtime.active_run_id) {
-        activeRunId = runtime.active_run_id;
+      // Admission is already serialized by the Session lock. A committed Run
+      // owns this conversation even before the Worker creates/acquires its
+      // native runtime. Include that startup window and released queue heads.
+      const [pending] =
+        runtime?.state === 'running' && runtime.active_run_id
+          ? []
+          : await transaction<{ run_id: string }[]>`
+              select e.run_id from allrice_employee_runs e
+              join allrice_runs r on r.id=e.run_id
+              where e.organization_id=${context.organizationId}
+                and e.workspace_id=${workspaceId}
+                and e.session_id=${options.conversationDelivery.sessionId}
+                and r.owner_id=${ownerId}
+                and r.state in ('queued','running','waiting_approval')
+              order by e.created_at,e.run_id limit 1`;
+      activeRunId =
+        runtime?.state === 'running'
+          ? runtime.active_run_id
+          : (pending?.run_id ?? null);
+      if (activeRunId) {
         const exactTurn =
+          runtime?.state === 'running' &&
           !options.conversationDelivery.hasAttachments &&
           options.conversationDelivery.requestedMode !== 'follow_up' &&
           runtime.active_turn_id !== null &&
@@ -447,8 +466,8 @@ export async function enqueueRun(
           options.conversationDelivery.expectedGeneration ===
             runtime.thread_generation;
         delivery = exactTurn ? 'steer_pending' : 'follow_up';
-        expectedTurnId = exactTurn ? runtime.active_turn_id : null;
-        expectedGeneration = exactTurn ? runtime.thread_generation : null;
+        expectedTurnId = exactTurn ? runtime!.active_turn_id : null;
+        expectedGeneration = exactTurn ? runtime!.thread_generation : null;
         availableAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
         timeoutAt =
           submission.timeoutMs === 0
@@ -823,7 +842,23 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     const rows = await transaction<JobRow[]>`
       select candidate.* from allrice_jobs candidate
       where candidate.status = 'queued'
-        and candidate.available_at <= ${now}
+        and (candidate.available_at <= ${now} or exists (
+          -- A startup failure/cancellation can finish before any runtime was
+          -- acquired. Release its FIFO successor through the existing queue,
+          -- instead of depending solely on native turn-completion callbacks.
+          select 1 from allrice_conversation_followups f
+          where f.run_id=candidate.run_id and f.mode='follow_up' and f.state='queued'
+            and not exists (
+              select 1 from allrice_employee_runs e
+              join allrice_runs r on r.id=e.run_id
+              left join allrice_conversation_followups earlier on earlier.run_id=e.run_id
+              where e.session_id=f.session_id and e.run_id<>f.run_id
+                and r.state not in ('succeeded','failed','canceled')
+                and (earlier.run_id is null or earlier.state in ('released','running')
+                  or (earlier.mode='follow_up' and earlier.state='queued'
+                    and (earlier.created_at,earlier.run_id)<(f.created_at,f.run_id)))
+            )
+        ))
         and candidate.timeout_at > ${now}
         and candidate.cancel_requested_at is null
         and not exists (select 1 from allrice_conversation_followups f where f.run_id=candidate.run_id and f.mode='steer_only')
@@ -839,6 +874,8 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     `;
     const job = rows[0];
     if (!job) return null;
+    await transaction`update allrice_conversation_followups
+      set state='released',released_at=now() where run_id=${job.run_id} and mode='follow_up' and state='queued'`;
     const claimed = await transaction<JobRow[]>`
       update allrice_jobs
       set status = 'claimed', attempt = attempt + 1,

@@ -12,6 +12,35 @@ function stuck() {
   };
 }
 describe('native model wait bound', () => {
+  it('does not report a terminal provider failure as a recovered response', async () => {
+    vi.useFakeTimers();
+    const source = stuck();
+    let deliver;
+    source.next.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          deliver = resolve;
+        }),
+    );
+    const onWait = vi.fn(),
+      iterator = boundedModelStream(source, {
+        noticeMs: 30,
+        idleMs: 100,
+        onWait,
+      });
+    const result = iterator.next();
+    await vi.advanceTimersByTimeAsync(40);
+    deliver({
+      done: false,
+      value: {
+        type: 'finish',
+        reason: { kind: 'error', failure: { code: 'TRANSPORT' } },
+      },
+    });
+    await result;
+    expect(onWait.mock.calls).toEqual([['started'], ['failed']]);
+    await iterator.return();
+  });
   it('reports waiting, bounds an uncooperative next/return and discards late output', async () => {
     vi.useFakeTimers();
     const source = stuck();

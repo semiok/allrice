@@ -43,7 +43,13 @@ export async function* boundedModelStream(
         clearTimeout(timer);
         clearTimeout(notice);
         signal?.removeEventListener('abort', abort);
-        if (waiting) onWait('completed');
+        if (waiting)
+          onWait(
+            result?.value?.type === 'finish' &&
+              ['error', 'aborted'].includes(result.value.reason?.kind)
+              ? 'failed'
+              : 'completed',
+          );
       }
       if (result.done) {
         exhausted = true;

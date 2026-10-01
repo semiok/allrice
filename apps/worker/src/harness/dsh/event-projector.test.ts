@@ -9,6 +9,28 @@ import {
 } from './event-projector.js';
 
 describe('safeDshSourcePayload', () => {
+  it('projects native retries without copying provider messages or credentials', () => {
+    const retry = nativeEventView({
+      seq: 30,
+      type: 'llm/retry',
+      data: {
+        turn: 1,
+        step: 2,
+        retryId: 'native-retry',
+        retry: 2,
+        maxRetries: 2,
+        delayMs: 1000,
+        failure: { code: 'TRANSPORT', message: 'private-url-and-token' },
+      },
+    });
+    expect(retry).toMatchObject({
+      presentation: 'lifecycle',
+      status: 'started',
+      label: '正在重新连接模型',
+      sourcePayload: { retry: 2, maxRetries: 2, delayMs: 1000 },
+    });
+    expect(JSON.stringify(retry)).not.toContain('private-url-and-token');
+  });
   it('retains public task names and states, strips unrelated data and preserves clearing', () => {
     const source = nativeEventView({
       seq: 20,

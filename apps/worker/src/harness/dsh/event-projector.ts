@@ -95,6 +95,19 @@ export function safeDshSourcePayload(event: Record<string, unknown>) {
   if (type === 'request/header') {
     return { reason: shortText(data.reason, 80) };
   }
+  if (type === 'llm/retry' || type === 'llm/retry-started') {
+    return {
+      ...common,
+      retryId: shortText(data.retryId, 160),
+      retry: positiveInteger(data.retry),
+      ...(typeof data.maxRetries === 'number'
+        ? { maxRetries: positiveInteger(data.maxRetries) }
+        : {}),
+      ...(typeof data.delayMs === 'number'
+        ? { delayMs: positiveInteger(Math.ceil(data.delayMs)) }
+        : {}),
+    };
+  }
   if (type === 'tool/call') {
     return {
       ...common,
@@ -161,6 +174,19 @@ export function nativeEventView(event: Record<string, unknown>) {
   const type = typeof event.type === 'string' ? event.type : '';
   const data = record(event.data) ?? {};
   const source = sourceMetadata(event);
+  if (type === 'llm/retry' || type === 'llm/retry-started') {
+    const retry = positiveInteger(data.retry);
+    return {
+      type: 'native.event' as const,
+      presentation: 'lifecycle' as const,
+      status: 'started' as const,
+      label: '正在重新连接模型',
+      summary: retry
+        ? `正在进行第 ${retry} 次重连，已有内容和工具结果保留。`
+        : '正在重新连接模型，已有内容和工具结果保留。',
+      ...source,
+    };
+  }
   if (type === 'request/context') {
     const provider = shortText(data.provider, 120);
     const model = shortText(data.model, 160);

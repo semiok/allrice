@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { documentDeliveryGuard } from './document-delivery.js';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
@@ -727,10 +728,7 @@ export async function executeEmployeeRun({
             ),
           }),
           requestedRuntimeMs: executionSnapshot.runtimePolicy.timeoutMs,
-          ...(executionSnapshot.schemaVersion === 2 &&
-          executionSnapshot.taskRuntimePolicy
-            ? { runId: execution.context.runId }
-            : {}),
+          runId: execution.context.runId,
         });
       } catch (error) {
         // No dispatch occurred. The existing pre-dispatch failure path records
@@ -994,6 +992,7 @@ export async function executeEmployeeRun({
       routeCacheUsageKnown = false;
     }
     routeExecutionStarted = true;
+    const delivery = documentDeliveryGuard();
     if (
       questionWait &&
       !(await beginNativeTask({
@@ -1286,35 +1285,38 @@ export async function executeEmployeeRun({
               onToolCall:
                 tools.length > 0
                   ? (call) =>
-                      executeRiceTool({
-                        nativeSkills: resolved.nativeSkills,
-                        localMcp:
-                          executionSnapshot.schemaVersion === 2
-                            ? executionSnapshot.localMcp
-                            : undefined,
-                        frozenMcpTools:
-                          executionSnapshot.schemaVersion === 2
-                            ? executionSnapshot.mcpTools
-                            : [],
-                        context: execution.context,
-                        managedBrowserJobAttempt: execution.job.attempt,
-                        managedBrowserJobLeaseToken: workflowLease.leaseToken,
-                        capabilities: resolved.grantedCapabilities,
-                        storageRoot:
-                          process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                        skillVersionIds: resolved.nativeSkills.map(
-                          (skill) => skill.id,
-                        ),
-                        sessionId:
-                          typeof input.sessionId === 'string'
-                            ? input.sessionId
-                            : undefined,
-                        employeeId: executionSnapshot.employee.id,
-                        userMessageId,
-                        userRequest: kernel.userRequest,
-                        signal,
-                        call,
-                      })
+                      delivery.execute(call, () =>
+                        executeRiceTool({
+                          nativeSkills: resolved.nativeSkills,
+                          localMcp:
+                            executionSnapshot.schemaVersion === 2
+                              ? executionSnapshot.localMcp
+                              : undefined,
+                          frozenMcpTools:
+                            executionSnapshot.schemaVersion === 2
+                              ? executionSnapshot.mcpTools
+                              : [],
+                          context: execution.context,
+                          managedBrowserJobAttempt: execution.job.attempt,
+                          managedBrowserJobLeaseToken: workflowLease.leaseToken,
+                          capabilities: resolved.grantedCapabilities,
+                          storageRoot:
+                            process.env.ALLRICE_STORAGE_ROOT ??
+                            '.local/storage',
+                          skillVersionIds: resolved.nativeSkills.map(
+                            (skill) => skill.id,
+                          ),
+                          sessionId:
+                            typeof input.sessionId === 'string'
+                              ? input.sessionId
+                              : undefined,
+                          employeeId: executionSnapshot.employee.id,
+                          userMessageId,
+                          userRequest: kernel.userRequest,
+                          signal,
+                          call,
+                        }),
+                      )
                   : undefined,
               threadId: runtime.threadId,
               onThreadBound: async ({
@@ -1468,6 +1470,7 @@ export async function executeEmployeeRun({
       workflowLease,
     });
     assertAssistantTaskComplete(result, modelBudgetScope.verifiedSubscription);
+    delivery.assertComplete();
     await completeRouteDecision({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,

@@ -36,6 +36,8 @@ export function nativeExecutionFailureText(
   code: string | null | undefined,
 ): string | null {
   switch (code) {
+    case 'DOCUMENT_DELIVERY_INCOMPLETE':
+      return '本轮文档尚未交付完成，回复和历史文件已保留。可继续让员工修正导出；历史版本不会冒充新文件。';
     case 'DSH_TRANSPORT':
       return '模型连接中断，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。';
     case 'DSH_TIMEOUT':

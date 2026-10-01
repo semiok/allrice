@@ -271,3 +271,30 @@ it('projects model waiting into one visible row and clears it when output resume
   expect(summarizeWorkProcess(rows).active).toBeUndefined();
   expect(summarizeWorkProcess(rows).steps[0]?.description).toBe('等待模型响应');
 });
+
+it('uses the native retry state only until a later model response resumes', () => {
+  const retry = event(1, 'harness.native', {
+    presentation: 'lifecycle',
+    status: 'started',
+    label: '正在重新连接模型',
+  });
+  retry.sourceEvent!.type = 'llm/retry';
+  expect(summarizeWorkProcess(projectNativeExperience([retry])).active).toBe(
+    '正在重新连接模型',
+  );
+  const response = event(2, 'harness.native', {
+    presentation: 'think',
+    status: 'started',
+    label: '思考中...',
+  });
+  expect(
+    summarizeWorkProcess(projectNativeExperience([retry, response])).active,
+  ).toBeUndefined();
+  const text = event(2, 'assistant.text.delta', {
+    text: '已恢复',
+    replyId: 'resumed',
+  });
+  expect(
+    summarizeWorkProcess(projectNativeExperience([retry, text])).active,
+  ).toBeUndefined();
+});

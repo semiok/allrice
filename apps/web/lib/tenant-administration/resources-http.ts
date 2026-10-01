@@ -207,12 +207,12 @@ export async function tenantResourcesHttp(
       error instanceof SyntaxError
     ) {
       const code =
-        error instanceof TenantQuotaConflict
-          ? 'CONFLICT'
-          : error instanceof McpError
+        error instanceof McpError
+          ? error.code
+          : error instanceof RuntimePolicyError
             ? error.code
-            : error instanceof RuntimePolicyError
-              ? error.code
+            : error instanceof TenantQuotaConflict
+              ? 'CONFLICT'
               : 'INVALID_REQUEST';
       const conflict = [
         'CONFLICT',
