@@ -70,6 +70,7 @@ export function operationWorkMethod(
     cloud_mcp: { 'cloud.mcp.call': 'cloud_apps' },
     rice_bridge: {
       'local.process.execute': 'bridge_compute',
+      'local.python.execute': 'bridge_compute',
       'local.browser.act': 'bridge_browser',
       'local.browser.observe': 'bridge_browser',
       'local.fs.write': 'bridge_files',

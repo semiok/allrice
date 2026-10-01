@@ -216,13 +216,13 @@
       "name": "office",
       "contentFile": "skills/office/SKILL.md",
       "bundleFile": "skills/office/bundle.json",
-      "version": "1.5.0",
-      "checksum": "sha256:a25c8441bf6cf6cc13b184155e5f8a06d0266c22b9f4cf6f453fd8beb0031fc1",
+      "version": "1.6.0",
+      "checksum": "sha256:d168944ba4c1440badbff35696d8ce65672f3cf043b7dc80cad05876a470e05c",
       "source": "dsh-migrated",
-      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=a25c8441bf6cf6cc13b184155e5f8a06d0266c22b9f4cf6f453fd8beb0031fc1",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=d168944ba4c1440badbff35696d8ce65672f3cf043b7dc80cad05876a470e05c",
       "license": "Apache-2.0 AND MIT",
       "reviewStatus": "reviewed",
-      "reviewedByLabel": "MET-164 managed local-first native Office",
+      "reviewedByLabel": "MET-166 local-first Python charts and native Office reuse",
       "createdByLabel": "MET-157 unified Office Skill",
       "modelInvocable": true,
       "userInvocable": true,
@@ -230,7 +230,8 @@
         "workspace.file.list",
         "workspace.document.read",
         "workspace.skill.read",
-        "workspace.export.create"
+        "workspace.export.create",
+        "python.execute"
       ],
       "enabled": true,
       "replaces": [

@@ -1,7 +1,7 @@
 import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
 import { readEmployeeOrganizationContext } from './organization-context.ts';
 import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
-import { freezeManagedOfficeBinding } from './managed-python-binding.ts';
+import { freezeManagedPythonBinding } from './managed-python-binding.ts';
 import {
   isPlatformAdmin,
   requirePlatformAdmin,
@@ -107,6 +107,7 @@ const skillGatedCapabilities = new Set<SkillCapability>([
 const nativeSkillToolCapabilities: Readonly<Record<string, SkillCapability>> = {
   'workspace.reconciliation.export': 'storage:write',
   'cloud.process.execute': 'storage:write',
+  'python.execute': 'storage:write',
   'cloud.mcp.call': 'secret:use',
   'local.mcp.discover': 'secret:use',
   'local.mcp.call': 'secret:use',
@@ -1219,7 +1220,7 @@ export async function prepareEmployeeRunBinding(input: {
       and p.tenant_employee_version_id = ${assignment.id}
       and p.active and r.status = 'published'
   `;
-  const managedPython = freezeManagedOfficeBinding({
+  const managedPython = freezeManagedPythonBinding({
     manifest: manifest.data,
     grantedCapabilities,
     publication: publication

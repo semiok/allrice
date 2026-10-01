@@ -104,6 +104,13 @@ export const allRiceToolManifest = [
     dshWireName: 'cloud_mcp_call',
   },
   {
+    canonicalName: 'python.execute',
+    capability: 'storage:write',
+    risk: 'side_effect',
+    transport: 'dsh_broker_native',
+    dshWireName: 'python_execute',
+  },
+  {
     canonicalName: 'cloud.process.execute',
     capability: 'storage:write',
     risk: 'side_effect',

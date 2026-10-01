@@ -272,6 +272,8 @@ export async function registerToolBrokerExport(
     format: DeliveryFormat;
     changeSummary?: string;
     object: StorageObject;
+    /** Internal publisher mode; model tool arguments never select it. */
+    storageMode?: 'existing_ready';
   },
   database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
@@ -355,12 +357,28 @@ export async function registerToolBrokerExport(
     if (
       !quota ||
       (quota.limit_bytes !== null &&
-        Number(quota.used_bytes) + input.object.sizeBytes >
+        Number(quota.used_bytes) +
+          (input.storageMode === 'existing_ready'
+            ? 0
+            : input.object.sizeBytes) >
           Number(quota.limit_bytes))
     ) {
       throw new DataAccessError('quota_exceeded');
     }
-    await transaction`
+    if (input.storageMode === 'existing_ready') {
+      const [existing] = await transaction<{ id: string }[]>`
+        select id from allrice_storage_objects where id=${input.object.id}
+          and organization_id=${input.context.organizationId} and workspace_id=${workspaceId} and owner_id=${ownerId}
+          and object_key=${input.object.key} and media_type=${input.object.mediaType} and size_bytes=${input.object.sizeBytes}
+          and checksum=${input.object.checksum} and immutable=${input.object.immutable} and immutable
+          and visibility='private' and state='ready' and deleted_at is null
+          and (retention_until is null or retention_until>clock_timestamp()) and category in ('artifacts','exports') for update`;
+      if (!existing) throw new DataAccessError('authorization_denied');
+      // Ready object category/key are immutable. Formal lineage retains the
+      // original bytes and identity; only their expiry is promoted.
+      await transaction`update allrice_storage_objects set retention_until=null,updated_at=clock_timestamp() where id=${existing.id}`;
+    } else
+      await transaction`
       insert into allrice_storage_objects (
         id, organization_id, workspace_id, owner_id, object_key, category,
         media_type, size_bytes, checksum, visibility, state, immutable

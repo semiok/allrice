@@ -112,6 +112,16 @@ export const CloudCommandInputSchema = z
       ctx.addIssue({ code: 'custom', message: 'duplicate cloud input object' });
   });
 export type CloudCommandInput = z.infer<typeof CloudCommandInputSchema>;
+/** Server-created proof of the canonical call, not a model-selectable tool. */
+export const CloudPythonOriginSchema = z
+  .object({
+    toolName: z.literal('python.execute'),
+    callId: z.string().min(1).max(255),
+    purpose: z.literal('python_charts'),
+    argumentsDigest: ChecksumSchema,
+  })
+  .strict();
+export type CloudPythonOrigin = z.infer<typeof CloudPythonOriginSchema>;
 export const CloudCommandSchema = z
   .object({
     capability: z.literal('cloud.process.execute'),
@@ -123,9 +133,15 @@ export const CloudCommandSchema = z
     ]),
     runtime: z.literal('runsc'),
     network: z.literal('none'),
+    origin: CloudPythonOriginSchema.optional(),
   })
   .strict()
   .superRefine((command, ctx) => {
+    if (command.origin && command.arguments.language !== 'python')
+      ctx.addIssue({
+        code: 'custom',
+        message: 'canonical Python delegation requires the Python runtime',
+      });
     if (
       command.imageDigest !==
       cloudRuntimeImage(cloudToolchainImageV1, command.arguments.language)

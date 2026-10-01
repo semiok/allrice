@@ -216,3 +216,70 @@ export const cloudNativeTools = [
     },
   },
 ];
+
+// Canonical Python retains the existing bounded command shape and raw call.
+export const PythonNativeArgumentsSchema = z
+  .object({
+    language: z.literal('python').optional(),
+    script: CloudNativeArgumentsSchema.shape.script.unwrap(),
+    inputs: CloudNativeArgumentsSchema.shape.inputs,
+    outputs: CloudNativeArgumentsSchema.shape.outputs,
+    limits: CloudNativeArgumentsSchema.shape.limits,
+    location: z.enum(['auto', 'local', 'cloud']).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const { location: _location, ...command } = value;
+    void _location;
+    const result = CloudNativeArgumentsSchema.safeParse({
+      ...command,
+      language: 'python',
+    });
+    if (!result.success)
+      for (const issue of result.error.issues)
+        ctx.addIssue({
+          code: 'custom',
+          path: issue.path,
+          message: issue.message,
+        });
+  });
+const cloud = cloudNativeTools[0];
+cloudNativeTools.push({
+  canonicalName: 'python.execute',
+  wireName: 'python_execute',
+  description:
+    'Execute Python computation and CJK charts, preferring the ready managed Bridge in auto mode and using authorized cloud only when local cannot carry the task. Omitted language means Python. location:auto/local/cloud is top-level. Busy/preparing local runtimes wait; explicit local, local-only data and unknown outcomes must never replay in cloud. Reuse fixed Python/Matplotlib/Agg/pandas/openpyxl/Pillow/Noto CJK, without installing dependencies, network access or host paths. Read exact input/ object copies; declare actual output/ PNG/JSON/CSV/TXT files or no files for stdout-only computation. Real checker-approved PNG bytes return immutable objectId/checksum/versionId for preview, download and embedding through the same Office Skill. Approval binds the exact original call and frozen authority.',
+  timeoutMs: 180000,
+  isConcurrencySafe: false,
+  validateArguments(args) {
+    PythonNativeArgumentsSchema.parse(args);
+    return args;
+  },
+  parameters: {
+    language: {
+      type: 'string',
+      enum: ['python'],
+      description:
+        'Optional. Omit to use Python; JavaScript and frozenScript are not supported by this canonical tool.',
+    },
+    script: {
+      ...cloud.parameters.script,
+      required: true,
+      description:
+        'Required Python script, at most 100000 characters. Read exact input/ files, write declared files under output/; no dependency installation.',
+    },
+    inputs: cloud.parameters.inputs,
+    outputs: {
+      ...cloud.parameters.outputs,
+      description:
+        'Zero to eight declared PNG/JSON/CSV/TXT files under output/. Empty or omitted outputs returns bounded stdout without inventing a file.',
+    },
+    limits: cloud.parameters.limits,
+    location: {
+      type: 'string',
+      enum: ['auto', 'local', 'cloud'],
+      description:
+        'Optional, defaults to auto. Prefer actual ready local; local requires local execution and never falls back to cloud. cloud explicitly chooses the authorized cloud runtime.',
+    },
+  },
+});

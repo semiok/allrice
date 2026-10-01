@@ -54,6 +54,11 @@ export function dshHostCapabilityInstructions(
 ) {
   return [
     'Direct shell, filesystem and network access on the DSH Worker host is disabled. Use only capabilities explicitly supplied by AllRice for this turn, including managed Bridge and cloud tools, within their frozen authorization.',
+    ...(tools.some((tool) => tool.name === 'python.execute')
+      ? [
+          'python.execute is canonical Python computation: omitted language means Python and top-level location defaults to auto, preferring the ready managed Bridge. It is independent of the Node local.process.execute tool. Preserve explicit local requests and local-only data; busy/preparing runtimes wait, unknown outcomes require reconciliation without replay. Publish actual checker-approved bytes before claiming chart delivery.',
+        ]
+      : []),
     ...(tools.some((tool) => tool.name === 'workspace.export.create')
       ? [
           "workspace.export.create's python workflow uses AllRice's managed runtime. It is independent of local.process.execute, the Node adapter; absence of that tool does not determine whether managed Office execution is available. Use the export tool's top-level location parameter for auto/local/cloud. Runtime availability, generation, formula calculation and preview are separate facts reported by the tool; do not infer success or extra authority.",

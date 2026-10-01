@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   RuntimeLocalPythonArtifactMetadataSchema,
   RuntimeLocalPythonCollectedArtifactSchema,
+  runtimeContractEqual,
   type RuntimeLocalPythonPayload,
   type RuntimeLocalPythonArtifactMetadata,
 } from '@allrice/contracts';
@@ -82,7 +83,12 @@ export function localPythonHttpTransport(input: {
       if (
         bytes.length !== parsed.sizeBytes ||
         `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
-          parsed.checksum
+          parsed.checksum ||
+        (output.format === 'png'
+          ? !parsed.png ||
+            parsed.png.checksum !== parsed.checksum ||
+            parsed.validation !== 'trusted_png'
+          : parsed.png !== undefined)
       )
         throw new LocalCommandError('ARTIFACT_VERSION_CHANGED');
       const response = await fetch(
@@ -121,9 +127,11 @@ export function localPythonHttpTransport(input: {
         JSON.parse(Buffer.concat(chunks).toString('utf8')).artifact,
       );
       if (
-        Object.entries({ ...output, ...parsed }).some(
-          ([key, value]) => artifact[key as keyof typeof artifact] !== value,
-        )
+        !runtimeContractEqual(artifact, {
+          ...output,
+          ...parsed,
+          collected: true,
+        })
       )
         throw new LocalCommandError('ARTIFACT_UPLOAD_UNKNOWN');
       return artifact;

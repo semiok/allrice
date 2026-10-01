@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.5.0",
-  "contentChecksum": "sha256:a25c8441bf6cf6cc13b184155e5f8a06d0266c22b9f4cf6f453fd8beb0031fc1",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=a25c8441bf6cf6cc13b184155e5f8a06d0266c22b9f4cf6f453fd8beb0031fc1",
+  "version": "1.6.0",
+  "contentChecksum": "sha256:d168944ba4c1440badbff35696d8ce65672f3cf043b7dc80cad05876a470e05c",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=d168944ba4c1440badbff35696d8ce65672f3cf043b7dc80cad05876a470e05c",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "MET-164 managed local-first native Office",
+  "reviewedBy": "MET-166 local-first Python charts and native Office reuse",
   "resources": [
     {
       "path": "references/LICENSE.dsh",
@@ -27,8 +27,8 @@
     {
       "path": "references/provenance.md",
       "mediaType": "text/markdown",
-      "byteLength": 4077,
-      "checksum": "sha256:d6d4c548c86334855d9dbf726521d311e974268248ec93fd7e25966c703659b7"
+      "byteLength": 4777,
+      "checksum": "sha256:7d803aea0ef9b356821b43be562c80c334c99947f137185a5cdcc1933158832f"
     },
     {
       "path": "references/xlsx.md",
@@ -59,7 +59,11 @@
     {
       "kind": "tool",
       "name": "workspace.export.create"
+    },
+    {
+      "kind": "tool",
+      "name": "python.execute"
     }
   ],
-  "checksum": "sha256:6f7318bfcf551e00b7a0c880bcb60602eb80af797284a53e0185cd9624d05542"
+  "checksum": "sha256:242aa33f9e8bd5f7c169a9a5bf7014c491a4e81a45fe533b436a55726ae2a170"
 }

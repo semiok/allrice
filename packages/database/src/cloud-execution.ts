@@ -4,6 +4,7 @@ import { linkTaskOperationCall } from './task-clock.ts';
 import {
   CloudCommandInputSchema,
   CloudCommandSchema,
+  PythonExecuteArgsSchema,
   CloudExecutionProfileSchema,
   cloudRuntimeImage,
   RuntimeActionBindingSchema,
@@ -17,6 +18,7 @@ import {
   type StoragePort,
   type StorageObject,
   type CloudCommand,
+  type CloudPythonOrigin,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
@@ -34,6 +36,7 @@ import {
   cloudExecutionEnabled,
   checkCloudBindingAuthority,
   cloudCommandBinding,
+  normalizeCloudPythonArguments,
 } from './cloud-authority.ts';
 import {
   createRuntimePolicyAdmission,
@@ -137,6 +140,63 @@ export async function createCloudCommandOperation(
   input: { context: ExecutionContext; arguments: unknown; callId: string },
   database: Database = getDatabase(),
 ) {
+  return createCloudOperation(input, database);
+}
+
+/** Preserve the canonical call; managed-local authorization is not cloud authority. */
+export async function createCloudPythonOperation(
+  input: { context: ExecutionContext; arguments: unknown; callId: string },
+  database: Database = getDatabase(),
+) {
+  PythonExecuteArgsSchema.parse(input.arguments);
+  const originalArguments = JSON.parse(
+    JSON.stringify(input.arguments),
+  ) as Record<string, unknown>;
+  const origin: CloudPythonOrigin = {
+    toolName: 'python.execute',
+    callId: input.callId,
+    purpose: 'python_charts',
+    argumentsDigest: digest(originalArguments),
+  };
+  const [selection] = await database<
+    {
+      metadata: {
+        requestDigest: string;
+        choice: { location: string; status: string };
+        localInputs: boolean;
+      };
+    }[]
+  >`
+    select metadata from allrice_audit_events where organization_id=${input.context.organizationId} and workspace_id=${input.context.workspaceId}
+      and actor_id=${input.context.policySnapshot.subjectId} and action='execution.location' and resource_type='managed_python'
+      and resource_id=${cloudStableId(`managed-python:${input.context.runId}:${input.callId}`)} order by occurred_at limit 1`;
+  if (
+    selection?.metadata.requestDigest !==
+      digest({
+        toolName: 'python.execute',
+        arguments: originalArguments,
+        purpose: 'python_charts',
+      }) ||
+    selection.metadata.choice.location !== 'cloud' ||
+    selection.metadata.choice.status !== 'execute' ||
+    selection.metadata.localInputs
+  )
+    throw new RuntimePolicyError('cloud_input_changed');
+  return createCloudOperation(
+    { ...input, arguments: normalizeCloudPythonArguments(originalArguments) },
+    database,
+    { origin, originalArguments },
+  );
+}
+
+async function createCloudOperation(
+  input: { context: ExecutionContext; arguments: unknown; callId: string },
+  database: Database,
+  python?: {
+    origin: CloudPythonOrigin;
+    originalArguments: Record<string, unknown>;
+  },
+) {
   if (!cloudExecutionEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const args = CloudCommandInputSchema.parse(input.arguments),
@@ -170,6 +230,7 @@ export async function createCloudCommandOperation(
       imageDigest: cloudRuntimeImage(profile.imageDigest, args.language),
       runtime: profile.runtime,
       network: 'none',
+      ...(python ? { origin: python.origin } : {}),
     });
   // Frozen resource:read permission and current ready/owner scope; exact transfer
   // itself additionally requires the approval binding's dataScope below.
@@ -178,7 +239,7 @@ export async function createCloudCommandOperation(
     if (authorized.object.checksum !== file.checksum)
       throw new RuntimePolicyError('cloud_input_changed');
   }
-  const key = `cloud-command:${ctx.runId}:${input.callId}`,
+  const key = `${python ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`,
     operationId = cloudStableId(key);
   const content = args.inputs.map((f) => ({
     kind: 'storage_object' as const,
@@ -232,7 +293,7 @@ export async function createCloudCommandOperation(
       authorizationVersion: 1,
     })),
   });
-  await database`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload) values(${operationId},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},${grant.id},${ctx.jobId},${ctx.worker.id},${run.lease_token},${database.json(binding)},${database.json(payload)}) on conflict(operation_id) do nothing`;
+  await database`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload,original_arguments) values(${operationId},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},${grant.id},${ctx.jobId},${ctx.worker.id},${run.lease_token},${database.json(binding)},${database.json(payload)},${python ? database.json(python.originalArguments as Parameters<Database['json']>[0]) : null}) on conflict(operation_id) do nothing`;
   const [stored] = await database<
     {
       binding: unknown;
@@ -240,11 +301,16 @@ export async function createCloudCommandOperation(
       job_id: string;
       worker_id: string;
       job_lease_token: string;
+      original_arguments: unknown | null;
     }[]
-  >`select binding,payload,job_id,worker_id,job_lease_token::text from allrice_cloud_execution_inputs where operation_id=${operationId}`;
+  >`select binding,payload,original_arguments,job_id,worker_id,job_lease_token::text from allrice_cloud_execution_inputs where operation_id=${operationId}`;
   if (
     !runtimeContractEqual(stored?.binding, binding) ||
     !runtimeContractEqual(stored?.payload, payload) ||
+    !runtimeContractEqual(
+      stored?.original_arguments,
+      python?.originalArguments ?? null,
+    ) ||
     stored?.job_id !== ctx.jobId ||
     stored?.worker_id !== ctx.worker.id ||
     stored?.job_lease_token !== run.lease_token

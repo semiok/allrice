@@ -6,6 +6,7 @@ import {
   RuntimeLocalPythonResultSchema,
   RuntimeLocalPythonProfileSchema,
   RuntimeLocalPythonCheckpointSchema,
+  runtimeContractEqual,
   type RuntimeLocalPythonCheckpoint,
   type RuntimeLocalPythonPayload,
   type RuntimeLocalPythonResult,
@@ -155,7 +156,8 @@ export class LocalPythonRunner {
         const office = proof.officeChecker as
             Record<string, unknown> | undefined,
           png = proof.pngChecker as Record<string, unknown> | undefined,
-          font = proof.font as Record<string, unknown> | undefined;
+          font = proof.font as Record<string, unknown> | undefined,
+          checks = proof.checks as Record<string, unknown> | undefined;
         if (
           proof.architecture !== release.architecture ||
           proof.pythonVersion !== release.pythonVersion ||
@@ -164,7 +166,9 @@ export class LocalPythonRunner {
           office?.upstream !== release.officeChecker.upstream ||
           png?.sha256 !== release.pngChecker.sha256 ||
           font?.sha256 !== release.font.sha256 ||
-          font?.fileName !== release.font.fileName
+          font?.fileName !== release.font.fileName ||
+          checks?.cjkAggPng !== true ||
+          checks?.corruptPngRejected !== true
         )
           throw new LocalCommandError('PROFILE_PROBE_FAILED');
       } finally {
@@ -190,6 +194,7 @@ export class LocalPythonRunner {
       officeFormulaCalculation: false,
       officePreview: false,
       stopConfirmed: true,
+      pythonChartsContractVersion: 1,
     });
   }
   private async removeProbe(id: string, attempt: string) {
@@ -525,6 +530,8 @@ export class LocalPythonRunner {
         !checkpoint ||
         checkpoint.exitCode !== 0 ||
         checkpoint.artifacts.length !== payload.arguments.outputs.length ||
+        new Set(checkpoint.artifacts.map((file) => file.objectId)).size !==
+          checkpoint.artifacts.length ||
         !transport
       )
         throw new LocalCommandError('PYTHON_RESULT_UNKNOWN');
@@ -535,7 +542,19 @@ export class LocalPythonRunner {
             ([k, v]) => file[k as keyof typeof file] === v,
           ),
         );
-        if (!output) throw new LocalCommandError('ARTIFACT_PATH_CHANGED');
+        if (
+          !output ||
+          file.validation !==
+            (payload.arguments.purpose === 'office'
+              ? 'dsh_office'
+              : file.format === 'png'
+                ? 'trusted_png'
+                : 'utf8') ||
+          (file.format === 'png'
+            ? !file.png || file.png.checksum !== file.checksum
+            : file.png !== undefined)
+        )
+          throw new LocalCommandError('ARTIFACT_PATH_CHANGED');
         const tar = await this.api.getArchive(
             id,
             `/tmp/work/output/${output.path}`,
@@ -555,19 +574,28 @@ export class LocalPythonRunner {
             file.checksum
         )
           throw new LocalCommandError('ARTIFACT_VERSION_CHANGED');
-        artifacts.push(
-          await transport.upload(
-            output,
-            {
-              checksum: file.checksum,
-              sizeBytes: file.sizeBytes,
-              mediaType: file.mediaType,
-              validation: file.validation,
-            },
-            bytes,
-            signal,
-          ),
+        const metadata = {
+          checksum: file.checksum,
+          sizeBytes: file.sizeBytes,
+          mediaType: file.mediaType,
+          validation: file.validation,
+          ...(file.png ? { png: file.png } : {}),
+        };
+        const uploaded = await transport.upload(
+          output,
+          metadata,
+          bytes,
+          signal,
         );
+        if (
+          !runtimeContractEqual(uploaded, {
+            ...output,
+            ...metadata,
+            collected: true,
+          })
+        )
+          throw new LocalCommandError('ARTIFACT_VERSION_CHANGED');
+        artifacts.push(uploaded);
       }
     }
     return RuntimeLocalPythonResultSchema.parse({

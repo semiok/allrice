@@ -11,7 +11,10 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from './employee-config.ts';
-import { freezeManagedOfficeBinding } from './managed-python-binding.ts';
+import {
+  freezeManagedOfficeBinding,
+  freezeManagedPythonBinding,
+} from './managed-python-binding.ts';
 
 function fixture() {
   const manifest = EmployeeDefinitionSchema.parse(
@@ -125,6 +128,36 @@ describe('publication-derived managed Office delegation', () => {
     const input = fixture();
     input.publication.definition.capabilities.toolNames = ['python.execute'];
     expect(freezeManagedOfficeBinding(input)).toBeUndefined();
+  });
+  it('freezes chart authority independently from Office and legacy cloud tools', () => {
+    const input = fixture();
+    input.manifest.capabilityBindings.toolNames = ['python.execute'];
+    input.publication.definition.capabilities.toolNames = ['python.execute'];
+    expect(freezeManagedPythonBinding(input)?.purposes).toEqual([
+      'python_charts',
+    ]);
+    input.manifest.capabilityBindings.toolNames = ['cloud.process.execute'];
+    input.publication.definition.capabilities.toolNames = [
+      'cloud.process.execute',
+    ];
+    expect(freezeManagedPythonBinding(input)).toBeUndefined();
+  });
+  it('derives each purpose only from the matching frozen and published tool', () => {
+    const input = fixture();
+    input.manifest.capabilityBindings.toolNames.push('python.execute');
+    input.publication.definition.capabilities.toolNames.push('python.execute');
+    const original = JSON.stringify(input.manifest);
+    expect(freezeManagedPythonBinding(input)?.purposes).toEqual([
+      'office',
+      'python_charts',
+    ]);
+    expect(JSON.stringify(input.manifest)).toBe(original);
+    input.publication.definition.capabilities.toolNames = ['python.execute'];
+    expect(freezeManagedPythonBinding(input)?.purposes).toEqual([
+      'python_charts',
+    ]);
+    input.manifest.capabilityBindings.toolNames = ['workspace.export.create'];
+    expect(freezeManagedPythonBinding(input)).toBeUndefined();
   });
   it('rejects runtime authority in editable bindings and preserves old frozen bindings without defaults', () => {
     const input = fixture(),

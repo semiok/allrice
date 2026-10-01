@@ -15,11 +15,13 @@ The native workflow uses python-docx 1.2.0, openpyxl 3.1.5, python-pptx 1.0.2 an
 
 ## Thin Allrice adapter
 
-`workspace_export_create.python` maps authorized storage objects into an isolated task workspace and returns the resulting document through the existing export pipeline. It reuses the cloud sandbox's gVisor lifecycle, cancellation, resource limits and watchdog. It exposes no host files, credentials or network. There is no new document operation DSL and no new model or upstream engine fork.
+`workspace_export_create.python` maps authorized storage objects into an isolated task workspace and returns the resulting document through the existing export pipeline. It selects a ready Bridge's managed Python VM first, with the existing cloud sandbox as authorized fallback. Both reuse their existing lifecycle, cancellation, resource limits and watchdog. They expose no arbitrary host files, credentials or network. There is no new document operation DSL and no new model or upstream engine fork.
+
+Office 1.6 adds the canonical `python_execute` tool for local-first calculations and PNG delivery, reusing the same fixed Python libraries, Matplotlib, Pillow checker and CJK fonts. It adds a checksum-bound PNG report and uses existing file versions and downloads, then passes the exact same PNG object into the unchanged upstream DOCX/PPTX workflows. The canonical tool is independent of legacy Node cloud commands. Previously frozen Skill versions and their original tool authority remain unchanged. No second chart renderer, dependency installer or separate Office Skill is introduced.
 
 Allrice contributes tenant file authorization, source/version history, downloads, formula-cache updates and page previews. The root Skill explains this environment and the upstream guides' supported fallback paths. It also retains the prior document-reading and non-Office delivery workflows. Generic cloud command execution retains its separate existing policy and ledger; a managed Office export only publishes the requested document through the existing managed-write tool.
 
-Previously frozen Office 1.0–1.2 employee packages retain their legacy export compatibility handler. Current Office 1.3 uses native Python by default. Legacy typed editing is no longer developed as a parallel implementation; compatibility can be removed once no published package or active run refers to it. Historical artifacts are ordinary stored files and need no old editor to view or download.
+Previously frozen Office 1.0–1.2 employee packages retain their legacy export compatibility handler. Office 1.3 and later use native Python by default. Legacy typed editing is no longer developed as a parallel implementation; compatibility can be removed once no published package or active run refers to it. Historical artifacts are ordinary stored files and need no old editor to view or download.
 
 ## Checks and previews
 

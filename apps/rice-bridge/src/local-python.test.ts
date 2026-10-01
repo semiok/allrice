@@ -2,17 +2,19 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RuntimeLocalPythonPayloadSchema,
   managedPythonPayloadForPlatform,
+  type RuntimeLocalPythonPayload,
 } from '@allrice/contracts';
 import {
   createLocalPythonArchive,
   readLocalPythonArchive,
 } from './local-python-archive.js';
 import { LocalPythonRunner } from './local-python-runner.js';
+import type { LocalPythonTransport } from './local-python-client.js';
 import {
   assertManagedSandboxConfiguration,
   downloadManagedRuntimeAsset,
@@ -72,11 +74,45 @@ function payload() {
   });
 }
 
+function chartPayload() {
+  const office = payload();
+  return RuntimeLocalPythonPayloadSchema.parse({
+    ...office,
+    arguments: {
+      ...office.arguments,
+      purpose: 'python_charts',
+      origin: {
+        toolName: 'python.execute',
+        callId: 'chart-proof',
+        argumentsDigest: hash(Buffer.from('args')),
+      },
+      limits: {
+        ...office.arguments.limits,
+        inputBytes: 2_000_000,
+        artifactBytes: 4_000_000,
+      },
+      outputs: [
+        {
+          path: '中文图.png',
+          fileName: '中文图.png',
+          format: 'png',
+          mediaType: 'image/png',
+          objectId: randomUUID(),
+        },
+      ],
+    },
+  });
+}
+
 async function engine(
   options: {
     cancelStart?: AbortController;
     corrupt?: boolean;
     stdout?: string;
+    payload?: RuntimeLocalPythonPayload;
+    bytes?: Buffer;
+    artifacts?: unknown[];
+    probeChecks?: Partial<Record<'cjkAggPng' | 'corruptPngRejected', boolean>>;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-python-socket-')),
@@ -114,15 +150,16 @@ async function engine(
     body?: Body;
     data?: Buffer;
   }[] = [];
-  const bytes = Buffer.from([0x50, 0x4b, 0, 0xff, 0xfe, 0x13, 0]),
-    p = payload();
+  const bytes =
+      options.bytes ?? Buffer.from([0x50, 0x4b, 0, 0xff, 0xfe, 0x13, 0]),
+    p = options.payload ?? payload();
   const checkpoint = {
     exitCode: 0,
     reason: 'exited',
     stdout: options.stdout ?? 'generated',
     stderr: '',
     truncated: false,
-    artifacts: [
+    artifacts: options.artifacts ?? [
       {
         ...p.arguments.outputs[0],
         sizeBytes: bytes.length,
@@ -203,6 +240,10 @@ async function engine(
           officeChecker: release.officeChecker,
           pngChecker: release.pngChecker,
           font: release.font,
+          checks: options.probeChecks ?? {
+            cjkAggPng: true,
+            corruptPngRejected: true,
+          },
         }) + '\n',
       );
       const h = Buffer.alloc(8);
@@ -252,7 +293,7 @@ async function engine(
           {
             path: target?.endsWith('result.json')
               ? 'result.json'
-              : 'result.docx',
+              : basename(target!),
             bytes: target?.endsWith('result.json')
               ? Buffer.from(JSON.stringify(checkpoint))
               : options.corrupt
@@ -275,6 +316,213 @@ async function engine(
 }
 
 describe('managed Python Engine byte adapter and physical-stop evidence', () => {
+  it('reports chart protocol 1 only after the fixed physical CJK/Pillow probe evidence passes', async () => {
+    const e = await engine();
+    expect(
+      await e.runner.preflight(new AbortController().signal),
+    ).toMatchObject({
+      available: true,
+      pythonChartsContractVersion: 1,
+      officeGeneration: true,
+      officeFormulaCalculation: false,
+      officePreview: false,
+    });
+    expect(
+      e.requests.filter((r) => r.path.includes('/containers/create?')),
+    ).toHaveLength(1);
+    const probe = e.requests.find((r) =>
+      r.path.includes('/containers/create?'),
+    )!;
+    expect(probe.body).toMatchObject({
+      Image: release.imageId,
+      User: '65532:65532',
+      Cmd: ['-I', '/opt/allrice/probe.py', 'probe'],
+    });
+    expect(e.requests.some((r) => r.method === 'DELETE')).toBe(true);
+  });
+  it.each([
+    { cjkAggPng: false, corruptPngRejected: true },
+    { cjkAggPng: true },
+    {},
+  ])(
+    'does not infer chart readiness from package pins without the actual probe checks (%j)',
+    async (probeChecks) => {
+      const e = await engine({ probeChecks });
+      await expect(
+        e.runner.preflight(new AbortController().signal),
+      ).rejects.toMatchObject({ code: 'PROFILE_PROBE_FAILED' });
+      expect(e.requests.some((r) => r.method === 'DELETE')).toBe(true);
+      expect(e.requests.some((r) => r.path.endsWith('/volumes/create'))).toBe(
+        false,
+      );
+    },
+  );
+  it('retains the actual PNG checker report across the Engine checkpoint, original bytes upload and reordered receipt', async () => {
+    const bytes = await readFile(
+      new URL(
+        '../../web/lib/runtime/fixtures/met166-cjk-chart.png',
+        import.meta.url,
+      ),
+    );
+    expect(hash(bytes)).toBe(
+      'sha256:83780a798b38c1ee8b7b15a11ad67e6673282c041cb63f9d7cdf35d92eb14237',
+    );
+    const p = chartPayload();
+    const png = {
+        checker: 'pillow-11.3.0' as const,
+        width: 1080,
+        height: 600,
+        checksum: hash(bytes),
+      },
+      artifact = {
+        ...p.arguments.outputs[0],
+        sizeBytes: bytes.length,
+        checksum: hash(bytes),
+        validation: 'trusted_png',
+        png,
+      },
+      e = await engine({ payload: p, bytes, artifacts: [artifact] });
+    const upload = vi.fn<LocalPythonTransport['upload']>(
+      async (output, metadata, uploaded) => {
+        expect(uploaded).toEqual(bytes);
+        expect(metadata.png).toEqual(png);
+        expect([...e.containers.values()].every((c) => !c.State.Running)).toBe(
+          true,
+        );
+        return {
+          ...output,
+          ...metadata,
+          png: {
+            height: png.height,
+            checksum: png.checksum,
+            checker: png.checker,
+            width: png.width,
+          },
+          collected: true as const,
+        };
+      },
+    );
+    const result = await e.runner.execute(p, {
+      attemptId: randomUUID(),
+      maintainLease: async () => true,
+      transport: { download: async () => Buffer.alloc(0), upload },
+    });
+    expect(result.artifacts[0]!.png).toEqual(png);
+    expect(result).toMatchObject({
+      purpose: 'python_charts',
+      reason: 'exited',
+      stopped: true,
+      exitCode: 0,
+    });
+    expect(upload).toHaveBeenCalledTimes(1);
+  });
+  it.each([
+    'missing_report',
+    'wrong_checksum',
+    'wrong_validator',
+    'duplicate_object',
+    'over_budget',
+  ])(
+    'does not upload a checkpoint with %s or replay the retained attempt',
+    async (problem) => {
+      const p = chartPayload(),
+        bytes = await readFile(
+          new URL(
+            '../../web/lib/runtime/fixtures/met166-cjk-chart.png',
+            import.meta.url,
+          ),
+        ),
+        checksum = hash(bytes),
+        png = { checker: 'pillow-11.3.0', checksum, width: 1080, height: 600 },
+        artifact = {
+          ...p.arguments.outputs[0],
+          checksum,
+          sizeBytes: bytes.length,
+          validation: 'trusted_png',
+          png,
+        },
+        changed: Record<string, unknown> = { ...artifact };
+      if (problem === 'missing_report') delete changed.png;
+      if (problem === 'wrong_checksum')
+        changed.png = { ...png, checksum: hash(Buffer.from('wrong bytes')) };
+      if (problem === 'wrong_validator') changed.validation = 'utf8';
+      if (problem === 'over_budget') p.arguments.limits.artifactBytes = 1024;
+      const artifacts = [changed];
+      if (problem === 'duplicate_object') {
+        p.arguments.outputs.push({
+          ...p.arguments.outputs[0]!,
+          path: 'second.png',
+          fileName: 'second.png',
+          objectId: randomUUID(),
+        });
+        artifacts.push({ ...changed });
+      }
+      const e = await engine({ payload: p, bytes, artifacts }),
+        attempt = randomUUID(),
+        upload = vi.fn();
+      await expect(
+        e.runner.execute(p, {
+          attemptId: attempt,
+          maintainLease: async () => true,
+          transport: { download: async () => Buffer.alloc(0), upload },
+        }),
+      ).rejects.toMatchObject({ code: 'PYTHON_RESULT_UNKNOWN' });
+      expect(upload).not.toHaveBeenCalled();
+      const starts = e.requests.filter((r) => r.path.endsWith('/start')).length;
+      await expect(e.runner.recover(attempt, p)).rejects.toMatchObject({
+        code: 'PYTHON_RESULT_UNKNOWN',
+      });
+      expect(e.requests.filter((r) => r.path.endsWith('/start'))).toHaveLength(
+        starts,
+      );
+      expect([...e.containers.values()].every((c) => !c.State.Running)).toBe(
+        true,
+      );
+    },
+  );
+  it('accepts stdout-only charts without artifact IO and does not weaken the one-output Office contract', async () => {
+    const original = payload(),
+      p = RuntimeLocalPythonPayloadSchema.parse({
+        ...original,
+        arguments: {
+          ...original.arguments,
+          purpose: 'python_charts',
+          origin: { ...original.arguments.origin, toolName: 'python.execute' },
+          limits: {
+            ...original.arguments.limits,
+            inputBytes: 2_000_000,
+            artifactBytes: 4_000_000,
+          },
+          outputs: [],
+        },
+      }),
+      e = await engine({ payload: p, artifacts: [], stdout: '合计: 1400.5' }),
+      upload = vi.fn();
+    const result = await e.runner.execute(p, {
+      attemptId: randomUUID(),
+      maintainLease: async () => true,
+      transport: { download: async () => Buffer.alloc(0), upload },
+    });
+    expect(result).toMatchObject({
+      reason: 'exited',
+      exitCode: 0,
+      stopped: true,
+      stdout: '合计: 1400.5',
+      artifacts: [],
+    });
+    expect(upload).not.toHaveBeenCalled();
+    expect(
+      e.requests.filter(
+        (r) => r.method === 'GET' && r.path.includes('/archive?'),
+      ),
+    ).toHaveLength(1);
+    expect(
+      RuntimeLocalPythonPayloadSchema.safeParse({
+        ...original,
+        arguments: { ...original.arguments, outputs: [] },
+      }).success,
+    ).toBe(false);
+  });
   it('round-trips binary/Chinese/space names and rejects traversal, a second file and checksum corruption', () => {
     const bytes = Buffer.from([0, 0xff, 1, 2]),
       name = '中文 空格'.repeat(15) + '.docx';
