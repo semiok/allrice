@@ -3,6 +3,7 @@ import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
+import type { PlatformEmployeeSummary } from '@allrice/contracts';
 import type {
   Browser,
   Page,
@@ -39,6 +40,7 @@ import {
 } from '../api/v1/admin/platform-employees/[employeeId]/lifecycle/route';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import {
+  getPlatformEmployee,
   savePlatformEmployeeDraft,
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
@@ -866,6 +868,132 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await context.close();
     }
   });
+  it.each(['load', 'choose'] as const)(
+    'preserves every non-task field in metadata saves after %s and reload',
+    async (entry) => {
+      const f = await createEmployeeAdministrationFixture(fixture.db);
+      const name = `Metadata preservation ${entry}`;
+      await savePlatformEmployeeDraft(f.employeeId, {
+        definition: {
+          ...f.definition,
+          name,
+          securityPolicy: {
+            ...f.definition.securityPolicy,
+            bridgeAccess: 'read_write',
+            connectorIdentityModes: ['user'],
+            deniedCapabilities: ['secret:use'],
+          },
+        },
+      });
+      await f.preview();
+      await f.publish();
+      const original = (await getPlatformEmployee(f.employeeId))!;
+      const originalDraft = original.currentDraft!;
+      const { page, context } = await pageFor();
+      try {
+        // Only reorder real directory records to exercise initial load and
+        // explicit selection separately; definitions and writes stay unmocked.
+        await page.route(
+          '**/api/v1/admin/platform-employees',
+          async (route) => {
+            const response = await route.fetch();
+            const directory = await response.json();
+            const target = directory.employees.filter(
+              (employee: PlatformEmployeeSummary) =>
+                employee.id === f.employeeId,
+            );
+            const others = directory.employees.filter(
+              (employee: PlatformEmployeeSummary) =>
+                employee.id !== f.employeeId,
+            );
+            await route.fulfill({
+              response,
+              json: {
+                ...directory,
+                employees:
+                  entry === 'load'
+                    ? [...target, ...others]
+                    : [...others, ...target],
+              },
+            });
+          },
+        );
+        await page.goto(`${origin}/runtime-console?view=employees`);
+        if (entry === 'choose')
+          await page.getByRole('button').filter({ hasText: name }).click();
+        await page.getByRole('heading', { name, exact: true }).waitFor();
+        const save = async (expectedRevisionId: string) => {
+          const button = page.getByRole('button', {
+            name: '保存草稿',
+            exact: true,
+          });
+          await button.scrollIntoViewIfNeeded();
+          const [response] = await Promise.all([
+            page.waitForResponse(
+              (result) =>
+                result.url() ===
+                  `${origin}/api/v1/admin/platform-employees/${f.employeeId}` &&
+                result.request().method() === 'PUT',
+            ),
+            button.click(),
+          ]);
+          expect(response.status()).toBe(200);
+          expect((await response.json()).validation.valid).toBe(true);
+          const payload = response.request().postDataJSON();
+          expect(payload.expectedRevisionId).toBe(expectedRevisionId);
+          expect({ ...payload.definition, taskSuggestions: undefined }).toEqual(
+            {
+              ...originalDraft.definition,
+              taskSuggestions: undefined,
+            },
+          );
+          const saved = (await getPlatformEmployee(f.employeeId))!;
+          expect(saved.currentDraft!.definition).toEqual(payload.definition);
+          expect(saved.currentPublished).toEqual(original.currentPublished);
+          expect((await f.revision(originalDraft.id)).definition).toEqual(
+            originalDraft.definition,
+          );
+          await expect.poll(() => button.isEnabled()).toBe(true);
+          return saved.currentDraft!;
+        };
+        const tasks = page.getByRole('region', {
+          name: '推荐任务配置',
+          exact: true,
+        });
+        await tasks
+          .getByRole('button', { name: '新增推荐任务', exact: true })
+          .click();
+        await tasks
+          .getByRole('textbox', { name: '标题', exact: true })
+          .fill('Metadata-only task');
+        await tasks
+          .getByRole('textbox', { name: '草稿模板', exact: true })
+          .fill('整理提供的材料。');
+        const saved = await save(originalDraft.id);
+        expect(saved.definition.taskSuggestions).toEqual([
+          {
+            id: expect.stringMatching(/^task-/),
+            title: 'Metadata-only task',
+            template: '整理提供的材料。',
+          },
+        ]);
+        // The save reloads the editor. Resetting task metadata must also retain
+        // the policy and all other fields rather than preparing new defaults.
+        await tasks
+          .getByRole('button', {
+            name: '恢复按能力匹配的默认任务',
+            exact: true,
+          })
+          .click();
+        expect((await save(saved.id)).definition).toEqual(
+          originalDraft.definition,
+        );
+      } finally {
+        await page.unrouteAll({ behavior: 'wait' });
+        await context.close();
+      }
+    },
+  );
   it('uses tool-derived employee defaults without a security tab or changing the published version', async () => {
     const f = await createEmployeeAdministrationFixture(fixture.db);
     await fixture.db`update allrice_workspaces set name='MCP safety fixture workspace' where id=${f.workspaceId}`;
