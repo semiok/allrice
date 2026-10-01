@@ -35,6 +35,7 @@ it('passes native Python Office work through the DSH broker without a typed edit
       expect(schema.required).not.toContain('content');
     },
     onToolCall: async (call) => {
+      expect(call.arguments).not.toHaveProperty('location');
       expect(NativeOfficeExportSchema.parse(call.arguments.python).script).toBe(
         python.script,
       );
@@ -47,6 +48,69 @@ it('passes native Python Office work through the DSH broker without a typed edit
     },
   });
 }, 45_000);
+
+it.each([
+  ['auto', 'invalid-location'],
+  ['local', 'content'],
+  ['cloud', 'legacy-office'],
+] as const)(
+  'declares and forwards top-level Office location=%s without changing the original arguments',
+  async (location, invalidCase) => {
+    const python = {
+      inputs: [],
+      script:
+        "from openpyxl import Workbook\nWorkbook().save('/tmp/work/output/result.xlsx')",
+    };
+    const args = {
+      fileName: '执行位置.xlsx',
+      format: 'xlsx',
+      python,
+      location,
+    };
+    const invalidArgs =
+      invalidCase === 'invalid-location'
+        ? { ...args, location: 'host' }
+        : invalidCase === 'content'
+          ? {
+              fileName: '正文.txt',
+              format: 'text',
+              content: 'synthetic only',
+              location,
+            }
+          : {
+              fileName: '兼容文档.docx',
+              format: 'docx',
+              office: {
+                kind: 'docx',
+                title: 'synthetic only',
+                blocks: [{ type: 'paragraph', text: 'synthetic only' }],
+              },
+              location,
+            };
+    await nativeBrokerRoundtrip({
+      canonicalName: 'workspace.export.create',
+      wireName: 'workspace_export_create',
+      args,
+      invalidArgs,
+      inspectSchema: (schema) => {
+        expect(schema.properties).toMatchObject({
+          location: { type: 'string', enum: ['auto', 'local', 'cloud'] },
+        });
+        expect(schema.required).not.toContain('location');
+        const properties = schema.properties as Record<
+          string,
+          Record<string, unknown>
+        >;
+        expect(properties.location).not.toHaveProperty('default');
+      },
+      onToolCall: async (call) => {
+        expect(call.arguments).toEqual(args);
+        return { modelContent: '{}', summary: '原生执行位置通过' };
+      },
+    });
+  },
+  45_000,
+);
 
 it('lists uploaded files through the native loop and returns object ids to the model', async () => {
   const id = randomUUID();

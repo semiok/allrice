@@ -75,6 +75,68 @@ describe('DSH Tool Bridge', () => {
     expect(instructions).toContain('<allrice_tool_call>');
   });
 
+  it.each([false, true])(
+    'preserves managed Office without a Node tool in native-only/mixed turns (mixed=%s)',
+    (mixed) => {
+      const instructions = dshToolBridgeInstructions(
+        executionInput({
+          tools: [
+            {
+              name: 'workspace.export.create',
+              description: 'Managed Office export',
+              inputSchema: { type: 'object' },
+            },
+            ...(mixed
+              ? [
+                  {
+                    name: 'legacy.envelope.tool',
+                    description: 'A legacy envelope tool',
+                    inputSchema: { type: 'object' },
+                  },
+                ]
+              : []),
+          ],
+        }),
+      );
+      expect(instructions).toContain('on the DSH Worker host is disabled');
+      expect(instructions).toContain('within their frozen authorization');
+      expect(instructions).toContain('independent of local.process.execute');
+      expect(instructions).toContain('top-level location');
+      expect(instructions).toContain('separate facts reported by the tool');
+      expect(instructions).not.toContain('All host capabilities are disabled');
+      expect(instructions.includes('<allrice_tool_call>')).toBe(mixed);
+    },
+  );
+
+  it('does not advertise or authorize managed Office when only the Node tool is supplied', async () => {
+    const onToolCall = vi.fn();
+    const input = executionInput({
+      tools: [
+        {
+          name: 'local.process.execute',
+          description: 'Authorized Node adapter',
+          inputSchema: { type: 'object' },
+        },
+      ],
+      onToolCall,
+    });
+    expect(dshToolBridgeInstructions(input)).not.toContain(
+      'managed Office execution',
+    );
+    await expect(
+      dshInboundToolHandler(input)('allrice/tool-call', {
+        toolCallId: 'synthetic-office',
+        name: 'workspace.export.create',
+        arguments: {
+          fileName: 'report.docx',
+          format: 'docx',
+          location: 'local',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'TOOL_NOT_ALLOWED' });
+    expect(onToolCall).not.toHaveBeenCalled();
+  });
+
   it('parses exactly one valid envelope and rejects ambiguous output', () => {
     expect(
       parseDshToolCall(

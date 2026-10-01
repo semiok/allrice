@@ -7,6 +7,7 @@ import {
   PLATFORM_IMAGE_MODELS,
   OfficeExportSchema,
   NativeOfficeExportSchema,
+  ExecutionLocationSchema,
 } from '@allrice/contracts';
 
 export const workbenchNativeTools = [
@@ -62,7 +63,7 @@ export const workbenchNativeTools = [
     canonicalName: 'workspace.export.create',
     wireName: 'workspace_export_create',
     description:
-      'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Publishing a proposal does not write to the local device.',
+      'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Native Python Office can use the authorized ready Bridge runtime; select its execution location with the top-level location parameter. Publishing a proposal does not write to the local device.',
     presentation: 'tool',
     validateArguments(args) {
       if (
@@ -72,6 +73,11 @@ export const workbenchNativeTools = [
         throw new Error(
           'Supply exactly one of content, python or legacy office.',
         );
+      if (args.location !== undefined) {
+        if (args.python === undefined)
+          throw new Error('location applies only to python native Office.');
+        ExecutionLocationSchema.parse(args.location);
+      }
       if (args.python !== undefined) {
         if (args.inputs !== undefined || args.sourceObjectId !== undefined)
           throw new Error(
@@ -172,7 +178,13 @@ export const workbenchNativeTools = [
           },
         },
         description:
-          'Default Office workflow. New-file example: {fileName: "report.xlsx", format: "xlsx", python: {script: "Python code", inputs: []}}. For edits add inputs: [{path, objectId, checksum}] and sourceObjectId INSIDE python; for new files omit sourceObjectId or use null. Put changeSummary at the top level. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically, followed by formula recalculation, preview and versioned download. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
+          'Default Office workflow. New-file example: {fileName: "report.xlsx", format: "xlsx", python: {script: "Python code", inputs: []}}. For edits add inputs: [{path, objectId, checksum}] and sourceObjectId INSIDE python; for new files omit sourceObjectId or use null. Put changeSummary and execution location at the top level. Preinstalled python-docx, openpyxl, pandas, python-pptx; no installation needed. Files are /tmp/work/input/<path>; write exactly /tmp/work/output/result.<format>. A fresh isolated workspace per call. Upstream check_office.py runs automatically before versioned download. Formula recalculation and preview depend on actual quality capabilities and data authorization; local-only execution does not send bytes to cloud quality services. Inspect returned quality and nativeExecution rather than assuming recalculation or preview succeeded. Read the Office Skill format guide first. Use native libraries freely for document features; no fixed edit-operation list.',
+      },
+      location: {
+        type: 'string',
+        enum: ['auto', 'local', 'cloud'],
+        description:
+          'Optional, only for python native Office. Omit for auto: prefer the authorized ready Bridge managed runtime, with cloud fallback only when data authorization permits. local requires local execution and must never silently switch to cloud; cloud explicitly selects an authorized cloud runtime. The platform chooses the device and fixed runtime. This does not enable arbitrary host commands or file access.',
       },
       office: {
         type: 'object',

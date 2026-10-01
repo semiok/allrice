@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
 import { DshRuntimePool } from './runtime-pool.js';
@@ -18,18 +19,23 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function pool(native = false) {
+function pool(native = false, capturePrompt?: string) {
+  const fixturePath = resolve(
+    import.meta.dirname,
+    native
+      ? '../../../dsh/allrice-jsonrpc-runtime.mjs'
+      : '../fixtures/dsh-fake-runtime.mjs',
+  );
   const instance = new DshRuntimePool({
     runtimeRoot: join(root, 'runtime'),
     runtimeCommand: process.execPath,
-    runtimeArgs: [
-      resolve(
-        import.meta.dirname,
-        native
-          ? '../../../dsh/allrice-jsonrpc-runtime.mjs'
-          : '../fixtures/dsh-fake-runtime.mjs',
-      ),
-    ],
+    runtimeArgs: capturePrompt
+      ? [
+          '--input-type=module',
+          '--eval',
+          `import { writeFileSync } from 'node:fs'; writeFileSync(${JSON.stringify(capturePrompt)}, process.env.DSH_SYSTEM_PROMPT); await import(${JSON.stringify(pathToFileURL(fixturePath).href)});`,
+        ]
+      : [fixturePath],
     credentialResolver: { resolve: async () => ({ apiKey: 'synthetic-only' }) },
     requestTimeoutMs: 15_000,
   });
@@ -98,6 +104,36 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
     nativeSkills: [],
   };
 }
+
+it.each([false, true])(
+  'scopes the actual DSH startup prompt without granting managed Office (office supplied=%s)',
+  async (officeSupplied) => {
+    vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
+    const promptPath = join(root, 'synthetic-system-prompt.txt');
+    const runtimes = pool(false, promptPath);
+    const first = request();
+    if (officeSupplied)
+      first.input.tools = [
+        {
+          name: 'workspace.export.create',
+          description: 'Managed Office export',
+          inputSchema: { type: 'object' },
+        },
+      ];
+    const started = await runtimes.acquire(first);
+    const prompt = await readFile(promptPath, 'utf8');
+    expect(prompt).toContain(first.systemInstructions);
+    expect(prompt).toContain('on the DSH Worker host is disabled');
+    expect(prompt).toContain('within their frozen authorization');
+    expect(prompt).not.toContain('All host capabilities are disabled');
+    expect(prompt.includes('independent of local.process.execute')).toBe(
+      officeSupplied,
+    );
+    expect(started.runtime.nativeTools).toEqual(
+      officeSupplied ? ['workspace.export.create'] : [],
+    );
+  },
+);
 
 it('reuses the session process across business Runs with assistants enabled', async () => {
   const runtimes = pool();
