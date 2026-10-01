@@ -300,11 +300,9 @@ export function EmployeeProduction() {
         const definition =
           employee?.currentDraft?.definition ??
           employee?.currentPublished?.definition;
-        setDraft(
-          definition
-            ? prepareEmployeeEditorDefinition(clone(definition), result.skills)
-            : null,
-        );
+        // Opening an existing draft must retain its policy. Capability defaults
+        // are prepared only when the admin explicitly changes skills or tools.
+        setDraft(definition ? clone(definition) : null);
         setPreviewWorkspaceId((current) =>
           result.workspaces.some((workspace) => workspace.id === current)
             ? current
@@ -395,14 +393,7 @@ export function EmployeeProduction() {
     const definition =
       employee.currentDraft?.definition ??
       employee.currentPublished?.definition;
-    setDraft(
-      definition
-        ? prepareEmployeeEditorDefinition(
-            clone(definition),
-            directory?.skills ?? [],
-          )
-        : null,
-    );
+    setDraft(definition ? clone(definition) : null);
     setMessage('');
     setError('');
     setTestRuns([]);
