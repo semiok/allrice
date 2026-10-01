@@ -1,6 +1,10 @@
 /** Real Chrome + React StrictMode + synthetic loopback HTTP. No DB/auth/model/Bridge. */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { TaskSuggestionDisplay } from '@allrice/contracts';
+import {
+  workspaceCapabilityIds,
+  type TaskSuggestionDisplay,
+  type WorkspaceReadiness,
+} from '@allrice/contracts';
 import type { Attachment, WorkspaceFile } from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
@@ -248,6 +252,7 @@ suite(
         width?: number;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
+        readiness?: WorkspaceReadiness['capabilities'];
       } = {},
     ) {
       const pending: Pending[] = [];
@@ -339,6 +344,7 @@ suite(
             workspace: {
               organizationId: A,
               workspaceId: B,
+              ...(options.readiness ? { viewerId: C } : {}),
               canAdminister: false,
               sessions: [session(A), session(B)],
               sessionModels: [A, B].map((sessionId) => ({
@@ -356,7 +362,7 @@ suite(
                   isDefault: true,
                   versions: [],
                   currentVersion: {
-                    id: 'version',
+                    id: options.readiness ? C : 'version',
                     taskSuggestions: options.taskSuggestions ?? [],
                     manifest: {
                       name: 'Rice',
@@ -379,6 +385,21 @@ suite(
               actions: [],
               features: { chatFlowV3: true, nativeHarnessEvents: true },
             },
+          });
+          return;
+        }
+        if (path === '/api/v1/workspace/readiness' && options.readiness) {
+          answer(response, {
+            schemaVersion: 1,
+            organizationId: A,
+            workspaceId: B,
+            viewerId: C,
+            sessionId: url.searchParams.get('sessionId'),
+            employeeVersionId: C,
+            canAdminister: false,
+            observedAt: now,
+            basis: 'next_task',
+            capabilities: options.readiness,
           });
           return;
         }
@@ -1766,6 +1787,77 @@ suite(
         await f.close();
       }
     }, 15_000);
+
+    it.each([
+      { filesReady: true, browserReady: false },
+      { filesReady: false, browserReady: true },
+    ])(
+      'recommendation uses browser preparation with filesReady=$filesReady/browserReady=$browserReady',
+      async ({ filesReady, browserReady }) => {
+        const task: TaskSuggestionDisplay = {
+          id: 'read-browser',
+          title: '读取本地页面',
+          template: '只读查看本地浏览器中的页面。',
+          readiness: ['local_browser'],
+          preparation: ['bridge'],
+        };
+        const readiness: WorkspaceReadiness['capabilities'] =
+          workspaceCapabilityIds.map((id) => {
+            const state =
+              id === 'local_browser' && !browserReady
+                ? 'paused'
+                : id === 'local_files' && !filesReady
+                  ? 'needs_configuration'
+                  : 'ready';
+            return {
+              id,
+              state,
+              reason:
+                state === 'paused'
+                  ? 'device_paused'
+                  : state === 'needs_configuration'
+                    ? 'folder_missing'
+                    : 'ready',
+              target: 'local',
+              responsibleRole: 'user',
+              action: 'compose',
+              releaseEnabled: true,
+              authorization: 'normal_policy',
+            };
+          });
+        const f = await fixture({ taskSuggestions: [task], readiness });
+        try {
+          await f.page
+            .getByRole('button', { name: '推荐任务', exact: true })
+            .click();
+          const preparation = f.page.getByRole('menuitem', {
+            name: '连接与管理电脑',
+            exact: true,
+          });
+          if (browserReady)
+            await expect.poll(() => preparation.count()).toBe(0);
+          else {
+            // This hint proves that the real readiness response was parsed,
+            // rather than passing against the initial unknown state.
+            await f.page
+              .getByRole('menuitem', { name: /读取本地页面.*暂停/ })
+              .waitFor();
+            expect(await preparation.count()).toBe(1);
+          }
+          await f.page.getByRole('menuitem', { name: /^读取本地页面/ }).click();
+          expect(
+            await f.page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .inputValue(),
+          ).toBe(task.template);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
 
     it('recommendation shows at most five tasks per group and keeps all eight stable IDs selectable', async () => {
       const tasks: TaskSuggestionDisplay[] = Array.from(
