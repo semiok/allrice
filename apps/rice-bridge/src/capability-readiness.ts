@@ -242,6 +242,9 @@ export function projectBridgeCapabilityReadiness(input: {
     );
   const managed = input.managedPython,
     profile = managed?.profile;
+  // The existing readiness wire contract permits eight version facts total.
+  // Keep six runtime identities alongside bridge/node; the authenticated
+  // RuntimeLocalPythonProfile retains the full checker and font checksums.
   const pythonVersions: Record<string, string> = profile
     ? {
         backend: profile.backend,
@@ -250,9 +253,6 @@ export function projectBridgeCapabilityReadiness(input: {
         python: profile.pythonVersion,
         profile: String(profile.profileVersion),
         packages: profile.packagesChecksum,
-        officeChecker: profile.officeCheckerChecksum,
-        pngChecker: profile.pngCheckerChecksum,
-        font: profile.fontChecksum,
       }
     : {};
   for (const capability of ['local.office', 'local.python'] as const) {

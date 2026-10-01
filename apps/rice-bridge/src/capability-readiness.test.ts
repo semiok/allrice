@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, realpath, rename, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import {
+  BridgeCapabilities,
+  HeartbeatBridgeDeviceInputSchema,
+  RuntimeLocalPythonProfileSchema,
+  managedPythonPayloadForPlatform,
+} from '@allrice/contracts';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -32,6 +38,80 @@ const facts = {
   browserVersion: '140.0.0',
 };
 describe('Bridge per-capability facts', () => {
+  it.each(['ready', 'busy', 'paused', 'offline'] as const)(
+    'keeps a full managed Python profile within the heartbeat contract while %s',
+    (state) => {
+      const release = managedPythonPayloadForPlatform('macos-x64')!;
+      const profile = RuntimeLocalPythonProfileSchema.parse({
+        contractVersion: 1,
+        profileVersion: 1,
+        backend: 'local-vm-container-v1',
+        imageId: release.imageId,
+        architecture: release.architecture,
+        pythonVersion: release.pythonVersion,
+        packagesChecksum: release.packagesChecksum,
+        officeCheckerChecksum: release.officeChecker.sha256,
+        pngCheckerChecksum: release.pngChecker.sha256,
+        fontChecksum: release.font.sha256,
+        available: true,
+        purposes: ['office', 'python_charts'],
+        officeGeneration: true,
+        officeFormulaCalculation: false,
+        officePreview: false,
+        stopConfirmed: true,
+      });
+      const environment = {
+        ...facts.environment,
+        settings: {
+          localBrowser: true,
+          localCommand: state !== 'paused',
+          development: true,
+        },
+      };
+      const reports = projectBridgeCapabilityReadiness({
+        ...facts,
+        environment,
+        phase: state === 'offline' ? 'offline' : 'online',
+        activeForeground: state === 'busy' ? 1 : 0,
+        managedPython: {
+          state: state === 'paused' ? 'paused' : 'ready',
+          reason: state === 'paused' ? 'capability_paused' : 'ready',
+          profile,
+        },
+      });
+      for (const capability of ['local.office', 'local.python'] as const) {
+        expect(reports.find((r) => r.capability === capability)).toMatchObject({
+          state,
+          versions: {
+            bridge: facts.environment.clientVersion,
+            node: process.versions.node,
+            backend: profile.backend,
+            image: profile.imageId,
+            architecture: profile.architecture,
+            python: profile.pythonVersion,
+            profile: '1',
+            packages: profile.packagesChecksum,
+          },
+        });
+      }
+      expect(
+        reports.every((report) => Object.keys(report.versions).length <= 8),
+      ).toBe(true);
+      expect(
+        HeartbeatBridgeDeviceInputSchema.safeParse({
+          protocolVersion: 2,
+          capabilities: BridgeCapabilities,
+          environment: { ...environment, readiness: reports },
+        }).success,
+      ).toBe(true);
+      // Full checker/font identities remain in the separate runtime profile.
+      expect(profile).toMatchObject({
+        officeCheckerChecksum: release.officeChecker.sha256,
+        pngCheckerChecksum: release.pngChecker.sha256,
+        fontChecksum: release.font.sha256,
+      });
+    },
+  );
   it('keeps files/browser usable independently of absent sandbox and Office', () => {
     const reports = projectBridgeCapabilityReadiness(facts);
     expect(reports.find((r) => r.capability === 'local.fs.read')).toMatchObject(
