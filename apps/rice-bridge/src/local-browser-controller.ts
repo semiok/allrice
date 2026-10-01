@@ -60,6 +60,11 @@ export class LocalBrowserController {
   get hasActiveWork() {
     return this.polling || this.active !== null;
   }
+  /** Occupancy fact only. Idle acquisition still belongs to hasActiveWork so
+   * update/drain waits for its I/O without advertising a busy browser. */
+  get hasActiveBrowser() {
+    return this.active !== null;
+  }
   constructor(
     private readonly input: {
       deviceId: string;
