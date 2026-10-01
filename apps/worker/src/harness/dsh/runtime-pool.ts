@@ -23,7 +23,10 @@ import {
 } from '../dsh-distribution.js';
 import { dshEgressEnvironment } from '../dsh-egress-environment.js';
 import { DshProtocolClient } from '../dsh-protocol-client.js';
-import { isDshNativeTool } from './tool-bridge.js';
+import {
+  dshHostCapabilityInstructions,
+  isDshNativeTool,
+} from './tool-bridge.js';
 
 export interface DshRuntime {
   client: DshProtocolClient;
@@ -306,7 +309,7 @@ export class DshRuntimePool {
           : 'high',
       DSH_SYSTEM_PROMPT: [
         input.systemInstructions,
-        'All host capabilities are disabled. Use only capabilities explicitly supplied by AllRice in the current turn.',
+        dshHostCapabilityInstructions(input.input.tools),
       ].join('\n\n'),
       DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),

@@ -49,6 +49,19 @@ export function isDshSearchTool(name: string) {
   return name === 'web.search' || name === 'wechat.article.search';
 }
 
+export function dshHostCapabilityInstructions(
+  tools: readonly { name: string }[],
+) {
+  return [
+    'Direct shell, filesystem and network access on the DSH Worker host is disabled. Use only capabilities explicitly supplied by AllRice for this turn, including managed Bridge and cloud tools, within their frozen authorization.',
+    ...(tools.some((tool) => tool.name === 'workspace.export.create')
+      ? [
+          "workspace.export.create's python workflow uses AllRice's managed runtime. It is independent of local.process.execute, the Node adapter; absence of that tool does not determine whether managed Office execution is available. Use the export tool's top-level location parameter for auto/local/cloud. Runtime availability, generation, formula calculation and preview are separate facts reported by the tool; do not infer success or extra authority.",
+        ]
+      : []),
+  ].join('\n');
+}
+
 export function dshToolBridgeInstructions(input: HarnessExecutionInput) {
   const nativeTools = input.tools.filter((tool) => isDshNativeTool(tool.name));
   const bridgedTools = input.tools.filter(
@@ -56,7 +69,10 @@ export function dshToolBridgeInstructions(input: HarnessExecutionInput) {
   );
   if (bridgedTools.length === 0) {
     if (nativeTools.length > 0) {
-      return 'Use the native DSH tools supplied for this turn. Do not emit AllRice XML tool envelopes. Never claim a tool result unless the native call succeeds.';
+      return [
+        dshHostCapabilityInstructions(input.tools),
+        'Use the native DSH tools supplied for this turn. Do not emit AllRice XML tool envelopes. Never claim a tool result unless the native call succeeds.',
+      ].join('\n');
     }
     return 'No external tools are available. Never claim that a tool was called.';
   }
@@ -66,7 +82,7 @@ export function dshToolBridgeInstructions(input: HarnessExecutionInput) {
     inputSchema: tool.inputSchema,
   }));
   return [
-    'All host capabilities are disabled. Use only the tenant-scoped tools supplied by AllRice for this turn.',
+    dshHostCapabilityInstructions(input.tools),
     ...(nativeTools.length
       ? [
           `DSH native tools available for this turn: ${nativeTools
