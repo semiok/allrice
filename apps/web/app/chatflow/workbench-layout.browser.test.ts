@@ -335,6 +335,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       preferenceError: false,
       preferenceDelay: null as Promise<void> | null,
       workspace,
+      employeeModel: 'configured-model',
+      employeeReasoningEffort: 'medium',
       omitSessionA: false,
       deepLinkDenied: false,
       items: options.artifacts ? [artifact(10)] : [],
@@ -804,8 +806,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     model: {
                       harness: 'dsh',
                       provider: 'codex',
-                      model: 'configured-model',
-                      reasoningEffort: 'medium',
+                      model: state.employeeModel,
+                      reasoningEffort: state.employeeReasoningEffort,
                     },
                   },
                 ]
@@ -2825,6 +2827,37 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .toBe(expanded === 'true' ? 'false' : 'true');
         expect(await letter.isVisible()).toBe(true);
       }
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('reopening employee details refreshes the model changed after the page was loaded', async () => {
+    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+    try {
+      const open = f.page.getByRole('button', {
+        name: '查看Rice详情',
+        exact: true,
+      });
+      await open.click();
+      const dialog = f.page.getByRole('dialog', {
+        name: 'Rice员工详情',
+        exact: true,
+      });
+      await dialog.getByText('configured-model', { exact: true }).waitFor();
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      f.state.employeeModel = 'gpt-6.1-sol';
+      f.state.employeeReasoningEffort = 'xhigh';
+      await open.click();
+      await dialog.getByText('gpt-6.1-sol', { exact: true }).waitFor();
+      expect(await dialog.getByText('极高', { exact: true }).isVisible()).toBe(
+        true,
+      );
+      expect(
+        await dialog.getByText('configured-model', { exact: true }).count(),
+      ).toBe(0);
+      expect(f.writes).toEqual([]);
       expect(f.errors).toEqual([]);
     } finally {
       await f.close();

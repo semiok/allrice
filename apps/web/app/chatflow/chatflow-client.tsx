@@ -1265,6 +1265,11 @@ export function ChatFlowClient({
         onOpenEmployeeDetails={(assignmentId) => {
           setDetailsAssignmentId(assignmentId ?? null);
           setEmployeeDetailsOpen(true);
+          void loadWorkspace().catch((cause) =>
+            setError(
+              cause instanceof Error ? cause.message : '员工详情更新失败',
+            ),
+          );
         }}
         onSelectSession={(sessionId) => {
           if (sessionId !== activeId && !confirmSessionNavigation()) return;

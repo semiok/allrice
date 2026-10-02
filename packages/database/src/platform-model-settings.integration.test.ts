@@ -10,6 +10,7 @@ import {
   PlatformModelSettingsConflict,
 } from './providers/platform-model-settings.ts';
 import { freezeSessionModelSnapshot } from './providers/model-pool.ts';
+import { getEmployeeWorkspace } from './workspace/service.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -17,6 +18,52 @@ const integration =
     : describe.skip;
 integration('platform-wide model inheritance', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it('refreshes tenant employee details after platform changes without rewriting published versions or Run snapshots', async () => {
+    vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
+    const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
+    try {
+      const task = await f.prepareOrdinaryTask(
+        'Synthetic model display regression; no model call.',
+      );
+      const original = task.binding.executionSnapshot.modelSnapshot!;
+      const before = await getEmployeeWorkspace(f.context, f.workspaceId);
+      expect(before.employeeProfiles.length).toBeGreaterThan(0);
+      expect(
+        before.employeeProfiles.every(
+          (profile) => profile.model.model === original.model,
+        ),
+      ).toBe(true);
+      const settings = await readPlatformModelSettings();
+      await withFixturePlatformAdministrator(f.ownerId, async () => {
+        await updatePlatformModelSettings(f.context, {
+          expectedRevision: settings.revision,
+          configuration: {
+            ...settings.configuration,
+            workModel: 'gpt-6.1-sol',
+            reasoningEffort: 'medium',
+          },
+        });
+      });
+      const after = await getEmployeeWorkspace(f.context, f.workspaceId);
+      expect(after.employeeProfiles.map((profile) => profile.model)).toEqual(
+        before.employeeProfiles.map(() => ({
+          harness: 'dsh',
+          provider: 'openai-codex',
+          model: 'gpt-6.1-sol',
+          reasoningEffort: 'medium',
+        })),
+      );
+      expect(
+        after.employees.map((employee) => employee.currentVersion),
+      ).toEqual(before.employees.map((employee) => employee.currentVersion));
+      const [run] =
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${task.runId}`;
+      expect(run?.execution_snapshot.modelSnapshot).toEqual(original);
+    } finally {
+      await f.close();
+    }
+  }, 40_000);
   it('sets GPT-6.1 Sol once while retaining reasoning, images, connection and timeout', async () => {
     const f = await createAssistantFixtureDatabase();
     try {

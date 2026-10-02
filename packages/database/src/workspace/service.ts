@@ -12,6 +12,7 @@ import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
 export { SessionReferenceError } from './session-references.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
+import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash } from 'node:crypto';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import {
@@ -2276,6 +2277,9 @@ export async function getEmployeeWorkspace(
   ]);
   const { listEmployeeHub } = await import('../employees/employeehub.ts');
   const employeeHub = await listEmployeeHub(context, workspaceId);
+  // Published employee manifests stay immutable. New Runs inherit the current
+  // platform model, so the employee's public details must read that same policy.
+  const currentModelPolicy = await platformEmployeeModelPolicy();
   const assignedEmployeeIds = [
     ...new Set(employeeHub.assignments.map((item) => item.employeeId)),
   ];
@@ -2427,15 +2431,6 @@ export async function getEmployeeWorkspace(
               behaviorRules: [] as string[],
               safetyBoundaries: [] as string[],
             };
-      const runtimePolicy =
-        manifest.schemaVersion === 2
-          ? manifest.runtimePolicy
-          : {
-              harness: 'dsh' as const,
-              provider: manifest.provider.provider,
-              model: manifest.provider.model,
-              reasoningEffort: manifest.provider.reasoningEffort,
-            };
       return {
         assignmentId: item.id,
         employeeId: item.employeeId,
@@ -2447,9 +2442,9 @@ export async function getEmployeeWorkspace(
         skills: skillsByEmployee.get(item.employeeId) ?? [],
         model: {
           harness: 'dsh' as const,
-          provider: runtimePolicy.provider,
-          model: runtimePolicy.model,
-          reasoningEffort: runtimePolicy.reasoningEffort,
+          provider: currentModelPolicy.provider,
+          model: currentModelPolicy.model,
+          reasoningEffort: currentModelPolicy.reasoningEffort,
         },
       };
     }),
