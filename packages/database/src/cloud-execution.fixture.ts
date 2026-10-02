@@ -50,6 +50,11 @@ export async function createCloudExecutionFixture(
       /** Published JSON order may differ from its parsed/JSONB form. */
       manifestOrder?: 'reversed';
     };
+    /** Test-only canonical tool publication, without adding the legacy tool. */
+    canonicalPython?: {
+      bridgeAccess?: 'none' | 'read_only' | 'read_write';
+      freezeBinding?: boolean;
+    };
     /** Test-only initial values: persisted once, never mutate a frozen Run. */
     dsh?: {
       provider: DshExecutionSnapshot;
@@ -133,14 +138,19 @@ export async function createCloudExecutionFixture(
             ]
           : []),
       ];
-  const nativeCandidate = options.managedOffice
-    ? employeeManifest({
-        key: 'p15',
-        name: 'P15 synthetic Office',
-        description: 'Synthetic only',
-        toolNames: ['workspace.export.create'],
-      })
-    : null;
+  const nativeCandidate =
+    options.managedOffice || options.canonicalPython
+      ? employeeManifest({
+          key: 'p15',
+          name: 'P15 synthetic Office',
+          description: 'Synthetic only',
+          toolNames: [
+            options.canonicalPython
+              ? 'python.execute'
+              : 'workspace.export.create',
+          ],
+        })
+      : null;
   const nativeManifest =
     nativeCandidate?.schemaVersion === 2
       ? options.managedOffice?.manifestOrder === 'reversed'
@@ -177,12 +187,15 @@ export async function createCloudExecutionFixture(
           nativeSkillIds: [],
           workflowRevisionIds: [],
           knowledgeRevisionIds: [],
-          toolNames: ['workspace.export.create'],
+          toolNames: nativeManifest.capabilityBindings.toolNames,
           connectorRefs: [],
         },
         securityPolicy: {
           ...nativeManifest.securityPolicy,
-          bridgeAccess: options.managedOffice?.bridgeAccess ?? 'read_write',
+          bridgeAccess:
+            options.canonicalPython?.bridgeAccess ??
+            options.managedOffice?.bridgeAccess ??
+            'read_write',
         },
       })
     : null;
@@ -190,7 +203,9 @@ export async function createCloudExecutionFixture(
     ? employeeManifestChecksum(nativeManifest)
     : digest('p15');
   const managedPython =
-    nativeManifest && options.managedOffice?.freezeBinding !== false
+    nativeManifest &&
+    options.managedOffice?.freezeBinding !== false &&
+    options.canonicalPython?.freezeBinding !== false
       ? freezeManagedOfficeBinding({
           manifest: nativeManifest,
           grantedCapabilities: ['storage:read', 'storage:write'],
@@ -247,7 +262,9 @@ export async function createCloudExecutionFixture(
       grantedCapabilities: capabilities,
       bindings: {
         skillVersionIds: [],
-        toolNames: nativeManifest ? ['workspace.export.create'] : toolNames,
+        toolNames: nativeManifest
+          ? nativeManifest.capabilityBindings.toolNames
+          : toolNames,
         knowledgeScopes: ['workspace'],
         workflowIds: [],
         ...(managedPython ? { managedPython } : {}),

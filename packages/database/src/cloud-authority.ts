@@ -1,10 +1,13 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   CloudCommandSchema,
+  CloudCommandInputSchema,
   CloudExecutionProfileSchema,
   cloudRuntimeImage,
   RuntimeActionBindingSchema,
   EmployeeExecutionSnapshotSchema,
+  EmployeeDefinitionSchema,
+  PythonExecuteArgsSchema,
   runtimeContractEqual,
   type RuntimeActionBinding,
 } from '@allrice/contracts';
@@ -18,6 +21,18 @@ import {
 export const cloudExecutionEnabled = () =>
   runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
   runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
+
+/** Execution normalization never mutates or defaults the original tool call. */
+export function normalizeCloudPythonArguments(original: unknown) {
+  const args = PythonExecuteArgsSchema.parse(original);
+  return CloudCommandInputSchema.parse({
+    script: args.script,
+    language: 'python',
+    inputs: args.inputs,
+    outputs: args.outputs,
+    limits: args.limits,
+  });
+}
 export function cloudCommandBinding(
   payload: ReturnType<typeof CloudCommandSchema.parse>,
 ) {
@@ -64,6 +79,29 @@ export async function checkCloudBindingAuthority(
     binding.task.scope.projectId !== null
   )
     throw new RuntimePolicyError('resource_adapter_not_registered');
+  const [stored] = await tx<
+    { binding: unknown; payload: unknown; original_arguments: unknown | null }[]
+  >`select binding,payload,original_arguments from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and owner_id=${context.actor.id} and run_id=${binding.task.runId} and grant_id=${binding.execution.grantId}`;
+  if (
+    !stored ||
+    !runtimeContractEqual(
+      RuntimeActionBindingSchema.parse(stored.binding),
+      binding,
+    )
+  )
+    throw new RuntimePolicyError('cloud_input_changed');
+  const payload = CloudCommandSchema.parse(stored.payload),
+    origin = payload.origin;
+  if (Boolean(origin) !== (stored.original_arguments !== null))
+    throw new RuntimePolicyError('cloud_input_changed');
+  if (origin) {
+    const normalized = normalizeCloudPythonArguments(stored.original_arguments);
+    if (
+      digest(stored.original_arguments) !== origin.argumentsDigest ||
+      !runtimeContractEqual(normalized, payload.arguments)
+    )
+      throw new RuntimePolicyError('cloud_input_changed');
+  }
   const [frozen] =
     await tx`select e.execution_snapshot from allrice_employee_runs e join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id where e.run_id=${binding.task.runId} and e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId} and e.owner_id=${context.actor.id} and e.session_id=${binding.task.chatSessionId} and e.employee_version_id=${binding.task.frozenConfiguration.employeeVersionId} and c.active_run_id=e.run_id and c.state='running' and c.thread_generation=${binding.attempt.generation} for share of e,c`;
   const snapshot = EmployeeExecutionSnapshotSchema.safeParse(
@@ -80,10 +118,54 @@ export async function checkCloudBindingAuthority(
       'storage:write',
     ) ||
     !snapshot.data.capabilitySnapshot.bindings.toolNames.includes(
-      'cloud.process.execute',
+      origin ? 'python.execute' : 'cloud.process.execute',
     )
   )
     throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
+  if (origin) {
+    const f = snapshot.data;
+    if (
+      f.employee.definition.schemaVersion !== 2 ||
+      f.employee.definition.securityPolicy.deniedCapabilities.includes(
+        'storage:write',
+      ) ||
+      (payload.arguments.inputs.length > 0 &&
+        (!f.capabilitySnapshot.grantedCapabilities.includes('storage:read') ||
+          f.employee.definition.securityPolicy.deniedCapabilities.includes(
+            'storage:read',
+          )))
+    )
+      throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
+    const [version] = await tx<{ manifest: unknown }[]>`
+      select manifest from allrice_employee_versions where id=${f.employee.versionId} and employee_id=${f.employee.id}
+        and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+        and config_checksum=${f.employee.definitionChecksum} for share`;
+    const manifest = EmployeeDefinitionSchema.safeParse(version?.manifest);
+    if (
+      !manifest.success ||
+      !runtimeContractEqual(manifest.data, f.employee.definition)
+    )
+      throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
+    const [selection] = await tx<{ metadata: Record<string, unknown> }[]>`
+      select metadata from allrice_audit_events where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+        and actor_id=${context.actor.id} and action='execution.location' and resource_type='managed_python'
+        and metadata->>'runId'=${binding.task.runId} and metadata->>'callId'=${origin.callId} order by occurred_at limit 1`;
+    if (
+      selection?.metadata.requestDigest !==
+        digest({
+          toolName: 'python.execute',
+          arguments: stored.original_arguments,
+          purpose: 'python_charts',
+        }) ||
+      !runtimeContractEqual(
+        selection.metadata.choice &&
+          (selection.metadata.choice as { location?: string }).location,
+        'cloud',
+      ) ||
+      selection.metadata.localInputs !== false
+    )
+      throw new RuntimePolicyError('cloud_input_changed');
+  }
   const [row] = await tx<
     {
       profile: unknown;
@@ -105,21 +187,9 @@ export async function checkCloudBindingAuthority(
   const profile = CloudExecutionProfileSchema.parse(row.profile);
   if (digest(profile) !== binding.execution.scopeDigest)
     throw new RuntimePolicyError('cloud_profile_changed');
-  const [stored] = await tx<
-    { binding: unknown; payload: unknown }[]
-  >`select binding,payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and owner_id=${context.actor.id} and run_id=${binding.task.runId} and grant_id=${binding.execution.grantId}`;
-  if (
-    !stored ||
-    !runtimeContractEqual(
-      RuntimeActionBindingSchema.parse(stored.binding),
-      binding,
-    )
-  )
-    throw new RuntimePolicyError('cloud_input_changed');
   const [worker] =
     await tx`select j.id from allrice_cloud_execution_inputs i join allrice_jobs j on j.id=i.job_id and j.run_id=i.run_id and j.organization_id=i.organization_id and j.workspace_id=i.workspace_id and j.owner_id=i.owner_id and j.worker_id=i.worker_id and j.lease_token=i.job_lease_token where i.operation_id=${binding.attempt.operationId} and j.status='running' and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null for share of j`;
   if (!worker) throw new RuntimePolicyError('cloud_worker_lease_changed');
-  const payload = CloudCommandSchema.parse(stored.payload);
   if (
     digest(payload) !== binding.inputDigest ||
     !runtimeContractEqual(cloudCommandBinding(payload), binding.command) ||

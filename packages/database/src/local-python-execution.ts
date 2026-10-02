@@ -7,13 +7,16 @@ import {
   ExecutionChoiceSchema,
   ExecutionLocationSchema,
   NativeOfficeExportSchema,
+  PythonExecuteArgsSchema,
   RuntimeActionBindingSchema,
   RuntimeLocalPythonPayloadSchema,
   RuntimeLocalPythonProfileSchema,
   RuntimeLocalPythonArtifactMetadataSchema,
+  RuntimeLocalPythonResultSchema,
   RuntimeOperationSnapshotSchema,
   UuidSchema,
   localPythonProfileMatchesRelease,
+  localPythonResultMatchesPayload,
   PlatformEmployeeDefinitionSchema,
   managedPythonPayloadForPlatform,
   resolveExecutionChoice,
@@ -27,16 +30,28 @@ import {
   type RuntimeLocalPythonPayload,
   type ManagedPythonPurpose,
   type StoragePort,
+  type StorageObject,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
   RuntimePolicyError,
+  createRuntimePolicyAdmission,
   runtimePolicyDigest as digest,
 } from './runtime-policy.ts';
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
 import { executionRequestConstraints } from './browser-execution-choice.ts';
 import { cloudStableId } from './cloud-execution.ts';
-import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
+import {
+  cloudExecutionEnabled,
+  normalizeCloudPythonArguments,
+} from './cloud-authority.ts';
+import {
+  createGovernedBridgeOperationLedger,
+  createGovernedBridgePolicyOptions,
+} from './runtime-governed-bridge.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
+import { registerToolBrokerExport } from './execution/tool-broker.ts';
+import { validatePngArtifact } from '@allrice/storage';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
   localOperationsFeatureEnabled,
@@ -240,9 +255,10 @@ export async function selectManagedPythonExecution(
     if (prior && prior.metadata.requestDigest !== requestDigest)
       throw new RuntimePolicyError('idempotency_conflict');
     const [existing] = await tx<
-      { snapshot: unknown; device_id: string }[]
+      { snapshot: unknown; device_id: string | null }[]
     >`select snapshot,device_id from allrice_runtime_operations
-      where id=${operationId} and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId}`;
+      where id in (${operationId},${cloudStableId(`cloud-python:${ctx.runId}:${input.callId}`)}) and run_id=${ctx.runId}
+        and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} order by id`;
     const old = prior
         ? ExecutionChoiceSchema.parse(prior.metadata.choice)
         : null,
@@ -292,6 +308,8 @@ export async function selectManagedPythonExecution(
         (!p.success ||
           !p.data.available ||
           !p.data.purposes.includes(input.purpose) ||
+          (input.purpose === 'python_charts' &&
+            p.data.pythonChartsContractVersion !== 1) ||
           !d.profile_fresh ||
           !localPythonProfileMatchesRelease(p.data, release!))
       )
@@ -313,10 +331,12 @@ export async function selectManagedPythonExecution(
     const choice = resolveExecutionChoice({
       location,
       local: device?.state ?? null,
-      cloudAvailable: true,
+      cloudAvailable: input.purpose === 'office' || cloudExecutionEnabled(),
       localInputs,
       boundLocation: existing
-        ? 'local'
+        ? existing.device_id
+          ? 'local'
+          : 'cloud'
         : old?.location === 'none'
           ? undefined
           : old?.location,
@@ -455,8 +475,59 @@ export async function assertLocalPythonDelegation(
     )
       throw new RuntimePolicyError('bridge_authority_changed');
   } else {
-    // Future chart adapter delegates the same declared inputs/outputs and script.
-    if (origin.original_arguments.script !== a.script)
+    const original = PythonExecuteArgsSchema.safeParse(
+      origin.original_arguments,
+    );
+    const [profile] = await tx<{ profile: unknown }[]>`
+      select profile from allrice_bridge_managed_python_profiles where device_id=${device.id}
+        and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}`;
+    const currentProfile = RuntimeLocalPythonProfileSchema.safeParse(
+      profile?.profile,
+    );
+    if (
+      !original.success ||
+      !currentProfile.success ||
+      currentProfile.data.pythonChartsContractVersion !== 1
+    )
+      throw new RuntimePolicyError('bridge_authority_changed');
+    const normalized = normalizeCloudPythonArguments(origin.original_arguments);
+    const mediaTypes = {
+      png: 'image/png',
+      json: 'application/json',
+      csv: 'text/csv',
+      txt: 'text/plain',
+    };
+    if (
+      normalized.script !== a.script ||
+      !runtimeContractEqual(
+        normalized.inputs,
+        a.inputs.map(({ path, objectId, checksum }) => ({
+          path,
+          objectId,
+          checksum,
+        })),
+      ) ||
+      !runtimeContractEqual(
+        normalized.outputs,
+        a.outputs.map(({ path, fileName, format }) => ({
+          path,
+          fileName,
+          format,
+        })),
+      ) ||
+      !runtimeContractEqual(
+        { ...normalized.limits, inputBytes: 2_000_000 },
+        a.limits,
+      ) ||
+      a.outputs.some(
+        (o, index) =>
+          o.mediaType !== mediaTypes[normalized.outputs[index]!.format] ||
+          o.objectId !==
+            cloudStableId(
+              `managed-python-output:${binding.task.runId}:${a.origin.callId}:${index}`,
+            ),
+      )
+    )
       throw new RuntimePolicyError('bridge_authority_changed');
   }
   for (const file of a.inputs) {
@@ -687,6 +758,7 @@ export async function localPythonTransferAuthority(
     device,
     context,
     payload,
+    snapshot: renewed.snapshot,
     sessionId: snapshot.binding.task.chatSessionId,
     input: selectedInput,
     output,
@@ -717,6 +789,79 @@ export async function readLocalPythonInput(
   return { object: file.object, fileName: a.input.path.split('/').at(-1)! };
 }
 
+/** Quota must be locked before the existing root/operation lock order. */
+async function assertPythonTransferInTransaction(
+  tx: TransactionSql,
+  authority: Awaited<ReturnType<typeof localPythonTransferAuthority>>,
+  operationId: string,
+  leaseToken: string,
+) {
+  const { device, snapshot } = authority;
+  const [root] = await tx`
+    select root_run_id from allrice_runtime_roots where root_run_id=${snapshot.binding.task.rootRunId}
+      and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
+      and cancel_request_id is null and deadline_at>clock_timestamp() for update`;
+  const [row] = await tx<{ snapshot: unknown; bridge_payload: unknown }[]>`
+    select snapshot,bridge_payload from allrice_runtime_operations where id=${operationId}
+      and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and device_id=${device.id}
+      and lease_token_hash=${createHash('sha256').update(leaseToken).digest('hex')}
+      and lease_expires_at>clock_timestamp() and snapshot->>'status'='running'
+      and snapshot->>'cancelRequestId' is null for update`;
+  if (
+    !root ||
+    !row ||
+    !runtimeContractEqual(row.bridge_payload, authority.payload)
+  )
+    throw new DataAccessError('authorization_denied');
+  const current = RuntimeOperationSnapshotSchema.parse(row.snapshot);
+  if (!runtimeContractEqual(current.binding, snapshot.binding))
+    throw new DataAccessError('authorization_denied');
+  await createRuntimePolicyAdmission(createGovernedBridgePolicyOptions(device))(
+    {
+      transaction: tx,
+      binding: current.binding,
+      phase: 'heartbeat',
+      now: new Date(),
+    },
+  ).catch((error: unknown) => {
+    if (error instanceof RuntimePolicyError)
+      throw new DataAccessError('authorization_denied');
+    throw error;
+  });
+}
+
+async function verifiedPythonBytes(
+  storage: StoragePort,
+  object: StorageObject,
+  maximum: number,
+) {
+  const reader = (await storage.get(object)).getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > maximum || size > object.sizeBytes)
+        throw new DataAccessError('quota_exceeded');
+      chunks.push(chunk.value);
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+    reader.releaseLock();
+  }
+  const bytes = Buffer.concat(chunks);
+  if (
+    bytes.length !== object.sizeBytes ||
+    digestBytes(bytes) !== object.checksum
+  )
+    throw new DataAccessError('grant_invalid');
+  return bytes;
+}
+const digestBytes = (bytes: Uint8Array) =>
+  `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+
 export async function storeLocalPythonArtifact(input: {
   token: string;
   id: string;
@@ -727,16 +872,20 @@ export async function storeLocalPythonArtifact(input: {
   storage: StoragePort;
 }) {
   const metadata = RuntimeLocalPythonArtifactMetadataSchema.parse(
-      input.metadata,
-    ),
-    a = await localPythonTransferAuthority(
-      input.token,
-      input.id,
-      input.leaseToken,
-      input.objectId,
-      'upload',
-    ),
-    output = a.output!;
+    input.metadata,
+  );
+  const a = await localPythonTransferAuthority(
+    input.token,
+    input.id,
+    input.leaseToken,
+    input.objectId,
+    'upload',
+  ).catch(async (error: unknown) => {
+    await input.stream.cancel().catch(() => undefined);
+    throw error;
+  });
+  const output = a.output!,
+    db = getDatabase();
   const validation =
     a.payload.arguments.purpose === 'office'
       ? 'dsh_office'
@@ -746,39 +895,114 @@ export async function storeLocalPythonArtifact(input: {
   if (
     metadata.mediaType !== output.mediaType ||
     metadata.validation !== validation ||
-    metadata.sizeBytes > a.payload.arguments.limits.artifactBytes
-  )
+    metadata.sizeBytes > a.payload.arguments.limits.artifactBytes ||
+    (output.format === 'png'
+      ? metadata.png?.checksum !== metadata.checksum
+      : metadata.png !== undefined)
+  ) {
+    await input.stream.cancel().catch(() => undefined);
     throw new DataAccessError('authorization_denied');
-  const existing = await getStoredFile(a.context, output.objectId).catch(
-    (error: unknown) => {
-      if (error instanceof DataAccessError && error.code === 'not_found')
-        return null;
+  }
+  const reservation = await db
+    .begin(async (tx) => {
+      await lockWorkspaceStorageQuota(
+        tx,
+        a.device.organizationId,
+        a.device.workspaceId,
+      );
+      await assertPythonTransferInTransaction(
+        tx,
+        a,
+        input.id,
+        input.leaseToken,
+      );
+      const [existing] = await tx<
+        {
+          state: string;
+          checksum: string;
+          size_bytes: string;
+          media_type: string;
+          owner_id: string;
+          organization_id: string;
+          workspace_id: string;
+        }[]
+      >`select state,checksum,size_bytes,media_type,owner_id,organization_id,workspace_id from allrice_storage_objects where id=${output.objectId} for update`;
+      if (existing) {
+        if (
+          existing.owner_id !== a.device.ownerId ||
+          existing.organization_id !== a.device.organizationId ||
+          existing.workspace_id !== a.device.workspaceId ||
+          existing.checksum !== metadata.checksum ||
+          Number(existing.size_bytes) !== metadata.sizeBytes ||
+          existing.media_type !== metadata.mediaType
+        )
+          throw new DataAccessError('authorization_denied');
+        // A pending or abandoned identity is uncertain, never a second writer.
+        if (existing.state !== 'ready')
+          throw new DataAccessError('grant_invalid');
+        return {
+          file: await getStoredFile(a.context, output.objectId, tx),
+          writer: false,
+        };
+      }
+      const [budget] = await tx<{ bytes: string }[]>`
+      select coalesce(sum(size_bytes),0) as bytes from allrice_storage_objects
+      where id=any(${a.payload.arguments.outputs.map((o) => o.objectId)}::uuid[])
+        and organization_id=${a.device.organizationId} and workspace_id=${a.device.workspaceId}
+        and owner_id=${a.device.ownerId} and state<>'deleted'`;
+      if (
+        Number(budget?.bytes ?? 0) + metadata.sizeBytes >
+        a.payload.arguments.limits.artifactBytes
+      )
+        throw new DataAccessError('quota_exceeded');
+      const file = await createStorageMetadata(
+        a.context,
+        {
+          id: output.objectId,
+          workspaceId: a.device.workspaceId,
+          category: 'artifacts',
+          mediaType: metadata.mediaType,
+          sizeBytes: metadata.sizeBytes,
+          checksum: metadata.checksum,
+          visibility: 'private',
+          retentionUntil: new Date(Date.now() + 86_400_000).toISOString(),
+          immutable: true,
+        },
+        tx,
+      );
+      return { file, writer: true };
+    })
+    .catch(async (error: unknown) => {
+      await input.stream.cancel().catch(() => undefined);
       throw error;
-    },
-  );
-  if (existing) {
-    if (
-      existing.object.checksum !== metadata.checksum ||
-      existing.object.sizeBytes !== metadata.sizeBytes ||
-      existing.object.mediaType !== metadata.mediaType
-    )
-      throw new DataAccessError('authorization_denied');
-    await input.stream.cancel();
+    });
+  const file = reservation.file;
+  if (!reservation.writer) {
+    await input.stream.cancel().catch(() => undefined);
+    if (output.format === 'png') {
+      const bytes = await verifiedPythonBytes(
+        input.storage,
+        file.object,
+        a.payload.arguments.limits.artifactBytes,
+      );
+      try {
+        validatePngArtifact(bytes, metadata.png);
+      } catch {
+        throw new DataAccessError('grant_invalid');
+      }
+    }
+    await localPythonTransferAuthority(
+      input.token,
+      input.id,
+      input.leaseToken,
+      input.objectId,
+      'upload',
+    );
     return { ...output, ...metadata, collected: true as const };
   }
-  const file = await createStorageMetadata(a.context, {
-    id: output.objectId,
-    workspaceId: a.device.workspaceId,
-    category: 'artifacts',
-    mediaType: metadata.mediaType,
-    sizeBytes: metadata.sizeBytes,
-    checksum: metadata.checksum,
-    visibility: 'private',
-    retentionUntil: new Date(Date.now() + 86_400_000).toISOString(),
-    immutable: true,
-  });
   const reader = input.stream.getReader(),
-    hash = createHash('sha256');
+    hash = createHash('sha256'),
+    pngChunks: Uint8Array[] = [];
   let size = 0,
     verified = false;
   const bounded = new ReadableStream<Uint8Array>({
@@ -791,6 +1015,13 @@ export async function storeLocalPythonArtifact(input: {
             `sha256:${hash.digest('hex')}` !== metadata.checksum
           )
             throw new DataAccessError('grant_invalid');
+          if (output.format === 'png') {
+            try {
+              validatePngArtifact(Buffer.concat(pngChunks), metadata.png);
+            } catch {
+              throw new DataAccessError('grant_invalid');
+            }
+          }
           verified = true;
           controller.close();
           return;
@@ -802,6 +1033,7 @@ export async function storeLocalPythonArtifact(input: {
         )
           throw new DataAccessError('quota_exceeded');
         hash.update(next.value);
+        if (output.format === 'png') pngChunks.push(next.value);
         controller.enqueue(next.value);
       } catch (error) {
         controller.error(error);
@@ -815,23 +1047,243 @@ export async function storeLocalPythonArtifact(input: {
     await input.storage.put(file.object, bounded);
     if (!verified || !(await input.storage.exists(file.object)))
       throw new DataAccessError('grant_invalid');
-    await localPythonTransferAuthority(
-      input.token,
-      input.id,
-      input.leaseToken,
-      input.objectId,
-      'upload',
-    );
-    await markStorageReady(a.context, file.object.id);
+    await db.begin(async (tx) => {
+      await lockWorkspaceStorageQuota(
+        tx,
+        a.device.organizationId,
+        a.device.workspaceId,
+      );
+      await assertPythonTransferInTransaction(
+        tx,
+        a,
+        input.id,
+        input.leaseToken,
+      );
+      await markStorageReady(a.context, file.object.id, tx);
+    });
     return { ...output, ...metadata, collected: true as const };
   } catch (error) {
-    await abandonStorageMetadata(a.context, file.object.id).catch(
-      () => undefined,
-    );
-    await input.storage.delete(file.object).catch(() => undefined);
+    // Commit acknowledgements can be lost. Query before deleting: never remove
+    // a ready winner, or erase evidence if the database cannot confirm state.
+    const abandoned = await db
+      .begin(async (tx) => {
+        await lockWorkspaceStorageQuota(
+          tx,
+          a.device.organizationId,
+          a.device.workspaceId,
+        );
+        const [pending] =
+          await tx`select id from allrice_storage_objects where id=${file.object.id}
+        and organization_id=${a.device.organizationId} and workspace_id=${a.device.workspaceId} and owner_id=${a.device.ownerId}
+        and state='pending' for update`;
+        if (!pending) return false;
+        await abandonStorageMetadata(a.context, file.object.id, tx);
+        return true;
+      })
+      .catch(() => false);
+    if (abandoned)
+      await input.storage
+        .delete({ ...file.object, immutable: false })
+        .catch(() => undefined);
     throw error;
   } finally {
     await reader.cancel().catch(() => undefined);
     reader.releaseLock();
   }
+}
+
+/** Register only the original, stopped successful operation's ready outputs. */
+export async function publishLocalPythonArtifacts(
+  input: { context: ExecutionContext; operationId: string },
+  storage: StoragePort,
+  db = getDatabase(),
+) {
+  const { context: ctx } = input,
+    owner = ctx.policySnapshot.subjectId;
+  const read = async (sql: typeof db | TransactionSql) => {
+    const [row] = await sql<
+      {
+        snapshot: unknown;
+        bridge_payload: unknown;
+        device_id: string;
+        receipt: { attempt: unknown; evidence?: { output?: unknown } } | null;
+      }[]
+    >`
+      select o.snapshot,o.bridge_payload,o.device_id,r.payload as receipt from allrice_runtime_operations o
+      left join lateral (select payload from allrice_runtime_operation_receipts where operation_id=o.id and disposition='applied'
+        and payload->'signal'->>'type'='operation.outcome' and payload->'signal'->'result'->>'status'='succeeded'
+        order by received_at desc limit 1) r on true
+      where o.id=${UuidSchema.parse(input.operationId)} and o.run_id=${ctx.runId}
+        and o.organization_id=${ctx.organizationId} and o.workspace_id=${ctx.workspaceId}`;
+    if (!row) throw new RuntimePolicyError('local_python_result_unconfirmed');
+    const snapshot = RuntimeOperationSnapshotSchema.parse(row.snapshot),
+      payload = RuntimeLocalPythonPayloadSchema.parse(row.bridge_payload),
+      result = RuntimeLocalPythonResultSchema.safeParse(
+        row.receipt?.evidence?.output,
+      );
+    if (
+      payload.arguments.purpose !== 'python_charts' ||
+      snapshot.status !== 'succeeded' ||
+      snapshot.cancelRequestId ||
+      snapshot.binding.requestedBy.id !== owner ||
+      snapshot.binding.execution.deviceId !== row.device_id ||
+      snapshot.binding.task.runId !== ctx.runId ||
+      !row.receipt ||
+      !runtimeContractEqual(row.receipt.attempt, snapshot.binding.attempt) ||
+      !result.success ||
+      !result.data.stopped ||
+      result.data.reason !== 'exited' ||
+      result.data.exitCode !== 0 ||
+      !localPythonResultMatchesPayload(payload, result.data) ||
+      result.data.artifacts.length !== payload.arguments.outputs.length
+    )
+      throw new RuntimePolicyError('local_python_result_unconfirmed');
+    return { snapshot, payload, result: result.data, deviceId: row.device_id };
+  };
+  const initial = await read(db);
+  const requestContext: RequestContext = {
+    requestId: randomUUID(),
+    sessionId: initial.snapshot.binding.task.chatSessionId!,
+    actor: { type: 'user', id: owner },
+    organizationId: ctx.organizationId,
+    workspaceId: ctx.workspaceId,
+    memberships: ctx.policySnapshot.memberships,
+    authenticatedAt: new Date().toISOString(),
+  };
+  const verified: StorageObject[] = [];
+  let total = 0;
+  // Bounded byte validation happens before locks; final transaction rechecks all
+  // immutable identities and authority, so IO never blocks cancellation.
+  for (const output of initial.payload.arguments.outputs) {
+    const artifact = initial.result.artifacts.find(
+      (a) => a.objectId === output.objectId,
+    );
+    if (!artifact)
+      throw new RuntimePolicyError('local_python_result_unconfirmed');
+    const { object } = await getStoredFile(requestContext, output.objectId, db);
+    if (
+      object.checksum !== artifact.checksum ||
+      object.sizeBytes !== artifact.sizeBytes ||
+      object.mediaType !== artifact.mediaType ||
+      !object.immutable
+    )
+      throw new RuntimePolicyError('local_python_result_unconfirmed');
+    total += object.sizeBytes;
+    if (total > initial.payload.arguments.limits.artifactBytes)
+      throw new DataAccessError('quota_exceeded');
+    const bytes = await verifiedPythonBytes(
+      storage,
+      object,
+      initial.payload.arguments.limits.artifactBytes,
+    );
+    if (output.format === 'png') {
+      try {
+        validatePngArtifact(bytes, artifact.png);
+      } catch {
+        throw new RuntimePolicyError('local_python_result_unconfirmed');
+      }
+    }
+    verified.push(object);
+  }
+  return db.begin(async (tx) => {
+    await lockWorkspaceStorageQuota(tx, ctx.organizationId, ctx.workspaceId);
+    const [root] =
+      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${initial.snapshot.binding.task.rootRunId}
+      and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId}
+      and cancel_request_id is null and deadline_at>clock_timestamp() for update`;
+    const [operation] =
+      await tx`select id from allrice_runtime_operations where id=${input.operationId}
+      and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and run_id=${ctx.runId} for update`;
+    if (!root || !operation)
+      throw new RuntimePolicyError('local_python_result_unconfirmed');
+    const current = await read(tx);
+    if (!runtimeContractEqual(initial, current))
+      throw new RuntimePolicyError('local_python_result_unconfirmed');
+    const [d] = await tx<
+      { device: unknown }[]
+    >`select json_build_object('id',id,'organizationId',organization_id,'workspaceId',workspace_id,'ownerId',owner_id,
+      'name',name,'platform',platform,'protocolVersion',protocol_version,'capabilities',capabilities,'status','online',
+      'lastSeenAt',last_seen_at,'createdAt',created_at,'revokedAt',revoked_at) as device from allrice_bridge_devices
+      where id=${current.deviceId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${owner} and revoked_at is null`;
+    if (!d) throw new RuntimePolicyError('local_python_result_unconfirmed');
+    const binding = current.snapshot.binding;
+    const admission = createRuntimePolicyAdmission(
+      createGovernedBridgePolicyOptions(BridgeDeviceSchema.parse(d.device)),
+    );
+    await admission({
+      transaction: tx,
+      binding,
+      phase: 'heartbeat',
+      now: new Date(),
+    });
+    const published: {
+      object: StorageObject;
+      fileName: string;
+      versionId: string;
+    }[] = [];
+    for (const [index, output] of current.payload.arguments.outputs.entries()) {
+      const object = verified[index]!,
+        requestId = `managed-python:${input.operationId}:${output.path}`,
+        requestDigest = digest({
+          objectId: object.id,
+          checksum: object.checksum,
+        });
+      const [existing] = await tx<
+        { version_id: string; request_digest: string; object_id: string }[]
+      >`
+        select a.version_id,a.request_digest,v.object_id from allrice_workbench_artifacts a
+        join allrice_deliverable_versions v on v.id=a.version_id
+        where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner}
+          and a.run_id=${ctx.runId} and a.request_id=${requestId}`;
+      if (existing) {
+        if (
+          existing.object_id !== object.id ||
+          existing.request_digest !== requestDigest
+        )
+          throw new RuntimePolicyError('idempotency_conflict');
+        published.push({
+          object: { ...object, retentionUntil: null },
+          fileName: output.fileName,
+          versionId: existing.version_id,
+        });
+        continue;
+      }
+      const version = await registerToolBrokerExport(
+        {
+          context: ctx,
+          sessionId: binding.task.chatSessionId!,
+          fileName: output.fileName,
+          format:
+            output.format === 'png'
+              ? 'png'
+              : output.format === 'json'
+                ? 'json'
+                : 'text',
+          object,
+          storageMode: 'existing_ready',
+        },
+        tx,
+      );
+      await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
+        values(${version.id},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},'file',
+        ${tx.json({ kind: 'tool_result', runId: ctx.runId, operationId: input.operationId, stepId: null })},${tx.json(binding.execution)},${requestId},${requestDigest})`;
+      published.push({
+        object: { ...object, retentionUntil: null },
+        fileName: output.fileName,
+        versionId: version.id,
+      });
+    }
+    await admission({
+      transaction: tx,
+      binding,
+      phase: 'heartbeat',
+      now: new Date(),
+    });
+    const [stillCurrent] =
+      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${binding.task.rootRunId}
+      and cancel_request_id is null and deadline_at>clock_timestamp()`;
+    if (!stillCurrent)
+      throw new RuntimePolicyError('local_python_result_unconfirmed');
+    return published;
+  });
 }

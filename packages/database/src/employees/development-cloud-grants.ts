@@ -41,7 +41,8 @@ export async function prepareTenantCloudGrants(tx: Tx, scope: Scope) {
         and (m.workspace_id is null or m.workspace_id=a.workspace_id) and m.active and m.role in ('admin','member')
       join allrice_users u on u.id=a.user_id and u.status='active'
       where a.organization_id=${organizationId} and a.workspace_id=${workspaceId} and a.active
-        and v.manifest->'capabilityBindings'->'toolNames' ? ${kind === 'compute' ? 'cloud.process.execute' : 'browser.workspace'}`;
+        and (v.manifest->'capabilityBindings'->'toolNames' ? ${kind === 'compute' ? 'cloud.process.execute' : 'browser.workspace'}
+          or (${kind === 'compute'} and v.manifest->'capabilityBindings'->'toolNames' ? 'python.execute'))`;
     for (const user of users) {
       const existing =
         kind === 'compute'

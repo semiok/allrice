@@ -114,6 +114,12 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
     services: ['cloud_execution'],
     environment: 'cloud',
   },
+  'python.execute': {
+    policyActions: ['local.python.execute', 'cloud.process.execute'],
+    services: ['workbench', 'cloud_execution'],
+    // Reuse the managed Python publication access used by native Office.
+    managedOffice: true,
+  },
   'browser.workspace': {
     policyActions: ['cloud.browser.observe', 'cloud.browser.act'],
     services: ['cloud_browser'],
@@ -170,6 +176,7 @@ const labels: Partial<Record<AllRiceToolName, string>> = {
   'local.process.status': '本地服务状态',
   'local.process.stop': '停止本地服务',
   'cloud.process.execute': '云端隔离脚本',
+  'python.execute': 'Python 计算与图表（本地优先）',
   'browser.workspace': '云端浏览器工作区',
   'local.browser.workspace': '本地独立浏览器',
   'local.preview.open': '本地项目预览',

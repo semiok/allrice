@@ -7,7 +7,7 @@ import {
 } from '@allrice/contracts';
 
 /** Called only after resolving a publication for the exact assigned version. */
-export function freezeManagedOfficeBinding(input: {
+export function freezeManagedPythonBinding(input: {
   manifest: unknown;
   grantedCapabilities: readonly SkillCapability[];
   publication: {
@@ -30,18 +30,29 @@ export function freezeManagedOfficeBinding(input: {
   const frozen = manifest.data,
     original = published.data;
   if (
-    !frozen.capabilityBindings.toolNames.includes('workspace.export.create') ||
-    !original.capabilities.toolNames.includes('workspace.export.create') ||
     original.securityPolicy.bridgeAccess !== 'read_write' ||
     !input.grantedCapabilities.includes('storage:write') ||
     frozen.securityPolicy.deniedCapabilities.includes('storage:write') ||
     original.securityPolicy.deniedCapabilities.includes('storage:write')
   )
     return undefined;
+  const purposes = (
+    [
+      ['workspace.export.create', 'office'],
+      ['python.execute', 'python_charts'],
+    ] as const
+  )
+    .filter(
+      ([tool]) =>
+        frozen.capabilityBindings.toolNames.includes(tool) &&
+        original.capabilities.toolNames.includes(tool),
+    )
+    .map(([, purpose]) => purpose);
+  if (!purposes.length) return undefined;
   const binding = FrozenManagedPythonBindingSchema.safeParse({
     contractVersion: 1,
     profileVersion: 1,
-    purposes: ['office'],
+    purposes,
     publication: {
       revisionId: input.publication.revisionId,
       checksum: input.publication.checksum,
@@ -49,3 +60,6 @@ export function freezeManagedOfficeBinding(input: {
   });
   return binding.success ? binding.data : undefined;
 }
+
+// Preserve existing callers and immutable Office fixtures.
+export const freezeManagedOfficeBinding = freezeManagedPythonBinding;

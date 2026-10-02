@@ -2,6 +2,13 @@
  * private VM, without network, host mounts or writable interpreter/checkers. */
 export const localPythonSupervisor = String.raw`
 import os, sys, json, time, subprocess, signal, selectors, hashlib, stat, shutil
+def png_report(raw,checksum):
+    if len(raw)>1024:raise ValueError('PNG_REPORT_LIMIT')
+    report=json.loads(raw.decode('utf-8','strict'))
+    if not isinstance(report,dict) or set(report)!=set(['checker','checksum','width','height']) or report['checker']!='pillow-11.3.0':raise ValueError('PNG_REPORT_INVALID')
+    if type(report['width']) is not int or type(report['height']) is not int or not 1<=report['width']<=8192 or not 1<=report['height']<=8192 or report['width']*report['height']>16000000:raise ValueError('PNG_REPORT_INVALID')
+    if report['checksum']!=checksum:raise ValueError('PNG_REPORT_VERSION_CHANGED')
+    return report
 ROOT='/tmp/work'
 with open(ROOT+'/.allrice/config.json',encoding='utf-8') as f: config=json.load(f)
 a=config['arguments']; limits=a['limits']; deadline=config['deadlineUnixMs']/1000
@@ -73,18 +80,26 @@ if reason=='exited' and exit_code==0:
             os.chown(path,0,0);os.chmod(path,0o400)
             checker='/opt/allrice/check_office.py' if a['purpose']=='office' else '/opt/allrice/check_png.py' if output['format']=='png' else None
             validation='dsh_office' if a['purpose']=='office' else 'trusted_png' if output['format']=='png' else 'utf8'
+            png_stdout=None
             if checker:
                 command=['/opt/python/bin/python','-I',checker]+([path] if a['purpose']=='office' else [])
                 with open(path,'rb') as content:
                     checked=subprocess.run(command,stdin=content if a['purpose']!='office' else subprocess.DEVNULL,
                         stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20,env={'PATH':env['PATH'],'LANG':'C.UTF-8'})
                 if checked.returncode:raise ValueError('VALIDATOR_FAILED: '+checked.stdout[-4000:].decode('utf-8','replace'))
+                if validation=='trusted_png':
+                    if len(checked.stdout)>1024:raise ValueError('PNG_REPORT_LIMIT')
+                    png_stdout=checked.stdout
             else:
                 with open(path,encoding='utf-8',errors='strict') as f:f.read()
             h=hashlib.sha256()
             with open(path,'rb') as f:
                 for chunk in iter(lambda:f.read(65536),b''):h.update(chunk)
-            artifacts.append(dict(output,sizeBytes=info.st_size,checksum='sha256:'+h.hexdigest(),validation=validation))
+            checksum='sha256:'+h.hexdigest()
+            png=png_report(png_stdout,checksum) if png_stdout is not None else None
+            artifact=dict(output,sizeBytes=info.st_size,checksum=checksum,validation=validation)
+            if png is not None:artifact['png']=png
+            artifacts.append(artifact)
     except Exception as error:
         if reason=='exited':reason='validation_failed'
         exit_code=1;artifacts=[]

@@ -88,6 +88,8 @@ export const RuntimeLocalPythonProfileSchema = z
     officeFormulaCalculation: z.literal(false),
     officePreview: z.literal(false),
     stopConfirmed: z.boolean(),
+    // Absent in old clients; only reported after the PNG contract probe passes.
+    pythonChartsContractVersion: z.literal(1).optional(),
   })
   .strict()
   .refine(
@@ -141,7 +143,7 @@ export const RuntimeLocalPythonPayloadSchema = z
           .max(100_000)
           .refine((v) => !v.includes('\0')),
         inputs: z.array(RuntimeLocalPythonInputSchema).max(16),
-        outputs: z.array(RuntimeLocalPythonOutputSchema).min(1).max(8),
+        outputs: z.array(RuntimeLocalPythonOutputSchema).max(8),
         profileVersion: z.literal(managedPythonProfileVersionV1),
         imageId: ChecksumSchema,
         architecture,
@@ -217,6 +219,17 @@ export type RuntimeLocalPythonPayload = z.infer<
   typeof RuntimeLocalPythonPayloadSchema
 >;
 
+/** Existing fixed Pillow checker report, bound again to actual bytes at publication. */
+export const RuntimeLocalPythonPngValidationSchema = z
+  .object({
+    checker: z.literal('pillow-11.3.0'),
+    checksum: ChecksumSchema,
+    width: z.number().int().min(1).max(8192),
+    height: z.number().int().min(1).max(8192),
+  })
+  .strict()
+  .refine((value) => value.width * value.height <= 16_000_000);
+
 /** Header metadata only; the receiving StoragePort independently hashes bytes. */
 export const RuntimeLocalPythonArtifactMetadataSchema = z
   .object({
@@ -224,6 +237,7 @@ export const RuntimeLocalPythonArtifactMetadataSchema = z
     sizeBytes: z.number().int().positive().max(8_000_000),
     mediaType: z.string().min(1).max(255),
     validation: z.enum(['dsh_office', 'trusted_png', 'utf8']),
+    png: RuntimeLocalPythonPngValidationSchema.optional(),
   })
   .strict();
 export type RuntimeLocalPythonArtifactMetadata = z.infer<
@@ -295,6 +309,7 @@ export const RuntimeLocalPythonResultSchema = z
           sizeBytes: z.number().int().positive().max(8_000_000),
           checksum: ChecksumSchema,
           validation: z.enum(['dsh_office', 'trusted_png', 'utf8']),
+          png: RuntimeLocalPythonPngValidationSchema.optional(),
           collected: z.literal(true),
         }).strict(),
       )

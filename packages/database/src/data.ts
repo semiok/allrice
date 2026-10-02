@@ -16,6 +16,7 @@ import {
   type Visibility,
 } from '@allrice/contracts';
 import { z } from 'zod';
+import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
@@ -135,15 +136,17 @@ function authorizeFile(
   if (!decision.allowed) throw new DataAccessError('authorization_denied');
 }
 
-async function audit(input: {
-  context: RequestContext;
-  workspaceId: string;
-  action: string;
-  resourceId: string;
-  decision: 'allowed' | 'denied' | 'recorded';
-  reason: string;
-}) {
-  const sql = getDatabase();
+async function audit(
+  input: {
+    context: RequestContext;
+    workspaceId: string;
+    action: string;
+    resourceId: string;
+    decision: 'allowed' | 'denied' | 'recorded';
+    reason: string;
+  },
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+) {
   await sql`
     insert into allrice_audit_events (
       organization_id, workspace_id, actor_id, action, resource_type,
@@ -160,6 +163,7 @@ async function audit(input: {
 export async function createStorageMetadata(
   context: RequestContext,
   input: unknown,
+  database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
   const metadata = CreateStorageMetadataSchema.parse(input);
   const owner = actorId(context);
@@ -173,8 +177,7 @@ export async function createStorageMetadata(
     category: metadata.category,
     objectId: metadata.id,
   });
-  const sql = getDatabase();
-  const row = await sql.begin(async (transaction) => {
+  const create = async (transaction: TransactionSql) => {
     await lockWorkspaceStorageQuota(
       transaction,
       context.organizationId,
@@ -224,24 +227,29 @@ export async function createStorageMetadata(
       returning *
     `;
     return rows[0];
-  });
+  };
+  const row =
+    'begin' in database ? await database.begin(create) : await create(database);
   if (!row) throw new Error('storage metadata creation failed');
-  await audit({
-    context,
-    workspaceId: metadata.workspaceId,
-    action: 'storage.create',
-    resourceId: metadata.id,
-    decision: 'allowed',
-    reason: 'owner_with_workspace_membership',
-  });
+  await audit(
+    {
+      context,
+      workspaceId: metadata.workspaceId,
+      action: 'storage.create',
+      resourceId: metadata.id,
+      decision: 'allowed',
+      reason: 'owner_with_workspace_membership',
+    },
+    database,
+  );
   return mapStoredFile(row);
 }
 
 export async function markStorageReady(
   context: RequestContext,
   objectId: string,
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
-  const sql = getDatabase();
   const rows = await sql<StorageObjectRow[]>`
     update allrice_storage_objects
     set state = 'ready', updated_at = now()
@@ -259,8 +267,8 @@ export async function markStorageReady(
 export async function abandonStorageMetadata(
   context: RequestContext,
   objectId: string,
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
-  const sql = getDatabase();
   await sql`
     update allrice_storage_objects
     set state = 'deleted', deleted_at = now(), updated_at = now()
@@ -271,8 +279,11 @@ export async function abandonStorageMetadata(
   `;
 }
 
-export async function getStoredFile(context: RequestContext, objectId: string) {
-  const sql = getDatabase();
+export async function getStoredFile(
+  context: RequestContext,
+  objectId: string,
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+) {
   const rows = await sql<StorageObjectRow[]>`
     select * from allrice_storage_objects
     where id = ${UuidSchema.parse(objectId)}
@@ -285,14 +296,17 @@ export async function getStoredFile(context: RequestContext, objectId: string) {
   try {
     authorizeFile(context, row, 'resource:read');
   } catch (error) {
-    await audit({
-      context,
-      workspaceId: row.workspace_id,
-      action: 'storage.read',
-      resourceId: row.id,
-      decision: 'denied',
-      reason: 'resource_policy_denied',
-    });
+    await audit(
+      {
+        context,
+        workspaceId: row.workspace_id,
+        action: 'storage.read',
+        resourceId: row.id,
+        decision: 'denied',
+        reason: 'resource_policy_denied',
+      },
+      sql,
+    );
     throw error;
   }
   return mapStoredFile(row);

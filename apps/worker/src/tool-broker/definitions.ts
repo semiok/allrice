@@ -3,6 +3,7 @@ import {
   OfficeExportSchema,
   NativeOfficeExportSchema,
   runtimeFeatureEnabled,
+  PythonExecuteArgsSchema,
 } from '@allrice/contracts';
 import {
   allRiceToolManifest,
@@ -36,6 +37,7 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
   'local.browser.workspace',
   'local.preview.open',
   'cloud.process.execute',
+  'python.execute',
   'cloud.mcp.call',
   'local.mcp.discover',
   'local.mcp.call',
@@ -115,6 +117,14 @@ export const riceToolDefinitions = [
     description:
       '代办应用连接与调用。action=connect 传 name、endpoint 自动连接并发现工具；action=list 查看已连接应用；action=status 传 connectionId 查看状态。公共服务无需凭据，登录只在专用表单完成，禁止在聊天或工具参数中传密钥。调用时用返回的 connectionId、tool、arguments；当前任务立即可用。具体操作按成员工作方式自动执行或请求确认，未知结果不得重发。',
     inputSchema: z.toJSONSchema(McpAgentInputSchema),
+  },
+  {
+    name: 'python.execute',
+    description:
+      '执行 Python 数据计算与中文图表，默认优先已就绪的电脑 Bridge，缺能力或离线时由云端补位。location 可选 auto/local/cloud；本地准备中或忙碌时等待，explicit local、本地限定输入及 unknown 结果不得改云端重跑。省略 language 表示 Python，固定无网络环境内读取精确 input 文件并生成已声明 output 文件，可无文件只返回计算结果。PNG 用可信 Pillow 检查后进入原成果预览、下载与版本；该原图可作为统一 Office Skill 的输入。不安装依赖、不传镜像或宿主路径。',
+    inputSchema: z.toJSONSchema(PythonExecuteArgsSchema, {
+      unrepresentable: 'any',
+    }),
   },
   {
     name: 'cloud.process.execute',
@@ -656,7 +666,7 @@ export function riceToolDefinitionsForCapabilities(
         (allowed?.has(definition.name) &&
           runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
-      (definition.name !== 'cloud.process.execute' ||
+      (!['cloud.process.execute', 'python.execute'].includes(definition.name) ||
         (allowed?.has(definition.name) &&
           runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'))) &&
