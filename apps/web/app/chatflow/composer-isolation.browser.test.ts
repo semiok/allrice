@@ -2157,11 +2157,18 @@ suite(
           await expect
             .poll(() => input.inputValue())
             .toBe('围绕蛋白质研究 🧬制定30天计划，再核对蛋白质研究 🧬。');
-          expect(
-            await input.evaluate((element: HTMLTextAreaElement) =>
-              element.value.slice(element.selectionStart, element.selectionEnd),
-            ),
-          ).toBe('蛋白质研究 🧬');
+          // Draft text commits before the next frame restores its focus/selection.
+          await expect
+            .poll(() =>
+              input.evaluate((element: HTMLTextAreaElement) => ({
+                focused: document.activeElement === element,
+                selected: element.value.slice(
+                  element.selectionStart,
+                  element.selectionEnd,
+                ),
+              })),
+            )
+            .toEqual({ focused: true, selected: '蛋白质研究 🧬' });
           expect(f.writes).toEqual([]);
           expect(f.errors).toEqual([]);
         } finally {
