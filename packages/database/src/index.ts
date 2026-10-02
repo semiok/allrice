@@ -92,6 +92,7 @@ export {
   type ManagedCloudEnvironmentReport,
 } from './tenant-employee-access.ts';
 export * from './organization-activity.ts';
+export * from './organization-dashboard.ts';
 
 export * from './execution-diagnostics.ts';
 export * from './operations-resources.ts';

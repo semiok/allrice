@@ -1,0 +1,59 @@
+.caption {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #aeb8c7;
+}
+.people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin: 16px 0;
+  color: #c6ccd5;
+}
+.people strong {
+  font-size: 20px;
+  color: #e9edf2;
+  margin-left: 6px;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin: 16px 0;
+}
+.metrics .metric {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  min-height: 115px;
+  gap: 8px;
+  padding: 16px;
+}
+.metric strong {
+  font-size: 28px;
+  line-height: 1.1;
+}
+.facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin: 20px 0;
+}
+.facts section {
+  border: 1px solid #363d48;
+  border-radius: 10px;
+  padding: 16px;
+  min-width: 0;
+}
+.facts h4 {
+  margin: 0 0 10px;
+}
+@media (max-width: 700px) {
+  .facts {
+    grid-template-columns: 1fr;
+  }
+  .metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

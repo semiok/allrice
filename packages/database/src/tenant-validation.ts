@@ -117,7 +117,7 @@ export async function inspectTenantRun(
     }[]
   >`select e.session_id,r.state,r.created_at,e.employee_version_id from allrice_employee_runs e
     join allrice_runs r on r.id=e.run_id and r.organization_id=e.organization_id and r.workspace_id=e.workspace_id and r.owner_id=e.owner_id
-    join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id and s.archived_at is null
+    join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id
     where e.run_id=${runId} and e.organization_id=${organizationId} and e.workspace_id=${workspaceId} and e.owner_id=${subjectId}`;
   if (!row) throw new DataAccessError('not_found');
   const timeline = await listDshRuntimeEventTimeline(row.session_id, {

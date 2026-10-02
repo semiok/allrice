@@ -293,7 +293,7 @@ export async function inspectTenantRunArtifacts(
     const [run] = await tx<
       { session_id: string }[]
     >`select e.session_id from allrice_employee_runs e
-      join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id and s.archived_at is null
+      join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id
       where e.run_id=${runId} and e.organization_id=${target.organizationId} and e.workspace_id=${target.workspaceId} and e.owner_id=${target.subjectId}`;
     if (!run) fail('artifact_not_found');
     const rows = await artifactRows(
