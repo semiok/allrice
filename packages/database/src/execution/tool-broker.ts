@@ -282,7 +282,13 @@ export async function assertToolBrokerSourceFile(
     source.objectId,
     tx,
   );
-  if (company) return { source, parentObjectId: undefined, derivation: true };
+  if (company)
+    return {
+      source,
+      parentObjectId: undefined,
+      derivation: true,
+      companyTemplate: true,
+    };
   const [version] = await tx<{ object_id: string; format: DeliveryFormat }[]>`
     select object_id,format from allrice_deliverable_versions
     where object_id=${source.objectId} and organization_id=${context.organizationId}
@@ -314,6 +320,7 @@ export async function assertToolBrokerSourceFile(
       : [];
   return {
     source,
+    companyTemplate: false,
     parentObjectId: derivation
       ? undefined
       : (version?.object_id ?? reuploadedParent?.object_id),
@@ -433,7 +440,7 @@ export async function registerToolBrokerExport(
       input.parentObjectId !== source.parentObjectId
     )
       throw new Error('source_file_changed');
-    const requestedParent = source?.derivation
+    const requestedParent = source?.companyTemplate
       ? undefined
       : (source?.parentObjectId ?? input.parentObjectId);
     const quotas = await transaction<

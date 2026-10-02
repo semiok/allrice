@@ -780,7 +780,7 @@ export async function publishWorkbenchArtifact(
         input.parentObjectId !== source.parentObjectId
       )
         fail('version_changed');
-      const parentObjectId = source?.derivation
+      const parentObjectId = source?.companyTemplate
         ? undefined
         : (source?.parentObjectId ?? input.parentObjectId);
       let derivedSource: WorkbenchArtifact | null = null;
