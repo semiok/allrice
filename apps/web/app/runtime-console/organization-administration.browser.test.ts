@@ -1,6 +1,6 @@
 import { GET as runtimeInventoryHttp } from '../api/v1/admin/runtime-console/route';
 import { GET as runtimeEventsHttp } from '../api/v1/admin/runtime-console/[sessionId]/events/route';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -19,9 +19,11 @@ import {
   createManagedOrganization,
   importOrganizationPeople,
   getEmployeeWorkspace,
+  inspectCompanyDeliverable,
 } from '@allrice/database';
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { organizationActivityHttp } from '../../lib/organization-administration/activity-http';
+import { companyDeliverablesHttp } from '../../lib/organization-administration/deliverables-http';
 import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
 import { organizationAdministrationHttp } from '../../lib/organization-administration/http';
 import { organizationAssignmentsHttp } from '../../lib/organization-administration/assignments-http';
@@ -125,14 +127,16 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                 ? await organizationActivityHttp(request)
                 : parts[4] === 'tenants' && parts[6] === 'validation'
                   ? await tenantValidationHttp(request, parts[5]!)
-                  : parts[6] === 'ai-employees'
-                    ? await organizationAssignmentsHttp(request, parts[5]!)
-                    : await organizationAdministrationHttp(
-                        request,
-                        parts[5],
-                        parts[7],
-                        action,
-                      );
+                  : parts[6] === 'deliverables'
+                    ? await companyDeliverablesHttp(request, parts[5]!)
+                    : parts[6] === 'ai-employees'
+                      ? await organizationAssignmentsHttp(request, parts[5]!)
+                      : await organizationAdministrationHttp(
+                          request,
+                          parts[5],
+                          parts[7],
+                          action,
+                        );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -519,6 +523,139 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         throw new Error(
           `${stage}: ${String(e)}; browser=${JSON.stringify(errors)}; server=${JSON.stringify(failures)}; page=${(await page.locator('body').innerText()).slice(0, 1600)}`,
         );
+      } finally {
+        await context.close();
+      }
+    },
+  );
+
+  it.each([1440, 390])(
+    'opens company files across archived work, fixes the chosen version and checks byte access (%i)',
+    async (width) => {
+      const a = await tenantValidationFixture(fixture.db),
+        b = await tenantValidationFixture(fixture.db);
+      const admin = (await authenticateSession(adminToken))!;
+      const original = await inspectCompanyDeliverable(
+        admin,
+        a.target.organizationId,
+        a.artifact.artifactId,
+        fixture.db,
+      );
+      const objectId = randomUUID(),
+        versionId = randomUUID(),
+        bytes = Buffer.from(
+          'Second immutable company version.\n' +
+            Array.from({ length: 5001 }, (_, i) => `row ${i}`).join('\n') +
+            '\nLAST_NATIVE_PAGE',
+        ),
+        checksum = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+      const object = {
+        ...original.object,
+        id: objectId,
+        key: original.object.key.replace(original.object.id, objectId),
+        checksum,
+        sizeBytes: bytes.length,
+      };
+      await assistantFixtureStorage(fixture.db).put(
+        object,
+        new Blob([bytes]).stream(),
+      );
+      await fixture.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable) values(${objectId},${object.organizationId},${object.workspaceId},${object.ownerId},${object.key},'artifacts',${object.mediaType},${object.sizeBytes},${checksum},'ready',true)`;
+      await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,parent_version_id,session_id,file_name,format) values(${versionId},${object.organizationId},${object.workspaceId},${object.ownerId},${objectId},${original.version.seriesId},2,${original.version.id},${a.task.chatSessionId},'company-v2.txt','text')`;
+      await fixture.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest) select ${versionId},organization_id,workspace_id,owner_id,run_id,kind,provenance,${randomUUID()},${checksum} from allrice_workbench_artifacts where version_id=${a.artifact.artifactId}`;
+      await fixture.db`update allrice_chat_sessions set archived_at=now() where id=${a.task.chatSessionId}`;
+      const context = await browser.newContext({
+        viewport: { width, height: 900 },
+      });
+      context.setDefaultTimeout(6000);
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage(),
+        errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      try {
+        await page.clock.install();
+        await page.goto(`${origin}/runtime-console?view=activity`);
+        await page
+          .getByLabel('公司', { exact: true })
+          .selectOption(a.target.organizationId);
+        const library = page.getByRole('region', {
+          name: '公司交付成果',
+          exact: true,
+        });
+        await library
+          .getByRole('row')
+          .filter({ hasText: 'company-v2.txt' })
+          .getByRole('button', { name: '查看成果', exact: true })
+          .click();
+        const dialog = page.getByRole('dialog', {
+            name: '公司成果预览',
+            exact: true,
+          }),
+          preview = dialog.getByRole('region', {
+            name: '固定版本成果预览',
+            exact: true,
+          });
+        await expect
+          .poll(() => preview.innerText())
+          .toContain('Second immutable company version.');
+        await dialog
+          .getByRole('button', { name: '加载更多内容', exact: true })
+          .click();
+        await expect
+          .poll(() => preview.innerText())
+          .toContain('LAST_NATIVE_PAGE');
+        await dialog.getByText('文件来源与质量', { exact: true }).click();
+        await expect.poll(() => preview.innerText()).toContain(checksum);
+        await dialog
+          .getByLabel('成果版本', { exact: true })
+          .selectOption(a.artifact.artifactId);
+        await expect
+          .poll(() => preview.innerText())
+          .toContain('Isolated fixture, not a real model answer.');
+        const link = await dialog
+          .getByRole('link', { name: '下载原文件', exact: true })
+          .getAttribute('href');
+        const response = await context.request.get(`${origin}${link}`);
+        expect(response.status()).toBe(200);
+        expect(await response.text()).toContain(
+          'Isolated fixture, not a real model answer.',
+        );
+        expect(
+          (
+            await context.request.get(
+              `${origin}${link!.replace(a.artifact.artifactId, b.artifact.artifactId)}`,
+            )
+          ).status(),
+        ).toBe(404);
+        await preview.evaluate((e) =>
+          e.setAttribute('data-fixed-version', 'yes'),
+        );
+        await page.clock.runFor(15001);
+        expect(await page.locator('[data-fixed-version="yes"]').count()).toBe(
+          1,
+        );
+        expect(
+          await dialog.getByLabel('成果版本', { exact: true }).inputValue(),
+        ).toBe(a.artifact.artifactId);
+        const box = await dialog.boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+        await page.screenshot({
+          path: `.local/met161/company-library-${width}.png`,
+          fullPage: true,
+        });
+        await dialog
+          .getByRole('button', { name: '查看来源工作', exact: true })
+          .click();
+        await page
+          .getByRole('dialog', { name: '成果来源工作', exact: true })
+          .getByRole('region', { name: '真实任务检查结果', exact: true })
+          .waitFor();
+        await page.keyboard.press('Escape');
+        expect(errors).toEqual([]);
+        expect(failures).toEqual([]);
       } finally {
         await context.close();
       }

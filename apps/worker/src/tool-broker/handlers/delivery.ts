@@ -270,6 +270,14 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       callId: input.call.id,
       fileName,
       ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
+      ...(checked
+        ? {
+            officeReceipt: {
+              quality: checked.quality,
+              warnings: checked.warnings,
+            },
+          }
+        : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
@@ -381,6 +389,14 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       fileName,
       format,
       ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
+      ...(checked
+        ? {
+            officeReceipt: {
+              quality: checked.quality,
+              warnings: checked.warnings,
+            },
+          }
+        : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),

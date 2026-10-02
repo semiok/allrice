@@ -1,6 +1,6 @@
 # Company workbench
 
-Status: MET165 PR1 implemented; Dev delivery evidence is recorded separately.
+Status: MET165 PR1/PR2 implemented; Dev delivery evidence is recorded separately.
 Owner: AllRice. Issue: [MET165](https://linear.app/metasnowsky/issue/MET-165).
 
 The administration “公司看板” opens a company-wide work overview. A compact
@@ -56,6 +56,20 @@ administrator sessions. Browser checks exercise desktop/mobile filtering,
 detail retention, previews, downloads and ordinary-account denial against
 the real HTTP handlers and isolated database.
 
-PR2 adds the company deliverable library and native preview. PR3/PR4 add
+The company library reads immutable business versions through
+`GET /api/v1/admin/organizations/:organizationId/deliverables`. It uses the
+same source and filters as the overview, selects the latest available version
+of each series, and provides version history, original download and recorded
+source work. Missing legacy Run/AI provenance stays unknown. Expired, deleted
+or archived-workspace files are not offered as readable. Each preview/download
+rechecks the actual administrator before and after storage IO. The library
+uses existing DSH dialogs and native document previews, with no periodic file
+reload, private-owner impersonation or changes to source bytes.
+Native text continuation uses the same direct preview shape. A separate metadata
+read shows exact object checksums, recorded source-file identity and exporter
+quality. New exporter receipts are appended within version registration; legacy
+quality remains unrecorded. This does not rerun or replace the native checker.
+
+PR3/PR4 add
 explicitly published company rules/templates and immutable Run references.
 ROI estimation and model-generated recommendations belong to later rounds.

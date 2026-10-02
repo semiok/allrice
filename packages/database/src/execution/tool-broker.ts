@@ -6,10 +6,12 @@ import {
   DeliverableVersionSchema,
   DeliveryFormatSchema,
   ObjectKeySchema,
+  OfficeDeliveryReceiptSchema,
   UuidSchema,
   authorizeExecution,
   makeObjectKey,
   type DeliveryFormat,
+  type OfficeDeliveryReceipt,
   type ArtifactSourceFile,
   type ExecutionContext,
   type RequestContext,
@@ -297,6 +299,7 @@ export async function registerToolBrokerExport(
     platformTestRunId?: string;
     parentObjectId?: string;
     sourceFile?: ArtifactSourceFile;
+    officeReceipt?: OfficeDeliveryReceipt;
     fileName: string;
     format: DeliveryFormat;
     changeSummary?: string;
@@ -495,6 +498,11 @@ export async function registerToolBrokerExport(
         'deliverable_version', ${versions[0]!.id}, 'recorded', ${source.derivation ? 'source_file_derivation' : 'source_file_copy'},
         ${transaction.json({ sourceFile: source.source, objectId: input.object.id, runId: input.context.runId })})
     `;
+    if (input.officeReceipt) {
+      const receipt = OfficeDeliveryReceiptSchema.parse(input.officeReceipt);
+      await transaction`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+        values(${input.context.organizationId},${workspaceId},${ownerId},'artifact.office-quality','deliverable_version',${versions[0]!.id},'recorded','actual_exporter_receipt',${transaction.json({ objectId: input.object.id, checksum: input.object.checksum, runId: input.context.runId, receipt })})`;
+    }
     return {
       id: versions[0]!.id,
       seriesId: versions[0]!.series_id,

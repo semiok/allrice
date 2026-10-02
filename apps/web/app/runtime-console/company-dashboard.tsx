@@ -7,6 +7,7 @@ import type {
 } from '@allrice/contracts';
 import { useActivityPages } from './organization-activity-data';
 import { CompanyWorkList } from './company-work-list';
+import { CompanyDeliverableLibrary } from './company-deliverables';
 import styles from './tenant-administration.module.css';
 import css from './company-dashboard.module.css';
 
@@ -348,6 +349,10 @@ export function CompanyDashboard({
         scopeQuery={scopeQuery}
         automatic={automatic && current > 0}
         requested={requested}
+      />
+      <CompanyDeliverableLibrary
+        organizationId={organizationId}
+        scopeQuery={scopeQuery}
       />
     </section>
   );

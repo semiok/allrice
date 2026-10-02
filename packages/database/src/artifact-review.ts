@@ -12,7 +12,10 @@ import {
   UuidSchema,
   runtimeContractEqual,
   WorkbenchCursorSchema,
+  ArtifactSourceFileSchema,
+  OfficeDeliveryReceiptSchema,
   type ArtifactSourceFile,
+  type OfficeDeliveryReceipt,
   type WorkbenchArtifact,
   type ReviewDraftInput,
   type ExecutionContext,
@@ -22,6 +25,11 @@ import {
   type DeliveryFormat,
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
+import { businessDeliverablePredicate } from './organization-dashboard.ts';
+import {
+  requireTenantAdministrationAuthority,
+  requireTenantAdministrationTarget,
+} from './tenant-administration.ts';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
@@ -319,6 +327,76 @@ export async function inspectTenantRunArtifacts(
     };
   });
 }
+/** Company file inspection keeps the issuer's own identity. Unlike Run-specific
+ * inspection, legacy files may have no recorded originating Run. */
+export async function inspectCompanyDeliverable(
+  issuer: RequestContext,
+  organizationInput: string,
+  artifactInput: string,
+  db: Database = getDatabase(),
+) {
+  const organizationId = UuidSchema.parse(organizationInput),
+    artifactId = UuidSchema.parse(artifactInput);
+  return db.begin(async (tx) => {
+    await requireTenantAdministrationAuthority(issuer, tx);
+    await requireTenantAdministrationTarget(tx, organizationId, null);
+    const [row] = await tx<
+      { workspace_id: string; owner_id: string; session_id: string }[]
+    >`
+      select dv.workspace_id,dv.owner_id,dv.session_id from allrice_deliverable_versions dv
+      left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
+      where dv.id=${artifactId} and dv.organization_id=${organizationId} and dv.session_id is not null and dv.platform_test_run_id is null
+        and exists(select 1 from allrice_employee_runs er where er.organization_id=dv.organization_id and er.workspace_id=dv.workspace_id and er.owner_id=dv.owner_id and er.session_id=dv.session_id
+          and (a.run_id is null or a.run_id=er.run_id) and not exists(select 1 from allrice_assistant_instances ai where ai.run_id=er.run_id and ai.run_id<>ai.root_run_id))
+        and ${businessDeliverablePredicate(tx)}`;
+    if (!row) fail('artifact_not_found');
+    await requireTenantInspectionScope(
+      issuer,
+      {
+        organizationId,
+        workspaceId: row.workspace_id,
+        subjectId: row.owner_id,
+      },
+      tx,
+    );
+    const [artifactRow] = await artifactRows(
+      tx,
+      { organizationId, workspaceId: row.workspace_id, ownerId: row.owner_id },
+      row.session_id,
+      artifactId,
+      1,
+    );
+    if (!artifactRow) fail('artifact_not_found');
+    const artifact = mapArtifact(artifactRow);
+    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+      values(${organizationId},${row.workspace_id},${issuer.actor.id},'company.deliverable.inspected','artifact',${artifactId},'recorded','read_only_company_delivery',${tx.json({ subjectId: row.owner_id, sessionId: row.session_id, readOnly: true })})`;
+    const sourceRows =
+      await tx`select action,metadata from allrice_audit_events where organization_id=${organizationId} and workspace_id=${row.workspace_id}
+      and actor_id=${row.owner_id} and resource_type='deliverable_version' and resource_id=${artifactId} and action in ('artifact.source','artifact.office-quality') order by occurred_at desc,id desc limit 10`;
+    const source = ArtifactSourceFileSchema.safeParse(
+      sourceRows.find((r) => r.action === 'artifact.source')?.metadata
+        ?.sourceFile,
+    );
+    const receiptRow = sourceRows.find(
+      (r) =>
+        r.action === 'artifact.office-quality' &&
+        r.metadata?.objectId === artifact.object.id &&
+        r.metadata?.checksum === artifact.object.checksum,
+    );
+    const office = OfficeDeliveryReceiptSchema.safeParse(
+      receiptRow?.metadata?.receipt,
+    );
+    return {
+      ...artifact,
+      companyEvidence: {
+        objectId: artifact.object.id,
+        checksum: artifact.object.checksum,
+        sourceFile: source.success ? source.data : null,
+        office: office.success ? office.data : null,
+      },
+    };
+  });
+}
 export async function readArtifactBytes(
   storage: StoragePort,
   object: StorageObject,
@@ -579,6 +657,7 @@ export async function publishWorkbenchArtifact(
     mediaType: string;
     parentObjectId?: string;
     sourceFile?: ArtifactSourceFile;
+    officeReceipt?: OfficeDeliveryReceipt;
     changeSummary?: string;
     /** Server-only provider receipt and exact worker lease, never model arguments. */
     trustedImageOperation?: { id: string; leaseToken: string };
@@ -804,6 +883,9 @@ export async function publishWorkbenchArtifact(
           fileName: input.fileName,
           format: input.format,
           object: created,
+          ...(input.officeReceipt
+            ? { officeReceipt: input.officeReceipt }
+            : {}),
           ...(source ? { sourceFile: source.source } : {}),
           ...(parentObjectId ? { parentObjectId } : {}),
           ...(input.changeSummary

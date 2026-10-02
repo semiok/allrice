@@ -166,6 +166,52 @@ describe('Office-to-PDF in the existing export publisher', () => {
   beforeEach(() => {
     vi.resetAllMocks();
   });
+  it.each(['checked', 'unavailable'] as const)(
+    'passes only the real %s Office checker receipt to immutable publication',
+    async (status) => {
+      const { input, args } = setup();
+      delete args.officePdf;
+      delete args.location;
+      args.format = 'docx';
+      args.office = {};
+      args.officeReceipt = { quality: { status: 'checked', pageCount: 9999 } };
+      mocks.legacy.mockResolvedValue({
+        bytes: original,
+        mediaType: officeMediaTypes.docx,
+        extension: '.docx',
+      });
+      const quality =
+        status === 'checked'
+          ? {
+              status,
+              format: 'docx',
+              pageCount: 2,
+              formulaCount: 0,
+              formulaErrorCount: 0,
+              layout: 'rendered_not_visually_reviewed',
+            }
+          : { status, reason: 'Checker not available' };
+      mocks.quality.mockResolvedValue({
+        bytes: original,
+        quality,
+        warnings: ['Business review remains required'],
+      });
+      await createWorkspaceExport({ input, arguments: args });
+      expect(mocks.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bytes: original,
+          officeReceipt: {
+            quality,
+            warnings: ['Business review remains required'],
+          },
+        }),
+        expect.anything(),
+      );
+      expect(
+        mocks.publish.mock.calls[0]![0].officeReceipt.quality.pageCount,
+      ).not.toBe(9999);
+    },
+  );
 
   it('publishes unchanged DSH PDF bytes and forwards source, fonts and actual service location', async () => {
     const { input, args, officePdf, output } = setup();

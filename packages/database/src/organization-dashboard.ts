@@ -6,6 +6,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import type { TransactionSql } from 'postgres';
 import { DataAccessError } from './data.ts';
 import { getManagedOrganization } from './organization-administration.ts';
 
@@ -65,7 +66,7 @@ export function organizationWorkSource(
 
 /** Explicit business deliveries plus compatible legacy documents. Tool paging,
  * raw command output and browser evidence are not business delivery counts. */
-export function businessDeliverablePredicate(db: Database) {
+export function businessDeliverablePredicate(db: Database | TransactionSql) {
   return db`(
     (a.version_id is not null and a.kind in ('document','plan','file'))
     or (a.version_id is null and not (
@@ -127,11 +128,12 @@ export async function readOrganizationDashboard(
     ${source}`;
   const [deliveries] = await db<Record<string, number>[]>`
     with scoped_runs as (select r.id,r.workspace_id,r.owner_id,er.session_id ${source})
-    select count(distinct dv.series_id) filter(where o.state='ready' and o.deleted_at is null
+    select count(distinct dv.series_id) filter(where o.state='ready' and o.deleted_at is null and w.archived_at is null
         and (o.retention_until is null or o.retention_until>clock_timestamp()))::int as available,
       count(distinct dv.series_id) filter(where dv.version=1 and dv.created_at>=${period.from}::timestamptz and dv.created_at<${period.to}::timestamptz)::int as first_deliveries,
       count(distinct dv.series_id) filter(where dv.version>1 and dv.created_at>=${period.from}::timestamptz and dv.created_at<${period.to}::timestamptz)::int as revisions
     from allrice_deliverable_versions dv
+    join allrice_workspaces w on w.id=dv.workspace_id and w.organization_id=dv.organization_id
     join allrice_storage_objects o on o.id=dv.object_id and o.organization_id=dv.organization_id and o.workspace_id=dv.workspace_id and o.owner_id=dv.owner_id
     left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
     where dv.organization_id=${organizationId} and dv.session_id is not null and dv.platform_test_run_id is null
