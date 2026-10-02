@@ -54,8 +54,8 @@ export async function readTaskNextSteps(
         : [];
       const errors = run
         ? await tx<
-            { reason: string }[]
-          >`select distinct reason from allrice_audit_events where organization_id=${context.organizationId} and workspace_id=${input.workspaceId} and actor_id=${context.actor.id} and action='tool.execute' and decision='denied' and metadata->>'runId'=${run.id} order by reason limit 20`
+            { error_code: string }[]
+          >`select distinct metadata->>'errorCode' as error_code from allrice_audit_events where organization_id=${context.organizationId} and workspace_id=${input.workspaceId} and actor_id=${context.actor.id} and action='tool.execute' and decision='denied' and metadata->>'runId'=${run.id} and metadata->>'errorCode' is not null order by error_code limit 20`
         : [];
       const readable = run
         ? await tx<
@@ -71,7 +71,7 @@ export async function readTaskNextSteps(
         manifest: EmployeeManifestSchema.parse(employee.manifest),
         run,
         unknown: !!unknown.length,
-        errorCodes: errors.map((e) => e.reason),
+        errorCodes: errors.map((e) => e.error_code),
         artifacts: [],
         visibility: Object.fromEntries(
           readable.map((o) => [o.id, o.visibility]),

@@ -80,6 +80,21 @@ suite(
         )[0]?.role,
       ).toBe('member');
     });
+    it('uses the persisted tool errorCode rather than the lower-case audit reason', async () => {
+      const { a, input } = await fixture();
+      await f.db`update allrice_runs set state='failed',error_code=null where id=${a.task.runId}`;
+      await f.db`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata) values(${a.context.organizationId},${input.workspaceId},${a.context.actor.id},'tool.execute','run',${a.task.runId},'denied','source_unavailable',${a.context.requestId},${f.db.json({ runId: a.task.runId, errorCode: 'TOOL_FILE_NOT_FOUND' })})`;
+      const result = await readTaskNextSteps(a.context, input, f.db);
+      expect(
+        result.suggestions.some((s) => s.task.id === 'prepare-files'),
+      ).toBe(true);
+      await f.db`update allrice_audit_events set metadata=${f.db.json({ runId: a.task.runId })} where action='tool.execute' and resource_id=${a.task.runId}`;
+      expect(
+        (await readTaskNextSteps(a.context, input, f.db)).suggestions.some(
+          (s) => s.task.id === 'prepare-files',
+        ),
+      ).toBe(false);
+    });
     it('rejects another member, tenant/workspace, Session assignment and outdated next-turn version', async () => {
       const { a, input } = await fixture(),
         foreign = await fixture();
