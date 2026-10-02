@@ -174,6 +174,41 @@ describe('company template UI publication and fixed revision boundaries', () => 
       vi.unstubAllGlobals();
     }
   });
+  it.each([403, 404])(
+    'keeps a %i denial but uses company-content wording without retrying',
+    async (status) => {
+      const code =
+        status === 404 ? 'RESOURCE_NOT_FOUND' : 'AUTHORIZATION_DENIED';
+      const fetch = vi.fn(async () =>
+        Response.json(
+          {
+            error: {
+              code,
+              message: status === 404 ? 'Run not found' : 'Access denied',
+            },
+          },
+          { status },
+        ),
+      );
+      vi.stubGlobal('fetch', fetch);
+      try {
+        await expect(
+          companyAssetJson(
+            '/api/v1/company-assets?assetId=withdrawn&history=1',
+            {},
+          ),
+        ).rejects.toMatchObject({
+          status,
+          code,
+          message:
+            '当前公司资料不可访问，可能已撤回或权限已变更，请刷新后核对。',
+        });
+        expect(fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    },
+  );
   it('keeps a CAS conflict explicit and does not retry the mutation', async () => {
     const fetch = vi.fn(async () =>
       Response.json(
