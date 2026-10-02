@@ -1,0 +1,374 @@
+{
+  "schemaVersion": 1,
+  "authoredTruth": "Hard-coded synthetic source, never inferred from parser output",
+  "sourceRows": [
+    {
+      "id": "00123",
+      "date": "2026-09-30",
+      "category": "办公费用",
+      "amountRaw": "1250.50",
+      "amount": 1250.5,
+      "note": "有效金额"
+    },
+    {
+      "id": "00456",
+      "date": "2026-10-01",
+      "category": "退款冲销",
+      "amountRaw": "-200.00",
+      "amount": -200,
+      "note": "负数保留"
+    },
+    {
+      "id": "00789",
+      "date": "2026-10-01",
+      "category": "科研材料金额缺失",
+      "amountRaw": "—",
+      "amount": null,
+      "note": "缺失不是零"
+    },
+    {
+      "id": "00999",
+      "date": "2026-10-02",
+      "category": "较长中文分类名称的资料整理费用",
+      "amountRaw": "350.00",
+      "amount": 350,
+      "note": "长中文文本"
+    }
+  ],
+  "columns": [
+    "编号",
+    "日期",
+    "类别",
+    "金额（元）",
+    "备注"
+  ],
+  "expectedTotals": {
+    "valid": 3,
+    "missing": 1,
+    "total": 1400.5
+  },
+  "fixtures": [
+    {
+      "fixtureId": "01-chinese-multipage-digital",
+      "fileName": "01-chinese-multipage-digital.pdf",
+      "sourceChecksum": "sha256:be7ad18d5d5289ea302ac061974f240e8978085d9af4a071bb707b589bb68e46",
+      "pageCount": 3,
+      "mode": "digital-text",
+      "pages": [
+        {
+          "pageNumber": 1,
+          "requiredText": [
+            "中文多页经营摘录：第一页",
+            "00123",
+            "2026-09-30",
+            "1250.50",
+            "青松办公室"
+          ]
+        },
+        {
+          "pageNumber": 2,
+          "requiredText": [
+            "00456",
+            "2026-10-01",
+            "-200.00",
+            "00789",
+            "不能填零",
+            "星河实验室"
+          ]
+        },
+        {
+          "pageNumber": 3,
+          "requiredText": [
+            "00999",
+            "2026-10-02",
+            "350.00",
+            "1400.50",
+            "远山资料室"
+          ]
+        }
+      ],
+      "selectedPageProbe": {
+        "requested": [
+          2
+        ],
+        "returned": [
+          2
+        ],
+        "mustNotReturn": [
+          1,
+          3
+        ]
+      }
+    },
+    {
+      "fixtureId": "02-ruled-invoice-table",
+      "fileName": "02-ruled-invoice-table.pdf",
+      "sourceChecksum": "sha256:8c3e580baf3f8b390bf5d5364150f2bd822bb8aaee4ad7dc7cc376b5d4d48c0d",
+      "pageCount": 1,
+      "mode": "detected-grid",
+      "tables": [
+        {
+          "pageNumber": 1,
+          "tableIndex": 0,
+          "matrix": [
+            [
+              "编号",
+              "日期",
+              "类别",
+              "金额（元）",
+              "备注"
+            ],
+            [
+              "00123",
+              "2026-09-30",
+              "办公费用",
+              "1250.50",
+              "有效金额"
+            ],
+            [
+              "00456",
+              "2026-10-01",
+              "退款冲销",
+              "-200.00",
+              "负数保留"
+            ],
+            [
+              "00789",
+              "2026-10-01",
+              "科研材料金额缺失",
+              "—",
+              "缺失不是零"
+            ],
+            [
+              "00999",
+              "2026-10-02",
+              "较长中文分类名称的资料整理费用",
+              "350.00",
+              "长中文文本"
+            ]
+          ],
+          "sourceRows": [
+            "00123",
+            "00456",
+            "00789",
+            "00999"
+          ]
+        }
+      ],
+      "expectedNumeric": {
+        "valid": 3,
+        "missing": 1,
+        "total": 1400.5,
+        "leadingZeroIds": [
+          "00123",
+          "00456",
+          "00789",
+          "00999"
+        ]
+      }
+    },
+    {
+      "fixtureId": "03-cross-page-ruled-table",
+      "fileName": "03-cross-page-ruled-table.pdf",
+      "sourceChecksum": "sha256:d7e9e1bc11964d6b55c114e51e2836404daab5745e67883948f6b9930ab69945",
+      "pageCount": 2,
+      "mode": "page-fragments",
+      "manualContinuationId": "SYNTH-TABLE-001",
+      "automaticCrossPageMergeSupported": false,
+      "tables": [
+        {
+          "pageNumber": 1,
+          "tableIndex": 0,
+          "matrix": [
+            [
+              "编号",
+              "日期",
+              "类别",
+              "金额（元）",
+              "备注"
+            ],
+            [
+              "00123",
+              "2026-09-30",
+              "办公费用",
+              "1250.50",
+              "有效金额"
+            ],
+            [
+              "00456",
+              "2026-10-01",
+              "退款冲销",
+              "-200.00",
+              "负数保留"
+            ]
+          ],
+          "sourceRows": [
+            "00123",
+            "00456"
+          ]
+        },
+        {
+          "pageNumber": 2,
+          "tableIndex": 0,
+          "matrix": [
+            [
+              "编号",
+              "日期",
+              "类别",
+              "金额（元）",
+              "备注"
+            ],
+            [
+              "00789",
+              "2026-10-01",
+              "科研材料金额缺失",
+              "—",
+              "缺失不是零"
+            ],
+            [
+              "00999",
+              "2026-10-02",
+              "较长中文分类名称的资料整理费用",
+              "350.00",
+              "长中文文本"
+            ]
+          ],
+          "sourceRows": [
+            "00789",
+            "00999"
+          ]
+        }
+      ],
+      "expectedWarning": "cross_page_unmerged",
+      "expectedNumericAfterExplicitTraceableJoin": {
+        "valid": 3,
+        "missing": 1,
+        "total": 1400.5,
+        "excludeRepeatedHeaders": true
+      }
+    },
+    {
+      "fixtureId": "04-scanned-image-only",
+      "fileName": "04-scanned-image-only.pdf",
+      "sourceChecksum": "sha256:875d785772f747c3c232a79e528cd5f8cf906ec029599dc990a4432c61cb06ef",
+      "pageCount": 2,
+      "mode": "unsupported-no-text-layer",
+      "expectedTextLayerCharacters": 0,
+      "expectedDetectedTables": 0,
+      "expectedWarning": "no_text_layer",
+      "visibleSource": {
+        "fixture": "01-chinese-multipage-digital.pdf",
+        "sourcePhysicalPages": [
+          1,
+          2
+        ]
+      },
+      "mustNotClaim": [
+        "OCR supported",
+        "amounts verified",
+        "empty parse is successful extraction"
+      ]
+    },
+    {
+      "fixtureId": "05-password-protected",
+      "fileName": "05-password-protected.pdf",
+      "sourceChecksum": "sha256:f191e82db5316eb28e4d8b428e144d191842c3e64ec40da737d6f572b300e820",
+      "pageCount": 1,
+      "mode": "unsupported-password-required",
+      "expectedWarning": "password_required",
+      "syntheticTestPassword": "met166-fixture-open",
+      "passwordClassification": "public synthetic fixture password; no account credentials",
+      "authorizedProbe": {
+        "requiredText": [
+          "ENC001",
+          "2026-10-02",
+          "88.80"
+        ]
+      },
+      "mustNotClaimWithoutPassword": [
+        "malformed PDF",
+        "amount 88.80 verified",
+        "empty success"
+      ]
+    },
+    {
+      "fixtureId": "06-borderless-layout",
+      "fileName": "06-borderless-layout.pdf",
+      "sourceChecksum": "sha256:d87c7ab177b4ece608b165b6a1c3c228533047b5940d3cb0685fe57c7c76228e",
+      "pageCount": 1,
+      "mode": "text-only-table-uncertain",
+      "expectedDetectedTables": 0,
+      "requiredText": [
+        "00123",
+        "00456",
+        "00789",
+        "00999",
+        "1250.50",
+        "-200.00",
+        "350.00"
+      ],
+      "manualVisualMatrix": [
+        [
+          "编号",
+          "日期",
+          "类别",
+          "金额（元）",
+          "备注"
+        ],
+        [
+          "00123",
+          "2026-09-30",
+          "办公费用",
+          "1250.50",
+          "有效金额"
+        ],
+        [
+          "00456",
+          "2026-10-01",
+          "退款冲销",
+          "-200.00",
+          "负数保留"
+        ],
+        [
+          "00789",
+          "2026-10-01",
+          "科研材料金额缺失",
+          "—",
+          "缺失不是零"
+        ],
+        [
+          "00999",
+          "2026-10-02",
+          "较长中文分类名称的资料整理费用",
+          "350.00",
+          "长中文文本"
+        ]
+      ],
+      "expectedWarning": "table_not_detected",
+      "mustNotClaim": [
+        "lossless structured table extraction",
+        "automatic columns confirmed"
+      ]
+    }
+  ],
+  "sourceBinding": {
+    "fixtureChecksums": "Exact immutable input bytes; map to actual authorized StorageObject ID and checksum at QA upload",
+    "uploadedObjectIds": null,
+    "artifactVersionIds": null,
+    "noInventedIds": true
+  },
+  "reportConversion": {
+    "input": "07-report-source.docx",
+    "provider": "existing DSH Office-to-PDF via @allrice/office-runtime/preview",
+    "notExecutedHere": true,
+    "expectedPages": 2,
+    "requiredText": [
+      "合成中文费用报告",
+      "1400.50",
+      "来源与限制",
+      "缺失金额"
+    ],
+    "actualPagesAndMissingFontsMustBeVerified": true,
+    "mustPublishCompletePdfBytesAsArtifact": true
+  }
+}

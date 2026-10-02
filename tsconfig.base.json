@@ -20,6 +20,9 @@
       "@allrice/office-runtime": ["packages/office-runtime/src/index.ts"],
       "@allrice/office-runtime/preview": [
         "packages/office-runtime/src/preview.ts"
+      ],
+      "@allrice/office-runtime/pdf-reader": [
+        "packages/office-runtime/src/pdf-reader.ts"
       ]
     },
     "resolveJsonModule": true,

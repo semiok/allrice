@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "syntheticOnly": true,
+  "authoredTruth": "Hard-coded synthetic source, never inferred from parser output",
+  "files": [
+    {
+      "fileName": "01-chinese-multipage-digital.pdf",
+      "bytes": 77885,
+      "checksum": "sha256:be7ad18d5d5289ea302ac061974f240e8978085d9af4a071bb707b589bb68e46",
+      "mediaType": "application/pdf"
+    },
+    {
+      "fileName": "02-ruled-invoice-table.pdf",
+      "bytes": 76295,
+      "checksum": "sha256:8c3e580baf3f8b390bf5d5364150f2bd822bb8aaee4ad7dc7cc376b5d4d48c0d",
+      "mediaType": "application/pdf"
+    },
+    {
+      "fileName": "03-cross-page-ruled-table.pdf",
+      "bytes": 78383,
+      "checksum": "sha256:d7e9e1bc11964d6b55c114e51e2836404daab5745e67883948f6b9930ab69945",
+      "mediaType": "application/pdf"
+    },
+    {
+      "fileName": "04-scanned-image-only.pdf",
+      "bytes": 51643,
+      "checksum": "sha256:875d785772f747c3c232a79e528cd5f8cf906ec029599dc990a4432c61cb06ef",
+      "mediaType": "application/pdf"
+    },
+    {
+      "fileName": "05-password-protected.pdf",
+      "bytes": 67867,
+      "checksum": "sha256:f191e82db5316eb28e4d8b428e144d191842c3e64ec40da737d6f572b300e820",
+      "mediaType": "application/pdf"
+    },
+    {
+      "fileName": "06-borderless-layout.pdf",
+      "bytes": 79490,
+      "checksum": "sha256:d87c7ab177b4ece608b165b6a1c3c228533047b5940d3cb0685fe57c7c76228e",
+      "mediaType": "application/pdf"
+    }
+  ],
+  "expectedSourceChecksum": "sha256:2dfc344304c017db6a7a7ab37754a6fb09f47421e41c4c5d2c6ea36289088692",
+  "provenance": {
+    "generator": "pdfkit 0.17.2",
+    "font": {
+      "family": "NotoSansCJKsc-Regular",
+      "checksum": "sha256:b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a",
+      "licenseFile": "FONT-LICENSE.txt",
+      "sourceImage": "sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e"
+    },
+    "originalGenerationSourceChecksum": "sha256:a543178eabd439fc2ddc85a45eb44484f53971be8b297f4e05c6c2123286d89a",
+    "scannedFixture": "Image-only rendering of digital fixture physical pages 1 and 2; no text layer"
+  },
+  "scope": "Six immutable synthetic PDFs and independently authored expectations; no accounts, business records, object IDs or parser-derived expectations"
+}

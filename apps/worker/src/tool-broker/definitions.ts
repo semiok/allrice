@@ -161,16 +161,24 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.document.read',
     description:
-      '按文件 ID 解析当前工作区内有权访问的 PDF、DOCX、XLSX、PPTX 或常见文本，返回带页码、幻灯片或工作表定位的内容。',
+      '按文件 ID 解析当前工作区内有权访问的 PDF、DOCX、XLSX、PPTX 或常见文本，返回来源与页码、幻灯片或工作表定位。PDF 每次最多读取 10 页，按 nextPages 继续，不确定结果保留告警。',
     inputSchema: {
       type: 'object',
       properties: {
         objectId: { type: 'string', format: 'uuid' },
         maxCharacters: { type: 'integer', minimum: 1000, maximum: 300000 },
+        pages: {
+          type: 'array',
+          items: { type: 'integer', minimum: 1 },
+          minItems: 1,
+          maxItems: 10,
+          description:
+            '仅 PDF：从 1 开始的物理页码，默认前 10 页；去重并按页序返回。',
+        },
         includeStructure: {
           type: 'boolean',
           description:
-            'Office 编辑前设为 true，返回段落、实际页序或工作表坐标与公式，以及源文件 checksum。',
+            'PDF 设为 true 返回带页码的线框表格片段和提取告警；不做 OCR 或跨页自动合并。Office 编辑前设为 true，返回段落、页序、工作表坐标与公式及源文件 checksum。',
         },
       },
       required: ['objectId'],

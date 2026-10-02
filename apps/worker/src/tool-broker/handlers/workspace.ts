@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   createTraceableMemory,
   getToolBrokerFile,
@@ -150,6 +152,36 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
     input.context,
     stringValue(args.objectId, 'objectId'),
   );
+  const isPdf =
+    file.object.mediaType === 'application/pdf' ||
+    file.fileName.toLowerCase().endsWith('.pdf');
+  if (args.pages !== undefined && !isPdf) {
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'pages 仅适用于 PDF 文档',
+      false,
+    );
+  }
+  if (
+    args.pages !== undefined &&
+    (!Array.isArray(args.pages) ||
+      args.pages.length === 0 ||
+      args.pages.length > 10 ||
+      args.pages.some((page) => !Number.isSafeInteger(page) || page < 1))
+  ) {
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'PDF 页码必须是从 1 开始的正整数，每次最多指定 10 页',
+      false,
+    );
+  }
+  if (file.object.sizeBytes > 20 * 1024 * 1024) {
+    throw new HandlerError(
+      'TOOL_FILE_TOO_LARGE',
+      '文档超过 20 MB 的安全解析上限',
+      false,
+    );
+  }
   const stream = await new LocalStorageAdapter(input.storageRoot).get(
     file.object,
   );
@@ -173,28 +205,74 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
   } finally {
     reader.releaseLock();
   }
+  const bytes = Buffer.concat(chunks);
+  if (
+    isPdf &&
+    (bytes.length !== file.object.sizeBytes ||
+      `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
+        file.object.checksum)
+  ) {
+    throw new HandlerError(
+      'TOOL_SOURCE_CHANGED',
+      '源 PDF 与记录的版本或校验值不一致，请重新选择文件',
+      false,
+    );
+  }
   const maximumCharacters = limitValue(args.maxCharacters, 120_000, 300_000);
-  const format = (Object.keys(officeMediaTypes) as OfficeFormat[]).find(
-    (format) => officeMediaTypes[format] === file.object.mediaType,
-  );
+  const format = !isPdf
+    ? (Object.keys(officeMediaTypes) as OfficeFormat[]).find(
+        (format) => officeMediaTypes[format] === file.object.mediaType,
+      )
+    : undefined;
   const parsed =
     args.includeStructure === true && format
-      ? await inspectOffice(Buffer.concat(chunks), format, maximumCharacters)
+      ? await inspectOffice(bytes, format, maximumCharacters)
       : await parseDocument({
-          bytes: Buffer.concat(chunks),
+          bytes,
           mediaType: file.object.mediaType,
           fileName: file.fileName,
           maximumCharacters,
+          pages: args.pages as number[] | undefined,
+          includeStructure: args.includeStructure === true,
         });
+  const modelContent = JSON.stringify({
+    id: file.object.id,
+    fileName: file.fileName,
+    mediaType: file.object.mediaType,
+    checksum: file.object.checksum,
+    ...parsed,
+    ...(isPdf
+      ? {
+          source: {
+            objectId: file.object.id,
+            checksum: file.object.checksum,
+            sizeBytes: file.object.sizeBytes,
+            ...(file.artifactVersionId
+              ? {
+                  artifactVersionId: file.artifactVersionId,
+                  artifactVersion: file.artifactVersion,
+                }
+              : {}),
+          },
+          execution: { location: 'cloud', backend: 'worker' },
+        }
+      : {}),
+  });
+  if (isPdf && Buffer.byteLength(modelContent) > 512_000) {
+    throw new HandlerError(
+      'TOOL_RESULT_TOO_LARGE',
+      'PDF 结果超过读取上限，请减少页数或字符数后继续',
+      false,
+    );
+  }
   return {
-    modelContent: JSON.stringify({
-      id: file.object.id,
-      fileName: file.fileName,
-      mediaType: file.object.mediaType,
-      checksum: file.object.checksum,
-      ...parsed,
-    }),
-    summary: `已解析 ${file.fileName} · ${parsed.units.length} 个内容单元`,
+    modelContent,
+    summary:
+      isPdf &&
+      (parsed.quality === 'no_extractable_text' ||
+        !parsed.units.some((unit) => unit.text.trim()))
+        ? `${file.fileName} 未提取到文本，请查看文件及提取说明`
+        : `已解析 ${file.fileName} · ${parsed.units.length} 个内容单元${parsed.truncated ? ' · 结果已截断' : ''}`,
     itemCount: parsed.units.length,
   };
 };

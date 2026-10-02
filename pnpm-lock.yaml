@@ -543,6 +543,9 @@ importers:
       "@deepseek-ai/dsh-office-to-pdf":
         specifier: 0.1.7-rc.1
         version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
+      pdf-parse:
+        specifier: 2.4.5
+        version: 2.4.5
 
   packages/storage:
     dependencies:
