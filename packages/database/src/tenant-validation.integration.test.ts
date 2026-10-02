@@ -153,7 +153,9 @@ suite('MET-151 PR4 scoped inspection (isolated PostgreSQL)', () => {
           a.artifact.artifactId,
           f.db,
         ),
-      ).rejects.toThrow('artifact_not_found');
+      ).resolves.toMatchObject({
+        artifacts: [expect.objectContaining({ id: a.artifact.artifactId })],
+      });
     } finally {
       await f.db`update allrice_chat_sessions set archived_at=null where id=${a.task.chatSessionId}`;
     }

@@ -359,11 +359,13 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         b = await tenantValidationFixture(fixture.db);
       const companyName = `星米工作动态 ${width}`,
         personName = `小雪动态 ${width}`;
+      let stage = 'open dashboard';
       await fixture.db`update allrice_organizations set name=${companyName} where id=${a.target.organizationId}`;
       await fixture.db`update allrice_users set display_name=${personName} where id=${a.target.subjectId}`;
       const context = await browser.newContext({
         viewport: { width, height: 900 },
       });
+      context.setDefaultTimeout(6000);
       await context.addCookies([
         { name: 'fixture_session', value: adminToken, url: origin },
       ]);
@@ -374,14 +376,22 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page.clock.install();
         await page.goto(`${origin}/runtime-console?view=activity`);
         await page
-          .getByRole('button', { name: `查看 ${companyName}`, exact: true })
-          .click();
+          .getByLabel('公司', { exact: true })
+          .selectOption(a.target.organizationId);
         await page
-          .getByRole('button', {
-            name: `查看 ${personName} 的工作`,
-            exact: true,
-          })
-          .click();
+          .getByRole('heading', { name: companyName, exact: true })
+          .waitFor();
+        stage = 'select employee';
+        expect(
+          await page.getByLabel('员工', { exact: true }).inputValue(),
+        ).toBe('');
+        await page
+          .getByLabel('员工', { exact: true })
+          .selectOption(a.target.subjectId);
+        await page
+          .getByRole('heading', { name: `${personName} 的工作`, exact: true })
+          .waitFor();
+        stage = 'open work';
         await page
           .getByRole('button', { name: '查看工作与成果', exact: true })
           .click();
@@ -415,6 +425,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           .click();
         const preview = page.getByRole('region', { name: '只读交付物预览' });
         await preview.waitFor();
+        stage = 'automatic refresh';
         await page.evaluate(() => {
           document
             .querySelector('[aria-label="真实任务检查结果"]')
@@ -425,20 +436,20 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
             const u = new URL(r.url());
             return (
               u.pathname === '/api/v1/admin/activity' &&
-              u.searchParams.has('userId')
+              u.searchParams.get('view') === 'companyRuns'
             );
           }),
           page.waitForResponse((r) => {
             const u = new URL(r.url());
             return (
               u.pathname === '/api/v1/admin/activity' &&
-              u.searchParams.has('organizationId') &&
-              !u.searchParams.has('userId')
+              u.searchParams.get('view') === 'dashboard'
             );
           }),
         ]);
         await page.clock.runFor(15001);
         expect((await refreshed).every((r) => r.ok())).toBe(true);
+        stage = 'inspect preview and download';
         for (const name of ['刷新工作详情']) {
           const button = page.getByRole('button', { name, exact: true });
           await button.click();
@@ -504,6 +515,10 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         expect(await dialog.count()).toBe(0);
         expect(errors).toEqual([]);
         expect(failures).toEqual([]);
+      } catch (e) {
+        throw new Error(
+          `${stage}: ${String(e)}; browser=${JSON.stringify(errors)}; server=${JSON.stringify(failures)}; page=${(await page.locator('body').innerText()).slice(0, 1600)}`,
+        );
       } finally {
         await context.close();
       }

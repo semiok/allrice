@@ -28,10 +28,14 @@ export interface OrganizationActivityPeople {
 }
 export interface OrganizationActivityRuns {
   organizationId: string;
-  userId: string;
+  userId: string | null;
   employees: { id: string; name: string }[];
   runs: {
     id: string;
+    ownerId: string;
+    ownerName: string;
+    jobTitle: string;
+    sessionArchived: boolean;
     workspaceId: string;
     sessionId: string;
     title: string;

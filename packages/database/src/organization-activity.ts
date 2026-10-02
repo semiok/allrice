@@ -2,6 +2,7 @@ import { diagnosticText } from './tenant-validation.ts';
 import { z } from 'zod';
 import {
   UuidSchema,
+  OrganizationDashboardFilterSchema,
   type RequestContext,
   type ActivityCounts,
   type OrganizationActivityOverview,
@@ -20,6 +21,10 @@ import {
   requireTenantAdministrationTarget,
 } from './tenant-administration.ts';
 import { readTaskClocks } from './task-clock.ts';
+import {
+  organizationDashboardPeriod,
+  organizationWorkSource,
+} from './organization-dashboard.ts';
 
 const emptyCounts = (): ActivityCounts => ({
   running: 0,
@@ -121,40 +126,82 @@ const filterSchema = z.object({
     ])
     .default('all'),
   before: UuidSchema.optional(),
+  range: z.enum(['7d', '30d', 'custom']).optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  timeZone: z.string().optional(),
+  jobTitle: z.string().trim().max(160).optional(),
+  measure: z
+    .enum(['activity', 'started', 'completed', 'current'])
+    .default('activity'),
 });
 export async function listOrganizationActivityRuns(
   context: RequestContext,
   orgInput: string,
-  userInput: string,
+  userInput: string | null,
   input: unknown = {},
 ): Promise<OrganizationActivityRuns> {
   const db = getDatabase(),
     organizationId = UuidSchema.parse(orgInput),
-    userId = UuidSchema.parse(userInput),
+    userId = userInput === null ? null : UuidSchema.parse(userInput),
     filter = filterSchema.parse(input);
   await requireTenantAdministrationAuthority(context, db);
   await requireTenantAdministrationTarget(db, organizationId, null);
-  const [person] =
-    await db`select id from allrice_memberships where organization_id=${organizationId} and user_id=${userId} limit 1`;
-  if (!person) throw new DataAccessError('not_found');
+  if (userId) {
+    const [person] = await db`select 1 from allrice_users u where u.id=${userId}
+      and (exists(select 1 from allrice_memberships m where m.organization_id=${organizationId} and m.user_id=u.id)
+        or exists(select 1 from allrice_employee_runs er where er.organization_id=${organizationId} and er.owner_id=u.id))`;
+    if (!person) throw new DataAccessError('not_found');
+  }
+  const period = filter.range
+    ? organizationDashboardPeriod(
+        OrganizationDashboardFilterSchema.parse(filter),
+      )
+    : null;
+  const source = organizationWorkSource(db, organizationId, {
+    userId: userId ?? undefined,
+    employeeId: filter.employeeId,
+    jobTitle: filter.jobTitle,
+  });
+  const completed = period
+    ? db`r.completed_at>=${period.from}::timestamptz and r.completed_at<${period.to}::timestamptz`
+    : db`true`;
+  const started = period
+    ? db`r.created_at>=${period.from}::timestamptz and r.created_at<${period.to}::timestamptz`
+    : db`true`;
+  const current = db`r.state not in ('succeeded','failed','canceled')`;
+  const window = !period
+    ? db`true`
+    : filter.measure === 'started'
+      ? started
+      : filter.measure === 'completed'
+        ? db`r.state in ('succeeded','failed','canceled') and ${completed}`
+        : filter.measure === 'current'
+          ? current
+          : ['succeeded', 'failed', 'canceled'].includes(filter.status)
+            ? completed
+            : db`(${current} or (${started}) or (${completed}))`;
   const employees = await db<{ id: string; name: string }[]>`
     select distinct coalesce(d.employee_id,e.id) as id,coalesce(p.name,e.name) as name from allrice_employee_assignments a
     join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id
     left join allrice_platform_employee_tenant_assignments d on d.tenant_employee_id=e.id and d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
     left join allrice_platform_employees p on p.id=d.employee_id
-    where a.organization_id=${organizationId} and a.user_id=${userId} order by name,id`;
+    where a.organization_id=${organizationId} and (${userId}::uuid is null or a.user_id=${userId}) order by name,id`;
   let before: Date | null = null;
   if (filter.before) {
     const [cursor] = await db<
       { created_at: Date }[]
-    >`select r.created_at from allrice_runs r join allrice_employee_runs er on er.run_id=r.id
-      where r.id=${filter.before} and r.organization_id=${organizationId} and r.owner_id=${userId}`;
+    >`select r.created_at ${source} and r.id=${filter.before}`;
     if (!cursor) throw new DataAccessError('not_found');
     before = cursor.created_at;
   }
   const rows = await db<
     {
       id: string;
+      owner_id: string;
+      owner_name: string;
+      job_title: string;
+      session_archived: boolean;
       workspace_id: string;
       session_id: string;
       title: string;
@@ -169,7 +216,8 @@ export async function listOrganizationActivityRuns(
       last_label: string | null;
     }[]
   >`
-    select r.id,r.workspace_id,er.session_id,left(s.title,250) as title,coalesce(d.employee_id,e.id) as employee_id,v.name as employee_name,
+    select r.id,r.owner_id,coalesce(person.display_name,u.display_name) as owner_name,coalesce(person.job_title,'') as job_title,
+      s.archived_at is not null as session_archived,r.workspace_id,er.session_id,left(s.title,250) as title,coalesce(d.employee_id,e.id) as employee_id,v.name as employee_name,
       ${state(db)} as status,r.created_at,r.completed_at,
       exists(select 1 from allrice_task_questions q where q.run_id=r.id and q.pending) as question,
       exists(select 1 from allrice_task_progress p where p.run_id=r.id and p.pause_id is not null) as paused,
@@ -178,14 +226,9 @@ export async function listOrganizationActivityRuns(
         and ev.workspace_id=r.workspace_id and ev.event_type='harness.native' and ev.payload->>'source'='dsh'
         and ev.payload->>'presentation' in ('tool','todo','search','compaction','context','lifecycle')
         and ev.payload->>'label' is not null order by ev.sequence desc limit 1) as last_label
-    from allrice_runs r join allrice_employee_runs er on er.run_id=r.id and er.organization_id=r.organization_id and er.workspace_id=r.workspace_id and er.owner_id=r.owner_id
-    join allrice_chat_sessions s on s.id=er.session_id and s.organization_id=r.organization_id and s.workspace_id=r.workspace_id and s.owner_id=r.owner_id and s.archived_at is null
-    join allrice_employee_versions v on v.id=er.employee_version_id and v.organization_id=r.organization_id and v.workspace_id=r.workspace_id
-    join allrice_employees e on e.id=v.employee_id
-    left join allrice_platform_employee_tenant_assignments d on d.tenant_employee_id=e.id and d.organization_id=r.organization_id and d.workspace_id=r.workspace_id
-    left join allrice_task_clocks c on c.run_id=r.id
-    where r.organization_id=${organizationId} and r.owner_id=${userId}
-      and (${filter.employeeId ?? null}::uuid is null or coalesce(d.employee_id,e.id)=${filter.employeeId ?? null})
+    ${source}
+      and (${period !== null} or s.archived_at is null)
+      and (${window})
       and (${filter.status}='all' or ${state(db)}=${filter.status})
       and (${before}::timestamptz is null or (r.created_at,r.id)<(${before},${filter.before ?? null}::uuid))
     order by r.created_at desc,r.id desc limit 51`;
@@ -211,6 +254,10 @@ export async function listOrganizationActivityRuns(
     nextCursor: rows.length > 50 ? page.at(-1)!.id : null,
     runs: page.map((r) => ({
       id: r.id,
+      ownerId: r.owner_id,
+      ownerName: diagnosticText(r.owner_name),
+      jobTitle: diagnosticText(r.job_title),
+      sessionArchived: r.session_archived,
       workspaceId: r.workspace_id,
       sessionId: r.session_id,
       title: diagnosticText(r.title),

@@ -482,7 +482,7 @@ export function RuntimeConsole() {
           aria-current={view === 'activity' ? 'page' : undefined}
           onClick={() => selectView('activity')}
         >
-          工作动态
+          公司看板
         </button>
         <button
           aria-current={
