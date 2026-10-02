@@ -13,6 +13,8 @@ import {
 
 import type {
   SessionReference,
+  TaskNextStep,
+  TaskNextSteps,
   UserQuestionAnswerSubmission,
 } from '@allrice/contracts';
 import { isMessageRunActive } from './run-view';
@@ -56,11 +58,13 @@ import { useArtifactWorkbench } from './use-artifact-workbench';
 import { useWorkbenchLayout } from './use-workbench-layout';
 import { useWorkbenchResize, WorkbenchSplitter } from './workbench-splitter';
 import { useWorkspaceReadiness } from './use-workspace-readiness';
+import { useTaskNextSteps } from './use-task-next-steps';
 import { CapabilityContent } from './capability-panel';
 import { capabilityLabels } from './capability-catalog';
 import {
   appendComposerDraft,
   prepareComposerText,
+  renderTaskSuggestion,
   type PreparedComposerDraft,
 } from '../../lib/chatflow/composer-draft';
 import workbenchUi from './workbench.module.css';
@@ -442,6 +446,7 @@ export function ChatFlowClient({
   }, [activeId, history?.messages.length, scrollToTranscriptBottom]);
 
   const {
+    addTaskReferences,
     addWorkspaceFiles,
     attachmentPreview,
     clearPendingAttachments,
@@ -477,6 +482,31 @@ export function ChatFlowClient({
     tenantHeaders,
     workspace,
   });
+
+  const nextStepSession =
+    history?.session ?? workspace?.sessions.find((s) => s.id === activeId);
+  const nextStepEmployee =
+    workspace && nextStepSession
+      ? employeeForSession(workspace, nextStepSession)
+      : newSessionEmployee;
+  const nextStepRunRevision = `${history?.messages.at(-1)?.runId}/${history?.messages.at(-1)?.status}/${Object.values(
+    runViews,
+  )
+    .map((v) => `${v.runId}:${v.status}`)
+    .join(',')}/${visibleSubmission?.user.id ?? ''}`;
+  const nextSteps = useTaskNextSteps({
+    organizationId: workspace?.organizationId,
+    workspaceId: workspace?.workspaceId,
+    viewerId: workspace?.viewerId,
+    sessionId: sessionArchived ? null : activeId,
+    employeeAssignmentId: nextStepEmployee?.id,
+    employeeVersionId: nextStepEmployee?.currentVersion.id,
+    runRevision: nextStepRunRevision,
+    headers: tenantHeaders,
+  });
+  const nextStepLifetime = `${settingsScope}/${activeId}/${nextStepEmployee?.id}/${nextStepEmployee?.currentVersion.id}/${nextStepRunRevision}`;
+  const nextStepState = useRef({ lifetime: nextStepLifetime, busy });
+  nextStepState.current = { lifetime: nextStepLifetime, busy };
 
   const bridge = useBridge({ setError, tenantHeaders, workspace });
   const {
@@ -1056,10 +1086,45 @@ export function ChatFlowClient({
     });
   }
 
+  async function prepareNextStep(step: TaskNextStep, snapshot: TaskNextSteps) {
+    if (busy || composing.current)
+      throw Error('请先完成当前输入，再填写草稿。');
+    const selection = captureSelection(),
+      lifetime = nextStepLifetime;
+    const fresh = await nextSteps.reload(true);
+    if (!selection.current() || lifetime !== nextStepState.current.lifetime)
+      throw Error('会话或任务已变化，请关闭后重新打开。');
+    const currentStep = fresh?.suggestions.find(
+      (s) => s.task.id === step.task.id,
+    );
+    if (
+      !fresh ||
+      fresh.scope.contextRevision !== snapshot.scope.contextRevision ||
+      !currentStep
+    )
+      throw Error('下一步建议或资料已变化，请关闭后重新打开。');
+    if (nextStepState.current.busy || composing.current)
+      throw Error('请先完成当前输入，再填写草稿。');
+    const prepared = renderTaskSuggestion(currentStep.task);
+    if (currentStep.references.length) {
+      // Append filenames as literal data after slot rendering. Quoting preserves
+      // braces/control characters without interpreting them as template slots.
+      prepared.text += `\n\n参考成果：${currentStep.references.map((r) => JSON.stringify(r.fileName)).join('、')}。`;
+      prepared.selectionStart = prepared.selectionEnd = prepared.text.length;
+    }
+    addTaskReferences(currentStep.references);
+    prepareDraft(prepared);
+  }
+
   const renderComposer = (hero = false) => (
     <ChatComposer
       taskSuggestions={suggestionVersion?.taskSuggestions ?? []}
       taskScope={taskScope}
+      taskNextSteps={nextSteps.data}
+      onOpenTasks={() => {
+        void nextSteps.reload();
+      }}
+      onPrepareNextStep={prepareNextStep}
       compact={layout.compact}
       taskReadiness={
         readiness.data?.employeeVersionId === suggestionVersion?.id

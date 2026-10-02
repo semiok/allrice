@@ -4,6 +4,8 @@ import { IconRefreshOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives
 import type {
   SessionReference,
   TaskSuggestionDisplay,
+  TaskNextStep,
+  TaskNextSteps,
   WorkspaceReadiness,
 } from '@allrice/contracts';
 import { TaskSuggestions } from './task-suggestions';
@@ -35,6 +37,12 @@ import styles from './dsh-saas.module.css';
 interface ChatComposerProps {
   taskSuggestions?: TaskSuggestionDisplay[];
   taskScope?: string;
+  taskNextSteps?: TaskNextSteps | null;
+  onOpenTasks?: () => void;
+  onPrepareNextStep?: (
+    step: TaskNextStep,
+    snapshot: TaskNextSteps,
+  ) => Promise<void>;
   compact?: boolean;
   taskReadiness?: WorkspaceReadiness | null;
   onPrepareTask?: (prepared: PreparedComposerDraft) => void;
@@ -80,6 +88,9 @@ interface ChatComposerProps {
 export function ChatComposer({
   taskSuggestions,
   taskScope,
+  taskNextSteps,
+  onOpenTasks,
+  onPrepareNextStep,
   compact = false,
   taskReadiness = null,
   onPrepareTask,
@@ -216,6 +227,9 @@ export function ChatComposer({
             readiness={taskReadiness}
             onPrepare={onPrepareTask}
             onPreparation={onTaskPreparation}
+            nextSteps={taskNextSteps}
+            onOpen={onOpenTasks}
+            onPrepareNextStep={onPrepareNextStep}
           />
         )}
         <div className={`${inputUi.row} ${styles.composerRow}`}>
