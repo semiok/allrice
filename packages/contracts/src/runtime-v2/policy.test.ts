@@ -50,6 +50,58 @@ const controls = {
   rules: [{ action: binding.action, effect: 'allow' }],
 };
 describe('B1 deterministic policy', () => {
+  it('lets the registered PDF backend perform an already-authorized read without a second legacy rule', () => {
+    for (const mode of ['execute', 'plan_only'] as const)
+      expect(
+        runtimePolicyActionDecision(
+          { ...controls, mode, rules: [] },
+          'local.pdf.read',
+        ).effect,
+      ).toBe('allow');
+    expect(
+      runtimePolicyActionDecision(
+        { ...controls, rules: [] },
+        'local.python.execute',
+      ).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision(
+        { ...controls, rules: [] },
+        'unregistered.read',
+      ).effect,
+    ).toBe('deny');
+  });
+  it('keeps disabled policy, platform Deny, explicit Deny and Ask authoritative for PDF reads', () => {
+    const action = 'local.pdf.read';
+    expect(
+      runtimePolicyActionDecision(
+        { ...controls, enabled: false, rules: [] },
+        action,
+      ).effect,
+    ).toBe('deny');
+    expect(
+      runtimePolicyActionDecision({ ...controls, rules: [] }, action, [action])
+        .reason,
+    ).toBe('platform_deny');
+    expect(
+      runtimePolicyActionDecision(
+        {
+          ...controls,
+          rules: [
+            { action, effect: 'allow' },
+            { action, effect: 'deny' },
+          ],
+        },
+        action,
+      ).reason,
+    ).toBe('tenant_deny');
+    expect(
+      runtimePolicyActionDecision(
+        { ...controls, rules: [{ action, effect: 'ask' }] },
+        action,
+      ).effect,
+    ).toBe('ask');
+  });
   it('projects existing delegation authority without inventing an Ask approval path', () => {
     const action = 'assistant.delegate';
     for (const effect of ['allow', 'deny', 'ask'] as const) {

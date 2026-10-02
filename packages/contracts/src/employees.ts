@@ -175,11 +175,26 @@ export type FrozenManagedPythonBinding = z.infer<
   typeof FrozenManagedPythonBindingSchema
 >;
 
+/** Independent read delegation; does not grant Python, folders or file writes. */
+export const FrozenManagedPdfBindingSchema = z
+  .object({
+    contractVersion: z.literal(1),
+    profileVersion: z.literal(1),
+    publication: z
+      .object({ revisionId: UuidSchema, checksum: ChecksumSchema })
+      .strict(),
+  })
+  .strict();
+export type FrozenManagedPdfBinding = z.infer<
+  typeof FrozenManagedPdfBindingSchema
+>;
+
 // No defaults: old Runs retain their original authority. Editable manifests and
 // the V1 contract cannot accept a model/admin-supplied runtime delegation.
 export const FrozenEmployeeCapabilityBindingsSchema =
   EmployeeCapabilityBindingsSchema.extend({
     managedPython: FrozenManagedPythonBindingSchema.optional(),
+    managedPdf: FrozenManagedPdfBindingSchema.optional(),
   }).strict();
 
 export const EmployeeSecurityPolicySchema = z

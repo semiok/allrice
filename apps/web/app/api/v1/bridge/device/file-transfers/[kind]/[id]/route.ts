@@ -11,6 +11,9 @@ import {
   localPythonTransferAuthority,
   readLocalPythonInput,
   storeLocalPythonArtifact,
+  readBridgeOperationTransferCapability,
+  localPdfTransferAuthority,
+  readLocalPdfInput,
   DataAccessError,
 } from '@allrice/database';
 import { getBridgeDeviceToken } from '../../../../../../../../lib/bridge/request';
@@ -41,13 +44,19 @@ export async function GET(request: Request, route: Route) {
       const action = z
         .enum(['download', 'authorize'])
         .parse(url.searchParams.get('action'));
+      const capability = await readBridgeOperationTransferCapability(
+        i.token,
+        i.id,
+        i.leaseToken,
+      );
+      if (!['local.pdf.read', 'local.python.execute'].includes(capability))
+        throw new DataAccessError('authorization_denied');
       if (action === 'download') {
-        const { object } = await readLocalPythonInput(
-          i.token,
-          i.id,
-          i.leaseToken,
-          objectId,
-        );
+        const { object } = await (
+          capability === 'local.pdf.read'
+            ? readLocalPdfInput
+            : readLocalPythonInput
+        )(i.token, i.id, i.leaseToken, objectId);
         return new Response(await getStorageAdapter().get(object), {
           headers: {
             'content-type': 'application/octet-stream',
@@ -57,13 +66,11 @@ export async function GET(request: Request, route: Route) {
           },
         });
       }
-      await localPythonTransferAuthority(
-        i.token,
-        i.id,
-        i.leaseToken,
-        objectId,
-        'authorize',
-      );
+      await (
+        capability === 'local.pdf.read'
+          ? localPdfTransferAuthority
+          : localPythonTransferAuthority
+      )(i.token, i.id, i.leaseToken, objectId, 'authorize');
       return Response.json(
         { authorized: true },
         { headers: { 'cache-control': 'private, no-store' } },
@@ -109,6 +116,16 @@ export async function POST(request: Request, route: Route) {
     if (url.searchParams.has('objectId')) {
       if (i.kind !== 'operation' || !i.token)
         throw new DataAccessError('authorization_denied');
+      // Dispatch from the authenticated immutable operation. A read delegation
+      // can never enter Python uploads or the legacy folder write path.
+      if (
+        (await readBridgeOperationTransferCapability(
+          i.token,
+          i.id,
+          i.leaseToken,
+        )) !== 'local.python.execute'
+      )
+        throw new DataAccessError('authorization_denied');
       const artifact = await storeLocalPythonArtifact({
         token: i.token,
         id: i.id,
@@ -125,6 +142,16 @@ export async function POST(request: Request, route: Route) {
         { headers: { 'cache-control': 'private, no-store' } },
       );
     }
+    if (
+      i.kind === 'operation' &&
+      i.token &&
+      (await readBridgeOperationTransferCapability(
+        i.token,
+        i.id,
+        i.leaseToken,
+      )) === 'local.pdf.read'
+    )
+      throw new DataAccessError('authorization_denied');
     const metadata = z
       .object({
         version: LocalFileVersionSchema,

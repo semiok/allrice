@@ -5,11 +5,13 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { verifyPdfPackage } from './rice-bridge-pdf-runtime.mjs';
 import {
   assertBridgeSigningAvailable,
   bridgeSigningConfiguration,
   signAndNotarizeBridge,
   verifyPackagedBridge,
+  verifyBridgePdfSigning,
 } from './rice-bridge-signing.mjs';
 
 assert.equal(process.platform, 'darwin');
@@ -120,7 +122,8 @@ execFileSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', app], {
 });
 const signingEvidence =
   signingConfig.mode === 'developer-id'
-    ? signAndNotarizeBridge(signingConfig, app, output)
+    ? (verifyBridgePdfSigning(signingConfig, core),
+      signAndNotarizeBridge(signingConfig, app, output))
     : {
         signing: 'ad-hoc; not notarized',
         notarization: 'not-performed',
@@ -143,6 +146,12 @@ const manifest = {
   appHostSha256: await digest(executable),
   coreSha256: await digest(core),
   browserLauncherSha256: await digest(browserLauncher),
+  pdfGuardianSha256: await digest(`${core}.pdf-guardian`),
+  pdfRuntimeManifestSha256: await digest(`${core}.pdf-runtime/manifest.json`),
+  pdfNativeVerification:
+    targetArch === 'x64'
+      ? 'required-on-device-before-ready'
+      : 'unsupported-until-native-verification',
   browserRuntimeManifestSha256: await digest(`${core}.runtime/manifest.json`),
   ...signingEvidence,
   trustedUpdatesEnabled: false,
@@ -155,6 +164,12 @@ const manifest = {
     'auto-prepare; approved live container HTTP service only; no host port or public URL',
   sourceArchiveSha256: process.env.ALLRICE_BRIDGE_SOURCE_ARCHIVE_SHA256 ?? null,
 };
+const pdfPackageExpectation = {
+  architecture: targetArch,
+  manifestChecksum: manifest.pdfRuntimeManifestSha256,
+  guardianSha256: manifest.pdfGuardianSha256,
+};
+await verifyPdfPackage(core, pdfPackageExpectation);
 await writeFile(
   join(output, 'release.json'),
   JSON.stringify(manifest, null, 2) + '\n',
@@ -193,6 +208,10 @@ if (signingConfig.mode === 'developer-id') {
   await mkdir(verification, { mode: 0o700 });
   execFileSync('/usr/bin/ditto', ['-x', '-k', zip, verification]);
   verifyPackagedBridge(signingConfig, join(verification, 'Rice Bridge.app'));
+  await verifyPdfPackage(
+    join(verification, 'Rice Bridge.app/Contents/Resources/RiceBridgeCore'),
+    pdfPackageExpectation,
+  );
 }
 const zipSha256 = await digest(zip);
 manifest.zip = zip.split('/').at(-1);

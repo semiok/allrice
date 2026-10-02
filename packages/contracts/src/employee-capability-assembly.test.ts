@@ -240,6 +240,7 @@ it('assembles the existing Office export tool without requiring a Node command t
 
 it.each([
   [[], 'none'],
+  [['workspace.document.read'], 'read_only'],
   [['local.fs.read'], 'read_only'],
   [['local.fs.write'], 'read_write'],
 ] as const)(

@@ -1,22 +1,30 @@
 #!/usr/bin/env node
-import {
-  grant,
-  help,
-  launch,
-  pair,
-  revoke,
-  sandbox,
-  start,
-  status,
-} from './core.js';
 import { BridgeInstanceLock } from './instance-lock.js';
 import { bridgeVersion } from './version.js';
 
 async function main() {
   const [requestedCommand, ...args] = process.argv.slice(2);
   const command = requestedCommand ?? 'launch';
+  if (command === '--pdf-reader') {
+    if (args.length) throw Error('PDF_INPUT_INVALID');
+    return (await import('./local-pdf-reader.js')).runFixedPdfReader();
+  }
+  if (command === '--pdf-probe') {
+    if (args.length !== 1) throw Error('PDF_PROBE_INVALID');
+    const { LocalPdfRunner } = await import('./local-pdf-runner.js');
+    console.info(
+      JSON.stringify(
+        await new LocalPdfRunner({ directory: args[0]! }).probe(
+          AbortSignal.timeout(30_000),
+        ),
+      ),
+    );
+    return;
+  }
   if (command === '--version' || command === 'version')
     return console.info(bridgeVersion);
+  const { grant, help, launch, pair, revoke, sandbox, start, status } =
+    await import('./core.js');
   if (command === 'update-helper') {
     if (args.length !== 3 || !['install', 'recover'].includes(args[1]!))
       throw Error('UPDATE_REQUEST_INVALID');

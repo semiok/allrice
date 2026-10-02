@@ -3,6 +3,7 @@ import {
   bridgeDeviceStatus,
   createGovernedBridgeOperationLedger,
   readManagedPythonRuntimeGrant,
+  readLocalPdfRuntimeGrant,
 } from '@allrice/database';
 
 import { createRuntimeBridgeHttpHandler } from './operation-http';
@@ -16,6 +17,7 @@ export const handleRuntimeBridgeOperation = createRuntimeBridgeHttpHandler({
     return {
       ...status,
       managedRuntimeGrant: await readManagedPythonRuntimeGrant(status.device),
+      pdfRuntimeGrant: await readLocalPdfRuntimeGrant(status.device),
     };
   },
   ledgerForDevice: async (device) =>

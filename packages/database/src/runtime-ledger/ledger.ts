@@ -18,6 +18,9 @@ import {
   RuntimeLocalCommandResultSchema,
   RuntimeLocalPythonResultSchema,
   localPythonResultMatchesPayload,
+  RuntimeLocalPdfResultSchema,
+  localPdfResultMatchesPayload,
+  localPdfPreExecutionDenialCodes,
   UuidSchema,
   advanceRuntimeOperation,
   isTerminalRuntimeOperationStatus,
@@ -45,6 +48,7 @@ import {
   type RuntimeLedgerLease,
   type RuntimeLedgerReceipt,
   type RuntimeLedgerTransaction,
+  type RuntimeBridgeClaimSupport,
 } from './types.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
@@ -60,6 +64,9 @@ const json = (tx: Tx, value: unknown) =>
   tx.json(JSON.parse(JSON.stringify(value)) as Json);
 const hash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
+// These fixed-reader failures occur before a child exists. Unknown process
+// failures need an uncertain receipt, never an invented physical stop.
+const pdfPreExecutionDenials = new Set<string>(localPdfPreExecutionDenialCodes);
 
 /** Exact JSON payload digest, matching P04's codepoint-sorted canonical JSON. */
 export function runtimeLedgerInputDigest(value: unknown): string {
@@ -915,21 +922,14 @@ export function createRuntimeOperationLedger(options: {
       });
     },
 
-    async claimNextBridgeOperation(input: {
-      scope: RuntimeScope;
-      deviceId: string;
-      leaseMs: number;
-      supportsLocalCommand?: boolean;
-      supportsLocalMcp?: boolean;
-      supportsProjectDiagnostics?: boolean;
-      supportsNpmDependencies?: boolean;
-      supportsChangesetCandidate?: boolean;
-      supportsBackgroundServices?: boolean;
-      supportsChangeset?: boolean;
-      supportsBinaryFiles?: boolean;
-      supportsManagedPython?: boolean;
-      recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
-    }) {
+    async claimNextBridgeOperation(
+      input: RuntimeBridgeClaimSupport & {
+        scope: RuntimeScope;
+        deviceId: string;
+        leaseMs: number;
+        recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
+      },
+    ) {
       const scope = RuntimeScopeSchema.parse(input.scope),
         deviceId = UuidSchema.parse(input.deviceId),
         duration = leaseDuration.parse(input.leaseMs);
@@ -944,7 +944,7 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
-          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => name !== 'local.python.execute' && (input.supportsBinaryFiles || !name.startsWith('local.file.'))), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsManagedPython ? ['local.python.execute'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
+          and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => name !== 'local.python.execute' && name !== 'local.pdf.read' && (input.supportsBinaryFiles || !name.startsWith('local.file.'))), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsManagedPython ? ['local.python.execute'] : []), ...(input.supportsPdfRead === true ? ['local.pdf.read'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
         try {
@@ -1423,6 +1423,48 @@ export function createRuntimeOperationLedger(options: {
                   if (!stored) throw new RuntimeLedgerError('invalid_state');
                 }
             }
+            if (payload.capability === 'local.pdf.read') {
+              const output = (content.evidence as { output?: unknown } | null)
+                ?.output;
+              const result = RuntimeLocalPdfResultSchema.safeParse(output);
+              const preExecution =
+                output !== null &&
+                typeof output === 'object' &&
+                !('type' in output) &&
+                'errorCode' in output &&
+                typeof output.errorCode === 'string' &&
+                pdfPreExecutionDenials.has(output.errorCode);
+              const success =
+                content.signal.type === 'operation.outcome' &&
+                content.signal.result.status === 'succeeded';
+              if (
+                (success &&
+                  (!result.success ||
+                    result.data.document === null ||
+                    !result.data.process.stopped)) ||
+                (result.success &&
+                  (!localPdfResultMatchesPayload(result.data, payload) ||
+                    !result.data.process.stopped ||
+                    result.data.process.reason === 'process_unknown')) ||
+                (result.success &&
+                  content.signal.type === 'operation.outcome' &&
+                  content.signal.result.status !== 'succeeded' &&
+                  result.data.document !== null) ||
+                (content.signal.type === 'operation.stopped' &&
+                  (!result.success ||
+                    result.data.document !== null ||
+                    result.data.process.reason !== 'canceled')) ||
+                (!result.success &&
+                  !success &&
+                  content.signal.type === 'operation.outcome' &&
+                  !preExecution) ||
+                (content.signal.type === 'operation.outcome' &&
+                  content.signal.result.effects !== 'none') ||
+                (content.signal.type === 'operation.stopped' &&
+                  content.signal.effects !== 'none')
+              )
+                throw new RuntimeLedgerError('invalid_state');
+            }
           }
           // A finite service may be stopped locally (Bridge shutdown/lease
           // loss) before the server saw a stop request. Preserve the targeted
@@ -1468,6 +1510,23 @@ export function createRuntimeOperationLedger(options: {
                 content.signal.effects !== 'none' ||
                 !['canceled', 'lease_lost'].includes(result.data.reason) ||
                 !localPythonResultMatchesPayload(payload, result.data)
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              await append(tx, row, {
+                type: 'operation.cancel_requested',
+                requestId: input.receiptId,
+              });
+            } else if (payload.capability === 'local.pdf.read') {
+              const result = RuntimeLocalPdfResultSchema.safeParse(
+                (input.evidence as { output?: unknown } | null)?.output,
+              );
+              if (
+                !result.success ||
+                content.signal.effects !== 'none' ||
+                !result.data.process.stopped ||
+                result.data.document !== null ||
+                result.data.process.reason !== 'canceled' ||
+                !localPdfResultMatchesPayload(result.data, payload)
               )
                 throw new RuntimeLedgerError('invalid_state');
               await append(tx, row, {

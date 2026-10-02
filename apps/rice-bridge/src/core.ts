@@ -12,7 +12,9 @@ import {
   BridgeCommandSchema,
   BridgeWorkspaceSelectionRequestSchema,
   managedPythonPayloadForPlatform,
+  pdfReadReleaseForPlatform,
   type RuntimeLocalPythonProfile,
+  type RuntimeLocalPdfProfile,
   BridgeSettingsCommandSchema,
   type BridgeSettingsCommand,
   PairBridgeDeviceResponseSchema,
@@ -545,6 +547,23 @@ async function startSession(
         )
       : undefined;
   let pythonAvailable = false;
+  const pdfRunner =
+    operationLedgerEnabled &&
+    process.platform === 'darwin' &&
+    pdfReadReleaseForPlatform(`macos-${process.arch}`)?.nativeSupported
+      ? new (await import('./local-pdf-runner.js')).LocalPdfRunner({
+          directory: `${configPath()}.pdf-read-${config.deviceId}`,
+        })
+      : undefined;
+  let pdfAvailable = false;
+  let pdfProfile: RuntimeLocalPdfProfile | undefined;
+  let pdfState: 'ready' | 'preparing' | 'unsupported' = pdfRunner
+    ? 'preparing'
+    : 'unsupported';
+  let pdfReason = pdfRunner
+    ? 'runtime_preparing'
+    : 'PDF_NATIVE_PLATFORM_UNVERIFIED';
+  let lastPdfProbe = 0;
   let pythonProfile: RuntimeLocalPythonProfile | undefined;
   let pythonState: 'ready' | 'preparing' | 'paused' | 'unsupported' =
     managedSandbox ? 'preparing' : optedIn ? 'unsupported' : 'paused';
@@ -599,6 +618,7 @@ async function startSession(
           ? pythonReason
           : 'capability_paused',
       },
+      managedPdf: { state: pdfState, profile: pdfProfile, reason: pdfReason },
     });
   const publish = () => {
     state.environment!.readiness = capabilityReadiness();
@@ -768,6 +788,36 @@ async function startSession(
             options.onNotice?.('SANDBOX_UNAVAILABLE');
           }
         })(),
+        (async () => {
+          pdfAvailable = false;
+          if (!pdfRunner) return;
+          if (!pdfProfile && Date.now() - lastPdfProbe < 60_000) return;
+          try {
+            lastPdfProbe = Date.now();
+            const profile = pdfProfile
+              ? await pdfRunner.preflight()
+              : await pdfRunner.probe(commandAbort.signal);
+            commandAbort.signal.throwIfAborted();
+            await bridgeRequest({
+              server: config.server,
+              path: '/api/v1/bridge/device/runtime-profile',
+              method: 'POST',
+              token,
+              body: profile,
+              maximumResponseBytes: 4096,
+              timeoutMs: 5000,
+              signal: commandAbort.signal,
+            });
+            pdfProfile = profile;
+            pdfAvailable = true;
+            pdfState = 'ready';
+            pdfReason = 'ready';
+          } catch (error) {
+            pdfState = 'unsupported';
+            pdfReason = readinessErrorCode(error, 'pdf_runtime_unavailable');
+          }
+          publish();
+        })(),
       ]);
       // Same preparation lifecycle; this fixed private VM is separate from
       // the existing Node VM and never inherits business folder mounts.
@@ -849,6 +899,7 @@ async function startSession(
       void heartbeat().catch(() => {
         runnerAvailable = false;
         pythonAvailable = false;
+        pdfAvailable = false;
         state.phase = 'offline';
         publish();
       });
@@ -991,6 +1042,7 @@ async function startSession(
               pythonRunner: pythonAvailable
                 ? managedSandbox?.runner
                 : undefined,
+              pdfRunner: pdfAvailable ? pdfRunner : undefined,
               signal: commandAbort.signal,
               acquiring: () => !options.drainSignal?.aborted,
               request: currentTransport()?.request,
@@ -1099,6 +1151,7 @@ async function startSession(
         config,
         token,
         journal,
+        pdfRunner,
         request: (input) =>
           bridgeRequest({
             ...input,

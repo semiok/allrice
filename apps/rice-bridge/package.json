@@ -19,9 +19,11 @@
   "dependencies": {
     "@allrice/browser-control": "workspace:*",
     "@allrice/contracts": "workspace:*",
+    "@allrice/office-runtime": "workspace:*",
     "@modelcontextprotocol/sdk": "1.30.0",
     "playwright-core": "1.62.1",
-    "ws": "8.21.3"
+    "ws": "8.21.3",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/ws": "8.18.1",

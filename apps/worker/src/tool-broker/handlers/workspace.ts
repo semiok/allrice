@@ -7,12 +7,17 @@ import {
   searchToolBrokerMemories,
   searchToolBrokerSessions,
 } from '@allrice/database';
-import type { ExecutionContext, RequestContext } from '@allrice/contracts';
+import {
+  WorkspaceDocumentReadArgsSchema,
+  type ExecutionContext,
+  type RequestContext,
+} from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 
 import { inspectOffice } from '../../office/inspect.js';
 import { officeMediaTypes, type OfficeFormat } from '../../office/package.js';
 import { parseDocument } from '../../document-reader.js';
+import { readPdfLocally } from '../../document-read-local.js';
 import { HandlerError } from '../../errors.js';
 import {
   hasExplicitRememberIntent,
@@ -155,6 +160,21 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
   const isPdf =
     file.object.mediaType === 'application/pdf' ||
     file.fileName.toLowerCase().endsWith('.pdf');
+  if (
+    args.location !== undefined &&
+    !['auto', 'local', 'cloud'].includes(String(args.location))
+  )
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'location 必须是 auto、local 或 cloud',
+      false,
+    );
+  if (!isPdf && args.location === 'local')
+    throw new HandlerError(
+      'TOOL_LOCATION_UNSUPPORTED',
+      '本地文档阅读目前仅支持 PDF；Office 和文本继续使用云端读取。',
+      false,
+    );
   if (args.pages !== undefined && !isPdf) {
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
@@ -182,6 +202,15 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
       false,
     );
   }
+  const local = isPdf
+    ? await readPdfLocally(
+        input,
+        file,
+        WorkspaceDocumentReadArgsSchema.parse(args),
+      )
+    : null;
+  if (local)
+    return workspaceDocumentResult(file, local.document, local.execution);
   const stream = await new LocalStorageAdapter(input.storageRoot).get(
     file.object,
   );
@@ -235,6 +264,23 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
           pages: args.pages as number[] | undefined,
           includeStructure: args.includeStructure === true,
         });
+  return workspaceDocumentResult(
+    file,
+    parsed,
+    isPdf ? { location: 'cloud', backend: 'worker' } : undefined,
+  );
+};
+
+function workspaceDocumentResult(
+  file: Awaited<ReturnType<typeof getToolBrokerFile>>,
+  parsed: Awaited<ReturnType<typeof parseDocument>>,
+  execution?: {
+    location: 'local' | 'cloud';
+    backend: string;
+    operationId?: string;
+  },
+) {
+  const isPdf = parsed.kind === 'pdf';
   const modelContent = JSON.stringify({
     id: file.object.id,
     fileName: file.fileName,
@@ -254,7 +300,7 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
                 }
               : {}),
           },
-          execution: { location: 'cloud', backend: 'worker' },
+          execution,
         }
       : {}),
   });
@@ -275,7 +321,7 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
         : `已解析 ${file.fileName} · ${parsed.units.length} 个内容单元${parsed.truncated ? ' · 结果已截断' : ''}`,
     itemCount: parsed.units.length,
   };
-};
+}
 
 export const searchWorkspaceMemory: RiceToolHandler = async ({
   input,

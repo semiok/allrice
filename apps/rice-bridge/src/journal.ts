@@ -23,8 +23,10 @@ import {
   RuntimeBridgeOutputSchema,
   RuntimeLocalCommandResultSchema,
   RuntimeLocalPythonResultSchema,
+  RuntimeLocalPdfResultSchema,
   localPythonResultMatchesPayload,
   type RuntimeLocalPythonResult,
+  type RuntimeLocalPdfResult,
   ChangesetFileResultSchema,
   type ChangesetFileResult,
   type RuntimeLocalCommandResult,
@@ -35,6 +37,7 @@ import {
 import { initialChangesetResults } from './changeset-executor.js';
 import { LocalServiceJournal } from './local-service-journal.js';
 import { BridgeJournalError } from './journal-error.js';
+import { pdfResultMatchesPayload } from './local-pdf-proof.js';
 export { BridgeJournalError } from './journal-error.js';
 
 export const maximumReceiptBytes = 500_000;
@@ -878,6 +881,61 @@ export class BridgeJournal {
     return rows.map((row) =>
       RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
     );
+  }
+
+  async unknownLocalPdfOperations() {
+    await this.guard();
+    return this.database
+      .prepare(
+        "SELECT dispatch FROM entries WHERE state='unknown' AND json_extract(dispatch,'$.payload.capability')='local.pdf.read' ORDER BY rowid LIMIT 16",
+      )
+      .all()
+      .map((row) =>
+        RuntimeBridgeDispatchSchema.parse(JSON.parse(String(row.dispatch))),
+      );
+  }
+
+  async reconcileLocalPdf(operationId: string, input: RuntimeLocalPdfResult) {
+    await this.guard();
+    const result = RuntimeLocalPdfResultSchema.parse(input);
+    return this.transaction(() => {
+      const row = this.entry(operationId),
+        dispatch = RuntimeBridgeDispatchSchema.parse(JSON.parse(row.dispatch));
+      if (
+        row.state !== 'unknown' ||
+        dispatch.payload.capability !== 'local.pdf.read' ||
+        !result.process.stopped ||
+        !pdfResultMatchesPayload(dispatch.payload, result)
+      )
+        throw new BridgeJournalError('JOURNAL_RECOVERY_MISMATCH');
+      const evidence = {
+        summary: '本地 PDF 原进程停止及固定结果已对账；未重新解析或换端',
+        output: result,
+      };
+      const ref = {
+        id: randomUUID(),
+        recordedAt: new Date().toISOString(),
+        digest: bridgeDigest(evidence),
+      };
+      const receipt = this.append(
+        row,
+        result.process.reason === 'canceled'
+          ? { type: 'operation.stopped', effects: 'none', evidence: ref }
+          : {
+              type: 'operation.outcome',
+              result: {
+                status: result.document !== null ? 'succeeded' : 'failed',
+                effects: 'none',
+                evidence: ref,
+              },
+            },
+        evidence,
+      );
+      this.database
+        .prepare("UPDATE entries SET state='completed' WHERE operation_id=?")
+        .run(operationId);
+      return receipt;
+    });
   }
 
   async unknownLocalPythonOperations() {

@@ -232,16 +232,18 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     ).toBe(false);
   });
 
-  it('keeps legacy executor capabilities and adds implemented file and managed Python capabilities', () => {
+  it('keeps legacy executor capabilities and adds implemented file, Python and fixed PDF capabilities', () => {
     expect(BridgeCapabilitySchema.options).toEqual([
       ...bridgeCapabilities,
       ...localFileCapabilities,
       'local.python.execute',
+      'local.pdf.read',
     ]);
     expect(BridgeCapabilities).toEqual([
       ...bridgeCapabilities,
       ...localFileCapabilities,
       'local.python.execute',
+      'local.pdf.read',
     ]);
     const inspect = {
       capability: 'local.file.inspect',
@@ -251,6 +253,13 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     expect(LegacyBridgeCommandPayloadSchema.safeParse(inspect).success).toBe(
       false,
     );
+    // PDF is only a governed V2 delegation; legacy command payloads stay closed.
+    expect(
+      BridgeCommandPayloadSchema.safeParse({
+        capability: 'local.pdf.read',
+        arguments: {},
+      }).success,
+    ).toBe(false);
     expect(BridgeCommandStatusSchema.options).toEqual([
       'queued',
       'claimed',

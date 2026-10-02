@@ -11,6 +11,7 @@ import {
   type BridgeReadinessCapability,
   type BridgeReadinessState,
   type RuntimeLocalPythonProfile,
+  type RuntimeLocalPdfProfile,
 } from '@allrice/contracts';
 import type { BridgeConfig } from './config.js';
 
@@ -84,6 +85,11 @@ export function projectBridgeCapabilityReadiness(input: {
     profile?: RuntimeLocalPythonProfile;
     reason?: string;
   };
+  managedPdf?: {
+    state: 'ready' | 'preparing' | 'unsupported';
+    profile?: RuntimeLocalPdfProfile;
+    reason?: string;
+  };
   observedAt?: string;
 }) {
   const env = input.environment,
@@ -117,7 +123,11 @@ export function projectBridgeCapabilityReadiness(input: {
     });
   };
   for (const capability of BridgeCapabilities) {
-    if (capability === 'local.python.execute') continue;
+    if (
+      capability === 'local.python.execute' ||
+      capability === 'local.pdf.read'
+    )
+      continue;
     const write =
       capability === 'local.fs.write' ||
       capability === 'local.fs.mkdir' ||
@@ -242,6 +252,33 @@ export function projectBridgeCapabilityReadiness(input: {
     );
   const managed = input.managedPython,
     profile = managed?.profile;
+  const pdf = input.managedPdf;
+  const pdfState = !input.operationLedgerEnabled
+    ? 'unsupported'
+    : pdf?.state === 'ready' && input.activeForeground
+      ? 'busy'
+      : (pdf?.state ?? 'unsupported');
+  const pdfReason = !input.operationLedgerEnabled
+    ? 'operation_ledger_disabled'
+    : pdfState === 'busy'
+      ? 'local_busy'
+      : (pdf?.reason ?? 'pdf_runtime_not_reported');
+  add(
+    'local.pdf.read',
+    pdfState,
+    pdfReason,
+    pdfState === 'unsupported' ? [pdfReason] : [],
+    pdf?.profile
+      ? {
+          backend: pdf.profile.backend,
+          architecture: pdf.profile.platform,
+          parser: pdf.profile.pins.parserVersion,
+          pdfjs: pdf.profile.pins.pdfJsVersion,
+          resources: pdf.profile.pins.resourceManifestChecksum,
+          policy: pdf.profile.pins.policyChecksum,
+        }
+      : {},
+  );
   // The existing readiness wire contract permits eight version facts total.
   // Keep six runtime identities alongside bridge/node; the authenticated
   // RuntimeLocalPythonProfile retains the full checker and font checksums.

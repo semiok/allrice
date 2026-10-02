@@ -1,9 +1,13 @@
-import { RuntimeLocalPythonProfileSchema } from '@allrice/contracts';
+import {
+  RuntimeLocalPythonProfileSchema,
+  RuntimeLocalPdfProfileSchema,
+} from '@allrice/contracts';
 import {
   bridgeDeviceStatus,
   localCommandEnabled,
   reportLocalCommandProfile,
   reportLocalPythonProfile,
+  reportLocalPdfProfile,
 } from '@allrice/database';
 import { getBridgeDeviceToken } from '../../../../../../lib/bridge/request';
 export const runtime = 'nodejs';
@@ -38,13 +42,16 @@ export async function POST(request: Request) {
     const { device } = await bridgeDeviceStatus(token);
     const value = JSON.parse(text + decoder.decode());
     const python = RuntimeLocalPythonProfileSchema.safeParse(value);
-    if (!python.success && !localCommandEnabled())
+    const pdf = RuntimeLocalPdfProfileSchema.safeParse(value);
+    if (!python.success && !pdf.success && !localCommandEnabled())
       return new Response(null, { status: 404, headers });
     return Response.json(
       {
-        profile: python.success
-          ? await reportLocalPythonProfile(device, python.data)
-          : await reportLocalCommandProfile(device, value),
+        profile: pdf.success
+          ? await reportLocalPdfProfile(device, pdf.data)
+          : python.success
+            ? await reportLocalPythonProfile(device, python.data)
+            : await reportLocalCommandProfile(device, value),
       },
       { headers },
     );
