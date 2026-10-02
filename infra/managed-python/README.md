@@ -43,6 +43,9 @@ a bit-identical new image ID. Keep the reviewed archive for the frozen release.
 
 Only a byte-verified archive belongs in the static release allowlist. Its presence
 does not imply runtime readiness: the client must verify the native architecture,
-execute its real probe and confirm physical stop. ARM remains unsupported until
-native execution is independently verified; a wheel lock or emulated build is
-not that evidence. The client downloads only the server's fixed asset route.
+execute its real probe and confirm physical stop. Both macOS architectures have
+native execution evidence. The client selects matching VM resources and still
+probes the installed environment; a wheel lock or emulated build is not that
+evidence. The client downloads only the server's fixed asset route. Release probes
+use the local Docker OCI runtime and validate the image's persisted proof, even
+when Docker reuses cached build steps.

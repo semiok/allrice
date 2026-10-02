@@ -305,9 +305,14 @@ export class ManagedPythonSandbox {
     });
   }
   async prepareManaged(signal: AbortSignal) {
+    const platform =
+      process.platform === 'darwin' &&
+      (process.arch === 'x64' || process.arch === 'arm64')
+        ? (`macos-${process.arch}` as const)
+        : null;
     if (
-      process.platform !== 'darwin' ||
-      process.arch !== 'x64' ||
+      !platform ||
+      this.release.platform !== platform ||
       !this.release.nativeSupported
     )
       throw new LocalCommandError('UNSUPPORTED_NATIVE_PLATFORM');
@@ -349,7 +354,7 @@ export class ManagedPythonSandbox {
       );
       return this.runner.preflight(signal);
     }
-    const distribution = managedSandboxReleases['macos-x64'];
+    const distribution = managedSandboxReleases[platform];
     const assets = [
       distribution.colima,
       distribution.lima,

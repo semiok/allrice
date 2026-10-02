@@ -406,13 +406,13 @@ export async function buildPayload({ architecture, socket, output, repo }) {
     )
       throw Error('payload_image_platform_or_budget_invalid');
     const buildOutput = await readFile(buildLog, 'utf8');
-    const imageProof = buildOutput
+    let imageProof = buildOutput
       .split('\n')
       .filter((line) => line.includes('{"aptChecksum":'))
       .map((line) => JSON.parse(line.slice(line.indexOf('{"aptChecksum":'))))
       .at(-1);
     if (
-      !imageProof ||
+      imageProof &&
       imageProof.packagesChecksum !== `sha256:${sha(requirementsBytes)}`
     )
       throw Error('payload_runtime_build_proof_missing');
@@ -428,8 +428,10 @@ export async function buildPayload({ architecture, socket, output, repo }) {
             '--name',
             probeName,
             '--rm',
-            '--runtime',
-            'runsc',
+            // The managed local VM uses Docker's native OCI runtime. Requiring
+            // the cloud-only runsc installation prevents native Mac builders
+            // from probing the same payload the Bridge actually executes.
+            '--runtime=runc',
             '--network=none',
             '--read-only',
             '--memory=512m',
@@ -455,8 +457,17 @@ export async function buildPayload({ architecture, socket, output, repo }) {
           },
         ),
       );
-      if (JSON.stringify(runtimeProof) !== JSON.stringify(imageProof))
+      // Cached Docker RUN steps omit their original stdout. The fixed native
+      // probe independently checks the persisted /opt/allrice/runtime.json
+      // against real libraries, files and generated Office outputs.
+      if (
+        runtimeProof.architecture !== architecture ||
+        runtimeProof.packagesChecksum !== `sha256:${sha(requirementsBytes)}` ||
+        (imageProof &&
+          JSON.stringify(runtimeProof) !== JSON.stringify(imageProof))
+      )
         throw Error('payload_runtime_proof_changed');
+      imageProof ??= runtimeProof;
     } finally {
       await command([...prefix, 'container', 'rm', '--force', probeName]).catch(
         () => undefined,
