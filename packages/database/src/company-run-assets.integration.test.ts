@@ -295,6 +295,13 @@ suite(
         true,
       );
       expect((await capture()).rules).toEqual([]);
+      const legacyContext = { ...owner, sessionId: randomUUID() };
+      expect(
+        (await capture(legacyContext, 'ordinary task', [])).templates,
+      ).toEqual([]);
+      await expect(
+        capture(legacyContext, 'report', [selection()]),
+      ).rejects.toThrow('authorization_denied');
       expect(old!.prompt_snapshot.companyAssets.rules).toHaveLength(1);
       await expect(
         capture(owner, 'report', [{ ...selection(), parameters: {} }]),

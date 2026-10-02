@@ -63,12 +63,16 @@ export async function captureCompanyRunAssets(
   text: string,
   selections: unknown = [],
 ): Promise<CompanyRunSnapshot> {
-  await requireCompanyAssetReader(context, context.organizationId, tx);
   const chosen = CompanyTemplateSelectionSchema.array()
     .max(3)
     .parse(selections);
   if (new Set(chosen.map((s) => s.assetId)).size !== chosen.length)
     throw new CompanyRunAssetError('selection_changed');
+  // Existing callers already authorize ordinary message admission. Company
+  // authority is an additional gate only when this input uses company material;
+  // an empty publication must not impose a new login protocol on legacy callers.
+  if (chosen.length)
+    await requireCompanyAssetReader(context, context.organizationId, tx);
   const [platform] = await tx<{ employee_id: string }[]>`
     select employee_id from allrice_platform_employee_tenant_assignments
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
@@ -95,6 +99,8 @@ export async function captureCompanyRunAssets(
     return [{ assetId: row.asset_id, revision: r }];
   });
   const templates: CompanyRunSnapshot['templates'] = [];
+  if (rules.length && !chosen.length)
+    await requireCompanyAssetReader(context, context.organizationId, tx);
   for (const selection of chosen) {
     const [row] = await tx<RevisionRow[]>`
       select r.* from allrice_company_assets a
