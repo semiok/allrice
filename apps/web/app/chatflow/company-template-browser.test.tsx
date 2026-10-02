@@ -100,7 +100,18 @@ describe('company template UI publication and fixed revision boundaries', () => 
     const row = asset();
     expect(companyAssetActions({ ...row, canEdit: false })).toEqual([]);
     expect(companyAssetActions({ ...row, state: 'archived' })).toEqual([]);
-    expect(companyAssetActions(row)).toEqual(['pause', 'withdraw', 'archive']);
+    expect(companyAssetActions(row)).toEqual([
+      'pause',
+      'withdraw',
+      'pin',
+      'archive',
+    ]);
+    expect(companyAssetActions({ ...row, pinned: true })).toEqual([
+      'pause',
+      'withdraw',
+      'unpin',
+      'archive',
+    ]);
     const newerDraft = {
       ...row,
       latest: { ...row.latest, id: randomUUID(), number: 2 },
@@ -110,6 +121,7 @@ describe('company template UI publication and fixed revision boundaries', () => 
       'publish',
       'pause',
       'withdraw',
+      'pin',
       'archive',
     ]);
     expect(companyAssetActions({ ...newerDraft, state: 'paused' })).toEqual([

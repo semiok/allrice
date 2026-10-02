@@ -4,6 +4,7 @@ import {
   DataAccessError,
   CompanyAssetError,
   listCompanyAssets,
+  listCompanyTemplateRecommendations,
   getCompanyAsset,
   listCompanyAssetRevisions,
   getCompanyAssetFile,
@@ -73,6 +74,18 @@ export async function companyAssetsHttp(
       });
     }
     const id = p.has('assetId') ? UuidSchema.parse(p.get('assetId')) : null;
+    if (!id && p.get('recommendations') === '1') {
+      if (administration) throw new DataAccessError('authorization_denied');
+      return Response.json(
+        await listCompanyTemplateRecommendations(
+          context,
+          org,
+          UuidSchema.parse(p.get('employeeId')),
+          p.get('task') ?? '',
+        ),
+        { headers },
+      );
+    }
     if (!id)
       return Response.json(
         await listCompanyAssets(context, org, {

@@ -22,6 +22,7 @@ import { readArtifactBytes } from './artifact-review.ts';
 import {
   getCompanyAssetFile,
   listCompanyAssets,
+  listCompanyTemplateRecommendations,
   listCompanyAssetRevisions,
   listCompanyRuleSources,
   mutateCompanyAsset,
@@ -289,6 +290,112 @@ suite(
       );
       expect(history.revisions).toHaveLength(2);
       expect(history.publishedRevisionIds).toHaveLength(2);
+    });
+    it('recommends only applicable published revisions, ranks company pins and rechecks current bytes and authority', async () => {
+      const employee = randomUUID(),
+        other = randomUUID();
+      await f.db`insert into allrice_platform_employees(id,employee_key,name,description,status)
+        values(${employee},'company-reference-fixture','Company reference fixture','Isolated recommendation fixture','published'),
+              (${other},'other-reference-fixture','Other reference fixture','Isolated recommendation fixture','published')`;
+      const create = async (
+        title: string,
+        extra: Partial<CompanyAssetContent> = {},
+      ) => {
+        let item = await mutate(owner, {
+          operation: 'save',
+          assetId: randomUUID(),
+          expectedRevision: 0,
+          content: content('template', {
+            title,
+            sourceVersionId: a.artifact.artifactId,
+            ...extra,
+          }),
+        });
+        item = await mutate(owner, {
+          operation: 'publish',
+          assetId: item.id,
+          expectedRevision: item.revision,
+        });
+        return item;
+      };
+      let pinned = await create('Pinned current reference');
+      const fixed = pinned.latest;
+      const matching = await create('Task-matching reference', {
+        taskKeywords: ['quarter-report'],
+      });
+      const excluded = await create('Different AI reference', {
+        appliesToEmployeeIds: [other],
+      });
+      const recommend = (ctx = owner) =>
+        listCompanyTemplateRecommendations(
+          ctx,
+          owner.organizationId,
+          employee,
+          'quarter-report',
+          f.db,
+        );
+      expect((await recommend()).assets[0]!.id).toBe(matching.id);
+      const pin = {
+        operation: 'pin',
+        assetId: pinned.id,
+        expectedRevision: pinned.revision,
+      };
+      pinned = await mutate(owner, pin);
+      expect((await mutate(owner, pin)).revision).toBe(pinned.revision);
+      await expect(
+        mutate(member, { ...pin, expectedRevision: pinned.revision }),
+      ).rejects.toThrow('authorization_denied');
+      pinned = await mutate(owner, {
+        operation: 'save',
+        assetId: pinned.id,
+        expectedRevision: pinned.revision,
+        content: {
+          ...pinned.latest.content,
+          body: 'NEW PRIVATE DRAFT MUST NOT BE RECOMMENDED',
+        },
+      });
+      const result = await recommend();
+      expect(result.assets[0]).toMatchObject({
+        id: pinned.id,
+        pinned: true,
+        latest: { id: fixed.id, digest: fixed.digest },
+      });
+      expect(JSON.stringify(result)).not.toContain('NEW PRIVATE DRAFT');
+      expect(result.assets.some((x) => x.id === excluded.id)).toBe(false);
+      expect((await recommend(member)).assets[0]!.latest.id).toBe(fixed.id);
+      await expect(recommend(foreign.context)).rejects.toThrow('not_found');
+      const [count] =
+        await f.db`select count(*)::int as count from allrice_company_asset_revisions where asset_id=${pinned.id}`;
+      expect(count!.count).toBe(2);
+      pinned = await mutate(
+        admin,
+        {
+          operation: 'unpin',
+          assetId: pinned.id,
+          expectedRevision: pinned.revision,
+        },
+        true,
+      );
+      expect((await recommend()).assets[0]!.id).toBe(matching.id);
+      await f.db`update allrice_storage_objects set created_at=clock_timestamp()-interval '2 seconds',retention_until=clock_timestamp()-interval '1 second' where id=${fixed.file!.objectId}`;
+      expect((await recommend()).assets.some((x) => x.id === pinned.id)).toBe(
+        false,
+      );
+      pinned = await mutate(owner, {
+        operation: 'withdraw',
+        assetId: pinned.id,
+        expectedRevision: pinned.revision,
+      });
+      await expect(
+        mutate(owner, {
+          operation: 'pin',
+          assetId: pinned.id,
+          expectedRevision: pinned.revision,
+        }),
+      ).rejects.toThrow('asset_unavailable');
+      expect((await recommend()).assets.some((x) => x.id === pinned.id)).toBe(
+        false,
+      );
     });
     it('pins an explicitly selected Memory revision while preserving the separately authored rule body', async () => {
       const memory = await createTraceableMemory(owner, {

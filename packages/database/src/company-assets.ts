@@ -40,6 +40,7 @@ type Row = {
   kind: 'rule' | 'template';
   state: CompanyAsset['state'];
   revision: number;
+  pinned: boolean;
   latest_revision_id: string | null;
   published_revision_id: string | null;
   content: CompanyAssetContent;
@@ -116,6 +117,7 @@ function asset(
     publishedRevisionId: row.published_revision_id,
     latest: revision(row),
     usage: row.usage,
+    pinned: row.pinned,
     canEdit:
       administration ||
       (row.kind === 'template' && row.owner_id === context.actor.id),
@@ -166,6 +168,46 @@ export async function listCompanyAssets(
         .slice(0, 50)
         .map((row) => asset(row, context, !!options.administration)),
       nextCursor: result.length > 50 ? result[49]!.id : null,
+      ruleBudget: { ...companyRuleBudget, publishedBytes: budget?.bytes ?? 0 },
+    };
+  });
+}
+/** Bounded discovery over the same authoritative publications. The owner also
+ * sees the published revision here, never a newer private draft. */
+export async function listCompanyTemplateRecommendations(
+  context: RequestContext,
+  org: string,
+  employeeInput: string,
+  taskInput = '',
+  db: Db = getDatabase(),
+) {
+  const employeeId = UuidSchema.parse(employeeInput),
+    task = taskInput.slice(0, 512);
+  return db.begin('isolation level repeatable read read only', async (tx) => {
+    await requireCompanyAssetReader(context, org, tx);
+    const result = await tx<Row[]>`
+      select a.*,u.display_name as owner_name,r.id as revision_id,r.number,r.content,r.digest,r.file_metadata,r.created_at
+      from allrice_company_assets a join allrice_users u on u.id=a.owner_id
+      join allrice_company_asset_revisions r on r.id=a.published_revision_id and r.asset_id=a.id
+      join allrice_company_asset_publications p on p.asset_id=a.id and p.revision_id=r.id
+      join allrice_storage_objects o on o.id=r.snapshot_object_id and o.state='ready' and o.deleted_at is null
+      where a.organization_id=${org} and a.kind='template' and a.state='published'
+        and (o.retention_until is null or o.retention_until>clock_timestamp())
+        and o.checksum=r.file_metadata->>'checksum' and o.size_bytes=(r.file_metadata->>'sizeBytes')::bigint
+        and o.media_type=r.file_metadata->>'mediaType' and o.size_bytes<=20971520
+        and (jsonb_array_length(r.content->'appliesToEmployeeIds')=0 or r.content->'appliesToEmployeeIds' ? ${employeeId})
+      order by a.pinned desc,
+        exists(select 1 from jsonb_array_elements_text(r.content->'taskKeywords') k where strpos(lower(${task}),lower(k))>0) desc,
+        a.id limit 6
+    `;
+    const [budget] = await tx<
+      { bytes: number }[]
+    >`select coalesce(sum(octet_length(r.content->>'body')),0)::int as bytes
+      from allrice_company_assets a join allrice_company_asset_revisions r on r.id=a.published_revision_id
+      where a.organization_id=${org} and a.kind='rule' and a.state='published'`;
+    return {
+      assets: result.map((row) => asset(row, context, false)),
+      nextCursor: null,
       ruleBudget: { ...companyRuleBudget, publishedBytes: budget?.bytes ?? 0 },
     };
   });
@@ -370,6 +412,7 @@ export async function mutateCompanyAsset(
           owner_id: string;
           kind: string;
           revision: number;
+          pinned: boolean;
           latest_revision_id: string | null;
           published_revision_id: string | null;
           state: string;
@@ -385,7 +428,17 @@ export async function mutateCompanyAsset(
         throw new DataAccessError('not_found');
       if (current && current.revision !== input.expectedRevision) {
         if (
+          (input.operation === 'pin' || input.operation === 'unpin') &&
+          current.revision === input.expectedRevision + 1 &&
+          current.kind === 'template' &&
+          current.state === 'published' &&
+          current.pinned === (input.operation === 'pin')
+        )
+          return;
+        if (
           input.operation !== 'save' &&
+          input.operation !== 'pin' &&
+          input.operation !== 'unpin' &&
           current.revision === input.expectedRevision + 1 &&
           current.state ===
             (
@@ -504,6 +557,23 @@ export async function mutateCompanyAsset(
         await tx`insert into allrice_company_asset_revisions(id,organization_id,asset_id,number,content,digest,snapshot_object_id,file_metadata,source_version_id,source_memory_id,source_memory_revision_id,base_asset_revision,created_by) values(${revisionId},${org},${input.assetId},${(latest?.number ?? 0) + 1},${tx.json(input.content)},${digest},${file?.objectId ?? null},${file ? tx.json(file) : null},${sourceId ?? null},${input.content.sourceMemoryId ?? null},${input.content.sourceMemoryRevisionId ?? null},${input.expectedRevision},${context.actor.id})`;
         await tx`update allrice_company_assets set latest_revision_id=${revisionId},revision=${current ? current.revision + 1 : 1},updated_at=clock_timestamp() where id=${input.assetId}`;
         await audit(tx, context, org, input.assetId, 'saved', revisionId);
+      } else if (input.operation === 'pin' || input.operation === 'unpin') {
+        if (
+          !current ||
+          current.kind !== 'template' ||
+          current.state !== 'published'
+        )
+          throw new CompanyAssetError('asset_unavailable');
+        await tx`update allrice_company_assets set pinned=${input.operation === 'pin'},revision=revision+1,updated_at=clock_timestamp()
+          where id=${input.assetId} and organization_id=${org}`;
+        await audit(
+          tx,
+          context,
+          org,
+          input.assetId,
+          input.operation,
+          current.published_revision_id,
+        );
       } else {
         if (!current) throw new DataAccessError('not_found');
         const publishing =
