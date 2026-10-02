@@ -114,9 +114,13 @@ export class LocalDockerApi {
           let total = 0;
           res.on('data', (chunk: Buffer) => {
             total += chunk.length;
-            if (total > maximum)
-              req.destroy(new LocalCommandError('DAEMON_RESPONSE_LIMIT'));
-            else chunks.push(chunk);
+            if (total > maximum) {
+              // A complete response may already have detached the socket's
+              // request error listener. Reject before closing without an error
+              // so queued end cannot succeed or emit an uncaught socket error.
+              reject(new LocalCommandError('DAEMON_RESPONSE_LIMIT'));
+              req.destroy();
+            } else chunks.push(chunk);
           });
           res.once('error', reject);
           res.once('end', () => {
@@ -169,9 +173,8 @@ export class LocalDockerApi {
               try {
                 if (JSON.parse(line).error) throw Error();
               } catch {
-                req.destroy(
-                  new LocalCommandError('TOOLCHAIN_PREPARATION_FAILED'),
-                );
+                reject(new LocalCommandError('TOOLCHAIN_PREPARATION_FAILED'));
+                req.destroy();
                 return;
               }
             }
@@ -294,14 +297,16 @@ export class LocalDockerApi {
                 ![1, 2].includes(buffered[0] ?? 0) ||
                 buffered.readUIntBE(1, 3) !== 0
               ) {
-                req.destroy(new LocalCommandError('DAEMON_INVALID_FRAME'));
+                reject(new LocalCommandError('DAEMON_INVALID_FRAME'));
+                req.destroy();
                 return;
               }
               if (buffered.length < length + 8) break;
               try {
                 receive(buffered.subarray(8, 8 + length));
               } catch {
-                req.destroy(new LocalCommandError('DAEMON_INVALID_OUTPUT'));
+                reject(new LocalCommandError('DAEMON_INVALID_OUTPUT'));
+                req.destroy();
                 return;
               }
               buffered = buffered.subarray(8 + length);

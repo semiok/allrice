@@ -551,6 +551,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       await page
         .getByRole('button', { name: '连接与用量', exact: true })
         .click();
+      // Initial member discovery starts both connection reads; wait for those
+      // before switching tabs so canSwitch does not reject an in-flight load.
+      await page.getByText('暂无应用连接。', { exact: false }).waitFor();
+      await page.getByText('还没有连接电脑。', { exact: false }).waitFor();
       await page.getByRole('button', { name: '用量', exact: true }).click();
       await page
         .getByLabel('实际使用者', { exact: true })
@@ -1074,19 +1078,20 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         .getByText('是否自动执行，由使用者在前台', { exact: false })
         .waitFor();
       const save = async () => {
+        const button = page.getByRole('button', {
+          name: '保存草稿',
+          exact: true,
+        });
+        // The tool tree is much taller than the former Security panel. Finish
+        // scrolling to the header before checking it and starting the HTTP
+        // response deadline.
+        await button.scrollIntoViewIfNeeded();
         await page
           .getByRole('heading', {
             name: 'MET151 MCP safety fixture',
             exact: true,
           })
           .waitFor();
-        const button = page.getByRole('button', {
-          name: '保存草稿',
-          exact: true,
-        });
-        // The tool tree is much taller than the former Security panel. Finish
-        // scrolling to the header before starting the HTTP response deadline.
-        await button.scrollIntoViewIfNeeded();
         const [result] = await Promise.all([
           page.waitForResponse(
             (r) =>

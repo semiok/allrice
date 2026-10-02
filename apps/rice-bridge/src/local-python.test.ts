@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, type RequestListener } from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -14,6 +14,7 @@ import {
   readLocalPythonArchive,
 } from './local-python-archive.js';
 import { LocalPythonRunner } from './local-python-runner.js';
+import { LocalDockerApi } from './local-docker-api.js';
 import type { LocalPythonTransport } from './local-python-client.js';
 import {
   assertManagedSandboxConfiguration,
@@ -103,6 +104,154 @@ function chartPayload() {
     },
   });
 }
+
+async function daemon(reply: RequestListener) {
+  const root = await mkdtemp(join(tmpdir(), 'allrice-python-boundary-')),
+    socket = join(root, 'engine.sock'),
+    server = createServer(reply);
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  cleanups.push(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+  return new LocalDockerApi(socket);
+}
+
+describe('actual Engine HTTP rejection at a complete response boundary', () => {
+  it.each(['complete', 'chunked'])(
+    '%s archive over the bound rejects without a late socket exception',
+    async (mode) => {
+      const api = await daemon((_req, res) => {
+        if (mode === 'complete') {
+          res.setHeader('content-length', 1025);
+          res.end(Buffer.alloc(1025));
+        } else {
+          res.write(Buffer.alloc(1024));
+          setImmediate(() => res.end(Buffer.alloc(1)));
+        }
+      });
+      await expect(
+        api.getArchive(
+          'a'.repeat(64),
+          '/tmp/work/output/result.png',
+          1024,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: 'DAEMON_RESPONSE_LIMIT' });
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  );
+
+  it('accepts an archive exactly at the byte bound', async () => {
+    const bytes = Buffer.alloc(1024, 37),
+      api = await daemon((_req, res) => res.end(bytes));
+    await expect(
+      api.getArchive(
+        'a'.repeat(64),
+        '/tmp/work/output/result.png',
+        bytes.length,
+        new AbortController().signal,
+      ),
+    ).resolves.toEqual(bytes);
+  });
+
+  it.each([
+    {
+      method: 'json',
+      code: 'DAEMON_RESPONSE_LIMIT',
+      body: Buffer.alloc(2_000_001, 32),
+    },
+    {
+      method: 'prepare',
+      code: 'TOOLCHAIN_PREPARATION_FAILED',
+      body: Buffer.from('{"error":"synthetic daemon refusal"}\n'),
+    },
+    {
+      method: 'prepare',
+      code: 'DAEMON_RESPONSE_LIMIT',
+      body: Buffer.alloc(100_001, 32),
+    },
+    {
+      method: 'logs',
+      code: 'DAEMON_INVALID_FRAME',
+      body: (() => {
+        const frame = Buffer.alloc(8);
+        frame[0] = 1;
+        frame.writeUInt32BE(250_001, 4);
+        return frame;
+      })(),
+    },
+    {
+      method: 'receive',
+      code: 'DAEMON_INVALID_OUTPUT',
+      body: Buffer.from([1, 0, 0, 0, 0, 0, 0, 1, 37]),
+    },
+  ])(
+    '$method preserves $code for a complete invalid response',
+    async ({ method, code, body }) => {
+      const api = await daemon((_req, res) => {
+        res.setHeader('content-length', body.length);
+        res.end(body);
+      });
+      const operation =
+        method === 'json'
+          ? api.json('GET', '/info')
+          : method === 'prepare'
+            ? api.prepareToolchain(new AbortController().signal)
+            : api.logs(
+                'a'.repeat(64),
+                () => {
+                  if (method === 'receive') throw Error('synthetic output');
+                },
+                5000,
+              );
+      await expect(operation).rejects.toMatchObject({ code });
+      await new Promise((resolve) => setImmediate(resolve));
+    },
+  );
+
+  it('preserves a non-success daemon HTTP status', async () => {
+    const api = await daemon((_req, res) => {
+      res.statusCode = 503;
+      res.end('synthetic refusal');
+    });
+    await expect(
+      api.getArchive(
+        'a'.repeat(64),
+        '/tmp/work/output/result.png',
+        1024,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'DAEMON_HTTP_503' });
+  });
+
+  it('preserves an interrupted response transport error', async () => {
+    const api = await daemon((_req, res) => {
+      res.setHeader('content-length', 1024);
+      res.write(Buffer.alloc(1));
+      setImmediate(() => res.destroy());
+    });
+    await expect(
+      api.getArchive(
+        'a'.repeat(64),
+        '/tmp/work/output/result.png',
+        1024,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'ECONNRESET' });
+  });
+
+  it('preserves the absolute JSON request deadline', async () => {
+    const api = await daemon((_req, res) => {
+      res.setHeader('content-length', 1024);
+      res.write(Buffer.alloc(1));
+    });
+    await expect(api.json('GET', '/info', undefined, 10)).rejects.toMatchObject(
+      { code: 'DAEMON_TIMEOUT' },
+    );
+  });
+});
 
 async function engine(
   options: {
