@@ -107,3 +107,4 @@ export * from './local-python-execution.ts';
 export * from './local-pdf-execution.ts';
 export * from './office-pdf-execution.ts';
 export * from './company-assets.ts';
+export * from './task-next-steps.ts';

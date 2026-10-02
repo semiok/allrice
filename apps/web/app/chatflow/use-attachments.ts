@@ -10,7 +10,12 @@ import {
   type SetStateAction,
 } from 'react';
 
-import { officeMediaTypes, type DeliverableVersion } from '@allrice/contracts';
+import {
+  officeMediaTypes,
+  type DeliverableVersion,
+  type TaskNextStepReference,
+} from '@allrice/contracts';
+import { appendTaskReferences } from '../../lib/chatflow/task-reference-draft';
 
 import type {
   Attachment,
@@ -47,6 +52,7 @@ export interface WorkspaceFileAddResult {
 }
 
 interface UseAttachmentsResult {
+  addTaskReferences: (references: TaskNextStepReference[]) => void;
   addWorkspaceFiles: (
     files: WorkspaceFile[],
   ) => Promise<WorkspaceFileAddResult>;
@@ -629,6 +635,14 @@ export function useAttachments({
   );
 
   return {
+    addTaskReferences(references) {
+      const next = appendTaskReferences(
+        pendingAttachmentsRef.current,
+        references,
+      );
+      pendingAttachmentsRef.current = next;
+      setPendingAttachments(next);
+    },
     addWorkspaceFiles,
     attachmentPreview,
     clearPendingAttachments,

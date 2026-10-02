@@ -11,6 +11,8 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import type {
   TaskSuggestionDisplay,
+  TaskNextStep,
+  TaskNextSteps,
   WorkspaceReadiness,
 } from '@allrice/contracts';
 import {
@@ -38,6 +40,9 @@ export function TaskSuggestions({
   readiness,
   onPrepare,
   onPreparation,
+  nextSteps,
+  onOpen,
+  onPrepareNextStep,
 }: {
   suggestions: TaskSuggestionDisplay[];
   draft: string;
@@ -48,11 +53,19 @@ export function TaskSuggestions({
   readiness: WorkspaceReadiness | null;
   onPrepare: (prepared: PreparedComposerDraft) => void;
   onPreparation: (preparation: Preparation) => void;
+  nextSteps?: TaskNextSteps | null;
+  onOpen?: () => void;
+  onPrepareNextStep?: (
+    step: TaskNextStep,
+    snapshot: TaskNextSteps,
+  ) => Promise<void>;
 }) {
   const [snapshot, setSnapshot] = useState<TaskSuggestionDisplay[] | null>(
     null,
   );
   const [page, setPage] = useState(0);
+  const [nextSnapshot, setNextSnapshot] = useState<TaskNextSteps | null>(null);
+  const [checking, setChecking] = useState(false);
   const [selected, setSelected] = useState<TaskSuggestionDisplay | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
   const [error, setError] = useState('');
@@ -62,6 +75,7 @@ export function TaskSuggestions({
   const visible = (snapshot ?? suggestions).slice(page * 5, page * 5 + 5);
   const close = () => {
     setSnapshot(null);
+    setNextSnapshot(null);
     setSelected(null);
     setError('');
   };
@@ -107,12 +121,19 @@ export function TaskSuggestions({
     dialog.addEventListener('keydown', trap);
     return () => {
       dialog.removeEventListener('keydown', trap);
-      if (trigger.current?.isConnected)
+      // An async next-step check may have already focused the composer before
+      // passive Modal cleanup. Preserve that deliberate focus destination.
+      if (
+        trigger.current?.isConnected &&
+        (document.activeElement === document.body ||
+          dialog.contains(document.activeElement))
+      )
         trigger.current.focus({ preventScroll: true });
     };
   }, [selected, snapshot, compact]);
 
   function pick(suggestion: TaskSuggestionDisplay) {
+    if (checking) return;
     setSnapshot(null);
     setError('');
     if (suggestion.slots?.some((slot) => slot.required && !slot.defaultValue)) {
@@ -140,6 +161,23 @@ export function TaskSuggestions({
       );
       setSelected(suggestion);
       setError(cause instanceof Error ? cause.message : '请补齐参数');
+    }
+  }
+  async function pickNext(step: TaskNextStep) {
+    if (busy || checking || !nextSnapshot || !onPrepareNextStep) return;
+    setChecking(true);
+    setError('');
+    try {
+      await onPrepareNextStep(step, nextSnapshot);
+      close();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : '建议已变化，请关闭后重新打开。',
+      );
+    } finally {
+      setChecking(false);
     }
   }
   function prepare() {
@@ -178,6 +216,14 @@ export function TaskSuggestions({
     }));
   }
   function menuSelect(id: string) {
+    if (checking) return;
+    const next = nextSnapshot?.suggestions.find(
+      (step) => `next:${step.task.id}` === id,
+    );
+    if (next) {
+      void pickNext(next);
+      return;
+    }
     if (id === 'page:more') {
       setPage((current) => (current ? 0 : 1));
       return;
@@ -191,7 +237,10 @@ export function TaskSuggestions({
     if (suggestion) pick(suggestion);
   }
   const footer: MenuEntry[] = [
-    ...preparationEntries(visible),
+    ...preparationEntries([
+      ...visible,
+      ...(nextSnapshot?.suggestions.map((s) => s.task) ?? []),
+    ]),
     ...((snapshot?.length ?? 0) > 5
       ? [
           {
@@ -208,13 +257,27 @@ export function TaskSuggestions({
       type="button"
       ref={trigger}
       className={css.trigger}
-      disabled={busy || !suggestions.length}
+      disabled={
+        busy ||
+        checking ||
+        !(
+          suggestions.length ||
+          nextSteps?.suggestions.length ||
+          nextSteps?.notice
+        )
+      }
       aria-label="推荐任务"
       aria-haspopup={compact ? 'dialog' : 'menu'}
       aria-expanded={!!snapshot}
       onClick={() => {
         setPage(0);
-        setSnapshot((current) => (current ? null : [...suggestions]));
+        setError('');
+        if (snapshot) close();
+        else {
+          setSnapshot([...suggestions]);
+          setNextSnapshot(nextSteps ?? null);
+          onOpen?.();
+        }
       }}
     >
       <IconChecklistOutlineRegular size={16} aria-hidden="true" />
@@ -223,7 +286,9 @@ export function TaskSuggestions({
   );
   return (
     <div className={css.row}>
-      {suggestions.length ? (
+      {suggestions.length ||
+      nextSteps?.suggestions.length ||
+      nextSteps?.notice ? (
         compact ? (
           triggerButton
         ) : (
@@ -235,7 +300,7 @@ export function TaskSuggestions({
             portal
             listClassName={css.menu}
             anchor={triggerButton}
-            onClose={() => setSnapshot(null)}
+            onClose={close}
             items={[
               {
                 type: 'label',
@@ -244,6 +309,7 @@ export function TaskSuggestions({
               },
               ...visible.map((suggestion) => ({
                 id: `task:${suggestion.id}`,
+                disabled: checking,
                 label: (
                   <span className={css.item}>
                     <strong>{suggestion.title}</strong>
@@ -254,6 +320,56 @@ export function TaskSuggestions({
                   </span>
                 ),
               })),
+              ...(nextSnapshot?.suggestions.length || nextSnapshot?.notice
+                ? [
+                    {
+                      type: 'label' as const,
+                      id: 'next-heading',
+                      text: `下一步 · ${actionLabel}`,
+                    },
+                    ...(nextSnapshot.notice
+                      ? [
+                          {
+                            type: 'label' as const,
+                            id: 'next-notice',
+                            text: nextSnapshot.notice,
+                          },
+                        ]
+                      : []),
+                    ...nextSnapshot.suggestions.map((step) => ({
+                      id: `next:${step.task.id}`,
+                      disabled: checking,
+                      label: (
+                        <span className={css.item}>
+                          <strong>{step.task.title}</strong>
+                          {step.task.description && (
+                            <small>{step.task.description}</small>
+                          )}
+                          {step.references.map((ref) => (
+                            <small key={ref.versionId}>
+                              引用：{ref.fileName}
+                            </small>
+                          ))}
+                          {hints(step.task) && (
+                            <small>{hints(step.task)}</small>
+                          )}
+                        </span>
+                      ),
+                    })),
+                  ]
+                : []),
+              ...(checking
+                ? [
+                    {
+                      type: 'label' as const,
+                      id: 'next-checking',
+                      text: '正在核对已有资料…',
+                    },
+                  ]
+                : []),
+              ...(error
+                ? [{ type: 'label' as const, id: 'next-error', text: error }]
+                : []),
             ]}
             footer={footer}
             onSelect={menuSelect}
@@ -365,6 +481,7 @@ export function TaskSuggestions({
                   className={css.mobileItem}
                   type="button"
                   key={suggestion.id}
+                  disabled={checking}
                   onClick={() => pick(suggestion)}
                 >
                   <strong>{suggestion.title}</strong>
@@ -374,6 +491,32 @@ export function TaskSuggestions({
                   {hints(suggestion) && <small>{hints(suggestion)}</small>}
                 </button>
               ))}
+              {nextSnapshot?.suggestions.length || nextSnapshot?.notice ? (
+                <>
+                  <strong>下一步 · {actionLabel}</strong>
+                  {nextSnapshot.notice && <p>{nextSnapshot.notice}</p>}
+                  {nextSnapshot.suggestions.map((step) => (
+                    <button
+                      className={css.mobileItem}
+                      type="button"
+                      key={step.task.id}
+                      disabled={checking}
+                      onClick={() => void pickNext(step)}
+                    >
+                      <strong>{step.task.title}</strong>
+                      {step.task.description && (
+                        <small>{step.task.description}</small>
+                      )}
+                      {step.references.map((ref) => (
+                        <small key={ref.versionId}>引用：{ref.fileName}</small>
+                      ))}
+                      {hints(step.task) && <small>{hints(step.task)}</small>}
+                    </button>
+                  ))}
+                </>
+              ) : null}
+              {checking && <p>正在核对已有资料…</p>}
+              {error && <p role="alert">{error}</p>}
               {footer.map(
                 (item) =>
                   'label' in item && (

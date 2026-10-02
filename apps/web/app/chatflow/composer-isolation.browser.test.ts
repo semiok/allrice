@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   workspaceCapabilityIds,
   type TaskSuggestionDisplay,
+  type TaskNextSteps,
   type WorkspaceReadiness,
 } from '@allrice/contracts';
 import type { Attachment, WorkspaceFile } from './chatflow-types';
@@ -29,6 +30,8 @@ const B = '22222222-2222-4222-8222-222222222222';
 const C = '33333333-3333-4333-8333-333333333333';
 const runId = '44444444-4444-4444-8444-444444444444';
 const childId = '55555555-5555-4555-8555-555555555555';
+const nextAssignmentId = '77777777-7777-4777-8777-777777777777';
+const nextVersionId = '88888888-8888-4888-8888-888888888888';
 const now = '2026-09-14T00:00:00.000Z';
 type Pending = {
   path: string;
@@ -253,6 +256,8 @@ suite(
         width?: number;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
+        nextSteps?: TaskNextSteps;
+        delayNextStepsA?: boolean;
         readiness?: WorkspaceReadiness['capabilities'];
       } = {},
     ) {
@@ -261,6 +266,19 @@ suite(
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
       const uploaded = new Map<string, Attachment>();
+      let nextSteps = options.nextSteps;
+      let holdNextReply = false;
+      let releaseHeldNextReply: (() => void) | undefined;
+      let releaseNextStepsA!: () => void;
+      const nextStepsGate = new Promise<void>((done) => {
+        releaseNextStepsA = done;
+      });
+      const fixtureSession = (id: string) => ({
+        ...session(id),
+        ...(options.nextSteps
+          ? { employeeAssignmentId: nextAssignmentId }
+          : {}),
+      });
       let releaseHistoryB!: () => void;
       const historyBGate = new Promise<void>((done) => {
         releaseHistoryB = done;
@@ -345,9 +363,11 @@ suite(
             workspace: {
               organizationId: A,
               workspaceId: B,
-              ...(options.readiness ? { viewerId: C } : {}),
+              ...(options.readiness || options.nextSteps
+                ? { viewerId: C }
+                : {}),
               canAdminister: false,
-              sessions: [session(A), session(B)],
+              sessions: [fixtureSession(A), fixtureSession(B)],
               sessionModels: [A, B].map((sessionId) => ({
                 sessionId,
                 harness: 'dsh',
@@ -358,12 +378,16 @@ suite(
               employeeProfiles: [],
               employees: [
                 {
-                  id: 'employee',
+                  id: options.nextSteps ? nextAssignmentId : 'employee',
                   employeeId: 'employee',
                   isDefault: true,
                   versions: [],
                   currentVersion: {
-                    id: options.readiness ? C : 'version',
+                    id: options.nextSteps
+                      ? nextVersionId
+                      : options.readiness
+                        ? C
+                        : 'version',
                     taskSuggestions: options.taskSuggestions ?? [],
                     manifest: {
                       name: 'Rice',
@@ -468,6 +492,33 @@ suite(
           answer(response, { artifacts: [], nextCursor: null });
           return;
         }
+        if (path.endsWith('/next-steps') && options.nextSteps) {
+          const capturedSteps = nextSteps;
+          if (holdNextReply && path.includes(`/${A}/`)) {
+            holdNextReply = false;
+            await new Promise<void>((done) => {
+              releaseHeldNextReply = done;
+            });
+          }
+          if (path.includes(`/${A}/`) && options.delayNextStepsA)
+            await nextStepsGate;
+          if (!capturedSteps) answer(response, { code: 'UNAVAILABLE' }, 503);
+          else if (path.includes(`/${A}/`)) answer(response, capturedSteps);
+          else
+            answer(response, {
+              ...capturedSteps,
+              scope: {
+                ...capturedSteps.scope,
+                sessionId: B,
+                sourceRunId: null,
+              },
+              state: 'idle',
+              notice: '',
+              suggestions: [],
+              readableArtifactCount: 0,
+            });
+          return;
+        }
         if (path.endsWith('/interactions')) {
           answer(response, {
             runtime: null,
@@ -518,7 +569,7 @@ suite(
           if (id === B && options.delayHistoryB) await historyBGate;
           answer(response, {
             history: {
-              session: session(id),
+              session: fixtureSession(id),
               messages: messages[id],
               contextStatus: {
                 percentage: 0,
@@ -618,6 +669,16 @@ suite(
         pending,
         reads,
         writes,
+        releaseNextStepsA,
+        setNextSteps(value: TaskNextSteps | undefined) {
+          nextSteps = value;
+        },
+        holdNextStepsReply() {
+          holdNextReply = true;
+        },
+        releaseHeldNextReply() {
+          releaseHeldNextReply?.();
+        },
         errors,
         releaseHistoryB,
         showTiming() {
@@ -1594,6 +1655,312 @@ suite(
           .getByRole('menuitem', { name: new RegExp(`^${title}`) })
           .click();
     }
+    function nextStepsProof(
+      title = '检查本轮成果',
+      revision = 'a',
+    ): TaskNextSteps {
+      return {
+        contractVersion: 1,
+        scope: {
+          organizationId: A,
+          workspaceId: B,
+          viewerId: C,
+          sessionId: A,
+          employeeAssignmentId: nextAssignmentId,
+          employeeVersionId: nextVersionId,
+          sourceRunId: runId,
+          contextRevision: `sha256:${revision.repeat(64)}`,
+        },
+        state: 'succeeded',
+        readableArtifactCount: 1,
+        notice: '',
+        suggestions: [
+          {
+            source: 'context-rule',
+            task: {
+              id: 'check-current-result',
+              title,
+              template: '读取这份已有成果，核对异常与依据；先不要修改原件。',
+            },
+            references: [
+              {
+                objectId: childId,
+                versionId: runId,
+                checksum: `sha256:${'c'.repeat(64)}`,
+                fileName: '原成果{{参数}}.xlsx',
+                mediaType:
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                sizeBytes: 12,
+                visibility: 'private',
+              },
+            ],
+          },
+        ],
+      };
+    }
+    const nextRows = (page: Page, width: number, title: string) =>
+      width < 760
+        ? page
+            .getByRole('dialog', { name: '推荐任务', exact: true })
+            .getByRole('button', { name: new RegExp(`^${title}`) })
+        : page.getByRole('menuitem', { name: new RegExp(`^${title}`) });
+    it.each([1440, 390])(
+      'next-step native menu/modal preserves draft/uploads and references existing bytes without sending at %ipx',
+      async (width) => {
+        const proof = nextStepsProof(),
+          f = await fixture({
+            width,
+            taskSuggestions: [weeklyTask],
+            nextSteps: proof,
+            longHistory: true,
+          });
+        try {
+          await expect
+            .poll(() => f.reads.some((url) => url.includes('/next-steps')))
+            .toBe(true);
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('原草稿👩‍🔬\n保留 {{原文}}');
+          await f.page.locator('input[type=file]').setInputFiles({
+            name: '未上传.txt',
+            mimeType: 'text/plain',
+            buffer: Buffer.from('original draft attachment'),
+          });
+          await expect
+            .poll(() =>
+              f.page.getByTitle('未上传.txt', { exact: true }).count(),
+            )
+            .toBe(1);
+          const scroll = f.page.locator('[data-conversation-scroll]');
+          await scroll.evaluate((el) => {
+            el.scrollTop = 300;
+          });
+          await f.page.waitForTimeout(50);
+          const originalScroll = await scroll.evaluate((el) => el.scrollTop);
+          const originalHeader = await f.page
+            .getByRole('heading', { level: 1 })
+            .boundingBox();
+          await selectSuggestion(f.page, '检查本轮成果', width);
+          await expect
+            .poll(() => input.inputValue())
+            .toBe(
+              '原草稿👩‍🔬\n保留 {{原文}}\n\n' +
+                proof.suggestions[0]!.task.template +
+                '\n\n参考成果："原成果{{参数}}.xlsx"。',
+            );
+          expect(
+            await f.page.getByTitle('未上传.txt', { exact: true }).count(),
+          ).toBe(1);
+          expect(
+            await f.page
+              .getByTitle('原成果{{参数}}.xlsx', { exact: true })
+              .count(),
+          ).toBe(1);
+          await expect
+            .poll(() => input.evaluate((el) => document.activeElement === el))
+            .toBe(true);
+          expect(await scroll.evaluate((el) => el.scrollTop)).toBe(
+            originalScroll,
+          );
+          expect(
+            await f.page.getByRole('heading', { level: 1 }).boundingBox(),
+          ).toEqual(originalHeader);
+          expect(f.writes).toEqual([]);
+          expect(f.pending).toEqual([]);
+          await selectSuggestion(f.page, '检查本轮成果', width);
+          expect(
+            await f.page
+              .getByTitle('原成果{{参数}}.xlsx', { exact: true })
+              .count(),
+          ).toBe(1);
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+          // The original send action remains the only message submission route.
+          await input.press('Enter');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toBe(`/api/v1/sessions/${A}/messages`);
+          expect(f.pending[0]!.body.attachmentIds).toEqual(
+            expect.arrayContaining([childId, C]),
+          );
+        } finally {
+          await f.close();
+        }
+      },
+      15000,
+    );
+    it('next-step list stays frozen while open and rejects a changed source revision until reopened', async () => {
+      const f = await fixture({
+        taskSuggestions: [weeklyTask],
+        nextSteps: nextStepsProof(),
+      });
+      try {
+        await expect
+          .poll(
+            () => f.reads.filter((url) => url.includes('/next-steps')).length,
+          )
+          .toBeGreaterThan(0);
+        // First populate the settled hook snapshot without relying on fetch timing.
+        const opened = f.page.waitForResponse((response) =>
+          response.url().includes('/next-steps'),
+        );
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await opened;
+        await nextRows(f.page, 1440, '检查本轮成果').waitFor();
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        await f.page.keyboard.press('Escape');
+        const previousReads = f.reads.filter((url) =>
+          url.includes('/next-steps'),
+        ).length;
+        f.holdNextStepsReply();
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await expect
+          .poll(
+            () => f.reads.filter((url) => url.includes('/next-steps')).length,
+          )
+          .toBeGreaterThan(previousReads);
+        await nextRows(f.page, 1440, '检查本轮成果').waitFor();
+        expect(await nextRows(f.page, 1440, '新一轮资料核对').count()).toBe(0);
+        // Opening's in-flight response has already captured OLD facts. A click
+        // must make a new verification read rather than adopt that old promise.
+        f.setNextSteps(nextStepsProof('新一轮资料核对', 'b'));
+        await nextRows(f.page, 1440, '检查本轮成果').click();
+        await f.page
+          .getByText('下一步建议或资料已变化，请关闭后重新打开。', {
+            exact: true,
+          })
+          .waitFor();
+        f.releaseHeldNextReply();
+        expect(await nextRows(f.page, 1440, '检查本轮成果').count()).toBe(1);
+        expect(await nextRows(f.page, 1440, '新一轮资料核对').count()).toBe(0);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('');
+        expect(
+          await f.page
+            .getByTitle('原成果{{参数}}.xlsx', { exact: true })
+            .count(),
+        ).toBe(0);
+        await f.page.keyboard.press('Escape');
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await nextRows(f.page, 1440, '新一轮资料核对').waitFor();
+        expect(await nextRows(f.page, 1440, '新一轮资料核对').count()).toBe(1);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15000);
+    it('a delayed next-step response cannot leak across Session selection', async () => {
+      const f = await fixture({
+        taskSuggestions: [weeklyTask],
+        nextSteps: nextStepsProof(),
+        delayNextStepsA: true,
+      });
+      try {
+        await expect
+          .poll(() => f.reads.some((url) => url.includes(`/${A}/next-steps`)))
+          .toBe(true);
+        await f.choose(B);
+        f.releaseNextStepsA();
+        await f.page.getByText('Existing B', { exact: true }).waitFor();
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await f.page.getByRole('menuitem', { name: /^整理周报/ }).waitFor();
+        expect(await nextRows(f.page, 1440, '检查本轮成果').count()).toBe(0);
+        expect(
+          await f.page
+            .getByRole('textbox', { name: '给 Rice 的消息' })
+            .inputValue(),
+        ).toBe('');
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15000);
+    it('unknown states stay honest and a failed suggestion refresh retains ordinary task fallback', async () => {
+      const proof = {
+        ...nextStepsProof(),
+        state: 'unknown' as const,
+        suggestions: [],
+        notice: '执行结果尚未确认，请先核对已执行的操作；不会建议重跑。',
+      };
+      const f = await fixture({
+        taskSuggestions: [weeklyTask],
+        nextSteps: proof,
+      });
+      try {
+        await expect
+          .poll(() => f.reads.some((url) => url.includes('/next-steps')))
+          .toBe(true);
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await f.page.getByText(proof.notice, { exact: true }).waitFor();
+        await f.page.keyboard.press('Escape');
+        f.setNextSteps(undefined);
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await expect
+          .poll(
+            () => f.reads.filter((url) => url.includes('/next-steps')).length,
+          )
+          .toBeGreaterThan(2);
+        await f.page.keyboard.press('Escape');
+        await selectSuggestion(f.page, weeklyTask.title);
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('textbox', { name: '给 Rice 的消息' })
+              .inputValue(),
+          )
+          .toBe('整理最近 7 天的工作，输出科研👩‍🔬总结。');
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15000);
+    it('next-step responses for another viewer or employee version never appear in the current composer', async () => {
+      const proof = nextStepsProof();
+      const f = await fixture({
+        taskSuggestions: [weeklyTask],
+        nextSteps: {
+          ...proof,
+          scope: { ...proof.scope, viewerId: A, employeeVersionId: childId },
+        },
+      });
+      try {
+        await expect
+          .poll(() => f.reads.some((url) => url.includes('/next-steps')))
+          .toBe(true);
+        await f.page
+          .getByRole('button', { name: '推荐任务', exact: true })
+          .click();
+        await f.page.getByRole('menuitem', { name: /^整理周报/ }).waitFor();
+        expect(await nextRows(f.page, 1440, '检查本轮成果').count()).toBe(0);
+        expect(f.writes).toEqual([]);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15000);
     it.each([1440, 390])(
       'recommendation fills a default task locally with selection and no request at %ipx',
       async (width) => {
