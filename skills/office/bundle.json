@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.7.0",
-  "contentChecksum": "sha256:634af1ed79bccf1b75e7b8519a558d23879484208968d9fe9fdde6b165946f24",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=634af1ed79bccf1b75e7b8519a558d23879484208968d9fe9fdde6b165946f24",
+  "version": "1.7.1",
+  "contentChecksum": "sha256:458e29701b88277bb965710675b69c2db28b7d22c68a345f5c258235dc9001c2",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=458e29701b88277bb965710675b69c2db28b7d22c68a345f5c258235dc9001c2",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "MET-166 native PDF reading and DSH Office-to-PDF formal delivery",
+  "reviewedBy": "MET-166 writable Office output and in-memory intermediate charts",
   "resources": [
     {
       "path": "references/LICENSE.dsh",
@@ -27,8 +27,8 @@
     {
       "path": "references/provenance.md",
       "mediaType": "text/markdown",
-      "byteLength": 6108,
-      "checksum": "sha256:035140fc5ce6844b900eefdde86728a440c176ffa47967c552db26a1b781ad65"
+      "byteLength": 6528,
+      "checksum": "sha256:73692fe67adb66e61413e7a0fad5fbc5be8f1e8cffc4c1bd8e0c91844a9ed8c2"
     },
     {
       "path": "references/xlsx.md",
@@ -65,5 +65,5 @@
       "name": "python.execute"
     }
   ],
-  "checksum": "sha256:973dbfca4b72631be41799a0e8857444280476b85e9a3711a1b15316f9ec5175"
+  "checksum": "sha256:a0f5412e84447df2bef2bf6853ed4a49ce888ee20724336957836a22eb511fd8"
 }
