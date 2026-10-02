@@ -2,6 +2,7 @@ import {
   ImageToolInputSchema,
   OfficeExportSchema,
   NativeOfficeExportSchema,
+  OfficePdfExportSchema,
   runtimeFeatureEnabled,
   PythonExecuteArgsSchema,
 } from '@allrice/contracts';
@@ -419,13 +420,18 @@ export const riceToolDefinitions = [
         python: {
           ...z.toJSONSchema(NativeOfficeExportSchema),
           description:
-            'Office 默认路径：执行 DSH 原生 Python 文档流程。最小入参 {"fileName":"报告.xlsx","format":"xlsx","python":{"script":"...","inputs":[]}}。新文件省略 sourceObjectId（也接受 null）；修改说明优先放外层 changeSummary。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查和版本交付，公式重算与预览按实际质量能力处理。与 content/旧版 office 三选一。',
+            'Office 默认路径：执行 DSH 原生 Python 文档流程。最小入参 {"fileName":"报告.xlsx","format":"xlsx","python":{"script":"...","inputs":[]}}。新文件省略 sourceObjectId（也接受 null）；修改说明优先放外层 changeSummary。已配置 python-docx/openpyxl/pandas/python-pptx。输入映射到 /tmp/work/input/<path>，保存 /tmp/work/output/result.<format>；自动原生检查和版本交付，公式重算与预览按实际质量能力处理。与 content/officePdf/旧版 office 四选一。',
+        },
+        officePdf: {
+          ...z.toJSONSchema(OfficePdfExportSchema),
+          description:
+            '将已生成或已上传的同一 Word/Excel/PPT 转成正式 PDF：format=pdf，officePdf={objectId,checksum}。使用文件工具返回的存储对象与校验和；复用 DSH 原生转换器，不重新生成报告、不传脚本或客户端路径。保留真实字体提示，转换位置按当前能力及用户数据限制选择。与 content/python/旧版 office 四选一。',
         },
         location: {
           type: 'string',
           enum: ['auto', 'local', 'cloud'],
           description:
-            '仅适用于 python 原生 Office。默认 auto：已授权且就绪的本地 Bridge 优先，无法使用本地时按用户数据约束选择云端。local 必须在本地执行，不能静默改到云端；cloud 必须符合当前数据授权。模型不能指定设备、镜像或运行路径。',
+            '适用于 python 原生 Office 或 officePdf 转换。默认 auto：具体能力就绪时优先 Bridge，缺少本地转换器时只将同一授权 Office 文件交给服务端 DSH 转换。local 必须本地执行；本地专用资料或禁止外发时不能静默改到云端。模型不能指定设备、镜像或运行路径。',
         },
         office: {
           ...z.toJSONSchema(OfficeExportSchema),
@@ -447,7 +453,14 @@ export const riceToolDefinitions = [
       oneOf: [
         { required: ['content'] },
         { required: ['python'] },
+        { required: ['officePdf'] },
         { required: ['office'] },
+      ],
+      allOf: [
+        {
+          if: { required: ['officePdf'] },
+          then: { properties: { format: { const: 'pdf' } } },
+        },
       ],
       additionalProperties: false,
     },

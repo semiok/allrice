@@ -2,9 +2,53 @@ import { randomUUID } from 'node:crypto';
 import {
   OfficeExportSchema,
   NativeOfficeExportSchema,
+  OfficePdfExportSchema,
 } from '@allrice/contracts';
 import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+
+it.each(['conflicting-mode', 'wrong-format'])(
+  'passes the exact Office PDF source through native DSH and rejects %s',
+  async (invalidCase) => {
+    const officePdf = {
+      objectId: randomUUID(),
+      checksum: `sha256:${'a'.repeat(64)}`,
+    };
+    const args = { fileName: '同一报告.pdf', format: 'pdf', officePdf };
+    await nativeBrokerRoundtrip({
+      canonicalName: 'workspace.export.create',
+      wireName: 'workspace_export_create',
+      args,
+      invalidArgs:
+        invalidCase === 'conflicting-mode'
+          ? { ...args, content: 'must not replace the Office conversion' }
+          : { ...args, format: 'docx' },
+      inspectSchema: (schema) => {
+        expect(schema.properties).toMatchObject({
+          officePdf: {
+            additionalProperties: false,
+            properties: {
+              objectId: { type: 'string' },
+              checksum: { type: 'string' },
+            },
+          },
+        });
+        expect(schema.required).not.toContain('content');
+      },
+      onToolCall: async (call) => {
+        expect(call.arguments).toEqual(args);
+        expect(OfficePdfExportSchema.parse(call.arguments.officePdf)).toEqual(
+          officePdf,
+        );
+        return {
+          modelContent: '{"objectId":"formal-PDF"}',
+          summary: '正式 PDF',
+        };
+      },
+    });
+  },
+  45_000,
+);
 
 it('passes native Python Office work through the DSH broker without a typed editor', async () => {
   const objectId = randomUUID();

@@ -205,10 +205,13 @@ export async function assertToolBrokerSourceFile(
   sourceInput: ArtifactSourceFile,
   sessionId?: string,
   requestedParentObjectId?: string,
+  outputFormat?: DeliveryFormat,
 ) {
   const source = ArtifactSourceFileSchema.parse(sourceInput);
-  const [row] = await tx<(ResourceRow & { checksum: string })[]>`
-    select id, organization_id, workspace_id, owner_id, visibility, checksum
+  const [row] = await tx<
+    (ResourceRow & { checksum: string; media_type: string })[]
+  >`
+    select id, organization_id, workspace_id, owner_id, visibility, checksum, media_type
     from allrice_storage_objects
     where id=${source.objectId} and organization_id=${context.organizationId}
       and workspace_id=${context.workspaceId ?? null} and state='ready'
@@ -217,17 +220,24 @@ export async function assertToolBrokerSourceFile(
   if (!row) throw new DataAccessError('not_found');
   authorizeRead(context, 'storage_object', row);
   if (row.checksum !== source.checksum) throw new Error('source_file_changed');
-  const [version] = await tx<{ object_id: string }[]>`
-    select object_id from allrice_deliverable_versions
+  const [version] = await tx<{ object_id: string; format: DeliveryFormat }[]>`
+    select object_id,format from allrice_deliverable_versions
     where object_id=${source.objectId} and organization_id=${context.organizationId}
       and workspace_id=${context.workspaceId ?? null}
       and owner_id=${context.policySnapshot.subjectId} and session_id=${sessionId ?? null}
   `;
+  // Conversion sources retain provenance, while a different file format starts
+  // its own series. The explicit same-format parent is checked by registration.
+  const derivation =
+    !!outputFormat &&
+    (version
+      ? version.format !== outputFormat
+      : outputFormat === 'pdf' && row.media_type !== 'application/pdf');
   // A user may download a version and upload the identical file for editing.
   // Retain the upload as the real source while continuing the explicitly chosen
   // current-session version. Never attach an unrelated or changed upload by name.
   const [reuploadedParent] =
-    !version && requestedParentObjectId && sessionId
+    !version && !derivation && requestedParentObjectId && sessionId
       ? await tx<{ object_id: string }[]>`
           select v.object_id from allrice_deliverable_versions v
           join allrice_storage_objects o on o.id=v.object_id
@@ -236,11 +246,15 @@ export async function assertToolBrokerSourceFile(
             and v.workspace_id=${context.workspaceId ?? null}
             and v.owner_id=${context.policySnapshot.subjectId}
             and v.session_id=${sessionId} and o.state='ready'
-            and o.checksum=${source.checksum} for share of o`
+            and o.checksum=${source.checksum} and o.media_type=${row.media_type}
+            and (${outputFormat ?? null}::text is null or v.format=${outputFormat ?? null}) for share of o`
       : [];
   return {
     source,
-    parentObjectId: version?.object_id ?? reuploadedParent?.object_id,
+    parentObjectId: derivation
+      ? undefined
+      : (version?.object_id ?? reuploadedParent?.object_id),
+    derivation,
   };
 }
 
@@ -345,10 +359,12 @@ export async function registerToolBrokerExport(
           input.sourceFile,
           input.sessionId,
           input.parentObjectId,
+          input.format,
         )
       : undefined;
     if (
       source &&
+      !source.derivation &&
       input.parentObjectId &&
       input.parentObjectId !== source.parentObjectId
     )
@@ -419,6 +435,9 @@ export async function registerToolBrokerExport(
           and version.organization_id = ${input.context.organizationId}
           and version.workspace_id = ${workspaceId}
           and version.owner_id = ${ownerId}
+          and version.session_id is not distinct from ${input.sessionId ?? null}::uuid
+          and version.platform_test_run_id is not distinct from ${input.platformTestRunId ?? null}::uuid
+          and version.format = ${input.format}
           and object.state = 'ready'
         for update of version
       `;
@@ -473,7 +492,7 @@ export async function registerToolBrokerExport(
       insert into allrice_audit_events (organization_id, workspace_id, actor_id, action,
         resource_type, resource_id, decision, reason, metadata)
       values (${input.context.organizationId}, ${workspaceId}, ${ownerId}, 'artifact.source',
-        'deliverable_version', ${versions[0]!.id}, 'recorded', 'source_file_copy',
+        'deliverable_version', ${versions[0]!.id}, 'recorded', ${source.derivation ? 'source_file_derivation' : 'source_file_copy'},
         ${transaction.json({ sourceFile: source.source, objectId: input.object.id, runId: input.context.runId })})
     `;
     return {

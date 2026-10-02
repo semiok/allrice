@@ -460,6 +460,28 @@ async function assertCloudDerivationLease(
   if (!current) fail('run_unavailable');
 }
 
+async function assertOfficePdfLease(
+  tx: TransactionSql,
+  context: ExecutionContext,
+  lease: { jobAttempt: number; jobLeaseToken: string },
+) {
+  if (
+    !Number.isSafeInteger(lease.jobAttempt) ||
+    lease.jobAttempt < 0 ||
+    !UuidSchema.safeParse(lease.jobLeaseToken).success
+  )
+    fail('run_unavailable');
+  const [current] = await tx`select id from allrice_jobs
+    where id=${context.jobId} and run_id=${context.runId}
+      and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!}
+      and owner_id=${context.policySnapshot.subjectId} and worker_id=${context.worker.id}
+      and attempt=${lease.jobAttempt} and lease_token=${lease.jobLeaseToken}
+      and status='running' and cancel_requested_at is null
+      and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp()
+    for update`;
+  if (!current) fail('run_unavailable');
+}
+
 /** Publish a reviewable proposal, never enqueue a file write or create approval.
  * The model cannot supply a device, grant, scope digest, checksum or authority.
  * Before-text is an untrusted proposal baseline; application still checks its
@@ -560,6 +582,8 @@ export async function publishWorkbenchArtifact(
     changeSummary?: string;
     /** Server-only provider receipt and exact worker lease, never model arguments. */
     trustedImageOperation?: { id: string; leaseToken: string };
+    /** Server-only originating converter lease; never parsed from tool args. */
+    trustedOfficePdfLease?: { jobAttempt: number; jobLeaseToken: string };
     /** Server-only deterministic renderer input; never accepted by generic export HTTP/tool arguments. */
     trustedCloudDerivation?: {
       sourceArtifactId: string;
@@ -600,6 +624,14 @@ export async function publishWorkbenchArtifact(
     (input.kind !== 'document' || input.trustedCloudDerivation)
   )
     fail('invalid_publication');
+  if (
+    input.trustedOfficePdfLease &&
+    (input.kind !== 'document' ||
+      input.format !== 'pdf' ||
+      input.mediaType !== 'application/pdf' ||
+      !input.sourceFile)
+  )
+    fail('invalid_publication');
   const principal: WorkbenchPrincipal = {
     actor: { type: 'user', id: owner },
     organizationId: context.organizationId,
@@ -632,6 +664,8 @@ export async function publishWorkbenchArtifact(
       // and session. Holding session first can deadlock with an assistant check
       // which refreshes the job deadline before SHARE-locking the session.
       await tx`select root_run_id from allrice_runtime_roots where root_run_id=${context.runId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for update`;
+      if (input.trustedOfficePdfLease)
+        await assertOfficePdfLease(tx, context, input.trustedOfficePdfLease);
       await development?.admit(tx);
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
       const source = input.sourceFile
@@ -641,10 +675,12 @@ export async function publishWorkbenchArtifact(
             input.sourceFile,
             input.sessionId,
             input.parentObjectId,
+            input.format,
           )
         : undefined;
       if (
         source &&
+        !source.derivation &&
         input.parentObjectId &&
         input.parentObjectId !== source.parentObjectId
       )
@@ -731,7 +767,12 @@ export async function publishWorkbenchArtifact(
         and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and owner_id=${owner}`;
         if (!p) fail('artifact_not_found');
         parent = await readArtifact(tx, principal, input.sessionId, p.id);
-        if (parent.stale || parent.kind !== input.kind) fail('version_changed');
+        if (
+          parent.stale ||
+          parent.kind !== input.kind ||
+          parent.version.format !== input.format
+        )
+          fail('version_changed');
       }
       const execution =
         input.kind === 'changeset'
@@ -773,7 +814,9 @@ export async function publishWorkbenchArtifact(
       );
       const provenance = {
         kind:
-          derivedSource || input.trustedImageOperation
+          derivedSource ||
+          input.trustedImageOperation ||
+          input.trustedOfficePdfLease
             ? 'tool_result'
             : 'model_proposal',
         runId: publishingRunId,
@@ -793,6 +836,8 @@ export async function publishWorkbenchArtifact(
       );
       // Audit insertion and projection reads may block. Recheck the authoritative
       // deadline after those waits, immediately before committing the new version.
+      if (input.trustedOfficePdfLease)
+        await assertOfficePdfLease(tx, context, input.trustedOfficePdfLease);
       if (derivedSource)
         await assertCloudDerivationLease(
           tx,
