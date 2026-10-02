@@ -27,6 +27,8 @@ Allrice contributes tenant file authorization, source/version history, downloads
 
 Previously frozen Office 1.0–1.2 employee packages retain their legacy export compatibility handler. Office 1.3 and later use native Python by default. Legacy typed editing is no longer developed as a parallel implementation; compatibility can be removed once no published package or active run refers to it. Historical artifacts are ordinary stored files and need no old editor to view or download.
 
+Office 1.7.1 corrects the Allrice integration instructions to match the existing sandbox: `/tmp/work` and `/tmp/work/input` are read-only, and only the declared deliverable is written to `/tmp/work/output`. Intermediate embedded charts use `io.BytesIO`. This changes guidance and its reviewed bundle identity; it does not change upstream guides, the checker, sandbox permissions or previously frozen employee packages.
+
 ## Checks and previews
 
 Upstream's checker validates package structure, relationships and requested string/count assertions; it does not calculate formulas or judge appearance. Allrice's existing LibreOffice/Poppler renderer recalculates normal/shared formulas and supplies bounded page previews. It does not certify business accuracy, native Excel appearance, or visual review. Formula errors and unavailable checks are reported honestly. The native workflow adds workbook print-area/scaling instructions to prevent the extra chart page found in the comparison.
