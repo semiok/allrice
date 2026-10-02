@@ -133,8 +133,18 @@ DispatchQueue.global().async {
         try childInput.fileHandleForWriting.close()
     } catch { lock.lock(); eof = true; lock.unlock() }
 }
+// A vanished PID can race Foundation's isRunning update. Only a confirmed
+// natural exit zero resolves this RSS-sample race; a killed/live child stays
+// unknown and explicit cancellation/resource limits retain their reason.
+func pdfCompletionReason(reason: String, rssSampleFailed: Bool, stopped: Bool,
+                         terminationReason: Process.TerminationReason, terminationStatus: Int32) -> String {
+    if reason == "process_unknown" && rssSampleFailed && stopped
+      && terminationReason == .exit && terminationStatus == 0 { return "completed" }
+    return reason
+}
 let started = Date()
 var reason = "completed", peak: UInt64 = 0
+var rssSampleFailed = false
 while process.isRunning {
     lock.lock(); let lost = eof || Date().timeIntervalSince(lastPulse) > 6 || outputLimit; let oversized = outputLimit; lock.unlock()
     var task = [UInt64](repeating: 0, count: 16)
@@ -144,7 +154,7 @@ while process.isRunning {
     else if lost || getppid() != owner || kill(owner, 0) != 0 { reason = "canceled" }
     else if Date().timeIntervalSince(started) >= 30 { reason = "timeout" }
     else if peak > 512 * 1024 * 1024 { reason = "memory_limit" }
-    else if count < 16 && process.isRunning { reason = "process_unknown" }
+    else if count < 16 && process.isRunning { rssSampleFailed = true; reason = "process_unknown" }
     if reason != "completed" { _ = kill(pid, SIGKILL); break }
     usleep(10_000)
 }
@@ -158,6 +168,8 @@ lock.lock(); if output.count + remaining.count <= 410_000 { output.append(remain
 lock.lock(); diagnostics.append(remainingError.prefix(max(0, 16_384 - diagnostics.count))); let finalDiagnostics = diagnostics; lock.unlock()
 let stopped = kill(pid, 0) != 0 && errno == ESRCH
 if !stopped { reason = "process_unknown" }
+reason = pdfCompletionReason(reason: reason, rssSampleFailed: rssSampleFailed, stopped: stopped,
+                             terminationReason: process.terminationReason, terminationStatus: process.terminationStatus)
 if reason == "completed" && outputLimit { reason = "output_limit" }
 let status: Any = process.terminationReason == .exit ? Int(process.terminationStatus) : NSNull()
 let result: Any = (try? JSONSerialization.jsonObject(with: finalOutput)) ?? NSNull()

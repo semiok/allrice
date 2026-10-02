@@ -4,14 +4,19 @@ import {
   type ServerResponse,
 } from 'node:http';
 import { once } from 'node:events';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type {
-  RuntimeBridgeReceipt,
-  RuntimeOperationSnapshot,
+import {
+  RuntimeBridgeDispatchSchema,
+  RuntimeLocalPdfPayloadSchema,
+  RuntimeLocalPdfResultSchema,
+  pdfReadReleaseForPlatform,
+  type RuntimeBridgeReceipt,
+  type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
 
 import {
@@ -23,6 +28,7 @@ import { fixtureId, journalDispatch } from './journal-fixtures.js';
 import { executeLocalCommand } from './executor.js';
 import { RuntimeBridgeOperationClient } from './operation-client.js';
 import { bridgeRequest, type BridgeRequestInput } from './client.js';
+import type { LocalPdfRunner } from './local-pdf-runner.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -56,6 +62,7 @@ async function createFixture(
     loseResult?: boolean;
     wrongAck?: boolean;
     cancelStart?: boolean;
+    pdf?: boolean;
   } = {},
 ) {
   const temporary = await realpath(
@@ -64,7 +71,56 @@ async function createFixture(
   cleanup.push(() => rm(temporary, { recursive: true, force: true }));
   const root = join(temporary, 'workspace');
   await mkdir(root);
-  const dispatch = journalDispatch(root);
+  const original = journalDispatch(root);
+  const pdfPayload = RuntimeLocalPdfPayloadSchema.parse({
+    capability: 'local.pdf.read',
+    arguments: {
+      path: '.',
+      origin: {
+        toolName: 'workspace.document.read',
+        callId: 'original-pdf-call',
+        argumentsDigest: `sha256:${'a'.repeat(64)}`,
+      },
+      source: {
+        objectId: fixtureId(31),
+        checksum: `sha256:${'b'.repeat(64)}`,
+        sizeBytes: 1024,
+        mediaType: 'application/pdf',
+      },
+      fileName: 'original.pdf',
+      options: { pages: [2], includeStructure: true },
+      profileVersion: 1,
+      pins: pdfReadReleaseForPlatform('macos-x64')!.pins,
+      limits: {
+        inputBytes: 20 * 1024 * 1024,
+        resultBytes: 400_000,
+        timeoutMs: 30_000,
+        resourceBudgetBytes: 512 * 1024 * 1024,
+      },
+    },
+  });
+  const pdfFingerprint = createHash('sha256')
+    .update(`allrice-readonly-pdf-v1:${fixtureId(11)}`)
+    .digest('hex');
+  const dispatch = options.pdf
+    ? RuntimeBridgeDispatchSchema.parse({
+        ...original,
+        payload: pdfPayload,
+        grantRootFingerprint: pdfFingerprint,
+        snapshot: {
+          ...original.snapshot,
+          binding: {
+            ...original.snapshot.binding,
+            action: 'local.pdf.read',
+            inputDigest: bridgeDigest(pdfPayload),
+            execution: {
+              ...original.snapshot.binding.execution,
+              scopeDigest: `sha256:${pdfFingerprint}`,
+            },
+          },
+        },
+      })
+    : original;
   let snapshot = dispatch.snapshot;
   let dispatched = false;
   let started = false;
@@ -92,10 +148,23 @@ async function createFixture(
       return { snapshot, mayExecute };
     },
     async recordReceipt(input) {
+      // Match the existing server gate: an unknown process result cannot be
+      // accepted as a terminal outcome, even when its schema is valid.
+      if (
+        options.pdf &&
+        input.signal.type === 'operation.outcome' &&
+        (input.evidence?.output as { process?: { reason?: string } })?.process
+          ?.reason === 'process_unknown'
+      )
+        throw Object.assign(new Error('invalid_state'), {
+          code: 'invalid_state',
+        });
       const duplicate = accepted.some(
         (receipt) => receipt.receiptId === input.receiptId,
       );
       if (!duplicate) accepted.push(input);
+      if (options.pdf && input.signal.type === 'operation.uncertain')
+        snapshot = { ...snapshot, status: 'unknown' };
       return { snapshot, disposition: duplicate ? 'duplicate' : 'applied' };
     },
   };
@@ -113,7 +182,9 @@ async function createFixture(
         name: 'Test device',
         platform: 'macos-arm64' as const,
         protocolVersion: 2 as const,
-        capabilities: ['local.fs.write' as const],
+        capabilities: options.pdf
+          ? ['local.pdf.read' as const]
+          : ['local.fs.write' as const],
         status: 'online' as const,
         lastSeenAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
@@ -129,6 +200,18 @@ async function createFixture(
           revokedAt: null,
         },
       ],
+      ...(options.pdf
+        ? {
+            pdfRuntimeGrant: {
+              id: fixtureId(12),
+              deviceId: fixtureId(11),
+              rootFingerprint: pdfFingerprint,
+              runtimeGeneration: 1,
+              profileVersion: 1 as const,
+              revokedAt: null,
+            },
+          }
+        : {}),
     };
   });
   const handle = createRuntimeBridgeHttpHandler({
@@ -216,6 +299,63 @@ async function createFixture(
 }
 
 describe('HTTP device journal adapter', () => {
+  it.each([false, true])(
+    'delivers PDF process_unknown as uncertain without replay or terminal recovery (lost ACK: %s)',
+    async (loseResult) => {
+      const f = await createFixture({ pdf: true, loseResult });
+      if (f.dispatch.payload.capability !== 'local.pdf.read') throw Error();
+      const payload = f.dispatch.payload.arguments;
+      const result = RuntimeLocalPdfResultSchema.parse({
+        type: 'local_pdf_read_result_v1',
+        origin: payload.origin,
+        source: payload.source,
+        profileVersion: 1,
+        pins: payload.pins,
+        document: null,
+        error: {
+          code: 'PDF_PROCESS_UNKNOWN',
+          message: 'Original result unknown',
+        },
+        process: {
+          stopped: true,
+          exitCode: 0,
+          reason: 'process_unknown',
+          memoryEnforcement: 'watchdog',
+          observedPeakRssBytes: 103_841_792,
+        },
+      });
+      const execute = vi.fn(async () => result);
+      const recover = vi.fn(async () => result);
+      const acknowledge = vi.fn();
+      const client = new RuntimeBridgeOperationClient({
+        config: { ...f.config, grants: [] },
+        token: 'fixture-device-token',
+        journal: f.journal,
+        pdfRunner: {
+          execute,
+          recover,
+          acknowledge,
+        } as unknown as LocalPdfRunner,
+      });
+      if (loseResult) await expect(client.pollOnce()).rejects.toThrow();
+      else await expect(client.pollOnce()).resolves.toBe(true);
+      expect(f.accepted).toHaveLength(1);
+      expect(f.accepted[0]?.signal).toEqual({
+        type: 'operation.uncertain',
+        reason: 'receipt_missing',
+      });
+      expect(f.accepted[0]?.evidence?.output).toEqual(result);
+      await expect(client.pollOnce()).resolves.toBe(false);
+      await expect(client.pollOnce()).resolves.toBe(false);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(recover).toHaveBeenCalledTimes(2);
+      expect(acknowledge).not.toHaveBeenCalled();
+      expect(f.accepted).toHaveLength(1);
+      expect(await f.journal.pending()).toEqual([]);
+      expect(await f.journal.unknownLocalPdfOperations()).toHaveLength(1);
+    },
+  );
+
   it('P14 drains new acquisition but finishes a claimed foreground operation and its durable receipt', async () => {
     const f = await createFixture();
     let acquiring = true;

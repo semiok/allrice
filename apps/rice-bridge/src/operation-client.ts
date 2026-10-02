@@ -144,7 +144,7 @@ export class RuntimeBridgeOperationClient {
             dispatch.snapshot.binding.attempt.attemptId,
             dispatch.payload,
           );
-          if (result)
+          if (result && result.process.reason !== 'process_unknown')
             await this.input.journal.reconcileLocalPdf(
               dispatch.snapshot.binding.attempt.operationId,
               result,
@@ -690,7 +690,12 @@ export class RuntimeBridgeOperationClient {
           }
         },
       });
-      if (result.process.reason === 'canceled')
+      if (result.process.reason === 'process_unknown')
+        await journal.uncertain(operationId, 'receipt_missing', {
+          summary: '本地 PDF 完成状态待对账；保留原回执，不自动重读或换端',
+          output: result,
+        });
+      else if (result.process.reason === 'canceled')
         await journal.stopped(
           operationId,
           result,
