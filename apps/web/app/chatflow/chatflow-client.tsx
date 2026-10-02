@@ -89,7 +89,6 @@ import { nextPaint } from './dsh-upstream/images/next-paint';
 import { useAttachments } from './use-attachments';
 import { useBridge } from './use-bridge';
 import { useBridgeReleases } from './bridge-releases';
-import { BridgeDialog } from './bridge-dialog';
 import { projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
@@ -1120,6 +1119,11 @@ export function ChatFlowClient({
     prepareDraft(prepared);
   }
 
+  const openBridgeSettings = () => {
+    setSettings({ scope: settingsScope, section: 'computer' });
+    return loadBridgeDevices(true);
+  };
+
   const renderComposer = (hero = false) => (
     <ChatComposer
       taskSuggestions={suggestionVersion?.taskSuggestions ?? []}
@@ -1149,8 +1153,7 @@ export function ChatFlowClient({
                 ?.focus({ preventScroll: true });
           });
         } else if (preparation === 'bridge') {
-          setSettings(null);
-          void loadBridgeDevices(true);
+          void openBridgeSettings();
         } else setSettings({ scope: settingsScope, section: 'apps' });
       }}
       sessionReferences={sessionReferences}
@@ -1190,7 +1193,7 @@ export function ChatFlowClient({
       onAttachmentMenuOpenChange={setAttachmentMenuOpen}
       onCancelRun={cancelRun}
       onDraftChange={setDraft}
-      onLoadBridgeDevices={() => loadBridgeDevices(true)}
+      onLoadBridgeDevices={openBridgeSettings}
       onOpenAttachment={setAttachmentPreview}
       onOpenWorkspaceFiles={openWorkspaceFiles}
       onRemoveAttachment={removePendingAttachment}
@@ -1296,8 +1299,7 @@ export function ChatFlowClient({
               setSettings({ scope: settingsScope, section: 'apps' });
             }}
             onBridge={() => {
-              setSettings(null);
-              void loadBridgeDevices(true);
+              void openBridgeSettings();
             }}
             onCompose={(id) => {
               if (
@@ -1315,14 +1317,22 @@ export function ChatFlowClient({
           />
         }
         settingsSection={
-          settings?.scope === settingsScope ? settings.section : null
+          bridgeOpen
+            ? 'computer'
+            : settings?.scope === settingsScope
+              ? settings.section
+              : null
         }
-        onSettingsSectionChange={(section) =>
+        onSettingsSectionChange={(section) => {
+          setBridgeOpen(false);
+          if (bridgeOpen) void readiness.reload();
           setSettings(
             section === null ? null : { scope: settingsScope, section },
-          )
-        }
-        onBridge={() => void loadBridgeDevices(true)}
+          );
+        }}
+        onBridge={() => void openBridgeSettings()}
+        bridge={bridge}
+        bridgeReleases={bridgeReleases}
         monthlyQuota={monthlyQuota}
         preferences={preferences}
         providerLabel={activeProviderLabel}
@@ -1795,17 +1805,6 @@ export function ChatFlowClient({
         }}
         versions={deliverableVersions}
       />
-
-      {bridgeOpen ? (
-        <BridgeDialog
-          bridge={bridge}
-          releases={bridgeReleases}
-          onClose={() => {
-            setBridgeOpen(false);
-            void readiness.reload();
-          }}
-        />
-      ) : null}
     </main>
   );
 }

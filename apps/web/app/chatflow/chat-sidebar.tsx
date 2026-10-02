@@ -13,6 +13,8 @@ import { AllriceMark } from '../../components/allrice-mark';
 import { SidebarSettings } from './sidebar-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
+import type { useBridge } from './use-bridge';
+import type { useBridgeReleases } from './bridge-releases';
 
 import type { Session, Workspace } from './chatflow-types';
 import type { useSessionArchive } from './use-session-archive';
@@ -38,6 +40,8 @@ interface ChatSidebarProps {
   settingsSection: string | null;
   onSettingsSectionChange: (section: string | null) => void;
   onBridge: () => void;
+  bridge: ReturnType<typeof useBridge>;
+  bridgeReleases: ReturnType<typeof useBridgeReleases>;
   onCollapsedChange: (collapsed: boolean) => void;
   onNewSession: (assignmentId?: string) => void;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
@@ -60,6 +64,8 @@ export function ChatSidebar({
   settingsSection,
   onSettingsSectionChange,
   onBridge,
+  bridge,
+  bridgeReleases,
   onCollapsedChange,
   onNewSession,
   onOpenEmployeeDetails,
@@ -288,6 +294,8 @@ export function ChatSidebar({
             section={settingsSection}
             onSectionChange={onSettingsSectionChange}
             onBridge={onBridge}
+            bridge={bridge}
+            bridgeReleases={bridgeReleases}
           />
         </div>
       </div>

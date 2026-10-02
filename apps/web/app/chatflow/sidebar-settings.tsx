@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Button,
   IconSettingsOutlineMedium,
@@ -14,6 +14,9 @@ import { StorageUsage } from './storage-usage';
 import { AccountPasswordSettings } from './account-password-settings';
 import { ExperiencePanel } from '../workspace/experience/experience-panel';
 import { ComputerSettings } from './computer-settings';
+import { BridgeSettings } from './bridge-dialog';
+import type { useBridge } from './use-bridge';
+import type { useBridgeReleases } from './bridge-releases';
 import { WorkAutomationSettings } from './work-automation-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
@@ -31,6 +34,8 @@ export function SidebarSettings({
   section,
   onSectionChange,
   onBridge,
+  bridge,
+  bridgeReleases,
 }: {
   experienceEnabled?: boolean;
   sessionId?: string;
@@ -43,10 +48,19 @@ export function SidebarSettings({
   section: string | null;
   onSectionChange: (section: string | null) => void;
   onBridge: () => void;
+  bridge: ReturnType<typeof useBridge>;
+  bridgeReleases: ReturnType<typeof useBridgeReleases>;
 }) {
   const [visited, setVisited] = useState(() => new Set(['account']));
   const [loggingOut, setLoggingOut] = useState(false);
   const [logoutError, setLogoutError] = useState('');
+  const backButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (section === 'computer' && bridge.bridgeOpen) {
+      backButton.current?.focus();
+      backButton.current?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [section, bridge.bridgeOpen]);
   async function logout() {
     setLoggingOut(true);
     setLogoutError('');
@@ -115,7 +129,32 @@ export function SidebarSettings({
                   hidden={row.id !== options?.only}
                   className={styles.section}
                 >
-                  <h2>{row.label}</h2>
+                  {row.id === 'computer' && bridge.bridgeOpen ? (
+                    <div className={styles.computerChildHeading}>
+                      <button
+                        data-computer-control
+                        ref={backButton}
+                        className={styles.computerBack}
+                        type="button"
+                        aria-label="返回我的电脑"
+                        onClick={() => {
+                          onSectionChange('computer');
+                          requestAnimationFrame(() =>
+                            document
+                              .querySelector<HTMLButtonElement>(
+                                '[data-computer-management-entry]',
+                              )
+                              ?.focus(),
+                          );
+                        }}
+                      >
+                        <span aria-hidden="true">←</span>
+                      </button>
+                      <h2>连接与管理电脑</h2>
+                    </div>
+                  ) : (
+                    <h2>{row.label}</h2>
+                  )}
                   {row.id === 'capabilities' && capabilities}
                   {row.id === 'preferences' && (
                     <>
@@ -212,14 +251,22 @@ export function SidebarSettings({
                     />
                   )}
                   {row.id === 'computer' && (
-                    <ComputerSettings
-                      workspaceId={workspaceId}
-                      active={section === 'computer'}
-                      onBridge={() => {
-                        close();
-                        onBridge();
-                      }}
-                    />
+                    <>
+                      <div hidden={bridge.bridgeOpen}>
+                        <ComputerSettings
+                          workspaceId={workspaceId}
+                          active={section === 'computer' && !bridge.bridgeOpen}
+                          onBridge={onBridge}
+                          bridge={bridge}
+                        />
+                      </div>
+                      {bridge.bridgeOpen && (
+                        <BridgeSettings
+                          bridge={bridge}
+                          releases={bridgeReleases}
+                        />
+                      )}
+                    </>
                   )}
                 </div>
               ));
