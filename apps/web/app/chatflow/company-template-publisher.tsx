@@ -310,6 +310,9 @@ export function CompanyTemplateEditor({
         sourceVersionId: versionId,
       },
   );
+  const [keywordText, setKeywordText] = useState(() =>
+    content.taskKeywords.join('，'),
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -324,7 +327,9 @@ export function CompanyTemplateEditor({
     if (busy || saved?.state === 'archived' || (saved && !saved.canEdit))
       return;
     if (!parsed.success) {
-      setError('请填写标题、用途，并为每个填写项提供标签；最多 12 项。');
+      setError(
+        '请填写标题、用途和填写项标签；填写项及关键词各最多 12 项，每个关键词最多 80 字。',
+      );
       return;
     }
     const controller = new AbortController();
@@ -351,6 +356,7 @@ export function CompanyTemplateEditor({
       if (controller.signal.aborted) return;
       setSaved(result);
       setContent(result.latest.content);
+      setKeywordText(result.latest.content.taskKeywords.join('，'));
       setNotice('草稿已保存。确认发布后，所选修订才会共享给公司员工。');
       onSaved?.(result);
     } catch (cause) {
@@ -379,6 +385,7 @@ export function CompanyTemplateEditor({
       if (!controller.signal.aborted) {
         setSaved(next);
         setContent(next.latest.content);
+        setKeywordText(next.latest.content.taskKeywords.join('，'));
         setNotice('已采用最新保存草稿，请核对后编辑或发布。');
       }
     } catch (cause) {
@@ -414,6 +421,38 @@ export function CompanyTemplateEditor({
           maxLength={160}
           disabled={disabled}
           onChange={(e) => setContent({ ...content, title: e.target.value })}
+        />
+      </label>
+      <label>
+        范本分类（可选）
+        <Input
+          aria-label="范本分类"
+          value={content.category}
+          maxLength={80}
+          disabled={disabled}
+          placeholder="例如：财务、运营、程序员、科研"
+          onChange={(e) => setContent({ ...content, category: e.target.value })}
+        />
+      </label>
+      <label>
+        推荐关键词（可选）
+        <Input
+          aria-label="范本推荐关键词"
+          value={keywordText}
+          maxLength={1000}
+          disabled={disabled}
+          placeholder="例如：周报，项目复盘；用逗号分隔"
+          onChange={(e) => {
+            const value = e.target.value;
+            setKeywordText(value);
+            setContent((current) => ({
+              ...current,
+              taskKeywords: value
+                .split(/[,，\n]/)
+                .map((key) => key.trim())
+                .filter(Boolean),
+            }));
+          }}
         />
       </label>
       <label>

@@ -2359,7 +2359,15 @@ suite(
         await f.page
           .getByRole('button', { name: '推荐任务', exact: true })
           .click();
-        expect(await f.page.getByRole('menuitem').count()).toBe(6);
+        // Company discovery is a footer action, outside the five task limit.
+        expect(
+          await f.page.getByRole('menuitem', { name: /^任务 \d+$/ }).count(),
+        ).toBe(5);
+        expect(
+          await f.page
+            .getByRole('menuitem', { name: '公司范本', exact: true })
+            .count(),
+        ).toBe(1);
         expect(
           await f.page
             .getByRole('menuitem', { name: '科研分析', exact: true })
@@ -2368,7 +2376,14 @@ suite(
         await f.page
           .getByRole('menuitem', { name: '更多任务（3）', exact: true })
           .click();
-        expect(await f.page.getByRole('menuitem').count()).toBe(4);
+        expect(
+          await f.page.getByRole('menuitem', { name: /^任务 \d+$/ }).count(),
+        ).toBe(2);
+        expect(
+          await f.page
+            .getByRole('menuitem', { name: '科研分析', exact: true })
+            .count(),
+        ).toBe(1);
         await f.page
           .getByRole('menuitem', { name: '科研分析', exact: true })
           .click();
