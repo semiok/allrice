@@ -233,7 +233,23 @@ describe('fixed read-only PDF delegation', () => {
         isolation: { ...profile.isolation, deniedNetwork: false },
       }).success,
     ).toBe(false);
-    expect(pdfReadReleaseForPlatform('macos-arm64')).toBeNull();
+    const armRelease = pdfReadReleaseForPlatform('macos-arm64')!;
+    expect(armRelease.nativeSupported).toBe(true);
+    expect(armRelease.pins.resourceManifestChecksum).not.toBe(
+      release.pins.resourceManifestChecksum,
+    );
+    expect(
+      localPdfProfileMatchesRelease(
+        { ...profile, platform: 'macos-arm64' },
+        armRelease,
+      ),
+    ).toBe(false);
+    expect(
+      localPdfProfileMatchesRelease(
+        { ...profile, platform: 'macos-arm64', pins: armRelease.pins },
+        armRelease,
+      ),
+    ).toBe(true);
     expect(pdfReadReleaseForPlatform('windows-x64')).toBeNull();
   });
 });

@@ -148,10 +148,7 @@ const manifest = {
   browserLauncherSha256: await digest(browserLauncher),
   pdfGuardianSha256: await digest(`${core}.pdf-guardian`),
   pdfRuntimeManifestSha256: await digest(`${core}.pdf-runtime/manifest.json`),
-  pdfNativeVerification:
-    targetArch === 'x64'
-      ? 'required-on-device-before-ready'
-      : 'unsupported-until-native-verification',
+  pdfNativeVerification: 'required-on-device-before-ready',
   browserRuntimeManifestSha256: await digest(`${core}.runtime/manifest.json`),
   ...signingEvidence,
   trustedUpdatesEnabled: false,
