@@ -51,9 +51,19 @@ guard header.count <= 16_384,
       sameDirectory() else { fail() }
 // Resolve our sibling SEA; callers cannot turn this helper into an arbitrary
 // binary executor even when manually invoking it outside AllRice.
-let guardian = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
-guard guardian == core + ".pdf-guardian", !core.contains("\0"),
-      URL(fileURLWithPath: core).resolvingSymlinksInPath().path == core else { fail() }
+// Foundation normalizes /private/var to /var. Use libc's physical path,
+// matching Node's realpath checks and retaining exact sibling identities.
+func canonicalPath(_ path: String) -> String? {
+    guard path.hasPrefix("/"), !path.contains("\0") else { return nil }
+    return path.withCString { input in
+        guard let resolved = Darwin.realpath(input, nil) else { return nil }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+}
+guard let guardian = canonicalPath(CommandLine.arguments[0]),
+      guardian == core + ".pdf-guardian", canonicalPath(core) == core,
+      canonicalPath(resources) == resources else { fail() }
 let cwd = directory + "/empty"
 var cwdStat = stat()
 guard lstat(cwd, &cwdStat) == 0, (cwdStat.st_mode & S_IFMT) == S_IFDIR,
