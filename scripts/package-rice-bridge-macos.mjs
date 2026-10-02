@@ -89,10 +89,7 @@ const manifest = {
   pdfRuntimeManifestSha256: sha256(
     await readFile(`${binary}.pdf-runtime/manifest.json`),
   ),
-  pdfNativeVerification:
-    targetArch === 'x64'
-      ? 'required-on-device-before-ready'
-      : 'unsupported-until-native-verification',
+  pdfNativeVerification: 'required-on-device-before-ready',
   browserRuntimeManifestSha256: sha256(
     await readFile(`${binary}.runtime/manifest.json`),
   ),

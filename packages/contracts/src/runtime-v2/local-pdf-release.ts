@@ -6,7 +6,7 @@ import type {
 export interface LocalPdfRelease {
   contractVersion: 1;
   profileVersion: 1;
-  platform: 'macos-x64';
+  platform: 'macos-x64' | 'macos-arm64';
   nativeSupported: true;
   pins: RuntimeLocalPdfPins;
 }
@@ -16,11 +16,11 @@ export interface LocalPdfRelease {
 export function pdfReadReleaseForPlatform(
   platform: string,
 ): LocalPdfRelease | null {
-  if (platform !== 'macos-x64') return null;
+  if (platform !== 'macos-x64' && platform !== 'macos-arm64') return null;
   return {
     contractVersion: 1,
     profileVersion: 1,
-    platform: 'macos-x64',
+    platform,
     nativeSupported: true,
     pins: {
       nodeVersion: '22.23.2',
@@ -28,7 +28,9 @@ export function pdfReadReleaseForPlatform(
       pdfJsVersion: '5.4.296',
       canvasVersion: '0.1.80',
       resourceManifestChecksum:
-        'sha256:ed7b2874d70fe5087f6b045489ab62bf812ea8dc00f06882aed5d1dde6150d68',
+        platform === 'macos-arm64'
+          ? 'sha256:019c64f66f346c2e95fdb40cda21d2606d659872ffae6502c3b97f7a920ad8ca'
+          : 'sha256:ed7b2874d70fe5087f6b045489ab62bf812ea8dc00f06882aed5d1dde6150d68',
       policyChecksum:
         'sha256:ff68ca0be9f1c81cb0191aa401da1a334c6ebdb63272b23842addd46a0969800',
     },
