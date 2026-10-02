@@ -146,6 +146,8 @@ export function companyAssetActions(asset: CompanyAsset): StateOperation[] {
   if (asset.latest.id !== asset.publishedRevisionId || asset.state === 'draft')
     actions.push('publish');
   if (asset.state === 'published') actions.push('pause', 'withdraw');
+  if (asset.state === 'published' && asset.kind === 'template')
+    actions.push(asset.pinned ? 'unpin' : 'pin');
   if (
     (asset.state === 'paused' || asset.state === 'withdrawn') &&
     asset.publishedRevisionId
@@ -161,6 +163,8 @@ const operationLabels: Record<StateOperation, string> = {
   resume: '恢复共享版',
   withdraw: '撤回共享',
   archive: '归档',
+  pin: '置顶推荐',
+  unpin: '取消置顶',
 };
 const operationNotices: Record<StateOperation, string> = {
   publish: '将已保存的这一修订共享给本公司员工。私人会话和其他文件不会共享。',
@@ -169,6 +173,8 @@ const operationNotices: Record<StateOperation, string> = {
   resume: '恢复原共享修订。尚未发布的最新草稿不会随之共享。',
   withdraw: '撤回后禁止新的预览和下载；已经下载的文件无法从他人电脑收回。',
   archive: '归档后不再共享此内容。历史修订保留用于核对。',
+  pin: '在本公司员工的推荐入口优先展示当前共享范本。不会发布新草稿或启动工作。',
+  unpin: '取消本公司的优先展示，现有共享版本与成果不变。',
 };
 export function CompanyAssetStateActions({
   asset,

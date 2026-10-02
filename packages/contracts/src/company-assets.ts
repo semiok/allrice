@@ -47,7 +47,15 @@ export const CompanyAssetMutationSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
-      operation: z.enum(['publish', 'pause', 'resume', 'withdraw', 'archive']),
+      operation: z.enum([
+        'publish',
+        'pause',
+        'resume',
+        'withdraw',
+        'archive',
+        'pin',
+        'unpin',
+      ]),
       assetId: UuidSchema,
       expectedRevision: z.number().int().positive(),
     })
@@ -140,6 +148,7 @@ export const CompanyAssetSchema = z
     publishedRevisionId: UuidSchema.nullable(),
     latest: CompanyAssetRevisionSchema,
     canEdit: z.boolean(),
+    pinned: z.boolean().optional(),
     usage: CompanyAssetUsageSchema.optional(),
   })
   .strict();

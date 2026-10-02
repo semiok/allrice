@@ -43,6 +43,7 @@ export function TaskSuggestions({
   nextSteps,
   onOpen,
   onPrepareNextStep,
+  onOpenCompanyTemplates,
 }: {
   suggestions: TaskSuggestionDisplay[];
   draft: string;
@@ -55,6 +56,7 @@ export function TaskSuggestions({
   onPreparation: (preparation: Preparation) => void;
   nextSteps?: TaskNextSteps | null;
   onOpen?: () => void;
+  onOpenCompanyTemplates?: () => void;
   onPrepareNextStep?: (
     step: TaskNextStep,
     snapshot: TaskNextSteps,
@@ -217,6 +219,11 @@ export function TaskSuggestions({
   }
   function menuSelect(id: string) {
     if (checking) return;
+    if (id === 'company:templates') {
+      close();
+      onOpenCompanyTemplates?.();
+      return;
+    }
     const next = nextSnapshot?.suggestions.find(
       (step) => `next:${step.task.id}` === id,
     );
@@ -237,6 +244,9 @@ export function TaskSuggestions({
     if (suggestion) pick(suggestion);
   }
   const footer: MenuEntry[] = [
+    ...(onOpenCompanyTemplates
+      ? [{ id: 'company:templates', label: '公司范本' }]
+      : []),
     ...preparationEntries([
       ...visible,
       ...(nextSnapshot?.suggestions.map((s) => s.task) ?? []),
@@ -263,7 +273,8 @@ export function TaskSuggestions({
         !(
           suggestions.length ||
           nextSteps?.suggestions.length ||
-          nextSteps?.notice
+          nextSteps?.notice ||
+          onOpenCompanyTemplates
         )
       }
       aria-label="推荐任务"
@@ -288,7 +299,8 @@ export function TaskSuggestions({
     <div className={css.row}>
       {suggestions.length ||
       nextSteps?.suggestions.length ||
-      nextSteps?.notice ? (
+      nextSteps?.notice ||
+      onOpenCompanyTemplates ? (
         compact ? (
           triggerButton
         ) : (

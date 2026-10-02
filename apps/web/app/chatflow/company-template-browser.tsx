@@ -359,6 +359,9 @@ export function CompanyTemplateBrowser(props: {
   workspaceId: string;
   headers: Record<string, string>;
   onPrepare?: (ref: CompanyDraftReference) => Promise<void>;
+  recommended?: boolean;
+  employeeId?: string;
+  taskText?: string;
 }) {
   if (!props.open) return null;
   return (
@@ -373,12 +376,44 @@ function Browser({
   workspaceId,
   headers,
   onPrepare,
+  recommended = false,
+  employeeId,
+  taskText = '',
 }: Parameters<typeof CompanyTemplateBrowser>[0]) {
-  const base = companyAssetUrl('/api/v1/company-assets', { workspaceId });
+  const [view, setView] = useState(
+    recommended && employeeId ? 'recommended' : 'all',
+  );
+  const [quickUse, setQuickUse] = useState(false);
+  const [category, setCategory] = useState('');
+  const [search, setSearch] = useState('');
+  const base = companyAssetUrl('/api/v1/company-assets', {
+    workspaceId,
+    ...(view === 'recommended' && employeeId
+      ? { recommendations: '1', employeeId, task: taskText }
+      : {}),
+  });
   const directory = useCompanyAssetDirectory(base, headers);
   const [selected, setSelected] = useState<CompanyAsset | null>(null);
-  const templates =
+  const available =
     directory.data?.assets.filter((a) => a.kind === 'template') ?? [];
+  const categories = [
+    ...new Set(available.map((a) => a.latest.content.category).filter(Boolean)),
+  ];
+  const templates = available.filter(
+    (a) =>
+      (!category || a.latest.content.category === category) &&
+      (!search ||
+        `${a.latest.content.title} ${a.latest.content.body}`
+          .toLocaleLowerCase()
+          .includes(search.toLocaleLowerCase())),
+  );
+  function switchView(next: string) {
+    setSelected(null);
+    setQuickUse(false);
+    setCategory('');
+    setSearch('');
+    setView(next);
+  }
   return (
     <DshDialog
       ariaLabel="公司范本"
@@ -390,6 +425,47 @@ function Browser({
       <p>
         查看公司已共享的固定修订，或管理本人范本。保存草稿不等于共享；这里不会自动启动工作。
       </p>
+      <div className={styles.actions}>
+        {employeeId && (
+          <Button
+            aria-pressed={view === 'recommended'}
+            onClick={() => switchView('recommended')}
+          >
+            推荐范本
+          </Button>
+        )}
+        <Button aria-pressed={view === 'all'} onClick={() => switchView('all')}>
+          全部范本与本人草稿
+        </Button>
+        <label>
+          分类
+          <select
+            aria-label="范本分类"
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+          >
+            <option value="">全部分类</option>
+            {categories.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          查找当前列表
+          <input
+            aria-label="查找范本"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </label>
+      </div>
+      {view === 'recommended' && (
+        <p>
+          优先显示公司置顶和与本次任务相关的共享范本。目录只在打开或刷新时读取。
+        </p>
+      )}
       <Button
         disabled={directory.loading}
         onClick={() => {
@@ -406,6 +482,10 @@ function Browser({
           {templates.map((asset) => (
             <article key={asset.id} className={styles.item}>
               <strong>{asset.latest.content.title}</strong>
+              {asset.pinned && <small>公司置顶</small>}
+              {asset.latest.content.category && (
+                <small>{asset.latest.content.category}</small>
+              )}
               <small>
                 {companyAssetStateLabels[asset.state]} · {asset.ownerName}
               </small>
@@ -417,12 +497,31 @@ function Browser({
                   ? ' · 本人最新草稿'
                   : ''}
               </small>
-              <Button onClick={() => setSelected(asset)}>查看范本</Button>
+              <Button
+                onClick={() => {
+                  setQuickUse(false);
+                  setSelected(asset);
+                }}
+              >
+                查看范本
+              </Button>
+              {onPrepare &&
+                asset.state === 'published' &&
+                asset.publishedRevisionId === asset.latest.id && (
+                  <Button
+                    onClick={() => {
+                      setSelected(asset);
+                      setQuickUse(true);
+                    }}
+                  >
+                    填写使用
+                  </Button>
+                )}
             </article>
           ))}
           {!directory.loading && directory.data && !templates.length && (
             <p>
-              当前没有可查看的公司范本。可从自己的成果卡选择具体版本，保存后再发布。
+              当前列表没有匹配的范本。可切换全部范本或清空筛选；自己的成果可保存范本后再发布。
             </p>
           )}
           {directory.data?.nextCursor && (
@@ -435,14 +534,25 @@ function Browser({
           )}
         </div>
         {selected && !directory.error ? (
-          <CompanyAssetRevisionView
-            key={selected.id}
-            initial={selected}
-            base={base}
-            headers={headers}
-            onPrepare={onPrepare}
-            onChange={(next) => setSelected(next)}
-          />
+          quickUse && onPrepare ? (
+            <CompanyTemplateUseForm
+              key={`${base}/${selected.id}/${selected.latest.id}`}
+              inline
+              asset={selected}
+              revision={selected.latest}
+              onClose={() => setQuickUse(false)}
+              onPrepare={onPrepare}
+            />
+          ) : (
+            <CompanyAssetRevisionView
+              key={`${base}/${selected.id}`}
+              initial={selected}
+              base={base}
+              headers={headers}
+              onPrepare={onPrepare}
+              onChange={(next) => setSelected(next)}
+            />
+          )
         ) : (
           <p>选择一项范本查看用途、历史修订和原文件。</p>
         )}

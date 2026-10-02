@@ -2400,9 +2400,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it.each([1440, 640])(
-    'prepares exact company template parameters without submitting, then preserves them in the original send at %ipx',
-    async (width) => {
+  it.each([
+    { width: 1440, recommended: false },
+    { width: 640, recommended: false },
+    { width: 1440, recommended: true },
+    { width: 640, recommended: true },
+  ])(
+    'prepares exact company template parameters without submitting, then preserves them in the original send at $width px (recommended=$recommended)',
+    async ({ width, recommended }) => {
       const f = await fixture({ width });
       const revisionId = id(8401),
         assetId = id(8402);
@@ -2416,6 +2421,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         revision: 2,
         publishedRevisionId: revisionId,
         canEdit: false,
+        pinned: true,
         latest: {
           id: revisionId,
           number: 1,
@@ -2482,19 +2488,60 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       try {
         const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
         await input.fill('保留原有草稿');
-        await f.page
-          .getByRole('button', { name: '公司范本', exact: true })
-          .click();
+        if (recommended) {
+          await f.page
+            .getByRole('button', { name: '推荐任务', exact: true })
+            .click();
+          if (width === 640)
+            await f.page
+              .getByRole('dialog', { name: '推荐任务', exact: true })
+              .getByRole('button', { name: '公司范本', exact: true })
+              .click();
+          else
+            await f.page
+              .getByRole('menuitem', { name: '公司范本', exact: true })
+              .click();
+        } else
+          await f.page
+            .getByRole('button', { name: '公司范本', exact: true })
+            .click();
         const dialog = f.page.getByRole('dialog', {
           name: '公司范本',
           exact: true,
         });
-        await dialog
-          .getByRole('button', { name: '查看范本', exact: true })
-          .click();
-        await dialog
-          .getByRole('button', { name: '选用此修订', exact: true })
-          .click();
+        if (recommended) {
+          await expect
+            .poll(() =>
+              dialog.getByText('公司置顶', { exact: true }).isVisible(),
+            )
+            .toBe(true);
+          await dialog
+            .getByRole('combobox', { name: '范本分类', exact: true })
+            .selectOption('运营');
+          await dialog
+            .getByRole('textbox', { name: '查找范本', exact: true })
+            .fill('不存在的标题');
+          await expect
+            .poll(() =>
+              dialog
+                .getByRole('button', { name: '填写使用', exact: true })
+                .count(),
+            )
+            .toBe(0);
+          await dialog
+            .getByRole('textbox', { name: '查找范本', exact: true })
+            .fill('季度经营');
+          await dialog
+            .getByRole('button', { name: '填写使用', exact: true })
+            .click();
+        } else {
+          await dialog
+            .getByRole('button', { name: '查看范本', exact: true })
+            .click();
+          await dialog
+            .getByRole('button', { name: '选用此修订', exact: true })
+            .click();
+        }
         await dialog
           .getByRole('textbox', { name: '本期业务数据', exact: true })
           .fill('十月：收入 120，成本 45\n实际数据');

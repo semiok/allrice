@@ -149,6 +149,8 @@ export function ChatFlowClient({
   const [companyTemplatesScope, setCompanyTemplatesScope] = useState<
     string | null
   >(null);
+  const [recommendCompanyTemplates, setRecommendCompanyTemplates] =
+    useState(false);
   const [busy, setBusy] = useState(false);
   const [cancelRequestedRunId, setCancelRequestedRunId] = useState<
     string | null
@@ -1240,6 +1242,10 @@ export function ChatFlowClient({
       onOpenTasks={() => {
         void nextSteps.reload();
       }}
+      onOpenCompanyTemplates={() => {
+        setRecommendCompanyTemplates(true);
+        setCompanyTemplatesScope(settingsScope);
+      }}
       onPrepareNextStep={prepareNextStep}
       compact={layout.compact}
       taskReadiness={
@@ -1398,6 +1404,9 @@ export function ChatFlowClient({
         workspaceId={workspace.workspaceId}
         headers={tenantHeaders}
         onPrepare={prepareCompanyTemplate}
+        recommended={recommendCompanyTemplates}
+        employeeId={activeEmployee?.employeeId}
+        taskText={draft.slice(0, 512)}
       />
       <ChatSidebar
         experienceEnabled={experienceEnabled}
@@ -1543,7 +1552,10 @@ export function ChatFlowClient({
                   <button
                     type="button"
                     className={workbenchUi.entry}
-                    onClick={() => setCompanyTemplatesScope(settingsScope)}
+                    onClick={() => {
+                      setRecommendCompanyTemplates(false);
+                      setCompanyTemplatesScope(settingsScope);
+                    }}
                   >
                     公司范本
                   </button>

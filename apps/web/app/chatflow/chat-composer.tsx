@@ -43,6 +43,7 @@ interface ChatComposerProps {
   taskScope?: string;
   taskNextSteps?: TaskNextSteps | null;
   onOpenTasks?: () => void;
+  onOpenCompanyTemplates?: () => void;
   onPrepareNextStep?: (
     step: TaskNextStep,
     snapshot: TaskNextSteps,
@@ -96,6 +97,7 @@ export function ChatComposer({
   taskScope,
   taskNextSteps,
   onOpenTasks,
+  onOpenCompanyTemplates,
   onPrepareNextStep,
   compact = false,
   taskReadiness = null,
@@ -242,6 +244,7 @@ export function ChatComposer({
             onPreparation={onTaskPreparation}
             nextSteps={taskNextSteps}
             onOpen={onOpenTasks}
+            onOpenCompanyTemplates={onOpenCompanyTemplates}
             onPrepareNextStep={onPrepareNextStep}
           />
         )}

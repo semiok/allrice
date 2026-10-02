@@ -7,6 +7,7 @@ const p = vi.hoisted(() => ({
   member: vi.fn(),
   file: vi.fn(),
   list: vi.fn(),
+  recommendations: vi.fn(),
   detail: vi.fn(),
   history: vi.fn(),
   sources: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   getCompanyAssetFile: p.file,
   listCompanyAssets: p.list,
+  listCompanyTemplateRecommendations: p.recommendations,
   getCompanyAsset: p.detail,
   listCompanyAssetRevisions: p.history,
   listCompanyRuleSources: p.sources,
@@ -79,6 +81,7 @@ describe('company publication HTTP authority and exact bytes', () => {
     });
     p.bytes.mockResolvedValue(Buffer.from([1, 2, 3]));
     p.list.mockResolvedValue({ assets: [] });
+    p.recommendations.mockResolvedValue({ assets: [] });
     p.mutate.mockResolvedValue({ state: 'draft' });
   });
   it('preserves the real reader, validates requested workspace and excludes other verbs/admin-only sources', async () => {
@@ -98,6 +101,35 @@ describe('company publication HTTP authority and exact bytes', () => {
     expect(
       (await companyAssetsHttp(request('workspaceId=invalid'))).status,
     ).toBe(400);
+  });
+  it('reads bounded recommendations as the actual member and validates the employee scope', async () => {
+    const employee = randomUUID(),
+      otherWs = randomUUID();
+    const response = await companyAssetsHttp(
+      request(
+        `recommendations=1&workspaceId=${otherWs}&employeeId=${employee}&task=quarter`,
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(p.recommendations).toHaveBeenCalledWith(
+      { ...context, workspaceId: otherWs },
+      org,
+      employee,
+      'quarter',
+    );
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(
+      (await companyAssetsHttp(request('recommendations=1&employeeId=invalid')))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await companyAssetsHttp(
+          request(`recommendations=1&employeeId=${employee}`),
+          org,
+        )
+      ).status,
+    ).toBe(403);
   });
   it('requires an exact publication revision and authorizes before and after native preview IO', async () => {
     expect(
