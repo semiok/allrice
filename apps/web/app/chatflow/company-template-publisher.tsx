@@ -44,12 +44,12 @@ export async function companyAssetJson(
     const detail = body?.error;
     throw Object.assign(
       Error(
-        typeof detail?.message === 'string'
-          ? detail.message
-          : response.status === 409
-            ? '内容已有变化，请刷新后核对。'
-            : response.status === 403 || response.status === 404
-              ? '当前内容不可访问，或权限已撤销。'
+        response.status === 403 || response.status === 404
+          ? '当前公司资料不可访问，可能已撤回或权限已变更，请刷新后核对。'
+          : typeof detail?.message === 'string'
+            ? detail.message
+            : response.status === 409
+              ? '内容已有变化，请刷新后核对。'
               : response.status === 401
                 ? '登录已失效，请重新登录。'
                 : '公司资料服务暂不可用，请刷新核对操作结果。',
