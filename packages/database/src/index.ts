@@ -93,6 +93,7 @@ export {
 } from './tenant-employee-access.ts';
 export * from './organization-activity.ts';
 export * from './organization-dashboard.ts';
+export * from './company-deliverables.ts';
 
 export * from './execution-diagnostics.ts';
 export * from './operations-resources.ts';

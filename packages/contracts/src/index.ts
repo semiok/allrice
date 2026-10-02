@@ -102,6 +102,7 @@ export * from './task-plan.ts';
 export * from './session-reference.ts';
 export * from './organization-activity.ts';
 export * from './organization-dashboard.ts';
+export * from './company-deliverables.ts';
 export * from './operations-resources.ts';
 export * from './platform-model-settings.ts';
 export * from './mcp-apps.ts';
