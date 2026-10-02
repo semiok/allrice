@@ -12,6 +12,7 @@ import type {
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   WorkbenchArtifactSchema,
+  TaskNextStepsSchema,
   type MessageFeedbackItem,
   McpConnectionSchema,
   type McpConnection,
@@ -887,6 +888,36 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           grants: [],
           humanCredentialsConfigured: false,
         });
+      }
+      const nextStepsSession = path.match(
+        /^\/api\/v1\/sessions\/([a-f0-9-]{36})\/next-steps$/,
+      )?.[1];
+      if (nextStepsSession && route.request().method() === 'GET') {
+        // This fixture has no contextual recommendations. Register the new
+        // read explicitly; unexpected requests and all writes remain failures.
+        if (url.searchParams.get('workspaceId') !== state.workspace)
+          return answer({ error: { code: 'authorization_denied' } }, 403);
+        return answer(
+          TaskNextStepsSchema.parse({
+            contractVersion: 1,
+            scope: {
+              organizationId: org,
+              workspaceId: state.workspace,
+              viewerId: state.viewer,
+              sessionId: nextStepsSession,
+              employeeAssignmentId: url.searchParams.get(
+                'employeeAssignmentId',
+              ),
+              employeeVersionId: url.searchParams.get('employeeVersionId'),
+              sourceRunId: null,
+              contextRevision: `sha256:${'0'.repeat(64)}`,
+            },
+            state: 'idle',
+            readableArtifactCount: 0,
+            notice: '',
+            suggestions: [],
+          }),
+        );
       }
       if (path === '/api/v1/bridge/devices')
         return state.bridgeError
