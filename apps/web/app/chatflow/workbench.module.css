@@ -342,8 +342,9 @@
   overflow-wrap: anywhere;
 }
 
-/* Native docked panes use layer 10; keep the shared resize handle above them. */
-.splitter {
+/* Native docked panes use layer 10. Override AppFrame's handle regardless of
+   CSS import order so the pane cannot intercept the handle's pointer events. */
+.splitter.splitter {
   z-index: 11;
 }
 

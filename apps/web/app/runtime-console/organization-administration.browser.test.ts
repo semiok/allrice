@@ -1,6 +1,7 @@
 import { GET as runtimeInventoryHttp } from '../api/v1/admin/runtime-console/route';
 import { GET as runtimeEventsHttp } from '../api/v1/admin/runtime-console/[sessionId]/events/route';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -20,10 +21,18 @@ import {
   importOrganizationPeople,
   getEmployeeWorkspace,
   inspectCompanyDeliverable,
+  createTraceableMemory,
+  correctWorkspaceMemory,
 } from '@allrice/database';
+import {
+  CompanyAssetDirectorySchema,
+  CompanyAssetRevisionSchema,
+  CompanyAssetSchema,
+} from '@allrice/contracts';
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { organizationActivityHttp } from '../../lib/organization-administration/activity-http';
 import { companyDeliverablesHttp } from '../../lib/organization-administration/deliverables-http';
+import { companyAssetsHttp } from '../../lib/organization-administration/company-assets-http';
 import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
 import { organizationAdministrationHttp } from '../../lib/organization-administration/http';
 import { organizationAssignmentsHttp } from '../../lib/organization-administration/assignments-http';
@@ -129,14 +138,16 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                   ? await tenantValidationHttp(request, parts[5]!)
                   : parts[6] === 'deliverables'
                     ? await companyDeliverablesHttp(request, parts[5]!)
-                    : parts[6] === 'ai-employees'
-                      ? await organizationAssignmentsHttp(request, parts[5]!)
-                      : await organizationAdministrationHttp(
-                          request,
-                          parts[5],
-                          parts[7],
-                          action,
-                        );
+                    : parts[6] === 'assets'
+                      ? await companyAssetsHttp(request, parts[5]!)
+                      : parts[6] === 'ai-employees'
+                        ? await organizationAssignmentsHttp(request, parts[5]!)
+                        : await organizationAdministrationHttp(
+                            request,
+                            parts[5],
+                            parts[7],
+                            action,
+                          );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -660,6 +671,270 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await context.close();
       }
     },
+  );
+
+  it.each([1440, 390])(
+    'creates company rules, pins the selected Memory revision, publishes, inspects history and pauses (%i)',
+    async (width) => {
+      const a = await tenantValidationFixture(fixture.db);
+      const owner = {
+        ...(await authenticateSession(
+          (await createSession(a.context.actor.id)).token,
+        ))!,
+        workspaceId: a.context.workspaceId,
+      };
+      const companyName = `星米公司规矩 ${width}`;
+      const title = `财务核验规矩 ${width}`;
+      const excerpt = '金额必须保留原始出处，缺失数据须明确列出。';
+      const authored = `${excerpt} 正式报告还须由财务人员核对。`;
+      await fixture.db`update allrice_organizations set name=${companyName} where id=${a.target.organizationId}`;
+      const memory = await createTraceableMemory(owner, {
+        workspaceId: owner.workspaceId,
+        content: excerpt,
+        sourceType: 'user',
+      });
+      const [before] = await fixture.db<
+        { runs: number }[]
+      >`select count(*)::int as runs from allrice_runs where organization_id=${a.target.organizationId}`;
+      const context = await browser.newContext({
+        baseURL: origin,
+        viewport: { width, height: 900 },
+      });
+      context.setDefaultTimeout(6000);
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      const base = `/api/v1/admin/organizations/${a.target.organizationId}/assets`;
+      try {
+        await page.goto(`${origin}/runtime-console?view=activity`);
+        await page
+          .getByLabel('公司', { exact: true })
+          .selectOption(a.target.organizationId);
+        await page
+          .getByRole('heading', { name: companyName, exact: true })
+          .waitFor();
+        const panel = page.getByRole('region', {
+          name: '公司规矩与范本',
+          exact: true,
+        });
+        await panel
+          .getByRole('button', { name: '新增公司规矩', exact: true })
+          .click();
+        const editor = page.getByRole('dialog', {
+          name: '编辑公司规矩',
+          exact: true,
+        });
+        const sourcesResponse = await context.request.get(`${base}?sources=1`);
+        expect(sourcesResponse.status()).toBe(200);
+        const sources = (await sourcesResponse.json()) as {
+          sources: {
+            id: string;
+            revisionId: string;
+            revision: number;
+            content: string;
+          }[];
+          employees: { id: string; name: string }[];
+        };
+        const chosen = sources.sources.find(
+          (source) => source.id === memory.id,
+        )!;
+        expect(chosen).toMatchObject({ revision: 1, content: excerpt });
+        await editor
+          .getByLabel('可选记忆摘录', { exact: true })
+          .selectOption(chosen.revisionId);
+        expect(await editor.getByLabel('规矩正文').inputValue()).toBe(excerpt);
+        await editor.getByLabel('规矩标题').fill(title);
+        await editor.getByLabel('规矩正文').fill(authored);
+        await editor.getByLabel('规矩分类').fill('财务');
+        await editor.getByLabel('规矩任务关键词').fill('汇总，报销');
+        expect(sources.employees).toEqual([]);
+        await editor
+          .getByText('当前没有可选择的 AI。', { exact: true })
+          .waitFor();
+
+        // A later Memory correction must not silently replace the selected
+        // revision or the separately authored rule body.
+        await correctWorkspaceMemory(owner, owner.workspaceId!, memory.id, {
+          content: '后续记忆修订：此内容不是所选择的原摘录。',
+          confidence: 1,
+          reason: 'Browser regression: selected revision remains pinned',
+          expiresAt: null,
+        });
+        const saveResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}${base}` &&
+            response.request().method() === 'POST',
+        );
+        await editor
+          .getByRole('button', { name: '保存规矩草稿', exact: true })
+          .click();
+        const save = await saveResponse;
+        expect(save.status()).toBe(200);
+        const draft = CompanyAssetSchema.parse(await save.json());
+        expect(draft).toMatchObject({
+          organizationId: a.target.organizationId,
+          state: 'draft',
+          revision: 1,
+          publishedRevisionId: null,
+          latest: {
+            number: 1,
+            content: {
+              title,
+              body: authored,
+              category: '财务',
+              taskKeywords: ['汇总', '报销'],
+              appliesToEmployeeIds: [],
+              sourceMemoryId: memory.id,
+              sourceMemoryRevisionId: chosen.revisionId,
+            },
+          },
+        });
+        await editor
+          .getByText(
+            '规矩草稿已保存。发布后才会成为公司的有效规矩；原有效版本保持不变。',
+          )
+          .waitFor();
+        await page.keyboard.press('Escape');
+        const item = panel.locator('article').filter({ hasText: title });
+        await item
+          .getByRole('button', { name: '编辑规矩草稿', exact: true })
+          .click();
+        await editor
+          .getByRole('option', { name: '保留已选择的原记忆版本', exact: true })
+          .waitFor({ state: 'attached' });
+        expect(
+          await editor.getByLabel('可选记忆摘录', { exact: true }).inputValue(),
+        ).toBe(chosen.revisionId);
+        expect(await editor.getByLabel('规矩正文').inputValue()).toBe(authored);
+        await editor
+          .getByRole('button', { name: '发布已保存草稿', exact: true })
+          .click();
+        await editor
+          .getByText(
+            '将已保存的这一修订共享给本公司员工。私人会话和其他文件不会共享。',
+          )
+          .waitFor();
+        const beforeConfirmation = await context.request.get(
+          `${base}?assetId=${draft.id}`,
+        );
+        expect(
+          CompanyAssetSchema.parse(await beforeConfirmation.json()).state,
+        ).toBe('draft');
+        const publishResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}${base}` &&
+            response.request().method() === 'POST',
+        );
+        await editor
+          .getByRole('button', { name: '确认发布已保存草稿', exact: true })
+          .click();
+        const publish = await publishResponse;
+        expect(publish.status()).toBe(200);
+        const published = CompanyAssetSchema.parse(await publish.json());
+        expect(published).toMatchObject({
+          state: 'published',
+          revision: 2,
+          publishedRevisionId: draft.latest.id,
+          latest: draft.latest,
+        });
+        await editor.getByText('共享状态已更新。', { exact: true }).waitFor();
+        await page.keyboard.press('Escape');
+        await item
+          .getByRole('button', { name: '查看修订与状态', exact: true })
+          .click();
+        const historyDialog = page.getByRole('dialog', {
+          name: '公司资料修订',
+          exact: true,
+        });
+        await historyDialog
+          .getByRole('heading', { name: title, exact: true, level: 4 })
+          .waitFor();
+        expect(
+          await historyDialog
+            .getByLabel('公司资料修订', { exact: true })
+            .inputValue(),
+        ).toBe(draft.latest.id);
+        expect(
+          await historyDialog.getByText(authored, { exact: true }).count(),
+        ).toBe(1);
+        const historyResponse = await context.request.get(
+          `${base}?assetId=${draft.id}&history=1`,
+        );
+        expect(historyResponse.status()).toBe(200);
+        const history = (await historyResponse.json()) as {
+          revisions: unknown[];
+          publishedRevisionIds: string[];
+        };
+        expect(
+          history.revisions.map((revision) =>
+            CompanyAssetRevisionSchema.parse(revision),
+          ),
+        ).toEqual([draft.latest]);
+        expect(history.publishedRevisionIds).toEqual([draft.latest.id]);
+        const box = await historyDialog.boundingBox();
+        expect(box!.x).toBeGreaterThanOrEqual(0);
+        expect(box!.x + box!.width).toBeLessThanOrEqual(width);
+        expect(box!.y).toBeGreaterThanOrEqual(0);
+        expect(box!.y + box!.height).toBeLessThanOrEqual(900);
+        await historyDialog
+          .getByRole('button', { name: '暂停共享', exact: true })
+          .click();
+        const pauseResponse = page.waitForResponse(
+          (response) =>
+            response.url() === `${origin}${base}` &&
+            response.request().method() === 'POST',
+        );
+        await historyDialog
+          .getByRole('button', { name: '确认暂停共享', exact: true })
+          .click();
+        const pause = await pauseResponse;
+        expect(pause.status()).toBe(200);
+        expect(CompanyAssetSchema.parse(await pause.json())).toMatchObject({
+          state: 'paused',
+          revision: 3,
+          publishedRevisionId: draft.latest.id,
+          latest: draft.latest,
+        });
+        await historyDialog
+          .getByRole('button', { name: '恢复共享版', exact: true })
+          .waitFor();
+        await mkdir('.local/met165-pr3-browser', { recursive: true });
+        await page.screenshot({
+          path: `.local/met165-pr3-browser/company-rules-${width}.png`,
+          fullPage: true,
+        });
+        await page.keyboard.press('Escape');
+        const directoryResponse = await context.request.get(base);
+        const directory = CompanyAssetDirectorySchema.parse(
+          await directoryResponse.json(),
+        );
+        expect(directory.assets).toHaveLength(1);
+        expect(directory.assets[0]).toMatchObject({
+          id: draft.id,
+          state: 'paused',
+        });
+        expect(directory.ruleBudget.publishedBytes).toBe(0);
+        const [provenance] = await fixture.db<
+          { source_memory_revision_id: string; content: string }[]
+        >`select r.source_memory_revision_id,m.content from allrice_company_asset_revisions r join allrice_memory_revisions m on m.id=r.source_memory_revision_id where r.id=${draft.latest.id}`;
+        expect(provenance).toEqual({
+          source_memory_revision_id: chosen.revisionId,
+          content: excerpt,
+        });
+        const [after] = await fixture.db<
+          { runs: number }[]
+        >`select count(*)::int as runs from allrice_runs where organization_id=${a.target.organizationId}`;
+        expect(after).toEqual(before);
+        expect(errors).toEqual([]);
+        expect(failures).toEqual([]);
+      } finally {
+        await context.close();
+      }
+    },
+    30_000,
   );
 
   it('creates a company and employees, imports a spreadsheet, edits profiles, resets passwords and disables access', async () => {
