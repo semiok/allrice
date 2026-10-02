@@ -7,6 +7,7 @@ import {
   PLATFORM_IMAGE_MODELS,
   OfficeExportSchema,
   NativeOfficeExportSchema,
+  OfficePdfExportSchema,
   ExecutionLocationSchema,
 } from '@allrice/contracts';
 
@@ -67,16 +68,26 @@ export const workbenchNativeTools = [
     presentation: 'tool',
     validateArguments(args) {
       if (
-        [args.content, args.office, args.python].filter((v) => v !== undefined)
-          .length !== 1
+        [args.content, args.office, args.python, args.officePdf].filter(
+          (v) => v !== undefined,
+        ).length !== 1
       )
         throw new Error(
-          'Supply exactly one of content, python or legacy office.',
+          'Supply exactly one of content, python, officePdf or legacy office.',
         );
       if (args.location !== undefined) {
-        if (args.python === undefined)
-          throw new Error('location applies only to python native Office.');
+        if (args.python === undefined && args.officePdf === undefined)
+          throw new Error(
+            'location applies only to python native Office or officePdf conversion.',
+          );
         ExecutionLocationSchema.parse(args.location);
+      }
+      if (args.officePdf !== undefined) {
+        OfficePdfExportSchema.parse(args.officePdf);
+        if (args.format !== 'pdf')
+          throw new Error('officePdf requires format=pdf.');
+        if (args.artifactKind !== undefined && args.artifactKind !== 'document')
+          throw new Error('officePdf delivers a document.');
       }
       if (args.python !== undefined) {
         if (args.inputs !== undefined || args.sourceObjectId !== undefined)
@@ -184,7 +195,27 @@ export const workbenchNativeTools = [
         type: 'string',
         enum: ['auto', 'local', 'cloud'],
         description:
-          'Optional, only for python native Office. Omit for auto: prefer the authorized ready Bridge managed runtime, with cloud fallback only when data authorization permits. local requires local execution and must never silently switch to cloud; cloud explicitly selects an authorized cloud runtime. The platform chooses the device and fixed runtime. This does not enable arbitrary host commands or file access.',
+          'Optional for python native Office or officePdf. Omit for auto: prefer the ready Bridge capability; when the Office-to-PDF converter is absent locally, only conversion of that authorized Office file uses the server DSH provider. local requires local execution; local-only data must not be sent to cloud. Never supply device IDs or runtime paths.',
+      },
+      officePdf: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          objectId: {
+            type: 'string',
+            required: true,
+            description:
+              'Exact authorized Office storage object UUID, not an attachment ID.',
+          },
+          checksum: {
+            type: 'string',
+            required: true,
+            description:
+              'Exact sha256 checksum returned by the file or export tools.',
+          },
+        },
+        description:
+          'Convert the same existing DOCX/XLSX/PPTX into a formal PDF using DSH Office-to-PDF. Example: {fileName: "report.pdf", format: "pdf", officePdf: {objectId: "...", checksum: "sha256:..."}}. Supply officePdf alone instead of content/python/legacy office; do not regenerate the report or supply a path/script. Inspect actual conversion location and missingFonts warnings. A PDF starts its own version series and retains the Office source; to revise that PDF use its previous objectId as top-level parentObjectId.',
       },
       office: {
         type: 'object',

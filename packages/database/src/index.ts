@@ -103,3 +103,4 @@ export {
 } from './platform-mcp-settings.ts';
 export * from './local-python-execution.ts';
 export * from './local-pdf-execution.ts';
+export * from './office-pdf-execution.ts';

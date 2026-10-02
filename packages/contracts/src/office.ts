@@ -1,5 +1,12 @@
 import { z } from 'zod';
 import { CloudCommandInputSchema } from './runtime-v2/cloud-command.ts';
+import { UuidSchema } from './common.ts';
+import { ChecksumSchema } from './runs.ts';
+
+/** Convert the exact authorized Office object through DSH, never a client path. */
+export const OfficePdfExportSchema = z
+  .object({ objectId: UuidSchema, checksum: ChecksumSchema })
+  .strict();
 
 /** DSH's native Python Office workflow; Allrice only supplies files/runtime. */
 export const NativeOfficeExportSchema = z

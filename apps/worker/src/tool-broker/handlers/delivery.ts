@@ -18,6 +18,7 @@ import { officeFormat } from '@allrice/office-runtime';
 
 import { generateOfficeExport } from '../../office/export.js';
 import { generateNativeOfficeExport } from '../../office/native.js';
+import { generateOfficePdfExport } from '../../office/pdf.js';
 import { checkOfficeExport } from '../../office/quality.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
@@ -55,23 +56,25 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   const format = DeliveryFormatSchema.parse(stringValue(args.format, 'format'));
   const hasOffice = args.office !== undefined;
   const hasPython = args.python !== undefined;
-  if (args.location !== undefined && !hasPython)
+  const hasOfficePdf = args.officePdf !== undefined;
+  if (args.location !== undefined && !hasPython && !hasOfficePdf)
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
-      '执行位置仅适用于 python 原生 Office 工作流。',
+      '执行位置仅适用于 python 原生 Office 或原文件转 PDF 工作流。',
       false,
     );
   if (
-    [hasOffice, hasPython, args.content !== undefined].filter(Boolean)
-      .length !== 1
+    [hasOffice, hasPython, hasOfficePdf, args.content !== undefined].filter(
+      Boolean,
+    ).length !== 1
   )
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
-      'content、python 与旧版 office 必须且只能提供一个',
+      'content、python、officePdf 与旧版 office 必须且只能提供一个',
       false,
     );
   if (
-    (hasOffice || hasPython) &&
+    (hasOffice || hasPython || hasOfficePdf) &&
     args.artifactKind !== undefined &&
     args.artifactKind !== 'document'
   )
@@ -81,7 +84,24 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       false,
     );
   const content =
-    hasOffice || hasPython ? '' : stringValue(args.content, 'content');
+    hasOffice || hasPython || hasOfficePdf
+      ? ''
+      : stringValue(args.content, 'content');
+  if (hasOfficePdf && format !== 'pdf')
+    throw new HandlerError(
+      'TOOL_INPUT_INVALID',
+      'officePdf 原文件转换只能交付 PDF 格式。',
+      false,
+    );
+  if (
+    hasOfficePdf &&
+    (!input.sessionId || !input.call.id || !workbenchEnabled())
+  )
+    throw new HandlerError(
+      'OFFICE_PDF_PUBLICATION_UNAVAILABLE',
+      '原文件转 PDF 需要当前对话的正式成果发布通道，未读取或转换原文件。',
+      false,
+    );
   const python = hasPython
     ? NativeOfficeExportSchema.parse(args.python)
     : undefined;
@@ -106,37 +126,44 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       false,
     );
   }
-  const generated = hasPython
-    ? await generateNativeOfficeExport(
+  input.signal?.throwIfAborted();
+  const generated = hasOfficePdf
+    ? await generateOfficePdfExport(
         input,
-        format,
-        python,
+        args.officePdf,
         args.location as 'auto' | 'local' | 'cloud' | undefined,
-      ).catch((error: unknown) => {
-        // The native sandbox has stopped and rejected the document. No managed
-        // file publication has started. DSH may correct the script in a new call.
-        // Transport/cleanup errors remain unknown; never infer from retryability.
-        if (
-          error instanceof HandlerError &&
-          ['OFFICE_DOCUMENT_INVALID', 'OFFICE_RUNTIME_UNAVAILABLE'].includes(
-            error.code,
+      )
+    : hasPython
+      ? await generateNativeOfficeExport(
+          input,
+          format,
+          python,
+          args.location as 'auto' | 'local' | 'cloud' | undefined,
+        ).catch((error: unknown) => {
+          // The native sandbox has stopped and rejected the document. No managed
+          // file publication has started. DSH may correct the script in a new call.
+          // Transport/cleanup errors remain unknown; never infer from retryability.
+          if (
+            error instanceof HandlerError &&
+            ['OFFICE_DOCUMENT_INVALID', 'OFFICE_RUNTIME_UNAVAILABLE'].includes(
+              error.code,
+            )
           )
-        )
-          confirmToolFailure(error, {
-            runId: input.context.runId,
-            callId: input.call.id,
-            toolName: input.call.name,
-          });
-        throw error;
-      })
-    : hasOffice
-      ? await generateOfficeExport(input, format, args.office)
-      : {
-          ...(await generateDeliverable({ format, content })),
-          sourceFile: undefined,
-          warnings: undefined,
-          changes: undefined,
-        };
+            confirmToolFailure(error, {
+              runId: input.context.runId,
+              callId: input.call.id,
+              toolName: input.call.name,
+            });
+          throw error;
+        })
+      : hasOffice
+        ? await generateOfficeExport(input, format, args.office)
+        : {
+            ...(await generateDeliverable({ format, content })),
+            sourceFile: undefined,
+            warnings: undefined,
+            changes: undefined,
+          };
   if (generated.bytes.byteLength > 8_000_000)
     throw new HandlerError(
       'TOOL_FILE_TOO_LARGE',
@@ -200,7 +227,13 @@ export const createWorkspaceExport: RiceToolHandler = async ({
           ...(checked?.warnings ?? []),
         ],
       }
-    : {};
+    : 'nativeConversion' in generated
+      ? {
+          sourceFile: generated.sourceFile,
+          warnings: generated.warnings,
+          nativeConversion: generated.nativeConversion,
+        }
+      : {};
   let fileName = [...stringValue(args.fileName, 'fileName')]
     .map((character) =>
       '\\/:*?"<>|'.includes(character) || character.charCodeAt(0) < 32
@@ -241,8 +274,17 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         ? { parentObjectId: args.parentObjectId }
         : {}),
       ...(typeof changeSummary === 'string' ? { changeSummary } : {}),
+      ...(hasOfficePdf
+        ? {
+            trustedOfficePdfLease: {
+              jobAttempt: input.managedBrowserJobAttempt!,
+              jobLeaseToken: input.managedBrowserJobLeaseToken!,
+            },
+          }
+        : {}),
     };
     const artifact = await (async () => {
+      input.signal?.throwIfAborted();
       try {
         return kind === 'changeset'
           ? await publishWorkbenchChangesetProposal(
@@ -314,14 +356,22 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       itemCount: 1,
     };
   }
+  if (hasOfficePdf)
+    throw new HandlerError(
+      'OFFICE_PDF_PUBLICATION_UNAVAILABLE',
+      '当前对话的正式成果发布通道已不可用，转换结果未发布。',
+      false,
+    );
   const object = createToolBrokerExportObject({
     context: input.context,
     mediaType: generated.mediaType,
     sizeBytes: bytes.byteLength,
     checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
   });
+  input.signal?.throwIfAborted();
   await storage.put(object, new Blob([Uint8Array.from(bytes)]).stream());
   try {
+    input.signal?.throwIfAborted();
     const registered = await registerToolBrokerExport({
       context: input.context,
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
