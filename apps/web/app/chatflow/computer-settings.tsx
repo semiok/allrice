@@ -65,10 +65,14 @@ export function ComputerSettings({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const generation = useRef(0);
+  const { loadBridgeDevices } = bridge;
   const view = projectBridgeView(
     bridge.bridgeDevices,
     bridge.bridgeStatusKnown,
   );
+  useEffect(() => {
+    if (active) void loadBridgeDevices(false, true);
+  }, [active, loadBridgeDevices]);
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
       const current = ++generation.current;

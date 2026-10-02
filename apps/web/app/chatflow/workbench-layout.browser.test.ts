@@ -3560,6 +3560,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await browserSwitch.waitFor();
+      await dialog
+        .getByRole('button', { name: '连接与管理电脑', exact: true })
+        .getByText('在线', { exact: true })
+        .waitFor();
       const remember = dialog.getByRole('switch', {
         name: '保留浏览器登录',
         exact: true,
@@ -3589,9 +3593,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .poll(() => browserSwitch.getAttribute('aria-checked'))
         .toBe('false');
       await dialog
-        .getByRole('button', { name: '连接与管理电脑', exact: true })
-        .getByText('在线', { exact: true })
-        .waitFor();
+        .getByText('正在同步到电脑…', { exact: true })
+        .waitFor({ state: 'hidden' });
       expect(await browserSwitch.getAttribute('data-retained')).toBe('yes');
       const development = dialog.getByRole('switch', {
         name: '受控开发协作',
@@ -3606,7 +3609,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('switch', { name: '本地沙箱命令', exact: true })
           .getAttribute('aria-checked'),
       ).toBe('true');
-      await dialog.getByText('已连接', { exact: true }).waitFor();
+      await dialog
+        .getByText('正在同步到电脑…', { exact: true })
+        .waitFor({ state: 'hidden' });
       await f.page.screenshot({
         path: '/tmp/allrice-bridge-three-switches.png',
       });
