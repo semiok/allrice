@@ -30,7 +30,7 @@
 .section input,
 .section select,
 .section textarea,
-.section button:not([role='switch']) {
+.section button:not([role='switch']):not([data-computer-control]) {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-2);
   border-color: var(--dsw-alias-border-primary, #d9dce2);
@@ -103,7 +103,7 @@
   line-height: 1.7;
   color: var(--dsw-alias-label-secondary);
 }
-.section button:not([role='switch']) {
+.section button:not([role='switch']):not([data-computer-control]) {
   border: 1px solid var(--dsw-alias-border-primary);
   border-radius: 8px;
   min-height: 34px;
@@ -112,7 +112,10 @@
   font-size: 12px;
   cursor: pointer;
 }
-.section button:not([role='switch']):hover:not(:disabled) {
+.section
+  button:not([role='switch']):not([data-computer-control]):hover:not(
+    :disabled
+  ) {
   background: var(--allrice-sidebar-hover);
 }
 .section button:disabled {
@@ -238,5 +241,138 @@
   .computer,
   .preferenceRow {
     padding: 14px;
+  }
+}
+
+.computerPage {
+  font-size: 15px;
+  line-height: 1.5;
+}
+.computerIntro {
+  margin: 0 0 22px;
+}
+.computerManagementEntry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 0;
+  min-height: 64px;
+  border: 0;
+  border-bottom: 1px solid var(--dsw-alias-border-primary);
+  border-radius: 0;
+  color: var(--dsw-alias-label-primary);
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.computerManagementEntry:hover {
+  background: var(--allrice-sidebar-hover);
+}
+.computerManagementCopy {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+.computerManagementCopy small {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.computerStatuses {
+  display: grid;
+  gap: 3px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.computerStatuses > span {
+  display: grid;
+  grid-template-columns: auto 3em;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--dsw-alias-label-secondary);
+}
+.computerStatuses [data-ready] {
+  text-align: right;
+}
+.computerStatuses [data-ready='true'] {
+  color: #16804d;
+}
+:global(body[data-ds-dark-theme]) .computerStatuses [data-ready='true'] {
+  color: #70dba3;
+}
+.computerManagementEntry > svg {
+  color: var(--dsw-alias-label-secondary);
+}
+.computerPermissions {
+  margin-top: 24px;
+}
+.computerPermissions > h3 {
+  margin: 0 0 2px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+.computerPage .capabilitySetting {
+  gap: 16px;
+  padding: 16px 0;
+}
+.computerPage .capabilitySetting strong {
+  font-size: 15px;
+  font-weight: 400;
+}
+.computerPage .capabilitySetting small {
+  padding: 0;
+  background: transparent;
+  font-size: 13px;
+}
+.computerPage button:not([role='switch']):not([data-computer-control]) {
+  min-height: 32px;
+  font-size: 13px;
+}
+.computerChildHeading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+}
+.computerChildHeading h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.computerBack {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.computerBack > span {
+  font-size: 22px;
+  line-height: 20px;
+}
+.computerBack:hover {
+  background: var(--allrice-sidebar-hover);
+}
+@media (pointer: coarse) {
+  .computerBack {
+    width: 44px;
+    height: 44px;
+  }
+  .computerPage button:not([role='switch']) {
+    min-height: 44px;
   }
 }

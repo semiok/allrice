@@ -2262,7 +2262,10 @@ suite(
           .getByRole('menuitem', { name: '连接与管理电脑', exact: true })
           .click();
         await f.page
-          .getByRole('dialog', { name: '我的电脑', exact: true })
+          .getByRole('dialog', { name: '设置', exact: true })
+          .waitFor();
+        await f.page
+          .getByRole('heading', { name: '连接与管理电脑', exact: true })
           .waitFor();
         expect(f.writes).toEqual([]);
         expect(f.errors).toEqual([]);

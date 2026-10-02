@@ -923,6 +923,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return state.bridgeError
           ? answer({ error: { message: '连接状态刷新失败' } }, 503)
           : answer({ devices: state.bridgeDevices });
+      if (
+        /^\/api\/v1\/bridge\/devices\/[^/]+\/settings$/.test(path) &&
+        route.request().method() === 'GET'
+      ) {
+        const device = state.bridgeDevices.find(
+          (device) => device.id === path.split('/').at(-2),
+        );
+        return device
+          ? answer({
+              device,
+              settings: {
+                localCommand: true,
+                localBrowser: true,
+                development: true,
+              },
+              environment: null,
+              revision: 1,
+              pending: false,
+              supported: false,
+            })
+          : answer({ error: { message: 'synthetic device missing' } }, 404);
+      }
       if (path === '/api/v1/bridge/client/releases')
         return answer({
           releases: [
@@ -2461,16 +2483,87 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             clientVersion: '0.6.0-dev.7',
             lastSeenAt: now,
             folderGrants: [],
+            readiness: (
+              [
+                'local.fs.read',
+                'local.fs.write',
+                'local.git.status',
+                'local.browser',
+                'local.process',
+                'local.development',
+                'local.preview',
+                'local.mcp',
+                'local.office',
+              ] as const
+            ).map((capability) => ({
+              capability,
+              state:
+                capability === 'local.mcp' || capability === 'local.office'
+                  ? ('unsupported' as const)
+                  : ('ready' as const),
+              reason:
+                capability === 'local.mcp'
+                  ? 'local_mcp_disabled'
+                  : capability === 'local.office'
+                    ? 'office_not_implemented'
+                    : 'ready',
+              missing: [],
+              versions: { bridge: '0.6.0-dev.7' },
+              observedAt: now,
+            })),
           },
         ];
         await f.page
           .getByRole('button', { name: 'Bridge 离线', exact: true })
           .click();
-        const computer = f.page.getByRole('dialog', {
-          name: '我的电脑',
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
           exact: true,
         });
-        await computer.getByText('尚未选择文件夹', { exact: true }).waitFor();
+        const computer = settings.locator('[data-bridge-settings]');
+        await computer.getByText('未连接文件夹', { exact: true }).waitFor();
+        expect(await f.page.getByRole('dialog').count()).toBe(1);
+        await settings
+          .getByRole('heading', { name: '连接与管理电脑', exact: true })
+          .waitFor();
+        const connect = computer.getByRole('button', {
+          name: '连接文件夹',
+          exact: true,
+        });
+        expect(
+          await connect.evaluate((button) => getComputedStyle(button).fontSize),
+        ).toBe('13px');
+        expect((await connect.boundingBox())!.height).toBe(
+          width < 600 ? 44 : 32,
+        );
+        expect(
+          (await computer
+            .getByRole('button', { name: '刷新状态', exact: true })
+            .boundingBox())!.y,
+        ).toBeLessThan(
+          (await computer
+            .getByText('授权文件夹', { exact: true })
+            .boundingBox())!.y,
+        );
+        await settings
+          .getByRole('button', { name: '返回我的电脑', exact: true })
+          .click();
+        const management = settings.getByRole('button', {
+          name: '连接与管理电脑',
+          exact: true,
+        });
+        await management.waitFor();
+        expect(await management.innerText()).toContain('Bridge\n在线');
+        expect(await management.innerText()).toContain('文件夹\n未连接');
+        expect(
+          await management
+            .locator('[data-ready]')
+            .evaluateAll((nodes) =>
+              nodes.map((node) => getComputedStyle(node).fontSize),
+            ),
+        ).toEqual(['13px', '13px']);
+        await management.click();
+        await connect.waitFor();
         expect(
           await computer.getByText('已连接', { exact: true }).isVisible(),
         ).toBe(true);
@@ -2485,7 +2578,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-empty-${width}.png`,
           });
         await computer
-          .getByRole('button', { name: '选择文件夹', exact: true })
+          .getByRole('button', { name: '连接文件夹', exact: true })
           .click();
         await expect
           .poll(() => f.state.bridgeSelections)
@@ -2496,6 +2589,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await computer
           .getByRole('button', { name: '刷新状态', exact: true })
           .click();
+        await computer.getByText('AI-what', { exact: true }).waitFor();
+        await settings
+          .getByRole('button', { name: '返回我的电脑', exact: true })
+          .click();
+        expect(await management.innerText()).toContain('文件夹\n已连接');
+        await management.click();
         await computer.getByText('AI-what', { exact: true }).waitFor();
         if (process.env.ALLRICE_DIALOG_SCREENSHOT)
           await f.page.screenshot({
@@ -2522,12 +2621,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         expect(
           await computer
-            .getByRole('button', { name: '选择文件夹', exact: true })
+            .getByRole('button', { name: '连接文件夹', exact: true })
             .count(),
         ).toBe(0);
         expect(
           await computer
-            .getByRole('button', { name: '断开', exact: true })
+            .getByRole('button', { name: '断开连接', exact: true })
             .count(),
         ).toBe(0);
         f.state.bridgeError = false;
@@ -2536,11 +2635,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
         await computer.getByText('AI-what', { exact: true }).waitFor();
         await computer
-          .getByRole('button', { name: '断开', exact: true })
+          .getByRole('button', { name: '断开连接', exact: true })
           .click();
-        await computer.getByText('尚未选择文件夹', { exact: true }).waitFor();
+        expect(f.state.bridgeDevices[0]!.folderGrants).toHaveLength(1);
+        await computer
+          .getByRole('button', { name: '取消', exact: true })
+          .click();
+        expect(f.state.bridgeDevices[0]!.folderGrants).toHaveLength(1);
+        await computer
+          .getByRole('button', { name: '断开连接', exact: true })
+          .click();
+        await computer
+          .getByRole('button', { name: '确认断开', exact: true })
+          .click();
+        await computer.getByText('未连接文件夹', { exact: true }).waitFor();
         expect(f.state.bridgeDevices[0]!.folderGrants).toEqual([]);
-        await computer.locator('summary').click();
+        expect(f.state.bridgeDevices[0]!.status).toBe('online');
+        await computer.getByText('下载与安装', { exact: true }).click();
         await computer
           .getByRole('link', {
             name: '下载 M 芯片版 · v0.6.0-dev.7',
@@ -2579,13 +2690,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         expect(
           await computer
-            .getByRole('button', { name: '选择文件夹', exact: true })
+            .getByRole('button', { name: '连接文件夹', exact: true })
             .count(),
         ).toBe(0);
         if (process.env.ALLRICE_DIALOG_SCREENSHOT)
           await f.page.screenshot({
             path: `${process.env.ALLRICE_DIALOG_SCREENSHOT}-offline-${width}.png`,
           });
+        await settings
+          .getByRole('button', { name: '返回我的电脑', exact: true })
+          .click();
+        expect(await management.innerText()).toContain('Bridge\n离线');
+        expect(await management.innerText()).toContain('文件夹\n未连接');
         await f.page.keyboard.press('Escape');
         expect(await computer.count()).toBe(0);
         expect(f.errors).toEqual([]);
@@ -3444,6 +3560,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await browserSwitch.waitFor();
+      await dialog
+        .getByRole('button', { name: '连接与管理电脑', exact: true })
+        .getByText('在线', { exact: true })
+        .waitFor();
       const remember = dialog.getByRole('switch', {
         name: '保留浏览器登录',
         exact: true,
@@ -3472,7 +3592,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => browserSwitch.getAttribute('aria-checked'))
         .toBe('false');
-      await dialog.getByText('已连接', { exact: true }).waitFor();
+      await dialog
+        .getByText('正在同步到电脑…', { exact: true })
+        .waitFor({ state: 'hidden' });
       expect(await browserSwitch.getAttribute('data-retained')).toBe('yes');
       const development = dialog.getByRole('switch', {
         name: '受控开发协作',
@@ -3487,7 +3609,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('switch', { name: '本地沙箱命令', exact: true })
           .getAttribute('aria-checked'),
       ).toBe('true');
-      await dialog.getByText('已连接', { exact: true }).waitFor();
+      await dialog
+        .getByText('正在同步到电脑…', { exact: true })
+        .waitFor({ state: 'hidden' });
       await f.page.screenshot({
         path: '/tmp/allrice-bridge-three-switches.png',
       });
@@ -5639,10 +5763,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
       const card = dialog.locator('[data-capability="local_files"]');
       await card.getByRole('button', { name: '连接与管理电脑' }).click();
-      const bridge = f.page.getByRole('dialog', {
-        name: '我的电脑',
-        exact: true,
-      });
+      const bridge = f.page
+        .getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        })
+        .locator('[data-bridge-settings]');
       await bridge.waitFor();
       await bridge.getByRole('link', { name: /下载 M 芯片版/ }).waitFor();
       const calls = f.state.readinessRequests;
@@ -5699,10 +5825,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .locator('[data-capability="local_files"]')
           .getByRole('button', { name: '连接与管理电脑' })
           .click();
-        const dialog = f.page.getByRole('dialog', {
-          name: '我的电脑',
-          exact: true,
-        });
+        const dialog = f.page
+          .getByRole('dialog', {
+            name: '设置',
+            exact: true,
+          })
+          .locator('[data-bridge-settings]');
         const download = dialog.getByRole('link', {
           name: '下载 M 芯片版 · v0.6.0-dev.7',
           exact: true,

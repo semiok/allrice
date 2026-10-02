@@ -54,6 +54,7 @@ export function bridgeCapabilityRows(device: BridgeDevice) {
           {
             capability,
             label,
+            state: report.state,
             stateLabel: readinessLabels[report.state],
             reason:
               readinessReasons[report.reason] ??
