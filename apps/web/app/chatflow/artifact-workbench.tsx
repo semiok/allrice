@@ -15,6 +15,7 @@ import {
   hasNativeViewport,
 } from './native-document-preview';
 import { DocumentToolbar, DocumentVersions } from './document-reader';
+import { CompanyTemplatePublisher } from './company-template-publisher';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
@@ -853,6 +854,17 @@ function ArtifactReview({
               version={artifact.version.version}
               onSelect={(version) => onSelect(version.id)}
             />
+            {!readOnly &&
+              !toolResult &&
+              ['document', 'plan', 'file'].includes(artifact.kind) && (
+                <CompanyTemplatePublisher
+                  key={artifact.version.id}
+                  workspaceId={workspaceId}
+                  headers={tenantHeaders}
+                  versionId={artifact.version.id}
+                  fileName={artifact.version.fileName}
+                />
+              )}
           </DocumentToolbar>
           <div
             className={`${reader.content} ${hasNativeViewport(preview) && view === 'preview' ? reader.officeContent : ''}`}

@@ -114,6 +114,7 @@ export async function listToolBrokerFiles(
     where o.organization_id = ${context.organizationId}
       and o.workspace_id = ${context.workspaceId}
       and o.category in ('uploads', 'exports') and o.state = 'ready'
+      and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
       and (o.owner_id = ${context.policySnapshot.subjectId}
         or o.visibility <> 'private')
     group by o.id, deliverable.file_name, deliverable.version
@@ -172,6 +173,7 @@ export async function getToolBrokerFile(
     where o.id = ${UuidSchema.parse(objectIdInput)}
       and o.organization_id = ${context.organizationId}
       and o.workspace_id = ${context.workspaceId} and o.state = 'ready'
+      and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
     group by o.id, deliverable.id, deliverable.version, deliverable.file_name
   `;
   const row = rows[0];

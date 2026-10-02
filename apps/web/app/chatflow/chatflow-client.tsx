@@ -24,6 +24,7 @@ import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
+import { CompanyTemplateBrowser } from './company-template-browser';
 import { AssistantHistoryButton } from './assistant-history-button';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
@@ -125,6 +126,9 @@ export function ChatFlowClient({
     SessionReference[]
   >([]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  const [companyTemplatesScope, setCompanyTemplatesScope] = useState<
+    string | null
+  >(null);
   const [busy, setBusy] = useState(false);
   const [cancelRequestedRunId, setCancelRequestedRunId] = useState<
     string | null
@@ -1205,6 +1209,13 @@ export function ChatFlowClient({
         />
       )}
       {archive.overlays}
+      <CompanyTemplateBrowser
+        key={settingsScope}
+        open={companyTemplatesScope === settingsScope}
+        onClose={() => setCompanyTemplatesScope(null)}
+        workspaceId={workspace.workspaceId}
+        headers={tenantHeaders}
+      />
       <ChatSidebar
         experienceEnabled={experienceEnabled}
         archive={archive}
@@ -1338,6 +1349,13 @@ export function ChatFlowClient({
                 <div
                   className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                 >
+                  <button
+                    type="button"
+                    className={workbenchUi.entry}
+                    onClick={() => setCompanyTemplatesScope(settingsScope)}
+                  >
+                    公司范本
+                  </button>
                   {workbenchEnabled ? (
                     <button
                       type="button"

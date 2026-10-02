@@ -1,0 +1,28 @@
+.panel {
+  min-width: 0;
+  padding: 18px 0;
+}
+.panel p {
+  line-height: 1.6;
+}
+.panel select {
+  max-width: 100%;
+  margin: 0 8px;
+  padding: 7px;
+  border: 1px solid var(--dsw-alias-border-l2, #394452);
+  border-radius: 8px;
+  background: var(--dsw-specific-input-major, #202630);
+  color: inherit;
+  font: inherit;
+}
+.items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 12px;
+  margin: 16px 0;
+}
+.check {
+  display: inline-flex !important;
+  align-items: center;
+  margin: 6px 14px 6px 0;
+}

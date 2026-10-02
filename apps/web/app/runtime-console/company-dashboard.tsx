@@ -8,6 +8,7 @@ import type {
 import { useActivityPages } from './organization-activity-data';
 import { CompanyWorkList } from './company-work-list';
 import { CompanyDeliverableLibrary } from './company-deliverables';
+import { CompanyAssetsPanel } from './company-assets-panel';
 import styles from './tenant-administration.module.css';
 import css from './company-dashboard.module.css';
 
@@ -353,6 +354,10 @@ export function CompanyDashboard({
       <CompanyDeliverableLibrary
         organizationId={organizationId}
         scopeQuery={scopeQuery}
+      />
+      <CompanyAssetsPanel
+        key={organizationId}
+        organizationId={organizationId}
       />
     </section>
   );
