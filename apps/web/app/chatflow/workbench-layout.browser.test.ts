@@ -2483,6 +2483,34 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             clientVersion: '0.6.0-dev.7',
             lastSeenAt: now,
             folderGrants: [],
+            readiness: (
+              [
+                'local.fs.read',
+                'local.fs.write',
+                'local.git.status',
+                'local.browser',
+                'local.process',
+                'local.development',
+                'local.preview',
+                'local.mcp',
+                'local.office',
+              ] as const
+            ).map((capability) => ({
+              capability,
+              state:
+                capability === 'local.mcp' || capability === 'local.office'
+                  ? ('unsupported' as const)
+                  : ('ready' as const),
+              reason:
+                capability === 'local.mcp'
+                  ? 'local_mcp_disabled'
+                  : capability === 'local.office'
+                    ? 'office_not_implemented'
+                    : 'ready',
+              missing: [],
+              versions: { bridge: '0.6.0-dev.7' },
+              observedAt: now,
+            })),
           },
         ];
         await f.page
@@ -2623,7 +2651,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await computer.getByText('未连接文件夹', { exact: true }).waitFor();
         expect(f.state.bridgeDevices[0]!.folderGrants).toEqual([]);
         expect(f.state.bridgeDevices[0]!.status).toBe('online');
-        await computer.locator('summary').click();
+        await computer.getByText('下载与安装', { exact: true }).click();
         await computer
           .getByRole('link', {
             name: '下载 M 芯片版 · v0.6.0-dev.7',
@@ -3560,7 +3588,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() => browserSwitch.getAttribute('aria-checked'))
         .toBe('false');
-      await dialog.getByText('已连接', { exact: true }).waitFor();
+      await dialog
+        .getByRole('button', { name: '连接与管理电脑', exact: true })
+        .getByText('在线', { exact: true })
+        .waitFor();
       expect(await browserSwitch.getAttribute('data-retained')).toBe('yes');
       const development = dialog.getByRole('switch', {
         name: '受控开发协作',
