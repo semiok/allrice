@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { dirname, join, sep } from 'node:path';
-import { PDFParse } from 'pdf-parse';
+import type { PDFParse as PdfParser } from 'pdf-parse';
 
 export const PDF_MAXIMUM_INPUT_BYTES = 20 * 1024 * 1024;
 export const PDF_MAXIMUM_RESULT_BYTES = 400_000;
@@ -8,11 +8,31 @@ export const PDF_MAXIMUM_PAGES = 10;
 
 const defaultMaximumCharacters = 120_000;
 const absoluteMaximumCharacters = 300_000;
-const packageRequire = createRequire(import.meta.url);
-const pdfParseRequire = createRequire(packageRequire.resolve('pdf-parse'));
-const pdfJsResources = dirname(
-  pdfParseRequire.resolve('pdfjs-dist/package.json'),
-);
+type PdfReaderRuntime = {
+  PDFParse: typeof PdfParser;
+  resourcesDirectory: string;
+};
+let trustedRuntime: PdfReaderRuntime | undefined;
+
+/** Fixed packaged native resources only. This is a trusted loader seam, never
+ * a document option or a model-provided module/worker path. */
+export function configureTrustedPdfReaderRuntime(runtime: PdfReaderRuntime) {
+  if (trustedRuntime) throw Error('PDF_RUNTIME_ALREADY_CONFIGURED');
+  trustedRuntime = runtime;
+}
+
+async function pdfReaderRuntime(): Promise<PdfReaderRuntime> {
+  if (trustedRuntime) return trustedRuntime;
+  const { PDFParse } = await import('pdf-parse');
+  const packageRequire = createRequire(import.meta.url);
+  const pdfParseRequire = createRequire(packageRequire.resolve('pdf-parse'));
+  return {
+    PDFParse,
+    resourcesDirectory: dirname(
+      pdfParseRequire.resolve('pdfjs-dist/package.json'),
+    ),
+  };
+}
 
 export type PdfReadErrorCode =
   | 'PDF_INPUT_TOO_LARGE'
@@ -237,6 +257,8 @@ export async function readPdfDocument(input: {
     Math.max(maximumCharacters, 1_000),
     absoluteMaximumCharacters,
   );
+  const { PDFParse, resourcesDirectory: pdfJsResources } =
+    await pdfReaderRuntime();
   const parser = new PDFParse({
     data: input.bytes,
     isEvalSupported: false,

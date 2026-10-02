@@ -9,6 +9,7 @@ import {
   RuntimeOperationSnapshotSchema,
   runtimeContractEqual,
   dependencyPreparationErrorLabels,
+  localPdfPreExecutionDenialCodes,
   type RuntimeBridgeDispatch,
 } from '@allrice/contracts';
 
@@ -31,6 +32,8 @@ import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import type { LocalPythonRunner } from './local-python-runner.js';
 import { localPythonHttpTransport } from './local-python-client.js';
+import type { LocalPdfRunner } from './local-pdf-runner.js';
+import { localPdfHttpTransport } from './local-pdf-client.js';
 import { LocalMcpRunner, validateLocalMcpTools } from './local-mcp-runner.js';
 import { readLocalMcpCredential } from './local-mcp-credentials.js';
 import {
@@ -49,6 +52,7 @@ export class RuntimeBridgeOperationClient {
       journal: BridgeJournal;
       runner?: LocalCommandRunner;
       pythonRunner?: LocalPythonRunner;
+      pdfRunner?: LocalPdfRunner;
       signal?: AbortSignal;
       // Test seams retain the real filesystem journal and HTTP adapter.
       execute?: typeof executeLocalCommand;
@@ -119,12 +123,36 @@ export class RuntimeBridgeOperationClient {
       if (ack.receiptId !== receipt.receiptId)
         throw new BridgeJournalError('JOURNAL_ACK_MISMATCH');
       await this.input.journal.acknowledge(receipt.receiptId);
+      if (
+        this.input.pdfRunner &&
+        ['operation.outcome', 'operation.stopped'].includes(receipt.signal.type)
+      )
+        await this.input.pdfRunner
+          .acknowledge(receipt.attempt.attemptId)
+          .catch(() => undefined);
     }
     return (await this.input.journal.pending(1)).length === 0;
   }
 
   async pollOnce() {
     if (this.input.signal?.aborted) return false;
+    if (this.input.pdfRunner)
+      for (const dispatch of await this.input.journal.unknownLocalPdfOperations()) {
+        if (dispatch.payload.capability !== 'local.pdf.read') continue;
+        try {
+          const result = await this.input.pdfRunner.recover(
+            dispatch.snapshot.binding.attempt.attemptId,
+            dispatch.payload,
+          );
+          if (result)
+            await this.input.journal.reconcileLocalPdf(
+              dispatch.snapshot.binding.attempt.operationId,
+              result,
+            );
+        } catch {
+          /* Immutable unknown evidence stays; never parse again. */
+        }
+      }
     if (this.input.pythonRunner)
       for (const dispatch of await this.input.journal.unknownLocalPythonOperations()) {
         if (dispatch.payload.capability !== 'local.python.execute') continue;
@@ -187,6 +215,7 @@ export class RuntimeBridgeOperationClient {
         supportsChangeset: true,
         supportsBinaryFiles: true,
         ...(this.input.pythonRunner ? { supportsManagedPython: true } : {}),
+        ...(this.input.pdfRunner ? { supportsPdfRead: true } : {}),
         ...(this.input.runner
           ? {
               supportsLocalCommand: true,
@@ -221,6 +250,16 @@ export class RuntimeBridgeOperationClient {
     const operationId = dispatch.snapshot.binding.attempt.operationId;
     if ((await journal.receive(dispatch)) === 'duplicate') return;
     if (this.input.signal?.aborted) {
+      if (dispatch.payload.capability === 'local.pdf.read') {
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: 'Bridge 已停止领取，PDF 解析进程未启动',
+          output: { errorCode: 'PDF_EXECUTION_REVOKED' },
+          errorCode: 'PDF_EXECUTION_REVOKED',
+        });
+        return;
+      }
       await journal.stopped(
         operationId,
         { reason: 'bridge_paused' },
@@ -229,6 +268,7 @@ export class RuntimeBridgeOperationClient {
       return;
     }
     const python = dispatch.payload.capability === 'local.python.execute';
+    const pdf = dispatch.payload.capability === 'local.pdf.read';
     const grant = config.grants.find(
       (item) => item.id === dispatch.snapshot.binding.execution.grantId,
     );
@@ -237,6 +277,7 @@ export class RuntimeBridgeOperationClient {
       : null;
     if (
       !python &&
+      !pdf &&
       (!grant ||
         !root ||
         grant.rootFingerprint !== dispatch.grantRootFingerprint ||
@@ -267,8 +308,25 @@ export class RuntimeBridgeOperationClient {
       });
       return;
     }
+    if (
+      pdf &&
+      (!this.input.pdfRunner ||
+        dispatch.grantRootFingerprint !==
+          createHash('sha256')
+            .update(`allrice-readonly-pdf-v1:${config.deviceId}`)
+            .digest('hex'))
+    ) {
+      await journal.outcome(operationId, {
+        status: 'failed',
+        effects: 'none',
+        summary: '本地固定只读 PDF 授权与本机不匹配，未执行',
+        errorCode: 'PDF_EXECUTION_REVOKED',
+        output: { errorCode: 'PDF_EXECUTION_REVOKED' },
+      });
+      return;
+    }
     try {
-      if (!python) journal.assertWorkspace(root!);
+      if (!python && !pdf) journal.assertWorkspace(root!);
     } catch {
       await journal.outcome(operationId, {
         status: 'failed',
@@ -336,6 +394,16 @@ export class RuntimeBridgeOperationClient {
       return;
     }
     if (this.input.signal?.aborted) {
+      if (dispatch.payload.capability === 'local.pdf.read') {
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: 'Bridge 已停止，PDF 解析进程未启动',
+          output: { errorCode: 'PDF_EXECUTION_REVOKED' },
+          errorCode: 'PDF_EXECUTION_REVOKED',
+        });
+        return;
+      }
       await journal.stopped(
         operationId,
         { reason: 'bridge_paused' },
@@ -345,6 +413,10 @@ export class RuntimeBridgeOperationClient {
     }
     if (dispatch.payload.capability === 'local.python.execute') {
       await this.executePython(dispatch);
+      return;
+    }
+    if (dispatch.payload.capability === 'local.pdf.read') {
+      await this.executePdf(dispatch);
       return;
     }
     if (isLocalFilePayload(dispatch.payload)) {
@@ -561,6 +633,92 @@ export class RuntimeBridgeOperationClient {
           'Operation completed; output exceeded the journal limit and was omitted',
         output: { truncated: true, reason: 'output_limit' },
       });
+    }
+  }
+
+  private async executePdf(dispatch: RuntimeBridgeDispatch) {
+    if (
+      dispatch.payload.capability !== 'local.pdf.read' ||
+      !this.input.pdfRunner
+    )
+      throw Error('PDF_EXECUTION_REVOKED');
+    const { config, token, journal, pdfRunner } = this.input;
+    const { operationId, attemptId } = dispatch.snapshot.binding.attempt;
+    try {
+      const result = await pdfRunner.execute(dispatch.payload, {
+        attemptId,
+        signal: this.input.signal,
+        transport: localPdfHttpTransport({
+          server: config.server,
+          token,
+          id: operationId,
+          leaseToken: dispatch.leaseToken,
+        }),
+        maintainLease: async () => {
+          if (this.input.signal?.aborted) return false;
+          try {
+            const current = await this.request<{
+              snapshot: unknown;
+              leaseExpiresAt: string;
+            }>({
+              server: config.server,
+              path: `${runtimeBridgeOperationPath}/${operationId}/heartbeat`,
+              method: 'POST',
+              token,
+              body: {
+                contractVersion: 1,
+                attempt: dispatch.snapshot.binding.attempt,
+                leaseToken: dispatch.leaseToken,
+              },
+              maximumResponseBytes: 200_000,
+              timeoutMs: 2500,
+            });
+            const snapshot = RuntimeOperationSnapshotSchema.parse(
+              current.snapshot,
+            );
+            return (
+              snapshot.status === 'running' &&
+              snapshot.cancelRequestId === null &&
+              runtimeContractEqual(
+                snapshot.binding,
+                dispatch.snapshot.binding,
+              ) &&
+              Date.parse(current.leaseExpiresAt) > Date.now()
+            );
+          } catch {
+            return false;
+          }
+        },
+      });
+      if (result.process.reason === 'canceled')
+        await journal.stopped(
+          operationId,
+          result,
+          '本地 PDF 读取已物理停止，未换端',
+        );
+      else
+        await journal.outcome(operationId, {
+          status: result.document !== null ? 'succeeded' : 'failed',
+          effects: 'none',
+          output: result,
+          summary: result.document
+            ? '本地固定 PDF 已解析授权原字节并物理退出；结果保留原页来源'
+            : '本地 PDF 读取未完成；未自动重试或换端',
+        });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : '';
+      if (localPdfPreExecutionDenialCodes.some((value) => value === code))
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: '本地 PDF 执行前校验未通过，解析进程未启动',
+          errorCode: code,
+          output: { errorCode: code },
+        });
+      else
+        await journal.uncertain(operationId, 'receipt_missing', {
+          summary: '本地 PDF 停止或结果待对账；不自动重读或换端',
+        });
     }
   }
 

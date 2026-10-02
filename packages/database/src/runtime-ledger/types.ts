@@ -68,6 +68,20 @@ export interface RuntimeLedgerLease {
   bridgePayload: RuntimeBridgePayload | null;
 }
 
+/** An absent support flag keeps the legacy claim set unchanged. */
+export interface RuntimeBridgeClaimSupport {
+  supportsLocalCommand?: boolean;
+  supportsLocalMcp?: boolean;
+  supportsProjectDiagnostics?: boolean;
+  supportsNpmDependencies?: boolean;
+  supportsChangesetCandidate?: boolean;
+  supportsBackgroundServices?: boolean;
+  supportsChangeset?: boolean;
+  supportsBinaryFiles?: boolean;
+  supportsManagedPython?: boolean;
+  supportsPdfRead?: boolean;
+}
+
 export interface RegisterRuntimeRootInput {
   /** Caller has authenticated the owner and selected immutable root limits. */
   task: RuntimeTaskRef;

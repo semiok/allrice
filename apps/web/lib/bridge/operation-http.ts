@@ -48,6 +48,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsChangeset?: boolean;
     supportsBinaryFiles?: boolean;
     supportsManagedPython?: boolean;
+    supportsPdfRead?: boolean;
     recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
   }): Promise<{
     snapshot: Snapshot;
@@ -123,17 +124,23 @@ function operationGrant(
   device: BridgeDevice,
   grants: BridgeFolderGrant[],
   managed: ManagedRuntimeGrant | null | undefined,
+  pdf: ManagedRuntimeGrant | null | undefined,
   snapshot: Snapshot,
 ) {
   const execution = snapshot.binding.execution;
-  if (snapshot.binding.action === 'local.python.execute') {
-    return managed &&
-      !managed.revokedAt &&
-      managed.profileVersion === 1 &&
-      managed.deviceId === device.id &&
-      managed.id === execution.grantId &&
-      managed.runtimeGeneration === execution.grantVersion
-      ? managed
+  if (
+    snapshot.binding.action === 'local.python.execute' ||
+    snapshot.binding.action === 'local.pdf.read'
+  ) {
+    const runtime =
+      snapshot.binding.action === 'local.pdf.read' ? pdf : managed;
+    return runtime &&
+      !runtime.revokedAt &&
+      runtime.profileVersion === 1 &&
+      runtime.deviceId === device.id &&
+      runtime.id === execution.grantId &&
+      runtime.runtimeGeneration === execution.grantVersion
+      ? runtime
       : undefined;
   }
   return grants.find(
@@ -174,6 +181,7 @@ export function createRuntimeBridgeHttpHandler(input: {
     device: BridgeDevice;
     grants: BridgeFolderGrant[];
     managedRuntimeGrant?: ManagedRuntimeGrant | null;
+    pdfRuntimeGrant?: ManagedRuntimeGrant | null;
   }>;
   // Must include current admission. Do not construct a permissive production ledger.
   ledgerForDevice: (device: BridgeDevice) => Promise<RuntimeBridgeLedgerPort>;
@@ -187,7 +195,7 @@ export function createRuntimeBridgeHttpHandler(input: {
       if (!input.enabled()) throw new HttpProblem(404, 'FEATURE_DISABLED');
       const token = getBridgeDeviceToken(request);
       if (!token) throw new HttpProblem(401, 'DEVICE_UNAUTHORIZED');
-      const { device, grants, managedRuntimeGrant } =
+      const { device, grants, managedRuntimeGrant, pdfRuntimeGrant } =
         await input.authenticate(token);
       if (device.revokedAt || device.status === 'revoked')
         throw new HttpProblem(401, 'DEVICE_UNAUTHORIZED');
@@ -215,6 +223,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsChangeset',
                 'supportsBinaryFiles',
                 'supportsManagedPython',
+                'supportsPdfRead',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
                 'supportsChangesetCandidate',
@@ -232,6 +241,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsBinaryFiles !== 'boolean') ||
           ('supportsManagedPython' in selection &&
             typeof selection.supportsManagedPython !== 'boolean') ||
+          ('supportsPdfRead' in selection &&
+            typeof selection.supportsPdfRead !== 'boolean') ||
           ('supportsProjectDiagnostics' in selection &&
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
@@ -251,6 +262,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsLocalCommand: selection.supportsLocalCommand === true,
           supportsBinaryFiles: selection.supportsBinaryFiles === true,
           supportsManagedPython: selection.supportsManagedPython === true,
+          supportsPdfRead: selection.supportsPdfRead === true,
           supportsLocalMcp: selection.supportsLocalMcp === true,
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
@@ -272,6 +284,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           device,
           grants,
           managedRuntimeGrant,
+          pdfRuntimeGrant,
           lease.snapshot,
         );
         if (
@@ -279,7 +292,9 @@ export function createRuntimeBridgeHttpHandler(input: {
           lease.snapshot.binding.execution.deviceId !== device.id ||
           !lease.bridgePayload ||
           (lease.snapshot.binding.action === 'local.python.execute' &&
-            lease.bridgePayload.capability !== 'local.python.execute')
+            lease.bridgePayload.capability !== 'local.python.execute') ||
+          (lease.snapshot.binding.action === 'local.pdf.read' &&
+            lease.bridgePayload.capability !== 'local.pdf.read')
         )
           throw new HttpProblem(409, 'DISPATCH_SCOPE_MISMATCH');
         return json({
@@ -324,6 +339,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           device,
           grants,
           managedRuntimeGrant,
+          pdfRuntimeGrant,
           snapshot,
         );
         if (!grant) throw new HttpProblem(403, 'GRANT_REVOKED');

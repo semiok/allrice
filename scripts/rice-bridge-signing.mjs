@@ -1,5 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 export function bridgeSigningConfiguration(environment = process.env) {
   const mode = environment.ALLRICE_BRIDGE_SIGNING_MODE ?? 'development';
@@ -49,6 +51,36 @@ export function assertBridgeSigningAvailable(config, run = command) {
         line.includes(`(${config.teamId})`),
     );
   if (!found) throw Error('BRIDGE_DEVELOPER_ID_UNAVAILABLE');
+}
+
+export function verifyBridgePdfSigning(config, core, run = command) {
+  if (config.mode !== 'developer-id')
+    throw Error('BRIDGE_SIGNING_CONFIGURATION_REQUIRED');
+  // Native bytes were signed before SEA expectations were embedded. Verify;
+  // never re-sign a fixed sidecar after its hash has become an authority pin.
+  const manifest = JSON.parse(
+    readFileSync(`${core}.pdf-runtime/manifest.json`, 'utf8'),
+  );
+  const binaries = [`${core}.pdf-guardian`];
+  for (const file of manifest.files.filter((file) =>
+    file.path.endsWith('.node'),
+  )) {
+    const path = join(`${core}.pdf-runtime`, file.path);
+    if (
+      createHash('sha256').update(readFileSync(path)).digest('hex') !==
+      file.sha256
+    )
+      throw Error('BRIDGE_PDF_RESOURCE_CHANGED');
+    binaries.push(path);
+  }
+  for (const binary of binaries)
+    run('/usr/bin/codesign', [
+      '--verify',
+      '--strict',
+      '-R',
+      `anchor apple generic and certificate leaf[subject.OU] = "${config.teamId}"`,
+      binary,
+    ]);
 }
 
 /** Inside-out signing, Apple ticket validation and Gatekeeper; only a newly

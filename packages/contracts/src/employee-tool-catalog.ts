@@ -20,6 +20,7 @@ export type EmployeeToolService =
   | 'cloud_runner';
 type ToolRequirements = {
   managedOffice?: boolean;
+  managedPdfRead?: boolean;
   requiredTools?: readonly AllRiceToolName[];
   // Existing proposal-only configurations remain readable. These additional
   // tools are assembled for the complete workflow, not new execution grants.
@@ -35,6 +36,12 @@ type ToolRequirements = {
 /** Static composition over the existing Broker manifest. Runtime readiness
  * and authorization remain facts supplied by their existing owners. */
 const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
+  'workspace.document.read': {
+    // This published read tool delegates an authorized PDF to the fixed
+    // Bridge parser. It does not require Python, a folder or write authority.
+    policyActions: ['local.pdf.read'],
+    managedPdfRead: true,
+  },
   'workspace.export.create': {
     // The native Office adapter delegates this exact published tool. A managed
     // runtime is not a business folder or the separate Node command tool.
@@ -375,7 +382,9 @@ export function assembleEmployeeCapabilities(
       ...(tool.requirements.capabilities ?? []),
     ]),
   );
-  const bridgeTools = tools.filter((tool) => tool.target === 'bridge');
+  const bridgeTools = tools.filter(
+    (tool) => tool.target === 'bridge' || tool.requirements.managedPdfRead,
+  );
   const bridgeAccess =
     bridgeTools.some((tool) => tool.capability !== 'storage:read') ||
     tools.some((tool) => tool.requirements.managedOffice)

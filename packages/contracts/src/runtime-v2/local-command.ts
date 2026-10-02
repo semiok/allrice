@@ -12,6 +12,7 @@ import { RuntimeChangesetSchema } from './changeset-execution.ts';
 import { RuntimeLocalMcpPayloadSchema } from './local-mcp.ts';
 import { RuntimeLocalServiceConfigSchema } from './local-service.ts';
 import { RuntimeLocalPythonPayloadSchema } from './local-python.ts';
+import { RuntimeLocalPdfPayloadSchema } from './local-pdf.ts';
 import {
   RuntimeDependencyPreparationSchema,
   RuntimeDependencyPreparationResultSchema,
@@ -163,6 +164,7 @@ export const RuntimeBridgePayloadSchema = z.union([
   RuntimeChangesetSchema,
   RuntimeLocalMcpPayloadSchema,
   RuntimeLocalPythonPayloadSchema,
+  RuntimeLocalPdfPayloadSchema,
 ]);
 export type RuntimeBridgePayload = z.infer<typeof RuntimeBridgePayloadSchema>;
 

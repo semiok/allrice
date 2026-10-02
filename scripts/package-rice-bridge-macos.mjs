@@ -4,9 +4,17 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
+import { verifyPdfPackage } from './rice-bridge-pdf-runtime.mjs';
 
 assert.equal(process.platform, 'darwin');
 assert.ok(['arm64', 'x64'].includes(process.arch));
+const targetArch = process.env.ALLRICE_BRIDGE_APP_ARCH ?? process.arch;
+assert.ok(['arm64', 'x64'].includes(targetArch));
+if (targetArch !== process.arch)
+  assert.ok(
+    process.env.ALLRICE_BRIDGE_NODE_BINARY,
+    'Cross-builds require an explicit official target-architecture Node binary',
+  );
 const output = resolve(process.argv[2] ?? '');
 assert.ok(
   process.argv[2] && output !== process.cwd(),
@@ -17,7 +25,18 @@ const folder = join(output, 'RiceBridge');
 await mkdir(folder);
 const binary = join(folder, 'RiceBridge');
 const browserLauncher = join(folder, 'RiceBrowserLauncher');
-const machoArch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+const machoArch = targetArch === 'arm64' ? 'arm64' : 'x86_64';
+assert.ok(
+  execFileSync(
+    '/usr/bin/lipo',
+    ['-archs', process.env.ALLRICE_BRIDGE_NODE_BINARY ?? process.execPath],
+    { encoding: 'utf8' },
+  )
+    .trim()
+    .split(/\s+/)
+    .includes(machoArch),
+  'Target Node architecture mismatch',
+);
 execFileSync(
   '/usr/bin/xcrun',
   [
@@ -46,19 +65,34 @@ execFileSync(process.execPath, ['scripts/build-rice-bridge-sea.mjs', binary], {
   stdio: 'inherit',
   env: { ...process.env, ALLRICE_BRIDGE_PUBLIC_BUILD: '1' },
 });
-const version = execFileSync(binary, ['--version'], {
-  encoding: 'utf8',
-}).trim();
+const sourceVersion = (
+  await readFile('apps/rice-bridge/src/version.ts', 'utf8')
+).match(/bridgeVersion = '([^']+)'/)?.[1];
+assert.ok(sourceVersion, 'Bridge version is required');
+const version =
+  targetArch === process.arch
+    ? execFileSync(binary, ['--version'], { encoding: 'utf8' }).trim()
+    : sourceVersion;
+assert.equal(version, sourceVersion);
 assert.match(version, /^\d+\.\d+\.\d+-dev\.\d+$/);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const manifest = {
   version,
-  platform: `macos-${process.arch}`,
+  platform: `macos-${targetArch}`,
+  runtimeVersionVerifiedOnBuildHost: targetArch === process.arch,
   builtAt: new Date().toISOString(),
   nodeVersion: process.version,
   sourceArchiveSha256: process.env.ALLRICE_BRIDGE_SOURCE_ARCHIVE_SHA256 ?? null,
   binarySha256: sha256(await readFile(binary)),
   browserLauncherSha256: sha256(await readFile(browserLauncher)),
+  pdfGuardianSha256: sha256(await readFile(`${binary}.pdf-guardian`)),
+  pdfRuntimeManifestSha256: sha256(
+    await readFile(`${binary}.pdf-runtime/manifest.json`),
+  ),
+  pdfNativeVerification:
+    targetArch === 'x64'
+      ? 'required-on-device-before-ready'
+      : 'unsupported-until-native-verification',
   browserRuntimeManifestSha256: sha256(
     await readFile(`${binary}.runtime/manifest.json`),
   ),
@@ -70,6 +104,11 @@ const manifest = {
   previewDefault:
     'auto-prepare; approved live container HTTP service only; no host port or public URL',
 };
+await verifyPdfPackage(binary, {
+  architecture: targetArch,
+  manifestChecksum: manifest.pdfRuntimeManifestSha256,
+  guardianSha256: manifest.pdfGuardianSha256,
+});
 await writeFile(
   join(folder, 'release.json'),
   JSON.stringify(manifest, null, 2) + '\n',
@@ -95,7 +134,7 @@ for (const [name, action] of [
 }
 await writeFile(
   join(folder, '升级与沙箱说明.txt'),
-  `Rice Bridge ${version} · ${process.arch}\n\n` +
+  `Rice Bridge ${version} · ${targetArch}\n\n` +
     '项目预览在配对后自动准备，独立浏览器和本地沙箱实际就绪后即可使用。只预览当前任务已批准的活动 HTTP 服务，不开放本机端口或公共网址，不支持 WebSocket/热更新、上传下载或保留项目登录资料。preview disable 可随时关闭，主动关闭状态会保留，不自动重启旧服务。\n\n' +
     '1. 先退出旧 Bridge，保留旧文件作为回退；不要删除“应用程序支持/Rice Bridge”中的配对配置。\n' +
     '2. 解压后双击“打开 RiceBridge.command”（或 RiceBridge），原有配对和目录授权继续使用。\n' +
@@ -110,7 +149,7 @@ await writeFile(
 );
 const zip = join(
   output,
-  process.arch === 'arm64' ? 'RiceBridge-M.zip' : 'RiceBridge-Intel.zip',
+  targetArch === 'arm64' ? 'RiceBridge-M.zip' : 'RiceBridge-Intel.zip',
 );
 execFileSync('/usr/bin/ditto', ['-c', '-k', '--keepParent', folder, zip]);
 const zipSha256 = sha256(await readFile(zip));

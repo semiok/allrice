@@ -7,6 +7,11 @@ import {
   preparePlaywrightRuntime,
   playwrightSeaPlugin,
 } from './rice-bridge-playwright-runtime.mjs';
+import {
+  preparePdfRuntime,
+  preparePdfGuardian,
+  pdfSeaPlugin,
+} from './rice-bridge-pdf-runtime.mjs';
 
 const staticEnvironment = [
   'ALLRICE_BRIDGE_DEVICE_TOKEN',
@@ -46,6 +51,8 @@ function run(command, args, options = {}) {
 }
 
 const browserRuntime = await preparePlaywrightRuntime(output);
+const pdfRuntime = await preparePdfRuntime(output);
+const pdfGuardian = await preparePdfGuardian(output);
 // Use the lockfile's esbuild (tsx dependency), not a transient global binary.
 {
   const require = createRequire(import.meta.url);
@@ -56,7 +63,10 @@ const browserRuntime = await preparePlaywrightRuntime(output);
     platform: 'node',
     format: 'cjs',
     outfile: bundle,
-    plugins: [playwrightSeaPlugin(browserRuntime.manifest)],
+    plugins: [
+      playwrightSeaPlugin(browserRuntime.manifest),
+      pdfSeaPlugin(pdfRuntime.manifest, pdfGuardian.guardianSha256),
+    ],
     ...(staticBuild
       ? {
           define: {
@@ -121,5 +131,9 @@ console.info(
   JSON.stringify({
     browserRuntime: browserRuntime.runtime,
     browserRuntimeManifestSha256: browserRuntime.manifestSha256,
+    pdfRuntime: pdfRuntime.runtime,
+    pdfRuntimeManifestSha256: pdfRuntime.manifestSha256,
+    pdfPolicySha256: pdfRuntime.policySha256,
+    pdfGuardianSha256: pdfGuardian.guardianSha256,
   }),
 );

@@ -427,7 +427,7 @@ async function checkBindingAuthority(
   )
     throw new RuntimePolicyError('resource_adapter_not_registered');
   const [grant] =
-    binding.action === 'local.python.execute'
+    binding.action === 'local.pdf.read'
       ? await transaction<
           {
             root_fingerprint: string;
@@ -435,20 +435,35 @@ async function checkBindingAuthority(
             revoked_at: Date | null;
             device_revoked: Date | null;
           }[]
-        >`select g.root_fingerprint,g.runtime_generation,g.revoked_at,d.revoked_at as device_revoked
+        >`
+          select g.root_fingerprint,g.runtime_generation,g.revoked_at,d.revoked_at as device_revoked
+          from allrice_bridge_pdf_runtime_grants g join allrice_bridge_devices d on d.id=g.device_id
+          where g.id=${binding.execution.grantId} and d.id=${binding.execution.deviceId} and g.profile_version=1
+            and g.organization_id=${context.organizationId} and g.workspace_id=${context.workspaceId} and g.owner_id=${context.actor.id}
+            and d.organization_id=${context.organizationId} and d.workspace_id=${context.workspaceId} and d.owner_id=${context.actor.id}
+          for share of g,d`
+      : binding.action === 'local.python.execute'
+        ? await transaction<
+            {
+              root_fingerprint: string;
+              runtime_generation: number;
+              revoked_at: Date | null;
+              device_revoked: Date | null;
+            }[]
+          >`select g.root_fingerprint,g.runtime_generation,g.revoked_at,d.revoked_at as device_revoked
     from allrice_bridge_managed_runtime_grants g join allrice_bridge_devices d on d.id=g.device_id
     where g.id=${binding.execution.grantId} and d.id=${binding.execution.deviceId} and g.profile_version=1
       and g.organization_id=${context.organizationId} and g.workspace_id=${context.workspaceId} and g.owner_id=${context.actor.id}
       and d.organization_id=${context.organizationId} and d.workspace_id=${context.workspaceId} and d.owner_id=${context.actor.id}
     for share of g,d`
-      : await transaction<
-          {
-            root_fingerprint: string;
-            runtime_generation: number;
-            revoked_at: Date | null;
-            device_revoked: Date | null;
-          }[]
-        >`
+        : await transaction<
+            {
+              root_fingerprint: string;
+              runtime_generation: number;
+              revoked_at: Date | null;
+              device_revoked: Date | null;
+            }[]
+          >`
     select folder.root_fingerprint, folder.runtime_generation, folder.revoked_at, device.revoked_at as device_revoked
     from allrice_bridge_devices device join allrice_bridge_folder_grants folder on folder.device_id = device.id
     where folder.id = ${binding.execution.grantId} and device.id = ${binding.execution.deviceId}

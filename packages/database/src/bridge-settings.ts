@@ -78,6 +78,7 @@ export function bridgeCapabilityReadinessView(
     ![
       'local.office',
       'local.python',
+      'local.pdf.read',
       'local.office.formulas',
       'local.office.preview',
     ].includes(capability) &&

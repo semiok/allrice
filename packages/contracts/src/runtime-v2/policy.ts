@@ -48,6 +48,7 @@ export const runtimeGovernedActions = [
   'local.file.reveal',
   'local.process.execute',
   'local.python.execute',
+  'local.pdf.read',
   'local.fs.changeset',
   'cloud.process.execute',
   'cloud.mcp.call',
@@ -60,6 +61,7 @@ export const runtimeGovernedActions = [
 ] as const;
 
 const readActions = new Set<string>([
+  'local.pdf.read',
   'local.fs.list',
   'local.fs.search',
   'local.fs.read',
@@ -110,6 +112,13 @@ export function runtimePolicyActionDecision(
   // An explicit Deny remains authoritative. Confirmation follows the member setting.
   if (matches.some((rule) => rule.effect === 'deny'))
     return { effect: 'deny', reason: 'tenant_deny' };
+  // PDF is an internal backend of the already-published document read, not
+  // another tool permission to ask users to configure. The production
+  // authority resolver still requires that exact frozen read delegation,
+  // publication, authorized source, verified profile and current job lease.
+  // Do not change legacy controls or let this default override an explicit Deny.
+  if (action === 'local.pdf.read' && matches.length === 0)
+    return { effect: 'allow', reason: 'published_document_read' };
   // Current member preferences choose confirmation within an already allowed
   // action. They never register a tool, lift a Deny, or widen a resource grant.
   const group = workAutomationGroup(action);

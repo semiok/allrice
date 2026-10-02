@@ -158,6 +158,12 @@ const brokerNativeTools = [
         description:
           'For PDF, return ruled-grid table fragments with page/table/row sources; no OCR or automatic cross-page merge, retain raw strings and warnings. For Office edits, inspect sheets/cells, slides and paragraphs with source checksum. Use returned id and checksum in python.inputs; edit the actual template rather than reconstructing it.',
       },
+      location: {
+        type: 'string',
+        enum: ['auto', 'local', 'cloud'],
+        description:
+          'PDF only: auto prefers a verified ready local Bridge and uses cloud otherwise. local never switches to cloud; cloud explicitly uses the cloud reader. Omit for auto.',
+      },
     },
   },
   {

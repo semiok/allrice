@@ -2,6 +2,7 @@ import { assertSessionReferencesReadable } from '../workspace/session-references
 import { readEmployeeOrganizationContext } from './organization-context.ts';
 import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
 import { freezeManagedPythonBinding } from './managed-python-binding.ts';
+import { freezeManagedPdfBinding } from './managed-pdf-binding.ts';
 import {
   isPlatformAdmin,
   requirePlatformAdmin,
@@ -1231,6 +1232,17 @@ export async function prepareEmployeeRunBinding(input: {
         }
       : null,
   });
+  const managedPdf = freezeManagedPdfBinding({
+    manifest: manifest.data,
+    grantedCapabilities,
+    publication: publication
+      ? {
+          revisionId: publication.revision_id,
+          checksum: publication.checksum,
+          definition: publication.definition,
+        }
+      : null,
+  });
   const profiles = await sql<{ profile: unknown; display_name: string }[]>`
     select coalesce(p.profile, jsonb_build_object(
         'schemaVersion', 1,
@@ -1440,6 +1452,7 @@ export async function prepareEmployeeRunBinding(input: {
         bindings: {
           ...capabilityBindings(manifest.data),
           ...(managedPython ? { managedPython } : {}),
+          ...(managedPdf ? { managedPdf } : {}),
           skillVersionIds,
           knowledgeScopes: [
             ...new Set(

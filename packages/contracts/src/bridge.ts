@@ -29,6 +29,7 @@ export const BridgeCapabilitySchema = z.enum([
   'local.file.reveal',
   'local.file.select',
   'local.python.execute',
+  'local.pdf.read',
 ]);
 export type BridgeCapability = z.infer<typeof BridgeCapabilitySchema>;
 

@@ -22,6 +22,7 @@ export const BridgeReadinessCapabilitySchema = z.enum([
   'local.mcp',
   'local.office',
   'local.python',
+  'local.pdf.read',
   'local.office.formulas',
   'local.office.preview',
 ]);

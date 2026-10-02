@@ -112,6 +112,9 @@ importers:
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@allrice/office-runtime':
+        specifier: workspace:*
+        version: link:../../packages/office-runtime
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@4.4.3)
@@ -121,6 +124,9 @@ importers:
       ws:
         specifier: 8.21.3
         version: 8.21.3
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
     devDependencies:
       '@types/ws':
         specifier: 8.18.1

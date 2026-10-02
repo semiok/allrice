@@ -6,6 +6,8 @@ import {
   HeartbeatBridgeDeviceInputSchema,
   RuntimeLocalPythonProfileSchema,
   managedPythonPayloadForPlatform,
+  RuntimeLocalPdfProfileSchema,
+  pdfReadReleaseForPlatform,
 } from '@allrice/contracts';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -38,6 +40,100 @@ const facts = {
   browserVersion: '140.0.0',
 };
 describe('Bridge per-capability facts', () => {
+  it.each([
+    'ready',
+    'busy',
+    'preparing',
+    'paused',
+    'offline',
+    'unsupported',
+  ] as const)(
+    'reports independent readonly PDF %s with a real bounded heartbeat shape',
+    (state) => {
+      const profile = RuntimeLocalPdfProfileSchema.parse({
+        contractVersion: 1,
+        profileVersion: 1,
+        backend: 'native-seatbelt-v1',
+        platform: 'macos-x64',
+        pins: pdfReadReleaseForPlatform('macos-x64')!.pins,
+        available: true,
+        readOnly: true,
+        ocr: false,
+        stopConfirmed: true,
+        isolation: {
+          network: 'none',
+          hostFileAccess: 'none',
+          childExecution: 'none',
+          memoryEnforcement: 'watchdog',
+          resourceBudgetBytes: 512 * 1024 * 1024,
+          watchdogThresholdBytes: 512 * 1024 * 1024,
+          timeoutMs: 30000,
+          deniedHostRead: true,
+          deniedHostWrite: true,
+          deniedNetwork: true,
+          deniedChildExecution: true,
+        },
+        limits: {
+          inputBytes: 20 * 1024 * 1024,
+          resultBytes: 400000,
+          maximumPages: 10,
+          maximumCharacters: 300000,
+        },
+      });
+      const environment = {
+        ...facts.environment,
+        paused: state === 'paused',
+        settings: {
+          localBrowser: false,
+          localCommand: false,
+          development: false,
+        },
+      };
+      const reports = projectBridgeCapabilityReadiness({
+        ...facts,
+        environment,
+        files: { ...facts.files, folder: false, writable: false },
+        phase: state === 'offline' ? 'offline' : 'online',
+        activeForeground: state === 'busy' ? 1 : 0,
+        managedPdf: {
+          state:
+            state === 'preparing' || state === 'unsupported' ? state : 'ready',
+          profile,
+          reason:
+            state === 'unsupported'
+              ? 'PDF_RESOURCE_INTEGRITY_FAILED'
+              : state === 'preparing'
+                ? 'runtime_preparing'
+                : 'ready',
+        },
+      });
+      expect(
+        reports.find((r) => r.capability === 'local.pdf.read'),
+      ).toMatchObject({
+        state,
+        versions: { parser: '2.4.5', architecture: 'macos-x64' },
+      });
+      expect(reports.every((r) => Object.keys(r.versions).length <= 8)).toBe(
+        true,
+      );
+      expect(
+        HeartbeatBridgeDeviceInputSchema.safeParse({
+          protocolVersion: 2,
+          capabilities: BridgeCapabilities,
+          environment: { ...environment, readiness: reports },
+        }).success,
+      ).toBe(true);
+    },
+  );
+  it('does not inherit folder readiness or Node/Python readiness without a PDF probe', () => {
+    const reports = projectBridgeCapabilityReadiness(facts);
+    expect(
+      reports.find((r) => r.capability === 'local.pdf.read'),
+    ).toMatchObject({
+      state: 'unsupported',
+      reason: 'pdf_runtime_not_reported',
+    });
+  });
   it.each(['ready', 'busy', 'paused', 'offline'] as const)(
     'keeps a full managed Python profile within the heartbeat contract while %s',
     (state) => {
