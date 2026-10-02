@@ -48,6 +48,7 @@ type Row = {
   digest: string;
   file_metadata: CompanyAssetRevision['file'];
   created_at: Date;
+  usage: CompanyAsset['usage'];
 };
 export const companyRuleBudget = { maximumBytes: 16_000, maximumRules: 32 };
 export class CompanyAssetError extends Error {
@@ -114,6 +115,7 @@ function asset(
     revision: row.revision,
     publishedRevisionId: row.published_revision_id,
     latest: revision(row),
+    usage: row.usage,
     canEdit:
       administration ||
       (row.kind === 'template' && row.owner_id === context.actor.id),
@@ -129,7 +131,12 @@ async function rows(
 ) {
   return sql<
     Row[]
-  >`select a.*,u.display_name as owner_name,r.id as revision_id,r.number,r.content,r.digest,r.file_metadata,r.created_at
+  >`select a.*,u.display_name as owner_name,r.id as revision_id,r.number,r.content,r.digest,r.file_metadata,r.created_at,
+      (select jsonb_build_object('selectedRuns',count(*)filter(where f.selected_at is not null),
+        'loadedRuns',count(*)filter(where f.loaded_at is not null),
+        'readRuns',count(*)filter(where f.read_at is not null),
+        'derivedRuns',count(*)filter(where exists(select 1 from allrice_company_asset_derivations d where d.run_id=f.run_id and d.asset_id=f.asset_id)))
+       from allrice_company_run_assets f where f.organization_id=a.organization_id and f.asset_id=a.id) as usage
     from allrice_company_assets a join allrice_users u on u.id=a.owner_id join allrice_company_asset_revisions r on r.id=case when ${administration} or a.owner_id=${viewer} then a.latest_revision_id else a.published_revision_id end and r.asset_id=a.id
     where a.organization_id=${org} and (${id}::uuid is null or a.id=${id}) and (${after}::uuid is null or a.id>${after})
       and (${administration} or (a.owner_id=${viewer} and a.kind='template') or a.state='published') order by a.id limit 51`;

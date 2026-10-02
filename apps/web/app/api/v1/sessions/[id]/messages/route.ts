@@ -5,6 +5,8 @@ import {
   ArtifactReviewError,
   QueueError,
   AssistantRuntimeError,
+  CompanyAssetError,
+  CompanyRunAssetError,
 } from '@allrice/database';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 
@@ -53,6 +55,24 @@ export async function POST(
       headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
+    if (
+      error instanceof CompanyAssetError ||
+      error instanceof CompanyRunAssetError
+    )
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message:
+              error.code === 'parameters_invalid'
+                ? '请补齐范本必填内容，再发送。'
+                : error.code === 'material_too_large'
+                  ? '范本文件超过当前 20 MB 读取上限，请选择其他范本。'
+                  : '所选范本已变化、暂停或撤回，请重新选用；草稿已保留。',
+          },
+        },
+        { status: 409, headers: { 'Cache-Control': 'private, no-store' } },
+      );
     if (error instanceof SessionReferenceError)
       return Response.json(
         {

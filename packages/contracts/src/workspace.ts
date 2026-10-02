@@ -1,4 +1,8 @@
 import { McpFailureKindSchema } from './mcp-failure.ts';
+import {
+  CompanyRunSnapshotSchema,
+  CompanyTemplateSelectionSchema,
+} from './company-assets.ts';
 import { SessionReferenceSchema } from './session-reference.ts';
 import { z } from 'zod';
 import { WorkMethodSchema } from './work-methods.ts';
@@ -75,6 +79,7 @@ export type ReviewContinuationInput = z.infer<
 export const ChatMessageContentSchema = z
   .object({
     text: z.string().max(100_000),
+    companyAssets: CompanyRunSnapshotSchema.optional(),
     budgetWarning: z
       .enum([
         'MODEL_OUTPUT_BUDGET_EXCEEDED',
@@ -225,6 +230,7 @@ export const SendChatMessageInputSchema = z
     clientMessageId: UuidSchema,
     text: z.string().trim().min(1).max(40_000),
     attachmentIds: z.array(UuidSchema).max(20).default([]),
+    companyTemplates: z.array(CompanyTemplateSelectionSchema).max(3).optional(),
     sessionReferenceIds: z.array(UuidSchema).max(3).optional(),
     deliveryMode: z.enum(['auto', 'steer', 'follow_up']).default('auto'),
     expectedTurnId: z.string().trim().min(1).max(255).optional(),
@@ -236,6 +242,20 @@ export const SendChatMessageInputSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.companyTemplates?.length &&
+      (value.deliveryMode !== 'follow_up' ||
+        value.userQuestionAnswer ||
+        value.reviewContinuation ||
+        value.changesetAction ||
+        new Set(value.companyTemplates.map((t) => t.assetId)).size !==
+          value.companyTemplates.length)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Company templates require a distinct ordinary task and unique references',
+      });
     if (
       value.sessionReferenceIds?.length &&
       (value.deliveryMode !== 'follow_up' ||

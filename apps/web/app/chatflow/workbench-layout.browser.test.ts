@@ -11,6 +11,7 @@ import type {
   Locator,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
+  CompanyAssetSchema,
   WorkbenchArtifactSchema,
   TaskNextStepsSchema,
   type MessageFeedbackItem,
@@ -2398,6 +2399,153 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([1440, 640])(
+    'prepares exact company template parameters without submitting, then preserves them in the original send at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      const revisionId = id(8401),
+        assetId = id(8402);
+      const asset = CompanyAssetSchema.parse({
+        id: assetId,
+        organizationId: org,
+        ownerId: id(8403),
+        ownerName: '范本作者',
+        kind: 'template',
+        state: 'published',
+        revision: 2,
+        publishedRevisionId: revisionId,
+        canEdit: false,
+        latest: {
+          id: revisionId,
+          number: 1,
+          digest: `sha256:${'c'.repeat(64)}`,
+          createdAt: now,
+          content: {
+            kind: 'template',
+            title: '季度经营简报',
+            body: '填写本期数据并核对。',
+            category: '运营',
+            appliesToEmployeeIds: [],
+            taskKeywords: [],
+            sourceVersionId: id(8404),
+            slots: [
+              {
+                key: 'period',
+                label: '本期业务数据',
+                required: true,
+                multiline: true,
+              },
+            ],
+          },
+          file: {
+            objectId: id(8405),
+            checksum: `sha256:${'d'.repeat(64)}`,
+            sizeBytes: 1000,
+            fileName: '旧简报.txt',
+            mediaType: 'text/plain',
+            format: 'text',
+          },
+        },
+      });
+      let withdrawn = false,
+        deniedWrites = 0;
+      await f.page.route('**/api/v1/company-assets*', async (route) => {
+        if (route.request().method() !== 'GET') {
+          deniedWrites++;
+          return route.fulfill({ status: 403 });
+        }
+        const url = new URL(route.request().url());
+        const value = {
+          ...asset,
+          state: withdrawn ? 'withdrawn' : 'published',
+        };
+        const result = url.searchParams.get('history')
+          ? {
+              asset: value,
+              revisions: [asset.latest],
+              publishedRevisionIds: [revisionId],
+            }
+          : url.searchParams.get('preview')
+            ? f.state.filePreview
+            : {
+                assets: [value],
+                nextCursor: null,
+                ruleBudget: {
+                  maximumBytes: 16000,
+                  maximumRules: 32,
+                  publishedBytes: 0,
+                },
+              };
+        return route.fulfill({ json: result });
+      });
+      try {
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('保留原有草稿');
+        await f.page
+          .getByRole('button', { name: '公司范本', exact: true })
+          .click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '公司范本',
+          exact: true,
+        });
+        await dialog
+          .getByRole('button', { name: '查看范本', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '选用此修订', exact: true })
+          .click();
+        await dialog
+          .getByRole('textbox', { name: '本期业务数据', exact: true })
+          .fill('十月：收入 120，成本 45\n实际数据');
+        withdrawn = true;
+        await dialog
+          .getByRole('button', { name: '加入消息草稿', exact: true })
+          .click();
+        await expect
+          .poll(() =>
+            dialog
+              .getByRole('alert')
+              .filter({ hasText: '范本已变化' })
+              .isVisible(),
+          )
+          .toBe(true);
+        expect(f.state.messageInputs).toHaveLength(0);
+        withdrawn = false;
+        await dialog
+          .getByRole('button', { name: '加入消息草稿', exact: true })
+          .click();
+        await expect.poll(() => dialog.count()).toBe(0);
+        expect(await input.inputValue()).toContain('保留原有草稿');
+        await expect
+          .poll(() =>
+            f.page
+              .getByRole('button', { name: '移除范本 季度经营简报' })
+              .isVisible(),
+          )
+          .toBe(true);
+        expect(f.state.messageInputs).toHaveLength(0);
+        expect(deniedWrites).toBe(0);
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.messageInputs[0]).toMatchObject({
+          deliveryMode: 'follow_up',
+          companyTemplates: [
+            {
+              assetId,
+              revisionId,
+              digest: asset.latest.digest,
+              parameters: { period: '十月：收入 120，成本 45\n实际数据' },
+            },
+          ],
+        });
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
 
   it('artifact previews keep file actions and use the chat composer for revision requests', async () => {
     const f = await fixture({ artifacts: true });

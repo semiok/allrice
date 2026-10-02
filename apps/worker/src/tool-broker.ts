@@ -1,3 +1,4 @@
+import { CompanyAssetError, CompanyRunAssetError } from '@allrice/database';
 import { recordToolBrokerAudit } from '@allrice/database';
 
 import { HandlerError } from './errors.js';
@@ -107,7 +108,16 @@ export async function executeRiceTool(
       metadata: auditMetadata(input, requiredCapability),
     });
     return result;
-  } catch (error) {
+  } catch (cause) {
+    const error =
+      cause instanceof CompanyAssetError ||
+      cause instanceof CompanyRunAssetError
+        ? new HandlerError(
+            'COMPANY_REFERENCE_UNAVAILABLE',
+            '公司范本已暂停、撤回或权限已变化。请停止读取并向用户说明，重新选用后再继续。',
+            false,
+          )
+        : cause;
     await recordToolBrokerAudit({
       context: input.context,
       toolName: input.call.name,

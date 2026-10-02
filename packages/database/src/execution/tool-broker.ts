@@ -22,6 +22,11 @@ import {
 import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
+import {
+  getCompanyMaterialForExecution,
+  recordCompanyDerivation,
+} from '../company-run-assets.ts';
+import { CompanyAssetError } from '../company-assets.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 
 interface ResourceRow {
@@ -115,26 +120,65 @@ export async function listToolBrokerFiles(
       and o.workspace_id = ${context.workspaceId}
       and o.category in ('uploads', 'exports') and o.state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
       and (o.owner_id = ${context.policySnapshot.subjectId}
         or o.visibility <> 'private')
     group by o.id, deliverable.file_name, deliverable.version
     order by o.created_at desc
     limit ${Math.min(Math.max(limit, 1), 50)}
   `;
-  return rows.map((row) => {
-    authorizeRead(context, 'storage_object', row);
-    return {
-      id: row.id,
-      fileName: row.file_name,
-      mediaType: row.media_type,
-      checksum: row.checksum,
-      sizeBytes: Number(row.size_bytes),
-      visibility: row.visibility,
-      category: row.category,
-      deliverableVersion: row.deliverable_version,
-      createdAt: row.created_at.toISOString(),
-    };
-  });
+  const selected = await sql<
+    { material_object_id: string; created_at: Date }[]
+  >`
+    select a.material_object_id,m.created_at from allrice_company_run_assets a
+    join allrice_company_asset_materials m on m.object_id=a.material_object_id
+    where a.run_id=${context.runId} and a.organization_id=${context.organizationId} and a.workspace_id=${context.workspaceId}
+      and a.owner_id=${context.policySnapshot.subjectId} and a.kind='template' order by a.asset_id`;
+  const companyFiles = [];
+  for (const row of selected) {
+    try {
+      const file = await getCompanyMaterialForExecution(
+        context,
+        row.material_object_id,
+        sql,
+      );
+      if (file)
+        companyFiles.push({
+          id: file.object.id,
+          fileName: file.fileName,
+          mediaType: file.object.mediaType,
+          checksum: file.object.checksum,
+          sizeBytes: file.object.sizeBytes,
+          visibility: file.visibility,
+          category: 'uploads' as const,
+          deliverableVersion: null,
+          createdAt: row.created_at.toISOString(),
+        });
+    } catch (error) {
+      if (!(
+        error instanceof CompanyAssetError && error.code === 'asset_unavailable'
+      ))
+        throw error;
+    }
+  }
+  return [
+    ...companyFiles,
+    ...rows.map((row) => {
+      authorizeRead(context, 'storage_object', row);
+      return {
+        id: row.id,
+        fileName: row.file_name,
+        mediaType: row.media_type,
+        checksum: row.checksum,
+        sizeBytes: Number(row.size_bytes),
+        visibility: row.visibility,
+        category: row.category,
+        deliverableVersion: row.deliverable_version,
+        createdAt: row.created_at.toISOString(),
+      };
+    }),
+  ].slice(0, Math.min(Math.max(limit, 1), 50));
 }
 
 export async function getToolBrokerFile(
@@ -143,6 +187,12 @@ export async function getToolBrokerFile(
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const sql = getDatabase();
+  const company = await getCompanyMaterialForExecution(
+    context,
+    objectIdInput,
+    sql,
+  );
+  if (company) return company;
   const rows = await sql<
     (ResourceRow & {
       file_name: string;
@@ -174,6 +224,8 @@ export async function getToolBrokerFile(
       and o.organization_id = ${context.organizationId}
       and o.workspace_id = ${context.workspaceId} and o.state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
     group by o.id, deliverable.id, deliverable.version, deliverable.file_name
   `;
   const row = rows[0];
@@ -219,11 +271,18 @@ export async function assertToolBrokerSourceFile(
     from allrice_storage_objects
     where id=${source.objectId} and organization_id=${context.organizationId}
       and workspace_id=${context.workspaceId ?? null} and state='ready'
+      and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=allrice_storage_objects.id)
     for share
   `;
   if (!row) throw new DataAccessError('not_found');
   authorizeRead(context, 'storage_object', row);
   if (row.checksum !== source.checksum) throw new Error('source_file_changed');
+  const company = await getCompanyMaterialForExecution(
+    context,
+    source.objectId,
+    tx,
+  );
+  if (company) return { source, parentObjectId: undefined, derivation: true };
   const [version] = await tx<{ object_id: string; format: DeliveryFormat }[]>`
     select object_id,format from allrice_deliverable_versions
     where object_id=${source.objectId} and organization_id=${context.organizationId}
@@ -374,7 +433,9 @@ export async function registerToolBrokerExport(
       input.parentObjectId !== source.parentObjectId
     )
       throw new Error('source_file_changed');
-    const requestedParent = source?.parentObjectId ?? input.parentObjectId;
+    const requestedParent = source?.derivation
+      ? undefined
+      : (source?.parentObjectId ?? input.parentObjectId);
     const quotas = await transaction<
       { limit_bytes: number | string | null; used_bytes: number | string }[]
     >`
@@ -500,6 +561,13 @@ export async function registerToolBrokerExport(
         'deliverable_version', ${versions[0]!.id}, 'recorded', ${source.derivation ? 'source_file_derivation' : 'source_file_copy'},
         ${transaction.json({ sourceFile: source.source, objectId: input.object.id, runId: input.context.runId })})
     `;
+    if (source)
+      await recordCompanyDerivation(
+        transaction,
+        input.context,
+        source.source.objectId,
+        versions[0]!.id,
+      );
     if (input.officeReceipt) {
       const receipt = OfficeDeliveryReceiptSchema.parse(input.officeReceipt);
       await transaction`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)

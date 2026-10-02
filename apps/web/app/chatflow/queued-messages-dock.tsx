@@ -91,16 +91,22 @@ export function QueuedMessagesDock({
             queue.map((row) => {
               const preview = [
                 row.text,
+                ...(row.companyAssets?.templates ?? []).map(
+                  (r) =>
+                    `范本：${r.revision.content.title} v${r.revision.number}`,
+                ),
                 ...(row.sessionReferences ?? []).map((r) => `＠ ${r.label}`),
                 ...(row.attachments ?? []).map((a) => `📎 ${a.fileName}`),
               ].join('　');
-              const steerUnavailable = row.sessionReferences?.length
-                ? '引用会话的消息会作为下一轮任务处理'
-                : row.attachments?.length
-                  ? '含附件的消息会作为下一轮任务处理'
-                  : !canSteer
-                    ? '等待当前回合开始后可引导'
-                    : undefined;
+              const steerUnavailable = row.companyAssets?.templates.length
+                ? '选用范本的消息会作为下一轮任务处理'
+                : row.sessionReferences?.length
+                  ? '引用会话的消息会作为下一轮任务处理'
+                  : row.attachments?.length
+                    ? '含附件的消息会作为下一轮任务处理'
+                    : !canSteer
+                      ? '等待当前回合开始后可引导'
+                      : undefined;
               return (
                 <li
                   key={row.id}

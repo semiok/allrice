@@ -47,6 +47,12 @@ import {
   waitLocalPdfReadOperation,
 } from './local-pdf-execution.ts';
 import * as client from './core/client.ts';
+import { authenticateSession, createSession } from './identity.ts';
+import { mutateCompanyAsset } from './company-assets.ts';
+import {
+  captureCompanyRunAssets,
+  prepareCompanyRunMaterials,
+} from './company-run-assets.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -534,6 +540,143 @@ suite('MET166 independent read-only PDF original-call authority', () => {
       create,
     };
   };
+
+  it('resolves an authorized company PDF input without a generic file reference and refuses it after withdrawal', async () => {
+    const f = await fixture({ artifactVersion: true }),
+      db = database.db;
+    const owner = {
+      ...(await authenticateSession((await createSession(f.owner)).token))!,
+      workspaceId: f.workspace,
+    };
+    let asset = await mutateCompanyAsset(
+      owner,
+      f.org,
+      {
+        operation: 'save',
+        assetId: randomUUID(),
+        expectedRevision: 0,
+        content: {
+          kind: 'template',
+          title: 'PDF 范本',
+          body: 'Use current task data.',
+          category: '',
+          appliesToEmployeeIds: [],
+          taskKeywords: [],
+          slots: [],
+          sourceVersionId: f.source.artifactVersionId,
+        },
+      },
+      assistantFixtureStorage(db),
+      false,
+      db,
+    );
+    asset = await mutateCompanyAsset(
+      owner,
+      f.org,
+      {
+        operation: 'publish',
+        assetId: asset.id,
+        expectedRevision: asset.revision,
+      },
+      assistantFixtureStorage(db),
+      false,
+      db,
+    );
+    const snapshot = await db.begin((tx) =>
+      captureCompanyRunAssets(tx, owner, f.versionId, 'Read selected PDF', [
+        {
+          assetId: asset.id,
+          revisionId: asset.latest.id,
+          digest: asset.latest.digest,
+          parameters: {},
+        },
+      ]),
+    );
+    // A new formal fixture Run gets its snapshot at insert; existing evidence
+    // remains append-only and its immutability triggers stay enabled.
+    const runId = randomUUID(),
+      jobId = randomUUID(),
+      question = randomUUID(),
+      answer = randomUUID();
+    await db.begin(async (tx) => {
+      await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input)
+        select ${runId},organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input from allrice_runs where id=${f.runId}`;
+      await tx`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content)
+        values(${question},${f.org},${f.workspace},${f.owner},${f.sessionId},'user','{"text":"Read company PDF"}'),
+        (${answer},${f.org},${f.workspace},${f.owner},${f.sessionId},'assistant','{"text":""}')`;
+      await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot)
+        select ${runId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,${question},${answer},provider_snapshot,${tx.json({ companyAssets: snapshot })},execution_snapshot from allrice_employee_runs where run_id=${f.runId}`;
+      await tx`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt)
+        select ${jobId},organization_id,workspace_id,owner_id,${runId},status,${randomUUID()},timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt from allrice_jobs where id=${f.jobId}`;
+      await tx`update allrice_conversation_runtimes set active_run_id=${runId} where session_id=${f.sessionId}`;
+    });
+    const execution = { ...f.execution, runId, jobId };
+    const [material] = await prepareCompanyRunMaterials(
+      execution,
+      snapshot,
+      assistantFixtureStorage(db),
+      db,
+    );
+    const source = {
+      objectId: material!.object.id,
+      checksum: material!.object.checksum,
+      sizeBytes: material!.object.sizeBytes,
+      mediaType: material!.object.mediaType,
+    };
+    expect(
+      await db`select object_id from allrice_file_references where object_id=${source.objectId}`,
+    ).toHaveLength(0);
+    const raw = { ...f.args, objectId: source.objectId },
+      callId = 'company-pdf';
+    const select = () =>
+      selectLocalPdfExecution(
+        {
+          context: execution,
+          callId,
+          toolName: 'workspace.document.read',
+          arguments: raw,
+          source,
+          jobAttempt: 1,
+          jobLeaseToken: f.jobLeaseToken,
+        },
+        db,
+      );
+    const selected = await select();
+    expect(selected.fileName).toBe('fixed-source.pdf');
+    const originalPayload = f.payload(callId, raw);
+    const payload = RuntimeLocalPdfPayloadSchema.parse({
+      ...originalPayload,
+      arguments: {
+        ...originalPayload.arguments,
+        source,
+        fileName: selected.fileName,
+      },
+    });
+    const created = await createLocalPdfReadOperation(
+      { selection: selected, context: execution, payload, arguments: raw },
+      db,
+    );
+    const [operation] = await db`
+      select bridge_payload from allrice_runtime_operations
+      where id = ${created.snapshot.binding.attempt.operationId}
+    `;
+    expect(operation!.bridge_payload.arguments.fileName).toBe(
+      'fixed-source.pdf',
+    );
+    await mutateCompanyAsset(
+      owner,
+      f.org,
+      {
+        operation: 'withdraw',
+        assetId: asset.id,
+        expectedRevision: asset.revision,
+      },
+      assistantFixtureStorage(db),
+      false,
+      db,
+    );
+    await expect(select()).rejects.toThrow('asset_unavailable');
+  });
 
   const running = async (f: Awaited<ReturnType<typeof fixture>>) => {
     const created = await f.create(),

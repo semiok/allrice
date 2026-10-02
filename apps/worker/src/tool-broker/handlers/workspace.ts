@@ -6,6 +6,7 @@ import {
   listToolBrokerFiles,
   searchToolBrokerMemories,
   searchToolBrokerSessions,
+  markCompanyMaterialRead,
 } from '@allrice/database';
 import {
   WorkspaceDocumentReadArgsSchema,
@@ -133,6 +134,18 @@ export const readWorkspaceFile: RiceToolHandler = async ({
   const content = await streamText(
     await new LocalStorageAdapter(input.storageRoot).get(file.object),
   );
+  if ('companyReference' in file) {
+    if (
+      `sha256:${createHash('sha256').update(content).digest('hex')}` !==
+      file.object.checksum
+    )
+      throw new HandlerError(
+        'TOOL_FILE_CHECKSUM_MISMATCH',
+        '范本内容校验失败，请重新选用。',
+        false,
+      );
+    await markCompanyMaterialRead(input.context, file.object.id);
+  }
   return {
     modelContent: JSON.stringify({
       id: file.object.id,
@@ -209,8 +222,11 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
         WorkspaceDocumentReadArgsSchema.parse(args),
       )
     : null;
-  if (local)
+  if (local) {
+    if ('companyReference' in file)
+      await markCompanyMaterialRead(input.context, file.object.id);
     return workspaceDocumentResult(file, local.document, local.execution);
+  }
   const stream = await new LocalStorageAdapter(input.storageRoot).get(
     file.object,
   );
@@ -236,7 +252,7 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
   }
   const bytes = Buffer.concat(chunks);
   if (
-    isPdf &&
+    (isPdf || 'companyReference' in file) &&
     (bytes.length !== file.object.sizeBytes ||
       `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
         file.object.checksum)
@@ -264,6 +280,8 @@ export const readWorkspaceDocument: RiceToolHandler = async ({
           pages: args.pages as number[] | undefined,
           includeStructure: args.includeStructure === true,
         });
+  if ('companyReference' in file)
+    await markCompanyMaterialRead(input.context, file.object.id);
   return workspaceDocumentResult(
     file,
     parsed,
@@ -286,6 +304,16 @@ function workspaceDocumentResult(
     fileName: file.fileName,
     mediaType: file.object.mediaType,
     checksum: file.object.checksum,
+    ...('companyReference' in file
+      ? {
+          companyTemplate: {
+            assetId: file.companyReference.assetId,
+            revisionId: file.companyReference.revision.id,
+            digest: file.companyReference.revision.digest,
+            title: file.companyReference.revision.content.title,
+          },
+        }
+      : {}),
     ...parsed,
     ...(isPdf
       ? {

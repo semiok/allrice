@@ -531,6 +531,20 @@ export async function assertLocalPythonDelegation(
       throw new RuntimePolicyError('bridge_authority_changed');
   }
   for (const file of a.inputs) {
+    const { getCompanyRunMaterial } = await import('./company-run-assets.ts');
+    await getCompanyRunMaterial(
+      {
+        organizationId: device.organizationId,
+        workspaceId: device.workspaceId,
+        ownerId: device.ownerId,
+        runId: binding.task.runId,
+      },
+      file.objectId,
+      tx,
+    );
+    const [reserved] =
+      await tx`select id from allrice_company_asset_revisions where snapshot_object_id=${file.objectId} limit 1`;
+    if (reserved) throw new RuntimePolicyError('bridge_authority_changed');
     const [object] = await tx<
       { checksum: string; size_bytes: string | number; media_type: string }[]
     >`select checksum,size_bytes,media_type from allrice_storage_objects
@@ -745,6 +759,19 @@ export async function localPythonTransferAuthority(
     from allrice_memberships where user_id=${device.ownerId} and organization_id=${device.organizationId} and active
       and (workspace_id is null or workspace_id=${device.workspaceId}) and role in ('admin','member')`;
   if (!memberships.length) throw new DataAccessError('authorization_denied');
+  const { getCompanyRunMaterial } = await import('./company-run-assets.ts');
+  const companyMaterial = selectedInput
+    ? await getCompanyRunMaterial(
+        {
+          organizationId: device.organizationId,
+          workspaceId: device.workspaceId,
+          ownerId: device.ownerId,
+          runId: snapshot.binding.task.runId,
+        },
+        objectId,
+        db,
+      )
+    : null;
   const context: RequestContext = {
     requestId: randomUUID(),
     sessionId: device.id,
@@ -762,6 +789,7 @@ export async function localPythonTransferAuthority(
     sessionId: snapshot.binding.task.chatSessionId,
     input: selectedInput,
     output,
+    companyMaterial,
   };
 }
 
@@ -778,7 +806,7 @@ export async function readLocalPythonInput(
       objectId,
       'download',
     ),
-    file = await getStoredFile(a.context, objectId);
+    file = a.companyMaterial ?? (await getStoredFile(a.context, objectId));
   if (
     !a.input ||
     file.object.checksum !== a.input.checksum ||

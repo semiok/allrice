@@ -240,6 +240,44 @@ export function ChatTranscript({
                         <SessionReferenceChips
                           references={message.content.sessionReferences ?? []}
                         />
+                        {message.content.companyAssets &&
+                          (message.content.companyAssets.rules.length > 0 ||
+                            message.content.companyAssets.templates.length >
+                              0) && (
+                            <details aria-label="本次采用的公司资料">
+                              <summary>
+                                本次公司资料 ·{' '}
+                                {message.content.companyAssets.rules.length}{' '}
+                                条规矩 ·{' '}
+                                {message.content.companyAssets.templates.length}{' '}
+                                项范本
+                              </summary>
+                              {message.content.companyAssets.rules.map(
+                                (ref) => (
+                                  <p key={ref.assetId}>
+                                    规矩：{ref.revision.content.title} · v
+                                    {ref.revision.number}
+                                  </p>
+                                ),
+                              )}
+                              {message.content.companyAssets.templates.map(
+                                (ref) => (
+                                  <div key={ref.assetId}>
+                                    <p>
+                                      范本：{ref.revision.content.title} · v
+                                      {ref.revision.number}
+                                    </p>
+                                    {ref.revision.content.slots.map((slot) => (
+                                      <p key={slot.key}>
+                                        {slot.label}：
+                                        {ref.parameters[slot.key] || '未填写'}
+                                      </p>
+                                    ))}
+                                  </div>
+                                ),
+                              )}
+                            </details>
+                          )}
                         {messageImages && message.attachments?.length ? (
                           <MessageImageGallery
                             attachments={message.attachments}

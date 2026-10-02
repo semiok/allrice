@@ -73,6 +73,61 @@ export const CompanyAssetRevisionSchema = z
     createdAt: z.string(),
   })
   .strict();
+export const CompanyTemplateParametersSchema = z
+  .record(z.string().regex(/^[a-z][a-z0-9_]{0,39}$/), z.string().max(4000))
+  .refine((v) => Object.keys(v).length <= 12)
+  .refine((v) => Object.values(v).join('').length <= 16_000);
+export const CompanyTemplateSelectionSchema = z
+  .object({
+    assetId: UuidSchema,
+    revisionId: UuidSchema,
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    parameters: CompanyTemplateParametersSchema,
+  })
+  .strict();
+const frozenAsset = z
+  .object({ assetId: UuidSchema, revision: CompanyAssetRevisionSchema })
+  .strict();
+export const CompanyRunSnapshotSchema = z
+  .object({
+    organizationId: UuidSchema,
+    rules: z.array(frozenAsset).max(32),
+    templates: z
+      .array(
+        frozenAsset.extend({ parameters: CompanyTemplateParametersSchema }),
+      )
+      .max(3),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (
+      value.rules.some(
+        (r) => r.revision.content.kind !== 'rule' || r.revision.file,
+      ) ||
+      value.templates.some(
+        (r) => r.revision.content.kind !== 'template' || !r.revision.file,
+      ) ||
+      new Set([...value.rules, ...value.templates].map((r) => r.assetId))
+        .size !==
+        value.rules.length + value.templates.length ||
+      value.rules.reduce(
+        (n, r) => n + new TextEncoder().encode(r.revision.content.body).length,
+        0,
+      ) > 16_000
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Invalid frozen company material',
+      });
+  });
+export const CompanyAssetUsageSchema = z
+  .object({
+    selectedRuns: z.number().int().nonnegative(),
+    loadedRuns: z.number().int().nonnegative(),
+    readRuns: z.number().int().nonnegative(),
+    derivedRuns: z.number().int().nonnegative(),
+  })
+  .strict();
 export const CompanyAssetSchema = z
   .object({
     id: UuidSchema,
@@ -85,6 +140,7 @@ export const CompanyAssetSchema = z
     publishedRevisionId: UuidSchema.nullable(),
     latest: CompanyAssetRevisionSchema,
     canEdit: z.boolean(),
+    usage: CompanyAssetUsageSchema.optional(),
   })
   .strict();
 export const CompanyAssetDirectorySchema = z
@@ -103,3 +159,7 @@ export type CompanyAssetContent = z.infer<typeof CompanyAssetContentSchema>;
 export type CompanyAssetRevision = z.infer<typeof CompanyAssetRevisionSchema>;
 export type CompanyAssetMutation = z.infer<typeof CompanyAssetMutationSchema>;
 export type CompanyAssetDirectory = z.infer<typeof CompanyAssetDirectorySchema>;
+export type CompanyTemplateSelection = z.infer<
+  typeof CompanyTemplateSelectionSchema
+>;
+export type CompanyRunSnapshot = z.infer<typeof CompanyRunSnapshotSchema>;
