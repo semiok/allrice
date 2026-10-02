@@ -11,6 +11,10 @@
     "./preview": {
       "types": "./dist/preview.d.ts",
       "default": "./dist/preview.js"
+    },
+    "./pdf-reader": {
+      "types": "./dist/pdf-reader.d.ts",
+      "default": "./dist/pdf-reader.js"
     }
   },
   "scripts": {
@@ -21,6 +25,7 @@
   "dependencies": {
     "@allrice/contracts": "workspace:*",
     "@deepseek-ai/cordis": "4.0.4",
-    "@deepseek-ai/dsh-office-to-pdf": "0.1.7-rc.1"
+    "@deepseek-ai/dsh-office-to-pdf": "0.1.7-rc.1",
+    "pdf-parse": "2.4.5"
   }
 }

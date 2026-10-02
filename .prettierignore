@@ -51,3 +51,6 @@ apps/web/app/chatflow/dsh-upstream/deliverables/
 
 # Pinned DSH image renderer/cache and verified HTTP compatibility patches.
 apps/web/app/chatflow/dsh-upstream/images/
+
+# Preserve independently annotated PDF acceptance truth bytes.
+tests/fixtures/pdf/expected-source.json

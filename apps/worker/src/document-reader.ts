@@ -1,7 +1,11 @@
 import ExcelJS from 'exceljs';
 import JSZip from 'jszip';
 import mammoth from 'mammoth';
-import { PDFParse } from 'pdf-parse';
+import {
+  PdfReadError,
+  readPdfDocument,
+  type PdfReadResult,
+} from '@allrice/office-runtime/pdf-reader';
 
 import { HandlerError } from './errors.js';
 
@@ -9,11 +13,13 @@ const maximumDocumentBytes = 20 * 1024 * 1024;
 const defaultMaximumCharacters = 120_000;
 const absoluteMaximumCharacters = 300_000;
 
-export interface ParsedDocument {
+export interface ParsedDocument extends Partial<
+  Omit<PdfReadResult, 'kind' | 'text' | 'truncated' | 'units' | 'warnings'>
+> {
   kind: 'text' | 'pdf' | 'docx' | 'xlsx' | 'pptx';
   text: string;
   truncated: boolean;
-  units: { label: string; text: string }[];
+  units: { label: string; text: string; pageNumber?: number }[];
   warnings: string[];
 }
 
@@ -64,20 +70,6 @@ function limitDocument(
         : []),
     ],
   };
-}
-
-async function parsePdf(bytes: Buffer, maximumCharacters: number) {
-  const parser = new PDFParse({ data: bytes });
-  try {
-    const result = await parser.getText();
-    const pages = result.pages.map((page, index) => ({
-      label: `第 ${page.num ?? index + 1} 页`,
-      text: page.text,
-    }));
-    return limitDocument('pdf', pages, maximumCharacters);
-  } finally {
-    await parser.destroy();
-  }
 }
 
 async function parseDocx(bytes: Buffer, maximumCharacters: number) {
@@ -161,6 +153,8 @@ export async function parseDocument(input: {
   mediaType: string;
   fileName: string;
   maximumCharacters?: number;
+  pages?: number[];
+  includeStructure?: boolean;
 }): Promise<ParsedDocument> {
   if (input.bytes.byteLength > maximumDocumentBytes) {
     throw new HandlerError(
@@ -172,7 +166,21 @@ export async function parseDocument(input: {
   const maximumCharacters = input.maximumCharacters ?? defaultMaximumCharacters;
   const extension = input.fileName.toLowerCase().split('.').pop() ?? '';
   if (input.mediaType === 'application/pdf' || extension === 'pdf') {
-    return parsePdf(input.bytes, maximumCharacters);
+    try {
+      return await readPdfDocument({
+        bytes: input.bytes,
+        maximumCharacters,
+        ...(input.pages === undefined ? {} : { pages: input.pages }),
+        ...(input.includeStructure === undefined
+          ? {}
+          : { includeStructure: input.includeStructure }),
+      });
+    } catch (error) {
+      if (error instanceof PdfReadError) {
+        throw new HandlerError(error.code, error.message, false);
+      }
+      throw error;
+    }
   }
   if (
     input.mediaType ===

@@ -150,18 +150,27 @@ export async function getToolBrokerFile(
       retention_until: Date | null;
       deleted_at: Date | null;
       immutable: boolean;
+      artifact_version_id: string | null;
+      artifact_version: number | null;
     })[]
   >`
     select o.id, o.organization_id, o.workspace_id, o.owner_id, o.visibility,
-      coalesce(max(f.file_name), '未命名文件') as file_name,
+      coalesce(deliverable.file_name, max(f.file_name), '未命名文件') as file_name,
       o.object_key, o.checksum, o.media_type, o.size_bytes,
-      o.retention_until, o.deleted_at, o.immutable
+      o.retention_until, o.deleted_at, o.immutable,
+      deliverable.id as artifact_version_id, deliverable.version as artifact_version
     from allrice_storage_objects o
     left join allrice_file_references f on f.object_id = o.id
+    left join lateral (
+      select v.id, v.version, v.file_name from allrice_deliverable_versions v
+      where v.object_id=o.id and v.organization_id=o.organization_id
+        and v.workspace_id=o.workspace_id
+      order by v.version desc limit 1
+    ) deliverable on true
     where o.id = ${UuidSchema.parse(objectIdInput)}
       and o.organization_id = ${context.organizationId}
       and o.workspace_id = ${context.workspaceId} and o.state = 'ready'
-    group by o.id
+    group by o.id, deliverable.id, deliverable.version, deliverable.file_name
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
@@ -179,7 +188,13 @@ export async function getToolBrokerFile(
     deletedAt: row.deleted_at?.toISOString() ?? null,
     immutable: row.immutable,
   };
-  return { object, fileName: row.file_name, visibility: row.visibility };
+  return {
+    object,
+    fileName: row.file_name,
+    visibility: row.visibility,
+    artifactVersionId: row.artifact_version_id ?? null,
+    artifactVersion: row.artifact_version ?? null,
+  };
 }
 
 /** Recheck the exact source inside the publication transaction. The share lock

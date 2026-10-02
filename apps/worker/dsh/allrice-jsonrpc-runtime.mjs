@@ -136,7 +136,7 @@ const brokerNativeTools = [
     canonicalName: 'workspace.document.read',
     wireName: 'workspace_document_read',
     description:
-      'Parse one tenant-authorized cloud workspace PDF, DOCX, XLSX, PPTX, Markdown, text, or JSON file and return content with page, slide, or sheet locators.',
+      'Parse an authorized workspace file and return exact source and page, slide or sheet locators. PDF reads at most 10 physical pages per call; follow nextPages for more. Preserve warnings and uncertain values.',
     parameters: {
       objectId: {
         type: 'string',
@@ -147,10 +147,16 @@ const brokerNativeTools = [
         type: 'integer',
         description: 'Maximum extracted characters from 1000 to 300000.',
       },
+      pages: {
+        type: 'array',
+        items: { type: 'integer' },
+        description:
+          'PDF only: up to 10 positive physical page numbers, starting at 1; deduplicated and sorted. Omit for the first 10 pages, then follow returned nextPages.',
+      },
       includeStructure: {
         type: 'boolean',
         description:
-          'For Office template edits, set true to inspect sheets/cells, slides and paragraphs with the source checksum. Use the returned id and checksum in python.inputs and edit that input with native Office libraries; never reconstruct the template from extracted text.',
+          'For PDF, return ruled-grid table fragments with page/table/row sources; no OCR or automatic cross-page merge, retain raw strings and warnings. For Office edits, inspect sheets/cells, slides and paragraphs with source checksum. Use returned id and checksum in python.inputs; edit the actual template rather than reconstructing it.',
       },
     },
   },
