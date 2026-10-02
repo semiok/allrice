@@ -1,3 +1,5 @@
+import { mutateCompanyAsset } from './company-assets.ts';
+import { assistantFixtureStorage } from './assistant-runtime.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
@@ -101,6 +103,115 @@ suite(
       };
       return { admin, tenant, source, list, entry, change };
     }
+    it('captures current company rules on each formal input in the same Session and retries the original Run unchanged', async () => {
+      const f = await setup();
+      await f.change('assign');
+      const assignment = (
+        await getEmployeeWorkspace(f.tenant.context, f.tenant.workspaceId)
+      ).employees[0]!;
+      const session = await createChatSession(f.tenant.context, {
+        workspaceId: f.tenant.workspaceId,
+        employeeAssignmentId: assignment.id,
+        title: 'Company rules across turns',
+      });
+      const ruleContent = {
+        kind: 'rule',
+        title: 'Current reply marker',
+        body: 'Include CURRENT-V1.',
+        category: '',
+        appliesToEmployeeIds: [],
+        taskKeywords: [],
+        slots: [],
+      };
+      const mutate = (value: unknown) =>
+        mutateCompanyAsset(
+          f.admin.context,
+          f.tenant.organizationId,
+          value,
+          assistantFixtureStorage(fixture.db),
+          true,
+          fixture.db,
+        );
+      let rule = await mutate({
+        operation: 'save',
+        assetId: randomUUID(),
+        expectedRevision: 0,
+        content: ruleContent,
+      });
+      rule = await mutate({
+        operation: 'publish',
+        assetId: rule.id,
+        expectedRevision: rule.revision,
+      });
+      const input = {
+        clientMessageId: randomUUID(),
+        text: 'Check company marker',
+        deliveryMode: 'follow_up',
+      };
+      const first = await sendChatMessage(
+        f.tenant.context,
+        f.tenant.workspaceId,
+        session.id,
+        input,
+      );
+      const [frozen] =
+        await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${first.run.id}`;
+      expect(
+        frozen!.prompt_snapshot.companyAssets.rules[0].revision.content.body,
+      ).toBe('Include CURRENT-V1.');
+      rule = await mutate({
+        operation: 'save',
+        assetId: rule.id,
+        expectedRevision: rule.revision,
+        content: { ...ruleContent, body: 'Include CURRENT-V2.' },
+      });
+      rule = await mutate({
+        operation: 'publish',
+        assetId: rule.id,
+        expectedRevision: rule.revision,
+      });
+      expect(
+        (
+          await sendChatMessage(
+            f.tenant.context,
+            f.tenant.workspaceId,
+            session.id,
+            input,
+          )
+        ).run.id,
+      ).toBe(first.run.id);
+      const second = await sendChatMessage(
+        f.tenant.context,
+        f.tenant.workspaceId,
+        session.id,
+        { ...input, clientMessageId: randomUUID(), text: 'New marker task' },
+      );
+      const [current] =
+        await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${second.run.id}`;
+      expect(
+        current!.prompt_snapshot.companyAssets.rules[0].revision.content.body,
+      ).toBe('Include CURRENT-V2.');
+      await mutate({
+        operation: 'pause',
+        assetId: rule.id,
+        expectedRevision: rule.revision,
+      });
+      const third = await sendChatMessage(
+        f.tenant.context,
+        f.tenant.workspaceId,
+        session.id,
+        { ...input, clientMessageId: randomUUID(), text: 'Paused marker task' },
+      );
+      const [paused] =
+        await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${third.run.id}`;
+      expect(paused!.prompt_snapshot.companyAssets.rules).toEqual([]);
+      expect(
+        (
+          await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${first.run.id}`
+        )[0]!.prompt_snapshot,
+      ).toEqual(frozen!.prompt_snapshot);
+    });
+
     it('assigns the exact published package to an ordinary member, creates a usable session and freezes the real execution binding', async () => {
       const f = await setup();
       const before =

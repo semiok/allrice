@@ -46,6 +46,8 @@ import {
   completeNativeTask,
   readParkedNativeUsage,
   NativeWaitAuthorityError,
+  prepareCompanyRunMaterials,
+  markCompanyRunLoaded,
 } from '@allrice/database';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
@@ -213,12 +215,36 @@ export async function executeEmployeeRun({
       false,
     );
   }
+  const companyMaterials = resolved.promptSnapshot.companyAssets
+    ? await prepareCompanyRunMaterials(
+        execution.context,
+        resolved.promptSnapshot.companyAssets,
+        new LocalStorageAdapter(
+          process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+        ),
+      )
+    : [];
+  const companyInputBindings = companyMaterials.map(
+    ({ assetId, revisionId, object, fileName }) => ({
+      assetId,
+      revisionId,
+      objectId: object.id,
+      checksum: object.checksum,
+      fileName,
+    }),
+  );
   const configChecksum = `sha256:${createHash('sha256')
     .update(
       JSON.stringify({
         employeeVersionId: input.employeeVersionId,
         provider: resolved.providerSnapshot,
         systemPrompt: resolved.promptSnapshot.systemPrompt,
+        ...(resolved.promptSnapshot.companyAssets
+          ? {
+              companyAssets: resolved.promptSnapshot.companyAssets,
+              companyInputBindings,
+            }
+          : {}),
         ...(resolved.promptSnapshot.organizationContext
           ? { organizationContext: resolved.promptSnapshot.organizationContext }
           : {}),
@@ -264,6 +290,7 @@ export async function executeEmployeeRun({
     userMessageId: input.userMessageId,
     assistantMessageId: input.assistantMessageId,
     resolved,
+    companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };
   const kernel = assembleEmployeeKernel({ ...kernelInput, checkpoint });
@@ -332,6 +359,7 @@ export async function executeEmployeeRun({
       ? 'durable'
       : 'wall',
   );
+  let companyContextRecorded = false;
   const guardedHarnessEvent = async (event: HarnessEvent) => {
     try {
       loopGuard.observe(event);
@@ -346,6 +374,19 @@ export async function executeEmployeeRun({
       throw error;
     }
     await onHarnessEvent(event);
+    if (
+      !companyContextRecorded &&
+      resolved.promptSnapshot.companyAssets &&
+      (event.type === 'assistant.delta' ||
+        event.type === 'assistant.completed' ||
+        event.type === 'tool.started' ||
+        (event.type === 'native.event' &&
+          event.presentation === 'context' &&
+          event.status === 'completed'))
+    ) {
+      await markCompanyRunLoaded(execution.context);
+      companyContextRecorded = true;
+    }
     if (
       event.type === 'native.event' &&
       event.sourceEventType === 'session/projection'

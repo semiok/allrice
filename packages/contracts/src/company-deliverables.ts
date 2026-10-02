@@ -28,6 +28,16 @@ export const CompanyDeliverableEvidenceSchema = z.object({
   objectId: UuidSchema,
   checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   sourceFile: ArtifactSourceFileSchema.nullable(),
+  companyTemplate: z
+    .object({
+      assetId: UuidSchema,
+      revisionId: UuidSchema,
+      digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      title: z.string(),
+      revision: z.number().int().positive(),
+      sourceChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    })
+    .optional(),
   office: OfficeDeliveryReceiptSchema.nullable(),
 });
 export type CompanyDeliverableEvidence = z.infer<

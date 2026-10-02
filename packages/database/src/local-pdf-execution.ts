@@ -150,6 +150,23 @@ async function assertPdfSource(
   source: RuntimeLocalPdfSource,
   context?: ExecutionContext,
 ) {
+  const { getCompanyMaterialForExecution } =
+    await import('./company-run-assets.ts');
+  const company = context
+    ? await getCompanyMaterialForExecution(context, source.objectId, tx)
+    : null;
+  if (company) {
+    if (
+      company.object.mediaType !== 'application/pdf' ||
+      company.object.mediaType !== source.mediaType ||
+      company.object.checksum !== source.checksum ||
+      company.object.sizeBytes !== source.sizeBytes ||
+      source.artifactVersionId !== undefined ||
+      source.artifactVersion !== undefined
+    )
+      throw new RuntimePolicyError('bridge_authority_changed');
+    return company.fileName;
+  }
   const [object] = await tx<
     {
       checksum: string;
@@ -819,6 +836,17 @@ export async function localPdfTransferAuthority(
     from allrice_memberships where user_id=${device.ownerId} and organization_id=${device.organizationId} and active
       and (workspace_id is null or workspace_id=${device.workspaceId}) and role in ('admin','member')`;
   if (!memberships.length) throw new DataAccessError('authorization_denied');
+  const { getCompanyRunMaterial } = await import('./company-run-assets.ts');
+  const companyMaterial = await getCompanyRunMaterial(
+    {
+      organizationId: device.organizationId,
+      workspaceId: device.workspaceId,
+      ownerId: device.ownerId,
+      runId: snapshot.binding.task.runId,
+    },
+    objectId,
+    db,
+  );
   const context: RequestContext = {
     requestId: randomUUID(),
     sessionId: device.id,
@@ -835,6 +863,7 @@ export async function localPdfTransferAuthority(
     snapshot: renewed.snapshot,
     sessionId: snapshot.binding.task.chatSessionId,
     input: payload.arguments.source,
+    companyMaterial,
   };
 }
 
@@ -853,7 +882,7 @@ export async function readLocalPdfInput(
       'download',
       db,
     ),
-    file = await getStoredFile(a.context, objectId, db);
+    file = a.companyMaterial ?? (await getStoredFile(a.context, objectId, db));
   if (
     file.object.checksum !== a.input.checksum ||
     file.object.sizeBytes !== a.input.sizeBytes ||

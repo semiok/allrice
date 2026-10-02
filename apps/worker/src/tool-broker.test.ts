@@ -52,6 +52,10 @@ const {
 }));
 
 vi.mock('@allrice/database', async (original) => ({
+  CompanyAssetError: (await original<typeof Database>()).CompanyAssetError,
+  CompanyRunAssetError: (await original<typeof Database>())
+    .CompanyRunAssetError,
+  markCompanyMaterialRead: vi.fn(async () => undefined),
   ManagedBrowserTaskStartError: (await original<typeof Database>())
     .ManagedBrowserTaskStartError,
   ArtifactPublicationRollbackError: (await original<typeof Database>())

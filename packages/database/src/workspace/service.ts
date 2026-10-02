@@ -14,6 +14,7 @@ import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash } from 'node:crypto';
+import { captureCompanyRunAssets } from '../company-run-assets.ts';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import {
   ArtifactReviewError,
@@ -937,6 +938,7 @@ export async function getChatSessionHistory(
           text: mapped.content.text,
           attachments: mapped.attachments,
           sessionReferences: mapped.content.sessionReferences,
+          companyAssets: mapped.content.companyAssets,
           createdAt: mapped.createdAt,
         };
       }),
@@ -1233,6 +1235,7 @@ export async function sendChatMessage(
             message.text ||
             message.reviewContinuation ||
             message.changesetAction ||
+            message.companyTemplates?.length ||
             message.assistantPreference))
       )
         throw new ArtifactReviewError('input_id_conflict');
@@ -1269,6 +1272,9 @@ export async function sendChatMessage(
             and o.organization_id = ${context.organizationId}
             and o.workspace_id = ${workspaceId}
             and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
+      and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
             and o.state = 'ready'
             and f.session_id = ${session.id}
         `;
@@ -1283,6 +1289,13 @@ export async function sendChatMessage(
         session,
         message.sessionReferenceIds ?? [],
       );
+      const companyAssets = await captureCompanyRunAssets(
+        transaction,
+        { ...context, workspaceId },
+        currentAssignment.employee_id,
+        message.text,
+        message.companyTemplates ?? [],
+      );
       const users = await transaction<MessageRow[]>`
         insert into allrice_messages (
           organization_id, workspace_id, session_id, owner_id, role,
@@ -1292,6 +1305,7 @@ export async function sendChatMessage(
           ${requireUser(context)}, 'user',
           ${transaction.json({
             text: message.text,
+            companyAssets,
             citations: [],
             ...(references.length
               ? {
@@ -1515,6 +1529,9 @@ export async function sendChatMessage(
       assistantMessageId: result.assistantMessage.id,
       promptSnapshot: {
         systemPrompt: '',
+        companyAssets: ChatMessageContentSchema.parse(
+          result.userMessage.content,
+        ).companyAssets,
         conversation: historyRows.slice(-80).map((row) => ({
           id: row.id,
           role: row.role,
@@ -1652,6 +1669,9 @@ export async function linkFileToSession(input: {
       and o.workspace_id = ${input.workspaceId}
       and o.owner_id = ${requireUser(input.context)}
       and o.state = 'ready'
+      and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
     on conflict (object_id, session_id) do nothing
     returning object_id as id
   `;
@@ -1701,6 +1721,9 @@ export async function listWorkspaceFiles(
       and o.workspace_id = ${workspaceId}
       and o.category in ('uploads', 'exports') and o.state = 'ready'
       and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
+      and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
     group by o.id, deliverable.file_name, deliverable.version
     order by o.created_at desc
     limit 100
@@ -1742,6 +1765,9 @@ export async function linkWorkspaceFileToSession(input: {
       and o.workspace_id = ${input.workspaceId}
       and o.state = 'ready'
       and (o.owner_id = ${requireUser(input.context)} or o.visibility <> 'private')
+      and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
     group by o.id
   `;
   const file = rows[0];

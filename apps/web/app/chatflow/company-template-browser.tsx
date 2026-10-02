@@ -27,6 +27,10 @@ import {
   useCompanyAssetDirectory,
 } from './company-template-publisher';
 import styles from './company-template-browser.module.css';
+import {
+  CompanyTemplateUseForm,
+  type CompanyDraftReference,
+} from './company-template-use';
 
 const historySchema = z.object({
   asset: CompanyAssetSchema,
@@ -51,11 +55,13 @@ export function CompanyAssetRevisionView({
   base,
   headers,
   onChange,
+  onPrepare,
 }: {
   initial: CompanyAsset;
   base: string;
   headers: Record<string, string>;
   onChange?: (asset: CompanyAsset) => void;
+  onPrepare?: (ref: CompanyDraftReference) => Promise<void>;
 }) {
   const [history, setHistory] = useState<z.infer<typeof historySchema> | null>(
     null,
@@ -68,6 +74,7 @@ export function CompanyAssetRevisionView({
   const [previewError, setPreviewError] = useState('');
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [using, setUsing] = useState(false);
   const request = useRef<AbortController | null>(null);
   const asset = history?.asset ?? initial;
   const revisions = history?.revisions ?? [initial.latest];
@@ -170,7 +177,21 @@ export function CompanyAssetRevisionView({
   }
   return (
     <section className={styles.detail} aria-label="公司资料固定修订">
+      {using && selected && onPrepare && (
+        <CompanyTemplateUseForm
+          inline
+          asset={asset}
+          revision={selected}
+          onClose={() => setUsing(false)}
+          onPrepare={onPrepare}
+        />
+      )}
       <div className={styles.actions}>
+        {onPrepare && selected && readable && !error && (
+          <Button disabled={loading} onClick={() => setUsing(true)}>
+            选用此修订
+          </Button>
+        )}
         <Button disabled={loading} onClick={() => void refresh()}>
           刷新状态与修订
         </Button>
@@ -185,6 +206,13 @@ export function CompanyAssetRevisionView({
             </Button>
           )}
       </div>
+      {asset.usage && (
+        <p>
+          选用 {asset.usage.selectedRuns} 次 · 已装载 {asset.usage.loadedRuns}{' '}
+          次 · 已读取 {asset.usage.readRuns} 次 · 生成新成果{' '}
+          {asset.usage.derivedRuns} 次
+        </p>
+      )}
       <p>
         {companyAssetStateLabels[asset.state]} · {asset.ownerName}
         {asset.canEdit &&
@@ -245,7 +273,6 @@ export function CompanyAssetRevisionView({
                       </li>
                     ))}
                   </ul>
-                  <p>本期仅查看和管理范本，不会自动填写草稿或启动工作。</p>
                 </div>
               )}
               {selected.file && (
@@ -331,6 +358,7 @@ export function CompanyTemplateBrowser(props: {
   onClose: () => void;
   workspaceId: string;
   headers: Record<string, string>;
+  onPrepare?: (ref: CompanyDraftReference) => Promise<void>;
 }) {
   if (!props.open) return null;
   return (
@@ -344,6 +372,7 @@ function Browser({
   onClose,
   workspaceId,
   headers,
+  onPrepare,
 }: Parameters<typeof CompanyTemplateBrowser>[0]) {
   const base = companyAssetUrl('/api/v1/company-assets', { workspaceId });
   const directory = useCompanyAssetDirectory(base, headers);
@@ -411,6 +440,7 @@ function Browser({
             initial={selected}
             base={base}
             headers={headers}
+            onPrepare={onPrepare}
             onChange={(next) => setSelected(next)}
           />
         ) : (

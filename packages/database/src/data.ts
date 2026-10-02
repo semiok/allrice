@@ -291,6 +291,8 @@ export async function getStoredFile(
       and (${context.workspaceId}::uuid is null or workspace_id = ${context.workspaceId})
       and state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=allrice_storage_objects.id)
+      and not exists(select 1 from allrice_company_asset_materials m where m.object_id=allrice_storage_objects.id)
+      and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=allrice_storage_objects.id)
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
@@ -422,6 +424,8 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
       and g.revoked_at is null
       and o.state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
+      and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('grant_invalid');

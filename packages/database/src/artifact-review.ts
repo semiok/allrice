@@ -386,12 +386,28 @@ export async function inspectCompanyDeliverable(
     const office = OfficeDeliveryReceiptSchema.safeParse(
       receiptRow?.metadata?.receipt,
     );
+    // This is the exporter source fact for this exact output, not a claim
+    // inferred from task text or a later version of the company directory.
+    const [companyTemplate] = await tx`
+      select ra.asset_id as "assetId",ra.revision_id as "revisionId",
+        ra.digest,r.content->>'title' as title,r.number as revision,
+        r.file_metadata->>'checksum' as "sourceChecksum"
+      from allrice_company_asset_derivations d
+      join allrice_company_run_assets ra on ra.run_id=d.run_id and ra.asset_id=d.asset_id
+      join allrice_company_asset_revisions r on r.id=ra.revision_id and r.asset_id=ra.asset_id
+      where d.deliverable_version_id=${artifactId} and ra.organization_id=${organizationId}
+        and ra.workspace_id=${row.workspace_id} and ra.owner_id=${row.owner_id}
+        and ra.kind='template' and ra.material_object_id=${source.success ? source.data.objectId : null}
+        and r.file_metadata->>'checksum'=${source.success ? source.data.checksum : null}
+      order by d.created_at,d.asset_id limit 1
+    `;
     return {
       ...artifact,
       companyEvidence: {
         objectId: artifact.object.id,
         checksum: artifact.object.checksum,
         sourceFile: source.success ? source.data : null,
+        ...(companyTemplate ? { companyTemplate } : {}),
         office: office.success ? office.data : null,
       },
     };
@@ -764,7 +780,9 @@ export async function publishWorkbenchArtifact(
         input.parentObjectId !== source.parentObjectId
       )
         fail('version_changed');
-      const parentObjectId = source?.parentObjectId ?? input.parentObjectId;
+      const parentObjectId = source?.companyTemplate
+        ? undefined
+        : (source?.parentObjectId ?? input.parentObjectId);
       let derivedSource: WorkbenchArtifact | null = null;
       if (input.trustedCloudDerivation) {
         if (

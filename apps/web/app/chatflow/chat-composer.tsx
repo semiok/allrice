@@ -8,6 +8,10 @@ import type {
   TaskNextSteps,
   WorkspaceReadiness,
 } from '@allrice/contracts';
+import {
+  CompanyTemplateDraftChips,
+  type CompanyDraftReference,
+} from './company-template-use';
 import { TaskSuggestions } from './task-suggestions';
 import type { PreparedComposerDraft } from '../../lib/chatflow/composer-draft';
 import { SessionReferenceChips } from './session-reference-picker';
@@ -47,6 +51,8 @@ interface ChatComposerProps {
   taskReadiness?: WorkspaceReadiness | null;
   onPrepareTask?: (prepared: PreparedComposerDraft) => void;
   onTaskPreparation?: (preparation: 'files' | 'bridge' | 'connections') => void;
+  companyReferences?: CompanyDraftReference[];
+  onRemoveCompanyReference?: (id: string) => void;
   sessionReferences?: SessionReference[];
   onOpenSessionReferences?: () => void;
   onRemoveSessionReference?: (id: string) => void;
@@ -95,6 +101,8 @@ export function ChatComposer({
   taskReadiness = null,
   onPrepareTask,
   onTaskPreparation,
+  companyReferences = [],
+  onRemoveCompanyReference,
   sessionReferences = [],
   onOpenSessionReferences,
   onRemoveSessionReference,
@@ -151,6 +159,11 @@ export function ChatComposer({
         </div>
       ) : null}
       <div className={inputUi.card}>
+        <CompanyTemplateDraftChips
+          references={companyReferences}
+          disabled={busy}
+          onRemove={onRemoveCompanyReference ?? (() => {})}
+        />
         <SessionReferenceChips
           references={sessionReferences}
           onRemove={onRemoveSessionReference}

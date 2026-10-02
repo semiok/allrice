@@ -317,6 +317,13 @@ function CompanyFilePreview({
               <p>
                 原文件编号：<code>{evidence.objectId}</code>
               </p>
+              {evidence.companyTemplate && (
+                <p>
+                  来源公司范本：{evidence.companyTemplate.title} · v
+                  {evidence.companyTemplate.revision} · 修订{' '}
+                  <code>{evidence.companyTemplate.revisionId}</code>
+                </p>
+              )}
               {evidence.sourceFile ? (
                 <p>
                   参考源文件：<code>{evidence.sourceFile.objectId}</code> ·{' '}

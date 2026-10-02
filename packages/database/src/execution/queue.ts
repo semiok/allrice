@@ -700,6 +700,16 @@ export async function enqueueRun(
         )
       `;
     }
+    if (options.employeeBinding?.promptSnapshot.companyAssets) {
+      const { recordCompanyRunSelections } =
+        await import('../company-run-assets.ts');
+      await recordCompanyRunSelections(transaction, {
+        organizationId: context.organizationId,
+        workspaceId,
+        ownerId,
+        runId: run.id,
+      });
+    }
     await appendEvent(transaction, {
       organizationId: context.organizationId,
       workspaceId,

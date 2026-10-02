@@ -27,6 +27,15 @@ import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
 import { CompanyTemplateBrowser } from './company-template-browser';
+import { type CompanyDraftReference } from './company-template-use';
+import {
+  CompanyAssetSchema,
+  CompanyAssetRevisionSchema,
+} from '@allrice/contracts';
+import {
+  companyAssetJson,
+  companyAssetUrl,
+} from './company-template-publisher';
 import { AssistantHistoryButton } from './assistant-history-button';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
@@ -116,6 +125,14 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
+  const [companyReferences, setCompanyReferences] = useState<
+    CompanyDraftReference[]
+  >([]);
+  const companyPreparationState = useRef({
+    busy: false,
+    count: 0,
+    taskScope: '',
+  });
   const [submission, setSubmission] = useState<{
     scope: string;
     sessionId: string | null;
@@ -245,6 +262,7 @@ export function ChatFlowClient({
   useEffect(() => {
     setSessionReferences([]);
     setReferencePickerOpen(false);
+    setCompanyReferences([]);
   }, [settingsScope, activeId]);
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
   useEffect(() => {
@@ -585,6 +603,7 @@ export function ChatFlowClient({
     if (!action) return;
     const draftAttachments = [...pendingAttachments];
     const draftReferences = [...sessionReferences];
+    const draftCompanyReferences = [...companyReferences];
     let clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
     const optimisticAssistantId = `optimistic-assistant:${clientMessageId}`;
@@ -621,6 +640,7 @@ export function ChatFlowClient({
     setSubmission(echo);
     setDraft('');
     setSessionReferences([]);
+    setCompanyReferences([]);
     try {
       await nextPaint();
       if (!action.current()) return;
@@ -656,6 +676,9 @@ export function ChatFlowClient({
       });
       const inputBody = {
         text,
+        ...(draftCompanyReferences.length
+          ? { companyTemplates: draftCompanyReferences.map((r) => r.selection) }
+          : {}),
         ...(draftReferences.length
           ? {
               sessionReferenceIds: draftReferences.map(
@@ -746,6 +769,7 @@ export function ChatFlowClient({
                 previewUrl: undefined,
               })),
               sessionReferences: draftReferences,
+              companyAssets: result.userMessage.content.companyAssets,
               createdAt: result.userMessage.createdAt,
             },
           ],
@@ -760,6 +784,7 @@ export function ChatFlowClient({
       setSubmission(null);
       setDraft(text);
       setSessionReferences(draftReferences);
+      setCompanyReferences(draftCompanyReferences);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
     } finally {
       if (action.finish()) setBusy(false);
@@ -773,7 +798,10 @@ export function ChatFlowClient({
     if (!workspace || !activeId) return;
     if (
       kind === 'edit' &&
-      (draft.trim() || pendingAttachments.length || sessionReferences.length)
+      (draft.trim() ||
+        pendingAttachments.length ||
+        sessionReferences.length ||
+        companyReferences.length)
     )
       throw new Error('请先发送或清空当前草稿，再编辑排队消息。');
     const action = sessionActions.begin('composer');
@@ -817,6 +845,18 @@ export function ChatFlowClient({
       );
       if (kind === 'edit') {
         setDraft(item.text);
+        setCompanyReferences(
+          (item.companyAssets?.templates ?? []).map((t) => ({
+            selection: {
+              assetId: t.assetId,
+              revisionId: t.revision.id,
+              digest: t.revision.digest,
+              parameters: t.parameters,
+            },
+            title: t.revision.content.title,
+            number: t.revision.number,
+          })),
+        );
         setSessionReferences(item.sessionReferences ?? []);
         setPendingAttachments(
           (item.attachments ?? []).map((a) => ({
@@ -945,7 +985,8 @@ export function ChatFlowClient({
       !(
         draft.trim() ||
         pendingAttachments.length ||
-        sessionReferences.length
+        sessionReferences.length ||
+        companyReferences.length
       ) ||
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
     );
@@ -964,6 +1005,7 @@ export function ChatFlowClient({
     setPendingEmployeeAssignmentId(assignmentId);
     setDraft('');
     setSessionReferences([]);
+    setCompanyReferences([]);
     setReferencePickerOpen(false);
     clearPendingAttachments();
     setEmployeePickerOpen(false);
@@ -1064,6 +1106,11 @@ export function ChatFlowClient({
   // An existing Session/Run is never rebound merely to display these tasks.
   const suggestionVersion = activeEmployee?.currentVersion;
   const taskScope = `${settingsScope}/${activeId}/${activeEmployee?.id}/${suggestionVersion?.id}`;
+  companyPreparationState.current = {
+    busy,
+    count: companyReferences.length,
+    taskScope,
+  };
   function prepareDraft(prepared: PreparedComposerDraft) {
     if (busy || composing.current) return;
     const selection = captureSelection();
@@ -1119,6 +1166,67 @@ export function ChatFlowClient({
     prepareDraft(prepared);
   }
 
+  async function prepareCompanyTemplate(reference: CompanyDraftReference) {
+    if (!workspace || busy || composing.current || sessionArchived)
+      throw Error('请先完成当前输入，再选用范本。');
+    const selection = captureSelection();
+    const templateScope = taskScope;
+    const base = companyAssetUrl('/api/v1/company-assets', {
+      workspaceId: workspace.workspaceId,
+    });
+    const result = (await companyAssetJson(
+      companyAssetUrl(base, {
+        assetId: reference.selection.assetId,
+        history: '1',
+      }),
+      tenantHeaders,
+    )) as {
+      asset: unknown;
+      revisions: unknown[];
+      publishedRevisionIds: string[];
+    };
+    if (
+      !selection.current() ||
+      templateScope !== companyPreparationState.current.taskScope ||
+      companyPreparationState.current.busy ||
+      composing.current
+    )
+      throw Error('会话或账号已变化，请重新选用。');
+    const asset = CompanyAssetSchema.parse(result.asset);
+    const revision = result.revisions
+      .map((r) => CompanyAssetRevisionSchema.parse(r))
+      .find((r) => r.id === reference.selection.revisionId);
+    if (
+      asset.state !== 'published' ||
+      !revision?.file ||
+      revision.digest !== reference.selection.digest ||
+      !result.publishedRevisionIds.includes(revision.id)
+    )
+      throw Error('范本已变化、暂停或撤回，请重新选用。');
+    if (
+      revision.content.appliesToEmployeeIds.length &&
+      !revision.content.appliesToEmployeeIds.includes(
+        activeEmployee?.employeeId ?? '',
+      )
+    )
+      throw Error('此范本不适用于当前 AI 员工，请选择其他员工。');
+    if (
+      !companyReferences.some((r) => r.selection.assetId === asset.id) &&
+      companyPreparationState.current.count >= 3
+    )
+      throw Error('一次最多选用 3 项范本，请先移除其他范本。');
+    setCompanyReferences((current) => [
+      ...current.filter((r) => r.selection.assetId !== asset.id),
+      reference,
+    ]);
+    prepareDraft(
+      prepareComposerText(
+        `请参考公司范本「${revision.content.title}」v${revision.number}，根据本次填写内容制作新的成果；缺少资料请先向我确认。`,
+      ),
+    );
+    setCompanyTemplatesScope(null);
+  }
+
   const openBridgeSettings = () => {
     setSettings({ scope: settingsScope, section: 'computer' });
     return loadBridgeDevices(true);
@@ -1156,6 +1264,12 @@ export function ChatFlowClient({
           void openBridgeSettings();
         } else setSettings({ scope: settingsScope, section: 'apps' });
       }}
+      companyReferences={companyReferences}
+      onRemoveCompanyReference={(id) =>
+        setCompanyReferences((current) =>
+          current.filter((r) => r.selection.assetId !== id),
+        )
+      }
       sessionReferences={sessionReferences}
       onOpenSessionReferences={() => setReferencePickerOpen(true)}
       onRemoveSessionReference={(id) =>
@@ -1283,6 +1397,7 @@ export function ChatFlowClient({
         onClose={() => setCompanyTemplatesScope(null)}
         workspaceId={workspace.workspaceId}
         headers={tenantHeaders}
+        onPrepare={prepareCompanyTemplate}
       />
       <ChatSidebar
         experienceEnabled={experienceEnabled}
@@ -1363,6 +1478,7 @@ export function ChatFlowClient({
           if (sessionId !== activeId) {
             clearPendingAttachments();
             setSessionReferences([]);
+            setCompanyReferences([]);
             setReferencePickerOpen(false);
             setDraft('');
           }

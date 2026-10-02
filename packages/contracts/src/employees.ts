@@ -1,4 +1,5 @@
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
+import { CompanyRunSnapshotSchema } from './company-assets.ts';
 import { z } from 'zod';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 import {
@@ -593,6 +594,7 @@ export const EmployeeRunStatusSchema = z.enum([
 export const EmployeePromptSnapshotSchema = z
   .object({
     systemPrompt: z.string().min(1).max(10_000),
+    companyAssets: CompanyRunSnapshotSchema.optional(),
     organizationContext: z
       .object({
         organizationId: UuidSchema,
