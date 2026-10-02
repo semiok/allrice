@@ -1,81 +1,46 @@
-.intro {
-  margin: 0 0 22px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 21px;
+.page {
+  color: var(--dsw-alias-label-primary);
+  font-size: 15px;
+  line-height: 1.5;
 }
 .devices {
   display: grid;
-  gap: 18px;
+  gap: 22px;
 }
-.capabilities {
-  display: grid;
-  gap: 10px;
-  padding: 14px 0;
-}
-.capability {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 3px 12px;
-  font-size: 12px;
-}
-.capability strong {
-  font-weight: 500;
-}
-.capability small {
-  grid-column: 1 / -1;
-  color: var(--dsw-alias-label-secondary);
-  overflow-wrap: anywhere;
-}
-.capabilityVersion {
-  grid-column: 1 / -1;
-  font-size: 10px;
-  color: var(--dsw-alias-label-secondary);
-  overflow-wrap: anywhere;
+.deviceCard {
+  padding: 16px;
+  border: 1px solid var(--dsw-alias-border-primary);
+  border-radius: 12px;
+  background: var(--allrice-employee-bg);
 }
 .deviceHeader {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 18px;
-  border-radius: 16px;
-  background: var(--allrice-employee-bg);
 }
-.computerIcon,
-.folderIcon {
+.computerIcon {
   display: grid;
   place-items: center;
   flex: 0 0 40px;
   height: 40px;
+  border: 1px solid var(--dsw-alias-border-primary);
+  border-radius: 10px;
   color: var(--dsw-alias-label-secondary);
-}
-.computerIcon svg {
-  width: 26px;
-  height: 26px;
-  stroke: currentColor;
-  stroke-width: 1.5;
-  stroke-linecap: round;
-  stroke-linejoin: round;
+  background: var(--dsw-alias-bg-base);
 }
 .deviceCopy,
 .folderCopy {
   display: grid;
   min-width: 0;
   flex: 1;
-  gap: 4px;
+  gap: 3px;
   overflow-wrap: anywhere;
 }
-.deviceCopy strong {
+.page .deviceCopy strong,
+.page .folderCopy strong {
   font-size: 15px;
-  line-height: 22px;
-  font-weight: 600;
-}
-.deviceMeta,
-.deviceMeta > small,
-.folderCopy > span {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 18px;
+  line-height: 1.5;
+  font-weight: 400;
 }
 .deviceMeta {
   display: flex;
@@ -83,136 +48,271 @@
   align-items: baseline;
   gap: 4px;
 }
+.deviceMeta,
+.deviceMeta > small,
+.folderCopy > span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
 .connection {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   flex: none;
-  padding: 4px 8px;
-  border-radius: 20px;
-  background: var(--allrice-sidebar-hover);
   color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
+  font-size: 13px;
+  font-weight: 400;
   white-space: nowrap;
 }
 .connection[data-online='true'] {
   color: #16804d;
-  background: #20b26b12;
-}
-:global(body[data-ds-dark-theme]) .connection[data-online='true'] {
-  color: #70dba3;
 }
 .connection i {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
+}
+.refreshRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.refreshRow > span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+.folderSection {
+  margin-top: 15px;
+  padding-top: 13px;
+  border-top: 1px solid var(--dsw-alias-border-primary);
+}
+.folderSection h3,
+.capabilityHeading h3 {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 500;
 }
 .folder {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 12px;
-  padding: 20px 0;
+  margin-top: 10px;
 }
 .folderIcon {
-  border-radius: 11px;
-  background: var(--allrice-employee-bg);
+  flex: none;
+  align-self: flex-start;
+  margin-top: 3px;
+  color: var(--dsw-alias-label-secondary);
 }
-.folderCopy strong {
-  font-size: 13px;
-  line-height: 20px;
-  font-weight: 500;
+.folderCopy {
+  flex: 1 1 160px;
+}
+.folder[data-connected='false'] strong {
+  color: var(--dsw-alias-label-secondary);
 }
 .textButton,
 .primaryButton,
 .secondaryButton,
+.folderActionButton,
 .bridgeClientDownload {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   flex: none;
-  min-height: 36px;
-  border: 0;
-  border-radius: 9px;
-  padding: 8px 12px;
+  min-height: 32px;
+  border: 1px solid var(--dsw-alias-border-primary);
+  border-radius: 7px;
+  padding: 5px 11px;
   color: var(--dsw-alias-label-secondary);
-  background: transparent;
-  font: inherit;
-  font-size: 12px;
+  background: var(--dsw-alias-bg-base);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
   line-height: 20px;
   text-decoration: none;
   cursor: pointer;
 }
-.textButton:hover,
-.secondaryButton:hover,
-.bridgeClientDownload:hover {
-  color: var(--dsw-alias-label-primary);
-  background: var(--allrice-sidebar-hover);
+.textButton {
+  border: 0;
+  padding: 5px 7px;
+  background: transparent;
+  font-size: 15px;
+}
+.folderActionButton {
+  margin-left: auto;
 }
 .primaryButton {
   color: var(--dsw-alias-bg-base);
+  border-color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-label-primary);
 }
-.primaryButton:hover {
-  opacity: 0.85;
+.textButton:hover:not(:disabled),
+.secondaryButton:hover:not(:disabled),
+.folderActionButton:hover:not(:disabled),
+.bridgeClientDownload:hover {
+  background: var(--allrice-sidebar-hover);
 }
-.secondaryButton,
-.bridgeClientDownload {
-  color: var(--dsw-alias-label-primary);
-  background: var(--allrice-employee-bg);
+.primaryButton:hover:not(:disabled) {
+  opacity: 0.85;
 }
 .textButton:disabled,
 .primaryButton:disabled,
-.secondaryButton:disabled {
+.secondaryButton:disabled,
+.folderActionButton:disabled {
   opacity: 0.5;
   cursor: default;
 }
 .textButton:focus-visible,
 .primaryButton:focus-visible,
 .secondaryButton:focus-visible,
+.folderActionButton:focus-visible,
 .bridgeClientDownload:focus-visible,
-.install summary:focus-visible {
+.page summary:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: 2px;
+}
+.disconnectConfirmation {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--dsw-alias-border-primary);
+}
+.disconnectConfirmation p {
+  margin: 0 0 10px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+.confirmActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.capabilities {
+  margin-top: 22px;
+}
+.capabilityHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-bottom: 8px;
+}
+.capabilityHeading > span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+}
+.capability {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3px 12px;
+  min-height: 42px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-primary);
+}
+.capabilityCopy {
+  min-width: 0;
+}
+.page .capabilityCopy strong {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 400;
+}
+.capabilityCopy strong svg {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+}
+.capabilityCopy small {
+  display: block;
+  margin-top: 4px;
+  padding-left: 27px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.capabilityState {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 15px;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.capability[data-ready='true'] .capabilityState {
+  color: #16804d;
+}
+.capabilityVersion {
+  margin-top: 12px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.capabilityVersion > summary {
+  padding: 5px 0;
+  cursor: pointer;
+}
+.capabilityVersion dl {
+  margin: 8px 0;
+}
+.capabilityVersion dl > div {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 5px 0;
+}
+.capabilityVersion dd {
+  margin: 0;
+  text-align: right;
 }
 .notice,
 .feedback {
   margin: 16px 0;
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 1.55;
 }
 .feedback[data-kind='error'] {
   color: var(--dsw-alias-state-error-primary);
 }
 .install {
-  border-top: 1px solid var(--dsw-alias-border-l2);
-  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  margin-top: 22px;
+  border-top: 1px solid var(--dsw-alias-border-primary);
+  border-bottom: 1px solid var(--dsw-alias-border-primary);
 }
-.install summary {
+.install > summary {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   min-height: 56px;
+  padding: 12px 0;
   list-style: none;
   cursor: pointer;
-  border-radius: 8px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
+  color: var(--dsw-alias-label-primary);
+  font-size: 15px;
 }
-.install summary::-webkit-details-marker {
+.install > summary::-webkit-details-marker {
   display: none;
 }
-.install summary:hover {
-  color: var(--dsw-alias-label-primary);
-}
-.install summary small {
+.install > summary small {
   margin-left: auto;
-  font-size: 11px;
-  color: var(--dsw-alias-label-tertiary);
+  color: #9b6410;
+  font-size: 15px;
+  font-weight: 400;
 }
-.install[open] summary > svg:last-child {
+.install[open] > summary > svg:last-child {
   transform: rotate(180deg);
 }
 .installBody {
@@ -221,8 +321,8 @@
 .installBody p {
   margin: 10px 0;
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
-  line-height: 20px;
+  font-size: 13px;
+  line-height: 1.55;
 }
 .bridgeReleaseSection {
   display: grid;
@@ -231,7 +331,7 @@
 .bridgeReleaseSection > small,
 .bridgeDownloadUnavailable {
   color: var(--dsw-alias-label-secondary);
-  font-size: 12px;
+  font-size: 13px;
 }
 .bridgeDownloads {
   display: flex;
@@ -246,7 +346,7 @@
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: 10px;
   background: var(--allrice-employee-bg);
 }
 .pairingCode code {
@@ -254,44 +354,60 @@
   flex: 1;
   overflow-wrap: anywhere;
   font-size: 22px;
-  font-weight: 600;
+  font-weight: 500;
   letter-spacing: 0.08em;
 }
+:global(body[data-ds-dark-theme]) .connection[data-online='true'],
+:global(body[data-ds-dark-theme])
+  .capability[data-ready='true']
+  .capabilityState {
+  color: #70dba3;
+}
+:global(body[data-ds-dark-theme]) .install > summary small {
+  color: #e4b66a;
+}
 @media (max-width: 560px) {
+  .deviceCard {
+    padding: 12px;
+  }
   .deviceHeader {
     flex-wrap: wrap;
     gap: 10px;
-    padding: 14px;
   }
   .computerIcon {
-    flex-basis: 30px;
+    flex-basis: 38px;
+    height: 38px;
   }
   .deviceCopy {
-    flex-basis: calc(100% - 40px);
+    flex-basis: calc(100% - 48px);
   }
   .connection {
-    margin-left: 40px;
-  }
-  .folder {
-    flex-wrap: wrap;
+    margin-left: 48px;
   }
   .folderCopy {
-    flex-basis: calc(100% - 52px);
+    flex-basis: calc(100% - 29px);
   }
-  .folder > button {
-    margin-left: 52px;
+}
+@media (max-width: 380px) {
+  .capability {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .textButton,
-  .primaryButton,
-  .secondaryButton,
-  .bridgeClientDownload {
-    min-height: 40px;
+  .capabilityState {
+    padding-left: 27px;
+  }
+  .capabilityVersion dl > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .capabilityVersion dd {
+    text-align: left;
   }
 }
 @media (pointer: coarse) {
   .textButton,
   .primaryButton,
   .secondaryButton,
+  .folderActionButton,
   .bridgeClientDownload {
     min-width: 44px;
     min-height: 44px;

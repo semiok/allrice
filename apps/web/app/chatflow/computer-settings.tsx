@@ -1,7 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  IconChevronRightOutlineRegular,
+  Switch,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type {
   BridgeDevice,
   BridgeSettings,
@@ -9,6 +12,8 @@ import type {
 } from '@allrice/contracts';
 import styles from './sidebar-settings.module.css';
 import { BrowserLoginSettings } from './browser-login-settings';
+import { projectBridgeView } from './bridge-view';
+import type { useBridge } from './use-bridge';
 
 type Computer = {
   device: BridgeDevice;
@@ -49,15 +54,21 @@ export function ComputerSettings({
   workspaceId,
   active,
   onBridge,
+  bridge,
 }: {
   workspaceId: string;
   active: boolean;
   onBridge: () => void;
+  bridge: ReturnType<typeof useBridge>;
 }) {
   const [computers, setComputers] = useState<Computer[] | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
   const generation = useRef(0);
+  const view = projectBridgeView(
+    bridge.bridgeDevices,
+    bridge.bridgeStatusKnown,
+  );
   const refresh = useCallback(
     async (signal?: AbortSignal) => {
       const current = ++generation.current;
@@ -147,10 +158,44 @@ export function ComputerSettings({
     }
   }
   return (
-    <>
-      <p>
-        连接 Bridge 后，以下能力默认开启。处理本地文件时，再选择工作文件夹。
-      </p>
+    <div className={styles.computerPage}>
+      <p className={styles.computerIntro}>设置员工的本地权限和浏览器偏好。</p>
+      <button
+        data-computer-control
+        data-computer-management-entry
+        type="button"
+        className={styles.computerManagementEntry}
+        onClick={onBridge}
+        aria-label="连接与管理电脑"
+      >
+        <span className={styles.computerManagementCopy}>
+          <span>连接与管理电脑</span>
+          <small>设备、授权文件夹和安装更新</small>
+        </span>
+        <span className={styles.computerStatuses} aria-live="polite">
+          <span>
+            <span>Bridge</span>
+            <span data-ready={view.bridgeConnectionState === 'online'}>
+              {view.bridgeConnectionState === 'unknown'
+                ? '待确认'
+                : view.bridgeConnectionState === 'online'
+                  ? '在线'
+                  : '离线'}
+            </span>
+          </span>
+          <span>
+            <span>文件夹</span>
+            <span data-ready={view.localWorkspaceOnline === true}>
+              {view.bridgeConnectionState === 'unknown'
+                ? '待确认'
+                : view.localWorkspaceOnline
+                  ? '已连接'
+                  : '未连接'}
+            </span>
+          </span>
+        </span>
+        <IconChevronRightOutlineRegular size={16} />
+      </button>
       {error && <p role="alert">{error}</p>}
       {!computers && !error && <p role="status">正在读取电脑状态…</p>}
       {computers?.length === 0 && (
@@ -161,19 +206,19 @@ export function ComputerSettings({
       {computers?.map((computer) => (
         <section
           key={computer.device.id}
-          className={styles.computer}
+          className={styles.computerPermissions}
           aria-label={computer.device.name}
         >
-          <strong>{computer.device.name}</strong>
-          <p role="status">
-            {computer.pending
-              ? computer.device.status === 'online'
+          <h3>
+            {computers.length > 1 ? computer.device.name : '员工使用权限'}
+          </h3>
+          {computer.pending && (
+            <p role="status">
+              {computer.device.status === 'online'
                 ? '正在同步到电脑…'
-                : '设置已保存，电脑上线后自动同步。'
-              : computer.device.status === 'online'
-                ? '已连接'
-                : '电脑离线'}
-          </p>
+                : '设置已保存，电脑上线后自动同步。'}
+            </p>
+          )}
           {!computer.supported && <p>请更新 Bridge 后使用这些开关。</p>}
           {!computer.pending && computer.environment?.paused && (
             <p>Bridge 已整体暂停，请在本机恢复连接。</p>
@@ -230,21 +275,6 @@ export function ComputerSettings({
           )}
         </section>
       ))}
-      <div className={styles.computerActions}>
-        <Button variant="outline" type="button" onClick={onBridge}>
-          连接与管理电脑
-        </Button>
-        <Button
-          variant="outline"
-          type="button"
-          onClick={() => {
-            setError('');
-            void refresh().catch((e) => setError(e.message));
-          }}
-        >
-          刷新状态
-        </Button>
-      </div>
-    </>
+    </div>
   );
 }

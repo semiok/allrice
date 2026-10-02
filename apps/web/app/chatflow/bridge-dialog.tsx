@@ -3,12 +3,15 @@
 import { useState } from 'react';
 import {
   IconChevronDownOutlineRegular,
+  IconCheckOutlineRegular,
+  IconCodeOutlineRegular,
   IconCopyOutlineRegular,
   IconDownloadOutlineRegular,
   IconFolderOpenOutlineRegular,
+  IconFollowsystemOutlineRegular,
+  IconGlobeOutlineRegular,
   IconRefreshOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { DshDialog } from './dsh-upstream/Dialog';
 import {
   BridgeReleaseDownloads,
   BridgeVersionStatus,
@@ -16,18 +19,15 @@ import {
   type useBridgeReleases,
 } from './bridge-releases';
 import type { useBridge } from './use-bridge';
-import dialog from './compact-dialog.module.css';
 import css from './bridge-dialog.module.css';
 import { bridgeCapabilityRows } from './bridge-view';
 
-export function BridgeDialog({
+export function BridgeSettings({
   bridge,
   releases,
-  onClose,
 }: {
   bridge: ReturnType<typeof useBridge>;
   releases: ReturnType<typeof useBridgeReleases>;
-  onClose: () => void;
 }) {
   const devices = bridge.bridgeDevices.filter(
     (device) => device.status !== 'revoked',
@@ -36,6 +36,7 @@ export function BridgeDialog({
     ? devices.filter((device) => device.status === 'online')
     : [];
   const [installExpanded, setInstallExpanded] = useState<boolean | null>(null);
+  const [disconnectId, setDisconnectId] = useState<string | null>(null);
   const installOpen =
     installExpanded ?? (bridge.bridgeStatusKnown && !onlineDevices.length);
   const comparisons = onlineDevices.map((device) => {
@@ -51,121 +52,213 @@ export function BridgeDialog({
     : comparisons.length && comparisons.every((value) => value === 0)
       ? '已是最新版'
       : '';
+  const refreshControl = (
+    <div className={css.refreshRow}>
+      <span role="status" data-bridge-refresh-status>
+        {bridge.bridgeStatusKnown && bridge.bridgeLastRefreshedAt
+          ? `已刷新 · ${new Date(bridge.bridgeLastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+          : bridge.bridgeRefreshError || '正在确认连接状态…'}
+      </span>
+      <button
+        data-computer-control
+        className={css.textButton}
+        disabled={bridge.bridgeBusy}
+        onClick={() => {
+          void bridge.loadBridgeDevices();
+          void releases.reload();
+        }}
+        type="button"
+      >
+        <IconRefreshOutlineRegular size={16} />
+        {bridge.bridgeBusy ? '正在刷新…' : '刷新状态'}
+      </button>
+    </div>
+  );
 
   return (
-    <DshDialog
-      ariaLabel="我的电脑"
-      eyebrow="Rice Bridge"
-      title="我的电脑"
-      className={dialog.dialog}
-      bodyClassName={dialog.body}
-      onClose={onClose}
-    >
-      <p className={css.intro}>让员工处理你选择的本地文件。</p>
+    <div className={css.page} data-bridge-settings>
+      {!devices.length && refreshControl}
       <div className={css.devices}>
-        {devices.map((device) => {
+        {devices.map((device, index) => {
           const online = bridge.bridgeStatusKnown && device.status === 'online';
+          const rows = bridgeCapabilityRows(device);
+          const available = rows.filter((row) => row.state === 'ready').length;
           return (
             <section
               key={device.id}
               aria-label={device.name}
               className={css.device}
             >
-              <div className={css.deviceHeader}>
-                <span className={css.computerIcon} aria-hidden="true">
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <rect x="3.5" y="4" width="17" height="12" rx="2" />
-                    <path d="M8 20h8M12 16v4" />
-                  </svg>
-                </span>
-                <div className={css.deviceCopy}>
-                  <strong>{device.name.replace(/ · Rice Bridge$/, '')}</strong>
-                  <div className={css.deviceMeta}>
-                    <span>
-                      {device.platform === 'macos-arm64'
-                        ? 'M 芯片'
-                        : 'Intel 芯片'}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <BridgeVersionStatus
-                      installed={device.clientVersion}
-                      release={releases.releases?.find(
-                        (item) => item.platform === device.platform,
-                      )}
-                      online={online}
-                      compact
-                    />
+              <div className={css.deviceCard}>
+                <div className={css.deviceHeader}>
+                  <span className={css.computerIcon} aria-hidden="true">
+                    <IconFollowsystemOutlineRegular size={20} />
+                  </span>
+                  <div className={css.deviceCopy}>
+                    <strong>
+                      {device.name.replace(/ · Rice Bridge$/, '')}
+                    </strong>
+                    <div className={css.deviceMeta}>
+                      <span>
+                        {device.platform === 'macos-arm64'
+                          ? 'M 芯片'
+                          : 'Intel 芯片'}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <BridgeVersionStatus
+                        installed={device.clientVersion}
+                        release={releases.releases?.find(
+                          (item) => item.platform === device.platform,
+                        )}
+                        online={online}
+                        compact
+                      />
+                    </div>
                   </div>
+                  <span className={css.connection} data-online={online}>
+                    <i aria-hidden="true" />
+                    {!bridge.bridgeStatusKnown
+                      ? '待确认'
+                      : online
+                        ? '已连接'
+                        : '离线'}
+                  </span>
                 </div>
-                <span className={css.connection} data-online={online}>
-                  <i aria-hidden="true" />
-                  {!bridge.bridgeStatusKnown
-                    ? '待确认'
-                    : online
-                      ? '已连接'
-                      : '离线'}
-                </span>
-              </div>
-              {bridge.bridgeStatusKnown && device.readiness ? (
-                <div className={css.capabilities} aria-label="电脑能力状态">
-                  {bridgeCapabilityRows(device).map((row) => (
-                    <div key={row.capability} className={css.capability}>
-                      <strong>{row.label}</strong>
-                      <span>{row.stateLabel}</span>
-                      <small>{row.reason}</small>
-                      {row.version && (
-                        <details className={css.capabilityVersion}>
-                          <summary>版本信息</summary>
-                          <small>{row.version}</small>
-                        </details>
+                {index === 0 && refreshControl}
+                {online ? (
+                  <div className={css.folderSection}>
+                    <h3>授权文件夹</h3>
+                    <div
+                      className={css.folder}
+                      data-connected={device.folderGrants.length > 0}
+                    >
+                      <span className={css.folderIcon} aria-hidden="true">
+                        <IconFolderOpenOutlineRegular size={17} />
+                      </span>
+                      <div className={css.folderCopy}>
+                        <strong>
+                          {device.folderGrants.length
+                            ? device.folderGrants
+                                .map((grant) => grant.label)
+                                .join('、')
+                            : '未连接文件夹'}
+                        </strong>
+                        <span>
+                          {device.folderGrants.length
+                            ? '员工仅可访问你选择的文件夹。'
+                            : '选择一个文件夹，授权员工访问。'}
+                        </span>
+                      </div>
+                      {device.folderGrants.length ? (
+                        <button
+                          data-computer-control
+                          className={css.folderActionButton}
+                          disabled={bridge.bridgeBusy}
+                          aria-expanded={disconnectId === device.id}
+                          onClick={() => setDisconnectId(device.id)}
+                          type="button"
+                        >
+                          断开连接
+                        </button>
+                      ) : (
+                        <button
+                          data-computer-control
+                          className={css.folderActionButton}
+                          disabled={bridge.bridgeBusy}
+                          onClick={() =>
+                            void bridge.requestBridgeWorkspaceSelection(device)
+                          }
+                          type="button"
+                        >
+                          连接文件夹
+                        </button>
                       )}
                     </div>
-                  ))}
-                </div>
-              ) : null}
-              {online ? (
-                <div className={css.folder}>
-                  <span className={css.folderIcon} aria-hidden="true">
-                    <IconFolderOpenOutlineRegular size={21} />
-                  </span>
-                  <div className={css.folderCopy}>
-                    <strong>
-                      {device.folderGrants.length
-                        ? device.folderGrants
-                            .map((grant) => grant.label)
-                            .join('、')
-                        : '尚未选择文件夹'}
-                    </strong>
+                    {disconnectId === device.id &&
+                      device.folderGrants.length > 0 && (
+                        <div className={css.disconnectConfirmation}>
+                          <p>断开后，员工将无法访问这个文件夹。</p>
+                          <div className={css.confirmActions}>
+                            <button
+                              data-computer-control
+                              className={css.secondaryButton}
+                              type="button"
+                              onClick={() => setDisconnectId(null)}
+                            >
+                              取消
+                            </button>
+                            <button
+                              data-computer-control
+                              className={css.primaryButton}
+                              type="button"
+                              disabled={bridge.bridgeBusy}
+                              onClick={() => {
+                                setDisconnectId(null);
+                                void bridge.disconnectBridgeWorkspace(device);
+                              }}
+                            >
+                              确认断开
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                  </div>
+                ) : null}
+              </div>
+              {bridge.bridgeStatusKnown && device.readiness ? (
+                <section className={css.capabilities} aria-label="电脑能力状态">
+                  <div className={css.capabilityHeading}>
+                    <h3>电脑能力</h3>
                     <span>
-                      {device.folderGrants.length
-                        ? '员工仅可访问你选择的文件夹'
-                        : '选择员工需要处理的本地文件夹'}
+                      {available} 项可用 · {rows.length - available} 项未就绪
                     </span>
                   </div>
-                  {device.folderGrants.length ? (
-                    <button
-                      className={css.textButton}
-                      disabled={bridge.bridgeBusy}
-                      onClick={() =>
-                        void bridge.disconnectBridgeWorkspace(device)
-                      }
-                      type="button"
-                    >
-                      断开
-                    </button>
-                  ) : (
-                    <button
-                      className={css.primaryButton}
-                      disabled={bridge.bridgeBusy}
-                      onClick={() =>
-                        void bridge.requestBridgeWorkspaceSelection(device)
-                      }
-                      type="button"
-                    >
-                      选择文件夹
-                    </button>
+                  {rows.map((row) => {
+                    const Icon =
+                      row.capability === 'local.browser'
+                        ? IconGlobeOutlineRegular
+                        : row.capability === 'local.fs.read' ||
+                            row.capability === 'local.fs.write'
+                          ? IconFolderOpenOutlineRegular
+                          : IconCodeOutlineRegular;
+                    return (
+                      <div
+                        key={row.capability}
+                        className={css.capability}
+                        data-ready={row.state === 'ready'}
+                      >
+                        <div className={css.capabilityCopy}>
+                          <strong>
+                            <Icon size={17} />
+                            {row.label}
+                          </strong>
+                          {row.state !== 'ready' && <small>{row.reason}</small>}
+                        </div>
+                        <span className={css.capabilityState}>
+                          {row.state === 'ready' && (
+                            <IconCheckOutlineRegular size={15} />
+                          )}
+                          {row.stateLabel}
+                        </span>
+                      </div>
+                    );
+                  })}
+                  {rows.some((row) => row.version) && (
+                    <details className={css.capabilityVersion}>
+                      <summary>版本信息</summary>
+                      <dl>
+                        {rows
+                          .filter((row) => row.version)
+                          .map((row) => (
+                            <div key={row.capability}>
+                              <dt>{row.label}</dt>
+                              <dd>{row.version}</dd>
+                            </div>
+                          ))}
+                      </dl>
+                    </details>
                   )}
-                </div>
+                </section>
               ) : null}
             </section>
           );
@@ -208,6 +301,7 @@ export function BridgeDialog({
           </p>
           <p>当前为开发版，尚未通过 Apple 公证。</p>
           <button
+            data-computer-control
             className={css.secondaryButton}
             disabled={bridge.bridgePairingBusy}
             onClick={() => void bridge.createBridgePairing()}
@@ -224,6 +318,7 @@ export function BridgeDialog({
               <div className={css.pairingCode}>
                 <code>{bridge.bridgePairing.code.replaceAll('-', '')}</code>
                 <button
+                  data-computer-control
                   className={css.textButton}
                   aria-label="复制配对码"
                   onClick={() =>
@@ -250,25 +345,6 @@ export function BridgeDialog({
           {bridge.bridgeFeedback.message}
         </p>
       ) : null}
-      <footer className={dialog.footer}>
-        <span role="status" data-bridge-refresh-status>
-          {bridge.bridgeStatusKnown && bridge.bridgeLastRefreshedAt
-            ? `已刷新 · ${new Date(bridge.bridgeLastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-            : bridge.bridgeRefreshError || '正在确认连接状态…'}
-        </span>
-        <button
-          className={css.textButton}
-          disabled={bridge.bridgeBusy}
-          onClick={() => {
-            void bridge.loadBridgeDevices();
-            void releases.reload();
-          }}
-          type="button"
-        >
-          <IconRefreshOutlineRegular size={15} />
-          {bridge.bridgeBusy ? '正在刷新…' : '刷新状态'}
-        </button>
-      </footer>
-    </DshDialog>
+    </div>
   );
 }
