@@ -2,15 +2,19 @@
 
 import { useState } from 'react';
 import {
+  IconBranchOutlineRegular,
   IconChevronDownOutlineRegular,
   IconCheckOutlineRegular,
   IconCodeOutlineRegular,
   IconCopyOutlineRegular,
   IconDownloadOutlineRegular,
+  IconDeliverDocRegular,
   IconFolderOpenOutlineRegular,
   IconFollowsystemOutlineRegular,
   IconGlobeOutlineRegular,
   IconRefreshOutlineRegular,
+  IconRightUpOutlineRegular,
+  IconCordisPluginOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   BridgeReleaseDownloads,
@@ -51,38 +55,46 @@ export function BridgeSettings({
     ? '有新版本'
     : comparisons.length && comparisons.every((value) => value === 0)
       ? '已是最新版'
-      : '';
+      : bridge.bridgeBusy || (!releases.releases && !releases.error)
+        ? '检查中'
+        : '待确认';
   const refreshControl = (
-    <div className={css.refreshRow}>
-      <span role="status" data-bridge-refresh-status>
-        {bridge.bridgeStatusKnown && bridge.bridgeLastRefreshedAt
-          ? `已刷新 · ${new Date(bridge.bridgeLastRefreshedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-          : bridge.bridgeRefreshError || '正在确认连接状态…'}
-      </span>
-      <button
-        data-computer-control
-        className={css.textButton}
-        disabled={bridge.bridgeBusy}
-        onClick={() => {
-          void bridge.loadBridgeDevices();
-          void releases.reload();
-        }}
-        type="button"
-      >
-        <IconRefreshOutlineRegular size={16} />
-        {bridge.bridgeBusy ? '正在刷新…' : '刷新状态'}
-      </button>
-    </div>
+    <button
+      data-computer-control
+      className={css.refreshButton}
+      disabled={bridge.bridgeBusy}
+      aria-label="刷新状态"
+      aria-busy={bridge.bridgeBusy}
+      title="刷新 Bridge 状态"
+      onClick={() => {
+        void bridge.loadBridgeDevices();
+        void releases.reload();
+      }}
+      type="button"
+    >
+      <IconRefreshOutlineRegular size={16} />
+    </button>
   );
 
   return (
     <div className={css.page} data-bridge-settings>
-      {!devices.length && refreshControl}
+      {!devices.length && (
+        <div className={css.emptyState}>
+          <span role="status">
+            {bridge.bridgeStatusKnown
+              ? '尚未连接电脑'
+              : bridge.bridgeRefreshError || '正在确认连接状态…'}
+          </span>
+          {refreshControl}
+        </div>
+      )}
       <div className={css.devices}>
-        {devices.map((device, index) => {
+        {devices.map((device) => {
           const online = bridge.bridgeStatusKnown && device.status === 'online';
           const rows = bridgeCapabilityRows(device);
-          const available = rows.filter((row) => row.state === 'ready').length;
+          const available = online
+            ? rows.filter((row) => row.state === 'ready').length
+            : 0;
           return (
             <section
               key={device.id}
@@ -105,35 +117,49 @@ export function BridgeSettings({
                           : 'Intel 芯片'}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <BridgeVersionStatus
-                        installed={device.clientVersion}
-                        release={releases.releases?.find(
-                          (item) => item.platform === device.platform,
+                      <span>Rice Bridge</span>
+                      {bridge.bridgeStatusKnown &&
+                        bridge.bridgeLastRefreshedAt && (
+                          <span
+                            className={css.refreshedAt}
+                            data-bridge-refresh-status
+                          >
+                            ·{' '}
+                            {new Date(
+                              bridge.bridgeLastRefreshedAt,
+                            ).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}{' '}
+                            更新
+                          </span>
                         )}
-                        online={online}
-                        compact
-                      />
                     </div>
                   </div>
-                  <span className={css.connection} data-online={online}>
-                    <i aria-hidden="true" />
-                    {!bridge.bridgeStatusKnown
-                      ? '待确认'
-                      : online
-                        ? '已连接'
-                        : '离线'}
-                  </span>
+                  <div className={css.deviceActions}>
+                    <span
+                      className={css.connection}
+                      data-online={online}
+                      data-bridge-connection
+                    >
+                      <i aria-hidden="true" />
+                      {!bridge.bridgeStatusKnown
+                        ? '待确认'
+                        : online
+                          ? '已连接'
+                          : '离线'}
+                    </span>
+                    {refreshControl}
+                  </div>
                 </div>
-                {index === 0 && refreshControl}
                 {online ? (
-                  <div className={css.folderSection}>
-                    <h3>授权文件夹</h3>
+                  <div className={css.folderSection} data-bridge-folder>
                     <div
                       className={css.folder}
                       data-connected={device.folderGrants.length > 0}
                     >
-                      <span className={css.folderIcon} aria-hidden="true">
-                        <IconFolderOpenOutlineRegular size={17} />
+                      <span className={css.computerIcon} aria-hidden="true">
+                        <IconFolderOpenOutlineRegular size={20} />
                       </span>
                       <div className={css.folderCopy}>
                         <strong>
@@ -145,7 +171,7 @@ export function BridgeSettings({
                         </strong>
                         <span>
                           {device.folderGrants.length
-                            ? '员工仅可访问你选择的文件夹。'
+                            ? '授权文件夹 · 员工仅可访问此文件夹。'
                             : '选择一个文件夹，授权员工访问。'}
                         </span>
                       </div>
@@ -203,42 +229,76 @@ export function BridgeSettings({
                         </div>
                       )}
                   </div>
-                ) : null}
+                ) : (
+                  <div className={css.folderSection} data-bridge-folder>
+                    <div className={css.folder}>
+                      <span className={css.computerIcon} aria-hidden="true">
+                        <IconFolderOpenOutlineRegular size={20} />
+                      </span>
+                      <div className={css.folderCopy}>
+                        <strong>授权文件夹</strong>
+                        <span>
+                          {bridge.bridgeStatusKnown
+                            ? 'Bridge 离线，重新连接后可管理文件夹。'
+                            : '连接状态待确认，请刷新后管理文件夹。'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               {bridge.bridgeStatusKnown && device.readiness ? (
-                <section className={css.capabilities} aria-label="电脑能力状态">
-                  <div className={css.capabilityHeading}>
-                    <h3>电脑能力</h3>
-                    <span>
-                      {available} 项可用 · {rows.length - available} 项未就绪
-                    </span>
-                  </div>
+                <details
+                  className={css.capabilities}
+                  aria-label="电脑能力状态"
+                  data-bridge-capabilities
+                >
+                  <summary>
+                    <span>能力详情</span>
+                    <small>
+                      {online
+                        ? `${available} 项可用 · ${rows.length - available} 项未就绪`
+                        : '连接后检查'}
+                    </small>
+                    <IconChevronDownOutlineRegular size={16} />
+                  </summary>
                   {rows.map((row) => {
+                    const ready = online && row.state === 'ready';
                     const Icon =
                       row.capability === 'local.browser'
                         ? IconGlobeOutlineRegular
                         : row.capability === 'local.fs.read' ||
                             row.capability === 'local.fs.write'
                           ? IconFolderOpenOutlineRegular
-                          : IconCodeOutlineRegular;
+                          : row.capability === 'local.git.status'
+                            ? IconBranchOutlineRegular
+                            : row.capability === 'local.preview'
+                              ? IconRightUpOutlineRegular
+                              : row.capability === 'local.office'
+                                ? IconDeliverDocRegular
+                                : row.capability === 'local.mcp'
+                                  ? IconCordisPluginOutlineRegular
+                                  : IconCodeOutlineRegular;
                     return (
                       <div
                         key={row.capability}
                         className={css.capability}
-                        data-ready={row.state === 'ready'}
+                        data-ready={ready}
                       >
                         <div className={css.capabilityCopy}>
                           <strong>
-                            <Icon size={17} />
+                            <Icon size={16} />
                             {row.label}
                           </strong>
-                          {row.state !== 'ready' && <small>{row.reason}</small>}
+                          {!ready && (
+                            <small>
+                              {online ? row.reason : '请打开本机 Bridge。'}
+                            </small>
+                          )}
                         </div>
                         <span className={css.capabilityState}>
-                          {row.state === 'ready' && (
-                            <IconCheckOutlineRegular size={15} />
-                          )}
-                          {row.stateLabel}
+                          {ready && <IconCheckOutlineRegular size={14} />}
+                          {online ? row.stateLabel : '离线'}
                         </span>
                       </div>
                     );
@@ -258,7 +318,7 @@ export function BridgeSettings({
                       </dl>
                     </details>
                   )}
-                </section>
+                </details>
               ) : null}
             </section>
           );
@@ -278,7 +338,7 @@ export function BridgeSettings({
           请在 Mac 弹出的窗口中选择文件夹，这里会自动更新。
         </p>
       ) : null}
-      <details className={css.install} open={installOpen}>
+      <details className={css.install} open={installOpen} data-bridge-install>
         <summary
           onClick={(event) => {
             event.preventDefault();
@@ -287,10 +347,30 @@ export function BridgeSettings({
         >
           <IconDownloadOutlineRegular size={18} />
           <span>下载与安装</span>
-          <small>{versionHint}</small>
+          <small data-bridge-update={versionHint === '有新版本'}>
+            {versionHint}
+          </small>
           <IconChevronDownOutlineRegular size={16} />
         </summary>
         <div className={css.installBody}>
+          {devices.map((device) => (
+            <p key={device.id} className={css.installedVersion}>
+              <span>
+                {devices.length > 1
+                  ? device.name.replace(/ · Rice Bridge$/, '')
+                  : 'Rice Bridge'}{' '}
+                ·{' '}
+              </span>
+              <BridgeVersionStatus
+                installed={device.clientVersion}
+                release={releases.releases?.find(
+                  (item) => item.platform === device.platform,
+                )}
+                online={bridge.bridgeStatusKnown && device.status === 'online'}
+                compact
+              />
+            </p>
+          ))}
           <BridgeReleaseDownloads
             releases={releases.releases}
             error={releases.error}
