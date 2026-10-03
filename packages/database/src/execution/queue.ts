@@ -265,6 +265,7 @@ export async function enqueueRun(
   context: RequestContext,
   input: unknown,
   options: {
+    folderEventId?: string;
     skillBinding?: {
       installationId: string;
       skillVersionId: string;
@@ -362,6 +363,24 @@ export async function enqueueRun(
       };
     }
 
+    if (options.folderEventId) {
+      const { assertFolderTriggerMessage } =
+        await import('../folder-triggers.ts');
+      const binding = options.employeeBinding;
+      if (!binding || !options.conversationDelivery)
+        throw new QueueError('policy_denied');
+      const attachments = await transaction<
+        { object_id: string }[]
+      >`select object_id from allrice_message_attachments where message_id=${binding.userMessageId} and organization_id=${context.organizationId} and workspace_id=${workspaceId}`;
+      await assertFolderTriggerMessage(
+        transaction,
+        options.folderEventId,
+        { ...context, workspaceId },
+        binding.sessionId,
+        options.conversationDelivery.clientUserMessageId,
+        attachments.map((a) => a.object_id),
+      );
+    }
     if (options.employeeBinding) {
       const { assertWorkbenchSession } = await import('../artifact-review.ts');
       await assertWorkbenchSession(

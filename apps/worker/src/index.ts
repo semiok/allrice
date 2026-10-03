@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
 import {
   claimDueAutomations,
+  processFolderTriggerEvents,
   claimNextJob,
   closeDatabase,
   maintainQueue,
@@ -295,6 +296,7 @@ async function automationTick() {
   automationTickRunning = true;
   try {
     await syncAutomationRuns();
+    await processFolderTriggerEvents(Math.max(1, concurrency));
     const claimed = await claimDueAutomations(Math.max(1, concurrency));
     if (claimed > 0) {
       console.info('[M6] queued automation runs', { count: claimed });

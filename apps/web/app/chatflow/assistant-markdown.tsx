@@ -21,18 +21,21 @@ const labels: MarkdownLabels = {
   footnotes: '注释',
 };
 const noArtifacts: readonly WorkbenchArtifact[] = [];
+const noFiles: readonly { id: string; fileName: string }[] = [];
 
 export const AssistantMarkdown = memo(function AssistantMarkdown({
   text,
   streaming = false,
   allowRemoteImages = true,
   artifacts = noArtifacts,
+  accessibleFiles = noFiles,
   onOpenArtifact,
 }: {
   text: string;
   streaming?: boolean;
   allowRemoteImages?: boolean;
   artifacts?: readonly WorkbenchArtifact[];
+  accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
 }) {
   const origin = typeof location === 'undefined' ? undefined : location.origin;
@@ -40,8 +43,14 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     () =>
       streaming && allowRemoteImages
         ? text
-        : markdownDeliveryText(text, artifacts, allowRemoteImages, origin),
-    [text, artifacts, allowRemoteImages, streaming, origin],
+        : markdownDeliveryText(
+            text,
+            artifacts,
+            allowRemoteImages,
+            origin,
+            accessibleFiles,
+          ),
+    [text, artifacts, accessibleFiles, allowRemoteImages, streaming, origin],
   );
   const openLink = useCallback(
     (href: string) => {

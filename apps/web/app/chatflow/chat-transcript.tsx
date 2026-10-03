@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, type RefObject } from 'react';
+import { useState, useEffect, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
   nativeExecutionFailureText,
@@ -20,7 +20,12 @@ import {
 import { AssistantMarkdown } from './assistant-markdown';
 import type { MessageImageSource } from './message-image-cache';
 import { MessageImageGallery } from './attachment-components';
-import type { Message, RunTrace, RunView } from './chatflow-types';
+import type {
+  Message,
+  RunTrace,
+  RunView,
+  WorkspaceFile,
+} from './chatflow-types';
 import { BrowserWorkspacePanel } from './browser-workspace-panel';
 import { hasBrowserWorkspaceEvents } from '../../lib/chatflow/managed-browser-task-presenter';
 import { assistantDelta } from './chatflow-utils';
@@ -92,6 +97,53 @@ export function ChatTranscript({
   artifacts = [],
   onOpenArtifact,
 }: ChatTranscriptProps) {
+  const [downloadFiles, setDownloadFiles] = useState<{
+    workspaceId: string;
+    files: WorkspaceFile[];
+  } | null>(null);
+  // Existing uploads need the same origin adaptation as formal Artifacts.
+  // Resolve their authenticated metadata only when settled replies reference
+  // files; no polling, extra model calls or changes to DSH's streaming parser.
+  const downloadRequest = [
+    ...new Set(
+      messages
+        .filter(
+          (m) =>
+            m.role === 'assistant' &&
+            !isMessageRunActive(m, runViews[m.runId ?? '']),
+        )
+        .flatMap(
+          (m) =>
+            m.content.text
+              .replace(/\\+\//g, '/')
+              .match(/\/api\/v1\/files\/[a-f0-9-]{36}/g) ?? [],
+        ),
+    ),
+  ]
+    .sort()
+    .join(',');
+  useEffect(() => {
+    if (!downloadRequest) return;
+    const controller = new AbortController();
+    void fetch(`/api/v1/files?workspaceId=${encodeURIComponent(workspaceId)}`, {
+      cache: 'no-store',
+      headers: tenantHeaders,
+      signal: controller.signal,
+    })
+      .then(async (response) =>
+        response.ok
+          ? ((await response.json()) as { files: WorkspaceFile[] })
+          : null,
+      )
+      .then((result) => {
+        if (result && !controller.signal.aborted)
+          setDownloadFiles({ workspaceId, files: result.files });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [downloadRequest, workspaceId, tenantHeaders]);
+  const accessibleFiles =
+    downloadFiles?.workspaceId === workspaceId ? downloadFiles.files : [];
   const [browserRevisions, setBrowserRevisions] = useState<
     Record<string, number>
   >({});
@@ -329,6 +381,7 @@ export function ChatTranscript({
                             <>
                               {feedback}
                               <WorkProcess
+                                accessibleFiles={accessibleFiles}
                                 items={timeline.items}
                                 parts={timeline.parts}
                                 renderOperation={renderOperation}
@@ -440,6 +493,7 @@ export function ChatTranscript({
                                   }
                                 >
                                   <AssistantMarkdown
+                                    accessibleFiles={accessibleFiles}
                                     text={responseText}
                                     streaming={
                                       streamingOutput && messageIsRunning

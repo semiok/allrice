@@ -15,7 +15,16 @@ export async function GET(request: Request) {
     if (!context) throw new DataAccessError('authentication_required');
     const workspaceId =
       new URL(request.url).searchParams.get('workspaceId') ?? undefined;
-    return Response.json(await listAutomations(context, workspaceId));
+    const trigger = new URL(request.url).searchParams.get('triggerType');
+    if (trigger && !['schedule', 'folder'].includes(trigger))
+      throw new DataAccessError('grant_invalid');
+    return Response.json(
+      await listAutomations(
+        context,
+        workspaceId,
+        (trigger as 'schedule' | 'folder' | undefined) || undefined,
+      ),
+    );
   } catch (error) {
     return storageErrorResponse(error);
   }

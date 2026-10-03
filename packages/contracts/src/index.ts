@@ -30,6 +30,7 @@ export function makeHealthResponse(
 export * from './api.ts';
 export * from './task-native-wait.ts';
 export * from './automation.ts';
+export * from './folder-trigger.ts';
 export * from './authorization.ts';
 export * from './tenant-administration.ts';
 export * from './organization-administration.ts';

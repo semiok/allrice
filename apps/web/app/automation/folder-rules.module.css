@@ -1,0 +1,109 @@
+.page {
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 32px 24px;
+  color: var(--ds-text-primary);
+}
+.header,
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+.header {
+  margin-bottom: 24px;
+}
+.header h1 {
+  margin: 0;
+  font-size: 24px;
+}
+.page p {
+  line-height: 1.6;
+}
+.page a {
+  color: var(--ds-text-link, #4266cf);
+}
+.toolbar {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.empty,
+.card {
+  margin-top: 20px;
+  border: 1px solid var(--ds-border-primary, #d9dce2);
+  border-radius: 16px;
+  padding: 24px;
+}
+.card h2 {
+  margin: 0;
+  font-size: 18px;
+}
+.muted,
+.event small {
+  color: var(--ds-text-secondary, #767b84);
+}
+.form {
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+}
+.form label {
+  display: grid;
+  gap: 6px;
+}
+.form select,
+.form textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  color: inherit;
+  background: var(--ds-background-primary, transparent);
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--ds-border-primary, #d9dce2);
+}
+.form fieldset {
+  border: 0;
+  padding: 0;
+  display: flex;
+  gap: 20px;
+}
+.form .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.history {
+  margin-top: 20px;
+  border-top: 1px solid var(--ds-border-primary, #d9dce2);
+}
+.event {
+  padding: 16px 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.event > div {
+  flex: 1;
+  min-width: 180px;
+}
+.event small {
+  display: block;
+  margin-top: 6px;
+}
+.event p {
+  width: 100%;
+  margin: 0;
+}
+@media (max-width: 640px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .page {
+    padding: 20px 16px;
+  }
+}

@@ -32,6 +32,9 @@ const publicPaths = new Set([
 ]);
 
 const bridgeDevicePaths = new Set([
+  '/api/v1/bridge/folder-triggers',
+  '/api/v1/bridge/folder-triggers/events',
+  '/api/v1/bridge/folder-triggers/observations',
   '/api/v1/bridge/device/pair',
   '/api/v1/bridge/device/heartbeat',
   '/api/v1/bridge/device/status',

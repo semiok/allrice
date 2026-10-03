@@ -1,11 +1,12 @@
 import { z } from 'zod';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { FolderTriggerConfigSchema } from './folder-trigger.ts';
 
 export const AutomationStatusSchema = z.enum(['enabled', 'paused']);
 export type AutomationStatus = z.infer<typeof AutomationStatusSchema>;
 
-export const AutomationTriggerTypeSchema = z.enum(['schedule']);
+export const AutomationTriggerTypeSchema = z.enum(['schedule', 'folder']);
 export type AutomationTriggerType = z.infer<typeof AutomationTriggerTypeSchema>;
 
 export const AutomationFrequencySchema = z.enum(['once', 'daily', 'weekly']);
@@ -66,7 +67,9 @@ export const AutomationSchema = z
     description: z.string().max(1_000),
     prompt: z.string().min(1).max(40_000),
     triggerType: AutomationTriggerTypeSchema,
-    schedule: AutomationScheduleSchema,
+    schedule: AutomationScheduleSchema.nullable(),
+    folder: FolderTriggerConfigSchema.nullable(),
+    revision: z.number().int().positive(),
     status: AutomationStatusSchema,
     conversationMode: AutomationConversationModeSchema,
     employeeAssignmentId: UuidSchema.nullable(),
@@ -89,12 +92,28 @@ export const CreateAutomationInputSchema = z
     description: z.string().trim().max(1_000).default(''),
     prompt: z.string().trim().min(1).max(40_000),
     triggerType: AutomationTriggerTypeSchema.default('schedule'),
-    schedule: AutomationScheduleSchema,
+    schedule: AutomationScheduleSchema.optional(),
+    folder: FolderTriggerConfigSchema.optional(),
     conversationMode: AutomationConversationModeSchema.default('new_each_run'),
     employeeAssignmentId: UuidSchema.nullable().optional(),
     enabled: z.boolean().default(true),
   })
-  .strict();
+  .strict()
+  .superRefine((v, ctx) => {
+    if (
+      v.triggerType === 'schedule'
+        ? !v.schedule || v.folder !== undefined
+        : !v.folder ||
+          v.schedule !== undefined ||
+          !v.employeeAssignmentId ||
+          v.conversationMode !== 'new_each_run'
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Choose either a schedule or an authorized folder with a current AI employee; folder events each create a private work session.',
+      });
+  });
 export type CreateAutomationInput = z.infer<typeof CreateAutomationInputSchema>;
 
 export const UpdateAutomationInputSchema = z
@@ -103,6 +122,8 @@ export const UpdateAutomationInputSchema = z
     description: z.string().trim().max(1_000).optional(),
     prompt: z.string().trim().min(1).max(40_000).optional(),
     schedule: AutomationScheduleSchema.optional(),
+    folder: FolderTriggerConfigSchema.optional(),
+    expectedRevision: z.number().int().positive().optional(),
     conversationMode: AutomationConversationModeSchema.optional(),
     employeeAssignmentId: UuidSchema.nullable().optional(),
     status: AutomationStatusSchema.optional(),

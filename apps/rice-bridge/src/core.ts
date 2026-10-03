@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { realpath, stat } from 'node:fs/promises';
+import { mkdtemp, realpath, rm, stat } from 'node:fs/promises';
 import { arch, hostname, platform } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
+import { z } from 'zod';
 
 import {
   BridgeCapabilities,
@@ -16,6 +17,11 @@ import {
   type RuntimeLocalPythonProfile,
   type RuntimeLocalPdfProfile,
   BridgeSettingsCommandSchema,
+  FolderTriggerRuleSchema,
+  FolderTriggerEventSchema,
+  FolderTriggerObservationSchema,
+  UuidSchema,
+  type FolderTriggerRule,
   type BridgeSettingsCommand,
   PairBridgeDeviceResponseSchema,
   type BridgeEnvironment,
@@ -25,7 +31,11 @@ import {
   type BridgeWorkspaceSelectionRequest,
 } from '@allrice/contracts';
 
-import { bridgeRequest, BridgeClientError } from './client.js';
+import {
+  bridgeRequest,
+  BridgeClientError,
+  type BridgeRequestInput,
+} from './client.js';
 import { BridgeDualTransport } from './dual-transport.js';
 import {
   localCapabilitySettings,
@@ -43,6 +53,15 @@ import {
 } from './config.js';
 import { LocalExecutionError, executeLocalCommand } from './executor.js';
 import type { BridgeJournal } from './journal.js';
+import { fileGuardianReady } from './file-guardian-resources.js';
+import {
+  FolderTriggerWatcher,
+  folderTriggerRuleFingerprint,
+  folderTriggerRuleKey,
+  folderTriggerMatches,
+  folderTriggerEventId,
+  type FolderTriggerWatcherOptions,
+} from './folder-trigger-watcher.js';
 import {
   nativeSandboxConfig,
   sandboxOptIn,
@@ -418,6 +437,495 @@ export function journalDirectory(config: BridgeConfig) {
   return `${configPath()}.operation-journal`;
 }
 
+/** Chokidar's global override wins over usePolling:false. Refuse it, without
+ * changing the user's environment or silently installing a polling loop. */
+export function assertFolderTriggerWatcherEnvironment(
+  environment: NodeJS.ProcessEnv = process.env,
+) {
+  const value = environment.CHOKIDAR_USEPOLLING?.toLowerCase();
+  if (value && value !== 'false' && value !== '0')
+    throw Error('FOLDER_TRIGGER_POLLING_UNSUPPORTED');
+}
+
+export function projectFolderTriggerEnvironment(
+  environment: BridgeEnvironment,
+  available: boolean,
+  stopping: boolean,
+) {
+  let supported = available && !stopping && !environment.paused;
+  try {
+    assertFolderTriggerWatcherEnvironment();
+  } catch {
+    supported = false;
+  }
+  if (supported) environment.folderTriggerVersion = 1;
+  else delete environment.folderTriggerVersion;
+}
+
+/** Verify the actual sealed primitive and SQLite guard on an empty directory
+ * we own. A source-level feature flag or installed helper path is insufficient. */
+export async function probeFolderTriggerRuntime(input: {
+  journal: BridgeJournal | null;
+  directory: string;
+  signal: AbortSignal;
+}) {
+  if (
+    !input.journal ||
+    process.platform !== 'darwin' ||
+    !['x64', 'arm64'].includes(process.arch) ||
+    !fileGuardianReady()
+  )
+    return false;
+  assertFolderTriggerWatcherEnvironment();
+  input.signal.throwIfAborted();
+  await input.journal.diagnosticCounts();
+  const directory = await mkdtemp(join(input.directory, 'folder-probe-'));
+  try {
+    input.signal.throwIfAborted();
+    const { executeFileSurvey } = await import('./file-survey.js');
+    const { output } = await executeFileSurvey(
+      await realpath(directory),
+      '.',
+      { mode: 'files', hash: false, maximumEntries: 1, maximumHashBytes: 1 },
+      { signal: input.signal },
+    );
+    input.signal.throwIfAborted();
+    return output.complete && !output.truncated && output.files.length === 0;
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+type FolderCoreWatcher = Pick<
+  FolderTriggerWatcher,
+  'start' | 'renewAdmission' | 'reconcile' | 'close'
+>;
+type FolderCoreEntry = {
+  rule: FolderTriggerRule;
+  watcher: FolderCoreWatcher;
+  task: Promise<void>;
+  ready: boolean;
+  errorCode: string | null;
+  observation?: string;
+};
+export type FolderTriggerCoreOptions = {
+  server: string;
+  deviceId: string;
+  token: string;
+  journal: BridgeJournal;
+  signal: AbortSignal;
+  drainSignal?: AbortSignal;
+  available(): boolean;
+  readCredentials?(): Promise<{ config: BridgeConfig; token: string }>;
+  request?(input: BridgeRequestInput): Promise<unknown>;
+  makeWatcher?(options: FolderTriggerWatcherOptions): FolderCoreWatcher;
+  onDiagnostic?(code: string): void;
+};
+
+/** Called by the existing heartbeat only. All facts remain in the exact device
+ * journal until the authenticated server acknowledges the immutable event. */
+export class FolderTriggerCore {
+  private entries = new Map<string, FolderCoreEntry>();
+  private syncTask: Promise<void> | null = null;
+  private flushTask: Promise<void> | null = null;
+  private closing: Promise<void> | null = null;
+  private disconnected = false;
+  private identityCurrent = true;
+  private readonly abort = () => {
+    void this.close().catch(() =>
+      this.options.onDiagnostic?.('FOLDER_TRIGGER_STOP_UNCONFIRMED'),
+    );
+  };
+  constructor(private readonly options: FolderTriggerCoreOptions) {
+    options.signal.addEventListener('abort', this.abort, { once: true });
+    options.drainSignal?.addEventListener('abort', this.abort, { once: true });
+  }
+  get canAdvertise() {
+    return (
+      this.identityCurrent &&
+      !this.closing &&
+      !this.options.signal.aborted &&
+      !this.options.drainSignal?.aborted
+    );
+  }
+  private request(input: Omit<BridgeRequestInput, 'server' | 'token'>) {
+    return (this.options.request ?? bridgeRequest)({
+      ...input,
+      server: this.options.server,
+      token: this.options.token,
+      signal: input.signal ?? this.options.signal,
+      maximumResponseBytes: input.maximumResponseBytes ?? 4096,
+      timeoutMs: 5000,
+    });
+  }
+  private code(error: unknown) {
+    return readinessErrorCode(error, 'FOLDER_TRIGGER_UNAVAILABLE');
+  }
+  private async currentConfig() {
+    if (
+      this.closing ||
+      this.options.signal.aborted ||
+      this.options.drainSignal?.aborted
+    )
+      throw Error('FOLDER_TRIGGER_CLOSED');
+    assertFolderTriggerWatcherEnvironment();
+    if (!this.options.available()) throw Error('FOLDER_TRIGGER_UNAVAILABLE');
+    const current = await (
+      this.options.readCredentials ??
+      (async () => credentials(await readConfig()))
+    )();
+    if (
+      current.config.server !== this.options.server ||
+      current.config.deviceId !== this.options.deviceId ||
+      current.token !== this.options.token
+    ) {
+      this.identityCurrent = false;
+      throw Error('FOLDER_TRIGGER_IDENTITY_CHANGED');
+    }
+    if (current.config.paused) {
+      this.identityCurrent = false;
+      throw Error('FOLDER_TRIGGER_PAUSED');
+    }
+    this.identityCurrent = true;
+    return current.config;
+  }
+  private async root(rule: FolderTriggerRule) {
+    const config = await this.currentConfig();
+    const current = this.entries.get(folderTriggerRuleKey(rule));
+    if (
+      !current ||
+      current.errorCode ||
+      folderTriggerRuleFingerprint(current.rule) !==
+        folderTriggerRuleFingerprint(rule) ||
+      Date.parse(current.rule.admissionExpiresAt) <= Date.now() ||
+      rule.deviceId !== this.options.deviceId
+    )
+      throw Error('FOLDER_TRIGGER_SCOPE_REVOKED');
+    // The authenticated current rule binds runtime_generation. Local config
+    // only maps that exact grant id to its previously selected physical root.
+    const grant = config.grants.find(
+      (value) => value.id === rule.folderGrantId,
+    );
+    if (
+      !grant ||
+      (await realpath(grant.rootPath)) !== grant.rootPath ||
+      createHash('sha256').update(grant.rootPath).digest('hex') !==
+        grant.rootFingerprint
+    )
+      throw Error('FOLDER_TRIGGER_ROOT_CHANGED');
+    return grant.rootPath;
+  }
+  private async drop(entry: FolderCoreEntry) {
+    entry.ready = false;
+    await entry.watcher.close();
+    await entry.task;
+    entry.ready = false;
+  }
+  private async pause(error: unknown) {
+    const code = this.code(error);
+    const entries = [...this.entries.values()];
+    for (const entry of entries) entry.errorCode = code;
+    const results = await Promise.allSettled(
+      entries.map((entry) => this.drop(entry)),
+    );
+    const failed = results.find((result) => result.status === 'rejected');
+    if (failed?.status === 'rejected') throw failed.reason;
+    if (code === 'FOLDER_TRIGGER_PAUSED' && !this.closing) {
+      try {
+        const current = await (
+          this.options.readCredentials ??
+          (async () => credentials(await readConfig()))
+        )();
+        // Release can overlap a re-pair. Report the completed physical pause
+        // only while its original device/server/token still owns this scope.
+        if (
+          current.config.server === this.options.server &&
+          current.config.deviceId === this.options.deviceId &&
+          current.token === this.options.token
+        )
+          await this.observe();
+      } catch (error) {
+        // A failed status delivery keeps its digest unacknowledged for the
+        // next scoped check without undoing the physical watcher release.
+        this.options.onDiagnostic?.(this.code(error));
+      }
+    }
+  }
+  /** Local identity/settings changes also stop listeners during long commands. */
+  async checkScope() {
+    try {
+      await this.currentConfig();
+    } catch (error) {
+      await this.pause(error);
+      throw error;
+    }
+  }
+  synchronize() {
+    if (this.closing) return Promise.resolve();
+    this.syncTask ??= this.sync().finally(() => {
+      this.syncTask = null;
+    });
+    return this.syncTask;
+  }
+  async connectionFailure(error: unknown) {
+    this.disconnected = true;
+    if (error instanceof BridgeClientError && [401, 403].includes(error.status))
+      await this.pause(error);
+  }
+  private async sync() {
+    try {
+      await this.checkScope();
+      const response = z
+        .object({ rules: z.array(FolderTriggerRuleSchema).max(32) })
+        .strict()
+        .parse(
+          await this.request({
+            path: '/api/v1/bridge/folder-triggers',
+            // 32 bounded rules may include 16 UTF-8 relative exclusions each.
+            maximumResponseBytes: 2_000_000,
+          }),
+        );
+      await this.checkScope();
+      const rules = new Map<string, FolderTriggerRule>();
+      const ids = new Set<string>();
+      for (const rule of response.rules) {
+        if (
+          rule.deviceId !== this.options.deviceId ||
+          ids.has(rule.automationId) ||
+          Date.parse(rule.admissionExpiresAt) <= Date.now() ||
+          Date.parse(rule.admissionExpiresAt) > Date.now() + 80000
+        )
+          throw Error('FOLDER_TRIGGER_RULE_INVALID');
+        ids.add(rule.automationId);
+        rules.set(folderTriggerRuleKey(rule), rule);
+      }
+      const reconnect = this.disconnected;
+      this.disconnected = false;
+      const observations = new Map<string, string | undefined>();
+      for (const [key, entry] of this.entries) {
+        const rule = rules.get(key);
+        if (
+          rule &&
+          folderTriggerRuleFingerprint(rule) ===
+            folderTriggerRuleFingerprint(entry.rule)
+        ) {
+          // Preserve and report an asynchronous startup failure before retry;
+          // retrying cannot erase it or repeatedly write the same status.
+          if (entry.errorCode) await this.observe(undefined, [entry]);
+          observations.set(key, entry.observation);
+        }
+        if (
+          !rule ||
+          entry.errorCode ||
+          folderTriggerRuleFingerprint(rule) !==
+            folderTriggerRuleFingerprint(entry.rule)
+        ) {
+          await this.drop(entry);
+          this.entries.delete(key);
+        }
+      }
+      for (const [key, rule] of rules) {
+        if (this.closing) break;
+        const old = this.entries.get(key);
+        if (old) {
+          old.rule = rule;
+          try {
+            await old.watcher.renewAdmission(rule);
+            if (reconnect && old.ready) {
+              old.ready = false;
+              old.task = old.watcher
+                .reconcile()
+                .then(() => {
+                  old.ready = true;
+                })
+                .catch((error: unknown) => {
+                  old.errorCode = this.code(error);
+                });
+            }
+          } catch (error) {
+            old.errorCode = this.code(error);
+            await this.drop(old);
+          }
+          continue;
+        }
+        const watcher = (
+          this.options.makeWatcher ??
+          ((options) => new FolderTriggerWatcher(options))
+        )({
+          rule,
+          journal: this.options.journal,
+          signal: this.options.signal,
+          getRoot: (bound) => this.root(FolderTriggerRuleSchema.parse(bound)),
+          authorize: async () => {
+            await this.root(rule);
+            return true;
+          },
+          onError: (code) => {
+            if (code === 'FOLDER_TRIGGER_FILE_CHANGED') {
+              this.options.onDiagnostic?.(code);
+              return;
+            }
+            entry.ready = false;
+            entry.errorCode = code;
+          },
+        });
+        const entry: FolderCoreEntry = {
+          rule,
+          watcher,
+          ready: false,
+          errorCode: null,
+          task: Promise.resolve(),
+          observation: observations.get(key),
+        };
+        this.entries.set(key, entry);
+        entry.task = watcher
+          .start()
+          .then(() => {
+            entry.ready = true;
+          })
+          .catch((error: unknown) => {
+            entry.errorCode = this.code(error);
+          });
+      }
+      await this.observe();
+      void this.flush().catch((error: unknown) => {
+        this.options.onDiagnostic?.(this.code(error));
+      });
+    } catch (error) {
+      this.disconnected = true;
+      if (
+        !(error instanceof BridgeClientError) ||
+        ![0, 502, 503, 504].includes(error.status)
+      )
+        await this.pause(error);
+      this.options.onDiagnostic?.(this.code(error));
+    }
+  }
+  private async observe(
+    signal?: AbortSignal,
+    entries: Iterable<FolderCoreEntry> = this.entries.values(),
+  ) {
+    for (const entry of entries) {
+      // Startup/reconcile retain no false listening fact and do not produce
+      // a paused/listening flicker on every heartbeat.
+      if (!entry.ready && !entry.errorCode) continue;
+      const observation = FolderTriggerObservationSchema.parse({
+        ruleId: entry.rule.automationId,
+        revision: entry.rule.revision,
+        status: entry.errorCode
+          ? [
+              'FOLDER_TRIGGER_ADMISSION_EXPIRED',
+              'FOLDER_TRIGGER_PAUSED',
+              'FOLDER_TRIGGER_CLOSED',
+            ].includes(entry.errorCode)
+            ? 'paused'
+            : 'error'
+          : entry.ready
+            ? 'listening'
+            : 'paused',
+        errorCode: entry.errorCode,
+      });
+      const digest = JSON.stringify(observation);
+      if (entry.observation === digest) continue;
+      await this.request({
+        path: '/api/v1/bridge/folder-triggers/observations',
+        method: 'POST',
+        body: observation,
+        signal,
+      });
+      entry.observation = digest;
+    }
+  }
+  flush() {
+    if (this.closing) return Promise.resolve();
+    this.flushTask ??= this.deliver()
+      .catch(async (error: unknown) => {
+        await this.connectionFailure(error);
+        throw error;
+      })
+      .finally(() => {
+        this.flushTask = null;
+      });
+    return this.flushTask;
+  }
+  private async deliver() {
+    let remaining = 16;
+    for (const entry of this.entries.values()) {
+      if (!entry.ready || entry.errorCode) continue;
+      await this.root(entry.rule);
+      for (const event of await this.options.journal.pendingFolderTriggers(
+        entry.rule,
+        remaining,
+      )) {
+        await this.root(entry.rule);
+        // Renew performs only pinned root/authority checks, never a survey.
+        // Delivery cannot borrow a same-path replacement directory's grant.
+        await entry.watcher.renewAdmission(entry.rule);
+        const body = FolderTriggerEventSchema.parse(event);
+        if (
+          body.ruleId !== entry.rule.automationId ||
+          body.revision !== entry.rule.revision ||
+          body.grantId !== entry.rule.folderGrantId ||
+          body.grantVersion !== entry.rule.folderGrantVersion ||
+          !folderTriggerMatches(entry.rule, body.path) ||
+          body.eventId !== folderTriggerEventId(entry.rule, body)
+        ) {
+          entry.errorCode = 'FOLDER_TRIGGER_EVENT_INVALID';
+          await this.drop(entry);
+          throw Error('FOLDER_TRIGGER_EVENT_INVALID');
+        }
+        const response = z.object({ acceptedEventId: UuidSchema }).parse(
+          await this.request({
+            path: '/api/v1/bridge/folder-triggers/events',
+            method: 'POST',
+            body,
+          }),
+        );
+        // The server may dedup to a different event id. Its acknowledgement is
+        // authoritative, but the local row to clear is always the original id.
+        UuidSchema.parse(response.acceptedEventId);
+        await this.root(entry.rule);
+        await entry.watcher.renewAdmission(entry.rule);
+        await this.options.journal.acknowledgeFolderTrigger(
+          entry.rule,
+          event.eventId,
+        );
+        if (--remaining === 0) return;
+      }
+    }
+  }
+  async close() {
+    if (this.closing) return this.closing;
+    this.options.signal.removeEventListener('abort', this.abort);
+    this.options.drainSignal?.removeEventListener('abort', this.abort);
+    this.closing = (async () => {
+      await this.pause(Error('FOLDER_TRIGGER_CLOSED'));
+      await this.syncTask;
+      await this.flushTask?.catch((error: unknown) => {
+        this.options.onDiagnostic?.(this.code(error));
+      });
+      try {
+        const current = await (
+          this.options.readCredentials ??
+          (async () => credentials(await readConfig()))
+        )();
+        if (
+          current.config.server === this.options.server &&
+          current.config.deviceId === this.options.deviceId &&
+          current.token === this.options.token
+        )
+          await this.observe(AbortSignal.timeout(5000));
+      } catch (error) {
+        // Failed status delivery never turns a physically released observer
+        // into an unknown file mutation or clears an event outbox.
+        this.options.onDiagnostic?.(this.code(error));
+      }
+      this.entries.clear();
+    })();
+    return this.closing;
+  }
+}
+
 type StartOptions = {
   signal?: AbortSignal;
   /** Stop acquiring work; let already claimed foreground work finish. This
@@ -556,6 +1064,8 @@ async function startSession(
         })
       : undefined;
   let pdfAvailable = false;
+  let folderRuntimeAvailable = false;
+  let folderTriggers: FolderTriggerCore | null = null;
   let pdfProfile: RuntimeLocalPdfProfile | undefined;
   let pdfState: 'ready' | 'preparing' | 'unsupported' = pdfRunner
     ? 'preparing'
@@ -621,6 +1131,11 @@ async function startSession(
       managedPdf: { state: pdfState, profile: pdfProfile, reason: pdfReason },
     });
   const publish = () => {
+    projectFolderTriggerEnvironment(
+      state.environment!,
+      folderRuntimeAvailable && Boolean(folderTriggers?.canAdvertise),
+      stopping || Boolean(options.drainSignal?.aborted),
+    );
     if (
       pdfState === 'ready' &&
       state.environment!.fileDerivationVersion === 1 &&
@@ -663,12 +1178,34 @@ async function startSession(
       () => undefined,
     );
   };
+  folderTriggers = journal
+    ? new FolderTriggerCore({
+        server: config.server,
+        deviceId: config.deviceId,
+        token,
+        journal,
+        signal: commandAbort.signal,
+        drainSignal: options.drainSignal,
+        available: () => folderRuntimeAvailable && !stopping && runtimeReady,
+        onDiagnostic: (code) => {
+          if (code === 'FOLDER_TRIGGER_IDENTITY_CHANGED') {
+            folderRuntimeAvailable = false;
+            publish();
+          }
+          console.warn(code);
+        },
+      })
+    : null;
   publish();
   console.info(`Rice Bridge ${bridgeVersion} 正在运行：${config.deviceName}`);
   let lastHeartbeatAt = 0;
   let heartbeatInFlight: Promise<void> | null = null;
   const heartbeat = () => {
     heartbeatInFlight ??= (async () => {
+      if (folderRuntimeAvailable && !stopping)
+        await folderTriggers?.checkScope().catch((error: unknown) => {
+          console.warn(readinessErrorCode(error, 'FOLDER_TRIGGER_UNAVAILABLE'));
+        });
       capabilitySettings = await localCapabilitySettings(config);
       state.environment!.settings = capabilitySettings.settings;
       state.environment!.settingsRevision = capabilitySettings.revision;
@@ -688,6 +1225,9 @@ async function startSession(
           },
         },
         timeoutMs: 5000,
+      }).catch(async (error: unknown) => {
+        await folderTriggers?.connectionFailure(error);
+        throw error;
       });
       const next = BridgeSettingsCommandSchema.safeParse(response.settings);
       if (
@@ -702,6 +1242,10 @@ async function startSession(
       if (!stopping) state.phase = 'online';
       options.onNotice?.('BRIDGE_CONNECTED');
       publish();
+      if (!stopping && runtimeReady)
+        void folderTriggers?.synchronize().catch((error: unknown) => {
+          console.warn(readinessErrorCode(error, 'FOLDER_TRIGGER_UNAVAILABLE'));
+        });
     })().finally(() => {
       heartbeatInFlight = null;
     });
@@ -929,6 +1473,7 @@ async function startSession(
   let browserTask: Promise<void> | null = null;
   let runtimeReady = false;
   let browserStopUnconfirmed = false;
+  let folderStopUnconfirmed = false;
   try {
     const [
       { LocalBrowserController },
@@ -993,12 +1538,21 @@ async function startSession(
   }
   let reconnectDelayMs = 1_000;
   try {
+    folderRuntimeAvailable = await probeFolderTriggerRuntime({
+      journal,
+      directory: journalDirectory(config),
+      signal: commandAbort.signal,
+    }).catch((error: unknown) => {
+      console.warn(readinessErrorCode(error, 'FOLDER_TRIGGER_UNAVAILABLE'));
+      return false;
+    });
     if (options.onReady) await options.onReady();
     else await updateLifecycle.acknowledgeBridgeUpdateReadiness(options.signal);
     runtimeReady = true;
     prepare();
     while (!stopping) {
       if (options.drainSignal?.aborted) {
+        await folderTriggers?.close();
         // Facts must be readable. A failed delivery alone is not failed stop;
         // known durable receipts can remain queued across the update.
         await updateFacts();
@@ -1034,6 +1588,7 @@ async function startSession(
               : undefined,
           );
           ({ config, token } = await credentials(await readConfig()));
+          await folderTriggers?.checkScope().catch(() => undefined);
           options.onNotice?.('WORKSPACE_CHANGED');
           await updateFacts();
           reconnectDelayMs = 1_000;
@@ -1041,6 +1596,7 @@ async function startSession(
         }
         if (operationModule && journal) {
           ({ config, token } = await credentials(await readConfig()));
+          await folderTriggers?.checkScope().catch(() => undefined);
           const worked = await new operationModule.RuntimeBridgeOperationClient(
             {
               config,
@@ -1096,6 +1652,7 @@ async function startSession(
           // A folder granted from another terminal should become available
           // without requiring the long-running Bridge process to restart.
           ({ config, token } = await credentials(await readConfig()));
+          await folderTriggers?.checkScope().catch(() => undefined);
           state.activeForeground = 1;
           publish();
           const command = BridgeCommandSchema.parse(response.command);
@@ -1140,6 +1697,10 @@ async function startSession(
     await browserTask;
     await preparing;
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
+    await folderTriggers?.close().catch(() => {
+      folderStopUnconfirmed = true;
+      console.warn('FOLDER_TRIGGER_STOP_UNCONFIRMED');
+    });
     state.environment = initialBridgeEnvironment(true);
     await heartbeat().catch(() => undefined);
     process.removeListener('SIGINT', stop);
@@ -1172,14 +1733,17 @@ async function startSession(
         .catch(() => undefined);
       await updateFacts().catch(() => undefined);
     }
-    await journal?.close();
-    state.phase = browserStopUnconfirmed ? 'stopping' : 'stopped';
+    if (!folderStopUnconfirmed) await journal?.close();
+    state.phase =
+      browserStopUnconfirmed || folderStopUnconfirmed ? 'stopping' : 'stopped';
     state.activeForeground = 0;
     state.activeServices = 0;
-    if (!browserStopUnconfirmed) options.onNotice?.('BRIDGE_STOPPED');
+    if (!browserStopUnconfirmed && !folderStopUnconfirmed)
+      options.onNotice?.('BRIDGE_STOPPED');
     publish();
   }
   if (browserStopUnconfirmed) throw Error('LOCAL_BROWSER_CLEANUP_PENDING');
+  if (folderStopUnconfirmed) throw Error('FOLDER_TRIGGER_STOP_UNCONFIRMED');
   console.info('Rice Bridge 已停止');
   return requestedSettings;
 }

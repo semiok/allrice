@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   WorkAutomationViewSchema,
@@ -138,6 +139,13 @@ export function WorkAutomationSettings({
               />
             </div>
           ))}
+          <p>
+            <Link
+              href={`/automation?workspaceId=${encodeURIComponent(workspaceId)}`}
+            >
+              文件夹自动处理
+            </Link>
+          </p>
           <p>
             仅影响你在当前工作区的后续操作；进行中的工作可在任务中停止。电脑能力开关在「我的电脑」管理。
           </p>

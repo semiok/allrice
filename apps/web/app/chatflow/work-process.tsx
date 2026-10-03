@@ -67,6 +67,7 @@ export function WorkProcess({
   assistantAttention,
   children,
   artifacts,
+  accessibleFiles,
   onOpenArtifact,
   renderOperation,
   label = '工作过程',
@@ -85,6 +86,7 @@ export function WorkProcess({
   assistantAttention: number;
   children?: ReactNode;
   artifacts?: readonly WorkbenchArtifact[];
+  accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
   label?: string;
   renderOperation?: (operationId: string) => ReactNode;
@@ -164,6 +166,7 @@ export function WorkProcess({
           hidden={!showHistory && part.id !== final?.id}
         >
           <AssistantMarkdown
+            accessibleFiles={accessibleFiles}
             onOpenArtifact={onOpenArtifact}
             text={part.text}
             streaming={streaming && running && index === parts.length - 1}
