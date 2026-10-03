@@ -18,6 +18,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type * as Playwright from '../../../apps/worker/node_modules/playwright-core/index.js';
 import { dependencyFixture } from '../../../apps/rice-bridge/test/dependency-fixture.js';
+import { projectFixture } from '../../../apps/rice-bridge/test/project-fixture.js';
 import { testSocket } from '../../../apps/rice-bridge/test/toolchain.js';
 
 import {
@@ -31,6 +32,7 @@ import {
   ExecutionContextSchema,
   RuntimeLocalCommandResultSchema,
   localCommandToolchainImageV1,
+  managedPythonPayloadForPlatform,
 } from '@allrice/contracts';
 import postgres from 'postgres';
 import {
@@ -603,6 +605,98 @@ async function commandFixture(
 
 suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it.each(['pnpm', 'uv'] as const)(
+    'PR8 prepares %s through persisted ordinary employee authority and requires the actual project runtime profile',
+    async (manager) => {
+      const f = await commandFixture();
+      await database`delete from allrice_member_work_automation where organization_id=${f.context.organizationId}`;
+      const ordinaryPolicy = {
+        ...f.policyPayload,
+        memberships: f.policyPayload.memberships.map((m) => ({
+          ...m,
+          role: 'member' as const,
+        })),
+      };
+      await database`update allrice_memberships set role='member' where id=${f.membership}`;
+      await database`update allrice_policy_snapshots set payload=${database.json(ordinaryPolicy)} where id=${f.policy}`;
+      const context = ExecutionContextSchema.parse({
+        ...f.execution,
+        policySnapshot: { ...f.execution.policySnapshot, ...ordinaryPolicy },
+      });
+      const source = projectFixture(manager);
+      const a = source.command.arguments;
+      const args = {
+        executable: a.executable,
+        args: a.args,
+        path: a.path,
+        files: a.files,
+        limits: a.limits,
+        projectPreparation: a.projectPreparation,
+      };
+      const create = (callId: string) =>
+        createLocalCommandOperation(
+          { context, callId, arguments: args },
+          database,
+        );
+      await expect(create('pr8-no-manager')).rejects.toThrow(
+        'local_runner_preparing',
+      );
+      await reportLocalCommandProfile(
+        f.device,
+        {
+          contractVersion: 1,
+          backend: 'local-vm-container-v1',
+          imageDigest: localCommandToolchainImageV1,
+          architecture: 'amd64',
+          available: true,
+          features: ['project_preparation'],
+          projectPreparation: {
+            version: 1,
+            available: true,
+            nodeImage: localCommandToolchainImageV1,
+            pythonImage: managedPythonPayloadForPlatform('macos-x64')!.imageId,
+            pnpmVersion: '10.33.3',
+            uvVersion: '0.8.22',
+          },
+        },
+        database,
+      );
+      const created = await create('pr8-ordinary-project');
+      expect(created.snapshot.status).toBe('ready');
+      expect(await f.claim()).toBeNull();
+      const lease = await f.ledger().claimNextBridgeOperation({
+        scope: f.task.scope,
+        deviceId: f.device.id,
+        leaseMs: 30000,
+        supportsLocalCommand: true,
+        supportsProjectPreparation: true,
+      });
+      expect(lease!.bridgePayload).toMatchObject({
+        capability: 'local.process.execute',
+        arguments: {
+          projectPreparation: args.projectPreparation,
+          imageDigest:
+            manager === 'uv'
+              ? managedPythonPayloadForPlatform('macos-x64')!.imageId
+              : localCommandToolchainImageV1,
+        },
+      });
+      await database`update allrice_bridge_runtime_profiles set profile=profile-'projectPreparation' where device_id=${f.device.id}`;
+      await expect(
+        f.ledger().heartbeat({
+          scope: f.task.scope,
+          operationId: created.snapshot.binding.attempt.operationId,
+          leaseToken: lease!.leaseToken,
+          leaseMs: 30000,
+        }),
+      ).rejects.toThrow('unavailable');
+      expect(
+        (
+          await database`select role from allrice_memberships where id=${f.membership}`
+        )[0]!.role,
+      ).toBe('member');
+    },
+  );
   it('PR6 survey uses the persisted ordinary employee scope, requires a compatible client and stops after capability withdrawal', async () => {
     const f = await commandFixture(['local.fs.list']);
     await database`delete from allrice_member_work_automation where organization_id=${f.context.organizationId}`;

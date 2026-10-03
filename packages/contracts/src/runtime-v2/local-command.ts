@@ -6,6 +6,7 @@ import {
 } from './command-candidate.ts';
 
 import { BridgeCommandPayloadSchema } from '../bridge.ts';
+import { managedPythonPayloadForPlatform } from '../managed-python-payload.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
@@ -17,6 +18,10 @@ import {
   RuntimeDependencyPreparationSchema,
   RuntimeDependencyPreparationResultSchema,
 } from './dependency-preparation.ts';
+import {
+  RuntimeProjectPreparationSchema,
+  RuntimeProjectPreparationEvidenceSchema,
+} from './project-preparation.ts';
 import {
   RuntimeProjectDiagnosticsRequestSchema,
   RuntimeProjectDiagnosticsSchema,
@@ -41,13 +46,21 @@ export function localCommandToolchainForPlatform(platform: string) {
 
 export function isLocalCommandProfileForPlatform(
   platform: string,
-  profile: { imageDigest: string; architecture: string },
+  profile: {
+    imageDigest: string;
+    architecture: string;
+    projectPreparation?: { nodeImage: string; pythonImage: string };
+  },
 ) {
   const toolchain = localCommandToolchainForPlatform(platform);
   return (
     toolchain !== null &&
     profile.architecture === toolchain.architecture &&
-    profile.imageDigest === toolchain.imageDigest
+    profile.imageDigest === toolchain.imageDigest &&
+    (!profile.projectPreparation ||
+      (profile.projectPreparation.nodeImage === toolchain.imageDigest &&
+        profile.projectPreparation.pythonImage ===
+          managedPythonPayloadForPlatform(platform)?.imageId))
   );
 }
 
@@ -57,7 +70,11 @@ export const RuntimeLocalCommandSchema = z
     capability: z.literal('local.process.execute'),
     arguments: z
       .object({
-        executable: z.enum(['/usr/local/bin/node', '/usr/local/bin/npm']),
+        executable: z.enum([
+          '/usr/local/bin/node',
+          '/usr/local/bin/npm',
+          '/workspace/.venv/bin/python',
+        ]),
         args: z
           .array(
             z
@@ -69,6 +86,7 @@ export const RuntimeLocalCommandSchema = z
         path: z.union([z.literal('.'), path]),
         diagnostics: RuntimeProjectDiagnosticsRequestSchema.optional(),
         dependencies: RuntimeDependencyPreparationSchema.optional(),
+        projectPreparation: RuntimeProjectPreparationSchema.optional(),
         background: RuntimeLocalServiceConfigSchema.optional(),
         candidate: CommandCandidateSchema.optional(),
         files: z
@@ -92,6 +110,25 @@ export const RuntimeLocalCommandSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    const a = value.arguments;
+    if (
+      a.projectPreparation &&
+      (a.background || a.dependencies || a.diagnostics || a.candidate)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'project preparation is a foreground operation with its own exact source/lock identity',
+      });
+    if (
+      (a.executable === '/workspace/.venv/bin/python') !==
+      (a.projectPreparation?.manager === 'uv')
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'project Python requires an isolated uv environment; Node commands require the Node runtime',
+      });
     if (
       value.arguments.candidate &&
       (value.arguments.background ||
@@ -183,15 +220,36 @@ export const RuntimeLocalCommandProfileSchema = z
           'background_services',
           'local_mcp',
           'changeset_candidate',
+          'project_preparation',
         ]),
       )
       .max(8)
+      .optional(),
+    projectPreparation: z
+      .object({
+        version: z.literal(1),
+        available: z.literal(true),
+        nodeImage: ChecksumSchema,
+        pythonImage: ChecksumSchema,
+        pnpmVersion: z.literal('10.33.3'),
+        uvVersion: z.literal('0.8.22'),
+      })
+      .strict()
       .optional(),
   })
   .strict();
 export type RuntimeLocalCommandProfile = z.infer<
   typeof RuntimeLocalCommandProfileSchema
 >;
+
+export function localCommandRuntimeImage(
+  profile: RuntimeLocalCommandProfile,
+  command: { projectPreparation?: { manager: 'pnpm' | 'uv' } },
+) {
+  return command.projectPreparation?.manager === 'uv'
+    ? profile.projectPreparation?.pythonImage
+    : profile.imageDigest;
+}
 
 export const RuntimeLocalCommandResultSchema = z
   .object({
@@ -220,9 +278,33 @@ export const RuntimeLocalCommandResultSchema = z
     sourceDirectoryModified: z.literal(false),
     diagnostics: RuntimeProjectDiagnosticsSchema.optional(),
     dependencies: RuntimeDependencyPreparationResultSchema.optional(),
+    projectPreparation: RuntimeProjectPreparationEvidenceSchema.optional(),
     candidate: CommandCandidateEvidenceSchema.optional(),
   })
   .strict();
 export type RuntimeLocalCommandResult = z.infer<
   typeof RuntimeLocalCommandResultSchema
 >;
+
+export function localProjectResultMatchesPayload(
+  payload: RuntimeLocalCommand,
+  result: RuntimeLocalCommandResult,
+) {
+  const spec = payload.arguments.projectPreparation,
+    proof = result.projectPreparation;
+  return !spec
+    ? proof === undefined
+    : !!proof &&
+        proof.version === spec.version &&
+        proof.projectId === spec.projectId &&
+        proof.sourceDigest === spec.sourceDigest &&
+        proof.lockChecksum === spec.lockChecksum &&
+        proof.manager === spec.manager &&
+        proof.managerVersion === spec.managerVersion &&
+        proof.runtimeImage === payload.arguments.imageDigest &&
+        result.imageDigest === payload.arguments.imageDigest &&
+        proof.packageCount === spec.packages.length &&
+        (result.reason !== 'exited' ||
+          result.exitCode !== 0 ||
+          proof.installation === 'succeeded');
+}

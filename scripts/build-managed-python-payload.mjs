@@ -242,7 +242,7 @@ async function imageSummary(socket, apiVersion, tag) {
   return result[0];
 }
 
-async function saveArchive(prefix, imageId, path) {
+export async function saveArchive(prefix, imageId, path) {
   const temporary = `${path}.${randomUUID()}.tmp`;
   const child = spawn('docker', [...prefix, 'image', 'save', imageId], {
     stdio: ['ignore', 'pipe', 'inherit'],

@@ -6,7 +6,10 @@ import {
   localCommandToolchainForPlatform,
   type RuntimeLocalCommand,
   type RuntimeLocalCommandResult,
+  type RuntimeProjectScope,
 } from '@allrice/contracts';
+import { ProjectPreparation } from './project-preparation.js';
+import { ProjectCommandRunner } from './project-command-runner.js';
 import { LocalCommandOutputFilter } from './local-command-output.js';
 
 import { LocalDockerApi } from './local-docker-api.js';
@@ -50,16 +53,30 @@ const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 /** Explicit, fixed local backend. Callers still need current server approval and leases. */
 export class LocalCommandRunner {
   readonly api: LocalDockerApi;
+  readonly projects?: ProjectCommandRunner;
   constructor(
     readonly config: {
       socketPath: string;
       imageDigest: string;
       localMcpEnabled?: () => Promise<boolean>;
+      projectPreparation?: {
+        root: string;
+        pythonImage: string;
+        architecture: 'amd64' | 'arm64';
+      };
     },
   ) {
     if (config.imageDigest !== localCommandToolchainImageV1)
       throw new LocalCommandError('PINNED_IMAGE_REQUIRED');
     this.api = new LocalDockerApi(config.socketPath);
+    if (config.projectPreparation)
+      this.projects = new ProjectCommandRunner({
+        api: this.api,
+        preparation: new ProjectPreparation(config.projectPreparation.root),
+        nodeImage: config.imageDigest,
+        pythonImage: config.projectPreparation.pythonImage,
+        architecture: config.projectPreparation.architecture,
+      });
   }
 
   async localMcpEnabled() {
@@ -72,7 +89,8 @@ export class LocalCommandRunner {
     }
   }
 
-  async preflight() {
+  async preflight(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const toolchain = localCommandToolchainForPlatform(
       process.platform === 'darwin'
         ? `macos-${process.arch}`
@@ -116,6 +134,12 @@ export class LocalCommandRunner {
       image.Architecture !== toolchain.architecture
     )
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
+    // A missing project manager cannot disable an otherwise verified Node VM.
+    // Only a successful probe may advertise project preparation to the ledger.
+    const projectPreparation = this.projects
+      ? await this.projects.preflight(signal).catch(() => undefined)
+      : undefined;
+    signal?.throwIfAborted();
     return {
       backend: 'local-vm-container-v1' as const,
       imageDigest: image.Id,
@@ -124,11 +148,13 @@ export class LocalCommandRunner {
         'project_diagnostics',
         'npm_dependencies',
         'changeset_candidate',
+        ...(projectPreparation ? ['project_preparation'] : []),
         ...((await this.localMcpEnabled()) ? ['local_mcp'] : []),
         ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0'
           ? ['background_services']
           : []),
       ],
+      ...(projectPreparation ? { projectPreparation } : {}),
     };
   }
 
@@ -142,9 +168,37 @@ export class LocalCommandRunner {
       onOutput?: (chunk: LocalCommandOutput) => void;
       /** Revalidates policy, grant, cancellation and attempt independently of execution. */
       maintainLease?: () => Promise<boolean>;
+      scope?: RuntimeProjectScope;
     },
   ): Promise<RuntimeLocalCommandResult> {
     const command = RuntimeLocalCommandSchema.parse(input);
+    if (command.arguments.projectPreparation) {
+      if (!this.projects)
+        throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
+      const deadlineUnixMs = Date.now() + command.arguments.limits.timeoutMs;
+      const leaseDeadline =
+        options.leaseExpiresAt === undefined
+          ? Infinity
+          : Date.parse(options.leaseExpiresAt) - 250;
+      const bound = Math.min(deadlineUnixMs, leaseDeadline);
+      if (
+        !(bound > Date.now()) ||
+        options.signal?.aborted ||
+        (options.maintainLease && !(await options.maintainLease()))
+      )
+        throw new LocalCommandError('EXECUTION_REVOKED');
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(Math.max(1, bound - Date.now())),
+        ...(options.signal ? [options.signal] : []),
+      ]);
+      const profile = await this.preflight(signal);
+      if (!profile.projectPreparation)
+        throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
+      return this.projects.execute(root, command, {
+        ...options,
+        deadlineUnixMs,
+      });
+    }
     if (command.arguments.background)
       throw new LocalCommandError('SERVICE_MANAGER_REQUIRED');
     if (!uuid.test(options.attemptId))
@@ -427,6 +481,11 @@ export class LocalCommandRunner {
     attemptId: string,
     input: RuntimeLocalCommand,
   ): Promise<RuntimeLocalCommandResult | null> {
+    if (input.arguments.projectPreparation) {
+      if (!this.projects)
+        throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
+      return this.projects.recover(attemptId, input);
+    }
     await this.api.verifySocket();
     if (!uuid.test(attemptId)) throw new LocalCommandError('INVALID_ATTEMPT');
     const command = RuntimeLocalCommandSchema.parse(input);
@@ -587,6 +646,11 @@ export class LocalCommandRunner {
 
   /** Call only AFTER the corresponding evidence is durable in the Bridge journal. */
   async cleanup(attemptId: string, id: string) {
+    if (this.projects) {
+      const c = await this.api.json<Container>('GET', `/containers/${id}/json`);
+      if (c.Config.Labels['xyz.bplabs.allrice.project.payload'])
+        return this.projects.cleanup(attemptId, id);
+    }
     const container = await this.inspect(attemptId, id);
     if (container.State.Running || container.State.Status !== 'exited')
       throw new LocalCommandError('STOP_NOT_CONFIRMED');

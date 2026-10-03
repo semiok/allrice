@@ -1018,8 +1018,23 @@ async function startSession(
     ['arm64', 'x64'].includes(process.arch)
       ? nativeSandboxConfig()
       : undefined;
+  const pythonRelease = managedPythonPayloadForPlatform(
+    `macos-${process.arch}`,
+  );
+  const managedSandbox =
+    operationLedgerEnabled &&
+    optedIn &&
+    process.platform === 'darwin' &&
+    pythonRelease?.nativeSupported
+      ? new (await import('./managed-python-sandbox.js')).ManagedPythonSandbox(
+          config,
+          pythonRelease,
+        )
+      : undefined;
   const runnerSocket =
-    process.env.ALLRICE_LOCAL_DOCKER_SOCKET ?? sandboxConfig?.socketPath;
+    process.env.ALLRICE_LOCAL_DOCKER_SOCKET ??
+    managedSandbox?.runner.api.socketPath ??
+    sandboxConfig?.socketPath;
   const runnerImage =
     process.env.ALLRICE_LOCAL_COMMAND_IMAGE ?? sandboxConfig?.imageDigest;
   const runnerMcpBinding = { server: config.server, deviceId: config.deviceId };
@@ -1034,6 +1049,15 @@ async function startSession(
       ? new (await import('./local-command-runner.js')).LocalCommandRunner({
           socketPath: runnerSocket,
           imageDigest: runnerImage,
+          ...(managedSandbox && pythonRelease
+            ? {
+                projectPreparation: {
+                  root: `${configPath()}.project-preparation-${config.deviceId}`,
+                  pythonImage: pythonRelease.imageId,
+                  architecture: pythonRelease.architecture,
+                },
+              }
+            : {}),
           localMcpEnabled: () =>
             import('./local-mcp-settings.js').then((module) =>
               module.localMcpEnabledForBinding(runnerMcpBinding),
@@ -1041,19 +1065,6 @@ async function startSession(
         })
       : undefined;
   let runnerAvailable = false;
-  const pythonRelease = managedPythonPayloadForPlatform(
-    `macos-${process.arch}`,
-  );
-  const managedSandbox =
-    operationLedgerEnabled &&
-    optedIn &&
-    process.platform === 'darwin' &&
-    pythonRelease?.nativeSupported
-      ? new (await import('./managed-python-sandbox.js')).ManagedPythonSandbox(
-          config,
-          pythonRelease,
-        )
-      : undefined;
   let pythonAvailable = false;
   const pdfRunner =
     operationLedgerEnabled &&
@@ -1305,9 +1316,13 @@ async function startSession(
             return;
           }
           try {
+            if (managedSandbox && !process.env.ALLRICE_LOCAL_DOCKER_SOCKET) {
+              await prepareLocalSandbox(managedSandbox, commandAbort.signal);
+              await managedSandbox.prepareNodeImage(commandAbort.signal);
+            }
             let profile;
             try {
-              profile = await runner.preflight();
+              profile = await runner.preflight(commandAbort.signal);
             } catch (error) {
               if (Date.now() - lastSandboxResume < 60_000) throw error;
               lastSandboxResume = Date.now();

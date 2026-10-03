@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
+  localProjectResultMatchesPayload,
   BridgeCapabilities,
   BrowserCommandSchema,
   RuntimeBridgePayloadSchema,
@@ -946,6 +947,7 @@ export function createRuntimeOperationLedger(options: {
             or (${!!input.recoverLeaseToken} and snapshot->>'status'='dispatched' and lease_expires_at>clock_timestamp()))
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
+          and (${input.supportsProjectPreparation === true} or not coalesce(bridge_payload->'arguments' ? 'projectPreparation',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
           and (${input.supportsFileSurvey === true} or not coalesce(bridge_payload->'arguments' ? 'survey',false))
@@ -1403,6 +1405,26 @@ export function createRuntimeOperationLedger(options: {
             }
             if (
               payload.capability === 'local.process.execute' &&
+              payload.arguments.projectPreparation
+            ) {
+              const result = RuntimeLocalCommandResultSchema.safeParse(
+                (content.evidence as { output?: unknown } | null)?.output,
+              );
+              const success =
+                content.signal.type === 'operation.outcome' &&
+                content.signal.result.status === 'succeeded';
+              if (
+                (success && !result.success) ||
+                (result.success &&
+                  (!localProjectResultMatchesPayload(payload, result.data) ||
+                    (success &&
+                      (result.data.reason !== 'exited' ||
+                        result.data.exitCode !== 0))))
+              )
+                throw new RuntimeLedgerError('invalid_state');
+            }
+            if (
+              payload.capability === 'local.process.execute' &&
               payload.arguments.candidate
             ) {
               const evidence = content.evidence as { output?: unknown } | null;
@@ -1652,7 +1674,8 @@ export function createRuntimeOperationLedger(options: {
                 !result.success ||
                 content.signal.effects !== 'none' ||
                 !['canceled', 'lease_lost'].includes(result.data.reason) ||
-                result.data.imageDigest !== payload.arguments.imageDigest
+                result.data.imageDigest !== payload.arguments.imageDigest ||
+                !localProjectResultMatchesPayload(payload, result.data)
               )
                 throw new RuntimeLedgerError('invalid_state');
               await append(tx, row, {

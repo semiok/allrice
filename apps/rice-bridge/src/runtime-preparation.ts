@@ -186,7 +186,7 @@ export async function prepareLocalSandbox(
 ) {
   if ('prepareManaged' in runner) return runner.prepareManaged(signal);
   try {
-    return await runner.preflight();
+    return await runner.preflight(signal);
   } catch (error) {
     if (!(
       error instanceof LocalCommandError && error.code === 'DAEMON_HTTP_404'
@@ -194,7 +194,7 @@ export async function prepareLocalSandbox(
       await resumeExistingSandbox(runner, signal);
     signal.throwIfAborted();
     try {
-      return await runner.preflight();
+      return await runner.preflight(signal);
     } catch (next) {
       if (
         !(next instanceof LocalCommandError) ||
@@ -202,7 +202,7 @@ export async function prepareLocalSandbox(
       )
         throw next;
       await runner.api.prepareToolchain(signal);
-      return runner.preflight();
+      return runner.preflight(signal);
     }
   }
 }

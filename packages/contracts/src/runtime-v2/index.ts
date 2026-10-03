@@ -14,6 +14,7 @@ export * from './local-service.ts';
 export * from './local-service-http.ts';
 export * from './project-diagnostics.ts';
 export * from './dependency-preparation.ts';
+export * from './project-preparation.ts';
 export * from './artifact-review.ts';
 export * from './input-status.ts';
 export * from './queued-messages.ts';
