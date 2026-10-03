@@ -21,6 +21,11 @@ export class LocalBrowserTransportError extends Error {
     super('LOCAL_BROWSER_AUTHORITY_UNAVAILABLE');
   }
 }
+export class LocalBrowserProtocolError extends Error {
+  constructor() {
+    super('LOCAL_BROWSER_PROTOCOL_INVALID');
+  }
+}
 type RequestOf<K extends LocalBrowserHttpRequest['kind']> = Extract<
   LocalBrowserHttpRequest,
   { kind: K }
@@ -73,7 +78,7 @@ async function bounded(response: Response, maximum: number) {
       bytes += next.value.byteLength;
       if (bytes > maximum) {
         void reader.cancel().catch(() => undefined);
-        throw Error();
+        throw new LocalBrowserProtocolError();
       }
       parts.push(Buffer.from(next.value));
     }
@@ -99,7 +104,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
           ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname))
       )
     )
-      throw new LocalBrowserTransportError(0);
+      throw new LocalBrowserProtocolError();
   }
   private async exchange(
     path: string,
@@ -145,7 +150,8 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
         })(),
         canceled,
       ]);
-    } catch {
+    } catch (error) {
+      if (error instanceof LocalBrowserProtocolError) throw error;
       throw new LocalBrowserTransportError(status);
     } finally {
       clearTimeout(deadline);
@@ -176,7 +182,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
       ) as unknown;
     } catch (error) {
       if (error instanceof LocalBrowserTransportError) throw error;
-      throw new LocalBrowserTransportError(0);
+      throw new LocalBrowserProtocolError();
     }
   }
   async claim(
@@ -245,7 +251,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
       !('ok' in value) ||
       value.ok !== true
     )
-      throw new LocalBrowserTransportError(0);
+      throw new LocalBrowserProtocolError();
   }
   async takeInput(request: RequestOf<'take_input'>, maximumBytes: number) {
     if (
@@ -253,7 +259,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
       maximumBytes < 1 ||
       maximumBytes > platformFileMaximumBytes
     )
-      throw new LocalBrowserTransportError(0);
+      throw new LocalBrowserProtocolError();
     return this.exchange(
       localBrowserEndpoint,
       JSON.stringify(LocalBrowserHttpRequestSchema.parse(request)),
@@ -263,7 +269,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
   }
   async capture(metadata: LocalBrowserCapture, bytes: Buffer) {
     if (bytes.length > localBrowserCaptureMaximumBytes)
-      throw new LocalBrowserTransportError(0);
+      throw new LocalBrowserProtocolError();
     const value = await this.exchange(
       `${localBrowserEndpoint}/capture`,
       bytes,
@@ -278,7 +284,7 @@ export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
     try {
       return UuidSchema.parse(JSON.parse(value.toString('utf8')).objectId);
     } catch {
-      throw new LocalBrowserTransportError(0);
+      throw new LocalBrowserProtocolError();
     }
   }
 }

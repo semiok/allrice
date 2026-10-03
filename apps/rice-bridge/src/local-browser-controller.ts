@@ -15,6 +15,7 @@ import {
 } from '@allrice/contracts';
 import {
   LocalBrowserTransportError,
+  LocalBrowserProtocolError,
   type LocalBrowserAuthority,
 } from './local-browser-client.js';
 import {
@@ -79,6 +80,7 @@ export class LocalBrowserController {
       onError?: (
         code: 'LOCAL_BROWSER_UNAVAILABLE' | 'LOCAL_BROWSER_CLEANUP_PENDING',
       ) => void;
+      onDiagnostic?: (stage: 'heartbeat' | 'action', code: string) => void;
     },
   ) {}
   private owned(active: Active) {
@@ -320,6 +322,26 @@ export class LocalBrowserController {
       )
         await this.stopActive(active, response.workspace.revoked);
     } catch (error) {
+      this.input.onDiagnostic?.(
+        'heartbeat',
+        error instanceof LocalBrowserTransportError
+          ? `TRANSPORT_${error.status}`
+          : error instanceof Error && /^[A-Z0-9_]{1,100}$/.test(error.message)
+            ? error.message
+            : 'AUTHORITY_RESPONSE_INVALID',
+      );
+      // A transient exchange cannot extend authority. Keep only the original
+      // unexpired lease; the independent watchdog still enforces its deadline.
+      if (
+        active &&
+        this.active === active &&
+        !active.closing &&
+        !this.stopping &&
+        Date.now() < active.deadline &&
+        error instanceof LocalBrowserTransportError &&
+        [0, 502, 503, 504].includes(error.status)
+      )
+        return;
       if (error instanceof LocalBrowserTransportError && error.status === 401)
         await this.retirePairing().catch(() => undefined);
       else if (active)
@@ -483,7 +505,15 @@ export class LocalBrowserController {
         receipt.observationId = (await this.capture(active)).id;
         receipt.status = 'succeeded';
         receipt.errorCode = null;
-      } catch {
+      } catch (error) {
+        this.input.onDiagnostic?.(
+          'action',
+          error instanceof LocalBrowserTransportError
+            ? `TRANSPORT_${error.status}`
+            : error instanceof Error && /^[A-Z0-9_]{1,100}$/.test(error.message)
+              ? error.message
+              : 'LOCAL_BROWSER_DRIVER_ERROR',
+        );
         /* Once started, never infer that a failed renderer had no effect. */
       }
       receipt.networkEffect = active.networkEffect;
@@ -687,6 +717,14 @@ export class LocalBrowserController {
       } catch (error) {
         if (error instanceof LocalBrowserTransportError && error.status === 401)
           await this.retirePairing();
+        else if (
+          this.active &&
+          (error instanceof LocalBrowserProtocolError ||
+            (error instanceof LocalBrowserTransportError &&
+              error.status === 403) ||
+            (error instanceof Error && error.name === 'ZodError'))
+        )
+          await this.stopActive(this.active);
         throw error;
       }
     } finally {

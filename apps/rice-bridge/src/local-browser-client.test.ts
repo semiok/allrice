@@ -179,7 +179,7 @@ describe('P22 real HTTP authority transport', () => {
           server: 'http://remote.example',
           token: 'synthetic',
         }),
-    ).toThrow('LOCAL_BROWSER_AUTHORITY_UNAVAILABLE');
+    ).toThrow('LOCAL_BROWSER_PROTOCOL_INVALID');
     const client = await fixture((_req, res) => {
       res.writeHead(302, { location: 'https://foreign.example/private' });
       res.end();
@@ -252,7 +252,7 @@ describe('P22 real HTTP authority transport', () => {
         },
         2,
       ),
-    ).rejects.toThrow('LOCAL_BROWSER_AUTHORITY_UNAVAILABLE');
+    ).rejects.toThrow('LOCAL_BROWSER_PROTOCOL_INVALID');
   });
   it('transfers uploads above the legacy 2 MB cap using the platform file limit', async () => {
     const bytes = Buffer.alloc(2_100_000, 65);
@@ -272,7 +272,34 @@ describe('P22 real HTTP authority transport', () => {
       true,
     );
     await expect(client.takeInput(request, 9_000_001)).rejects.toThrow(
-      'LOCAL_BROWSER_AUTHORITY_UNAVAILABLE',
+      'LOCAL_BROWSER_PROTOCOL_INVALID',
     );
   });
+});
+
+it('keeps malformed JSON distinct from a transient network exchange', async () => {
+  const client = await fixture((_request, response) => {
+    response.writeHead(200);
+    response.end('{broken');
+  });
+  await expect(client.claim(randomUUID(), false)).rejects.toThrow(
+    'LOCAL_BROWSER_PROTOCOL_INVALID',
+  );
+});
+
+it('does not classify an invalid acknowledgement as a retryable connection error', async () => {
+  const client = await fixture((_request, response) =>
+    response
+      .writeHead(200, { 'content-type': 'application/json' })
+      .end('{"ok":false}'),
+  );
+  await expect(
+    client.acknowledge({
+      kind: 'stopped',
+      workspaceId: randomUUID(),
+      controllerLeaseToken: randomUUID(),
+      confirmed: true,
+      errorCode: null,
+    }),
+  ).rejects.toThrow('LOCAL_BROWSER_PROTOCOL_INVALID');
 });

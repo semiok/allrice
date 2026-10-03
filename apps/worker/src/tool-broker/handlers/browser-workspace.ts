@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { LocalStorageAdapter } from '@allrice/storage';
 import {
   browserPrincipal,
+  browserStopConfirmed,
   createBrowserWorkspace,
   createBrowserOperation,
   requestBrowserControl,
@@ -24,6 +25,7 @@ import {
   waitBrowserOperationResult,
 } from '../../browser-control/controller.js';
 import type { RiceToolHandler } from '../types.js';
+import { browserScreenshotDelivery } from '../../browser-control/delivery.js';
 
 export const runBrowserWorkspace: RiceToolHandler = async ({
   input,
@@ -75,11 +77,25 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
       control: 'closed',
       observationId: null,
     });
+    let stopped = false;
+    const stopDeadline = Date.now() + 8000;
+    while (!input.signal?.aborted && Date.now() < stopDeadline) {
+      stopped = await browserStopConfirmed(
+        input.context,
+        args.workspaceId,
+        input.managedBrowserJobAttempt,
+        input.managedBrowserJobLeaseToken,
+      );
+      if (stopped) break;
+      await delay(100, undefined, { signal: input.signal });
+    }
     return {
-      summary: '已请求关闭浏览器，等待实际停止确认',
+      summary: stopped
+        ? '浏览器已确认停止'
+        : '已请求关闭浏览器，等待实际停止确认',
       modelContent: JSON.stringify({
         requested: true,
-        confirmedStopped: false,
+        confirmedStopped: stopped,
         executionLocation: workspace.transport,
         executionReason: 'bound_execution',
       }),
@@ -232,6 +248,7 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
       profileId: op.workspace.profile_id,
       fence: op.workspace.control_fence,
       ...result,
+      ...browserScreenshotDelivery(result),
     }),
   };
 };
