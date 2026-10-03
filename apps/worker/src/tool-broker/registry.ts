@@ -1,4 +1,5 @@
 import { generateImage } from './handlers/image.js';
+import { runProjectWorkspace } from './handlers/project.js';
 import { executeLocalFileTool } from './handlers/local-files.js';
 import { HandlerError } from '../errors.js';
 import type { riceToolDefinitions } from './definitions.js';
@@ -100,6 +101,7 @@ export const riceToolHandlerRegistry = Object.freeze({
   'cloud.process.execute': registration('cloud_runner', executeCloudCommand),
   'python.execute': registration('cloud_runner', executePythonCommand),
   'workspace.file.list': registration('workspace', listWorkspaceFiles),
+  'workspace.project': registration('workspace', runProjectWorkspace),
   'workspace.file.read': registration('workspace', readWorkspaceFile),
   'workspace.document.read': registration('workspace', readWorkspaceDocument),
   'workspace.memory.search': registration('workspace', searchWorkspaceMemory),

@@ -25,10 +25,12 @@ export async function createAssistantLocalCommandFixture(
     deferRuntimeRoot?: boolean;
     development?: boolean;
     skipChild?: boolean;
+    projectWorkspace?: boolean;
   } = {},
 ) {
   const f = await createAssistantAuthorityFixture(database, {
     project,
+    ...(options.projectWorkspace ? { memberRole: 'member' as const } : {}),
     nativeSessionId: options.nativeSessionId,
     configure: !options.deferRuntimeRoot,
     allowedTools: [
@@ -39,6 +41,7 @@ export async function createAssistantLocalCommandFixture(
       ...(options.development
         ? ['assistant.development', 'workspace.export.create']
         : []),
+      ...(options.projectWorkspace ? ['workspace.project'] : []),
     ],
     controls: {
       version: 1,

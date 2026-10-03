@@ -46,6 +46,7 @@ import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
+import { projectNativeTools } from './allrice-project-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
@@ -68,6 +69,7 @@ const brokerNativeTools = [
   ...skillNativeTools,
   ...reconciliationNativeTools,
   ...workbenchNativeTools,
+  ...projectNativeTools,
   {
     canonicalName: 'web.fetch',
     wireName: 'web_fetch',
