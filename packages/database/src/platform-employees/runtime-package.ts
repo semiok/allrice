@@ -193,7 +193,7 @@ function markdownList(items: readonly string[], fallback = '- 无') {
 
 const skillRoutingHints: Record<string, string> = {
   'browser-research':
-    '公开网页需要 JavaScript 渲染、只读交互或用户要求截图时使用，可直接打开已知链接；普通检索和静态页面读取使用 web-research，成功获取的内容无需再用浏览器重复读取。',
+    '公开网页需要 JavaScript 渲染、只读交互或用户要求截图时使用，可直接打开已知链接；优先 browser_workspace 默认本地优先选择，忙碌或准备中等待，不自行改用云端。仅暴露传统 browser_run 的旧 Run 仍按云端只读执行。普通检索和静态页面读取使用 web-research，已有连接器可完成时优先连接器，成功获取的内容无需再用浏览器重复读取。',
   'document-analysis':
     '用户上传或指定 PDF、Word、Excel、PPT、Markdown、文本或图片并要求读取、摘要、提取、对比或定位内容时使用。',
   'market-data':

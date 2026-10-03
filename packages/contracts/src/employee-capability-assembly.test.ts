@@ -31,6 +31,32 @@ const office = {
     'workspace.skill.read',
   ],
 };
+it('assembles existing local browser authority for a new public-research draft without changing the old definition', () => {
+  const original = definition();
+  original.capabilities.toolNames = ['browser.run'];
+  const result = assembleEmployeeCapabilities(original, [
+    {
+      id: 'selected',
+      name: 'browser-research',
+      requiredToolRefs: ['browser.workspace', 'browser.run'],
+    },
+  ]);
+  expect(result.capabilities.toolNames).toEqual(
+    expect.arrayContaining([
+      'browser.run',
+      'browser.workspace',
+      'local.browser.workspace',
+    ]),
+  );
+  expect(result.securityPolicy.bridgeAccess).toBe('read_write');
+  expect(original.capabilities.toolNames).toEqual(['browser.run']);
+  expect(original.securityPolicy.bridgeAccess).toBe('none');
+  const removed = assembleEmployeeCapabilities(
+    { ...result, capabilities: { ...result.capabilities, nativeSkillIds: [] } },
+    [],
+  );
+  expect(removed.capabilities.toolNames).toEqual(['browser.run']);
+});
 it.each([
   ['document-analysis'],
   ['structured-deliverable'],
