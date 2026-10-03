@@ -193,7 +193,7 @@ export function LocalCommandPanel({
               <strong>
                 {op.command?.diagnostics
                   ? '项目环境诊断 · 操作授权'
-                  : op.command?.dependencies
+                  : op.command?.dependencies || op.command?.projectPreparation
                     ? '依赖准备与验证 · 操作授权'
                     : op.file
                       ? '本地文件 · 操作授权'
@@ -273,6 +273,51 @@ export function LocalCommandPanel({
                         </li>
                       ))}
                     </ul>
+                  </section>
+                )}
+                {op.command.projectPreparation && (
+                  <section aria-label="项目依赖准备范围">
+                    <p>
+                      使用 {op.command.projectPreparation.manager}{' '}
+                      {op.command.projectPreparation.managerVersion}，按锁文件{' '}
+                      <code>{op.command.projectPreparation.lockPath}</code>{' '}
+                      安装依赖，再执行下方命令；原文件保持不变。
+                    </p>
+                    <p>
+                      {op.command.projectPreparation.offline
+                        ? '仅使用已校验的离线缓存，缺包时停止。'
+                        : '优先复用已校验的归档；缺包时由 Bridge 校验并下载公开依赖，项目本身无网络。'}
+                    </p>
+                    <p>
+                      安装脚本：
+                      {op.command.projectPreparation.scripts === 'disabled'
+                        ? '禁止执行'
+                        : '允许在隔离副本执行，不访问宿主环境'}
+                    </p>
+                    <details>
+                      <summary>
+                        查看 {op.command.projectPreparation.packages.length}{' '}
+                        个依赖及锁定版本
+                      </summary>
+                      <ul>
+                        {op.command.projectPreparation.packages.map((pkg) => (
+                          <li key={`${pkg.name}@${pkg.version}`}>
+                            <code>
+                              {pkg.name}@{pkg.version}
+                            </code>
+                            <small>
+                              {pkg.archivePath ?? '由 Bridge 下载公开归档'}
+                            </small>
+                            <small>
+                              {'integrity' in pkg ? pkg.integrity : pkg.sha256}
+                            </small>
+                          </li>
+                        ))}
+                      </ul>
+                      <small>
+                        锁文件校验：{op.command.projectPreparation.lockChecksum}
+                      </small>
+                    </details>
                   </section>
                 )}
                 {op.command?.candidate && (
@@ -371,6 +416,20 @@ export function LocalCommandPanel({
                   ? '安装及指定验证命令成功'
                   : '安装或指定验证命令未成功'}
                 ；临时环境已停止，原工作区未修改。
+              </p>
+            )}
+            {result.success && result.data.projectPreparation && (
+              <p role="status">
+                依赖安装：
+                {result.data.projectPreparation.installation === 'succeeded'
+                  ? '已完成'
+                  : result.data.projectPreparation.installation ===
+                      'interrupted'
+                    ? '已中断'
+                    : '未完成'}
+                ；复用已校验归档 {result.data.projectPreparation.archiveHits} /{' '}
+                {result.data.projectPreparation.packageCount}。命令退出码{' '}
+                {result.data.exitCode}；原工作区未修改。
               </p>
             )}
             {result.success && result.data.diagnostics && (

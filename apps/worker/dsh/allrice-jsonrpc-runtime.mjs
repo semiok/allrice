@@ -333,12 +333,13 @@ const brokerNativeTools = [
     // command/CPU timeout. This is only the outer approval + receipt envelope.
     timeoutMs: 3_700_000,
     description:
-      'Run an explicitly approved Node/npm command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional diagnostics is read-only fixed Node with empty args; optional dependencies performs bounded locked npm preparation; optional background is a finite originating-Run-owned service. These three modes are mutually exclusive. Supply current SHA-256 for every input file. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
+      'Run an approved Node/npm or private-venv Python command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional projectPreparation installs pinned pnpm/uv dependencies from an exact lock and verified archives before this command. It cannot combine with diagnostics, dependencies, background or a candidate. Optional diagnostics is read-only fixed Node with empty args; dependencies performs bounded locked npm preparation; background is a finite originating-Run-owned service. Supply current SHA-256 for every input file. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
     parameters: {
       executable: {
         type: 'string',
         required: true,
-        description: '/usr/local/bin/node or /usr/local/bin/npm',
+        description:
+          '/usr/local/bin/node, /usr/local/bin/npm, or /workspace/.venv/bin/python for uv project preparation.',
       },
       args: {
         type: 'array',
@@ -414,6 +415,40 @@ const brokerNativeTools = [
         },
         description:
           'manager=npm,strategy=locked_ci,registry=https://registry.npmjs.org,scripts=disabled or allow_in_isolated_copy. Exact v3 package-lock/package.json and all transitive versions/SHA512 required. Max8 packages,total archives128KiB. Explicit archivePath avoids download; otherwise frozen network:outbound required. npm ci then requested verification, ephemeral isolated copy only.',
+      },
+      projectPreparation: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          version: { type: 'integer', required: true },
+          projectId: { type: 'string', required: true },
+          sourceDigest: { type: 'string', required: true },
+          lockChecksum: { type: 'string', required: true },
+          offline: { type: 'boolean', required: true },
+          manager: { type: 'string', required: true },
+          managerVersion: { type: 'string', required: true },
+          lockPath: { type: 'string', required: true },
+          scripts: { type: 'string', required: true },
+          packages: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string', required: true },
+                version: { type: 'string', required: true },
+                integrity: { type: 'string' },
+                fileName: { type: 'string' },
+                url: { type: 'string' },
+                sha256: { type: 'string' },
+                archivePath: { type: 'string' },
+              },
+            },
+          },
+        },
+        description:
+          'version=1. pnpm requires managerVersion=10.33.3, a v9 pnpm-lock.yaml and exact npm name/version/integrity. uv requires managerVersion=0.8.22, requirements.lock with exact name==version and SHA256, plus compatible wheel fileName/url/sha256. scripts=disabled by default; only pnpm permits allow_in_isolated_copy. sourceDigest is SHA256 of the path-sorted files manifest JSON; lockChecksum is SHA256 of lock bytes. Offline cache misses fail explicitly. Installation and verification share one isolated copy and deadline; original source is unchanged. Cache scope is assigned by the platform, never supplied here.',
       },
       background: {
         type: 'object',
