@@ -47,8 +47,10 @@ guard header.count <= 16_384,
       let resources = config["resources"] as? String, resources == core + ".pdf-runtime",
       let inputBytes = config["inputBytes"] as? Int, inputBytes >= 0, inputBytes <= 20 * 1024 * 1024,
       let childHeader = config["reader"] as? [String: Any],
-      let mode = childHeader["mode"] as? String, ["read", "isolation_probe", "exec_probe", "stop_probe"].contains(mode),
+      let mode = childHeader["mode"] as? String, ["read", "isolation_probe", "exec_probe", "stop_probe", "transform"].contains(mode),
       sameDirectory() else { fail() }
+let maximumReaderOutput = mode == "transform" ? 12_100_000 : 410_000
+let maximumRecordBytes = mode == "transform" ? 12_200_000 : 512_000
 // Resolve our sibling SEA; callers cannot turn this helper into an arbitrary
 // binary executor even when manually invoking it outside AllRice.
 // Foundation normalizes /private/var to /var. Use libc's physical path,
@@ -94,7 +96,7 @@ var output = Data(), diagnostics = Data(), outputLimit = false, eof = false, las
 childOutput.fileHandleForReading.readabilityHandler = { handle in
     let next = handle.availableData
     lock.lock(); defer { lock.unlock() }
-    if output.count + next.count > 410_000 { outputLimit = true }
+    if output.count + next.count > maximumReaderOutput { outputLimit = true }
     else { output.append(next) }
 }
 // Private bounded diagnostic checkpoint only; never an operation/model result.
@@ -106,7 +108,7 @@ do { try process.run() } catch { fail() }
 let pid = process.processIdentifier
 ownedChild = pid
 func persist(_ object: [String: Any], _ name: String) {
-    guard sameDirectory(), let bytes = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), bytes.count <= 512_000 else { fail() }
+    guard sameDirectory(), let bytes = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), bytes.count <= maximumRecordBytes else { fail() }
     let path = directory + "/" + name
     do {
         try bytes.write(to: URL(fileURLWithPath: path), options: [.atomic])
@@ -164,7 +166,7 @@ childOutput.fileHandleForReading.readabilityHandler = nil
 childError.fileHandleForReading.readabilityHandler = nil
 let remaining = childOutput.fileHandleForReading.readDataToEndOfFile()
 let remainingError = childError.fileHandleForReading.readDataToEndOfFile()
-lock.lock(); if output.count + remaining.count <= 410_000 { output.append(remaining) } else { outputLimit = true }; let finalOutput = output; lock.unlock()
+lock.lock(); if output.count + remaining.count <= maximumReaderOutput { output.append(remaining) } else { outputLimit = true }; let finalOutput = output; lock.unlock()
 lock.lock(); diagnostics.append(remainingError.prefix(max(0, 16_384 - diagnostics.count))); let finalDiagnostics = diagnostics; lock.unlock()
 let stopped = kill(pid, 0) != 0 && errno == ESRCH
 if !stopped { reason = "process_unknown" }

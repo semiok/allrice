@@ -224,3 +224,74 @@ it('rejects an absent or malformed archive entry without publishing an approxima
   ).rejects.toMatchObject({ code: 'FILE_ARCHIVE_ENTRY_NOT_FOUND' });
   expect(f.options.upload).not.toHaveBeenCalled();
 });
+it('new document processing retains the physical stop receipt and canonical output type', async () => {
+  const f = await fixture(),
+    bytes = Buffer.from('%PDF synthetic trusted-port output');
+  const payload = FileDerivationPayloadSchema.parse({
+    ...f.payload,
+    arguments: {
+      ...f.payload.arguments,
+      request: { kind: 'pdf_rotate', degrees: 90, fileName: '旋转.pdf' },
+    },
+  });
+  const processing = {
+    stopped: true as const,
+    reason: 'completed' as const,
+    guardianPid: 12,
+    readerPid: 13,
+    observedPeakRssBytes: 1,
+  };
+  const output = await executeFileDerivation(f.root, payload, {
+    ...f.options,
+    transform: async () => ({ bytes, processing }),
+  });
+  expect(output.processing).toEqual(processing);
+  expect(output.object?.mediaType).toBe('application/pdf');
+  expect(f.captured).toEqual([bytes]);
+});
+it('a document without physical completion or beyond formal 8MB cannot upload', async () => {
+  const f = await fixture();
+  const payload = FileDerivationPayloadSchema.parse({
+    ...f.payload,
+    arguments: {
+      ...f.payload.arguments,
+      request: { kind: 'pdf_extract', pages: [1], fileName: '提取.pdf' },
+    },
+  });
+  for (const result of [
+    { bytes: Buffer.from('x'), processing: undefined },
+    {
+      bytes: Buffer.alloc(8_000_001),
+      processing: {
+        stopped: true,
+        reason: 'completed',
+        guardianPid: 12,
+        readerPid: 13,
+        observedPeakRssBytes: 1,
+      },
+    },
+  ])
+    await expect(
+      executeFileDerivation(f.root, payload, {
+        ...f.options,
+        transform: async () => result as never,
+      }),
+    ).rejects.toThrow();
+  expect(f.options.upload).not.toHaveBeenCalled();
+});
+it('extracted text keeps its canonical media type for subsequent reading', async () => {
+  const zip = await createFileArchive([
+    { path: '样本.txt', bytes: Buffer.from('原文') },
+  ]);
+  const f = await fixture(Buffer.from(zip));
+  const payload = FileDerivationPayloadSchema.parse({
+    ...f.payload,
+    arguments: {
+      ...f.payload.arguments,
+      request: { kind: 'zip_extract', entry: '样本.txt', fileName: '输出.txt' },
+    },
+  });
+  expect(
+    (await executeFileDerivation(f.root, payload, f.options)).object?.mediaType,
+  ).toBe('text/plain');
+});

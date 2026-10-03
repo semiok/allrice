@@ -336,6 +336,15 @@ export function createGovernedBridgePolicyOptions(
       const settings = bridgeSettingsView(target.metadata).settings;
       if (
         payload.capability === 'local.file.derive' &&
+        !payload.arguments.request.kind.startsWith('zip_') &&
+        (
+          target.metadata.environment as
+            { documentTransformsVersion?: unknown } | undefined
+        )?.documentTransformsVersion !== 1
+      )
+        throw new RuntimePolicyError('bridge_authority_changed');
+      if (
+        payload.capability === 'local.file.derive' &&
         (
           target.metadata.environment as
             { fileDerivationVersion?: unknown } | undefined

@@ -22,6 +22,7 @@ import {
   localPdfTimeoutMsV1,
   localPdfMemoryBudgetBytesV1,
   pdfReadReleaseForPlatform,
+  type DocumentDerivationRequest,
   localPdfProfileMatchesRelease,
   type RuntimeLocalPdfPayload,
   type RuntimeLocalPdfProfile,
@@ -80,7 +81,9 @@ export async function runPdfGuardian(input: {
   directory: string;
   payloadDigest: string;
   reader: {
-    mode: 'read' | 'isolation_probe' | 'exec_probe' | 'stop_probe';
+    mode:
+      'read' | 'isolation_probe' | 'exec_probe' | 'stop_probe' | 'transform';
+    request?: DocumentDerivationRequest;
     options?: {
       pages?: number[];
       maximumCharacters?: number;
@@ -115,12 +118,14 @@ export async function runPdfGuardian(input: {
     env: { PATH: '/usr/bin:/bin', LANG: 'en_US.UTF-8' },
   });
   const close = once(child, 'close');
+  const maximumResultBytes =
+    input.reader.mode === 'transform' ? 12_200_000 : 512_000;
   let outputBytes = 0,
     oversized = false;
   const chunks: Buffer[] = [];
   child.stdout.on('data', (bytes: Buffer) => {
     outputBytes += bytes.length;
-    if (outputBytes <= 512_000) chunks.push(bytes);
+    if (outputBytes <= maximumResultBytes) chunks.push(bytes);
     else {
       oversized = true;
       child.stdin.end();
@@ -178,7 +183,7 @@ export async function runPdfGuardian(input: {
     const stored = await readCredentialRecordFile(
       input.directory,
       'result.json',
-      { maxBytes: 512_000 },
+      { maxBytes: maximumResultBytes },
     );
     if (!stored || !runtimeContractEqual(JSON.parse(stored), result))
       throw Error('PDF_RESULT_UNKNOWN');

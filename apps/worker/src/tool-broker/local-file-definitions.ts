@@ -29,7 +29,7 @@ export const localFileToolDefinitions = [
   {
     name: 'local.file.derive' as const,
     description:
-      '在已授权电脑目录内对inspect核验的原始文件执行有界ZIP打包、列表核验或单文件提取。每次最多32个源文件、输入与解压结果合计各9000000B。路径、expected必须来自当前inspect，不能使用survey版本。request.kind=zip_pack需fileName以.zip结尾；zip_list无输出；zip_extract指定entry与单个fileName。拒绝危险路径、符号链接、加密包、重复名称、CRC错误或过度膨胀。输出作为现有私有工作区附件；原文件不变，不写主机路径；另行local.file.save即可创建本机文件。',
+      '在已授权电脑目录内对inspect核验的原始文件执行有界ZIP打包/列表/提取、PDF合并/页码提取/旋转，或PNG/JPEG/WebP缩放/格式转换。每次最多32个源文件、输入与解压结果合计各9000000B。路径、expected必须来自当前inspect，不能使用survey版本。request.kind=zip_pack需fileName以.zip结尾；zip_list无输出；zip_extract指定entry与单个fileName。拒绝危险路径、符号链接、加密包、重复名称、CRC错误或过度膨胀。PDF页码从1开始且唯一，旋转为90/180/270度。图片每次一个源文件，width/height为精确像素，最大8192及1600万像素；PNG/WebP保留透明，JPEG白底，只保留动画首帧，不保留EXIF/ICC。PDF拒绝加密、签名及表单，不重排正文。所有PDF/图片在固定无网络原生进程内执行，可取消；输出作为现有私有工作区附件；原文件不变，不写主机路径；另行local.file.save即可创建本机文件。',
     inputSchema: z.toJSONSchema(FileDerivationArgumentsSchema, {
       unrepresentable: 'any',
     }),

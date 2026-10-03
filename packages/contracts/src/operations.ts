@@ -323,6 +323,8 @@ export const ExternalActionSchema = z
 
 export const DeliveryFormatSchema = z.enum([
   'png',
+  'jpeg',
+  'webp',
   'markdown',
   'text',
   'html',

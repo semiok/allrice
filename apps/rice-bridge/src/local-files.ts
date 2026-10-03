@@ -15,6 +15,7 @@ import {
   LocalFilePathSchema,
   LocalFileResultSchema,
   localFileMaximumBytes,
+  localFileMediaType,
   type LocalFilePayload,
   type LocalFileResult,
   type LocalFileVersion,
@@ -28,21 +29,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const chunkBytes = 64 * 1024;
-const documentTypes: Record<string, string> = {
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  pdf: 'application/pdf',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  webp: 'image/webp',
-  gif: 'image/gif',
-  txt: 'text/plain',
-  md: 'text/markdown',
-  csv: 'text/csv',
-  json: 'application/json',
-};
+
 export class LocalFileError extends Error {
   constructor(
     readonly code: string,
@@ -121,9 +108,7 @@ async function hashFile(
         ]),
       )
       .digest('hex')}`,
-    mediaType:
-      documentTypes[basename(path).split('.').at(-1)?.toLowerCase() ?? ''] ??
-      'application/octet-stream',
+    mediaType: localFileMediaType(path),
   };
 }
 export async function inspectLocalFile(root: string, path: string) {
@@ -410,7 +395,9 @@ export async function executeLocalFile(
     const header = Buffer.alloc(16);
     await file.handle.read(header, 0, header.length, 0);
     if (
-      !Object.values(documentTypes).includes(inspected.mediaType) ||
+      ['application/octet-stream', 'application/zip'].includes(
+        inspected.mediaType,
+      ) ||
       (file.stat.mode & 0o111) !== 0 ||
       header.subarray(0, 2).toString() === '#!' ||
       header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||

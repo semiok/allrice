@@ -2,8 +2,13 @@ import {
   createLocalBinaryFileOperation,
   createLocalFileDerivationOperation,
   waitLocalCommandOperation,
+  publishLocalFileDerivationArtifacts,
 } from '@allrice/database';
-import type { LocalFileToolArguments } from '@allrice/contracts';
+import {
+  FileDerivationResultSchema,
+  type LocalFileToolArguments,
+} from '@allrice/contracts';
+import { LocalStorageAdapter } from '@allrice/storage';
 import type { RiceToolHandler } from '../types.js';
 import { waitForLocalAdmission } from './local-admission.js';
 
@@ -27,9 +32,35 @@ export const executeLocalFileTool: RiceToolHandler = async ({
         }),
   );
   const result = await waitLocalCommandOperation(operation, input.signal);
+  const output = FileDerivationResultSchema.safeParse(
+    (result.evidence as { output?: unknown } | null)?.output,
+  );
+  const file = output.success ? output.data.object : null;
+  const publication =
+    file &&
+    output.success &&
+    !output.data.request.kind.startsWith('zip_') &&
+    result.status === 'succeeded'
+      ? await publishLocalFileDerivationArtifacts(
+          { context: input.context, operationId: result.operationId },
+          new LocalStorageAdapter(input.storageRoot),
+        )
+      : null;
   return {
     modelContent: JSON.stringify({
       ...result,
+      ...(file
+        ? {
+            downloads: [
+              {
+                objectId: file.objectId,
+                fileName: file.fileName,
+                url: `/api/v1/files/${file.objectId}/download?name=${encodeURIComponent(file.fileName)}`,
+              },
+            ],
+          }
+        : {}),
+      ...(publication ? { delivery: publication } : {}),
       source: 'rice-bridge',
       executionLocation: 'local',
       executionReason: 'explicit_local',

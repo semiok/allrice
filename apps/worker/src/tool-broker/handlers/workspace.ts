@@ -99,7 +99,12 @@ export const listWorkspaceFiles: RiceToolHandler = async ({
     limitValue(args.limit, 20, 50),
   );
   return {
-    modelContent: JSON.stringify(files),
+    modelContent: JSON.stringify(
+      files.map((file) => ({
+        ...file,
+        downloadUrl: `/api/v1/files/${file.id}/download?name=${encodeURIComponent(file.fileName)}`,
+      })),
+    ),
     summary: `找到 ${files.length} 个可访问文件`,
     itemCount: files.length,
   };
@@ -167,6 +172,7 @@ export const readWorkspaceFile: RiceToolHandler = async ({
   return {
     modelContent: JSON.stringify({
       id: file.object.id,
+      downloadUrl: `/api/v1/files/${file.object.id}/download?name=${encodeURIComponent(file.fileName)}`,
       fileName: file.fileName,
       mediaType: file.object.mediaType,
       content: content.slice(offset, offset + limit),

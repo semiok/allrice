@@ -240,6 +240,7 @@ export const BridgeEnvironmentSchema = z
     fileSurveyVersion: z.literal(1).optional(),
     fileOrganizationVersion: z.literal(1).optional(),
     fileDerivationVersion: z.literal(1).optional(),
+    documentTransformsVersion: z.literal(1).optional(),
     browser: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     sandbox: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     preview: z.enum(['preparing', 'ready', 'paused', 'unavailable']),

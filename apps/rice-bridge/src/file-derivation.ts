@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto';
 import {
   FileDerivationResultSchema,
   fileDerivationResultMatches,
+  fileDerivationMediaType,
+  DocumentDerivationRequestSchema,
+  type DocumentDerivationRequest,
   type FileDerivationPayload,
   type FileDerivationContentSchema,
   type LocalFileObject,
@@ -10,6 +13,8 @@ import {
 import type { z } from 'zod';
 import { createFileArchive, readFileArchive } from './file-archives.js';
 import { readLocalFileBytes, LocalFileError } from './local-files.js';
+import { runDocumentDerivation } from './document-derivation-runner.js';
+import type { DocumentTransformSource } from './document-transforms.js';
 
 export type FileDerivationContent = z.infer<typeof FileDerivationContentSchema>;
 export class FileDerivationError extends Error {
@@ -36,6 +41,12 @@ export async function executeFileDerivation(
       expected: LocalFileVersion,
       controls: { signal: AbortSignal; authorize: () => Promise<boolean> },
     ) => Promise<Uint8Array>;
+    /** Trusted hermetic test port; never selected by tool/HTTP arguments. */
+    transform?: (
+      sources: readonly DocumentTransformSource[],
+      request: DocumentDerivationRequest,
+      controls: { signal: AbortSignal; authorize: () => Promise<boolean> },
+    ) => ReturnType<typeof runDocumentDerivation>;
     upload: (
       metadata: FileDerivationContent,
       bytes: Uint8Array,
@@ -61,9 +72,11 @@ export async function executeFileDerivation(
     });
   const request = payload.arguments.request;
   let bytes: Uint8Array;
+  let processing:
+    Awaited<ReturnType<typeof runDocumentDerivation>>['processing'] | undefined;
   if (request.kind === 'zip_pack')
     bytes = await createFileArchive(sources, controls);
-  else {
+  else if (request.kind === 'zip_list' || request.kind === 'zip_extract') {
     const entries = await readFileArchive(sources[0]!.bytes, controls);
     if (request.kind === 'zip_list')
       return FileDerivationResultSchema.parse({
@@ -81,6 +94,18 @@ export async function executeFileDerivation(
     const entry = entries.find((e) => e.path === request.entry);
     if (!entry) throw new FileDerivationError('FILE_ARCHIVE_ENTRY_NOT_FOUND');
     bytes = entry.bytes;
+  } else {
+    const transformed = await (options.transform ?? runDocumentDerivation)(
+      sources,
+      DocumentDerivationRequestSchema.parse(request),
+      controls,
+    );
+    bytes = transformed.bytes;
+    processing = transformed.processing;
+    if (!processing?.stopped || processing.reason !== 'completed')
+      throw new FileDerivationError('DOCUMENT_TRANSFORM_PROCESS_UNKNOWN', true);
+    if (bytes.length > 8_000_000)
+      throw new FileDerivationError('DOCUMENT_TRANSFORM_LIMIT');
   }
   signal.throwIfAborted();
   if (!(await options.authorize())) throw new LocalFileError('FILE_CANCELED');
@@ -88,10 +113,7 @@ export async function executeFileDerivation(
     {
       checksum: checksum(bytes),
       sizeBytes: bytes.byteLength,
-      mediaType:
-        request.kind === 'zip_pack'
-          ? 'application/zip'
-          : 'application/octet-stream',
+      mediaType: fileDerivationMediaType(request),
       fileName: request.fileName,
     },
     bytes,
@@ -104,6 +126,7 @@ export async function executeFileDerivation(
     request,
     entries: [],
     object,
+    ...(processing ? { processing } : {}),
   });
   if (
     !fileDerivationResultMatches(payload, result) ||
