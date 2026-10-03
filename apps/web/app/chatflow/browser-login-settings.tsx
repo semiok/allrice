@@ -146,15 +146,15 @@ export function BrowserLoginSettings({
     }
   }
   return (
-    <div>
+    <div className={styles.browserLoginPreferences}>
       {grant && (
         <>
-          <div className={styles.capabilitySetting}>
+          <div
+            className={`${styles.capabilitySetting} ${styles.browserRetention}`}
+          >
             <div>
               <strong>保留浏览器登录</strong>
-              <p>
-                默认开启。登录资料保存在这台电脑的专用浏览器中，供你的后续任务使用。
-              </p>
+              <p>将登录保存在这台电脑的专用浏览器中，供后续任务使用。</p>
             </div>
             <Switch
               label="保留浏览器登录"
@@ -163,14 +163,16 @@ export function BrowserLoginSettings({
               onChange={(value) => void save(value)}
             />
           </div>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={busy}
-            onClick={() => void save(grant.persistLogin, true)}
-          >
-            清除浏览器登录
-          </Button>
+          <div className={styles.computerClearRow}>
+            <Button
+              variant="outline"
+              type="button"
+              disabled={busy}
+              onClick={() => void save(grant.persistLogin, true)}
+            >
+              清除浏览器登录
+            </Button>
+          </div>
         </>
       )}
       <div className={styles.capabilitySetting}>

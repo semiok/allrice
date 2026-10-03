@@ -153,7 +153,15 @@ export function SidebarSettings({
                       <h2>连接与管理电脑</h2>
                     </div>
                   ) : (
-                    <h2>{row.label}</h2>
+                    <h2
+                      className={
+                        row.id === 'computer'
+                          ? styles.computerHeading
+                          : undefined
+                      }
+                    >
+                      {row.label}
+                    </h2>
                   )}
                   {row.id === 'capabilities' && capabilities}
                   {row.id === 'preferences' && (

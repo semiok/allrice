@@ -1,30 +1,40 @@
 .page {
+  --bridge-content-inset: 12px;
+  container-type: inline-size;
   color: var(--dsw-alias-label-primary);
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 22px;
 }
 .devices {
   display: grid;
   gap: 22px;
 }
 .deviceCard {
-  padding: 16px;
+  padding: 20px;
   border: 1px solid var(--dsw-alias-border-primary);
-  border-radius: 12px;
-  background: var(--allrice-employee-bg);
+  border-radius: 14px;
+  background: color-mix(
+    in srgb,
+    var(--allrice-employee-bg) 50%,
+    var(--dsw-alias-bg-base)
+  );
 }
-.deviceHeader {
-  display: flex;
+.deviceHeader,
+.folder {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  column-gap: 14px;
+  row-gap: 8px;
+  min-height: 50px;
 }
 .computerIcon {
   display: grid;
   place-items: center;
-  flex: 0 0 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   border: 1px solid var(--dsw-alias-border-primary);
-  border-radius: 10px;
+  border-radius: 12px;
   color: var(--dsw-alias-label-secondary);
   background: var(--dsw-alias-bg-base);
 }
@@ -39,8 +49,8 @@
 .page .deviceCopy strong,
 .page .folderCopy strong {
   font-size: 15px;
-  line-height: 1.5;
-  font-weight: 400;
+  line-height: 22px;
+  font-weight: 500;
 }
 .deviceMeta {
   display: flex;
@@ -53,7 +63,16 @@
 .folderCopy > span {
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 20px;
+}
+.deviceActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.refreshedAt {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 .connection {
   display: inline-flex;
@@ -74,50 +93,36 @@
   border-radius: 50%;
   background: currentColor;
 }
-.refreshRow {
+.emptyState {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
-  margin-top: 12px;
-}
-.refreshRow > span {
+  padding-inline: var(--bridge-content-inset);
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
-  font-variant-numeric: tabular-nums;
+}
+.refreshButton {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  cursor: pointer;
+}
+.refreshButton:hover:not(:disabled) {
+  background: var(--allrice-sidebar-hover);
 }
 .folderSection {
-  margin-top: 15px;
-  padding-top: 13px;
+  margin-top: 18px;
+  padding-top: 18px;
   border-top: 1px solid var(--dsw-alias-border-primary);
-}
-.folderSection h3,
-.capabilityHeading h3 {
-  margin: 0;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-  font-weight: 500;
-}
-.folder {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px;
-  margin-top: 10px;
-}
-.folderIcon {
-  flex: none;
-  align-self: flex-start;
-  margin-top: 3px;
-  color: var(--dsw-alias-label-secondary);
-}
-.folderCopy {
-  flex: 1 1 160px;
-}
-.folder[data-connected='false'] strong {
-  color: var(--dsw-alias-label-secondary);
 }
 .textButton,
 .primaryButton,
@@ -151,6 +156,13 @@
 .folderActionButton {
   margin-left: auto;
 }
+.bridgeClientDownload {
+  box-sizing: border-box;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
+}
 .primaryButton {
   color: var(--dsw-alias-bg-base);
   border-color: var(--dsw-alias-label-primary);
@@ -166,6 +178,7 @@
   opacity: 0.85;
 }
 .textButton:disabled,
+.refreshButton:disabled,
 .primaryButton:disabled,
 .secondaryButton:disabled,
 .folderActionButton:disabled {
@@ -173,6 +186,7 @@
   cursor: default;
 }
 .textButton:focus-visible,
+.refreshButton:focus-visible,
 .primaryButton:focus-visible,
 .secondaryButton:focus-visible,
 .folderActionButton:focus-visible,
@@ -197,28 +211,25 @@
   gap: 8px;
 }
 .capabilities {
-  margin-top: 22px;
-}
-.capabilityHeading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 6px 12px;
-  margin-bottom: 8px;
-}
-.capabilityHeading > span {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
+  margin-top: 14px;
 }
 .capability {
   display: grid;
+  position: relative;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 3px 12px;
   min-height: 42px;
-  padding: 9px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-primary);
+  padding: 10px var(--bridge-content-inset);
+}
+.capability::after {
+  content: '';
+  position: absolute;
+  left: var(--bridge-content-inset);
+  right: var(--bridge-content-inset);
+  bottom: 0;
+  height: 1px;
+  background: var(--dsw-alias-border-primary);
 }
 .capabilityCopy {
   min-width: 0;
@@ -227,7 +238,8 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 15px;
+  font-size: 13px;
+  line-height: 20px;
   font-weight: 400;
 }
 .capabilityCopy strong svg {
@@ -237,17 +249,18 @@
 .capabilityCopy small {
   display: block;
   margin-top: 4px;
-  padding-left: 27px;
+  padding-left: 26px;
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 20px;
 }
 .capabilityState {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: var(--dsw-alias-label-secondary);
-  font-size: 15px;
+  font-size: 13px;
+  line-height: 20px;
   font-weight: 400;
   white-space: nowrap;
 }
@@ -256,6 +269,7 @@
 }
 .capabilityVersion {
   margin-top: 12px;
+  padding-inline: calc(var(--bridge-content-inset) + 26px);
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   overflow-wrap: anywhere;
@@ -280,6 +294,7 @@
 .notice,
 .feedback {
   margin: 16px 0;
+  padding-inline: var(--bridge-content-inset);
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   line-height: 1.55;
@@ -288,41 +303,87 @@
   color: var(--dsw-alias-state-error-primary);
 }
 .install {
-  margin-top: 22px;
-  border-top: 1px solid var(--dsw-alias-border-primary);
-  border-bottom: 1px solid var(--dsw-alias-border-primary);
+  margin-top: 14px;
 }
+.capabilities > summary,
 .install > summary {
-  display: flex;
+  display: grid;
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) auto 16px;
   align-items: center;
-  gap: 10px;
-  min-height: 56px;
-  padding: 12px 0;
+  gap: 12px;
+  min-height: 48px;
+  padding: 12px var(--bridge-content-inset);
+  border-radius: 10px;
   list-style: none;
   cursor: pointer;
   color: var(--dsw-alias-label-primary);
   font-size: 15px;
+  line-height: 22px;
 }
+.capabilities > summary::after,
+.install > summary::after {
+  content: '';
+  position: absolute;
+  left: var(--bridge-content-inset);
+  right: var(--bridge-content-inset);
+  bottom: 0;
+  height: 1px;
+  background: var(--dsw-alias-border-primary);
+}
+.capabilities > summary:hover,
+.capabilities[open] > summary,
+.install > summary:hover,
+.install[open] > summary {
+  background: color-mix(
+    in srgb,
+    var(--allrice-employee-bg) 50%,
+    var(--dsw-alias-bg-base)
+  );
+}
+.capabilities > summary::-webkit-details-marker,
 .install > summary::-webkit-details-marker {
   display: none;
 }
+.capabilities > summary small,
 .install > summary small {
-  margin-left: auto;
-  color: #9b6410;
-  font-size: 15px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 13px;
   font-weight: 400;
+  line-height: 20px;
+  white-space: nowrap;
 }
+.install > summary {
+  grid-template-columns: 16px minmax(0, 1fr) auto 16px;
+  column-gap: 10px;
+}
+.install > summary > svg,
+.capabilities > summary > svg {
+  color: var(--dsw-alias-label-secondary);
+}
+.install > summary small[data-bridge-update='true'] {
+  color: #966519;
+}
+.capabilities[open] > summary > svg:last-child,
 .install[open] > summary > svg:last-child {
   transform: rotate(180deg);
 }
 .installBody {
-  padding: 0 0 18px;
+  padding: 12px var(--bridge-content-inset) 18px
+    calc(var(--bridge-content-inset) + 26px);
 }
 .installBody p {
   margin: 10px 0;
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 20px;
+}
+.installBody .installedVersion {
+  margin: 0 0 12px;
+}
+.installedVersion small {
+  font-size: 13px;
+  line-height: 20px;
 }
 .bridgeReleaseSection {
   display: grid;
@@ -363,37 +424,42 @@
   .capabilityState {
   color: #70dba3;
 }
-:global(body[data-ds-dark-theme]) .install > summary small {
+:global(body[data-ds-dark-theme])
+  .install
+  > summary
+  small[data-bridge-update='true'] {
   color: #e4b66a;
 }
-@media (max-width: 560px) {
+@container (max-width: 480px) {
   .deviceCard {
     padding: 12px;
   }
-  .deviceHeader {
-    flex-wrap: wrap;
-    gap: 10px;
+  .deviceHeader,
+  .folder {
+    grid-template-columns: 44px minmax(0, 1fr);
   }
-  .computerIcon {
-    flex-basis: 38px;
-    height: 38px;
+  .deviceActions,
+  .folderActionButton {
+    grid-column: 2;
+    justify-self: start;
+    margin-left: 0;
   }
-  .deviceCopy {
-    flex-basis: calc(100% - 48px);
+  .capabilities > summary {
+    grid-template-columns: minmax(0, 1fr) 16px;
+    column-gap: 8px;
+    row-gap: 2px;
   }
-  .connection {
-    margin-left: 48px;
+  .capabilities > summary > span {
+    grid-column: 1;
+    grid-row: 1;
   }
-  .folderCopy {
-    flex-basis: calc(100% - 29px);
+  .capabilities > summary > small {
+    grid-column: 1;
+    grid-row: 2;
   }
-}
-@media (max-width: 380px) {
-  .capability {
-    grid-template-columns: minmax(0, 1fr);
-  }
-  .capabilityState {
-    padding-left: 27px;
+  .capabilities > summary > svg {
+    grid-column: 2;
+    grid-row: 1 / 3;
   }
   .capabilityVersion dl > div {
     grid-template-columns: minmax(0, 1fr);
@@ -405,6 +471,7 @@
 }
 @media (pointer: coarse) {
   .textButton,
+  .refreshButton,
   .primaryButton,
   .secondaryButton,
   .folderActionButton,
