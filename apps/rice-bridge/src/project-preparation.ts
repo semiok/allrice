@@ -6,11 +6,17 @@ import { parseDocument } from 'yaml';
 import {
   RuntimeProjectPreparationSchema,
   RuntimeProjectScopeSchema,
+  projectRuntimeCacheIdentity,
   runtimeNpmPackageUrl,
   type RuntimeProjectPreparation,
   type RuntimeProjectScope,
   type RuntimeLocalCommand,
 } from '@allrice/contracts';
+import {
+  mutateProjectCache,
+  reserveProjectArchive,
+  retainProjectArchives,
+} from './project-cache.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import { downloadPublicPackage } from './npm-registry-download.js';
 import { downloadManagedRuntimeAsset } from './managed-python-sandbox.js';
@@ -230,20 +236,7 @@ export function projectCacheKey(input: {
   image: string;
   architecture: string;
 }) {
-  const { spec } = input;
-  return hash(
-    JSON.stringify({
-      version: 1,
-      scope: RuntimeProjectScopeSchema.parse(input.scope),
-      projectId: spec.projectId,
-      os: 'linux',
-      architecture: input.architecture,
-      image: input.image,
-      manager: spec.manager,
-      managerVersion: spec.managerVersion,
-      lockChecksum: spec.lockChecksum,
-    }),
-  );
+  return hash(JSON.stringify(projectRuntimeCacheIdentity(input)));
 }
 
 async function privateDirectory(path: string) {
@@ -372,6 +365,14 @@ export class ProjectPreparation {
     await privateDirectory(this.root);
     await privateDirectory(join(this.root, 'archives'));
     await privateDirectory(directory);
+    const releaseArchives = retainProjectArchives(
+      spec.packages.map((pkg) =>
+        join(
+          directory,
+          hash('integrity' in pkg ? pkg.integrity : pkg.sha256).slice(7),
+        ),
+      ),
+    );
     const files: { path: string; bytes: Buffer }[] = [];
     let hits = 0,
       downloads = 0,
@@ -449,14 +450,21 @@ export class ProjectPreparation {
           if (!checksum(bytes))
             throw new LocalCommandError('PROJECT_DEPENDENCY_INTEGRITY');
           await check();
-          const temporary = path + '.' + randomUUID() + '.part';
-          try {
-            await writeFile(temporary, bytes, { flag: 'wx', mode: 0o600 });
-            signal.throwIfAborted();
-            await rename(temporary, path);
-          } finally {
-            await rm(temporary, { force: true });
-          }
+          await mutateProjectCache(join(this.root, 'archives'), async () => {
+            await reserveProjectArchive(
+              join(this.root, 'archives'),
+              path,
+              bytes!.length,
+            );
+            const temporary = path + '.' + randomUUID() + '.part';
+            try {
+              await writeFile(temporary, bytes!, { flag: 'wx', mode: 0o600 });
+              signal.throwIfAborted();
+              await rename(temporary, path);
+            } finally {
+              await rm(temporary, { force: true });
+            }
+          });
         }
         total += bytes.length;
         if (total > 64_000_000)
@@ -481,6 +489,7 @@ export class ProjectPreparation {
       };
     } finally {
       clearInterval(timer);
+      releaseArchives();
     }
   }
 }

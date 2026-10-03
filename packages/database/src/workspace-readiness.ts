@@ -116,6 +116,7 @@ async function readWorkspaceReadiness(
         platform: string;
         online: boolean;
         folder: boolean;
+        managed: boolean;
         target_online: boolean;
         environment: unknown;
         metadata: Record<string, unknown> | null;
@@ -128,6 +129,7 @@ async function readWorkspaceReadiness(
         exists(select 1 from allrice_bridge_folder_grants g where g.device_id=d.id
           and g.organization_id=d.organization_id and g.workspace_id=d.workspace_id
           and g.owner_id=d.owner_id and g.revoked_at is null) as folder,
+        exists(select 1 from allrice_bridge_managed_runtime_grants g where g.device_id=d.id and g.organization_id=d.organization_id and g.workspace_id=d.workspace_id and g.owner_id=d.owner_id and g.profile_version=1 and g.revoked_at is null) as managed,
         exists(select 1 from allrice_execution_targets t where t.organization_id=d.organization_id
           and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text
           and t.kind='rice_bridge' and t.state='online') as target_online,
@@ -147,7 +149,11 @@ async function readWorkspaceReadiness(
       const p = RuntimeLocalCommandProfileSchema.safeParse(d.profile);
       return (
         d.online &&
-        d.folder &&
+        (d.folder ||
+          (!candidate &&
+            d.managed &&
+            p.success &&
+            p.data.features?.includes('saved_project_source'))) &&
         d.target_online &&
         d.profile_fresh &&
         p.success &&
@@ -387,6 +393,14 @@ async function readWorkspaceReadiness(
           : 'offline',
       folder: devices.some((d) => d.online && d.folder),
       runner,
+      savedProjectRunner: devices.some(
+        (d) =>
+          runnerAvailable(d) &&
+          d.managed &&
+          RuntimeLocalCommandProfileSchema.parse(d.profile).features?.includes(
+            'saved_project_source',
+          ),
+      ),
       developmentRunner: devices.some((d) => runnerAvailable(d, true)),
       cloud: cloudStatus(
         'process.execute',

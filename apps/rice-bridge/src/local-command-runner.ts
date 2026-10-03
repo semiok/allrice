@@ -148,7 +148,9 @@ export class LocalCommandRunner {
         'project_diagnostics',
         'npm_dependencies',
         'changeset_candidate',
-        ...(projectPreparation ? ['project_preparation'] : []),
+        ...(projectPreparation
+          ? ['project_preparation', 'saved_project_source']
+          : []),
         ...((await this.localMcpEnabled()) ? ['local_mcp'] : []),
         ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0'
           ? ['background_services']
@@ -159,7 +161,7 @@ export class LocalCommandRunner {
   }
 
   async execute(
-    root: string,
+    root: string | null,
     input: RuntimeLocalCommand,
     options: {
       attemptId: string;
@@ -206,6 +208,8 @@ export class LocalCommandRunner {
     if (command.arguments.imageDigest !== this.config.imageDigest)
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
     const profile = await this.preflight();
+    if (root === null || command.arguments.projectSource)
+      throw new LocalCommandError('GRANT_MISMATCH');
     const bundle = await readLocalCommandInputs(root, command);
     if (
       options.signal?.aborted ||

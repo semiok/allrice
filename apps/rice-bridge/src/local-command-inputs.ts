@@ -8,6 +8,7 @@ import {
   ChangesetDocumentSchema,
   commandCandidateManifest,
   type RuntimeLocalCommand,
+  projectSourceLimits,
 } from '@allrice/contracts';
 
 export class LocalCommandError extends Error {
@@ -209,4 +210,40 @@ export async function readLocalCommandInputs(
       throw new LocalCommandError('INPUT_PATH_CHANGED');
   }
   return { command, files, ...evidence };
+}
+
+/** Exact immutable platform source; deliberately performs no host filesystem reads. */
+export function readSavedProjectInputs(input: RuntimeLocalCommand) {
+  const command = RuntimeLocalCommandSchema.parse(input).arguments;
+  const source = command.projectSource;
+  if (
+    !source ||
+    hash(JSON.stringify(source.snapshot)) !==
+      source.project.snapshot.checksum ||
+    hash(
+      JSON.stringify(
+        source.snapshot.files
+          .map(({ path, sha256 }) => ({ path, sha256 }))
+          .sort((a, b) => a.path.localeCompare(b.path)),
+      ),
+    ) !== source.snapshot.sourceDigest
+  )
+    throw new LocalCommandError('PROJECT_SOURCE_CHANGED');
+  let total = 0;
+  const files = source.snapshot.files.map((f) => {
+    if (f.path.split('/').some((p) => privatePart.test(p)))
+      throw new LocalCommandError('SENSITIVE_INPUT');
+    const bytes = Buffer.from(f.contentBase64, 'base64');
+    total += bytes.length;
+    if (
+      bytes.toString('base64') !== f.contentBase64 ||
+      bytes.length !== f.sizeBytes ||
+      bytes.length > projectSourceLimits.fileBytes ||
+      total > projectSourceLimits.totalBytes ||
+      hash(bytes) !== f.sha256
+    )
+      throw new LocalCommandError('PROJECT_SOURCE_CHANGED');
+    return { path: f.path, content: f.contentBase64 };
+  });
+  return { command, files };
 }

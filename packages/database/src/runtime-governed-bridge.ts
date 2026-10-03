@@ -24,6 +24,11 @@ import {
   type RuntimeActionBinding,
 } from '@allrice/contracts';
 
+import {
+  assertSavedProjectAuthority,
+  isProjectSourceAuthorityError,
+  savedProjectContext,
+} from './saved-project-authority.ts';
 import { getDatabase } from './core/client.ts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 import {
@@ -104,6 +109,11 @@ export function createGovernedBridgeOperationLedger(
   const admission = createRuntimePolicyAdmission(policyOptions);
   const ledger = createRuntimeOperationLedger({
     database: options.database ?? getDatabase(),
+    ...(options.initialOperation?.payload.capability ===
+      'local.process.execute' &&
+    options.initialOperation.payload.arguments.projectSource
+      ? { assertCreateReplayAuthority: policyOptions.assertFinalBinding }
+      : {}),
     admission: async (input) => {
       try {
         return await admission(input);
@@ -160,7 +170,37 @@ export function createGovernedBridgePolicyOptions(
   const policyOptions: RuntimePolicyOptions = {
     context,
     lockCurrentBinding: assistantAuthority.lockCurrentBinding,
-    assertFinalBinding: assistantAuthority.assertCurrentBinding,
+    assertFinalBinding: async ({ transaction: tx, binding }) => {
+      await assistantAuthority.assertCurrentBinding({
+        transaction: tx,
+        binding,
+      });
+      const [row] = await tx<
+        { bridge_payload: unknown }[]
+      >`select bridge_payload from allrice_runtime_operations where id=${binding.attempt.operationId} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and device_id=${device.id}`;
+      const payload = row
+        ? RuntimeBridgePayloadSchema.parse(row.bridge_payload)
+        : initial?.binding.attempt.operationId === binding.attempt.operationId
+          ? initial.payload
+          : null;
+      if (
+        payload?.capability === 'local.process.execute' &&
+        payload.arguments.projectSource
+      ) {
+        const source = payload.arguments.projectSource;
+        await assertSavedProjectAuthority(
+          tx,
+          await savedProjectContext(tx, binding, source),
+          binding.task.chatSessionId!,
+          source.origin,
+          source.project,
+        ).catch((error: unknown) => {
+          if (isProjectSourceAuthorityError(error))
+            throw new RuntimePolicyError('bridge_authority_changed');
+          throw error;
+        });
+      }
+    },
     async resolveCurrentBinding({ transaction: tx, binding: requested }) {
       await assistantAuthority.assertCurrentBinding({
         transaction: tx,
@@ -200,6 +240,12 @@ export function createGovernedBridgePolicyOptions(
         payload.capability === 'local.process.execute' ? payload : null;
       const python =
         payload.capability === 'local.python.execute' ? payload : null;
+      const projectSource = command?.arguments.projectSource;
+      if (
+        projectSource &&
+        (persisted?.agentInstanceId ?? initial?.assistant?.runId)
+      )
+        throw new RuntimePolicyError('assistant_authority_changed');
       const pdf = payload.capability === 'local.pdf.read' ? payload : null;
       const binaryFile = payload.capability.startsWith('local.file.');
       const mcp =
@@ -267,7 +313,7 @@ export function createGovernedBridgePolicyOptions(
           select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_pdf_runtime_grants
           where id=${binding.execution.grantId} and device_id=${device.id} and organization_id=${device.organizationId}
             and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and profile_version=1 for share`
-        : python
+        : python || projectSource
           ? await tx<
               {
                 id: string;
@@ -470,6 +516,9 @@ export function createGovernedBridgePolicyOptions(
           (command?.arguments.projectPreparation &&
             (!profile.data.features?.includes('project_preparation') ||
               !profile.data.projectPreparation?.available)) ||
+          (projectSource &&
+            (!profile.data.features?.includes('saved_project_source') ||
+              profile.data.architecture !== projectSource.architecture)) ||
           (command?.arguments.diagnostics &&
             !profile.data.features?.includes('project_diagnostics')) ||
           (command?.arguments.candidate &&
@@ -660,8 +709,10 @@ export function createGovernedBridgePolicyOptions(
           context,
           application.session_id,
           application.artifact_id,
-        ).catch(() => {
-          throw new RuntimePolicyError('bridge_authority_changed');
+        ).catch((error: unknown) => {
+          if (isProjectSourceAuthorityError(error))
+            throw new RuntimePolicyError('bridge_authority_changed');
+          throw error;
         });
         if (
           artifact.kind !== 'changeset' ||
@@ -707,6 +758,19 @@ export function createGovernedBridgePolicyOptions(
                 }
               : undefined,
           );
+      }
+      if (projectSource) {
+        await assertSavedProjectAuthority(
+          tx,
+          await savedProjectContext(tx, binding, projectSource),
+          employee!.session_id,
+          projectSource.origin,
+          projectSource.project,
+        ).catch((error: unknown) => {
+          if (isProjectSourceAuthorityError(error))
+            throw new RuntimePolicyError('bridge_authority_changed');
+          throw error;
+        });
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
       const job =

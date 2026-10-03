@@ -26,6 +26,15 @@ export const executeControlledLocalCommand: RiceToolHandler = async ({
       arguments: args,
       callId: input.call.id,
       storage: new LocalStorageAdapter(input.storageRoot),
+      ...(input.managedBrowserJobAttempt !== undefined &&
+      input.managedBrowserJobLeaseToken
+        ? {
+            worker: {
+              attempt: input.managedBrowserJobAttempt,
+              leaseToken: input.managedBrowserJobLeaseToken,
+            },
+          }
+        : {}),
     }),
   ).catch((error: unknown) => {
     if (

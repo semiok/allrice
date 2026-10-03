@@ -520,6 +520,12 @@ async function settleAssistantCommandReceipt(
 export function createRuntimeOperationLedger(options: {
   database?: ReturnType<typeof getDatabase>;
   admission: RuntimeLedgerAdmission;
+  /** Trusted, read-only replay authority check after root/operation lock waits.
+   * Does not admit new work, consume approval or alter prior execution facts. */
+  assertCreateReplayAuthority?: (input: {
+    transaction: Tx;
+    binding: RuntimeActionBinding;
+  }) => Promise<void>;
   /** Trusted server-only private recovery journal; never returned to a client.
    * Atomic with dispatch so ACK loss cannot orphan the authenticated lease. */
   persistLease?: (input: {
@@ -832,6 +838,10 @@ export function createRuntimeOperationLedger(options: {
             )
           )
             throw new RuntimeLedgerError('idempotency_conflict');
+          await options.assertCreateReplayAuthority?.({
+            transaction: tx,
+            binding: prior.snapshot.binding,
+          });
           return RuntimeOperationSnapshotSchema.parse(prior.snapshot);
         }
         const at = await now(tx);
@@ -947,6 +957,7 @@ export function createRuntimeOperationLedger(options: {
             or (${!!input.recoverLeaseToken} and snapshot->>'status'='dispatched' and lease_expires_at>clock_timestamp()))
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
+          and (${input.supportsSavedProjectSource === true} or not coalesce(bridge_payload->'arguments' ? 'projectSource',false))
           and (${input.supportsProjectPreparation === true} or not coalesce(bridge_payload->'arguments' ? 'projectPreparation',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
@@ -1413,7 +1424,14 @@ export function createRuntimeOperationLedger(options: {
               const success =
                 content.signal.type === 'operation.outcome' &&
                 content.signal.result.status === 'succeeded';
+              const effects =
+                content.signal.type === 'operation.outcome'
+                  ? content.signal.result.effects
+                  : content.signal.type === 'operation.stopped'
+                    ? content.signal.effects
+                    : 'none';
               if (
+                effects !== 'none' ||
                 (success && !result.success) ||
                 (result.success &&
                   (!localProjectResultMatchesPayload(payload, result.data) ||

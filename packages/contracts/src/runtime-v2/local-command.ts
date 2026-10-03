@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import {
+  ProjectVersionRefSchema,
+  RuntimeSavedProjectSourceSchema,
+} from '../project-workspace.ts';
+import { runtimeContractEqual } from './identity.ts';
+import {
   CommandCandidateSchema,
   CommandCandidateRefSchema,
   CommandCandidateEvidenceSchema,
@@ -87,6 +92,7 @@ export const RuntimeLocalCommandSchema = z
         diagnostics: RuntimeProjectDiagnosticsRequestSchema.optional(),
         dependencies: RuntimeDependencyPreparationSchema.optional(),
         projectPreparation: RuntimeProjectPreparationSchema.optional(),
+        projectSource: RuntimeSavedProjectSourceSchema.optional(),
         background: RuntimeLocalServiceConfigSchema.optional(),
         candidate: CommandCandidateSchema.optional(),
         files: z
@@ -111,6 +117,28 @@ export const RuntimeLocalCommandSchema = z
   .strict()
   .superRefine((value, context) => {
     const a = value.arguments;
+    if (
+      a.projectSource &&
+      (!a.projectPreparation ||
+        a.background ||
+        a.dependencies ||
+        a.diagnostics ||
+        a.candidate ||
+        a.projectPreparation.projectId !== a.projectSource.project.projectId ||
+        a.projectPreparation.sourceDigest !==
+          a.projectSource.snapshot.sourceDigest ||
+        !runtimeContractEqual(
+          a.files,
+          a.projectSource.snapshot.files.map(({ path, sha256 }) => ({
+            path,
+            sha256,
+          })),
+        ))
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'saved_project_source_changed',
+      });
     if (
       a.projectPreparation &&
       (a.background || a.dependencies || a.diagnostics || a.candidate)
@@ -184,9 +212,12 @@ export const RuntimeLocalCommandToolInputSchema =
       isolation: true,
       network: true,
       candidate: true,
+      projectSource: true,
     })
     .extend({
       candidate: CommandCandidateRefSchema.optional(),
+      project: ProjectVersionRefSchema.optional(),
+      files: RuntimeLocalCommandSchema.shape.arguments.shape.files.optional(),
       // The trusted Node supervisor and the project Node/npm process both
       // need native threads. On the pinned ARM image a 16-task cgroup can
       // hang child startup before any output. Reject undersized NEW requests
@@ -194,6 +225,25 @@ export const RuntimeLocalCommandToolInputSchema =
       limits: RuntimeLocalCommandSchema.shape.arguments.shape.limits.extend({
         pids: z.number().int().min(32).max(64),
       }),
+    })
+    .superRefine((c, ctx) => {
+      if (!!c.files === !!c.project)
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Supply exact project OR host files',
+        });
+      if (
+        c.project &&
+        (!c.projectPreparation ||
+          c.background ||
+          c.candidate ||
+          c.dependencies ||
+          c.diagnostics)
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Saved source requires finite project preparation',
+        });
     });
 export const RuntimeBridgePayloadSchema = z.union([
   BridgeCommandPayloadSchema,
@@ -221,6 +271,7 @@ export const RuntimeLocalCommandProfileSchema = z
           'local_mcp',
           'changeset_candidate',
           'project_preparation',
+          'saved_project_source',
         ]),
       )
       .max(8)
@@ -263,6 +314,7 @@ export const RuntimeLocalCommandResultSchema = z
       'canceled',
       'timeout',
       'output_limit',
+      'cache_limit',
       'memory_limit',
       'lease_lost',
       'supervisor_failed',
@@ -304,6 +356,22 @@ export function localProjectResultMatchesPayload(
         proof.runtimeImage === payload.arguments.imageDigest &&
         result.imageDigest === payload.arguments.imageDigest &&
         proof.packageCount === spec.packages.length &&
+        (payload.arguments.projectSource
+          ? !!proof.savedSource &&
+            runtimeContractEqual(
+              proof.savedSource.project,
+              payload.arguments.projectSource.project,
+            ) &&
+            proof.cacheKey === payload.arguments.projectSource.cacheKey &&
+            proof.cacheVolume ===
+              `allrice-project-cache-${payload.arguments.projectSource.cacheKey.slice(7)}` &&
+            proof.platform ===
+              `linux-${payload.arguments.projectSource.architecture}` &&
+            (proof.savedSource.restoredDigest === spec.sourceDigest ||
+              (proof.savedSource.restoredDigest === null &&
+                proof.installation !== 'succeeded' &&
+                result.reason !== 'exited'))
+          : proof.savedSource === undefined) &&
         (result.reason !== 'exited' ||
           result.exitCode !== 0 ||
           proof.installation === 'succeeded');

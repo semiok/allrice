@@ -7,6 +7,7 @@ import {
   type RuntimeActionApprovalSnapshot,
   type BridgeCommandPayload,
   type RuntimeLocalCommand,
+  type ProjectVersionRef,
   type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
 import styles from './local-command-panel.module.css';
@@ -15,7 +16,11 @@ import { CommandCandidatePreview } from './command-candidate-preview';
 
 interface Operation {
   snapshot: RuntimeOperationSnapshot;
-  command: RuntimeLocalCommand['arguments'] | null;
+  command:
+    | (Omit<RuntimeLocalCommand['arguments'], 'projectSource'> & {
+        project?: ProjectVersionRef;
+      })
+    | null;
   file?: Extract<
     BridgeCommandPayload,
     { capability: 'local.fs.write' | 'local.fs.mkdir' }
@@ -274,6 +279,16 @@ export function LocalCommandPanel({
                       ))}
                     </ul>
                   </section>
+                )}
+                {op.command.project && (
+                  <p>
+                    项目源码：
+                    <code>{op.command.project.snapshot.id.slice(0, 8)}</code> ·
+                    {'version' in op.command.project.snapshot
+                      ? `版本 ${op.command.project.snapshot.version}`
+                      : '指定不可变版本'}{' '}
+                    · 在私有副本中执行
+                  </p>
                 )}
                 {op.command.projectPreparation && (
                   <section aria-label="项目依赖准备范围">

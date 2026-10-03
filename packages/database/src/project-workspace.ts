@@ -3,7 +3,6 @@ import { z } from 'zod';
 import {
   ExecutionContextSchema,
   ProjectWorkspaceCommandSchema,
-  authorizeExecution,
   runtimeContractEqual,
   projectSourceLimits,
   runtimeFeatureEnabled,
@@ -15,12 +14,12 @@ import {
   type ProjectSnapshot,
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
+import { readProjectSource } from './saved-project-authority.ts';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   assertPublishingRun,
   assertWorkbenchSession,
-  readArtifact,
   readArtifactBytes,
   publishWorkbenchArtifact,
 } from './artifact-review.ts';
@@ -32,7 +31,6 @@ import {
   projectFail as fail,
   projectSourceFile,
   makeProjectSnapshot,
-  parseProjectSnapshotBytes,
   projectFileText,
   applyProjectProposal,
 } from './project-source.ts';
@@ -181,58 +179,7 @@ export async function executeProjectWorkspace(
     return row;
   }
   async function load(tx: TransactionSql, source: RuntimeContentRef) {
-    const [row] = await tx<
-      {
-        id: string;
-        session_id: string;
-        object_id: string;
-        series_id: string;
-        version: number;
-      }[]
-    >`select id,session_id,object_id,series_id,version from allrice_deliverable_versions
-      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and owner_id=${ctx.policySnapshot.subjectId}
-        and (${source.kind === 'storage_object'} and object_id=${source.id} or ${source.kind !== 'storage_object'} and id=${source.id}) for share`;
-    if (!row) fail('snapshot_not_found');
-    await assertWorkbenchSession(tx, principal, row.session_id);
-    const artifact = await readArtifact(tx, principal, row.session_id, row.id);
-    if (
-      !authorizeExecution(
-        {
-          type: 'storage_object',
-          id: artifact.object.id,
-          organizationId: artifact.object.organizationId,
-          workspaceId: artifact.object.workspaceId,
-          ownerId: artifact.object.ownerId,
-          visibility: 'private',
-          archivedAt: null,
-        },
-        'resource:read',
-        ctx,
-      ).allowed
-    )
-      fail('forbidden');
-    if (
-      artifact.kind !== 'document' ||
-      artifact.object.mediaType !== 'application/json' ||
-      !artifact.object.immutable ||
-      artifact.object.checksum !== source.checksum
-    )
-      fail('source_changed');
-    if (
-      source.kind === 'deliverable_version' &&
-      (source.objectId !== row.object_id ||
-        source.seriesId !== row.series_id ||
-        source.version !== row.version)
-    )
-      fail('source_changed');
-    const document = parseProjectSnapshotBytes(
-      await readArtifactBytes(
-        storage,
-        artifact.object,
-        projectSourceLimits.snapshotBytes,
-      ),
-    );
-    return { artifact, document };
+    return readProjectSource(tx, ctx, source, storage);
   }
   async function loadedProject(tx: TransactionSql, ref: ProjectVersionRef) {
     if (!(await head(tx, ref.projectId))) fail('project_not_open');

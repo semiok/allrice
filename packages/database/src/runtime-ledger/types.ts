@@ -75,6 +75,7 @@ export interface RuntimeBridgeClaimSupport {
   supportsProjectDiagnostics?: boolean;
   supportsNpmDependencies?: boolean;
   supportsProjectPreparation?: boolean;
+  supportsSavedProjectSource?: boolean;
   supportsChangesetCandidate?: boolean;
   supportsBackgroundServices?: boolean;
   supportsChangeset?: boolean;

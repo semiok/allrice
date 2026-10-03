@@ -70,6 +70,13 @@ async function fixture() {
   const json = vi
     .spyOn(api, 'json')
     .mockImplementation(async (method, path, body) => {
+      if (method === 'GET' && path === '/system/df')
+        return {
+          Volumes: [...volumes.values()].map((v) => ({
+            ...v,
+            UsageData: { Size: 0, RefCount: 0 },
+          })),
+        };
       if (method === 'POST' && path === '/volumes/create') {
         const b = body as Record<string, unknown>,
           volume = { ...b, Options: null };

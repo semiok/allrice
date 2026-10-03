@@ -2,7 +2,7 @@ import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
   bridgeDeviceStatus,
   createGovernedBridgeOperationLedger,
-  readManagedPythonRuntimeGrant,
+  readManagedRuntimeGrant,
   readLocalPdfRuntimeGrant,
 } from '@allrice/database';
 
@@ -16,7 +16,7 @@ export const handleRuntimeBridgeOperation = createRuntimeBridgeHttpHandler({
     const status = await bridgeDeviceStatus(token);
     return {
       ...status,
-      managedRuntimeGrant: await readManagedPythonRuntimeGrant(status.device),
+      managedRuntimeGrant: await readManagedRuntimeGrant(status.device),
       pdfRuntimeGrant: await readLocalPdfRuntimeGrant(status.device),
     };
   },

@@ -6,6 +6,7 @@ import {
   type RuntimeLocalCommand,
 } from '@allrice/contracts';
 
+import { upsertManagedRuntimeGrant } from './managed-runtime-grant.ts';
 import { getDatabase } from './core/client.ts';
 import { RuntimePolicyError, runtimePolicyDigest } from './runtime-policy.ts';
 
@@ -27,11 +28,25 @@ export async function reportLocalCommandProfile(
     device.revokedAt
   )
     throw new RuntimePolicyError('target_unavailable');
-  await database`insert into allrice_bridge_runtime_profiles(device_id,organization_id,workspace_id,profile)
-    values(${device.id},${device.organizationId},${device.workspaceId},${database.json(profile)})
-    on conflict(device_id) do update set profile=excluded.profile,reported_at=clock_timestamp()
-    where allrice_bridge_runtime_profiles.organization_id=excluded.organization_id
-      and allrice_bridge_runtime_profiles.workspace_id=excluded.workspace_id`;
+  await database.begin(async (tx) => {
+    const [current] =
+      await tx`select id from allrice_bridge_devices where id=${device.id} and organization_id=${device.organizationId}
+      and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and revoked_at is null for share`;
+    if (!current) throw new RuntimePolicyError('target_unavailable');
+    // Admission locks the managed grant before the profile. Reporting must use
+    // the same order so a live operation heartbeat cannot deadlock a refresh.
+    if (
+      profile.available &&
+      profile.features?.includes('saved_project_source') &&
+      profile.projectPreparation?.available
+    )
+      await upsertManagedRuntimeGrant(tx, device);
+    await tx`insert into allrice_bridge_runtime_profiles(device_id,organization_id,workspace_id,profile)
+      values(${device.id},${device.organizationId},${device.workspaceId},${tx.json(profile)})
+      on conflict(device_id) do update set profile=excluded.profile,reported_at=clock_timestamp()
+      where allrice_bridge_runtime_profiles.organization_id=excluded.organization_id
+        and allrice_bridge_runtime_profiles.workspace_id=excluded.workspace_id`;
+  });
   return profile;
 }
 
@@ -48,6 +63,12 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
       path: args.path,
       files: args.files,
       kind: 'local_copy',
+      ...(args.projectSource
+        ? {
+            project: args.projectSource.project,
+            sourceDigest: args.projectSource.snapshot.sourceDigest,
+          }
+        : {}),
       ...(args.candidate
         ? {
             candidate: {
@@ -71,6 +92,9 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
     toolchainDigest: runtimePolicyDigest({
       imageDigest: args.imageDigest,
       backend: args.isolation,
+      ...(args.projectSource
+        ? { architecture: args.projectSource.architecture }
+        : {}),
     }),
     budgetDigest: runtimePolicyDigest(
       args.background

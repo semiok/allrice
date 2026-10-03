@@ -7,14 +7,18 @@ import {
   RuntimeLocalCommandResultSchema,
   RuntimeProjectScopeSchema,
   RuntimeProjectPreparationEvidenceSchema,
+  localProjectResultMatchesPayload,
+  ProjectSnapshotSchema,
   type RuntimeLocalCommand,
   type RuntimeProjectScope,
   type RuntimeLocalCommandResult,
 } from '@allrice/contracts';
+import { mutateProjectCache, reserveProjectVolume } from './project-cache.js';
 import type { LocalDockerApi } from './local-docker-api.js';
 import {
   LocalCommandError,
   readLocalCommandInputs,
+  readSavedProjectInputs,
 } from './local-command-inputs.js';
 import { createLocalPythonArchive } from './local-python-archive.js';
 import {
@@ -152,9 +156,10 @@ export class ProjectCommandRunner {
             sha256: `sha256:${createHash('sha256').update(text!).digest('hex')}`,
           });
         }
+        files.sort((a, b) => a.path.localeCompare(b.path));
         const lockPath =
           manager === 'pnpm' ? 'pnpm-lock.yaml' : 'requirements.lock';
-        const command = RuntimeLocalCommandSchema.parse({
+        let command = RuntimeLocalCommandSchema.parse({
           capability: 'local.process.execute',
           arguments: {
             executable:
@@ -191,8 +196,53 @@ export class ProjectCommandRunner {
             },
           },
         });
+        const snapshot = ProjectSnapshotSchema.parse({
+          version: 1,
+          projectId: command.arguments.projectPreparation!.projectId,
+          sourceDigest: command.arguments.projectPreparation!.sourceDigest,
+          files: files.map((f) => ({
+            ...f,
+            sizeBytes: Buffer.byteLength(
+              contents[f.path as keyof typeof contents]!,
+            ),
+            contentBase64: Buffer.from(
+              contents[f.path as keyof typeof contents]!,
+            ).toString('base64'),
+          })),
+        });
+        command = RuntimeLocalCommandSchema.parse({
+          ...command,
+          arguments: {
+            ...command.arguments,
+            projectSource: {
+              version: 1,
+              project: {
+                projectId: snapshot.projectId,
+                snapshot: {
+                  kind: 'artifact',
+                  id: randomUUID(),
+                  checksum: `sha256:${createHash('sha256').update(JSON.stringify(snapshot)).digest('hex')}`,
+                },
+              },
+              snapshot,
+              architecture: this.input.architecture,
+              cacheKey: projectCacheKey({
+                spec: command.arguments.projectPreparation!,
+                scope,
+                image: command.arguments.imageDigest,
+                architecture: this.input.architecture,
+              }),
+              origin: {
+                jobId: randomUUID(),
+                workerId: randomUUID(),
+                attempt: 0,
+                leaseTokenDigest: '0'.repeat(64),
+              },
+            },
+          },
+        });
         const attemptId = randomUUID(),
-          result = await this.execute(root, command, {
+          result = await this.execute(null, command, {
             attemptId,
             scope,
             signal: AbortSignal.any([
@@ -204,7 +254,8 @@ export class ProjectCommandRunner {
           if (
             result.reason !== 'exited' ||
             result.exitCode !== 0 ||
-            result.projectPreparation?.installation !== 'succeeded'
+            result.projectPreparation?.installation !== 'succeeded' ||
+            !localProjectResultMatchesPayload(command, result)
           )
             throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
         } finally {
@@ -280,7 +331,11 @@ export class ProjectCommandRunner {
       throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
     return volume;
   }
-  async execute(root: string, input: RuntimeLocalCommand, options: Options) {
+  async execute(
+    root: string | null,
+    input: RuntimeLocalCommand,
+    options: Options,
+  ) {
     const command = RuntimeLocalCommandSchema.parse(input),
       a = command.arguments;
     const scope = RuntimeProjectScopeSchema.safeParse(options.scope);
@@ -304,7 +359,16 @@ export class ProjectCommandRunner {
     const deadlineSignal = AbortSignal.timeout(
       Math.max(1, deadlineUnixMs - Date.now()),
     );
-    const bundle = await readLocalCommandInputs(root, command),
+    if (
+      a.projectSource
+        ? root !== null ||
+          a.projectSource.architecture !== this.input.architecture
+        : root === null
+    )
+      throw new LocalCommandError('GRANT_MISMATCH');
+    const bundle = a.projectSource
+        ? readSavedProjectInputs(command)
+        : await readLocalCommandInputs(root!, command),
       spec = validateProjectPreparation(command, bundle.files);
     const revoked = new AbortController(),
       signal = AbortSignal.any([
@@ -356,6 +420,8 @@ export class ProjectCommandRunner {
         image: this.image(command),
         architecture: this.input.architecture,
       });
+      if (a.projectSource && a.projectSource.cacheKey !== cacheKey)
+        throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
       const cacheVolume = `allrice-project-cache-${cacheKey.slice(7)}`,
         workVolume = `allrice-project-work-${options.attemptId}`;
       const evidence = {
@@ -382,79 +448,89 @@ export class ProjectCommandRunner {
         [cacheLabel]: cacheKey,
         'xyz.bplabs.allrice.project.evidence': JSON.stringify(evidence),
       };
-      for (const [name, volumeLabels] of [
-        [cacheVolume, { [cacheLabel]: cacheKey }],
-        [workVolume, labels],
-      ] as const) {
-        const v = await this.input.api.json<Volume>('POST', '/volumes/create', {
-          Name: name,
-          Driver: 'local',
-          Labels: volumeLabels,
-        });
-        if (
-          v.Name !== name ||
-          v.Driver !== 'local' ||
-          Object.keys(v.Options ?? {}).length
-        )
-          throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
-        // Docker may omit labels from the create response for an existing
-        // volume. Inspect the actual saved volume instead of relabeling it.
-        await this.inspectVolume(name, volumeLabels);
-        if (name === workVolume) workVolumeCreated = name;
-      }
-      const c = await this.input.api.json<{ Id: string }>(
-        'POST',
-        `/containers/create?name=allrice-project-${options.attemptId}`,
-        {
-          Image: this.image(command),
-          Entrypoint:
-            spec.manager === 'pnpm'
-              ? ['/usr/local/bin/node']
-              : ['/opt/python/bin/python'],
-          Cmd:
-            spec.manager === 'pnpm'
-              ? ['--input-type=module', '--eval', nodeProjectSupervisor]
-              : ['-I', '-c', pythonProjectSupervisor],
-          User: '0:0',
-          WorkingDir: '/tmp/work',
-          Tty: false,
-          OpenStdin: false,
-          Labels: labels,
-          HostConfig: {
-            NetworkMode: 'none',
-            ReadonlyRootfs: true,
-            CapDrop: ['ALL'],
-            CapAdd: [
-              'CHOWN',
-              'FOWNER',
-              'DAC_OVERRIDE',
-              'SETUID',
-              'SETGID',
-              'KILL',
-            ],
-            SecurityOpt: ['no-new-privileges'],
-            PidsLimit: a.limits.pids,
-            Memory: a.limits.memoryMiB * 1024 ** 2,
-            MemorySwap: a.limits.memoryMiB * 1024 ** 2,
-            CpuPeriod: 100000,
-            CpuQuota: a.limits.cpuMillis * 100,
-            Mounts: [
-              { Type: 'volume', Source: workVolume, Target: '/tmp/work' },
-              { Type: 'volume', Source: cacheVolume, Target: '/cache' },
-            ],
-            Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777' },
-            ShmSize: 16 * 1024 ** 2,
-            LogConfig: {
-              Type: 'json-file',
-              Config: { 'max-size': '1m', 'max-file': '1' },
+      const c = await mutateProjectCache(
+        this.input.api.socketPath,
+        async () => {
+          await reserveProjectVolume(this.input.api, cacheVolume);
+          for (const [name, volumeLabels] of [
+            [cacheVolume, { [cacheLabel]: cacheKey }],
+            [workVolume, labels],
+          ] as const) {
+            const v = await this.input.api.json<Volume>(
+              'POST',
+              '/volumes/create',
+              {
+                Name: name,
+                Driver: 'local',
+                Labels: volumeLabels,
+              },
+            );
+            if (
+              v.Name !== name ||
+              v.Driver !== 'local' ||
+              Object.keys(v.Options ?? {}).length
+            )
+              throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
+            // Docker may omit labels from the create response for an existing
+            // volume. Inspect the actual saved volume instead of relabeling it.
+            await this.inspectVolume(name, volumeLabels);
+            if (name === workVolume) workVolumeCreated = name;
+          }
+          return this.input.api.json<{ Id: string }>(
+            'POST',
+            `/containers/create?name=allrice-project-${options.attemptId}`,
+            {
+              Image: this.image(command),
+              Entrypoint:
+                spec.manager === 'pnpm'
+                  ? ['/usr/local/bin/node']
+                  : ['/opt/python/bin/python'],
+              Cmd:
+                spec.manager === 'pnpm'
+                  ? ['--input-type=module', '--eval', nodeProjectSupervisor]
+                  : ['-I', '-c', pythonProjectSupervisor],
+              User: '0:0',
+              WorkingDir: '/tmp/work',
+              Tty: false,
+              OpenStdin: false,
+              Labels: labels,
+              HostConfig: {
+                NetworkMode: 'none',
+                ReadonlyRootfs: true,
+                CapDrop: ['ALL'],
+                CapAdd: [
+                  'CHOWN',
+                  'FOWNER',
+                  'DAC_OVERRIDE',
+                  'SETUID',
+                  'SETGID',
+                  'KILL',
+                ],
+                SecurityOpt: ['no-new-privileges'],
+                PidsLimit: a.limits.pids,
+                Memory: a.limits.memoryMiB * 1024 ** 2,
+                MemorySwap: a.limits.memoryMiB * 1024 ** 2,
+                CpuPeriod: 100000,
+                CpuQuota: a.limits.cpuMillis * 100,
+                Mounts: [
+                  { Type: 'volume', Source: workVolume, Target: '/tmp/work' },
+                  { Type: 'volume', Source: cacheVolume, Target: '/cache' },
+                ],
+                Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777' },
+                ShmSize: 16 * 1024 ** 2,
+                LogConfig: {
+                  Type: 'json-file',
+                  Config: { 'max-size': '1m', 'max-file': '1' },
+                },
+                RestartPolicy: { Name: 'no' },
+                AutoRemove: false,
+                Ulimits: [
+                  { Name: 'nofile', Soft: 256, Hard: 256 },
+                  { Name: 'core', Soft: 0, Hard: 0 },
+                ],
+              },
             },
-            RestartPolicy: { Name: 'no' },
-            AutoRemove: false,
-            Ulimits: [
-              { Name: 'nofile', Soft: 256, Hard: 256 },
-              { Name: 'core', Soft: 0, Hard: 0 },
-            ],
-          },
+          );
         },
       );
       const id = c.Id;
@@ -495,7 +571,13 @@ export class ProjectCommandRunner {
             path: '.allrice/config.json',
             bytes: Buffer.from(
               JSON.stringify({
-                command: a,
+                command: {
+                  ...a,
+                  projectSource: undefined,
+                  files: [...a.files].sort((f, g) =>
+                    f.path.localeCompare(g.path),
+                  ),
+                },
                 deadlineUnixMs,
                 deadlineReason,
               }),
@@ -504,12 +586,10 @@ export class ProjectCommandRunner {
           { path: '.allrice/empty.conf', bytes: Buffer.from('') },
           tool,
           ...prepared.files,
-          ...bundle.files
-            .filter((f) => !spec.packages.some((p) => p.archivePath === f.path))
-            .map((f) => ({
-              path: 'project/' + f.path,
-              bytes: Buffer.from(f.content, 'base64'),
-            })),
+          ...bundle.files.map((f) => ({
+            path: 'project/' + f.path,
+            bytes: Buffer.from(f.content, 'base64'),
+          })),
         ];
         // Use the existing bounded binary channel; don't enlarge ledger envelopes.
         let batch: typeof staged = [];
@@ -570,6 +650,14 @@ export class ProjectCommandRunner {
             installation: stopReason
               ? 'interrupted'
               : (observed.exit?.installation ?? 'failed'),
+            ...(a.projectSource
+              ? {
+                  savedSource: {
+                    project: a.projectSource.project,
+                    restoredDigest: observed.sourceDigest ?? null,
+                  },
+                }
+              : {}),
           },
         });
       } catch (e) {
@@ -619,7 +707,8 @@ export class ProjectCommandRunner {
       size = 0,
       sequence = 0,
       truncated = false,
-      exit: Exit | undefined;
+      exit: Exit | undefined,
+      sourceDigest: string | undefined;
     const filters = {
       stdout: new LocalCommandOutputFilter(),
       stderr: new LocalCommandOutputFilter(),
@@ -658,6 +747,10 @@ export class ProjectCommandRunner {
                 Buffer.from(e.data, 'base64'),
               ),
             );
+          } else if (e.type === 'source_verified') {
+            if (sourceDigest || !/^sha256:[a-f0-9]{64}$/.test(e.sourceDigest))
+              throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
+            sourceDigest = e.sourceDigest;
           } else if (e.type === 'stage') {
             if (!['preparing', 'running'].includes(e.stage))
               throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
@@ -674,6 +767,7 @@ export class ProjectCommandRunner {
                 'timeout',
                 'lease_lost',
                 'output_limit',
+                'cache_limit',
                 'supervisor_failed',
               ].includes(e.reason) ||
               !Number.isInteger(e.code) ||
@@ -696,6 +790,7 @@ export class ProjectCommandRunner {
       stdout,
       stderr,
       exit,
+      sourceDigest,
       truncated:
         truncated ||
         !!pending ||
@@ -731,6 +826,14 @@ export class ProjectCommandRunner {
     const evidence = RuntimeProjectPreparationEvidenceSchema.parse({
       ...JSON.parse(c.Config.Labels['xyz.bplabs.allrice.project.evidence']!),
       installation: observed.exit?.installation ?? 'interrupted',
+      ...(command.arguments.projectSource
+        ? {
+            savedSource: {
+              project: command.arguments.projectSource.project,
+              restoredDigest: observed.sourceDigest ?? null,
+            },
+          }
+        : {}),
     });
     if (
       evidence.sourceDigest !== spec.sourceDigest ||
@@ -739,7 +842,7 @@ export class ProjectCommandRunner {
       evidence.runtimeImage !== command.arguments.imageDigest
     )
       throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
-    return RuntimeLocalCommandResultSchema.parse({
+    const result = RuntimeLocalCommandResultSchema.parse({
       backend: 'local-vm-container-v1',
       containerId: c.Id,
       imageDigest: c.Config.Image,
@@ -753,6 +856,9 @@ export class ProjectCommandRunner {
       sourceDirectoryModified: false,
       projectPreparation: evidence,
     });
+    if (!localProjectResultMatchesPayload(command, result))
+      throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
+    return result;
   }
   private exitReason(
     c: Container,

@@ -44,6 +44,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsProjectDiagnostics?: boolean;
     supportsNpmDependencies?: boolean;
     supportsProjectPreparation?: boolean;
+    supportsSavedProjectSource?: boolean;
     supportsChangesetCandidate?: boolean;
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
@@ -134,7 +135,9 @@ function operationGrant(
   const execution = snapshot.binding.execution;
   if (
     snapshot.binding.action === 'local.python.execute' ||
-    snapshot.binding.action === 'local.pdf.read'
+    snapshot.binding.action === 'local.pdf.read' ||
+    (snapshot.binding.action === 'local.process.execute' &&
+      managed?.id === execution.grantId)
   ) {
     const runtime =
       snapshot.binding.action === 'local.pdf.read' ? pdf : managed;
@@ -234,6 +237,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
                 'supportsProjectPreparation',
+                'supportsSavedProjectSource',
                 'supportsChangesetCandidate',
                 'supportsBackgroundServices',
                 'supportsClaimRecovery',
@@ -261,6 +265,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
             typeof selection.supportsNpmDependencies !== 'boolean') ||
+          ('supportsSavedProjectSource' in selection &&
+            typeof selection.supportsSavedProjectSource !== 'boolean') ||
           ('supportsProjectPreparation' in selection &&
             typeof selection.supportsProjectPreparation !== 'boolean') ||
           ('supportsChangesetCandidate' in selection &&
@@ -286,6 +292,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
           supportsNpmDependencies: selection.supportsNpmDependencies === true,
+          supportsSavedProjectSource:
+            selection.supportsSavedProjectSource === true,
           supportsProjectPreparation:
             selection.supportsProjectPreparation === true,
           supportsChangesetCandidate:

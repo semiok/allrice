@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { generateCodexImage } from './allrice-codex-images.mjs';
+import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
 import {
   nativeContextProjection,
   installNativeContextProjection,
@@ -46,7 +47,10 @@ import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
-import { projectNativeTools } from './allrice-project-native-tools.mjs';
+import {
+  projectNativeTools,
+  projectVersionParameter,
+} from './allrice-project-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
@@ -335,7 +339,7 @@ const brokerNativeTools = [
     // command/CPU timeout. This is only the outer approval + receipt envelope.
     timeoutMs: 3_700_000,
     description:
-      'Run an approved Node/npm or private-venv Python command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional projectPreparation installs pinned pnpm/uv dependencies from an exact lock and verified archives before this command. It cannot combine with diagnostics, dependencies, background or a candidate. Optional diagnostics is read-only fixed Node with empty args; dependencies performs bounded locked npm preparation; background is a finite originating-Run-owned service. Supply current SHA-256 for every input file. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
+      'Run an approved Node/npm or private-venv Python command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional projectPreparation installs pinned pnpm/uv dependencies from an exact lock and verified archives before this command. It cannot combine with diagnostics, dependencies, background or a candidate. Optional diagnostics is read-only fixed Node with empty args; dependencies performs bounded locked npm preparation; background is a finite originating-Run-owned service. Supply either a workspace_project exact project ref (omit files, require matching projectPreparation; no folder grant needed) or current SHA-256 host files. Never mix sources. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
     parameters: {
       executable: {
         type: 'string',
@@ -354,9 +358,9 @@ const brokerNativeTools = [
         required: true,
         description: 'Relative working directory, or .',
       },
+      project: projectVersionParameter,
       files: {
         type: 'array',
-        required: true,
         items: {
           type: 'object',
           additionalProperties: false,
@@ -483,6 +487,9 @@ const brokerNativeTools = [
         description:
           'Finite service, duration1000..300000ms; readiness tcp/http, port1024..65535 and private-container only, timeout500..30000ms. stdin mode none/requests-v1, maxRequests1..16,maxBytes1..4096,requestTimeout500..60000ms. Input requests are fd3 NDJSON {type:input.request,prompt}; no TTY. At most one per Run and two per Bridge. Ends on Run completion, lost authorization or fixed deadline. Never combine with diagnostics/dependencies.',
       },
+    },
+    validateArguments(args) {
+      RuntimeLocalCommandToolInputSchema.parse(args);
     },
   },
   {

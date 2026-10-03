@@ -111,3 +111,64 @@ it.each(['pnpm', 'uv'] as const)(
   },
   45_000,
 );
+
+it('forwards an exact saved project to the real DSH provider without requiring a host manifest or exposing internal inputs', async () => {
+  const checksum = `sha256:${'a'.repeat(64)}`,
+    projectId = '713d721f-f0bf-40dd-aa0b-65f6aa79e49a';
+  const args = RuntimeLocalCommandToolInputSchema.parse({
+    executable: '/usr/local/bin/node',
+    args: ['main.cjs'],
+    path: '.',
+    project: {
+      projectId,
+      snapshot: {
+        kind: 'deliverable_version',
+        id: '713d721f-f0bf-40dd-aa0b-65f6aa79e49b',
+        checksum,
+        objectId: '713d721f-f0bf-40dd-aa0b-65f6aa79e49c',
+        seriesId: '713d721f-f0bf-40dd-aa0b-65f6aa79e49d',
+        version: 2,
+      },
+    },
+    limits: {
+      timeoutMs: 10000,
+      outputBytes: 16384,
+      memoryMiB: 256,
+      cpuMillis: 1000,
+      pids: 64,
+    },
+    projectPreparation: {
+      version: 1,
+      projectId,
+      sourceDigest: checksum,
+      lockChecksum: checksum,
+      offline: true,
+      manager: 'pnpm',
+      managerVersion: '10.33.3',
+      lockPath: 'pnpm-lock.yaml',
+      scripts: 'disabled',
+      packages: [],
+    },
+  });
+  await nativeBrokerRoundtrip({
+    canonicalName: 'local.process.execute',
+    wireName: 'local_process_execute',
+    args,
+    invalidArgs: { ...args, files: [] },
+    inspectSchema(schema) {
+      expect(schema.required).not.toContain('files');
+      expect(schema.properties).toHaveProperty('project');
+      expect(schema.properties).not.toHaveProperty('projectSource');
+      expect(schema.properties).not.toHaveProperty('architecture');
+    },
+    onToolCall: async (call) => {
+      expect(RuntimeLocalCommandToolInputSchema.parse(call.arguments)).toEqual(
+        args,
+      );
+      return {
+        modelContent: 'Synthetic exact source transport only.',
+        summary: '合成原生接线验证',
+      };
+    },
+  });
+}, 45000);
