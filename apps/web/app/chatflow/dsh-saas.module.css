@@ -961,6 +961,7 @@ div.composerAttachmentMenu {
 }
 
 .composerTrailing {
+  align-self: flex-end;
   max-width: 100%;
 }
 

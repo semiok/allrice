@@ -2005,6 +2005,11 @@ suite(
           const cardBox = (await input.locator('..').boundingBox())!;
           expect(taskBox.x).toBeGreaterThanOrEqual(cardBox.x);
           expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(sendBox.x);
+          expect(
+            Math.abs(
+              taskBox.y + taskBox.height / 2 - sendBox.y - sendBox.height / 2,
+            ),
+          ).toBeLessThan(2);
           expect(taskBox.y + taskBox.height).toBeLessThanOrEqual(
             cardBox.y + cardBox.height,
           );
