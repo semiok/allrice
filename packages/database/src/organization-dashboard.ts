@@ -68,7 +68,8 @@ export function organizationWorkSource(
  * raw command output and browser evidence are not business delivery counts. */
 export function businessDeliverablePredicate(db: Database | TransactionSql) {
   return db`(
-    (a.version_id is not null and a.kind in ('document','plan','file'))
+    (a.version_id is not null and a.kind in ('document','plan','file')
+      and coalesce(a.provenance->>'kind','') <> 'project_snapshot')
     or (a.version_id is null and not (
       coalesce(dv.change_summary,'') like 'Tool result %; Run %; call %'
       and dv.file_name='tool-result-' || replace(replace(split_part(dv.change_summary,';',1),'Tool result ',''),'.','-') || '-' || dv.object_id::text || '.txt'

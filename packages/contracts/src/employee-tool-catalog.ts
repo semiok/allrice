@@ -36,6 +36,10 @@ type ToolRequirements = {
 /** Static composition over the existing Broker manifest. Runtime readiness
  * and authorization remain facts supplied by their existing owners. */
 const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
+  'workspace.project': {
+    capabilities: ['storage:read'],
+    services: ['workbench'],
+  },
   'workspace.document.read': {
     // This published read tool delegates an authorized PDF to the fixed
     // Bridge parser. It does not require Python, a folder or write authority.
@@ -200,6 +204,7 @@ const labels: Partial<Record<AllRiceToolName, string>> = {
   'local.mcp.call': '本地 MCP 调用',
   'local.mcp.discover': '本地 MCP 工具发现',
   'workspace.export.create': '文件 / 报告 / Changeset 提案',
+  'workspace.project': '项目源码与版本',
   'workspace.skill.read': '读取已冻结 Skill',
   'workspace.reconciliation.export': '对账工件交付',
   'workspace.file.list': '工作区文件列表',

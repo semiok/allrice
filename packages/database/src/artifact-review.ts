@@ -207,6 +207,7 @@ async function artifactRows(
       and (o.retention_until is null or o.retention_until>clock_timestamp())
       and (${artifactId}::uuid is null or v.id=${artifactId}::uuid)
       and (${runId}::uuid is null or a.run_id=${runId}::uuid)
+      and (${includeToolResults} or coalesce(a.provenance->>'kind','') <> 'project_snapshot')
       -- Oversized tool responses are stored for model paging, not delivered
       -- files. Match both writer metadata and its exact object-bound filename.
       -- Keep explicit reads and administrator inspection available.
@@ -504,7 +505,7 @@ async function assertArtifactExecution(
   if (!target) fail('target_unavailable');
   return e;
 }
-async function assertPublishingRun(
+export async function assertPublishingRun(
   tx: TransactionSql,
   context: ExecutionContext,
   sessionId: string,
@@ -531,6 +532,10 @@ async function assertPublishingRun(
     !parsed.data.capabilitySnapshot.grantedCapabilities.includes(
       'storage:write',
     ) ||
+    (requiredTool === 'workspace.project' &&
+      !parsed.data.capabilitySnapshot.grantedCapabilities.includes(
+        'storage:read',
+      )) ||
     !parsed.data.capabilitySnapshot.bindings.toolNames.includes(requiredTool)
   )
     fail('run_unavailable');
@@ -701,6 +706,7 @@ export async function publishWorkbenchArtifact(
    * Admission takes root locks before the session lock and validates the exact
    * assignment/version each time. Storage still uses the real root job. */
   development?: {
+    requiredTool?: 'assistant.development' | 'workspace.project';
     runId: string;
     admit: (tx: TransactionSql) => Promise<void>;
     registered?: (tx: TransactionSql, artifactId: string) => Promise<void>;
@@ -727,6 +733,13 @@ export async function publishWorkbenchArtifact(
   if (
     input.sourceFile &&
     (input.kind !== 'document' || input.trustedCloudDerivation)
+  )
+    fail('invalid_publication');
+  if (
+    development?.requiredTool === 'workspace.project' &&
+    (input.kind !== 'document' ||
+      input.format !== 'json' ||
+      input.mediaType !== 'application/json')
   )
     fail('invalid_publication');
   if (
@@ -836,7 +849,7 @@ export async function publishWorkbenchArtifact(
         );
       }
       const requiredTool = development
-        ? 'assistant.development'
+        ? (development.requiredTool ?? 'assistant.development')
         : derivedSource
           ? 'workspace.reconciliation.export'
           : 'workspace.export.create';
@@ -924,11 +937,13 @@ export async function publishWorkbenchArtifact(
       );
       const provenance = {
         kind:
-          derivedSource ||
-          input.trustedImageOperation ||
-          input.trustedOfficePdfLease
-            ? 'tool_result'
-            : 'model_proposal',
+          requiredTool === 'workspace.project'
+            ? 'project_snapshot'
+            : derivedSource ||
+                input.trustedImageOperation ||
+                input.trustedOfficePdfLease
+              ? 'tool_result'
+              : 'model_proposal',
         runId: publishingRunId,
         operationId: derivedSource?.provenance.operationId ?? null,
         stepId: null,

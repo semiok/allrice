@@ -132,6 +132,15 @@ export async function createAssistantAuthorityFixture(
         action: 'job:execute',
         workspaceId: workspace,
       },
+      ...(selectedTools.includes('workspace.project')
+        ? [
+            {
+              resourceType: 'storage_object',
+              action: 'resource:read',
+              workspaceId: workspace,
+            },
+          ]
+        : []),
     ],
   };
   const snapshot = EmployeeExecutionSnapshotSchema.parse({

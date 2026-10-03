@@ -116,3 +116,4 @@ export * from './assistant-diagnostics.ts';
 export * from './company-assets.ts';
 export * from './task-next-steps.ts';
 export * from './managed-node-payload.ts';
+export * from './project-workspace.ts';

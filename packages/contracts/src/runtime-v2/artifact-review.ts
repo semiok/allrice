@@ -175,7 +175,12 @@ export const ArtifactSourceFileSchema = z
 export type ArtifactSourceFile = z.infer<typeof ArtifactSourceFileSchema>;
 export const ArtifactProvenanceSchema = z
   .object({
-    kind: z.enum(['model_proposal', 'tool_result', 'legacy_deliverable']),
+    kind: z.enum([
+      'model_proposal',
+      'tool_result',
+      'legacy_deliverable',
+      'project_snapshot',
+    ]),
     runId: UuidSchema.nullable(),
     operationId: UuidSchema.nullable(),
     stepId: UuidSchema.nullable(),

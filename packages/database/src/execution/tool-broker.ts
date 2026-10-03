@@ -184,9 +184,10 @@ export async function listToolBrokerFiles(
 export async function getToolBrokerFile(
   context: ExecutionContext,
   objectIdInput: string,
+  database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
-  const sql = getDatabase();
+  const sql = database;
   const company = await getCompanyMaterialForExecution(
     context,
     objectIdInput,

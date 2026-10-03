@@ -291,6 +291,7 @@ export function employeeManifest(input: {
         'workspace.file.list',
         'workspace.file.read',
         'workspace.document.read',
+        'workspace.project',
         'workspace.memory.search',
         'workspace.memory.remember',
         'workspace.session.search',
