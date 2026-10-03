@@ -230,24 +230,6 @@ export function ChatComposer({
           ref={composerInput}
           value={draft}
         />
-        {taskSuggestions && onPrepareTask && onTaskPreparation && (
-          <TaskSuggestions
-            key={taskScope}
-            suggestions={taskSuggestions}
-            draft={draft}
-            busy={busy}
-            hero={hero}
-            compact={compact}
-            attachmentCount={pendingAttachments.length}
-            readiness={taskReadiness}
-            onPrepare={onPrepareTask}
-            onPreparation={onTaskPreparation}
-            nextSteps={taskNextSteps}
-            onOpen={onOpenTasks}
-            onOpenCompanyTemplates={onOpenCompanyTemplates}
-            onPrepareNextStep={onPrepareNextStep}
-          />
-        )}
         <div className={`${inputUi.row} ${styles.composerRow}`}>
           <div className={`${inputUi.tools} ${styles.composerTools}`}>
             <div className={styles.attachmentMenuAnchor}>
@@ -388,6 +370,23 @@ export function ChatComposer({
               <option value="workspace">工作区公开</option>
               <option value="private">私有 · 仅自己可见</option>
             </ComposerSelect>
+            {taskSuggestions && onPrepareTask && onTaskPreparation && (
+              <TaskSuggestions
+                key={taskScope}
+                suggestions={taskSuggestions}
+                draft={draft}
+                busy={busy}
+                compact={compact}
+                attachmentCount={pendingAttachments.length}
+                readiness={taskReadiness}
+                onPrepare={onPrepareTask}
+                onPreparation={onTaskPreparation}
+                nextSteps={taskNextSteps}
+                onOpen={onOpenTasks}
+                onOpenCompanyTemplates={onOpenCompanyTemplates}
+                onPrepareNextStep={onPrepareNextStep}
+              />
+            )}
           </div>
           <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
             <button

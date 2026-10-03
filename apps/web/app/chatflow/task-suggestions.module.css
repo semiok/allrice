@@ -1,35 +1,32 @@
 .row {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: 8px;
-  height: 36px;
   min-width: 0;
 }
 .trigger {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 5px;
+  gap: 7px;
+  height: 36px;
   border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--dsw-alias-text-secondary, #626774);
-  padding: 6px 8px;
-  font-size: 12px;
+  border-radius: 999px;
+  background: var(--dsw-specific-selector, #f2f4f6);
+  color: var(--dsw-alias-label-secondary, #626774);
+  padding: 0 11px;
+  font-size: 15px;
   white-space: nowrap;
   cursor: pointer;
 }
-.trigger:hover,
-.common button:hover {
-  background: var(--dsw-alias-hover, #edf0f3);
+.trigger:hover:not(:disabled) {
+  background: var(--dsw-alias-interactive-bg-hover-solid, #edf0f3);
 }
-.trigger:focus-visible,
-.common button:focus-visible {
+.trigger:focus-visible {
   outline: 2px solid var(--dsw-alias-brand, #6d82e5);
   outline-offset: 1px;
 }
-.trigger:disabled,
-.common button:disabled {
+.trigger:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -54,27 +51,6 @@
   color: var(--dsw-alias-text-tertiary, #787e89);
   line-height: 1.5;
 }
-.common {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  overflow: hidden;
-  min-width: 0;
-}
-.common button {
-  min-width: 0;
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  border: 1px solid var(--dsw-alias-border, #e4e7ec);
-  border-radius: 14px;
-  background: transparent;
-  color: var(--dsw-alias-text-secondary, #626774);
-  padding: 4px 8px;
-  cursor: pointer;
-}
 .modal {
   width: min(460px, calc(100vw - 24px));
   max-height: min(620px, calc(100dvh - 32px));
@@ -93,11 +69,25 @@
   font-size: 13px;
 }
 .parameters input,
+.parameters textarea,
 .parameters select {
   min-width: 0;
   width: 100%;
   padding: 9px 10px;
   font: inherit;
+}
+.parameters textarea {
+  resize: vertical;
+  min-height: 88px;
+  border: 1px solid var(--dsw-alias-border, #e4e7ec);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base, #fff);
+  color: inherit;
+}
+.preparationButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .mobileItem {
   display: grid;
@@ -111,15 +101,14 @@
   cursor: pointer;
 }
 @media (max-width: 640px) {
-  .common {
-    gap: 4px;
-  }
-  .common button {
-    max-width: 76px;
-    padding-inline: 6px;
-  }
   .parameters input,
+  .parameters textarea,
   .parameters select {
     font-size: 16px;
+  }
+}
+@media (pointer: coarse) {
+  .trigger {
+    height: 44px;
   }
 }

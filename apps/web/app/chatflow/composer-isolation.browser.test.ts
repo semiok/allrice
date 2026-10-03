@@ -318,7 +318,9 @@ suite(
         const url = new URL(request.url!, 'http://localhost');
         const path = url.pathname;
         if (path === '/') {
-          response.writeHead(200, { 'content-type': 'text/html' });
+          response.writeHead(200, {
+            'content-type': 'text/html; charset=utf-8',
+          });
           response.end(
             '<html><head><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script src="/fixture.js"></script></body></html>',
           );
@@ -1643,16 +1645,29 @@ suite(
       ],
       preparation: ['files'],
     };
-    async function selectSuggestion(page: Page, title: string, width = 1440) {
-      await page.getByRole('button', { name: '推荐任务', exact: true }).click();
+    async function selectSuggestion(
+      page: Page,
+      title: string,
+      width = 1440,
+      confirm = true,
+    ) {
+      await page.getByRole('button', { name: '常用任务', exact: true }).click();
       if (width < 760)
         await page
-          .getByRole('dialog', { name: '推荐任务', exact: true })
+          .getByRole('dialog', { name: '常用任务', exact: true })
           .getByRole('button', { name: new RegExp(`^${title}`) })
           .click();
       else
         await page
           .getByRole('menuitem', { name: new RegExp(`^${title}`) })
+          .click();
+      if (
+        confirm &&
+        (await page.getByRole('dialog', { name: title, exact: true }).count())
+      )
+        await page
+          .getByRole('dialog', { name: title, exact: true })
+          .getByRole('button', { name: /^(填入输入框|追加到输入框)$/ })
           .click();
     }
     function nextStepsProof(
@@ -1701,7 +1716,7 @@ suite(
     const nextRows = (page: Page, width: number, title: string) =>
       width < 760
         ? page
-            .getByRole('dialog', { name: '推荐任务', exact: true })
+            .getByRole('dialog', { name: '常用任务', exact: true })
             .getByRole('button', { name: new RegExp(`^${title}`) })
         : page.getByRole('menuitem', { name: new RegExp(`^${title}`) });
     it.each([1440, 390])(
@@ -1803,7 +1818,7 @@ suite(
           response.url().includes('/next-steps'),
         );
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await opened;
         await nextRows(f.page, 1440, '检查本轮成果').waitFor();
@@ -1821,7 +1836,7 @@ suite(
         ).length;
         f.holdNextStepsReply();
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await expect
           .poll(
@@ -1854,7 +1869,7 @@ suite(
         ).toBe(0);
         await f.page.keyboard.press('Escape');
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await nextRows(f.page, 1440, '新一轮资料核对').waitFor();
         expect(await nextRows(f.page, 1440, '新一轮资料核对').count()).toBe(1);
@@ -1878,7 +1893,7 @@ suite(
         f.releaseNextStepsA();
         await f.page.getByText('Existing B', { exact: true }).waitFor();
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await f.page.getByRole('menuitem', { name: /^整理周报/ }).waitFor();
         expect(await nextRows(f.page, 1440, '检查本轮成果').count()).toBe(0);
@@ -1909,13 +1924,13 @@ suite(
           .poll(() => f.reads.some((url) => url.includes('/next-steps')))
           .toBe(true);
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await f.page.getByText(proof.notice, { exact: true }).waitFor();
         await f.page.keyboard.press('Escape');
         f.setNextSteps(undefined);
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await expect
           .poll(
@@ -1951,7 +1966,7 @@ suite(
           .poll(() => f.reads.some((url) => url.includes('/next-steps')))
           .toBe(true);
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         await f.page.getByRole('menuitem', { name: /^整理周报/ }).waitFor();
         expect(await nextRows(f.page, 1440, '检查本轮成果').count()).toBe(0);
@@ -1961,6 +1976,103 @@ suite(
         await f.close();
       }
     }, 15000);
+    it.each([1440, 390, 320])(
+      'common Office tasks use plain labels and preserve editable requirements without sending at %ipx',
+      async (width) => {
+        const task: TaskSuggestionDisplay = {
+          id: 'office-word-report',
+          title: '制作 Word 报告',
+          description: '运营：根据资料交付可下载的 Word 文件。',
+          template: '根据资料撰写{{主题}}的 Word 报告。',
+          slots: [{ name: '主题', label: '报告主题', required: true }],
+          preparation: ['files'],
+        };
+        const f = await fixture({ width, taskSuggestions: [task] });
+        try {
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('保留原要求 🌾');
+          const taskButton = f.page.getByRole('button', {
+            name: '常用任务',
+            exact: true,
+          });
+          const taskBox = (await taskButton.boundingBox())!;
+          const visibilityBox = (await f.page
+            .getByRole('combobox', { name: '上传文件可见范围' })
+            .boundingBox())!;
+          const sendBox = (await f.page
+            .getByRole('button', { name: '发送', exact: true })
+            .boundingBox())!;
+          const cardBox = (await input.locator('..').boundingBox())!;
+          expect(taskBox.x).toBeGreaterThanOrEqual(cardBox.x);
+          expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(sendBox.x);
+          expect(taskBox.y + taskBox.height).toBeLessThanOrEqual(
+            cardBox.y + cardBox.height,
+          );
+          if (width === 1440) {
+            expect(taskBox.x).toBeGreaterThan(
+              visibilityBox.x + visibilityBox.width,
+            );
+            expect(Math.abs(taskBox.y - visibilityBox.y)).toBeLessThan(2);
+          }
+          await f.page
+            .getByRole('button', { name: '常用任务', exact: true })
+            .click();
+          const list =
+            width < 760
+              ? f.page.getByRole('dialog', { name: '常用任务', exact: true })
+              : f.page.getByRole('menu');
+          expect(await list.textContent()).toContain('写报告（Word）');
+          expect(await list.textContent()).not.toContain('运营：');
+          expect(
+            await list.getByText('选择资料', { exact: true }).count(),
+          ).toBe(0);
+          await list
+            .getByRole(width < 760 ? 'button' : 'menuitem', {
+              name: /^写报告（Word）/,
+            })
+            .click();
+          const dialog = f.page.getByRole('dialog', {
+            name: '写报告（Word）',
+            exact: true,
+          });
+          await dialog
+            .getByRole('button', { name: '选择资料', exact: true })
+            .click();
+          await dialog
+            .getByRole('alert')
+            .getByText(/报告主题/)
+            .waitFor();
+          expect(await input.inputValue()).toBe('保留原要求 🌾');
+          await dialog
+            .getByRole('textbox', { name: '报告主题', exact: true })
+            .fill('季度经营');
+          const requirements = dialog.getByRole('textbox', {
+            name: '补充要求',
+            exact: true,
+          });
+          await requirements.fill('给总经理看');
+          await requirements.press('Enter');
+          await requirements.press('End');
+          await requirements.type('控制在两页');
+          expect(await dialog.count()).toBe(1);
+          expect(f.writes).toEqual([]);
+          await dialog
+            .getByRole('button', { name: '追加到输入框', exact: true })
+            .click();
+          await expect
+            .poll(() => input.inputValue())
+            .toBe(
+              '保留原要求 🌾\n\n根据资料撰写季度经营的 Word 报告。\n\n补充要求：给总经理看\n控制在两页',
+            );
+          expect(f.writes).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      20_000,
+    );
+
     it.each([1440, 390])(
       'recommendation fills a default task locally with selection and no request at %ipx',
       async (width) => {
@@ -1977,7 +2089,7 @@ suite(
                   const button = (event.target as HTMLElement).closest(
                     'button',
                   );
-                  if (!button?.textContent?.startsWith('整理周报')) return;
+                  if (!button?.textContent?.startsWith('填入输入框')) return;
                   const start = performance.now();
                   const observe = () => {
                     if (
@@ -2061,14 +2173,18 @@ suite(
         await input.fill(original);
         const beforeWrites = [...f.writes];
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
         expect(
           await f.page
-            .getByText('常用任务 · 追加到草稿', { exact: true })
+            .getByText('选择任务，补充需求后发送', { exact: true })
             .count(),
         ).toBe(1);
         await f.page.getByRole('menuitem', { name: /^整理周报/ }).click();
+        await f.page
+          .getByRole('dialog', { name: weeklyTask.title, exact: true })
+          .getByRole('button', { name: '追加到输入框', exact: true })
+          .click();
         const expected = `${original}\n\n整理最近 7 天的工作，输出科研👩‍🔬总结。`;
         await expect.poll(() => input.inputValue()).toBe(expected);
         expect(
@@ -2110,7 +2226,7 @@ suite(
         };
         const f = await fixture({ width, taskSuggestions: [task] });
         try {
-          await selectSuggestion(f.page, task.title, width);
+          await selectSuggestion(f.page, task.title, width, false);
           const dialog = f.page.getByRole('dialog', {
             name: task.title,
             exact: true,
@@ -2142,16 +2258,16 @@ suite(
           await expect.poll(() => dialog.count()).toBe(0);
           expect(
             await f.page
-              .getByRole('button', { name: '推荐任务', exact: true })
+              .getByRole('button', { name: '常用任务', exact: true })
               .evaluate((element) => document.activeElement === element),
           ).toBe(true);
-          await selectSuggestion(f.page, task.title, width);
+          await selectSuggestion(f.page, task.title, width, false);
           await goal.fill('蛋白质研究 🧬');
           await dialog
             .getByRole('combobox', { name: '天数', exact: true })
             .selectOption('30');
           await dialog
-            .getByRole('button', { name: '填写草稿', exact: true })
+            .getByRole('button', { name: '填入输入框', exact: true })
             .click();
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
           await expect
@@ -2197,7 +2313,7 @@ suite(
           (element) => element.scrollTop,
         );
         const before = await header.boundingBox();
-        await selectSuggestion(f.page, task.title);
+        await selectSuggestion(f.page, task.title, 1440, false);
         expect(await header.boundingBox()).toEqual(before);
         expect(await scroll.evaluate((element) => element.scrollTop)).toBe(
           scrollBefore,
@@ -2234,18 +2350,22 @@ suite(
       };
       const f = await fixture({ taskSuggestions: [task] });
       try {
-        await selectSuggestion(f.page, task.title);
+        await selectSuggestion(f.page, task.title, 1440, false);
+        const dialog = f.page.getByRole('dialog', {
+          name: task.title,
+          exact: true,
+        });
+        await dialog
+          .getByRole('textbox', { name: '补充要求', exact: true })
+          .fill('只看 src 目录');
+        await dialog
+          .getByRole('button', { name: '选择资料', exact: true })
+          .click();
         expect(
           await f.page
             .getByRole('textbox', { name: '给 Rice 的消息' })
             .inputValue(),
-        ).toBe(task.template);
-        await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '添加资料', exact: true })
-          .click();
+        ).toBe(`${task.template}\n\n补充要求：只看 src 目录`);
         await f.page
           .getByRole('menuitem', { name: '从工作区添加', exact: true })
           .waitFor();
@@ -2255,11 +2375,9 @@ suite(
             .evaluate((element) => document.activeElement === element),
         ).toBe(true);
         await f.page.keyboard.press('Escape');
-        await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '连接与管理电脑', exact: true })
+        await selectSuggestion(f.page, task.title, 1440, false);
+        await dialog
+          .getByRole('button', { name: '连接与管理电脑', exact: true })
           .click();
         await f.page
           .getByRole('dialog', { name: '设置', exact: true })
@@ -2313,10 +2431,12 @@ suite(
           });
         const f = await fixture({ taskSuggestions: [task], readiness });
         try {
-          await f.page
-            .getByRole('button', { name: '推荐任务', exact: true })
-            .click();
-          const preparation = f.page.getByRole('menuitem', {
+          await selectSuggestion(f.page, task.title, 1440, false);
+          const dialog = f.page.getByRole('dialog', {
+            name: task.title,
+            exact: true,
+          });
+          const preparation = dialog.getByRole('button', {
             name: '连接与管理电脑',
             exact: true,
           });
@@ -2325,12 +2445,12 @@ suite(
           else {
             // This hint proves that the real readiness response was parsed,
             // rather than passing against the initial unknown state.
-            await f.page
-              .getByRole('menuitem', { name: /读取本地页面.*暂停/ })
-              .waitFor();
+            await dialog.getByText(/暂停/).waitFor();
             expect(await preparation.count()).toBe(1);
           }
-          await f.page.getByRole('menuitem', { name: /^读取本地页面/ }).click();
+          await dialog
+            .getByRole('button', { name: '填入输入框', exact: true })
+            .click();
           expect(
             await f.page
               .getByRole('textbox', { name: '给 Rice 的消息' })
@@ -2345,7 +2465,7 @@ suite(
       15_000,
     );
 
-    it('recommendation shows at most five tasks per group and keeps all eight stable IDs selectable', async () => {
+    it('common tasks shows three initial tasks and keeps all eight stable IDs selectable', async () => {
       const tasks: TaskSuggestionDisplay[] = Array.from(
         { length: 8 },
         (_, index) => ({
@@ -2357,12 +2477,12 @@ suite(
       const f = await fixture({ taskSuggestions: tasks });
       try {
         await f.page
-          .getByRole('button', { name: '推荐任务', exact: true })
+          .getByRole('button', { name: '常用任务', exact: true })
           .click();
-        // Company discovery is a footer action, outside the five task limit.
+        // Company discovery remains available outside the three common tasks.
         expect(
           await f.page.getByRole('menuitem', { name: /^任务 \d+$/ }).count(),
-        ).toBe(5);
+        ).toBe(3);
         expect(
           await f.page
             .getByRole('menuitem', { name: '公司范本', exact: true })
@@ -2374,11 +2494,11 @@ suite(
             .count(),
         ).toBe(0);
         await f.page
-          .getByRole('menuitem', { name: '更多任务（3）', exact: true })
+          .getByRole('menuitem', { name: '更多任务（5）', exact: true })
           .click();
         expect(
           await f.page.getByRole('menuitem', { name: /^任务 \d+$/ }).count(),
-        ).toBe(2);
+        ).toBe(4);
         expect(
           await f.page
             .getByRole('menuitem', { name: '科研分析', exact: true })
@@ -2386,6 +2506,10 @@ suite(
         ).toBe(1);
         await f.page
           .getByRole('menuitem', { name: '科研分析', exact: true })
+          .click();
+        await f.page
+          .getByRole('dialog', { name: '科研分析', exact: true })
+          .getByRole('button', { name: '填入输入框', exact: true })
           .click();
         expect(
           await f.page

@@ -2490,11 +2490,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await input.fill('保留原有草稿');
         if (recommended) {
           await f.page
-            .getByRole('button', { name: '推荐任务', exact: true })
+            .getByRole('button', { name: '常用任务', exact: true })
             .click();
           if (width === 640)
             await f.page
-              .getByRole('dialog', { name: '推荐任务', exact: true })
+              .getByRole('dialog', { name: '常用任务', exact: true })
               .getByRole('button', { name: '公司范本', exact: true })
               .click();
           else

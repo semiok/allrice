@@ -777,7 +777,8 @@ div.composerRow {
 }
 
 div.composerTools {
-  flex-wrap: nowrap;
+  flex: 1;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
