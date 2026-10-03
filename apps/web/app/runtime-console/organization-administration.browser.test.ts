@@ -188,13 +188,15 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
   }, 120000);
   afterAll(async () => {
     await browser?.close();
-    await new Promise<void>((done) =>
-      server ? server.close(() => done()) : done(),
-    );
+    await new Promise<void>((done) => {
+      if (!server) return done();
+      server.close(() => done());
+      server.closeAllConnections();
+    });
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
-  });
+  }, 30000);
 
   it.each([1440, 390])(
     'scopes runtime navigation by company and person, including people without sessions (%i)',
@@ -1167,6 +1169,19 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       ).toHaveLength(1);
       await editor.getByRole('button', { name: '完成', exact: true }).click();
       await page.setViewportSize({ width: 320, height: 1000 });
+      const companyNameFits = await page
+        .getByLabel('管理公司', { exact: true })
+        .evaluate((node) => {
+          const select = node as HTMLSelectElement;
+          const style = getComputedStyle(select);
+          const canvas = document.createElement('canvas').getContext('2d')!;
+          canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          return (
+            select.clientWidth >=
+            canvas.measureText(select.selectedOptions[0]!.text).width
+          );
+        });
+      expect(companyNameFits).toBe(true);
       await page.getByLabel('查找员工', { exact: true }).fill('运营');
       await page.getByRole('button', { name: '查找', exact: true }).click();
       await page.getByLabel('选择 配发小李', { exact: true }).check();

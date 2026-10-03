@@ -70,7 +70,11 @@ export async function organizationApi<T>(
 const errorMessage = (e: unknown) =>
   e instanceof Error ? e.message : '暂时无法连接，请重试。';
 
-export function OrganizationAdministration() {
+export function OrganizationAdministration({
+  onNavigationStateChange,
+}: {
+  onNavigationStateChange?: (state: { busy: boolean; dirty: boolean }) => void;
+} = {}) {
   const [organizations, setOrganizations] = useState<ManagedOrganization[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [next, setNext] = useState<string | null>(null);
@@ -87,6 +91,20 @@ export function OrganizationAdministration() {
   const selection = useRef('');
   selection.current = selectedId;
   const selected = organizations.find((o) => o.id === selectedId);
+  useEffect(() => {
+    onNavigationStateChange?.({
+      busy: busy || !!editor,
+      dirty: configurationDirty,
+    });
+    return () => onNavigationStateChange?.({ busy: false, dirty: false });
+  }, [busy, editor, configurationDirty, onNavigationStateChange]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (busy || editor || configurationDirty) event.preventDefault();
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [busy, editor, configurationDirty]);
   const load = useCallback(async (after?: string, selected?: string) => {
     controller.current?.abort();
     const request = new AbortController();

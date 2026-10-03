@@ -555,6 +555,10 @@
   }
   .companyBar > .actions {
     margin-left: 54px;
+    flex-basis: calc(100% - 54px);
+  }
+  .companyCopy {
+    flex-basis: calc(100% - 54px);
   }
   .tabs {
     display: grid;
