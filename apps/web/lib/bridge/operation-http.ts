@@ -47,6 +47,8 @@ export interface RuntimeBridgeLedgerPort {
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
     supportsBinaryFiles?: boolean;
+    supportsFileSurvey?: boolean;
+    supportsFileOrganization?: boolean;
     supportsManagedPython?: boolean;
     supportsPdfRead?: boolean;
     recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
@@ -222,6 +224,8 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsLocalMcp',
                 'supportsChangeset',
                 'supportsBinaryFiles',
+                'supportsFileSurvey',
+                'supportsFileOrganization',
                 'supportsManagedPython',
                 'supportsPdfRead',
                 'supportsProjectDiagnostics',
@@ -239,6 +243,10 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsChangeset !== 'boolean') ||
           ('supportsBinaryFiles' in selection &&
             typeof selection.supportsBinaryFiles !== 'boolean') ||
+          ('supportsFileSurvey' in selection &&
+            typeof selection.supportsFileSurvey !== 'boolean') ||
+          ('supportsFileOrganization' in selection &&
+            typeof selection.supportsFileOrganization !== 'boolean') ||
           ('supportsManagedPython' in selection &&
             typeof selection.supportsManagedPython !== 'boolean') ||
           ('supportsPdfRead' in selection &&
@@ -261,6 +269,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           leaseMs: 120_000,
           supportsLocalCommand: selection.supportsLocalCommand === true,
           supportsBinaryFiles: selection.supportsBinaryFiles === true,
+          supportsFileSurvey: selection.supportsFileSurvey === true,
+          supportsFileOrganization: selection.supportsFileOrganization === true,
           supportsManagedPython: selection.supportsManagedPython === true,
           supportsPdfRead: selection.supportsPdfRead === true,
           supportsLocalMcp: selection.supportsLocalMcp === true,

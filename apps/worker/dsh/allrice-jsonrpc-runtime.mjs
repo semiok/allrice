@@ -244,6 +244,28 @@ const brokerNativeTools = [
         description: 'Relative directory path. Defaults to .',
       },
       limit: { type: 'integer', description: 'Maximum entries from 1 to 200.' },
+      survey: {
+        type: 'object',
+        description:
+          'Optional bounded read-only file survey. mode=files|duplicates|compare; compare requires comparePath in the same authorized root. Filters: nameContains, extensions, minimumBytes, maximumBytes, modifiedAfter, modifiedBefore; hash=true includes original-byte SHA. maximumEntries<=2000, maximumHashBytes<=128000000. Preserve incomplete/skipped results, never delete duplicate groups.',
+        properties: {
+          mode: { type: 'string', enum: ['files', 'duplicates', 'compare'] },
+          comparePath: { type: 'string' },
+          nameContains: { type: 'string' },
+          extensions: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          minimumBytes: { type: 'integer' },
+          maximumBytes: { type: 'integer' },
+          modifiedAfter: { type: 'string' },
+          modifiedBefore: { type: 'string' },
+          hash: { type: 'boolean' },
+          maximumEntries: { type: 'integer' },
+          maximumHashBytes: { type: 'integer' },
+        },
+        additionalProperties: false,
+      },
     },
   },
   {

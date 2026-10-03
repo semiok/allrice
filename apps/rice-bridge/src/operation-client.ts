@@ -16,6 +16,8 @@ import {
 import { bridgeRequest } from './client.js';
 import type { BridgeConfig } from './config.js';
 import { executeLocalCommand } from './executor.js';
+import { fileGuardianReady } from './file-guardian-resources.js';
+import { FileGuardianError } from './file-guardian.js';
 import { executeLocalFile, LocalFileError } from './local-files.js';
 import {
   localFileHttpTransport,
@@ -214,6 +216,9 @@ export class RuntimeBridgeOperationClient {
         supportsClaimRecovery: true,
         supportsChangeset: true,
         supportsBinaryFiles: true,
+        ...(fileGuardianReady()
+          ? { supportsFileSurvey: true, supportsFileOrganization: true }
+          : {}),
         ...(this.input.pythonRunner ? { supportsManagedPython: true } : {}),
         ...(this.input.pdfRunner ? { supportsPdfRead: true } : {}),
         ...(this.input.runner
@@ -521,6 +526,7 @@ export class RuntimeBridgeOperationClient {
     }
     if (dispatch.payload.capability === 'local.fs.changeset') {
       const result = await executeChangeset(root!, dispatch.payload, {
+        signal: this.input.signal,
         checkpoint: (index, file) =>
           journal.changesetCheckpoint(operationId, index, file),
         authorize: async () => {
@@ -596,8 +602,30 @@ export class RuntimeBridgeOperationClient {
       result = await (this.input.execute ?? executeLocalCommand)(
         root!,
         dispatch.payload,
+        dispatch.payload.capability === 'local.fs.list' &&
+          dispatch.payload.arguments.survey
+          ? {
+              signal: this.input.signal,
+              authorize: () => this.executionCurrent(dispatch),
+            }
+          : undefined,
       );
-    } catch {
+    } catch (error) {
+      if (
+        dispatch.payload.capability === 'local.fs.list' &&
+        dispatch.payload.arguments.survey
+      ) {
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: '目录检查未完成，未修改文件',
+          errorCode:
+            error instanceof FileGuardianError
+              ? error.code
+              : 'FILE_SURVEY_FAILED',
+        });
+        return;
+      }
       // Existing write helpers can throw after a rename/mkdir. They cannot
       // prove that no effect occurred, so do not fabricate a failed/none result.
       await journal.uncertain(operationId, 'receipt_missing');
@@ -633,6 +661,38 @@ export class RuntimeBridgeOperationClient {
           'Operation completed; output exceeded the journal limit and was omitted',
         output: { truncated: true, reason: 'output_limit' },
       });
+    }
+  }
+
+  private async executionCurrent(dispatch: RuntimeBridgeDispatch) {
+    if (this.input.signal?.aborted) return false;
+    try {
+      const current = await this.request<{
+        snapshot: unknown;
+        leaseExpiresAt: string;
+      }>({
+        server: this.input.config.server,
+        path: `${runtimeBridgeOperationPath}/${dispatch.snapshot.binding.attempt.operationId}/heartbeat`,
+        method: 'POST',
+        token: this.input.token,
+        body: {
+          contractVersion: 1,
+          attempt: dispatch.snapshot.binding.attempt,
+          leaseToken: dispatch.leaseToken,
+        },
+        timeoutMs: 2500,
+        maximumResponseBytes: 200_000,
+      });
+      const snapshot = RuntimeOperationSnapshotSchema.parse(current.snapshot);
+      return (
+        !this.input.signal?.aborted &&
+        snapshot.status === 'running' &&
+        snapshot.cancelRequestId === null &&
+        runtimeContractEqual(snapshot.binding, dispatch.snapshot.binding) &&
+        Date.parse(current.leaseExpiresAt) > Date.now()
+      );
+    } catch {
+      return false;
     }
   }
 

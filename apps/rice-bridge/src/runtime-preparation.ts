@@ -16,6 +16,7 @@ import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import { bridgeVersion } from './version.js';
 import type { ManagedPythonSandbox } from './managed-python-sandbox.js';
+import { fileGuardianReady } from './file-guardian-resources.js';
 
 export function sandboxLaunchEnvironment(binary: string): NodeJS.ProcessEnv {
   return {
@@ -34,6 +35,9 @@ export function initialBridgeEnvironment(paused = false): BridgeEnvironment {
     clientVersion: bridgeVersion,
     browserDefaultsVersion: 1,
     browserLocalSitesVersion: 1,
+    ...(fileGuardianReady()
+      ? { fileSurveyVersion: 1 as const, fileOrganizationVersion: 1 as const }
+      : {}),
     paused,
     browser: paused ? 'paused' : 'preparing',
     sandbox: paused ? 'paused' : 'preparing',

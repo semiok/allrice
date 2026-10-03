@@ -11,6 +11,8 @@ import {
   BridgeDeviceSchema,
   EmployeeExecutionSnapshotSchema,
   runtimeContractEqual,
+  changesetFileAppliedMatches,
+  fileOrganizationRestoration,
   type ChangesetActionInput,
   type ExecutionContext,
   type StoragePort,
@@ -193,23 +195,19 @@ export async function createChangesetOperation(
       !evidence.result
     )
       fail('restore_evidence_required');
-    const confirmed = new Set(
-      evidence.result.files
-        .filter((f) => f.status === 'applied')
-        .filter((f) =>
-          files.some(
-            (p) =>
-              p.path === f.path &&
-              (p.before?.checksum ?? null) === f.beforeChecksum &&
-              (p.after?.checksum ?? null) === f.afterChecksum,
-          ),
-        )
-        .map((f) => f.path),
-    );
-    files = [...files]
-      .reverse()
-      .filter((f) => confirmed.has(f.path))
-      .map((f) => ({ path: f.path, before: f.after, after: f.before }));
+    if (proposal.comparisonScope === 'file_organization')
+      files = fileOrganizationRestoration(files, evidence.result.files);
+    else {
+      const confirmed = new Set(
+        evidence.result.files
+          .filter((f) => files.some((p) => changesetFileAppliedMatches(p, f)))
+          .map((f) => f.path),
+      );
+      files = [...files]
+        .reverse()
+        .filter((f) => confirmed.has(f.path))
+        .map((f) => ({ path: f.path, before: f.after, after: f.before }));
+    }
     if (!files.length) fail('restore_evidence_required');
   }
   const payload = RuntimeChangesetSchema.parse({
@@ -219,6 +217,9 @@ export async function createChangesetOperation(
       artifactId: artifact.id,
       checksum: artifact.object.checksum,
       direction: row.restore_of ? 'restore' : 'apply',
+      ...(proposal.comparisonScope === 'file_organization'
+        ? { comparisonScope: 'file_organization' }
+        : {}),
       files,
     },
   });
@@ -234,7 +235,10 @@ export async function createChangesetOperation(
   >`select json_build_object('id',d.id,'organizationId',d.organization_id,'workspaceId',d.workspace_id,'ownerId',d.owner_id,'name',d.name,'platform',d.platform,'protocolVersion',d.protocol_version,'capabilities',d.capabilities,'status','online','lastSeenAt',d.last_seen_at,'createdAt',d.created_at,'revokedAt',d.revoked_at) as device,g.label
     from allrice_bridge_devices d join allrice_bridge_folder_grants g on g.device_id=d.id
     where d.id=${proposal.execution.deviceId} and g.id=${proposal.execution.grantId} and d.organization_id=${context.organizationId} and d.workspace_id=${context.workspaceId!} and d.owner_id=${owner}
-    and d.revoked_at is null and g.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'`;
+    and d.revoked_at is null and g.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'
+    and (${proposal.comparisonScope !== 'file_organization'} or exists(select 1 from allrice_execution_targets t where t.id=${proposal.execution.targetId}
+      and t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.metadata->>'bridgeDeviceId'=d.id::text
+      and t.metadata->'environment'->>'fileOrganizationVersion'='1'))`;
   if (!target) fail('changeset_target_unavailable');
   const device = BridgeDeviceSchema.parse(target.device),
     key = `changeset:${context.runId}`;

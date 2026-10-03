@@ -618,13 +618,15 @@ export async function publishWorkbenchChangesetProposal(
       and t.kind='rice_bridge' and t.state='online' and d.owner_id=${ctx.policySnapshot.subjectId}
       and d.revoked_at is null and g.revoked_at is null
       and d.last_seen_at between clock_timestamp()-interval '90 seconds' and clock_timestamp()
+      and (${!('operations' in proposal)} or t.metadata->'environment'->>'fileOrganizationVersion'='1')
     order by g.created_at desc,g.id limit 1`;
   if (!target) fail('target_unavailable');
   const side = (text: string | null) =>
     text === null ? null : { text, checksum: hash(text) };
   const changeset = ChangesetDocumentSchema.parse({
     contractVersion: 1,
-    comparisonScope: 'changeset',
+    comparisonScope:
+      'operations' in proposal ? 'file_organization' : 'changeset',
     execution: {
       targetId: target.target_id,
       targetKind: 'rice_bridge',
@@ -634,11 +636,19 @@ export async function publishWorkbenchChangesetProposal(
       scopeDigest: `sha256:${target.root_fingerprint}`,
       workCopy: { id: target.grant_id, kind: 'in_place' },
     },
-    files: proposal.files.map((f) => ({
-      path: f.path,
-      before: side(f.before),
-      after: side(f.after),
-    })),
+    files:
+      'operations' in proposal
+        ? proposal.operations.map((f) => ({
+            path: f.path,
+            before: null,
+            after: null,
+            organization: f,
+          }))
+        : proposal.files.map((f) => ({
+            path: f.path,
+            before: side(f.before),
+            after: side(f.after),
+          })),
   });
   const bytes = Buffer.from(JSON.stringify(changeset), 'utf8');
   parseChangesetBytes(bytes);

@@ -959,6 +959,210 @@ integration('P03-a shared operation ledger — real isolated PostgreSQL', () => 
     });
   });
 
+  it.each(['succeeded', 'partial', 'unknown'] as const)(
+    'PR6 rejects altered binary receipts and preserves a valid %s outcome',
+    async (terminal) => {
+      const f = await fixture(),
+        input = f.make(),
+        deviceId = randomUUID();
+      await db`update allrice_execution_targets set kind='rice_bridge' where id=${f.ids.targetId}`;
+      const files = ['a.xlsx', 'b.pdf'].map((path, index) => ({
+        path,
+        before: null,
+        after: null,
+        organization: {
+          path,
+          target: `new-${path}`,
+          operation: 'move' as const,
+          source: { checksum: digest, version: digest, sizeBytes: index + 1 },
+          expectedDestination: null,
+        },
+      }));
+      input.bridgePayload = {
+        capability: 'local.fs.changeset',
+        arguments: {
+          path: '.',
+          artifactId: randomUUID(),
+          checksum: digest,
+          direction: 'apply',
+          comparisonScope: 'file_organization',
+          files,
+        },
+      };
+      input.snapshot.binding.execution = {
+        ...input.snapshot.binding.execution,
+        targetKind: 'rice_bridge',
+        deviceId,
+        workCopy: { id: randomUUID(), kind: 'in_place' },
+      };
+      input.snapshot.binding.action = 'local.fs.changeset';
+      input.snapshot.binding.inputDigest = runtimeLedgerInputDigest(
+        input.bridgePayload,
+      );
+      await ledger().createOperation(input);
+      expect(
+        await ledger().claimNextBridgeOperation({
+          scope: f.scope,
+          deviceId,
+          leaseMs: 60000,
+          supportsChangeset: true,
+        }),
+      ).toBeNull();
+      const lease = await ledger().claimNextBridgeOperation({
+        scope: f.scope,
+        deviceId,
+        leaseMs: 60000,
+        supportsChangeset: true,
+        supportsFileOrganization: true,
+      });
+      expect(lease).not.toBeNull();
+      await ledger().startOperation(
+        receipt(lease!, { type: 'operation.transport_ack' }),
+      );
+      const output = {
+        contractVersion: 1,
+        files: files.map((file) => ({
+          path: file.path,
+          status: 'applied',
+          beforeChecksum: digest,
+          afterChecksum: digest,
+          organization: {
+            target: file.organization.target,
+            operation: 'move',
+            stage: 'complete',
+            sourceRemoved: true,
+            file: file.organization.source,
+            recovery: { path: file.organization.target, checksum: digest },
+          },
+        })),
+      };
+      const success: RuntimeOperationSignal = {
+        type: 'operation.outcome',
+        result: {
+          status: 'succeeded',
+          effects: 'applied',
+          evidence: {
+            id: randomUUID(),
+            recordedAt: new Date().toISOString(),
+            digest,
+          },
+        },
+      };
+      const wrong: unknown[] = [
+        { ...output, files: output.files.slice(0, 1) },
+        { ...output, files: [...output.files].reverse() },
+        {
+          ...output,
+          files: output.files.map((r, i) =>
+            i ? r : { ...r, path: 'unapproved' },
+          ),
+        },
+        {
+          ...output,
+          files: output.files.map((r, i) =>
+            i
+              ? r
+              : {
+                  ...r,
+                  organization: { ...r.organization, target: 'unapproved' },
+                },
+          ),
+        },
+        {
+          ...output,
+          files: output.files.map((r, i) =>
+            i
+              ? r
+              : {
+                  ...r,
+                  organization: {
+                    ...r.organization,
+                    stage: 'destination_committed',
+                  },
+                },
+          ),
+        },
+        {
+          ...output,
+          files: output.files.map((r, i) =>
+            i
+              ? r
+              : {
+                  ...r,
+                  organization: {
+                    ...r.organization,
+                    file: {
+                      ...r.organization.file,
+                      checksum: `sha256:${'c'.repeat(64)}`,
+                    },
+                  },
+                },
+          ),
+        },
+        {
+          ...output,
+          files: output.files.map((r, i) =>
+            i
+              ? r
+              : {
+                  ...r,
+                  status: 'pending',
+                  organization: {
+                    target: r.organization.target,
+                    operation: 'move',
+                    stage: 'pending',
+                    sourceRemoved: false,
+                  },
+                },
+          ),
+        },
+      ];
+      for (const bad of wrong)
+        await expect(
+          ledger().recordReceipt({
+            ...receipt(lease!, success),
+            evidence: { output: bad },
+          }),
+        ).rejects.toThrow('invalid_state');
+      let signal: RuntimeOperationSignal = success;
+      if (terminal !== 'succeeded') {
+        output.files[1] = {
+          ...output.files[1]!,
+          status: terminal === 'partial' ? 'conflict' : 'unknown',
+          organization: {
+            target: 'new-b.pdf',
+            operation: 'move',
+            stage: 'prepared',
+            sourceRemoved: false,
+          },
+        } as (typeof output.files)[number];
+        signal =
+          terminal === 'partial'
+            ? {
+                ...success,
+                result: {
+                  ...success.result,
+                  status: 'partial',
+                  effects: 'partial',
+                },
+              }
+            : { type: 'operation.uncertain', reason: 'receipt_missing' };
+        await expect(
+          ledger().recordReceipt({
+            ...receipt(lease!, success),
+            evidence: { output },
+          }),
+        ).rejects.toThrow('invalid_state');
+      }
+      const recorded = await ledger().recordReceipt({
+        ...receipt(lease!, signal),
+        evidence: { output },
+      });
+      expect(recorded.disposition).toBe('applied');
+      expect(recorded.snapshot.status).toBe(terminal);
+    },
+  );
+
   it('does not start an admitted child after its root Run has terminated', async () => {
     const f = await fixture();
     const lease = await dispatch(f.make());

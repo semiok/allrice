@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import { executeFileOrganization } from './file-organization.js';
 import {
   RuntimeChangesetSchema,
+  changesetFileChecksums,
   type RuntimeChangeset,
   type ChangesetFileResult,
   type ChangesetExecutionResult,
@@ -18,8 +20,17 @@ export function initialChangesetResults(
   return payload.arguments.files.map((f) => ({
     path: f.path,
     status: 'pending',
-    beforeChecksum: f.before?.checksum ?? null,
-    afterChecksum: f.after?.checksum ?? null,
+    ...changesetFileChecksums(f),
+    ...('organization' in f
+      ? {
+          organization: {
+            target: f.organization.target,
+            operation: f.organization.operation,
+            stage: 'pending',
+            sourceRemoved: false,
+          },
+        }
+      : {}),
   }));
 }
 /** Journal checkpoints bracket each real side effect. No retry loop or auto-resume. */
@@ -29,10 +40,13 @@ export async function executeChangeset(
   controls: {
     checkpoint: (index: number, result: ChangesetFileResult) => Promise<void>;
     authorize: () => Promise<boolean>;
+    signal?: AbortSignal;
   },
 ): Promise<ChangesetExecutionResult> {
   const payload = RuntimeChangesetSchema.parse(input),
     results = initialChangesetResults(payload);
+  if (payload.arguments.comparisonScope === 'file_organization')
+    return executeFileOrganization(root, payload, controls, results);
   const report = async (
     index: number,
     status: ChangesetFileResult['status'],

@@ -334,6 +334,23 @@ export function createGovernedBridgePolicyOptions(
 
       const settings = bridgeSettingsView(target.metadata).settings;
       if (
+        changeset?.arguments.comparisonScope === 'file_organization' &&
+        (
+          target.metadata.environment as
+            { fileOrganizationVersion?: unknown } | undefined
+        )?.fileOrganizationVersion !== 1
+      )
+        throw new RuntimePolicyError('bridge_authority_changed');
+      if (
+        payload.capability === 'local.fs.list' &&
+        payload.arguments.survey &&
+        (
+          target.metadata.environment as
+            { fileSurveyVersion?: unknown } | undefined
+        )?.fileSurveyVersion !== 1
+      )
+        throw new RuntimePolicyError('bridge_authority_changed');
+      if (
         ((command || mcp || python) && !settings.localCommand) ||
         (command?.arguments.candidate && !settings.development)
       )

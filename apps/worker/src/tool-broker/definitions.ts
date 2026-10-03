@@ -5,6 +5,7 @@ import {
   OfficePdfExportSchema,
   runtimeFeatureEnabled,
   PythonExecuteArgsSchema,
+  LocalFileSurveyInputSchema,
 } from '@allrice/contracts';
 import {
   allRiceToolManifest,
@@ -401,7 +402,7 @@ export const riceToolDefinitions = [
           type: 'string',
           enum: ['document', 'plan', 'changeset'],
           description:
-            'document 为文档，plan 为计划；changeset 为当前 Bridge 目录的文件修改提案，必须 format=json，content 为 {"files":[{"path":"相对路径","before":"原文或null（新文件）","after":"修改后全文或null（删除）"}]}。先读取原文，最多32个文件，不传设备ID/授权/校验和。服务端绑定目录，右栏展示 Diff；生成提案不修改文件，用户请求应用后，按成员工作方式自动执行或请求确认。',
+            'document 为文档，plan 为计划；changeset 必须 format=json。文本修改 content 为 {"files":[{"path":"相对路径","before":"原文或null（新文件）","after":"修改后全文或null（删除）"}]}，先读取原文。原字节文件整理使用 {"operations":[{"path":"原路径","target":"目标路径","operation":"copy|move|rename","source":{"checksum":"调查返回的SHA","version":"调查返回的原生版本","sizeBytes":字节数},"expectedDestination":null}]}，source 只能来自 local.fs.list 的 survey.hash=true 结果，不能用 local.file.inspect 的不同版本替代。最多32项、单文件9000000B、合计128000000B；目标父目录必须已有、同名目标不覆盖、路径不交叉，不支持永久删除。服务端绑定当前授权目录，右栏展示原文 Diff 或文件整理清单；生成提案不修改文件，用户请求应用后按成员工作方式执行。文件整理的逐项成功、未执行及未知结果分别保留；只恢复已确认移动且仍为原目标版本的文件，复制件保留。',
         },
         format: {
           type: 'string',
@@ -468,12 +469,15 @@ export const riceToolDefinitions = [
   {
     name: 'local.fs.list',
     description:
-      '列出当前用户已通过 Rice Bridge 明确授权的 Mac 文件夹内容。仅支持相对路径和只读访问。',
+      '列出当前用户已通过 Rice Bridge 明确授权的 Mac 文件夹内容。survey 可按文件名、扩展名、时间与大小调查，按原字节哈希查重或比较两子目录；仅只读相对路径，必须保留扫描不完整与跳过原因，查重不会删除文件。需要支持调查的新版 Bridge。',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', default: '.' },
         limit: { type: 'integer', minimum: 1, maximum: 200 },
+        survey: z.toJSONSchema(LocalFileSurveyInputSchema, {
+          unrepresentable: 'any',
+        }),
       },
       additionalProperties: false,
     },

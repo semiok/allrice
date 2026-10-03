@@ -26,6 +26,7 @@ const labels: Record<string, string> = {
 };
 export function ChangesetPanel({
   artifact,
+  organizationPlan = false,
   sessionId,
   workspaceId,
   headers,
@@ -33,6 +34,7 @@ export function ChangesetPanel({
   onContinued,
 }: {
   artifact: WorkbenchArtifact;
+  organizationPlan?: boolean;
   sessionId: string;
   workspaceId: string;
   headers: Record<string, string>;
@@ -194,7 +196,7 @@ export function ChangesetPanel({
           disabled={busy || disabled || artifact.stale}
           onClick={() => void requestExecution(null)}
         >
-          请求应用本版变更
+          {organizationPlan ? '请求整理这些文件' : '请求应用本版变更'}
         </button>
       ) : null}
       {records?.map((item) => {
@@ -234,17 +236,33 @@ export function ChangesetPanel({
                   {item.payload.arguments.files.map((f) => (
                     <li key={f.path}>
                       <code>{f.path}</code>
-                      <small>
-                        {f.before?.checksum ?? '不存在'} →{' '}
-                        {f.after?.checksum ?? '删除文件'}
-                      </small>
-                      <details>
-                        <summary>审查 {f.path} 的本次前后内容</summary>
-                        <strong>执行前</strong>
-                        <pre>{f.before?.text ?? '文件不存在'}</pre>
-                        <strong>执行后</strong>
-                        <pre>{f.after?.text ?? '删除这个文件'}</pre>
-                      </details>
+                      {'organization' in f ? (
+                        <small>
+                          {
+                            { copy: '复制', move: '移动', rename: '重命名' }[
+                              f.organization.operation
+                            ]
+                          }{' '}
+                          → <code>{f.organization.target}</code>
+                          <br />
+                          内容 {f.organization.source.checksum} ·{' '}
+                          {f.organization.source.sizeBytes} 字节；目标须为空
+                        </small>
+                      ) : (
+                        <>
+                          <small>
+                            {f.before?.checksum ?? '不存在'} →{' '}
+                            {f.after?.checksum ?? '删除文件'}
+                          </small>
+                          <details>
+                            <summary>审查 {f.path} 的本次前后内容</summary>
+                            <strong>执行前</strong>
+                            <pre>{f.before?.text ?? '文件不存在'}</pre>
+                            <strong>执行后</strong>
+                            <pre>{f.after?.text ?? '删除这个文件'}</pre>
+                          </details>
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -285,6 +303,26 @@ export function ChangesetPanel({
                 {item.evidence.result.files.map((f) => (
                   <li key={f.path}>
                     <code>{f.path}</code> · {labels[f.status]}
+                    {f.organization ? (
+                      <small>
+                        目标：<code>{f.organization.target}</code> · 阶段：
+                        {f.organization.stage}
+                        {f.organization.recovery ? (
+                          <>
+                            <br />
+                            核对位置：
+                            <code>{f.organization.recovery.path}</code>
+                          </>
+                        ) : null}
+                        {f.organization.sourceRecovery ? (
+                          <>
+                            <br />
+                            源文件核对位置：
+                            <code>{f.organization.sourceRecovery.path}</code>
+                          </>
+                        ) : null}
+                      </small>
+                    ) : null}
                     {f.errorCode ? <small>{f.errorCode}</small> : null}
                   </li>
                 ))}
@@ -295,7 +333,14 @@ export function ChangesetPanel({
             {stopped &&
             !item.restoreOf &&
             !records.some((r) => r.restoreOf === item.runId) &&
-            item.evidence.result?.files.some((f) => f.status === 'applied') ? (
+            item.evidence.result?.files.some(
+              (f) =>
+                f.status === 'applied' &&
+                (!f.organization ||
+                  (f.organization.operation !== 'copy' &&
+                    f.organization.sourceRemoved &&
+                    f.organization.file)),
+            ) ? (
               <button
                 type="button"
                 disabled={busy || disabled}
@@ -308,7 +353,10 @@ export function ChangesetPanel({
         );
       })}
       <small>
-        恢复仅反转有回执的文件，再检查现状
+        {organizationPlan
+          ? '恢复仅处理已确认移动或重命名的文件，复制成果继续保留。'
+          : '恢复仅反转有回执的文件。'}
+        再检查现状
         SHA；用户后续修改不会按旧版本覆盖。结果未知的文件需人工核对，不包含在恢复动作中。
       </small>
     </section>
