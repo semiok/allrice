@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { it } from 'vitest';
+import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 it('P21 browser uses native DSH to the existing Broker, with exact action envelope', async () => {
   await nativeBrokerRoundtrip({
@@ -21,3 +21,53 @@ it('P21 browser uses native DSH to the existing Broker, with exact action envelo
     },
   });
 }, 45000);
+
+it.each([
+  { command: 'open', url: 'https://example.com/' },
+  {
+    command: 'open',
+    url: 'https://example.com/',
+    location: 'local',
+    requireLocalInputs: true,
+  },
+  {
+    command: 'open',
+    url: 'https://example.com/',
+    location: 'cloud',
+    requireLocalInputs: false,
+  },
+])(
+  'passes browser open constraints unchanged through real DSH: %j',
+  async (args) => {
+    await nativeBrokerRoundtrip({
+      canonicalName: 'browser.workspace',
+      wireName: 'browser_workspace',
+      args,
+      invalidArgs: {
+        command: 'open',
+        url: 'https://example.com/',
+        location: 'host',
+      },
+      inspectSchema(schema) {
+        expect(schema.properties).toMatchObject({
+          location: { type: 'string', enum: ['auto', 'local', 'cloud'] },
+          requireLocalInputs: { type: 'boolean' },
+        });
+        expect(schema.required).not.toContain('location');
+        expect(schema.required).not.toContain('requireLocalInputs');
+      },
+    });
+  },
+  45_000,
+);
+
+it('rejects an attempt to change an existing browser workspace location before the Broker', async () => {
+  const args = { command: 'close', workspaceId: randomUUID(), fence: 1 };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'browser.workspace',
+    wireName: 'browser_workspace',
+    args,
+    invalidArgs: { ...args, location: 'cloud' },
+    invalidResultIncludes: 'open-only',
+  });
+}, 45_000);

@@ -128,6 +128,8 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
     managedOffice: true,
   },
   'browser.workspace': {
+    // Published cloud-only definitions remain valid. The new browser Skill
+    // explicitly assembles local authority when a new draft selects it.
     policyActions: ['cloud.browser.observe', 'cloud.browser.act'],
     services: ['cloud_browser'],
     environment: 'cloud',
@@ -184,7 +186,7 @@ const labels: Partial<Record<AllRiceToolName, string>> = {
   'local.process.stop': '停止本地服务',
   'cloud.process.execute': '云端隔离脚本',
   'python.execute': 'Python 计算与图表（本地优先）',
-  'browser.workspace': '云端浏览器工作区',
+  'browser.workspace': '专用浏览器（本地优先）',
   'local.browser.workspace': '本地独立浏览器',
   'local.preview.open': '本地项目预览',
   'browser.run': '传统云端网页读取',

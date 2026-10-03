@@ -198,17 +198,21 @@
       "id": "f23bc35e-2c1b-4aca-89e3-f6ca8e2b37e8",
       "name": "browser-research",
       "contentFile": "skills/browser-research/SKILL.md",
-      "version": "1.1.0",
-      "checksum": "sha256:15f4152a057c16f1a842b18c74cbbaebc49e6cb259eff9627c3fab7d680f0904",
+      "version": "1.2.0",
+      "checksum": "sha256:5ba406aba7f32c3bf2cbf9e2684933a4afdd8ff727eb940c514ef8901838a1ad",
       "source": "allrice",
-      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/browser-research?content-sha256=15f4152a057c16f1a842b18c74cbbaebc49e6cb259eff9627c3fab7d680f0904",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/browser-research?content-sha256=5ba406aba7f32c3bf2cbf9e2684933a4afdd8ff727eb940c514ef8901838a1ad",
       "license": "Apache-2.0",
       "reviewStatus": "reviewed",
-      "reviewedByLabel": "MET-98",
+      "reviewedByLabel": "MET-164 PR5",
       "createdByLabel": "MET-98 P1-3 browser Skill seed",
       "modelInvocable": true,
       "userInvocable": true,
-      "requiredToolRefs": ["browser.run"],
+      "requiredToolRefs": [
+        "browser.workspace",
+        "local.browser.workspace",
+        "browser.run"
+      ],
       "enabled": true
     },
     {
