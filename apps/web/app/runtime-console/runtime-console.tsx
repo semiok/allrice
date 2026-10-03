@@ -165,6 +165,10 @@ function tenantBridgeStatusLabel(tenant: TenantRuntimeItem) {
 }
 
 export function RuntimeConsole() {
+  const [organizationNavigation, setOrganizationNavigation] = useState({
+    busy: false,
+    dirty: false,
+  });
   const [view, setView] = useState<
     | 'activity'
     | 'runtimes'
@@ -221,12 +225,20 @@ export function RuntimeConsole() {
         | 'tenants'
         | 'feedback',
     ) => {
+      if (next === view) return;
+      if (
+        view === 'tenants' &&
+        (organizationNavigation.busy ||
+          (organizationNavigation.dirty &&
+            !window.confirm('放弃尚未保存的修改？')))
+      )
+        return;
       setView(next);
       const url = new URL(window.location.href);
       url.searchParams.set('view', next);
       window.history.replaceState(null, '', url);
     },
-    [],
+    [view, organizationNavigation],
   );
 
   const load = useCallback(
@@ -535,7 +547,9 @@ export function RuntimeConsole() {
       ) : view === 'feedback' ? (
         <TenantFeedback />
       ) : view === 'tenants' ? (
-        <OrganizationAdministration />
+        <OrganizationAdministration
+          onNavigationStateChange={setOrganizationNavigation}
+        />
       ) : view === 'employees' ? (
         <EmployeeProduction />
       ) : view === 'capabilities' ? (

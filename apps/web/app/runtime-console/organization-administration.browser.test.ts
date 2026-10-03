@@ -188,13 +188,15 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
   }, 120000);
   afterAll(async () => {
     await browser?.close();
-    await new Promise<void>((done) =>
-      server ? server.close(() => done()) : done(),
-    );
+    await new Promise<void>((done) => {
+      if (!server) return done();
+      server.close(() => done());
+      server.closeAllConnections();
+    });
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
-  });
+  }, 30000);
 
   it.each([1440, 390])(
     'scopes runtime navigation by company and person, including people without sessions (%i)',
@@ -979,14 +981,16 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         .getByRole('button', { name: '创建这些员工', exact: true })
         .click();
       await page.getByRole('row').filter({ hasText: '小陈' }).waitFor();
+      await row.locator('summary').click();
       await row.getByRole('button', { name: '编辑', exact: true }).click();
       await page.getByLabel('姓名', { exact: true }).fill('林小雪');
       await page.getByLabel('岗位', { exact: true }).fill('财务经理');
       await page.getByRole('button', { name: '保存员工', exact: true }).click();
       await expect.poll(() => row.textContent()).toContain('财务经理');
+      await row.locator('summary').click();
       await row.getByRole('button', { name: '重置密码', exact: true }).click();
-      const reset = page.locator('form').filter({
-        has: page.getByRole('heading', { name: '重置 林小雪 的密码' }),
+      const reset = page.getByRole('dialog', {
+        name: '重置 林小雪 的密码',
       });
       await reset
         .getByLabel('新密码', { exact: true })
@@ -1001,11 +1005,13 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       expect(
         (await login({ username, password: 'browser-new-password' })).user.id,
       ).toBe(signed.user.id);
+      await row.locator('summary').click();
       await row.getByRole('button', { name: '停用账号', exact: true }).click();
       await row.getByText('已停用', { exact: true }).waitFor();
       await expect(
         login({ username, password: 'browser-new-password' }),
       ).rejects.toMatchObject({ code: 'authentication_failed' });
+      await row.locator('summary').click();
       await row.getByRole('button', { name: '启用账号', exact: true }).click();
       await row.getByText('可登录', { exact: true }).waitFor();
       await page.getByRole('button', { name: '批量导入', exact: true }).click();
@@ -1073,6 +1079,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         },
       ],
     });
+    const historicalWorkspace = randomUUID();
+    await fixture.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${historicalWorkspace},${c.organizationId},'historic','历史研发组')`;
+    await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role,active) select ${c.organizationId},${historicalWorkspace},id,'member',true from allrice_users where username in ('assignment-snow','assignment-drink')`;
     const context = await browser.newContext({
       viewport: { width: 1360, height: 1000 },
     });
@@ -1088,7 +1097,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         .getByRole('heading', { name: '批量配发公司', exact: true })
         .waitFor();
       await page.getByLabel('选择 配发小雪', { exact: true }).check();
-      await page.getByRole('button', { name: '配置已选员工的 AI · 1' }).click();
+      await page
+        .getByRole('button', { name: '配发 AI 员工', exact: true })
+        .click();
       const editor = page.getByRole('region', {
         name: '员工 AI 配发',
         exact: true,
@@ -1119,7 +1130,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await ai.getByRole('button', { name: '移除', exact: true }).click();
       await expect.poll(() => ai.textContent()).toContain('0 / 1 人当前可用');
       await editor.getByRole('button', { name: '完成', exact: true }).click();
-      await page.getByText('公司 AI 员工、应用与用量', { exact: true }).click();
+      await page
+        .getByRole('tab', { name: '公司 AI 员工', exact: true })
+        .click();
       const defaults = page.getByRole('region', {
         name: '全员自动配发 AI 员工',
         exact: true,
@@ -1154,6 +1167,96 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       expect(
         (await getEmployeeWorkspace(b, c.defaultWorkspaceId)).employees,
       ).toHaveLength(1);
+      await editor.getByRole('button', { name: '完成', exact: true }).click();
+      await page.setViewportSize({ width: 320, height: 1000 });
+      const companyNameFits = await page
+        .getByLabel('管理公司', { exact: true })
+        .evaluate((node) => {
+          const select = node as HTMLSelectElement;
+          const style = getComputedStyle(select);
+          const canvas = document.createElement('canvas').getContext('2d')!;
+          canvas.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+          return (
+            select.clientWidth >=
+            canvas.measureText(select.selectedOptions[0]!.text).width
+          );
+        });
+      expect(companyNameFits).toBe(true);
+      await page.getByLabel('查找员工', { exact: true }).fill('运营');
+      await page.getByRole('button', { name: '查找', exact: true }).click();
+      await page.getByLabel('选择 配发小李', { exact: true }).check();
+      await page.getByLabel('查找员工', { exact: true }).fill('财务');
+      await page.getByLabel('查找员工', { exact: true }).press('Enter');
+      await page.getByLabel('选择 配发小雪', { exact: true }).waitFor();
+      expect(
+        await page.getByLabel('选择 配发小雪', { exact: true }).isChecked(),
+      ).toBe(false);
+      expect(await page.getByText('已选 1 人', { exact: true }).count()).toBe(
+        0,
+      );
+      await page.locator('summary[aria-label="批量配发"]').click();
+      await page
+        .getByRole('button', { name: '配发给筛选结果', exact: true })
+        .click();
+      await ai.getByRole('button', { name: '移除', exact: true }).click();
+      await expect.poll(() => ai.textContent()).toContain('0 / 1 人当前可用');
+      expect(
+        (await getEmployeeWorkspace(b, c.defaultWorkspaceId)).employees,
+      ).toHaveLength(1);
+      await editor.getByRole('button', { name: '完成', exact: true }).click();
+      await page.getByRole('button', { name: '清空查找', exact: true }).click();
+      await page.getByLabel('选择 配发小李', { exact: true }).waitFor();
+      await page.locator('summary[aria-label="批量配发"]').click();
+      await page
+        .getByRole('button', { name: '配发给全公司', exact: true })
+        .click();
+      await ai
+        .getByRole('button', { name: '跟随公司默认', exact: true })
+        .click();
+      await expect.poll(() => ai.textContent()).toContain('2 / 2 人当前可用');
+      await editor.getByRole('button', { name: '完成', exact: true }).click();
+      const peopleTab = page.getByRole('tab', {
+        name: '员工账号',
+        exact: true,
+      });
+      await peopleTab.focus();
+      await peopleTab.press('ArrowRight');
+      await defaults.waitFor();
+      expect(await page.getByLabel('历史工作区', { exact: true }).count()).toBe(
+        1,
+      );
+      await page
+        .getByLabel('历史工作区', { exact: true })
+        .selectOption(historicalWorkspace);
+      const historicAi = defaults
+        .getByRole('row')
+        .filter({ hasText: source.definition.name });
+      await expect
+        .poll(() => historicAi.textContent())
+        .toContain('0 / 2 人当前可用');
+      await historicAi
+        .getByLabel(`全员自动配发 ${source.definition.name}（含新员工）`, {
+          exact: true,
+        })
+        .click();
+      await expect
+        .poll(() => historicAi.textContent())
+        .toContain('2 / 2 人当前可用');
+      const originalCatalog = await context.request.get(
+        `${origin}/api/v1/admin/organizations/${c.organizationId}/ai-employees?${new URLSearchParams({ workspaceId: c.defaultWorkspaceId, target: JSON.stringify({ type: 'all' }) })}`,
+      );
+      expect(originalCatalog.status()).toBe(200);
+      expect(
+        (await originalCatalog.json()).employees.find(
+          (employee: { employeeId: string }) =>
+            employee.employeeId === source.employeeId,
+        ),
+      ).toMatchObject({ inheritedByDefault: true, targetAssignedCount: 2 });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
       if (process.env.ALLRICE_ORG_SCREENSHOT)
         await page.screenshot({
           path: process.env.ALLRICE_ORG_SCREENSHOT,
