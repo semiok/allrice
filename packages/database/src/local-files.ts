@@ -4,6 +4,7 @@ import {
   LocalFilePayloadSchema,
   FileDerivationPayloadSchema,
   FileDerivationContentSchema,
+  fileDerivationMediaType,
   type FileDerivationPayload,
   LocalFileUserRequestSchema,
   LocalFileObjectSchema,
@@ -484,13 +485,19 @@ async function commitLocalFileUpload(input: {
     const file = await createStorageMetadata(current.context, {
       id: objectId,
       workspaceId: current.device.workspaceId,
-      category: 'uploads',
+      category:
+        current.payload.capability === 'local.file.derive' &&
+        !current.payload.arguments.request.kind.startsWith('zip_')
+          ? 'artifacts'
+          : 'uploads',
       mediaType: version.mediaType,
       sizeBytes: version.sizeBytes,
       checksum: version.checksum,
       visibility: 'private',
       retentionUntil: null,
-      immutable: false,
+      immutable:
+        current.payload.capability === 'local.file.derive' &&
+        !current.payload.arguments.request.kind.startsWith('zip_'),
     });
     pending = true;
     const reader = input.stream.getReader();
@@ -612,10 +619,7 @@ export async function storeLocalFileDerivation(input: {
   if (
     request.kind === 'zip_list' ||
     metadata.fileName !== request.fileName ||
-    metadata.mediaType !==
-      (request.kind === 'zip_pack'
-        ? 'application/zip'
-        : 'application/octet-stream')
+    metadata.mediaType !== fileDerivationMediaType(request)
   )
     throw new DataAccessError('grant_invalid');
   const object = LocalFileObjectSchema.parse({

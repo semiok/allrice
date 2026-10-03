@@ -621,6 +621,13 @@ async function startSession(
       managedPdf: { state: pdfState, profile: pdfProfile, reason: pdfReason },
     });
   const publish = () => {
+    if (
+      pdfState === 'ready' &&
+      state.environment!.fileDerivationVersion === 1 &&
+      !state.environment!.paused
+    )
+      state.environment!.documentTransformsVersion = 1;
+    else delete state.environment!.documentTransformsVersion;
     state.environment!.readiness = capabilityReadiness();
     options.onState?.({
       ...state,

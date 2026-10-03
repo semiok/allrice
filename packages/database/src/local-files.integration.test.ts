@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { publishLocalFileDerivationArtifacts } from './local-file-deliverables.ts';
 import { createServer } from 'node:http';
 import {
   mkdtemp,
@@ -61,6 +62,7 @@ import * as client from './core/client.ts';
 import * as data from './data.ts';
 import { executeFileDerivation } from '../../../apps/rice-bridge/src/file-derivation.js';
 import { readFileArchive } from '../../../apps/rice-bridge/src/file-archives.js';
+import { transformDocuments } from '../../../apps/rice-bridge/src/document-transforms.js';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -175,7 +177,12 @@ suite(
           sandbox: 'unavailable',
           preview: 'unavailable',
           paused: false,
-          ...(deriving ? { fileDerivationVersion: 1 as const } : {}),
+          ...(deriving
+            ? {
+                fileDerivationVersion: 1 as const,
+                documentTransformsVersion: 1 as const,
+              }
+            : {}),
           readiness: capabilities.map((capability) => ({
             capability,
             state: 'ready',
@@ -534,6 +541,153 @@ suite(
         payload: FileDerivationPayloadSchema.parse(claim.bridgePayload),
       };
     }
+    async function readyPdf() {
+      const f = await fixture(true),
+        path = '原始.pdf';
+      const original = await readFile(
+        new URL(
+          '../../../tests/fixtures/pdf/01-chinese-multipage-digital.pdf',
+          import.meta.url,
+        ),
+      );
+      await writeFile(join(f.folder, path), original);
+      const run = await runningDerivation(f, {
+        inputs: [{ path, expected: await inspectLocalFile(f.folder, path) }],
+        request: { kind: 'pdf_extract', pages: [2, 1], fileName: '提取.pdf' },
+      });
+      const output = await executeFileDerivation(f.folder, run.payload, {
+        readSource: fixtureSource,
+        authorize: async () => true,
+        transform: async (sources, request, controls) => {
+          if (request.kind !== 'pdf_extract')
+            throw Error('unexpected fixture request');
+          const [result] = await transformDocuments(
+            sources,
+            { ...request, name: request.fileName },
+            controls,
+          );
+          // Synthetic process evidence tests DB authority only. Packaged native
+          // PID/stop verification is a separate macOS acceptance gate.
+          return {
+            bytes: Buffer.from(result!.bytes),
+            processing: {
+              stopped: true,
+              reason: 'completed',
+              guardianPid: 12,
+              readerPid: 13,
+              observedPeakRssBytes: 1,
+            },
+          };
+        },
+        upload: (metadata, bytes) =>
+          storeLocalFileDerivation({
+            token: f.token,
+            kind: 'operation',
+            id: run.identity.operationId,
+            leaseToken: run.identity.leaseToken,
+            metadata,
+            stream: stream(bytes),
+            storage: f.storage,
+          }),
+      });
+      const complete = () =>
+        run.ledger.recordReceipt({
+          ...run.identity,
+          receiptId: randomUUID(),
+          signal: {
+            type: 'operation.outcome',
+            result: {
+              status: 'succeeded',
+              effects: 'applied',
+              evidence: {
+                id: randomUUID(),
+                recordedAt: new Date().toISOString(),
+                digest: runtimePolicyDigest(output),
+              },
+            },
+          },
+          evidence: { output },
+        });
+      return { f, run, output, original, complete };
+    }
+    it('publishes only the completed native operation and reuses immutable bytes, quota, and one formal version', async () => {
+      const { f, run, output, original, complete } = await readyPdf();
+      const input = {
+        context: f.execution,
+        operationId: run.identity.operationId,
+      };
+      await expect(
+        publishLocalFileDerivationArtifacts(input, f.storage, database.db),
+      ).rejects.toMatchObject({ code: 'local_file_result_unconfirmed' });
+      const before =
+        await database.db`select id,size_bytes,category,immutable from allrice_storage_objects where id=${output.object!.objectId}`;
+      expect(before[0]).toMatchObject({
+        category: 'artifacts',
+        immutable: true,
+      });
+      await complete();
+      const published = await publishLocalFileDerivationArtifacts(
+        input,
+        f.storage,
+        database.db,
+      );
+      expect(published.objectId).toBe(output.object!.objectId);
+      expect(
+        await publishLocalFileDerivationArtifacts(
+          input,
+          f.storage,
+          database.db,
+        ),
+      ).toEqual(published);
+      expect(
+        await database.db`select id,size_bytes,category,immutable from allrice_storage_objects where id=${output.object!.objectId}`,
+      ).toEqual(before);
+      expect(
+        await database.db`select version_id from allrice_workbench_artifacts where request_id=${run.identity.operationId}`,
+      ).toHaveLength(1);
+      expect(
+        await database.db`select id from allrice_deliverable_versions where object_id=${output.object!.objectId}`,
+      ).toHaveLength(1);
+      const stored = await getStoredFile(
+        f.context,
+        published.objectId,
+        database.db,
+      );
+      const bytes = new Uint8Array(
+        await new Response(await f.storage.get(stored.object)).arrayBuffer(),
+      );
+      expect(checksum(bytes)).toBe(output.object!.checksum);
+      expect(await readFile(join(f.folder, '原始.pdf'))).toEqual(original);
+    }, 30000);
+    it.each(['grant', 'membership', 'root-cancel', 'session'] as const)(
+      'a completed PDF cannot become a formal success after %s is revoked',
+      async (reason) => {
+        const { f, run, output, complete } = await readyPdf();
+        await complete();
+        if (reason === 'grant')
+          await database.db`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
+        if (reason === 'membership')
+          await database.db`update allrice_memberships set active=false where user_id=${f.user}`;
+        if (reason === 'root-cancel')
+          await database.db`update allrice_runtime_roots set cancel_request_id=${randomUUID()},cancel_reason='user_request',cancel_requested_at=clock_timestamp() where root_run_id=${f.run}`;
+        if (reason === 'session')
+          await database.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.session}`;
+        await expect(
+          publishLocalFileDerivationArtifacts(
+            { context: f.execution, operationId: run.identity.operationId },
+            f.storage,
+            database.db,
+          ),
+        ).rejects.toThrow();
+        expect(
+          await database.db`select version_id from allrice_workbench_artifacts where request_id=${run.identity.operationId}`,
+        ).toHaveLength(0);
+        expect(
+          await database.db`select id from allrice_storage_objects where id=${output.object!.objectId} and state='ready'`,
+        ).toHaveLength(1);
+      },
+      30000,
+    );
     it('ordinary-member ZIP pack → private HTTP attachment → local save → list/extract verifies actual bytes and ledger receipts', async () => {
       const f = await fixture(true),
         path = '实际 中文.bin',

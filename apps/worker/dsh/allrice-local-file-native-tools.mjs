@@ -79,7 +79,7 @@ export const localFileNativeTools = [
     canonicalName: 'local.file.derive',
     wireName: 'local_file_derive',
     description:
-      'Process inspected local bytes into a bounded ZIP or extract one named entry as a private downloadable attachment. This preserves source files and does not write host destinations. Use exact expected from local_file_inspect, never the native survey version. ZIP input/output and unpacked total each <=9000000 bytes, at most32 files. Reject traversal, links, encryption, duplicate names, invalid CRC or oversized expansion. To create a host file, separately call local_file_save with the returned objectId and checksum; never overwrite or retry unknown effects.',
+      'Process inspected local bytes into a bounded ZIP, merge/extract/rotate PDF pages, or resize/re-encode PNG/JPEG/WebP as a private downloadable attachment. PDF pages are unique one-based numbers; rotations90/180/270; encrypted, signed or form PDFs refused. Image width/height are exact pixels, dimensions<=8192 and<=16MP; PNG/WebP retain alpha, JPEG uses white, animations use first frame, EXIF/ICC removed. PDF/image processing is a fixed isolated supervised native process, never host Python. This preserves source files and does not write host destinations. Use exact expected from local_file_inspect, never the native survey version. ZIP input/output and unpacked total each <=9000000 bytes, at most32 files. Reject traversal, links, encryption, duplicate names, invalid CRC or oversized expansion. To create a host file, separately call local_file_save with the returned objectId and checksum; never overwrite or retry unknown effects.',
     presentation: 'tool',
     timeoutMs: 3_800_000,
     isConcurrencySafe: false,
@@ -107,7 +107,16 @@ export const localFileNativeTools = [
           kind: {
             type: 'string',
             required: true,
-            enum: ['zip_pack', 'zip_list', 'zip_extract'],
+            enum: [
+              'zip_pack',
+              'zip_list',
+              'zip_extract',
+              'pdf_merge',
+              'pdf_extract',
+              'pdf_rotate',
+              'image_resize',
+              'image_format',
+            ],
           },
           fileName: {
             type: 'string',
@@ -118,6 +127,37 @@ export const localFileNativeTools = [
             type: 'string',
             description:
               'Exact safe archive entry path; required only for extract.',
+          },
+          pages: {
+            type: 'array',
+            items: { type: 'integer' },
+            description:
+              'One-based unique PDF pages in requested order; required for pdf_extract, optional for rotate.',
+          },
+          degrees: {
+            type: 'integer',
+            enum: [90, 180, 270],
+            description: 'Required clockwise rotation for pdf_rotate.',
+          },
+          format: {
+            type: 'string',
+            enum: ['png', 'jpeg', 'webp'],
+            description:
+              'Required image output format; filename suffix must match.',
+          },
+          width: {
+            type: 'integer',
+            description:
+              'Required exact output pixel width for image_resize, at most8192.',
+          },
+          height: {
+            type: 'integer',
+            description:
+              'Required exact output pixel height for image_resize, at most8192, total pixels<=16000000.',
+          },
+          quality: {
+            type: 'number',
+            description: 'Optional encoded image quality, 0.01 through1.',
           },
         },
       },

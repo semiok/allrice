@@ -1,6 +1,17 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { connect } from 'node:net';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { z } from 'zod';
+import {
+  DocumentDerivationRequestSchema,
+  LocalFilePathSchema,
+  localFileMaximumBytes,
+} from '@allrice/contracts';
+import {
+  transformDocuments,
+  DocumentTransformError,
+} from './document-transforms.js';
 import {
   configureTrustedPdfReaderRuntime,
   readPdfDocument,
@@ -53,6 +64,7 @@ export async function runFixedPdfReader() {
   if (split < 1 || split > 16_384) throw Error('PDF_INPUT_INVALID');
   const header = JSON.parse(input.subarray(0, split).toString('utf8')) as {
     mode: string;
+    request?: unknown;
     options?: {
       pages?: number[];
       maximumCharacters?: number;
@@ -62,6 +74,83 @@ export async function runFixedPdfReader() {
     newFile?: string;
   };
   const bytes = input.subarray(split + 1);
+  if (header.mode === 'transform') {
+    if (Object.keys(header).some((key) => !['mode', 'request'].includes(key)))
+      throw Error('DOCUMENT_TRANSFORM_INVALID_REQUEST');
+    try {
+      const request = DocumentDerivationRequestSchema.parse(header.request);
+      const body = z
+        .object({
+          sources: z
+            .array(
+              z
+                .object({
+                  path: LocalFilePathSchema,
+                  bytesBase64: z.string().max(12_000_000),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(32),
+        })
+        .strict()
+        .parse(JSON.parse(bytes.toString('utf8')));
+      const sources = body.sources.map((s) => {
+        const value = Buffer.from(s.bytesBase64, 'base64');
+        if (value.toString('base64') !== s.bytesBase64)
+          throw Error('DOCUMENT_TRANSFORM_INVALID_SOURCE');
+        return { path: s.path, bytes: value };
+      });
+      if (
+        sources.reduce((n, s) => n + s.bytes.length, 0) > localFileMaximumBytes
+      )
+        throw Error('DOCUMENT_TRANSFORM_LIMIT');
+      const transformed = await transformDocuments(
+        sources,
+        request.kind === 'pdf_merge' ||
+          request.kind === 'pdf_extract' ||
+          request.kind === 'pdf_rotate'
+          ? { ...request, name: request.fileName }
+          : {
+              ...request,
+              ...(request.quality === undefined
+                ? {}
+                : { quality: Math.round(request.quality * 100) }),
+            },
+      );
+      if (transformed.length !== 1)
+        throw Error('DOCUMENT_TRANSFORM_INVALID_RESULT');
+      const output = transformed[0]!;
+      process.stdout.write(
+        JSON.stringify({
+          file: {
+            fileName: request.fileName,
+            mediaType: output.mediaType,
+            sizeBytes: output.bytes.length,
+            checksum:
+              'sha256:' +
+              createHash('sha256').update(output.bytes).digest('hex'),
+            bytesBase64: Buffer.from(output.bytes).toString('base64'),
+          },
+          error: null,
+        }) + '\n',
+      );
+    } catch (error) {
+      process.stdout.write(
+        JSON.stringify({
+          file: null,
+          error: {
+            code:
+              error instanceof DocumentTransformError
+                ? error.code
+                : 'DOCUMENT_TRANSFORM_INVALID_SOURCE',
+          },
+        }) + '\n',
+      );
+      process.exitCode = 1;
+    }
+    return;
+  }
   if (header.mode === 'stop_probe') {
     setInterval(() => undefined, 1000);
     return;

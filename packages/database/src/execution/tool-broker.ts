@@ -558,6 +558,7 @@ export async function registerToolBrokerExport(
           ${input.context.organizationId}, ${workspaceId}, ${input.object.id},
           ${input.sessionId}, ${ownerId}, ${input.fileName}
         )
+        on conflict (object_id, session_id) do nothing
       `;
     }
     if (source)

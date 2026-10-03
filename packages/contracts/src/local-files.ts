@@ -1,5 +1,29 @@
 import { z } from 'zod';
 
+/** Selection by suffix; callers still verify the actual bytes for parsing. */
+export function localFileMediaType(path: string): string {
+  const types: Record<string, string> = {
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    pdf: 'application/pdf',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif',
+    txt: 'text/plain',
+    md: 'text/markdown',
+    csv: 'text/csv',
+    json: 'application/json',
+    zip: 'application/zip',
+  };
+  return (
+    types[path.split('/').at(-1)?.split('.').at(-1)?.toLowerCase() ?? ''] ??
+    'application/octet-stream'
+  );
+}
+
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { platformFileMaximumBytes } from './storage.ts';

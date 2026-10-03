@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
-import { basename } from 'node:path';
 import { z } from 'zod';
 import {
   LocalFilePathSchema,
   LocalFileVersionSchema,
   ChecksumSchema,
   localFileMaximumBytes,
+  localFileMediaType,
   type LocalFileVersion,
 } from '@allrice/contracts';
 import {
@@ -31,21 +31,7 @@ const nativeReadResult = z
   })
   .strict();
 // Same PR3 extension projection. MIME is a selection field, not sniffed data.
-const documentTypes: Record<string, string> = {
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  pdf: 'application/pdf',
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  webp: 'image/webp',
-  gif: 'image/gif',
-  txt: 'text/plain',
-  md: 'text/markdown',
-  csv: 'text/csv',
-  json: 'application/json',
-};
+
 const checksumOf = (bytes: Uint8Array) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
@@ -59,10 +45,7 @@ export async function readNativeFileBytes(
 ): Promise<Uint8Array> {
   const selectedPath = LocalFilePathSchema.parse(path);
   const selected = LocalFileVersionSchema.parse(expected);
-  const mediaType =
-    documentTypes[
-      basename(selectedPath).split('.').at(-1)?.toLowerCase() ?? ''
-    ] ?? 'application/octet-stream';
+  const mediaType = localFileMediaType(selectedPath);
   if (selected.mediaType !== mediaType)
     throw new FileGuardianError('FILE_CHANGED');
   const raw = await invokeFileGuardian(

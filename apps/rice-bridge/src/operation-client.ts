@@ -24,6 +24,7 @@ import {
   FileDerivationError,
 } from './file-derivation.js';
 import { FileArchiveError } from './file-archives.js';
+import { DocumentDerivationError } from './document-derivation-runner.js';
 import { fileDerivationHttpTransport } from './file-derivation-client.js';
 import {
   localFileHttpTransport,
@@ -464,7 +465,9 @@ export class RuntimeBridgeOperationClient {
       } catch (error) {
         if (
           committed ||
-          (error instanceof FileDerivationError && error.unknown)
+          (error instanceof FileDerivationError && error.unknown) ||
+          (error instanceof DocumentDerivationError && error.unknown) ||
+          (error instanceof FileGuardianError && error.unknown)
         )
           await journal.uncertain(operationId, 'receipt_missing', {
             summary: '新文件交付结果待对账，不自动重做',
@@ -477,6 +480,7 @@ export class RuntimeBridgeOperationClient {
             errorCode:
               error instanceof FileDerivationError ||
               error instanceof FileArchiveError ||
+              error instanceof DocumentDerivationError ||
               error instanceof FileGuardianError ||
               error instanceof LocalFileError
                 ? error.code
