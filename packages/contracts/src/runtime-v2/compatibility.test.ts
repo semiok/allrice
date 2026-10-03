@@ -236,12 +236,14 @@ describe('P01 additive contracts preserve the production wire contract', () => {
     expect(BridgeCapabilitySchema.options).toEqual([
       ...bridgeCapabilities,
       ...localFileCapabilities,
+      'local.file.derive',
       'local.python.execute',
       'local.pdf.read',
     ]);
     expect(BridgeCapabilities).toEqual([
       ...bridgeCapabilities,
       ...localFileCapabilities,
+      'local.file.derive',
       'local.python.execute',
       'local.pdf.read',
     ]);
