@@ -271,6 +271,13 @@ export const allRiceToolManifest = [
     dshWireName: 'local_file_reveal',
   },
   {
+    canonicalName: 'local.file.derive',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'local_file_derive',
+  },
+  {
     canonicalName: 'local.fs.search',
     capability: 'storage:read',
     risk: 'read_only',

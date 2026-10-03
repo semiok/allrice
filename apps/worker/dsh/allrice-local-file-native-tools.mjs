@@ -1,4 +1,7 @@
-import { LocalFileToolArguments } from '@allrice/contracts';
+import {
+  LocalFileToolArguments,
+  FileDerivationArgumentsSchema,
+} from '@allrice/contracts';
 
 const path = {
   type: 'string',
@@ -38,8 +41,8 @@ const descriptions = {
 
 // Model declarations only. The shared strict contract and the existing Broker
 // independently enforce frozen tools, device/grant binding and v2 authority.
-export const localFileNativeTools = Object.entries(descriptions).map(
-  ([action, description]) => {
+export const localFileNativeTools = [
+  ...Object.entries(descriptions).map(([action, description]) => {
     const canonicalName = `local.file.${action}`;
     return {
       canonicalName,
@@ -71,5 +74,56 @@ export const localFileNativeTools = Object.entries(descriptions).map(
         return args;
       },
     };
+  }),
+  {
+    canonicalName: 'local.file.derive',
+    wireName: 'local_file_derive',
+    description:
+      'Process inspected local bytes into a bounded ZIP or extract one named entry as a private downloadable attachment. This preserves source files and does not write host destinations. Use exact expected from local_file_inspect, never the native survey version. ZIP input/output and unpacked total each <=9000000 bytes, at most32 files. Reject traversal, links, encryption, duplicate names, invalid CRC or oversized expansion. To create a host file, separately call local_file_save with the returned objectId and checksum; never overwrite or retry unknown effects.',
+    presentation: 'tool',
+    timeoutMs: 3_800_000,
+    isConcurrencySafe: false,
+    parameters: {
+      path: {
+        type: 'string',
+        enum: ['.'],
+        description:
+          'Current authorized folder; always dot, never a host path.',
+      },
+      inputs: {
+        type: 'array',
+        required: true,
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: { path, expected },
+        },
+      },
+      request: {
+        type: 'object',
+        required: true,
+        additionalProperties: false,
+        properties: {
+          kind: {
+            type: 'string',
+            required: true,
+            enum: ['zip_pack', 'zip_list', 'zip_extract'],
+          },
+          fileName: {
+            type: 'string',
+            description:
+              'One output basename for pack (.zip) or extract; omit for list.',
+          },
+          entry: {
+            type: 'string',
+            description:
+              'Exact safe archive entry path; required only for extract.',
+          },
+        },
+      },
+    },
+    validateArguments(args) {
+      return FileDerivationArgumentsSchema.parse(args);
+    },
   },
-);
+];

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   LocalFileVersionSchema,
+  FileDerivationContentSchema,
   RuntimeLocalPythonArtifactMetadataSchema,
   UuidSchema,
 } from '@allrice/contracts';
@@ -8,6 +9,7 @@ import {
   localFileTransferAuthority,
   readLocalFileDownload,
   storeLocalFileUpload,
+  storeLocalFileDerivation,
   localPythonTransferAuthority,
   readLocalPythonInput,
   storeLocalPythonArtifact,
@@ -142,16 +144,32 @@ export async function POST(request: Request, route: Route) {
         { headers: { 'cache-control': 'private, no-store' } },
       );
     }
-    if (
-      i.kind === 'operation' &&
-      i.token &&
-      (await readBridgeOperationTransferCapability(
+    if (i.kind === 'operation' && i.token) {
+      const capability = await readBridgeOperationTransferCapability(
         i.token,
         i.id,
         i.leaseToken,
-      )) === 'local.pdf.read'
-    )
-      throw new DataAccessError('authorization_denied');
+      );
+      if (capability === 'local.pdf.read')
+        throw new DataAccessError('authorization_denied');
+      if (capability === 'local.file.derive') {
+        const object = await storeLocalFileDerivation({
+          token: i.token,
+          kind: i.kind,
+          id: i.id,
+          leaseToken: i.leaseToken,
+          metadata: FileDerivationContentSchema.parse(
+            JSON.parse(decodeURIComponent(header)),
+          ),
+          stream: request.body,
+          storage: getStorageAdapter(),
+        });
+        return Response.json(
+          { object },
+          { headers: { 'cache-control': 'private, no-store' } },
+        );
+      }
+    }
     const metadata = z
       .object({
         version: LocalFileVersionSchema,

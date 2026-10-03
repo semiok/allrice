@@ -37,6 +37,7 @@ export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';
 export * from './file-survey.ts';
 export * from './local-files.ts';
+export * from './file-derivation.ts';
 export * from './execution-choice.ts';
 export * from './capabilities.ts';
 export * from './chatflow.ts';

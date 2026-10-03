@@ -30,6 +30,8 @@ export async function invokeFileGuardian(
     (controls.authorize && !(await controls.authorize()))
   )
     throw new FileGuardianError('FILE_CANCELED');
+  // Authorization can await I/O; an abort during that await must not spawn.
+  if (controls.signal?.aborted) throw new FileGuardianError('FILE_CANCELED');
   return new Promise((resolve, reject) => {
     const child = spawn(executable, [], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -40,7 +42,9 @@ export async function invokeFileGuardian(
       stopped = false,
       checking = false;
     const chunks: Buffer[] = [];
-    const mutation = request.mode !== 'survey';
+    const readOnly = request.mode === 'survey' || request.mode === 'read';
+    const mutation = !readOnly;
+    const maximumOutputBytes = request.mode === 'read' ? 12_100_001 : 512_001;
     const stop = () => {
       stopped = true;
       child.stdin.destroy();
@@ -53,6 +57,7 @@ export async function invokeFileGuardian(
       }
     };
     controls.signal?.addEventListener('abort', stop, { once: true });
+    if (controls.signal?.aborted) stop();
     const timeout = setTimeout(stop, 30_000);
     // EOF means authority loss to the primitive. Empty frames renew liveness only.
     const heartbeat = setInterval(() => {
@@ -73,7 +78,7 @@ export async function invokeFileGuardian(
     }, 400);
     child.stdout.on('data', (bytes: Buffer) => {
       total += bytes.length;
-      if (total > 512_001) stop();
+      if (total > maximumOutputBytes) stop();
       else chunks.push(bytes);
     });
     child.stderr.resume(); // Never return native paths or unbounded stderr to the model.
@@ -101,13 +106,13 @@ export async function invokeFileGuardian(
           throw new FileGuardianError(
             String(result.error.code),
             result.status === 'unknown',
-            result,
+            request.mode === 'read' ? undefined : result,
           );
         if (code !== 0)
           throw new FileGuardianError(
             'FILE_PRIMITIVE_FAILED',
             mutation,
-            result,
+            request.mode === 'read' ? undefined : result,
           );
         resolve(result);
       } catch (error) {

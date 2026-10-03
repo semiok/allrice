@@ -1096,6 +1096,8 @@ export async function dispatchBridgeCommand(input: {
   // Bounded survey cancellation/authority belongs to the governed operation port.
   if (payload.capability === 'local.fs.list' && payload.arguments.survey)
     throw new BridgeDataError('command_unavailable');
+  if (payload.capability === 'local.file.derive')
+    throw new BridgeDataError('command_unavailable');
   const rows = prior
     ? [prior]
     : await sql<

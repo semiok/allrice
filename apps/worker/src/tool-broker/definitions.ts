@@ -31,6 +31,7 @@ export type RiceToolRisk = AllRiceToolRisk;
 // invocation requires its own durable exact-input approval before execution.
 export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
   'local.file.import',
+  'local.file.derive',
   'local.file.save',
   'local.file.open',
   'local.file.reveal',

@@ -46,6 +46,7 @@ export const runtimeGovernedActions = [
   'local.file.save',
   'local.file.open',
   'local.file.reveal',
+  'local.file.derive',
   'local.process.execute',
   'local.python.execute',
   'local.pdf.read',

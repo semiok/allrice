@@ -98,6 +98,12 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
     services: ['workbench'],
     environment: 'device',
   },
+  'local.file.derive': {
+    requiredTools: ['local.file.inspect', 'local.file.save'],
+    policyActions: ['local.file.derive'],
+    services: ['workbench'],
+    environment: 'device',
+  },
   'local.file.save': {
     policyActions: ['local.file.save'],
     services: ['workbench'],
@@ -211,6 +217,7 @@ const labels: Partial<Record<AllRiceToolName, string>> = {
   'local.fs.list': '本地目录列表',
   'local.file.inspect': '核验本地文件版本',
   'local.file.import': '上传选定电脑文件',
+  'local.file.derive': '本地 ZIP 打包与解包',
   'local.file.save': '保存原始文件到电脑',
   'local.file.open': '用电脑默认应用打开',
   'local.file.reveal': '在 Finder 定位',

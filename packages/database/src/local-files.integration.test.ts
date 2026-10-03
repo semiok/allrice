@@ -12,7 +12,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { localFileCapabilities, type RequestContext } from '@allrice/contracts';
+import {
+  localFileCapabilities,
+  FileDerivationPayloadSchema,
+  LocalFileObjectSchema,
+  type BridgeCapability,
+  type FileDerivationArguments,
+  type LocalFileVersion,
+  type RequestContext,
+} from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import {
@@ -26,14 +34,19 @@ import {
   enqueueLocalFileCommand,
   localFileTransferAuthority,
   readLocalFileCommand,
+  storeLocalFileDerivation,
   storeLocalFileUpload,
 } from './local-files.ts';
 import {
   createLocalBinaryFileOperation,
+  createLocalFileDerivationOperation,
   waitLocalCommandOperation,
 } from './local-command-service.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
-import { setRuntimePolicyControls } from './runtime-policy.ts';
+import {
+  setRuntimePolicyControls,
+  runtimePolicyDigest,
+} from './runtime-policy.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import { getStoredFile } from './data.ts';
 import {
@@ -45,6 +58,9 @@ import { BridgeJournal } from '../../../apps/rice-bridge/src/journal.js';
 import { createRuntimeBridgeHttpHandler } from '../../../apps/web/lib/bridge/operation-http.ts';
 import * as storageRuntime from '../../../apps/web/lib/storage/runtime.ts';
 import * as client from './core/client.ts';
+import * as data from './data.ts';
+import { executeFileDerivation } from '../../../apps/rice-bridge/src/file-derivation.js';
+import { readFileArchive } from '../../../apps/rice-bridge/src/file-archives.js';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -59,6 +75,17 @@ const stream = (bytes: Uint8Array) =>
       c.close();
     },
   });
+// The PostgreSQL suite validates server authority, storage and receipts; native
+// descriptor races have their own macOS binary gate, rather than a Linux claim.
+async function fixtureSource(
+  root: string,
+  path: string,
+  expected: LocalFileVersion,
+) {
+  const actual = await inspectLocalFile(root, path);
+  expect(actual).toEqual(expected);
+  return readFile(join(root, path));
+}
 suite(
   'MET164 PR3 existing commands, storage and real Run ledger in isolated PostgreSQL',
   () => {
@@ -89,12 +116,15 @@ suite(
       await database?.close();
       if (root) await rm(root, { recursive: true, force: true });
     });
-    async function fixture() {
-      const tools = localFileCapabilities.filter(
-        (n) => n !== 'local.file.select',
-      );
+    async function fixture(deriving = false) {
+      const capabilities: BridgeCapability[] = [
+        ...localFileCapabilities,
+        ...(deriving ? ['local.file.derive' as const] : []),
+      ];
+      const tools = capabilities.filter((n) => n !== 'local.file.select');
       const f = await createCloudExecutionFixture(database.db, root, {
         localProcess: true,
+        ...(deriving ? { memberRole: 'member' as const } : {}),
         dsh: {
           provider: {
             provider: 'dsh',
@@ -130,14 +160,14 @@ suite(
         folder = join(root, deviceId, '目录 空格');
       await mkdir(folder, { recursive: true });
       await database.db`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at)
-      values(${deviceId},${f.org},${f.workspace},${f.user},'Synthetic file Bridge','macos-x64',2,${localFileCapabilities},${createHash('sha256').update(token).digest('hex')},clock_timestamp())`;
+      values(${deviceId},${f.org},${f.workspace},${f.user},'Synthetic file Bridge','macos-x64',2,${capabilities},${createHash('sha256').update(token).digest('hex')},clock_timestamp())`;
       const grant = await createBridgeFolderGrant(token, {
         label: '目录 空格',
         rootFingerprint: createHash('sha256').update(folder).digest('hex'),
       });
       await heartbeatBridgeDevice(token, {
         protocolVersion: 2,
-        capabilities: localFileCapabilities,
+        capabilities,
         environment: {
           version: 1,
           clientVersion: 'synthetic-file-regression',
@@ -145,7 +175,8 @@ suite(
           sandbox: 'unavailable',
           preview: 'unavailable',
           paused: false,
-          readiness: localFileCapabilities.map((capability) => ({
+          ...(deriving ? { fileDerivationVersion: 1 as const } : {}),
+          readiness: capabilities.map((capability) => ({
             capability,
             state: 'ready',
             reason: 'ready',
@@ -172,6 +203,17 @@ suite(
         { expectedRevision: 2, capability: 'computer', enabled: true },
         database.db,
       );
+      if (deriving) {
+        // Governance setup is performed above; actual execution has only the
+        // ordinary persisted membership and no platform-admin identity.
+        vi.stubEnv(
+          'ALLRICE_PLATFORM_ADMIN_EMAILS',
+          (process.env.ALLRICE_PLATFORM_ADMIN_EMAILS ?? '')
+            .split(',')
+            .filter((email) => email !== `${f.user}@example.test`)
+            .join(','),
+        );
+      }
       return { ...f, deviceId, token, grant, folder };
     }
     const request = (
@@ -450,6 +492,382 @@ suite(
         status: 'canceled',
         summary: 'native picker closed',
       });
+    });
+    async function runningDerivation(
+      f: Awaited<ReturnType<typeof fixture>>,
+      args: Omit<FileDerivationArguments, 'path'>,
+      callId = randomUUID(),
+    ) {
+      const created = await createLocalFileDerivationOperation(
+        {
+          context: f.execution,
+          arguments: args,
+          callId,
+        },
+        database.db,
+      );
+      const { device } = await bridgeDeviceStatus(f.token);
+      const ledger = createGovernedBridgeOperationLedger(device, {
+        database: database.db,
+      });
+      const claim = await ledger.claimNextBridgeOperation({
+        scope: created.snapshot.binding.task.scope,
+        deviceId: f.deviceId,
+        leaseMs: 120_000,
+        supportsBinaryFiles: true,
+        supportsFileDerivation: true,
+      });
+      if (!claim) throw Error('file derivation claim missing');
+      const identity = {
+        scope: claim.snapshot.binding.task.scope,
+        operationId: claim.snapshot.binding.attempt.operationId,
+        leaseToken: claim.leaseToken,
+        attempt: claim.snapshot.binding.attempt,
+      };
+      expect(
+        await ledger.startOperation({ ...identity, receiptId: randomUUID() }),
+      ).toMatchObject({ mayExecute: true });
+      return {
+        created,
+        ledger,
+        identity,
+        payload: FileDerivationPayloadSchema.parse(claim.bridgePayload),
+      };
+    }
+    it('ordinary-member ZIP pack → private HTTP attachment → local save → list/extract verifies actual bytes and ledger receipts', async () => {
+      const f = await fixture(true),
+        path = '实际 中文.bin',
+        bytes = Buffer.from([0, 255, 14, 0, 34]);
+      await writeFile(join(f.folder, path), bytes);
+      const packed = await runningDerivation(f, {
+        inputs: [{ path, expected: await inspectLocalFile(f.folder, path) }],
+        request: { kind: 'zip_pack', fileName: '输出.zip' },
+      });
+      vi.spyOn(storageRuntime, 'getStorageAdapter').mockReturnValue(f.storage);
+      const output = await executeFileDerivation(f.folder, packed.payload, {
+        readSource: fixtureSource,
+        authorize: async () => {
+          await localFileTransferAuthority(
+            f.token,
+            'operation',
+            packed.identity.operationId,
+            packed.identity.leaseToken,
+          );
+          return true;
+        },
+        upload: async (metadata, body) => {
+          const response = await fileRoute.POST(
+            new Request('http://localhost/file-transfer', {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${f.token}`,
+                'x-allrice-lease': packed.identity.leaseToken,
+                'x-allrice-file': encodeURIComponent(JSON.stringify(metadata)),
+                'content-type': 'application/octet-stream',
+              },
+              body: stream(body),
+              duplex: 'half',
+            } as RequestInit),
+            {
+              params: Promise.resolve({
+                kind: 'operation',
+                id: packed.identity.operationId,
+              }),
+            },
+          );
+          expect(response.status).toBe(200);
+          return LocalFileObjectSchema.parse(
+            ((await response.json()) as { object: unknown }).object,
+          );
+        },
+      });
+      const receipt = {
+        ...packed.identity,
+        receiptId: randomUUID(),
+        signal: {
+          type: 'operation.outcome' as const,
+          result: {
+            status: 'succeeded' as const,
+            effects: 'applied' as const,
+            evidence: {
+              id: randomUUID(),
+              recordedAt: new Date().toISOString(),
+              digest: runtimePolicyDigest(output),
+            },
+          },
+        },
+        evidence: { output },
+      };
+      await expect(
+        packed.ledger.recordReceipt({
+          ...receipt,
+          evidence: {
+            output: {
+              ...output,
+              object: { ...output.object, objectId: randomUUID() },
+            },
+          },
+        }),
+      ).rejects.toMatchObject({ code: 'invalid_state' });
+      expect((await packed.ledger.recordReceipt(receipt)).snapshot.status).toBe(
+        'succeeded',
+      );
+      const object = await getStoredFile(f.context, output.object!.objectId);
+      const zip = new Uint8Array(
+        await new Response(await f.storage.get(object.object)).arrayBuffer(),
+      );
+      expect(checksum(zip)).toBe(output.object!.checksum);
+      expect(await readFileArchive(zip)).toEqual([{ path, bytes }]);
+      expect(await readFile(join(f.folder, path))).toEqual(bytes);
+      await expect(readFile(join(f.folder, '输出.zip'))).rejects.toThrow();
+      const saved = await enqueueLocalFileCommand(
+        f.context,
+        request(f, 'save', {
+          path: '保存.zip',
+          objectId: object.object.id,
+          checksum: object.object.checksum,
+        }),
+      );
+      const command = (await claimNextBridgeCommand(f.token))!;
+      expect(command.id).toBe(saved.id);
+      const savedOutput = await executeLocalFile(
+        f.folder,
+        command.payload as never,
+        {
+          authorize: async () => true,
+          transport: { download: async () => stream(zip), upload: vi.fn() },
+        },
+      );
+      expect(savedOutput.localSaved).toBe(true);
+      expect(await readFile(join(f.folder, '保存.zip'))).toEqual(
+        Buffer.from(zip),
+      );
+      await completeBridgeCommand(f.token, command.id, {
+        leaseToken: command.leaseToken,
+        status: 'succeeded',
+        output: savedOutput,
+        summary: 'Saved verified ZIP',
+      });
+      const zipInput = {
+        path: '保存.zip',
+        expected: await inspectLocalFile(f.folder, '保存.zip'),
+      };
+      const listed = await runningDerivation(f, {
+        inputs: [zipInput],
+        request: { kind: 'zip_list' },
+      });
+      const upload = vi.fn();
+      const list = await executeFileDerivation(f.folder, listed.payload, {
+        readSource: fixtureSource,
+        authorize: async () => true,
+        upload,
+      });
+      expect(list.entries).toEqual([
+        { path, checksum: checksum(bytes), sizeBytes: bytes.length },
+      ]);
+      expect(upload).not.toHaveBeenCalled();
+      await listed.ledger.recordReceipt({
+        ...listed.identity,
+        receiptId: randomUUID(),
+        signal: {
+          type: 'operation.outcome',
+          result: {
+            status: 'succeeded',
+            effects: 'none',
+            evidence: {
+              id: randomUUID(),
+              recordedAt: new Date().toISOString(),
+              digest: runtimePolicyDigest(list),
+            },
+          },
+        },
+        evidence: { output: list },
+      });
+      const extracted = await runningDerivation(f, {
+        inputs: [zipInput],
+        request: { kind: 'zip_extract', entry: path, fileName: '提取.bin' },
+      });
+      const result = await executeFileDerivation(f.folder, extracted.payload, {
+        readSource: fixtureSource,
+        authorize: async () => true,
+        upload: (metadata, body) =>
+          storeLocalFileDerivation({
+            token: f.token,
+            kind: 'operation',
+            id: extracted.identity.operationId,
+            leaseToken: extracted.identity.leaseToken,
+            metadata,
+            stream: stream(body),
+            storage: f.storage,
+          }),
+      });
+      const extractedFile = await getStoredFile(
+        f.context,
+        result.object!.objectId,
+      );
+      expect(
+        Buffer.from(
+          await new Response(
+            await f.storage.get(extractedFile.object),
+          ).arrayBuffer(),
+        ),
+      ).toEqual(bytes);
+      await expect(readFile(join(f.folder, '提取.bin'))).rejects.toThrow();
+      await extracted.ledger.recordReceipt({
+        ...extracted.identity,
+        receiptId: randomUUID(),
+        signal: {
+          type: 'operation.outcome',
+          result: {
+            status: 'succeeded',
+            effects: 'applied',
+            evidence: {
+              id: randomUUID(),
+              recordedAt: new Date().toISOString(),
+              digest: runtimePolicyDigest(result),
+            },
+          },
+        },
+        evidence: { output: result },
+      });
+      const refs =
+        await database.db`select object_id from allrice_file_references where session_id=${f.session}`;
+      expect(refs.map((r) => r.object_id).sort()).toEqual(
+        [output.object!.objectId, result.object!.objectId].sort(),
+      );
+      expect(
+        (
+          await database.db`select count(*)::int as n from allrice_bridge_runtime_profiles where device_id=${f.deviceId}`
+        )[0]?.n,
+      ).toBe(0);
+      expect(
+        (
+          await database.db`select count(*)::int as n from allrice_cloud_execution_attempts a join allrice_runtime_operations o on o.id=a.operation_id where o.run_id=${f.run}`
+        )[0]?.n,
+      ).toBe(0);
+    }, 30000);
+    it.each([
+      'grant',
+      'membership',
+      'root-cancel',
+      'token',
+      'session',
+    ] as const)(
+      'winning %s revocation before the final commit leaves no ready derivative or Session link',
+      async (reason) => {
+        const f = await fixture(true),
+          path = '撤权.bin',
+          bytes = Buffer.from('exact source bytes');
+        await writeFile(join(f.folder, path), bytes);
+        const run = await runningDerivation(f, {
+          inputs: [{ path, expected: await inspectLocalFile(f.folder, path) }],
+          request: { kind: 'zip_pack', fileName: '撤权.zip' },
+        });
+        const originalExists = f.storage.exists.bind(f.storage);
+        vi.spyOn(f.storage, 'exists').mockImplementationOnce(async (object) => {
+          const exists = await originalExists(object);
+          if (reason === 'grant')
+            await database.db`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
+          if (reason === 'membership')
+            await database.db`update allrice_memberships set active=false where user_id=${f.user}`;
+          if (reason === 'root-cancel')
+            await database.db`update allrice_runtime_roots set cancel_request_id=${randomUUID()},cancel_reason='user_request',cancel_requested_at=clock_timestamp() where root_run_id=${f.run}`;
+          if (reason === 'token')
+            await database.db`update allrice_bridge_devices set token_hash=${createHash('sha256').update(randomUUID()).digest('hex')} where id=${f.deviceId}`;
+          if (reason === 'session')
+            await database.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.session}`;
+          return exists;
+        });
+        await expect(
+          executeFileDerivation(f.folder, run.payload, {
+            readSource: fixtureSource,
+            authorize: async () => true,
+            upload: (metadata, body) =>
+              storeLocalFileDerivation({
+                token: f.token,
+                kind: 'operation',
+                id: run.identity.operationId,
+                leaseToken: run.identity.leaseToken,
+                metadata,
+                stream: stream(body),
+                storage: f.storage,
+              }),
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(
+          await database.db`select id from allrice_storage_objects where id=${run.payload.outputObjectId} and state='ready'`,
+        ).toHaveLength(0);
+        expect(
+          await database.db`select object_id from allrice_file_references where object_id=${run.payload.outputObjectId}`,
+        ).toHaveLength(0);
+        expect(await readFile(join(f.folder, path))).toEqual(bytes);
+      },
+    );
+    it('attachment commit holds real authority locks through ready + Session linking, so a later revocation waits', async () => {
+      const f = await fixture(true),
+        path = '锁内.bin',
+        bytes = Buffer.from('commit wins');
+      await writeFile(join(f.folder, path), bytes);
+      const run = await runningDerivation(f, {
+        inputs: [{ path, expected: await inspectLocalFile(f.folder, path) }],
+        request: { kind: 'zip_pack', fileName: '锁内.zip' },
+      });
+      const markReady = data.markStorageReady;
+      let revoke: Promise<unknown> | undefined;
+      const spy = vi
+        .spyOn(data, 'markStorageReady')
+        .mockImplementationOnce(async (context, id, tx) => {
+          expect(tx).toBeDefined();
+          expect(tx).not.toBe(database.db);
+          let started!: () => void;
+          const starting = new Promise<void>((resolve) => {
+            started = resolve;
+          });
+          revoke = database.db.begin(async (other) => {
+            await other`select 1`;
+            started();
+            await other`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
+          });
+          await starting;
+          expect(
+            await Promise.race([
+              revoke.then(() => true),
+              new Promise<boolean>((resolve) =>
+                setTimeout(() => resolve(false), 60),
+              ),
+            ]),
+          ).toBe(false);
+          return markReady(context, id, tx);
+        });
+      try {
+        const output = await executeFileDerivation(f.folder, run.payload, {
+          readSource: fixtureSource,
+          authorize: async () => true,
+          upload: (metadata, body) =>
+            storeLocalFileDerivation({
+              token: f.token,
+              kind: 'operation',
+              id: run.identity.operationId,
+              leaseToken: run.identity.leaseToken,
+              metadata,
+              stream: stream(body),
+              storage: f.storage,
+            }),
+        });
+        await revoke;
+        expect(
+          await database.db`select id from allrice_storage_objects where id=${output.object!.objectId} and state='ready'`,
+        ).toHaveLength(1);
+        expect(
+          await database.db`select object_id from allrice_file_references where object_id=${output.object!.objectId} and session_id=${f.session}`,
+        ).toHaveLength(1);
+        expect(
+          await database.db`select id from allrice_bridge_folder_grants where id=${f.grant.id} and revoked_at is not null`,
+        ).toHaveLength(1);
+      } finally {
+        spy.mockRestore();
+        await revoke;
+      }
     });
     it('executes real Run file inspect/import/save through existing v2 HTTP+SQLite without a sandbox profile', async () => {
       const f = await fixture(),

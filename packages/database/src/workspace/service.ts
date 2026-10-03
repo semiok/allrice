@@ -48,6 +48,7 @@ import {
   type WorkspaceMemorySchema,
 } from '@allrice/contracts';
 import { z } from 'zod';
+import type { TransactionSql } from 'postgres';
 
 import {
   DataAccessError,
@@ -459,11 +460,11 @@ async function sessionRow(
   context: RequestContext,
   workspaceId: string,
   sessionId: string,
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
   if (!hasWorkspaceAccess(context, workspaceId)) {
     throw new DataAccessError('authorization_denied');
   }
-  const sql = getDatabase();
   const rows = await sql<SessionRow[]>`
     select * from allrice_chat_sessions
     where organization_id = ${context.organizationId}
@@ -1646,16 +1647,21 @@ export async function linkFileToSession(input: {
   sessionId: string;
   objectId: string;
   fileName: string;
+  database?: TransactionSql;
 }) {
+  const sql = input.database ?? getDatabase();
+  if (input.database)
+    await sql`select id from allrice_chat_sessions where id=${UuidSchema.parse(input.sessionId)}
+      and organization_id=${input.context.organizationId} and workspace_id=${input.workspaceId} for share`;
   const session = await sessionRow(
     input.context,
     input.workspaceId,
     input.sessionId,
+    sql,
   );
   if (session.owner_id !== requireUser(input.context) || session.archived_at) {
     throw new DataAccessError('authorization_denied');
   }
-  const sql = getDatabase();
   const rows = await sql<{ id: string }[]>`
     insert into allrice_file_references (
       organization_id, workspace_id, object_id, session_id, owner_id, file_name

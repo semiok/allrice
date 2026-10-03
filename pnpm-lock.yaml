@@ -118,12 +118,21 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@4.4.3)
+      crc-32:
+        specifier: 1.2.2
+        version: 1.2.2
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       playwright-core:
         specifier: 1.62.1
         version: 1.62.1
       ws:
         specifier: 8.21.3
         version: 8.21.3
+      yauzl:
+        specifier: 3.2.0
+        version: 3.2.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
@@ -131,6 +140,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      '@types/yauzl':
+        specifier: 2.10.3
+        version: 2.10.3
       tsx:
         specifier: ^4.21.0
         version: 4.23.5
@@ -6452,6 +6464,16 @@ packages:
   "@types/trusted-types@2.0.7":
     resolution:
       integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==
+
+  '@types/yauzl@2.10.3':
+    resolution: {integrity: sha512-oJoftv0LSuaDZE3Le4DbKX+KS9G36NzOeSap90UIK0yMA/NhKJhqlSGtNDORNRaIbQfzjXDrQa0ytJ6mNRGz/Q==}
+
+  pend@1.2.0:
+    resolution: {integrity: sha512-F3asv42UuXchdzt+xXqfW1OGlVBe+mxa2mqI0pg5yAHZPvFmY3Y6drSf/GQ1A86WgWEN9Kzh/WrgKa6iGcHXLg==}
+
+  yauzl@3.2.0:
+    resolution: {integrity: sha512-Ow9nuGZE+qp1u4JIPvg+uCiUr7xGQWdff7JQSk5VGYTAZMDe2q8lxJ10ygv10qmSj031Ty/6FNJpLO4o1Sgc+w==}
+    engines: {node: '>=12'}
 
 snapshots:
 
@@ -13020,3 +13042,14 @@ snapshots:
 
   "@types/trusted-types@2.0.7":
     optional: true
+
+  '@types/yauzl@2.10.3':
+    dependencies:
+      '@types/node': 22.20.1
+
+  pend@1.2.0: {}
+
+  yauzl@3.2.0:
+    dependencies:
+      buffer-crc32: 0.2.13
+      pend: 1.2.0

@@ -1,12 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import {
   LocalFilePayloadSchema,
+  FileDerivationPayloadSchema,
+  FileDerivationContentSchema,
+  type FileDerivationPayload,
   LocalFileUserRequestSchema,
   LocalFileObjectSchema,
   LocalFileVersionSchema,
   LocalFileResultSchema,
   RuntimeOperationSnapshotSchema,
   canonicalRuntimeBridgeJson,
+  runtimeContractEqual,
   localFileMaximumBytes,
   type LocalFilePayload,
   type LocalFileObject,
@@ -19,7 +24,15 @@ import {
 import { getDatabase } from './core/client.ts';
 import { bridgeDeviceStatus, BridgeDataError } from './bridge.ts';
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
-import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
+import {
+  createGovernedBridgeOperationLedger,
+  createGovernedBridgePolicyOptions,
+} from './runtime-governed-bridge.ts';
+import {
+  createRuntimePolicyAdmission,
+  RuntimePolicyError,
+} from './runtime-policy.ts';
+import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   DataAccessError,
   getStoredFile,
@@ -256,7 +269,8 @@ export async function localFileTransferAuthority(
     memberships,
     authenticatedAt: new Date().toISOString(),
   };
-  let payload: LocalFilePayload, sessionId: string | null;
+  let payload: LocalFilePayload | FileDerivationPayload,
+    sessionId: string | null;
   if (kind === 'command') {
     const [row] = await db<
       { capability: string; arguments: unknown; session_id: string | null }[]
@@ -297,7 +311,10 @@ export async function localFileTransferAuthority(
       renewed.snapshot.cancelRequestId
     )
       throw new BridgeDataError('lease_lost');
-    payload = LocalFilePayloadSchema.parse(row.bridge_payload);
+    const deriving = FileDerivationPayloadSchema.safeParse(row.bridge_payload);
+    payload = deriving.success
+      ? deriving.data
+      : LocalFilePayloadSchema.parse(row.bridge_payload);
     sessionId = snapshot.binding.task.chatSessionId;
   }
   return { device, context, payload, sessionId };
@@ -345,6 +362,94 @@ export async function storeLocalFileUpload(input: {
     deliverableVersionId: null,
     deliverableVersion: null,
   });
+  return commitLocalFileUpload({ ...input, current, version, object });
+}
+
+/** Both original imports and local derivatives use the existing storage/owner stream. */
+async function commitDerivedFileInTransaction(
+  tx: TransactionSql,
+  input: {
+    current: Awaited<ReturnType<typeof localFileTransferAuthority>>;
+    token: string;
+    id: string;
+    leaseToken: string;
+    object: LocalFileObject;
+  },
+  markReady: boolean,
+) {
+  const { current, object } = input,
+    { device } = current;
+  if (current.payload.capability !== 'local.file.derive')
+    throw new DataAccessError('authorization_denied');
+  // Reuse the Python attachment commit lock order: quota -> root -> operation
+  // -> current policy/grant authority. The physical upload holds no DB locks.
+  await lockWorkspaceStorageQuota(
+    tx,
+    device.organizationId,
+    device.workspaceId,
+  );
+  const [root] = await tx`select root_run_id from allrice_runtime_roots
+    where root_run_id=(select snapshot->'binding'->'task'->>'rootRunId' from allrice_runtime_operations where id=${input.id})::uuid
+      and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
+      and cancel_request_id is null and deadline_at>clock_timestamp() for update`;
+  const [row] = await tx<
+    { snapshot: unknown; bridge_payload: unknown }[]
+  >`select snapshot,bridge_payload from allrice_runtime_operations
+    where id=${input.id} and device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId}
+      and lease_token_hash=${leaseHash(input.leaseToken)} and lease_expires_at>clock_timestamp()
+      and snapshot->>'status'='running' and snapshot->>'cancelRequestId' is null for update`;
+  if (
+    !root ||
+    !row ||
+    !runtimeContractEqual(row.bridge_payload, current.payload)
+  )
+    throw new DataAccessError('authorization_denied');
+  const snapshot = RuntimeOperationSnapshotSchema.parse(row.snapshot);
+  await createRuntimePolicyAdmission(createGovernedBridgePolicyOptions(device))(
+    {
+      transaction: tx,
+      binding: snapshot.binding,
+      phase: 'heartbeat',
+      now: new Date(),
+    },
+  ).catch((error: unknown) => {
+    if (error instanceof RuntimePolicyError)
+      throw new DataAccessError('authorization_denied');
+    throw error;
+  });
+  const [token] =
+    await tx`select id from allrice_bridge_devices where id=${device.id} and revoked_at is null
+    and token_hash=${leaseHash(input.token)} for share`;
+  if (!token) throw new DataAccessError('authorization_denied');
+  if (markReady) await markStorageReady(current.context, object.objectId, tx);
+  if (current.sessionId)
+    await linkFileToSession({
+      context: current.context,
+      workspaceId: device.workspaceId,
+      sessionId: current.sessionId,
+      objectId: object.objectId,
+      fileName: object.fileName,
+      database: tx,
+    });
+  const [stillLive] =
+    await tx`select id from allrice_runtime_operations where id=${input.id}
+    and lease_expires_at>clock_timestamp() and snapshot->>'status'='running' and snapshot->>'cancelRequestId' is null`;
+  if (!stillLive) throw new DataAccessError('authorization_denied');
+}
+
+async function commitLocalFileUpload(input: {
+  current: Awaited<ReturnType<typeof localFileTransferAuthority>>;
+  token: string;
+  kind: 'command' | 'operation';
+  id: string;
+  leaseToken: string;
+  version: Pick<LocalFileVersion, 'checksum' | 'sizeBytes' | 'mediaType'>;
+  object: LocalFileObject;
+  stream: ReadableStream<Uint8Array>;
+  storage: StoragePort;
+}) {
+  const { current, version, object } = input;
+  const objectId = object.objectId;
   let pending = false;
   try {
     // Fixed object ID plus immutable metadata makes a lost upload ACK safe to query.
@@ -362,7 +467,11 @@ export async function storeLocalFileUpload(input: {
       )
         throw new DataAccessError('grant_invalid');
       await input.stream.cancel();
-      if (current.sessionId)
+      if (current.payload.capability === 'local.file.derive')
+        await getDatabase().begin((tx) =>
+          commitDerivedFileInTransaction(tx, input, false),
+        );
+      else if (current.sessionId)
         await linkFileToSession({
           context: current.context,
           workspaceId: current.device.workspaceId,
@@ -423,22 +532,28 @@ export async function storeLocalFileUpload(input: {
     }
     if (!verified || !(await input.storage.exists(file.object)))
       throw new DataAccessError('grant_invalid');
-    await localFileTransferAuthority(
-      input.token,
-      input.kind,
-      input.id,
-      input.leaseToken,
-    );
-    await markStorageReady(current.context, objectId);
+    if (current.payload.capability === 'local.file.derive')
+      await getDatabase().begin((tx) =>
+        commitDerivedFileInTransaction(tx, input, true),
+      );
+    else {
+      await localFileTransferAuthority(
+        input.token,
+        input.kind,
+        input.id,
+        input.leaseToken,
+      );
+      await markStorageReady(current.context, objectId);
+      if (current.sessionId)
+        await linkFileToSession({
+          context: current.context,
+          workspaceId: current.device.workspaceId,
+          sessionId: current.sessionId,
+          objectId,
+          fileName: object.fileName,
+        });
+    }
     pending = false;
-    if (current.sessionId)
-      await linkFileToSession({
-        context: current.context,
-        workspaceId: current.device.workspaceId,
-        sessionId: current.sessionId,
-        objectId,
-        fileName: object.fileName,
-      });
     return object;
   } catch (e) {
     if (pending) {
@@ -467,6 +582,54 @@ export async function storeLocalFileUpload(input: {
     }
     throw e;
   }
+}
+
+export async function storeLocalFileDerivation(input: {
+  token: string;
+  kind: 'command' | 'operation';
+  id: string;
+  leaseToken: string;
+  metadata: unknown;
+  stream: ReadableStream<Uint8Array>;
+  storage: StoragePort;
+}) {
+  if (input.kind !== 'operation')
+    throw new DataAccessError('authorization_denied');
+  const current = await localFileTransferAuthority(
+    input.token,
+    input.kind,
+    input.id,
+    input.leaseToken,
+  );
+  const payload = current.payload;
+  if (
+    payload.capability !== 'local.file.derive' ||
+    payload.outputObjectId === null
+  )
+    throw new DataAccessError('authorization_denied');
+  const metadata = FileDerivationContentSchema.parse(input.metadata);
+  const request = payload.arguments.request;
+  if (
+    request.kind === 'zip_list' ||
+    metadata.fileName !== request.fileName ||
+    metadata.mediaType !==
+      (request.kind === 'zip_pack'
+        ? 'application/zip'
+        : 'application/octet-stream')
+  )
+    throw new DataAccessError('grant_invalid');
+  const object = LocalFileObjectSchema.parse({
+    ...metadata,
+    objectId: payload.outputObjectId,
+    deliverableVersionId: null,
+    deliverableVersion: null,
+  });
+  return commitLocalFileUpload({
+    ...input,
+    current,
+    version: metadata,
+    object,
+  });
 }
 
 export async function readLocalFileDownload(

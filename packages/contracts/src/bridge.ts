@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { BridgeCapabilityReadinessListSchema } from './execution-choice.ts';
 import { LocalFilePayloadSchema } from './local-files.ts';
+import { FileDerivationPayloadSchema } from './file-derivation.ts';
 import { LocalFileSurveyInputSchema } from './file-survey.ts';
 
 export const BridgeProtocolVersion = 2 as const;
@@ -29,6 +30,7 @@ export const BridgeCapabilitySchema = z.enum([
   'local.file.open',
   'local.file.reveal',
   'local.file.select',
+  'local.file.derive',
   'local.python.execute',
   'local.pdf.read',
 ]);
@@ -141,6 +143,7 @@ export type LegacyBridgeCommandPayload = z.infer<
 export const BridgeCommandPayloadSchema = z.union([
   LegacyBridgeCommandPayloadSchema,
   LocalFilePayloadSchema,
+  FileDerivationPayloadSchema,
 ]);
 export type BridgeCommandPayload = z.infer<typeof BridgeCommandPayloadSchema>;
 
@@ -236,6 +239,7 @@ export const BridgeEnvironmentSchema = z
     browserLocalSitesVersion: z.literal(1).optional(),
     fileSurveyVersion: z.literal(1).optional(),
     fileOrganizationVersion: z.literal(1).optional(),
+    fileDerivationVersion: z.literal(1).optional(),
     browser: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     sandbox: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     preview: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
