@@ -176,14 +176,20 @@ describe('AllRice worker tool manifest contract', () => {
     // exports only when the runtime imports AND spreads them into its registry.
     const moduleImports = [
       ...runtimeSource.matchAll(
-        /import \{ (\w+) \} from '(\.\/allrice-[a-z-]+-native-tools\.mjs)';/g,
+        /import\s+\{([^}]+)\}\s+from '(\.\/allrice-[a-z-]+-native-tools\.mjs)';/g,
       ),
-    ];
+    ].flatMap(([, bindings, modulePath]) =>
+      bindings!
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name.endsWith('NativeTools'))
+        .map((name) => [name, modulePath!] as const),
+    );
     const spreads = [...brokerNativeBlock.matchAll(/\.\.\.(\w+),/g)];
     expect(spreads.map((match) => match[1]).toSorted()).toEqual(
-      moduleImports.map((match) => match[1]).toSorted(),
+      moduleImports.map(([name]) => name).toSorted(),
     );
-    for (const [, exported, modulePath] of moduleImports) {
+    for (const [exported, modulePath] of moduleImports) {
       const module = await import(
         pathToFileURL(resolve(import.meta.dirname, '../dsh', modulePath!)).href
       );
