@@ -7,6 +7,7 @@ import {
   BridgeCommandPayloadSchema,
   BridgeCommandSchema,
   BridgeDeviceSchema,
+  BridgeEnvironmentSchema,
   BridgeFolderGrantSchema,
   HeartbeatBridgeDeviceInputSchema,
   BridgeWorkspaceSelectionRequestSchema,
@@ -152,9 +153,14 @@ function requireWorkspaceMember(context: RequestContext, workspaceId: string) {
 }
 
 function mapDevice(row: DeviceRow, now = Date.now()): BridgeDevice {
+  // The shutdown heartbeat is recent too. Its explicit stopped/paused report
+  // takes precedence over the heartbeat window, which only detects lost peers.
+  const paused = BridgeEnvironmentSchema.safeParse(row.metadata?.environment)
+    .data?.paused;
   const status = row.revoked_at
     ? 'revoked'
-    : row.last_seen_at &&
+    : !paused &&
+        row.last_seen_at &&
         row.last_seen_at.getTime() <= now &&
         now - row.last_seen_at.getTime() <= onlineWindowSeconds * 1_000
       ? 'online'
@@ -298,11 +304,14 @@ async function authenticatedDevice(token: string) {
   }
   const sql = getDatabase();
   const rows = await sql<AuthenticatedDeviceRow[]>`
-    select id, organization_id, workspace_id, owner_id, name, platform,
-      protocol_version, capabilities, token_hash, last_seen_at, created_at,
-      revoked_at
-    from allrice_bridge_devices
-    where token_hash = ${sha256(token)} and revoked_at is null limit 1
+    select d.id, d.organization_id, d.workspace_id, d.owner_id, d.name, d.platform,
+      d.protocol_version, d.capabilities, d.token_hash, d.last_seen_at, d.created_at,
+      d.revoked_at, t.metadata
+    from allrice_bridge_devices d
+    left join allrice_execution_targets t on t.organization_id=d.organization_id
+      and t.workspace_id=d.workspace_id and t.kind='rice_bridge'
+      and t.target_key='bridge.'||d.id::text
+    where d.token_hash = ${sha256(token)} and d.revoked_at is null limit 1
   `;
   const row = rows[0];
   if (!row) throw new BridgeDataError('device_unauthorized');
@@ -579,8 +588,9 @@ export async function heartbeatBridgeDevice(token: string, input?: unknown) {
     if (environment && (environment.paused || environment.sandbox !== 'ready'))
       await tx`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{available}','false'::jsonb),reported_at=clock_timestamp()
         where device_id=${device.id}`;
-    await preparePairedBrowserGrant(tx, mapDevice(row), environment);
-    return mapDevice(row);
+    const reportedDevice = mapDevice({ ...row, metadata: { environment } });
+    await preparePairedBrowserGrant(tx, reportedDevice, environment);
+    return reportedDevice;
   });
 }
 
@@ -775,6 +785,13 @@ export async function requestBridgeWorkspaceSelection(
         and revoked_at is null
         and last_seen_at > now() - (${onlineWindowSeconds} * interval '1 second')
         and last_seen_at <= now()
+        and not exists (
+          select 1 from allrice_execution_targets t
+          where t.organization_id=${context.organizationId}
+            and t.workspace_id=${workspaceId} and t.kind='rice_bridge'
+            and t.target_key='bridge.'||${deviceId}::text
+            and t.metadata->'environment'->'paused'='true'::jsonb
+        )
       for update
     `;
     if (!devices[0]) throw new BridgeDataError('device_offline');

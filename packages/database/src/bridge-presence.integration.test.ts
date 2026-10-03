@@ -275,6 +275,58 @@ suite(
         requestBridgeWorkspaceSelection(f.context, f.workspace, f.device),
       ).rejects.toMatchObject({ code: 'device_offline' });
     });
+    it('reports a shutdown heartbeat offline immediately, retains authorization and reconnects after resuming', async () => {
+      const f = await fixture();
+      await database`insert into allrice_bridge_folder_grants(organization_id,workspace_id,owner_id,device_id,label,root_fingerprint)
+        values(${f.org},${f.workspace},${f.owner},${f.device},'Retained Folder',${'b'.repeat(64)})`;
+      const environment = {
+        version: 1 as const,
+        clientVersion: '0.6.0-dev.27',
+        browser: 'ready' as const,
+        sandbox: 'ready' as const,
+        preview: 'ready' as const,
+        paused: false,
+      };
+      const heartbeat = (paused: boolean) =>
+        heartbeatBridgeDevice(f.token, {
+          protocolVersion: 2,
+          capabilities: ['local.fs.list'],
+          environment: { ...environment, paused },
+        });
+      expect((await heartbeat(false)).status).toBe('online');
+      expect((await listBridgeDevices(f.context, f.workspace))[0]?.status).toBe(
+        'online',
+      );
+
+      const stopped = await heartbeat(true);
+      expect(stopped.status).toBe('offline');
+      expect(Date.now() - Date.parse(stopped.lastSeenAt!)).toBeLessThan(90000);
+      const before =
+        await database`select last_seen_at,updated_at from allrice_bridge_devices where id=${f.device}`;
+      for (let i = 0; i < 3; i++) {
+        const [device] = await listBridgeDevices(f.context, f.workspace);
+        expect(device).toMatchObject({
+          status: 'offline',
+          folderGrants: [{ label: 'Retained Folder' }],
+        });
+        expect(
+          device!.readiness.every((item) => item.state === 'offline'),
+        ).toBe(true);
+      }
+      expect((await bridgeDeviceStatus(f.token)).device.status).toBe('offline');
+      expect(
+        await database`select last_seen_at,updated_at from allrice_bridge_devices where id=${f.device}`,
+      ).toEqual(before);
+      await expect(
+        requestBridgeWorkspaceSelection(f.context, f.workspace, f.device),
+      ).rejects.toMatchObject({ code: 'device_offline' });
+
+      expect((await heartbeat(false)).status).toBe('online');
+      expect(await listBridgeDevices(f.context, f.workspace)).toMatchObject([
+        { status: 'online', folderGrants: [{ label: 'Retained Folder' }] },
+      ]);
+      expect((await bridgeDeviceStatus(f.token)).device.status).toBe('online');
+    });
     it('never treats absent or future heartbeats as live or dispatches a selection request', async () => {
       const f = await fixture();
       for (const lastSeen of [null, new Date(Date.now() + 86400000)]) {
