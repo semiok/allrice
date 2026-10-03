@@ -6,7 +6,8 @@ import type {
   OrganizationAiTarget,
   OrganizationAiCatalog,
 } from '@allrice/contracts';
-import styles from './tenant-administration.module.css';
+import { AdminButton } from '../../components/admin/admin-ui';
+import styles from './organization-administration.module.css';
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...init });
@@ -33,6 +34,7 @@ export function OrganizationAiAssignments({
   title,
   onClose,
   onBusy,
+  workspaceId: configuredWorkspaceId,
 }: {
   organization: ManagedOrganization;
   target?: OrganizationAiTarget;
@@ -40,14 +42,16 @@ export function OrganizationAiAssignments({
   title?: string;
   onClose?: () => void;
   onBusy?: (busy: boolean) => void;
+  workspaceId?: string;
 }) {
-  const [workspaceId, setWorkspaceId] = useState(
+  const [localWorkspaceId, setWorkspaceId] = useState(
     organization.workspaces.find(
       (w) => w.id === organization.defaultWorkspaceId,
     )?.id ??
       organization.workspaces[0]?.id ??
       '',
   );
+  const workspaceId = configuredWorkspaceId ?? localWorkspaceId;
   const [data, setData] = useState<OrganizationAiCatalog | null>(null);
   const [loading, setLoading] = useState(false),
     [busy, setBusy] = useState(false);
@@ -129,127 +133,170 @@ export function OrganizationAiAssignments({
   }
   return (
     <section
-      className={styles.editor}
+      className={styles.aiAssignments}
       aria-label={defaults ? '全员自动配发 AI 员工' : '员工 AI 配发'}
     >
-      <div className={styles.selectors}>
-        <h3>{title ?? (defaults ? '全员自动配发 AI 员工' : '配置 AI 员工')}</h3>
-        <button disabled={busy || loading} onClick={() => void load()}>
-          刷新 AI 员工
-        </button>
-        {onClose && (
-          <button disabled={busy} onClick={onClose}>
-            完成
-          </button>
-        )}
+      <div className={styles.sectionHeader}>
+        <div className={styles.sectionTitle}>
+          <h3>{defaults ? '全员自动配发' : 'AI 员工'}</h3>
+          <span className={styles.meta}>
+            {data
+              ? `${data.employees.length} 个 AI 员工 · ${data.targetCount} 名员工`
+              : '正在读取…'}
+          </span>
+        </div>
+        <AdminButton
+          variant="icon"
+          icon="refresh"
+          aria-label="刷新 AI 员工"
+          disabled={busy || loading}
+          onClick={() => void load()}
+        />
       </div>
-      <p>
+      <p className={styles.meta}>
         {defaults
-          ? '勾选后，公司现有员工和以后新增的员工都会自动获得这个 AI 员工；单独为某人添加或移除的设置仍会保留。'
-          : `本次选择 ${data?.targetCount ?? '…'} 人。添加、移除或恢复跟随公司默认；不会改变其他员工。`}
+          ? '开启后自动配发给现有和新增员工。个人单独添加或移除的设置保留。'
+          : `${title ?? '本次配发'} · ${data?.targetCount ?? '…'} 人。操作即时保存，仅影响本次范围。`}
       </p>
-      {defaults && (
-        <p>
-          取消勾选后，跟随公司设置获得的配发会撤回，单独给个人添加的仍保留。需要只给部分人使用时，在员工列表中选择人员后配置
-          AI 员工。
+      {configuredWorkspaceId === undefined &&
+        organization.workspaces.length > 1 && (
+          <label className={styles.workspaceSelector}>
+            历史工作区
+            <select
+              aria-label="历史工作区"
+              value={workspaceId}
+              disabled={busy}
+              onChange={(e) => setWorkspaceId(e.target.value)}
+            >
+              {organization.workspaces.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+      {error && (
+        <p className={styles.error} role="alert">
+          {error}
         </p>
       )}
-      {organization.workspaces.length > 1 && (
-        <label>
-          历史工作区
-          <select
-            value={workspaceId}
-            disabled={busy}
-            onChange={(e) => setWorkspaceId(e.target.value)}
-          >
-            {organization.workspaces.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </select>
-        </label>
+      {notice && (
+        <p className={styles.notice} role="status">
+          {notice}
+        </p>
       )}
-      {error && <p role="alert">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
-      {loading && <p role="status">正在读取 AI 员工…</p>}
-      <div className={styles.table}>
-        <table>
-          <thead>
-            <tr>
-              <th>AI 员工</th>
-              <th>配发情况</th>
-              <th>操作</th>
+      {busy && (
+        <p className={styles.meta} role="status">
+          正在保存配发…
+        </p>
+      )}
+      {loading && (
+        <p className={styles.meta} role="status">
+          正在读取 AI 员工…
+        </p>
+      )}
+      <table className={styles.aiTable}>
+        <thead>
+          <tr>
+            <th>AI 员工</th>
+            <th>配发情况</th>
+            <th className={styles.alignEnd}>
+              {defaults ? '自动配发 · 即时保存' : '操作'}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {data?.employees.map((e) => (
+            <tr key={e.employeeId}>
+              <td>
+                <span className={styles.aiName}>{e.name}</span>
+                <small>{e.role}</small>
+              </td>
+              <td>
+                {e.targetAssignedCount} / {data.targetCount} 人当前可用
+                <small>
+                  {e.inheritedByDefault
+                    ? '已开启全员自动配发（含新员工）'
+                    : '未开启自动配发，按个人配置使用'}
+                  {e.targetExcludedCount
+                    ? ` · ${e.targetExcludedCount} 人已明确移除`
+                    : ''}
+                </small>
+              </td>
+              <td>
+                {defaults ? (
+                  <label className={styles.autoAssign}>
+                    <input
+                      className={styles.toggle}
+                      type="checkbox"
+                      aria-label={`全员自动配发 ${e.name}（含新员工）`}
+                      checked={e.inheritedByDefault}
+                      disabled={
+                        busy ||
+                        loading ||
+                        (!e.canAssign && !e.inheritedByDefault)
+                      }
+                      onChange={(event) =>
+                        void change(e, 'default', event.target.checked)
+                      }
+                    />
+                    <span className={styles.meta}>
+                      {e.inheritedByDefault
+                        ? '已开启'
+                        : e.canAssign
+                          ? '未开启'
+                          : '暂不可配发'}
+                    </span>
+                  </label>
+                ) : (
+                  <div className={styles.aiActions}>
+                    <AdminButton
+                      variant="quiet"
+                      disabled={
+                        busy || loading || !e.canAssign || !data.targetCount
+                      }
+                      onClick={() => void change(e, 'include')}
+                    >
+                      添加
+                    </AdminButton>
+                    <AdminButton
+                      variant="quiet"
+                      disabled={busy || loading || !data.targetCount}
+                      onClick={() => void change(e, 'exclude')}
+                    >
+                      移除
+                    </AdminButton>
+                    <AdminButton
+                      variant="quiet"
+                      disabled={busy || loading || !data.targetCount}
+                      onClick={() => void change(e, 'inherit')}
+                    >
+                      跟随公司默认
+                    </AdminButton>
+                  </div>
+                )}
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {data?.employees.map((e) => (
-              <tr key={e.employeeId}>
-                <td>
-                  <strong>{e.name}</strong>
-                  <small>{e.role}</small>
-                </td>
-                <td>
-                  {e.targetAssignedCount} / {data.targetCount} 人当前可用
-                  <small>
-                    {e.inheritedByDefault
-                      ? '已开启全员自动配发（含新员工）'
-                      : '未开启自动配发，按个人配置使用'}
-                    {e.targetExcludedCount
-                      ? ` · ${e.targetExcludedCount} 人已明确移除`
-                      : ''}
-                  </small>
-                </td>
-                <td>
-                  {defaults ? (
-                    <label>
-                      <input
-                        type="checkbox"
-                        aria-label={`全员自动配发 ${e.name}（含新员工）`}
-                        checked={e.inheritedByDefault}
-                        disabled={
-                          busy ||
-                          loading ||
-                          (!e.canAssign && !e.inheritedByDefault)
-                        }
-                        onChange={(event) =>
-                          void change(e, 'default', event.target.checked)
-                        }
-                      />
-                      全员自动配发（含新员工）
-                    </label>
-                  ) : (
-                    <div className={styles.selectors}>
-                      <button
-                        disabled={
-                          busy || loading || !e.canAssign || !data.targetCount
-                        }
-                        onClick={() => void change(e, 'include')}
-                      >
-                        添加
-                      </button>
-                      <button
-                        disabled={busy || loading || !data.targetCount}
-                        onClick={() => void change(e, 'exclude')}
-                      >
-                        移除
-                      </button>
-                      <button
-                        disabled={busy || loading || !data.targetCount}
-                        onClick={() => void change(e, 'inherit')}
-                      >
-                        跟随公司默认
-                      </button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+          ))}
+        </tbody>
+      </table>
       {data && !data.employees.length && (
-        <p>暂无已发布 AI 员工。先在「AI 员工」中发布，再在这里配发。</p>
+        <p className={styles.empty}>
+          暂无已发布 AI 员工。先在「AI 员工」中发布，再在这里配发。
+        </p>
+      )}
+      {defaults && (
+        <p className={styles.meta}>
+          关闭会撤回跟随公司的配发，个人单独添加的保留。部分人员配发可在员工列表中设置。
+        </p>
+      )}
+      {onClose && (
+        <div className={styles.dialogFooter}>
+          <AdminButton variant="primary" disabled={busy} onClick={onClose}>
+            完成
+          </AdminButton>
+        </div>
       )}
     </section>
   );

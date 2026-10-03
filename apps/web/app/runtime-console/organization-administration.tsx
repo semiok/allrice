@@ -16,7 +16,23 @@ import {
 } from '@allrice/contracts';
 import { OrganizationAiAssignments } from './organization-ai-assignments';
 import { TenantResourceEditor } from './tenant-resource-editor';
-import styles from './tenant-administration.module.css';
+import {
+  AdminButton,
+  AdminDialog,
+  AdminIcon,
+  AdminMenu,
+  AdminStatus,
+} from '../../components/admin/admin-ui';
+import legacyStyles from './tenant-administration.module.css';
+import styles from './organization-administration.module.css';
+
+type OrganizationView = 'people' | 'employees' | 'environments' | 'quotas';
+const companyTabs: { id: OrganizationView; label: string }[] = [
+  { id: 'people', label: '员工账号' },
+  { id: 'employees', label: '公司 AI 员工' },
+  { id: 'environments', label: '应用与电脑' },
+  { id: 'quotas', label: '用量' },
+];
 
 const messages: Record<string, string> = {
   AUTHENTICATION_REQUIRED: '登录已过期，请重新登录。',
@@ -63,6 +79,8 @@ export function OrganizationAdministration() {
   const [savingCompany, setBusy] = useState(false);
   const [peopleBusy, setPeopleBusy] = useState(false);
   const [configurationBusy, setConfigurationBusy] = useState(false);
+  const [configurationDirty, setConfigurationDirty] = useState(false);
+  const [view, setView] = useState<OrganizationView>('people');
   const busy = savingCompany || peopleBusy || configurationBusy;
   const [editor, setEditor] = useState<'create' | 'edit' | null>(null);
   const controller = useRef<AbortController | null>(null);
@@ -155,108 +173,249 @@ export function OrganizationAdministration() {
       setBusy(false);
     }
   }
+  function canNavigate() {
+    return (
+      !busy && (!configurationDirty || window.confirm('放弃尚未保存的修改？'))
+    );
+  }
+  function selectTab(nextView: OrganizationView) {
+    if (view !== nextView && canNavigate()) {
+      setConfigurationDirty(false);
+      setView(nextView);
+    }
+  }
   return (
-    <section className={styles.panel} aria-label="组织管理">
-      <header>
-        <h2>组织管理</h2>
-        <p>按公司管理员工账号、岗位职能与 AI 员工。</p>
-      </header>
-      <div className={styles.selectors}>
-        <label>
-          公司
-          <select
-            aria-label="管理公司"
-            value={selectedId}
-            disabled={busy || !!editor}
-            onChange={(e) => setSelectedId(e.target.value)}
-          >
-            <option value="">选择公司</option>
-            {organizations.map((o) => (
-              <option key={o.id} value={o.id}>
-                {o.name} · {o.peopleCount} 人
-              </option>
-            ))}
-          </select>
-        </label>
-        <button disabled={busy || !!editor} onClick={() => setEditor('create')}>
-          新建公司
-        </button>
-        <button
-          disabled={busy || loading || !!editor}
-          onClick={() => void load()}
+    <section className={styles.page} aria-label="组织管理">
+      <header className={styles.pageHeader}>
+        <div>
+          <h1>组织管理</h1>
+          <p>管理员工账号、公司资料与 AI 配发。</p>
+        </div>
+        <AdminButton
+          icon="plus"
+          disabled={busy || !!editor}
+          onClick={() => {
+            if (canNavigate()) setEditor('create');
+          }}
         >
-          刷新
-        </button>
-        {next && (
-          <button
-            disabled={loading || busy || !!editor}
-            onClick={() => void load(next)}
+          新建公司
+        </AdminButton>
+      </header>
+      {!editor && error && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
+      <div className={styles.companyBar}>
+        <span className={styles.companyMark}>
+          <AdminIcon name="organization" />
+        </span>
+        <div className={styles.companyCopy}>
+          <h2
+            aria-label={selected?.name ?? '选择公司'}
+            className={styles.companyHeading}
           >
-            更多公司
-          </button>
-        )}
+            <label className={styles.companyPicker}>
+              <span className={styles.srOnly}>管理公司</span>
+              <select
+                aria-label="管理公司"
+                value={selectedId}
+                disabled={busy || !!editor}
+                onChange={(event) => {
+                  if (canNavigate()) {
+                    setSelectedId(event.target.value);
+                    setConfigurationDirty(false);
+                    setView('people');
+                  }
+                }}
+              >
+                <option value="">选择公司</option>
+                {organizations.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+              <AdminIcon name="chevron" />
+            </label>
+          </h2>
+          {selected && (
+            <p className={styles.meta}>
+              {selected.peopleCount} 名员工
+              {selected.businessContext && <> · {selected.businessContext}</>}
+            </p>
+          )}
+        </div>
+        <div className={styles.actions}>
+          {next && (
+            <AdminButton
+              variant="quiet"
+              disabled={loading || busy || !!editor}
+              onClick={() => void load(next)}
+            >
+              更多公司
+            </AdminButton>
+          )}
+          {selected && (
+            <AdminButton
+              variant="quiet"
+              icon="edit"
+              disabled={busy || !!editor}
+              onClick={() => {
+                if (canNavigate()) setEditor('edit');
+              }}
+            >
+              编辑公司
+            </AdminButton>
+          )}
+          <AdminButton
+            variant="icon"
+            icon="refresh"
+            aria-label="刷新公司"
+            disabled={busy || loading || !!editor}
+            onClick={() => {
+              if (canNavigate()) void load();
+            }}
+          />
+        </div>
       </div>
-      {error && <p role="alert">{error}</p>}
-      {loading && <p role="status">正在读取公司…</p>}
+      {loading && !selected && (
+        <p role="status" className={styles.meta}>
+          正在读取公司…
+        </p>
+      )}
       {editor && (
-        <form key={editor} className={styles.editor} onSubmit={saveCompany}>
-          <h3>{editor === 'create' ? '新建公司' : '编辑公司'}</h3>
-          <fieldset disabled={busy}>
-            <label>
-              公司名称
-              <input
-                name="name"
-                required
-                maxLength={160}
-                defaultValue={editor === 'edit' ? selected?.name : ''}
-              />
-            </label>
-            <label>
-              公司业务背景
-              <textarea
-                name="businessContext"
-                maxLength={8000}
-                defaultValue={
-                  editor === 'edit' ? selected?.businessContext : ''
-                }
-                placeholder="例如主营业务、客户群体和团队工作习惯"
-              />
-            </label>
-            <div className={styles.selectors}>
-              <button>{busy ? '保存中…' : '保存公司'}</button>
-              <button type="button" onClick={() => setEditor(null)}>
-                取消
-              </button>
-            </div>
-          </fieldset>
-        </form>
+        <AdminDialog
+          title={editor === 'create' ? '新建公司' : '编辑公司'}
+          busy={savingCompany}
+          onClose={() => {
+            setEditor(null);
+            setError('');
+          }}
+        >
+          <form key={editor} className={styles.form} onSubmit={saveCompany}>
+            <fieldset disabled={busy}>
+              <label>
+                公司名称
+                <input
+                  name="name"
+                  required
+                  maxLength={160}
+                  defaultValue={editor === 'edit' ? selected?.name : ''}
+                />
+              </label>
+              <label>
+                公司业务背景
+                <textarea
+                  name="businessContext"
+                  maxLength={8000}
+                  defaultValue={
+                    editor === 'edit' ? selected?.businessContext : ''
+                  }
+                  placeholder="主营业务、客户群体和团队工作习惯"
+                />
+              </label>
+              {error && (
+                <p className={styles.error} role="alert">
+                  {error}
+                </p>
+              )}
+              <div className={styles.dialogFooter}>
+                <AdminButton
+                  onClick={() => {
+                    setEditor(null);
+                    setError('');
+                  }}
+                >
+                  取消
+                </AdminButton>
+                <AdminButton type="submit" variant="primary">
+                  {savingCompany ? '保存中…' : '保存公司'}
+                </AdminButton>
+              </div>
+            </fieldset>
+          </form>
+        </AdminDialog>
       )}
       {selected && (
         <>
-          <div className={styles.selectors}>
-            <h3>{selected.name}</h3>
-            <button
-              disabled={busy || !!editor}
-              onClick={() => setEditor('edit')}
+          <nav className={styles.tabs} aria-label="公司配置" role="tablist">
+            {companyTabs.map((tab, index) => (
+              <button
+                type="button"
+                key={tab.id}
+                role="tab"
+                id={`company-tab-${tab.id}`}
+                aria-controls={`company-panel-${tab.id}`}
+                aria-selected={view === tab.id}
+                tabIndex={view === tab.id ? 0 : -1}
+                disabled={busy || !!editor}
+                onClick={() => selectTab(tab.id)}
+                onKeyDown={(event) => {
+                  const offset =
+                    event.key === 'ArrowRight'
+                      ? 1
+                      : event.key === 'ArrowLeft'
+                        ? -1
+                        : 0;
+                  const nextIndex =
+                    event.key === 'Home'
+                      ? 0
+                      : event.key === 'End'
+                        ? companyTabs.length - 1
+                        : offset
+                          ? (index + offset + companyTabs.length) %
+                            companyTabs.length
+                          : null;
+                  if (nextIndex !== null && canNavigate()) {
+                    event.preventDefault();
+                    setConfigurationDirty(false);
+                    setView(companyTabs[nextIndex]!.id);
+                    document
+                      .getElementById(
+                        `company-tab-${companyTabs[nextIndex]!.id}`,
+                      )
+                      ?.focus();
+                  }
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </nav>
+          {companyTabs.map((tab) => (
+            <section
+              key={tab.id}
+              id={`company-panel-${tab.id}`}
+              role="tabpanel"
+              aria-labelledby={`company-tab-${tab.id}`}
+              hidden={view !== tab.id}
             >
-              编辑公司
-            </button>
-          </div>
-          <OrganizationPeople
-            key={selected.id}
-            organization={selected}
-            onBusy={setPeopleBusy}
-            onChanged={() => void load()}
-          />
-          <CompanyConfiguration
-            key={`config-${selected.id}`}
-            organization={selected}
-            onBusy={setConfigurationBusy}
-          />
+              {view === tab.id &&
+                (tab.id === 'people' ? (
+                  <OrganizationPeople
+                    key={selected.id}
+                    organization={selected}
+                    onBusy={setPeopleBusy}
+                    onChanged={() => void load()}
+                  />
+                ) : (
+                  <CompanyConfiguration
+                    key={`config-${selected.id}-${tab.id}`}
+                    organization={selected}
+                    view={tab.id}
+                    onBusy={setConfigurationBusy}
+                    onDirty={setConfigurationDirty}
+                  />
+                ))}
+            </section>
+          ))}
         </>
       )}
       {!selected && !loading && !editor && (
-        <p>新建公司后，即可添加员工。所有员工从 allrice.bplabs.xyz 登录。</p>
+        <p className={styles.empty}>
+          新建公司后，即可添加员工。员工从 allrice.bplabs.xyz 登录。
+        </p>
       )}
     </section>
   );
@@ -282,6 +441,8 @@ export function OrganizationPeople({
     'new' | 'bulk' | OrganizationPerson | null
   >(null);
   const [reset, setReset] = useState<OrganizationPerson | null>(null);
+  const [searchText, setSearchText] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
   const [selectedPeople, setSelectedPeople] = useState<string[]>([]);
   const [aiTarget, setAiTarget] = useState<{
     target: OrganizationAiTarget;
@@ -380,334 +541,526 @@ export function OrganizationPeople({
   const edited = typeof editor === 'object' ? editor : null;
   return (
     <section aria-label="公司员工">
-      <div className={styles.selectors}>
-        <h3>员工账号</h3>
-        <button disabled={busy || editing} onClick={() => setEditor('new')}>
-          添加员工
-        </button>
-        <button disabled={busy || editing} onClick={() => setEditor('bulk')}>
-          批量导入
-        </button>
-        <button
-          disabled={busy || loading || editing}
-          onClick={() => void load()}
-        >
-          刷新员工
-        </button>
+      <div className={styles.sectionHeader}>
+        <div className={styles.sectionTitle}>
+          <h3>员工列表</h3>
+          <span className={styles.meta}>
+            {query
+              ? `${people.length} 名匹配员工${next ? ' · 还有更多' : ''}`
+              : `共 ${organization.peopleCount} 名员工`}
+          </span>
+        </div>
+        <div className={styles.actions}>
+          <AdminButton
+            icon="upload"
+            disabled={busy || editing}
+            onClick={() => setEditor('bulk')}
+          >
+            批量导入
+          </AdminButton>
+          <AdminButton
+            variant="primary"
+            icon="plus"
+            disabled={busy || editing}
+            onClick={() => setEditor('new')}
+          >
+            添加员工
+          </AdminButton>
+        </div>
+      </div>
+      <div className={styles.toolbar}>
         <form
-          className={styles.accountSearch}
-          onSubmit={(e) => {
-            e.preventDefault();
-            setQuery(String(new FormData(e.currentTarget).get('search') ?? ''));
+          className={styles.search}
+          onSubmit={(event) => {
+            event.preventDefault();
+            setQuery(searchText.trim());
             setSelectedPeople([]);
           }}
         >
-          <label>
-            查找员工
-            <input
-              name="search"
-              placeholder="姓名、英文账号或岗位"
-              maxLength={160}
+          <AdminIcon name="search" />
+          <input
+            name="search"
+            aria-label="查找员工"
+            placeholder="姓名、账号或岗位"
+            maxLength={160}
+            value={searchText}
+            onChange={(event) => setSearchText(event.target.value)}
+            disabled={busy || editing}
+          />
+          {searchText && (
+            <AdminButton
+              variant="icon"
+              icon="close"
+              aria-label="清空查找"
               disabled={busy || editing}
+              onClick={() => {
+                setSearchText('');
+                setQuery('');
+                setSelectedPeople([]);
+              }}
             />
-          </label>
-          <button disabled={busy || editing}>查找</button>
+          )}
+          <AdminButton type="submit" variant="quiet" disabled={busy || editing}>
+            查找
+          </AdminButton>
         </form>
+        <div className={styles.actions}>
+          <AdminMenu label="批量配发" triggerLabel="批量配发" icon="chevron">
+            <AdminButton
+              variant="quiet"
+              disabled={busy || editing || !selectedPeople.length}
+              onClick={() =>
+                setAiTarget({
+                  target: { type: 'selected', userIds: selectedPeople },
+                  title: `已选 ${selectedPeople.length} 人的 AI 员工`,
+                })
+              }
+            >
+              配发给已选员工
+            </AdminButton>
+            <AdminButton
+              variant="quiet"
+              disabled={busy || editing || !query.trim()}
+              onClick={() =>
+                setAiTarget({
+                  target: { type: 'search', search: query },
+                  title: `符合「${query}」的员工`,
+                })
+              }
+            >
+              配发给筛选结果
+            </AdminButton>
+            <AdminButton
+              variant="quiet"
+              disabled={busy || editing}
+              onClick={() =>
+                setAiTarget({
+                  target: { type: 'all' },
+                  title: '全公司员工的 AI 配发',
+                })
+              }
+            >
+              配发给全公司
+            </AdminButton>
+          </AdminMenu>
+          <AdminButton
+            variant="icon"
+            icon="refresh"
+            aria-label="刷新员工"
+            disabled={busy || loading || editing}
+            onClick={() => void load()}
+          />
+        </div>
       </div>
-      <p>
-        所有员工均使用普通员工权限。初始密码为
-        admin@321，可由管理员指定或由员工登录后修改。
-      </p>
-      {error && <p role="alert">{error}</p>}
-      {notice && <p role="status">{notice}</p>}
-      {loading && <p role="status">正在读取员工…</p>}
-      <div className={styles.selectors}>
-        <button
-          disabled={busy || editing || !selectedPeople.length}
-          onClick={() =>
-            setAiTarget({
-              target: { type: 'selected', userIds: selectedPeople },
-              title: `已选 ${selectedPeople.length} 人的 AI 员工`,
-            })
-          }
-        >
-          配置已选员工的 AI · {selectedPeople.length}
-        </button>
-        <button
-          disabled={busy || editing || !query.trim()}
-          onClick={() =>
-            setAiTarget({
-              target: { type: 'search', search: query },
-              title: `符合「${query}」的员工`,
-            })
-          }
-        >
-          配置筛选结果的 AI
-        </button>
-        <button
-          disabled={busy || editing}
-          onClick={() =>
-            setAiTarget({
-              target: { type: 'all' },
-              title: '全公司员工的 AI 配发',
-            })
-          }
-        >
-          配置全公司员工的 AI
-        </button>
-      </div>
+      {!editing && error && (
+        <p className={styles.error} role="alert">
+          {error}
+        </p>
+      )}
+      {notice && (
+        <p className={styles.notice} role="status">
+          {notice}
+        </p>
+      )}
+      {!!selectedPeople.length && (
+        <div className={styles.selection}>
+          <span>已选 {selectedPeople.length} 人</span>
+          <AdminButton
+            variant="quiet"
+            disabled={busy || editing}
+            onClick={() => setSelectedPeople([])}
+          >
+            取消选择
+          </AdminButton>
+          <AdminButton
+            icon="employee"
+            disabled={busy || editing}
+            onClick={() =>
+              setAiTarget({
+                target: { type: 'selected', userIds: selectedPeople },
+                title: `已选 ${selectedPeople.length} 人的 AI 员工`,
+              })
+            }
+          >
+            配发 AI 员工
+          </AdminButton>
+        </div>
+      )}
       {aiTarget && (
-        <OrganizationAiAssignments
-          organization={organization}
-          target={aiTarget.target}
+        <AdminDialog
           title={aiTarget.title}
+          busy={aiBusy}
           onClose={() => setAiTarget(null)}
-        />
+        >
+          <OrganizationAiAssignments
+            organization={organization}
+            target={aiTarget.target}
+            title={aiTarget.title}
+            onBusy={setAiBusy}
+            onClose={() => setAiTarget(null)}
+          />
+        </AdminDialog>
       )}
       {editor === 'bulk' ? (
-        <BulkPeopleImport
+        <AdminDialog
+          title="批量导入员工"
           busy={busy}
-          onCancel={() => {
+          onClose={() => {
             setEditor(null);
             setError('');
           }}
-          onSave={(people) =>
-            void mutate(
-              base,
-              'POST',
-              { people },
-              `已创建 ${people.length} 个员工账号。`,
-            )
-          }
-        />
+        >
+          {error && (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
+          )}
+          <BulkPeopleImport
+            busy={busy}
+            onCancel={() => {
+              setEditor(null);
+              setError('');
+            }}
+            onSave={(rows) =>
+              void mutate(
+                base,
+                'POST',
+                { people: rows },
+                `已创建 ${rows.length} 个员工账号。`,
+              )
+            }
+          />
+        </AdminDialog>
       ) : (
         editor && (
-          <form
-            key={edited?.userId ?? 'new'}
-            className={styles.editor}
-            onSubmit={savePerson}
+          <AdminDialog
+            title={edited ? '编辑员工' : '添加员工'}
+            busy={busy}
+            onClose={() => {
+              setEditor(null);
+              setError('');
+            }}
           >
-            <h3>{edited ? '编辑员工' : '添加员工'}</h3>
-            <fieldset disabled={busy}>
-              <label>
-                英文账号
-                <input
-                  name="username"
-                  required
-                  pattern="[a-zA-Z][a-zA-Z0-9._-]*"
-                  minLength={2}
-                  maxLength={64}
-                  autoComplete="off"
-                  defaultValue={edited?.username ?? ''}
-                />
-              </label>
-              <label>
-                姓名
-                <input
-                  name="displayName"
-                  required
-                  maxLength={120}
-                  defaultValue={edited?.displayName ?? ''}
-                />
-              </label>
-              <label>
-                岗位
-                <input
-                  name="jobTitle"
-                  maxLength={160}
-                  defaultValue={edited?.jobTitle ?? ''}
-                />
-              </label>
-              <label>
-                职能
-                <textarea
-                  name="responsibilities"
-                  maxLength={8000}
-                  defaultValue={edited?.responsibilities ?? ''}
-                />
-              </label>
-              {!edited && (
+            <form
+              key={edited?.userId ?? 'new'}
+              className={styles.form}
+              onSubmit={savePerson}
+            >
+              <fieldset disabled={busy}>
+                <div className={styles.twoFields}>
+                  <label>
+                    姓名
+                    <input
+                      name="displayName"
+                      required
+                      maxLength={120}
+                      defaultValue={edited?.displayName ?? ''}
+                    />
+                  </label>
+                  <label>
+                    英文账号
+                    <input
+                      name="username"
+                      required
+                      pattern="[a-zA-Z][a-zA-Z0-9._-]*"
+                      minLength={2}
+                      maxLength={64}
+                      autoComplete="off"
+                      defaultValue={edited?.username ?? ''}
+                    />
+                  </label>
+                </div>
                 <label>
-                  初始密码
+                  岗位
                   <input
-                    name="password"
-                    type="password"
-                    autoComplete="new-password"
-                    minLength={8}
-                    maxLength={256}
-                    defaultValue="admin@321"
-                    required
+                    name="jobTitle"
+                    maxLength={160}
+                    defaultValue={edited?.jobTitle ?? ''}
                   />
                 </label>
-              )}
-              <div className={styles.selectors}>
-                <button>{busy ? '保存中…' : '保存员工'}</button>
-                <button type="button" onClick={() => setEditor(null)}>
-                  取消
-                </button>
-              </div>
-            </fieldset>
-          </form>
+                <label>
+                  职能
+                  <textarea
+                    name="responsibilities"
+                    maxLength={8000}
+                    defaultValue={edited?.responsibilities ?? ''}
+                  />
+                </label>
+                {!edited && (
+                  <label>
+                    初始密码
+                    <input
+                      name="password"
+                      type="password"
+                      autoComplete="new-password"
+                      minLength={8}
+                      maxLength={256}
+                      defaultValue="admin@321"
+                      required
+                    />
+                    <span className={styles.meta}>
+                      可指定初始密码，员工登录后可以修改。
+                    </span>
+                  </label>
+                )}
+                {error && (
+                  <p className={styles.error} role="alert">
+                    {error}
+                  </p>
+                )}
+                <div className={styles.dialogFooter}>
+                  <AdminButton
+                    onClick={() => {
+                      setEditor(null);
+                      setError('');
+                    }}
+                  >
+                    取消
+                  </AdminButton>
+                  <AdminButton type="submit" variant="primary">
+                    {busy ? '保存中…' : '保存员工'}
+                  </AdminButton>
+                </div>
+              </fieldset>
+            </form>
+          </AdminDialog>
         )
       )}
       {reset && (
-        <form
-          className={styles.editor}
-          onSubmit={(e) => {
-            e.preventDefault();
-            void mutate(
-              `${base}/${reset.userId}/password`,
-              'POST',
-              { password: new FormData(e.currentTarget).get('password') },
-              '密码已重置，旧登录已退出。',
-            );
+        <AdminDialog
+          title={`重置 ${reset.displayName} 的密码`}
+          busy={busy}
+          onClose={() => {
+            setReset(null);
+            setError('');
           }}
         >
-          <h3>重置 {reset.displayName} 的密码</h3>
-          <fieldset disabled={busy}>
-            <label>
-              新密码
-              <input
-                name="password"
-                type="password"
-                minLength={8}
-                maxLength={256}
-                required
-                autoComplete="new-password"
-                defaultValue="admin@321"
-              />
-            </label>
-            <div className={styles.selectors}>
-              <button>重置密码</button>
-              <button type="button" onClick={() => setReset(null)}>
-                取消
-              </button>
-            </div>
-          </fieldset>
-        </form>
+          <form
+            className={styles.form}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void mutate(
+                `${base}/${reset.userId}/password`,
+                'POST',
+                { password: new FormData(event.currentTarget).get('password') },
+                '密码已重置，旧登录已退出。',
+              );
+            }}
+          >
+            <fieldset disabled={busy}>
+              <label>
+                新密码
+                <input
+                  name="password"
+                  type="password"
+                  minLength={8}
+                  maxLength={256}
+                  required
+                  autoComplete="new-password"
+                  defaultValue="admin@321"
+                />
+              </label>
+              {error && (
+                <p className={styles.error} role="alert">
+                  {error}
+                </p>
+              )}
+              <div className={styles.dialogFooter}>
+                <AdminButton
+                  onClick={() => {
+                    setReset(null);
+                    setError('');
+                  }}
+                >
+                  取消
+                </AdminButton>
+                <AdminButton type="submit" variant="primary">
+                  {busy ? '重置中…' : '重置密码'}
+                </AdminButton>
+              </div>
+            </fieldset>
+          </form>
+        </AdminDialog>
       )}
-      <div className={styles.table}>
-        <table>
-          <thead>
-            <tr>
-              <th>
+      <table className={styles.peopleTable}>
+        <colgroup>
+          <col className={styles.checkColumn} />
+          <col className={styles.personColumn} />
+          <col />
+          <col className={styles.statusColumn} />
+          <col className={styles.actionsColumn} />
+        </colgroup>
+        <thead>
+          <tr>
+            <th>
+              <input
+                type="checkbox"
+                aria-label="选择当前列表员工"
+                disabled={busy || editing || !people.length}
+                checked={
+                  people.length > 0 &&
+                  people.every((person) =>
+                    selectedPeople.includes(person.userId),
+                  )
+                }
+                onChange={(event) =>
+                  setSelectedPeople(
+                    event.target.checked
+                      ? people.map((person) => person.userId)
+                      : [],
+                  )
+                }
+              />
+            </th>
+            <th>员工</th>
+            <th>岗位与职能</th>
+            <th>账号状态</th>
+            <th className={styles.alignEnd}>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {people.map((person) => (
+            <tr
+              key={person.userId}
+              data-selected={selectedPeople.includes(person.userId)}
+            >
+              <td>
                 <input
                   type="checkbox"
-                  aria-label="选择当前列表员工"
-                  disabled={busy || editing || !people.length}
-                  checked={
-                    people.length > 0 &&
-                    people.every((p) => selectedPeople.includes(p.userId))
-                  }
-                  onChange={(e) =>
-                    setSelectedPeople(
-                      e.target.checked ? people.map((p) => p.userId) : [],
+                  aria-label={`选择 ${person.displayName}`}
+                  checked={selectedPeople.includes(person.userId)}
+                  disabled={busy || editing}
+                  onChange={(event) =>
+                    setSelectedPeople((old) =>
+                      event.target.checked
+                        ? [...old, person.userId]
+                        : old.filter((id) => id !== person.userId),
                     )
                   }
                 />
-              </th>
-              <th>员工</th>
-              <th>岗位与职能</th>
-              <th>状态</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            {people.map((p) => (
-              <tr key={p.userId}>
-                <td>
-                  <input
-                    type="checkbox"
-                    aria-label={`选择 ${p.displayName}`}
-                    checked={selectedPeople.includes(p.userId)}
-                    disabled={busy || editing}
-                    onChange={(e) =>
-                      setSelectedPeople((old) =>
-                        e.target.checked
-                          ? [...old, p.userId]
-                          : old.filter((id) => id !== p.userId),
-                      )
-                    }
-                  />
-                </td>
-                <td>
-                  <strong>{p.displayName}</strong>
-                  <small>{p.username ?? '待迁移英文账号'}</small>
-                </td>
-                <td>
-                  {p.jobTitle || '未填写岗位'}
-                  <small>{p.responsibilities}</small>
-                </td>
-                <td>
-                  {p.status === 'disabled'
+              </td>
+              <td>
+                <div className={styles.person}>
+                  <span className={styles.avatar} aria-hidden="true">
+                    {Array.from(person.displayName)[0]}
+                  </span>
+                  <div className={styles.personCopy}>
+                    <button
+                      type="button"
+                      className={styles.personName}
+                      disabled={busy || editing}
+                      onClick={() => setEditor(person)}
+                    >
+                      {person.displayName}
+                    </button>
+                    <small>{person.username ?? '待迁移英文账号'}</small>
+                  </div>
+                </div>
+              </td>
+              <td>
+                <span>{person.jobTitle || '未填写岗位'}</span>
+                <small className={styles.responsibilities}>
+                  {person.responsibilities}
+                </small>
+              </td>
+              <td>
+                <AdminStatus
+                  tone={
+                    person.status === 'disabled' || !person.membershipActive
+                      ? 'muted'
+                      : person.status === 'invited'
+                        ? 'warning'
+                        : 'success'
+                  }
+                >
+                  {person.status === 'disabled'
                     ? '已停用'
-                    : !p.membershipActive
+                    : !person.membershipActive
                       ? '公司访问已撤回'
-                      : p.status === 'invited'
+                      : person.status === 'invited'
                         ? '待激活'
                         : '可登录'}
-                </td>
-                <td>
-                  <div className={styles.selectors}>
-                    <button
+                </AdminStatus>
+              </td>
+              <td>
+                <div className={styles.rowActions}>
+                  <AdminButton
+                    variant="quiet"
+                    disabled={busy || editing}
+                    onClick={() =>
+                      setAiTarget({
+                        target: { type: 'selected', userIds: [person.userId] },
+                        title: `${person.displayName} 的 AI 员工`,
+                      })
+                    }
+                  >
+                    AI 员工
+                  </AdminButton>
+                  <AdminMenu label={`${person.displayName}的更多操作`}>
+                    <AdminButton
+                      variant="quiet"
                       disabled={busy || editing}
-                      onClick={() =>
-                        setAiTarget({
-                          target: { type: 'selected', userIds: [p.userId] },
-                          title: `${p.displayName} 的 AI 员工`,
-                        })
-                      }
-                    >
-                      AI 员工
-                    </button>
-                    <button
-                      disabled={busy || editing}
-                      onClick={() => setEditor(p)}
+                      onClick={() => setEditor(person)}
                     >
                       编辑
-                    </button>
-                    <button
+                    </AdminButton>
+                    <AdminButton
+                      variant="quiet"
                       disabled={busy || editing}
-                      onClick={() => setReset(p)}
+                      onClick={() => setReset(person)}
                     >
                       重置密码
-                    </button>
-                    <button
+                    </AdminButton>
+                    <AdminButton
+                      variant={
+                        person.status === 'disabled' ? 'quiet' : 'danger'
+                      }
                       disabled={busy || editing}
                       onClick={() =>
                         void mutate(
-                          `${base}/${p.userId}/status`,
+                          `${base}/${person.userId}/status`,
                           'POST',
                           {
-                            active: p.status === 'disabled',
-                            expectedVersion: p.version,
+                            active: person.status === 'disabled',
+                            expectedVersion: person.version,
                           },
-                          p.status === 'disabled'
+                          person.status === 'disabled'
                             ? '账号已启用。'
                             : '账号已停用，历史工作和文件已保留。',
                         )
                       }
                     >
-                      {p.status === 'disabled' ? '启用账号' : '停用账号'}
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                      {person.status === 'disabled' ? '启用账号' : '停用账号'}
+                    </AdminButton>
+                  </AdminMenu>
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {loading && !people.length && (
+        <p role="status" className={styles.empty}>
+          正在读取员工…
+        </p>
+      )}
       {!loading && !people.length && (
-        <p>没有匹配的员工。可以添加员工或从表格批量导入。</p>
+        <p className={styles.empty}>没有匹配的员工。可以添加员工或批量导入。</p>
       )}
-      {next && (
-        <button
-          disabled={busy || loading || editing}
-          onClick={() => void load(next)}
-        >
-          更多员工
-        </button>
-      )}
+      <footer className={styles.listFooter}>
+        <span>员工从 allrice.bplabs.xyz 登录</span>
+        {next ? (
+          <AdminButton
+            variant="quiet"
+            disabled={busy || loading || editing}
+            onClick={() => void load(next)}
+          >
+            更多员工
+          </AdminButton>
+        ) : (
+          <span>普通员工权限</span>
+        )}
+      </footer>
     </section>
   );
 }
@@ -745,50 +1098,48 @@ function BulkPeopleImport({
   }, [value]);
   return (
     <form
-      className={styles.editor}
-      onSubmit={(e) => {
-        e.preventDefault();
+      className={styles.form}
+      onSubmit={(event) => {
+        event.preventDefault();
         if (parsed) onSave(parsed);
       }}
     >
-      <h3>批量导入员工</h3>
-      <p>
-        从 Excel
-        复制「英文账号、姓名、岗位、职能」四列粘贴到下方，每行一人，最多 100
-        人。初始密码统一为 admin@321。
+      <p className={styles.meta}>
+        从 Excel 复制「英文账号、姓名、岗位、职能」四列，每行一人，最多 100 人。
       </p>
       <fieldset disabled={busy}>
         <label>
           员工表格
           <textarea
             aria-label="员工表格"
+            className={styles.importInput}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(event) => setValue(event.target.value)}
             placeholder={
               'snow\t小雪\t财务\t供应商对账\ndrink\t小李\t运营\t内容与活动'
             }
           />
         </label>
         {parsed ? (
-          <p role="status">
+          <p role="status" className={styles.meta}>
             将创建 {parsed.length} 人：
-            {parsed.map((p) => p.displayName).join('、')}。
+            {parsed.map((person) => person.displayName).join('、')}。
           </p>
         ) : (
           value && (
-            <p role="alert">
+            <p role="alert" className={styles.error}>
               请检查四列格式、重复账号和必填的英文账号/姓名。单个单元格请勿换行。
             </p>
           )
         )}
-        <p>账号重名时整批不写入，已有员工密码不会改变。</p>
-        <div className={styles.selectors}>
-          <button disabled={!parsed}>
+        <p className={styles.meta}>
+          初始密码统一为 admin@321。账号重名时整批不写入，已有员工密码不会改变。
+        </p>
+        <div className={styles.dialogFooter}>
+          <AdminButton onClick={onCancel}>取消</AdminButton>
+          <AdminButton type="submit" variant="primary" disabled={!parsed}>
             {busy ? '导入中…' : '创建这些员工'}
-          </button>
-          <button type="button" onClick={onCancel}>
-            取消
-          </button>
+          </AdminButton>
         </div>
       </fieldset>
     </form>
@@ -797,98 +1148,80 @@ function BulkPeopleImport({
 
 function CompanyConfiguration({
   organization,
+  view,
   onBusy,
+  onDirty,
 }: {
   organization: ManagedOrganization;
+  view: Exclude<OrganizationView, 'people'>;
   onBusy: (busy: boolean) => void;
+  onDirty: (dirty: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [workspaceId, setWorkspaceId] = useState(
     organization.workspaces.find(
-      (w) => w.id === organization.defaultWorkspaceId,
+      (workspace) => workspace.id === organization.defaultWorkspaceId,
     )?.id ??
       organization.workspaces[0]?.id ??
       '',
   );
-  const [view, setView] = useState<'employees' | 'environments' | 'quotas'>(
-    'employees',
-  );
   const [dirty, setDirty] = useState(false),
     [busy, setBusy] = useState(false);
-  const canSwitch = () =>
-    !busy && (!dirty || window.confirm('放弃尚未保存的修改？'));
   useEffect(() => {
-    onBusy(dirty || busy);
+    onBusy(busy);
     return () => onBusy(false);
-  }, [dirty, busy, onBusy]);
+  }, [busy, onBusy]);
+  useEffect(() => {
+    onDirty(dirty);
+    return () => onDirty(false);
+  }, [dirty, onDirty]);
   return (
-    <details onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary>公司 AI 员工、应用与用量</summary>
-      {open && (
-        <>
-          {view !== 'employees' && organization.workspaces.length > 1 && (
-            <label>
-              历史工作区
-              <select
-                value={workspaceId}
-                disabled={busy}
-                onChange={(e) => {
-                  if (canSwitch()) {
-                    setWorkspaceId(e.target.value);
-                    setDirty(false);
-                  }
-                }}
-              >
-                {organization.workspaces.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <nav aria-label="公司配置">
-            {(['employees', 'environments', 'quotas'] as const).map((v) => (
-              <button
-                key={v}
-                aria-pressed={view === v}
-                disabled={busy}
-                onClick={() => {
-                  if (canSwitch()) {
-                    setView(v);
-                    setDirty(false);
-                  }
-                }}
-              >
-                {
-                  {
-                    employees: '公司 AI 员工',
-                    environments: '应用与电脑',
-                    quotas: '用量',
-                  }[v]
-                }
-              </button>
+    <div className={styles.configuration}>
+      {organization.workspaces.length > 1 && (
+        <label className={styles.workspaceSelector}>
+          历史工作区
+          <select
+            aria-label="历史工作区"
+            value={workspaceId}
+            disabled={busy}
+            onChange={(event) => {
+              if (!dirty || window.confirm('放弃尚未保存的修改？')) {
+                setWorkspaceId(event.target.value);
+                setDirty(false);
+              }
+            }}
+          >
+            {organization.workspaces.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </option>
             ))}
-          </nav>
-          {workspaceId &&
-            (view === 'employees' ? (
-              <OrganizationAiAssignments
-                organization={organization}
-                defaults
-                onBusy={setBusy}
-              />
-            ) : (
-              <TenantResourceEditor
-                key={`${workspaceId}/${view}`}
-                organizationId={organization.id}
-                workspaceId={workspaceId}
-                mode={view}
-                onDirty={setDirty}
-                onBusy={setBusy}
-              />
-            ))}
-        </>
+          </select>
+        </label>
       )}
-    </details>
+      {workspaceId ? (
+        view === 'employees' ? (
+          <OrganizationAiAssignments
+            key={workspaceId}
+            organization={organization}
+            workspaceId={workspaceId}
+            defaults
+            onBusy={setBusy}
+          />
+        ) : (
+          <div className={`${legacyStyles.panel} ${styles.resourcePanel}`}>
+            <TenantResourceEditor
+              key={`${workspaceId}/${view}`}
+              organizationId={organization.id}
+              workspaceId={workspaceId}
+              mode={view}
+              onDirty={setDirty}
+              onBusy={setBusy}
+            />
+          </div>
+        )
+      ) : (
+        <p className={styles.empty}>公司暂时没有可配置的工作区。</p>
+      )}
+    </div>
   );
 }

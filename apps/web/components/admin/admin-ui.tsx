@@ -217,9 +217,13 @@ export function AdminDialog({
 export function AdminMenu({
   label,
   children,
+  triggerLabel,
+  icon = 'more',
 }: {
   label: string;
   children: ReactNode;
+  triggerLabel?: string;
+  icon?: AdminIconName;
 }) {
   const details = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
@@ -233,7 +237,7 @@ export function AdminMenu({
   return (
     <details
       ref={details}
-      className={styles.menu}
+      className={`${styles.menu} ${triggerLabel ? styles.labeledMenu : ''}`}
       onKeyDown={(event) => {
         if (event.key === 'Escape') {
           details.current!.open = false;
@@ -242,15 +246,18 @@ export function AdminMenu({
       }}
     >
       <summary aria-label={label}>
-        <AdminIcon name="more" />
+        {triggerLabel && <span>{triggerLabel}</span>}
+        <AdminIcon name={icon} />
       </summary>
       <div
         className={styles.menuContent}
         role="group"
         aria-label={label}
         onClick={(event) => {
-          if ((event.target as Element).closest('button'))
+          if ((event.target as Element).closest('button')) {
             details.current!.open = false;
+            details.current!.querySelector('summary')?.focus();
+          }
         }}
       >
         {children}

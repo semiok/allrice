@@ -249,6 +249,14 @@
 .menu > summary::-webkit-details-marker {
   display: none;
 }
+.labeledMenu > summary {
+  width: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: var(--admin-font-meta);
+}
 .menu > summary:hover,
 .menu[open] > summary {
   color: var(--admin-text);

@@ -2,12 +2,17 @@ import { RuntimeConsole } from '../app/runtime-console/runtime-console';
 import { createRoot } from 'react-dom/client';
 import { OrganizationActivity } from '../app/runtime-console/organization-activity';
 import { OrganizationAdministration } from '../app/runtime-console/organization-administration';
+import adminStyles from '../components/admin/admin-ui.module.css';
 createRoot(document.getElementById('root')!).render(
   new URLSearchParams(window.location.search).get('view') === 'activity' ? (
-    <OrganizationActivity />
+    <div className={adminStyles.theme}>
+      <OrganizationActivity />
+    </div>
   ) : new URLSearchParams(window.location.search).get('view') === 'runtimes' ? (
     <RuntimeConsole />
   ) : (
-    <OrganizationAdministration />
+    <div className={adminStyles.theme}>
+      <OrganizationAdministration />
+    </div>
   ),
 );
