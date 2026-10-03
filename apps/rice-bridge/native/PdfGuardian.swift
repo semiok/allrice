@@ -7,6 +7,10 @@ func pidInfo(_ pid: Int32, _ flavor: Int32, _ arg: UInt64, _ buffer: UnsafeMutab
 // Trusted fixed supervisor, outside the document process's deny-default policy.
 // Only stdin/stdout/stderr cross the child boundary. No shell or model command.
 umask(0o077)
+// Canceling the reader can close its pipe while the bounded input writer is
+// still active. Let FileHandle report EPIPE instead of terminating this trusted
+// supervisor before it persists the reader's physical stop receipt.
+signal(SIGPIPE, SIG_IGN)
 let owner = getppid()
 var ownedChild: Int32 = 0
 func fail() -> Never {

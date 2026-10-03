@@ -121,3 +121,63 @@ try! FileHandle.standardOutput.write(contentsOf: bytes)
   },
   40_000,
 );
+
+// A killed reader closes stdin before the supervisor has necessarily finished
+// its bounded document write. Exercise the actual Darwin broken-pipe behavior.
+it.skipIf(process.platform !== 'darwin')(
+  'keeps the supervisor alive when cancellation closes the document input pipe',
+  async () => {
+    const source = await readFile(
+      new URL('../apps/rice-bridge/native/PdfGuardian.swift', import.meta.url),
+      'utf8',
+    );
+    const setup = source.match(/^signal\(SIGPIPE, SIG_IGN\)$/m)?.[0];
+    expect(setup).toBeTruthy();
+    const directory = await realpath(
+      await mkdtemp(join(tmpdir(), 'allrice-pdf-cancel-pipe-')),
+    );
+    try {
+      const fixture = join(directory, 'CancelPipe.swift');
+      const binary = join(directory, 'CancelPipe');
+      await writeFile(
+        fixture,
+        `import Foundation\nimport Darwin\n${setup}\n
+let process = Process(), input = Pipe()
+process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+process.arguments = ["30"]
+process.standardInput = input
+process.standardOutput = FileHandle.nullDevice
+process.standardError = FileHandle.nullDevice
+try process.run()
+try input.fileHandleForReading.close()
+_ = kill(process.processIdentifier, SIGKILL)
+process.waitUntilExit()
+var brokenPipe = false
+do {
+    try input.fileHandleForWriting.write(contentsOf: Data(repeating: 65, count: 3 * 1024 * 1024))
+} catch { brokenPipe = true }
+try input.fileHandleForWriting.close()
+let stopped = kill(process.processIdentifier, 0) != 0 && errno == ESRCH
+let receipt = try JSONSerialization.data(withJSONObject: ["stopped": stopped, "brokenPipe": brokenPipe])
+try FileHandle.standardOutput.write(contentsOf: receipt)
+`,
+        { mode: 0o600 },
+      );
+      execFileSync('/usr/bin/xcrun', ['swiftc', fixture, '-o', binary], {
+        timeout: 30_000,
+        maxBuffer: 65_536,
+      });
+      const result = JSON.parse(
+        execFileSync(binary, [], {
+          timeout: 5_000,
+          encoding: 'utf8',
+          maxBuffer: 16_384,
+        }),
+      );
+      expect(result).toEqual({ stopped: true, brokenPipe: true });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  40_000,
+);
