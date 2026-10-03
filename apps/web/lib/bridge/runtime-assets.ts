@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { managedPythonPayloadForPlatform } from '@allrice/contracts';
+import {
+  managedPythonPayloadForPlatform,
+  managedNodePayloadForPlatform,
+} from '@allrice/contracts';
 
 const maxArchiveBytes = 256 * 1024 * 1024;
 
@@ -17,7 +20,17 @@ export async function openManagedPythonPayload(
       : architecture === 'linux-arm64'
         ? 'macos-arm64'
         : null;
-  const release = platform ? managedPythonPayloadForPlatform(platform) : null;
+  const release = platform
+    ? [
+        managedPythonPayloadForPlatform(platform),
+        managedNodePayloadForPlatform(platform),
+      ].find(
+        (item) =>
+          item &&
+          archive ===
+            `${item.archive.sha256.slice('sha256:'.length)}.docker.tar.gz`,
+      )
+    : null;
   const directory = process.env.ALLRICE_BRIDGE_RUNTIME_ASSET_DIR;
   if (
     !release ||

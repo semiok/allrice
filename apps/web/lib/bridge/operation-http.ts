@@ -43,6 +43,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsLocalMcp?: boolean;
     supportsProjectDiagnostics?: boolean;
     supportsNpmDependencies?: boolean;
+    supportsProjectPreparation?: boolean;
     supportsChangesetCandidate?: boolean;
     supportsBackgroundServices?: boolean;
     supportsChangeset?: boolean;
@@ -232,6 +233,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsPdfRead',
                 'supportsProjectDiagnostics',
                 'supportsNpmDependencies',
+                'supportsProjectPreparation',
                 'supportsChangesetCandidate',
                 'supportsBackgroundServices',
                 'supportsClaimRecovery',
@@ -259,6 +261,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsProjectDiagnostics !== 'boolean') ||
           ('supportsNpmDependencies' in selection &&
             typeof selection.supportsNpmDependencies !== 'boolean') ||
+          ('supportsProjectPreparation' in selection &&
+            typeof selection.supportsProjectPreparation !== 'boolean') ||
           ('supportsChangesetCandidate' in selection &&
             typeof selection.supportsChangesetCandidate !== 'boolean') ||
           ('supportsBackgroundServices' in selection &&
@@ -282,6 +286,8 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsProjectDiagnostics:
             selection.supportsProjectDiagnostics === true,
           supportsNpmDependencies: selection.supportsNpmDependencies === true,
+          supportsProjectPreparation:
+            selection.supportsProjectPreparation === true,
           supportsChangesetCandidate:
             selection.supportsChangesetCandidate === true,
           supportsBackgroundServices:

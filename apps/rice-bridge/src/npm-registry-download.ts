@@ -38,8 +38,31 @@ export function publicRegistryAddress(address: string) {
 export async function downloadNpmArchive(
   pkg: RuntimeNpmPackage,
   signal: AbortSignal,
+  maximumBytes = 131072,
 ) {
   const url = new URL(runtimeNpmPackageUrl(RuntimeNpmPackageSchema.parse(pkg)));
+  return downloadPublicPackage(url, signal, maximumBytes);
+}
+
+/** The project preparer shares the same DNS-pinned, public-only transport. */
+export async function downloadPublicPackage(
+  url: URL,
+  signal: AbortSignal,
+  maximumBytes: number,
+) {
+  if (
+    url.protocol !== 'https:' ||
+    !['registry.npmjs.org', 'files.pythonhosted.org'].includes(url.hostname) ||
+    url.port ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > 32_000_000
+  )
+    throw new LocalCommandError('DEPENDENCY_SOURCE_DENIED');
   signal.throwIfAborted();
   let onAbort: () => void = () => {};
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -86,7 +109,7 @@ export async function downloadNpmArchive(
         let length = 0;
         res.on('data', (chunk: Buffer) => {
           length += chunk.length;
-          if (length > 131072)
+          if (length > maximumBytes)
             req.destroy(new LocalCommandError('DEPENDENCY_ARCHIVE_LIMIT'));
           else chunks.push(chunk);
         });

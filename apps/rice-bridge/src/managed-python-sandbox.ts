@@ -16,6 +16,7 @@ import {
 import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import type { ManagedPythonPayloadRelease } from '@allrice/contracts';
+import { managedNodePayloadForPlatform } from '@allrice/contracts';
 import { configPath, type BridgeConfig } from './config.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import { LocalPythonRunner } from './local-python-runner.js';
@@ -517,6 +518,54 @@ export class ManagedPythonSandbox {
       await this.stop().catch(() => undefined);
       throw error;
     }
+  }
+  async prepareNodeImage(signal: AbortSignal) {
+    signal.throwIfAborted();
+    const release = managedNodePayloadForPlatform(`macos-${process.arch}`);
+    if (!this.started || !release)
+      throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
+    const inspect = async () => {
+      const image = await this.runner.api.json<{
+        Id: string;
+        Architecture: string;
+        Os: string;
+      }>('GET', `/images/${release.imageId}/json`);
+      if (
+        image.Id !== release.imageId ||
+        image.Architecture !== release.architecture ||
+        image.Os !== 'linux'
+      )
+        throw new LocalCommandError('TOOLCHAIN_CHANGED');
+    };
+    try {
+      await inspect();
+      return;
+    } catch (error) {
+      if (
+        !(error instanceof LocalCommandError) ||
+        error.code !== 'DAEMON_HTTP_404'
+      )
+        throw error;
+    }
+    const path = join(this.root, 'archives', release.archive.fileName);
+    await downloadManagedRuntimeAsset(
+      path,
+      {
+        ...release.archive,
+        sha256: release.archive.sha256.slice('sha256:'.length),
+        url: new URL(
+          `/api/v1/bridge/runtime-assets/v1/linux-${release.architecture}/${release.archive.sha256.slice('sha256:'.length)}.docker.tar.gz`,
+          this.config.server,
+        ).toString(),
+      },
+      signal,
+    );
+    await this.runner.api.loadImageArchive(
+      createReadStream(path),
+      release.archive.sizeBytes,
+      signal,
+    );
+    await inspect();
   }
   async stop() {
     const binary = join(this.tools, 'bin', 'colima');

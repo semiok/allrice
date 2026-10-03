@@ -9,6 +9,7 @@ import {
   RuntimeOperationSnapshotSchema,
   runtimeContractEqual,
   dependencyPreparationErrorLabels,
+  projectPreparationErrorLabels,
   localPdfPreExecutionDenialCodes,
   type RuntimeBridgeDispatch,
 } from '@allrice/contracts';
@@ -238,6 +239,7 @@ export class RuntimeBridgeOperationClient {
               supportsLocalMcp: await this.input.runner.localMcpEnabled(),
               supportsProjectDiagnostics: true,
               supportsNpmDependencies: true,
+              supportsProjectPreparation: !!this.input.runner.projects,
               supportsChangesetCandidate: true,
               supportsBackgroundServices:
                 process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0' &&
@@ -1082,6 +1084,11 @@ export class RuntimeBridgeOperationClient {
     try {
       const result = await runner.execute(root, dispatch.payload, {
         attemptId,
+        scope: {
+          organizationId: dispatch.snapshot.binding.task.scope.organizationId,
+          workspaceId: dispatch.snapshot.binding.task.scope.workspaceId,
+          ownerId: dispatch.snapshot.binding.requestedBy.id,
+        },
         signal: this.input.signal,
         leaseExpiresAt: dispatch.leaseExpiresAt,
         maintainLease: async () => {
@@ -1196,12 +1203,14 @@ export class RuntimeBridgeOperationClient {
           'DEPENDENCY_ARCHIVE_REQUIRED',
           'DEPENDENCY_INTEGRITY_MISMATCH',
           'DEPENDENCY_NETWORK_UNAVAILABLE',
+          ...Object.keys(projectPreparationErrorLabels),
         ].includes(error.code);
       if (noExecution)
         await journal.outcome(operationId, {
           status: 'failed',
           effects: 'none',
           summary:
+            projectPreparationErrorLabels[error.code] ??
             dependencyPreparationErrorLabels[error.code] ??
             '本地执行前检查未通过，命令未运行',
           errorCode: error.code,

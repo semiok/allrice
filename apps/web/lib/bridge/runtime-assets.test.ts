@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { openManagedPythonPayload } from './runtime-assets';
-const mocks = vi.hoisted(() => ({ release: vi.fn() }));
+const mocks = vi.hoisted(() => ({ release: vi.fn(), nodeRelease: vi.fn() }));
 vi.mock('@allrice/contracts', () => ({
   managedPythonPayloadForPlatform: mocks.release,
+  managedNodePayloadForPlatform: mocks.nodeRelease,
 }));
 let directory: string | undefined;
 afterEach(async () => {
@@ -45,6 +46,17 @@ it('streams exactly the opened and hash-verified fixed software bytes', async ()
   }))
     chunks.push(chunk);
   expect(Buffer.concat(chunks)).toEqual(f.bytes);
+});
+it('uses the same fixed SHA and byte checks for the additional Node runtime archive', async () => {
+  const f = await fixture();
+  mocks.release.mockReturnValue(null);
+  mocks.nodeRelease.mockImplementation((platform) =>
+    platform === 'macos-x64' ? f.release : null,
+  );
+  const opened = await openManagedPythonPayload('linux-amd64', f.archive);
+  expect(opened).not.toBeNull();
+  await opened!.handle.close();
+  expect(await openManagedPythonPayload('linux-arm64', f.archive)).toBeNull();
 });
 it('rejects unknown architecture, SHA, missing configuration, corruption and oversized releases', async () => {
   const f = await fixture();

@@ -115,3 +115,4 @@ export * from './mcp-failure.ts';
 export * from './assistant-diagnostics.ts';
 export * from './company-assets.ts';
 export * from './task-next-steps.ts';
+export * from './managed-node-payload.ts';

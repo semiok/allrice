@@ -74,6 +74,7 @@ export interface RuntimeBridgeClaimSupport {
   supportsLocalMcp?: boolean;
   supportsProjectDiagnostics?: boolean;
   supportsNpmDependencies?: boolean;
+  supportsProjectPreparation?: boolean;
   supportsChangesetCandidate?: boolean;
   supportsBackgroundServices?: boolean;
   supportsChangeset?: boolean;

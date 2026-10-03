@@ -64,6 +64,9 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
     networkPolicyDigest: runtimePolicyDigest({
       network: args.network,
       ...(args.dependencies ? { dependencyDownloads: args.dependencies } : {}),
+      ...(args.projectPreparation
+        ? { projectPreparation: args.projectPreparation }
+        : {}),
     }),
     toolchainDigest: runtimePolicyDigest({
       imageDigest: args.imageDigest,

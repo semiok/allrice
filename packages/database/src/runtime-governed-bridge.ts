@@ -13,6 +13,7 @@ import {
   BridgeDeviceSchema,
   EmployeeExecutionSnapshotSchema,
   isLocalCommandProfileForPlatform,
+  localCommandRuntimeImage,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
   isRuntimeRelativePath,
@@ -466,6 +467,9 @@ export function createGovernedBridgePolicyOptions(
               !profile.data.features?.includes('background_services'))) ||
           (command?.arguments.dependencies &&
             !profile.data.features?.includes('npm_dependencies')) ||
+          (command?.arguments.projectPreparation &&
+            (!profile.data.features?.includes('project_preparation') ||
+              !profile.data.projectPreparation?.available)) ||
           (command?.arguments.diagnostics &&
             !profile.data.features?.includes('project_diagnostics')) ||
           (command?.arguments.candidate &&
@@ -474,7 +478,9 @@ export function createGovernedBridgePolicyOptions(
             currentDevice.platform,
             profile.data,
           ) ||
-          profile.data.imageDigest !==
+          (command
+            ? localCommandRuntimeImage(profile.data, command.arguments)
+            : profile.data.imageDigest) !==
             (command ?? mcp)!.arguments.imageDigest ||
           !current ||
           reported.reported_at.getTime() <= current.now.getTime() - 90_000 ||
@@ -546,6 +552,14 @@ export function createGovernedBridgePolicyOptions(
           (command?.arguments.dependencies?.packages.some(
             (p) => !p.archivePath,
           ) &&
+            !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
+              'network:outbound',
+            )) ||
+          (command?.arguments.projectPreparation &&
+            !command.arguments.projectPreparation.offline &&
+            command.arguments.projectPreparation.packages.some(
+              (p) => !p.archivePath,
+            ) &&
             !frozen.data.capabilitySnapshot.grantedCapabilities.includes(
               'network:outbound',
             ))

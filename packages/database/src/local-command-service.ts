@@ -17,6 +17,7 @@ import {
   RuntimeLocalCommandSchema,
   RuntimeLocalCommandProfileSchema,
   isLocalCommandProfileForPlatform,
+  localCommandRuntimeImage,
   RuntimeLocalCommandToolInputSchema,
   RuntimeActionApprovalRequestSchema,
   UuidSchema,
@@ -282,6 +283,12 @@ async function createLocalBridgeToolOperation(
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args?.dependencies && !profile?.features?.includes('npm_dependencies'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (
+    args?.projectPreparation &&
+    (!profile?.features?.includes('project_preparation') ||
+      !profile.projectPreparation?.available)
+  )
+    throw new RuntimePolicyError('local_runner_preparing');
   if (args?.background && !profile?.features?.includes('background_services'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (candidate && !profile?.features?.includes('changeset_candidate'))
@@ -293,7 +300,7 @@ async function createLocalBridgeToolOperation(
       arguments: {
         ...commandArgs,
         ...(candidate ? { candidate } : {}),
-        imageDigest: profile!.imageDigest,
+        imageDigest: localCommandRuntimeImage(profile!, commandArgs!),
         isolation: profile!.backend,
         network: 'none',
       },
