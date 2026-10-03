@@ -36,6 +36,13 @@ it.each([
     location: 'cloud',
     requireLocalInputs: false,
   },
+  {
+    command: 'open',
+    url: 'http://192.168.1.10:8080/',
+    grantId: randomUUID(),
+    requireLocalInputs: true,
+  },
+  { command: 'profiles' },
 ])(
   'passes browser open constraints unchanged through real DSH: %j',
   async (args) => {
@@ -52,6 +59,7 @@ it.each([
         expect(schema.properties).toMatchObject({
           location: { type: 'string', enum: ['auto', 'local', 'cloud'] },
           requireLocalInputs: { type: 'boolean' },
+          grantId: { type: 'string' },
         });
         expect(schema.required).not.toContain('location');
         expect(schema.required).not.toContain('requireLocalInputs');

@@ -14,6 +14,7 @@ import {
   selectBrowserExecution,
   executionResourceObserver,
   RuntimePolicyError,
+  listLocalBrowserGrants,
 } from '@allrice/database';
 import { resolveExecutionChoice } from '@allrice/contracts';
 import { BrowserWorkspaceToolInputSchema } from '../../browser-control/tool-input.js';
@@ -32,6 +33,26 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
     ctx = browserPrincipal(input.context);
   if (!input.managedBrowserJobAttempt || !input.managedBrowserJobLeaseToken)
     throw Error('BROWSER_JOB_LEASE_REQUIRED');
+  if (args.command === 'profiles') {
+    const profiles = (await listLocalBrowserGrants(ctx)).filter(
+      (p) => p.enabled,
+    );
+    return {
+      summary: `已读取 ${profiles.length} 个本地浏览器环境`,
+      modelContent: JSON.stringify({
+        profiles: profiles.map((p) => ({
+          grantId: p.grantId,
+          deviceId: p.deviceId,
+          deviceName: p.deviceName,
+          network: p.profile.network ?? 'exact_public_sites',
+          origins: p.profile.origins,
+          persistLogin: p.persistLogin,
+          accountState:
+            'User-managed dedicated login; credentials and cookies are not exposed. This list is not proof of an active business login.',
+        })),
+      }),
+    };
+  }
   const assertOwned = async (id: string) => {
     const w = await readCurrentBrowserWorkspace(ctx, id);
     if (w.transport === 'cloud')
@@ -75,6 +96,7 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
       jobLeaseToken: input.managedBrowserJobLeaseToken,
       location: args.location,
       requireLocalInputs: args.requireLocalInputs,
+      grantId: args.grantId,
     };
     const observer = executionResourceObserver({
       context: input.context,

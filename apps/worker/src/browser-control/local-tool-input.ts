@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import {
   BrowserActionSchema,
-  BrowserUrlSchema,
+  BrowserNavigationUrlSchema,
   UuidSchema,
 } from '@allrice/contracts';
 const workspace = {
@@ -14,7 +14,7 @@ export const LocalBrowserToolInputSchema = z.discriminatedUnion('command', [
     .object({
       command: z.literal('open'),
       grantId: UuidSchema,
-      url: BrowserUrlSchema,
+      url: BrowserNavigationUrlSchema,
     })
     .strict(),
   z.object({ command: z.literal('observe'), ...workspace }).strict(),

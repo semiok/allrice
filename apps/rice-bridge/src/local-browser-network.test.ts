@@ -1,4 +1,5 @@
 import { request } from 'node:http';
+import { networkInterfaces } from 'node:os';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BrowserProfileSchema } from '@allrice/contracts';
 import {
@@ -11,6 +12,72 @@ const profile = BrowserProfileSchema.parse({
   origins: ['https://site.example'],
 });
 const closers: Array<() => Promise<void>> = [];
+it('allows only the configured private site/port and refuses this computer through any interface alias', () => {
+  const p = BrowserProfileSchema.parse({
+    version: 1,
+    network: 'local_sites',
+    origins: ['http://10.250.254.253:8080'],
+  });
+  expect(localBrowserUrlAllowed('http://10.250.254.253:8080/report', p)).toBe(
+    true,
+  );
+  for (const url of [
+    'http://10.250.254.253:8081/report',
+    'http://10.250.254.254:8080/report',
+    'http://127.0.0.1:8080',
+    'http://169.254.169.254',
+    'http://100.100.100.200',
+    'https://example.com/',
+  ])
+    expect(localBrowserUrlAllowed(url, p)).toBe(false);
+  for (const item of Object.values(networkInterfaces())
+    .flatMap((values) => values ?? [])
+    .filter((item) => item.family === 'IPv4')) {
+    const origin = `http://${item.address}:8080`;
+    const own = BrowserProfileSchema.safeParse({
+      version: 1,
+      network: 'local_sites',
+      origins: [origin],
+    });
+    if (own.success)
+      expect(localBrowserUrlAllowed(origin + '/', own.data)).toBe(false);
+  }
+});
+it('rejects a wrong private port before any current-authority check or upstream connection', async () => {
+  const assertCurrent = vi.fn(async () => {});
+  const proxy = await startLocalBrowserProxy({
+    profile: BrowserProfileSchema.parse({
+      version: 1,
+      network: 'local_sites',
+      origins: ['http://10.250.254.253:8080'],
+    }),
+    assertCurrent,
+  });
+  closers.push(proxy.close);
+  const status = await new Promise((resolve, reject) => {
+    const req = request(
+      proxy.server,
+      {
+        path: 'http://10.250.254.253:8081/secret',
+        headers: {
+          'proxy-authorization':
+            'Basic ' +
+            Buffer.from(`${proxy.username}:${proxy.password}`).toString(
+              'base64',
+            ),
+        },
+      },
+      (response) => {
+        response.resume();
+        resolve(response.statusCode);
+      },
+    );
+    req.once('error', reject);
+    req.end();
+  });
+  expect(status).toBe(403);
+  expect(assertCurrent).not.toHaveBeenCalled();
+});
 afterEach(async () => {
   for (const close of closers.splice(0)) await close();
 });

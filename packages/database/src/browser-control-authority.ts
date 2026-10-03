@@ -239,6 +239,7 @@ export async function currentBrowserWorkspace(
         and d.revoked_at is null and d.last_seen_at>clock_timestamp()-interval '90 seconds'
         and (t.metadata->'environment' is null or t.metadata->'environment'='null'::jsonb or t.metadata->'environment'->>(case when g.purpose='local_preview' then 'preview' else 'browser' end)='ready')
         and (${BrowserProfileSchema.parse(w.profile).network === 'public_https'}=false or t.metadata->'environment'->>'version'='1')
+        and (${BrowserProfileSchema.parse(w.profile).network === 'local_sites'}=false or t.metadata->'environment'->>'browserLocalSitesVersion'='1')
         and ((l.controller_lease_token is null and ${w.state}='starting') or l.lease_expires_at>clock_timestamp())
       for share of l,g,d`;
     if (!local) throw new RuntimePolicyError('browser_authority_unavailable');

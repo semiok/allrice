@@ -1,8 +1,13 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { lookup } from 'node:dns/promises';
-import { createServer } from 'node:http';
+import { createServer, request as forwardRequest } from 'node:http';
+import { networkInterfaces } from 'node:os';
 import { BlockList, connect, isIP, type Socket } from 'node:net';
-import { browserOriginAllowed, type BrowserProfile } from '@allrice/contracts';
+import {
+  browserOriginAllowed,
+  browserPrivateSiteAddress,
+  type BrowserProfile,
+} from '@allrice/contracts';
+import { resolveLocalBrowserPublicAddress } from './local-browser-dns.js';
 
 const denied4 = new BlockList();
 for (const [address, prefix] of [
@@ -49,6 +54,16 @@ const denied = () => Error('LOCAL_BROWSER_POLICY_DENIED');
 export function localBrowserUrlAllowed(value: string, profile: BrowserProfile) {
   if (!browserOriginAllowed(value, profile)) return false;
   const hostname = new URL(value).hostname.replace(/^\[|\]$/g, '');
+  if (profile.network === 'local_sites') {
+    // Even explicit sites cannot expose services on this very computer through
+    // a private-interface alias. Project previews retain their separate lease.
+    return (
+      browserPrivateSiteAddress(hostname) &&
+      !Object.values(networkInterfaces())
+        .flatMap((addresses) => addresses ?? [])
+        .some((item) => item.address === hostname)
+    );
+  }
   if (
     /\.(local|localhost|internal|test|invalid|onion)$/.test(hostname) ||
     hostname === 'localhost'
@@ -56,26 +71,9 @@ export function localBrowserUrlAllowed(value: string, profile: BrowserProfile) {
     return false;
   return !isIP(hostname) || localBrowserPublicAddress(hostname);
 }
-async function resolvePublic(hostname: string) {
-  const literal = hostname.replace(/^\[|\]$/g, '');
-  const answers = isIP(literal)
-    ? [{ address: literal, family: isIP(literal) }]
-    : await lookup(literal, { all: true, verbatim: true });
-  if (
-    !answers.length ||
-    answers.some(
-      (item) =>
-        !localBrowserPublicAddress(item.address) ||
-        isIP(item.address) !== item.family,
-    )
-  )
-    throw denied();
-  return answers[0]!;
-}
-
-/** Native-browser-only CONNECT proxy. TLS stays end-to-end (Chrome checks SNI,
- * certificate and hostname); upstream sockets connect only to a validated IP.
- * No HTTP forwarder, arbitrary ports, fake-IP, localhost or preview exception. */
+/** Native-browser-only proxy. TLS stays end-to-end (Chrome checks SNI,
+ * certificate and hostname); sockets connect only to a validated public IP or
+ * an explicitly granted private IPv4/site/port, never this computer's services. */
 export async function startLocalBrowserProxy(input: {
   profile: BrowserProfile;
   assertCurrent: () => Promise<void>;
@@ -87,9 +85,69 @@ export async function startLocalBrowserProxy(input: {
   );
   const sockets = new Set<Socket>();
   let closed = false;
-  const server = createServer((_req, res) => {
-    res.writeHead(403, { connection: 'close' });
-    res.end();
+  const server = createServer((req, res) => {
+    if (input.profile.network !== 'local_sites') {
+      res.writeHead(403, { connection: 'close' });
+      res.end();
+      return;
+    }
+    void (async () => {
+      const supplied = Buffer.from(req.headers['proxy-authorization'] ?? '');
+      if (
+        supplied.length !== authorization.length ||
+        !timingSafeEqual(supplied, authorization)
+      ) {
+        res.writeHead(407, {
+          'proxy-authenticate': 'Basic realm="AllRice browser"',
+          connection: 'close',
+        });
+        res.end();
+        return;
+      }
+      const url = new URL(req.url ?? '');
+      if (
+        closed ||
+        input.profile.network !== 'local_sites' ||
+        url.protocol !== 'http:' ||
+        !localBrowserUrlAllowed(url.href, input.profile)
+      )
+        throw denied();
+      await input.assertCurrent();
+      if (closed || res.destroyed) throw denied();
+      const headers: Record<string, string | string[] | undefined> = {
+        ...req.headers,
+        host: url.host,
+        connection: 'close',
+      };
+      delete headers['proxy-authorization'];
+      delete headers['proxy-connection'];
+      const upstream = forwardRequest(
+        {
+          host: url.hostname,
+          port: Number(url.port || 80),
+          family: 4,
+          path: url.pathname + url.search,
+          method: req.method,
+          headers,
+          timeout: 30000,
+        },
+        (response) => {
+          res.writeHead(response.statusCode ?? 502, response.headers);
+          response.pipe(res);
+        },
+      );
+      upstream.once('socket', track);
+      upstream.once('timeout', () => upstream.destroy(denied()));
+      upstream.once('error', () => {
+        if (!res.headersSent) res.writeHead(502);
+        res.end();
+      });
+      res.once('close', () => upstream.destroy());
+      req.pipe(upstream);
+    })().catch(() => {
+      if (!res.headersSent) res.writeHead(403, { connection: 'close' });
+      res.end();
+    });
   });
   function track(socket: Socket) {
     sockets.add(socket);
@@ -135,7 +193,7 @@ export async function startLocalBrowserProxy(input: {
       const target = request.url ?? '';
       const url = new URL(`https://${target}`);
       if (
-        !target.endsWith(':443') ||
+        !/^.+:[0-9]+$/.test(target) ||
         url.pathname !== '/' ||
         url.search ||
         url.hash ||
@@ -143,12 +201,18 @@ export async function startLocalBrowserProxy(input: {
       )
         throw denied();
       await input.assertCurrent();
-      const address = await resolvePublic(url.hostname);
+      const address =
+        input.profile.network === 'local_sites'
+          ? { address: url.hostname, family: 4 }
+          : await resolveLocalBrowserPublicAddress(
+              url.hostname,
+              localBrowserPublicAddress,
+            );
       await input.assertCurrent();
       if (closed || client.destroyed) throw denied();
       upstream = connect({
         host: address.address,
-        port: 443,
+        port: Number(url.port || 443),
         family: address.family,
         autoSelectFamily: false,
       });

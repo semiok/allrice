@@ -31,12 +31,14 @@ export async function createLocalBrowserFixture(
     origin?: string;
     persistLogin?: boolean;
     workbench?: boolean;
+    memberRole?: 'admin' | 'member';
   } = {},
 ) {
   const f = await createCloudExecutionFixture(db, storageRoot, {
     browserControl: true,
     localBrowser: options.frozen !== false,
     workbench: options.workbench,
+    memberRole: options.memberRole,
   });
   const deviceId = randomUUID(),
     targetId = randomUUID(),

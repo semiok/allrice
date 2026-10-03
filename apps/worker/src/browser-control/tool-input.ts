@@ -1,16 +1,18 @@
 import { z } from 'zod';
 import {
   BrowserActionSchema,
-  BrowserUrlSchema,
+  BrowserNavigationUrlSchema,
   UuidSchema,
   ExecutionLocationSchema,
 } from '@allrice/contracts';
 
 export const BrowserWorkspaceToolInputSchema = z.discriminatedUnion('command', [
+  z.object({ command: z.literal('profiles') }).strict(),
   z
     .object({
       command: z.literal('open'),
-      url: BrowserUrlSchema,
+      url: BrowserNavigationUrlSchema,
+      grantId: UuidSchema.optional(),
       location: ExecutionLocationSchema.optional(),
       requireLocalInputs: z.boolean().optional(),
     })

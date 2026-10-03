@@ -1,6 +1,8 @@
 import {
   BrowserProfileSchema,
-  BrowserUrlSchema,
+  BrowserNavigationUrlSchema,
+  LocalBrowserSiteUrlSchema,
+  UuidSchema,
   browserOriginAllowed,
   ExecutionChoiceSchema,
   ExecutionLocationSchema,
@@ -58,17 +60,22 @@ export async function selectBrowserExecution(
     jobLeaseToken: string;
     location?: ExecutionLocation;
     requireLocalInputs?: boolean;
+    grantId?: string;
   },
   db = getDatabase(),
 ) {
   const ctx = browserPrincipal(input.context),
-    url = BrowserUrlSchema.parse(input.url);
+    url = BrowserNavigationUrlSchema.parse(input.url);
+  const grantId = input.grantId ? UuidSchema.parse(input.grantId) : null;
+  if (LocalBrowserSiteUrlSchema.safeParse(url).success && !grantId)
+    throw new RuntimePolicyError('local_site_profile_required');
   const requested = ExecutionLocationSchema.parse(input.location ?? 'auto');
   if (!input.callId || input.callId.length > 255)
     throw new RuntimePolicyError('invalid_tool_call');
   const id = cloudStableId(`browser:${input.context.runId}:${input.callId}`);
   const requestDigest = runtimePolicyDigest({
     url,
+    ...(grantId ? { grantId } : {}),
     location: requested,
     requireLocalInputs: input.requireLocalInputs ?? false,
   });
@@ -107,10 +114,16 @@ export async function selectBrowserExecution(
       for update of j`;
     if (!run) throw new RuntimePolicyError('browser_frozen_tool_denied');
     const constraints = executionRequestConstraints(run.text);
-    const location =
+    const requestedLocation =
       constraints.location === 'auto' ? requested : constraints.location;
+    if (grantId && requestedLocation === 'cloud')
+      throw new RuntimePolicyError('local_profile_cloud_denied');
+    const location = grantId ? 'local' : requestedLocation;
     const localInputs =
-      !!run.local_device || constraints.localOnly || input.requireLocalInputs;
+      !!grantId ||
+      !!run.local_device ||
+      constraints.localOnly ||
+      input.requireLocalInputs;
     const [prior] = await tx<
       {
         reason: string;
@@ -168,6 +181,7 @@ export async function selectBrowserExecution(
       where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${ctx.actor.id}
         and d.revoked_at is null and (${boundDevice}::uuid is null or d.id=${boundDevice}::uuid)
         and (${existing?.grant_id ?? null}::uuid is null or g.id=${existing?.grant_id ?? null}::uuid)
+        and (${grantId}::uuid is null or g.id=${grantId}::uuid)
       order by d.last_seen_at desc nulls last`
         : [];
     const candidates = devices.map((d) => {
@@ -183,6 +197,13 @@ export async function selectBrowserExecution(
       if (
         d.grant_id &&
         (!profile.success || !browserOriginAllowed(url, profile.data))
+      )
+        state = 'unsupported';
+      if (
+        profile.success &&
+        profile.data.network === 'local_sites' &&
+        (d.metadata.environment as Record<string, unknown> | undefined)
+          ?.browserLocalSitesVersion !== 1
       )
         state = 'unsupported';
       if (!d.grant_id && state === 'ready') state = 'unsupported';
