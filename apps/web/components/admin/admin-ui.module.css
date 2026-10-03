@@ -1,0 +1,360 @@
+.theme {
+  --admin-canvas: #181b20;
+  --admin-sidebar: #14171b;
+  --admin-raised: #22262d;
+  --admin-hover: #232830;
+  --admin-selected: #2a3039;
+  --admin-text: #edf0f4;
+  --admin-muted: #a0a9b7;
+  --admin-border: #2b3038;
+  --admin-control-border: #404854;
+  --admin-success: #7ec7a1;
+  --admin-warning: #d7b778;
+  --admin-danger: #ef9a9a;
+  --admin-link: #a9c7f2;
+  --admin-focus: #a9c7f2;
+  --admin-font-body: 14px;
+  --admin-font-meta: 12px;
+  --admin-font-title: 22px;
+  --admin-space-1: 4px;
+  --admin-space-2: 8px;
+  --admin-space-3: 12px;
+  --admin-space-4: 16px;
+  --admin-space-6: 24px;
+  --admin-space-8: 32px;
+  --admin-control-height: 34px;
+  --admin-control-radius: 7px;
+  --paper: var(--admin-canvas);
+  --ink: var(--admin-text);
+  --muted: var(--admin-muted);
+  --line: var(--admin-border);
+  color-scheme: dark;
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    sans-serif;
+  font-size: var(--admin-font-body);
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+.theme *,
+.theme *::before,
+.theme *::after {
+  box-sizing: border-box;
+}
+.theme :where(button, input, select, textarea) {
+  font: inherit;
+}
+.theme :where(button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--admin-focus);
+  outline-offset: 3px;
+}
+.theme :where(input[type='checkbox'], input[type='radio']) {
+  accent-color: var(--admin-text);
+}
+.theme :where(strong, h1, h2, h3, h4) {
+  font-weight: 500;
+}
+.theme :where(a) {
+  color: var(--admin-link);
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr);
+  min-height: 100dvh;
+}
+.sidebar {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 28px 12px 20px;
+  gap: 32px;
+  background: var(--admin-sidebar);
+  border-right: 1px solid var(--admin-border);
+}
+.brand {
+  display: flex;
+  gap: 10px;
+  padding: 0 12px;
+  align-items: center;
+}
+.brand > svg {
+  flex: none;
+  color: var(--admin-text);
+}
+.brand > div {
+  display: grid;
+  gap: 2px;
+}
+.brand strong {
+  font-size: var(--admin-font-title);
+  letter-spacing: -1px;
+  font-weight: 500;
+}
+.brand span {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.navigation {
+  display: grid;
+  gap: 6px;
+}
+.navigation button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--admin-muted);
+  background: transparent;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.navigation button:hover {
+  background: var(--admin-hover);
+  color: var(--admin-text);
+}
+.navigation button[aria-current='page'] {
+  background: var(--admin-selected);
+  color: var(--admin-text);
+  font-weight: 500;
+}
+.account {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding: 16px 12px 0;
+  border-top: 1px solid var(--admin-border);
+  font-size: var(--admin-font-meta);
+}
+.content {
+  min-width: 0;
+}
+.icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--admin-control-height);
+  padding: 6px 11px;
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  font: inherit;
+  font-size: var(--admin-font-body);
+  font-weight: 400;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.button:hover {
+  background: var(--admin-hover);
+}
+.button.primary {
+  color: var(--admin-canvas);
+  background: var(--admin-text);
+  border-color: var(--admin-text);
+}
+.button.primary:hover {
+  background: #d8dfe8;
+  border-color: #d8dfe8;
+}
+.button.quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--admin-muted);
+}
+.button.quiet:hover {
+  color: var(--admin-text);
+  background: var(--admin-hover);
+}
+.button.danger {
+  color: var(--admin-danger);
+}
+.button.icon {
+  width: 30px;
+  min-height: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  color: var(--admin-muted);
+  background: transparent;
+}
+.button.icon:hover {
+  color: var(--admin-text);
+  background: var(--admin-selected);
+}
+.button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.dialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 24px;
+  color: var(--admin-text);
+  background: var(--admin-raised);
+  border: 1px solid var(--admin-control-border);
+  border-radius: 12px;
+  box-shadow: 0 18px 60px #00000055;
+  overflow: auto;
+  font: inherit;
+}
+.dialog::backdrop {
+  background: #040609a6;
+}
+.dialogHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.dialogHeader h2 {
+  margin: 0;
+  font-size: var(--admin-font-body);
+  font-weight: 500;
+}
+.menu {
+  position: relative;
+}
+.menu > summary {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  list-style: none;
+  border-radius: 6px;
+  color: var(--admin-muted);
+  cursor: pointer;
+}
+.menu > summary::-webkit-details-marker {
+  display: none;
+}
+.menu > summary:hover,
+.menu[open] > summary {
+  color: var(--admin-text);
+  background: var(--admin-selected);
+}
+.menuContent {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  min-width: 150px;
+  padding: 5px;
+  border: 1px solid var(--admin-control-border);
+  border-radius: 9px;
+  background: var(--admin-raised);
+  box-shadow: 0 8px 28px #00000055;
+  z-index: 10;
+}
+.menuContent > button {
+  width: 100%;
+  justify-content: flex-start;
+  border: 0;
+  font-size: var(--admin-font-meta);
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: var(--admin-font-meta);
+}
+.status::before {
+  content: '';
+  width: 5px;
+  height: 5px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+.success {
+  color: var(--admin-success);
+}
+.muted {
+  color: var(--admin-muted);
+}
+.warning {
+  color: var(--admin-warning);
+}
+.danger {
+  color: var(--admin-danger);
+}
+
+@media (max-width: 900px) {
+  .shell {
+    grid-template-columns: 160px minmax(0, 1fr);
+  }
+  .sidebar {
+    padding-inline: 8px;
+  }
+}
+@media (max-width: 650px) {
+  .shell {
+    display: block;
+  }
+  .sidebar {
+    position: static;
+    min-height: auto;
+    gap: 16px;
+    padding: 16px;
+    border-right: 0;
+    border-bottom: 1px solid var(--admin-border);
+  }
+  .brand {
+    padding: 0;
+  }
+  .brand > div {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .navigation {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+  }
+  .navigation button {
+    justify-content: center;
+    padding: 8px 2px;
+    font-size: var(--admin-font-meta);
+  }
+  .navigation button > svg,
+  .account {
+    display: none;
+  }
+  .dialog {
+    padding: 20px;
+  }
+}
+@media (pointer: coarse) {
+  .theme {
+    --admin-control-height: 44px;
+  }
+  .theme :where(input, select, textarea) {
+    font-size: 16px;
+  }
+  .button.icon,
+  .menu > summary {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
