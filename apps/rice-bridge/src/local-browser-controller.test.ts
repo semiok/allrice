@@ -17,7 +17,10 @@ import { LocalBrowserController } from './local-browser-controller.js';
 import { LocalBrowserOutbox } from './local-browser-outbox.js';
 import { LocalBrowserProfiles } from './local-browser-profiles.js';
 import type { LocalBrowserAuthority } from './local-browser-client.js';
-import { LocalBrowserTransportError } from './local-browser-client.js';
+import {
+  LocalBrowserTransportError,
+  LocalBrowserProtocolError,
+} from './local-browser-client.js';
 import type {
   LocalBrowserDriver,
   startLocalBrowserDriver,
@@ -618,4 +621,64 @@ describe('P22 local controller with durable outbox and strict authority port', (
     await expect(f.controller.pollOnce()).rejects.toThrow();
     expect(f.authority.start).not.toHaveBeenCalled();
   });
+});
+
+describe('browser authority exchange recovery', () => {
+  it.each([0, 502, 503, 504])(
+    'retains only the original unexpired lease after transport %s',
+    async (status) => {
+      const clock = vi.spyOn(Date, 'now');
+      const start = Date.now();
+      clock.mockReturnValue(start);
+      try {
+        const f = await fixture();
+        await f.controller.pollOnce();
+        const nextCalls = vi.mocked(f.authority.next).mock.calls.length;
+        vi.mocked(f.authority.heartbeat).mockRejectedValue(
+          new LocalBrowserTransportError(status),
+        );
+        await f.controller.heartbeat();
+        expect(f.driver.close).not.toHaveBeenCalled();
+        expect(f.authority.next).toHaveBeenCalledTimes(nextCalls);
+        // Failures do not move the original deadline into the future.
+        clock.mockReturnValue(start + 6000);
+        await f.controller.heartbeat();
+        expect(f.driver.close).toHaveBeenCalledOnce();
+        expect(f.controller.hasActiveBrowser).toBe(false);
+      } finally {
+        clock.mockRestore();
+      }
+    },
+  );
+  it.each([
+    new LocalBrowserProtocolError(),
+    new LocalBrowserTransportError(401),
+    new LocalBrowserTransportError(403),
+  ])(
+    'stops immediately on protocol or identity rejection (%s)',
+    async (error) => {
+      const f = await fixture();
+      await f.controller.pollOnce();
+      vi.mocked(f.authority.heartbeat).mockRejectedValue(error);
+      await f.controller.heartbeat();
+      expect(f.driver.close).toHaveBeenCalledOnce();
+    },
+  );
+});
+
+describe('active non-heartbeat authority errors', () => {
+  it.each([
+    new LocalBrowserProtocolError(),
+    new LocalBrowserTransportError(403),
+  ])(
+    'stops the owned browser immediately on next rejection: %s',
+    async (error) => {
+      const f = await fixture();
+      await f.controller.pollOnce();
+      vi.mocked(f.authority.next).mockRejectedValueOnce(error);
+      await expect(f.controller.pollOnce()).rejects.toThrow();
+      expect(f.driver.close).toHaveBeenCalledOnce();
+      expect(f.driver.perform).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -972,6 +972,8 @@ async function startSession(
           browserStopUnconfirmed = true;
         console.warn(code);
       },
+      onDiagnostic: (stage, code) =>
+        console.warn('LOCAL_BROWSER_DIAGNOSTIC', stage, code),
     });
     browserHasActiveWork = () => controller.hasActiveWork;
     browserHasActiveBrowser = () => controller.hasActiveBrowser;

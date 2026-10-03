@@ -742,3 +742,28 @@ export async function recordBrowserStopped(
     await tx`update allrice_browser_direct_inputs set envelope=null,consumed_at=coalesce(consumed_at,clock_timestamp()) where browser_workspace_id=${id}`;
   });
 }
+
+/** Read terminal physical-stop evidence; never renew or authorize a browser action. */
+export async function browserStopConfirmed(
+  context: ExecutionContext,
+  workspaceId: string,
+  jobAttempt: number,
+  jobLeaseToken: string,
+  db = getDatabase(),
+) {
+  const principal = browserPrincipal(context);
+  UuidSchema.parse(workspaceId);
+  UuidSchema.parse(jobLeaseToken);
+  return db.begin(async (tx) => {
+    await browserIdentity(tx, principal);
+    const [row] = await tx`select w.id from allrice_browser_workspaces w
+      where w.id=${workspaceId} and w.organization_id=${principal.organizationId} and w.workspace_id=${principal.workspaceId}
+      and w.owner_id=${principal.actor.id} and w.run_id=${context.runId} and w.job_id=${context.jobId}
+      and w.worker_id=${context.worker.id} and w.job_attempt=${jobAttempt} and w.job_lease_token=${jobLeaseToken}
+      and w.state='closed' and w.desired_control='closed' and w.stopped_at is not null
+      and (w.transport='cloud' or exists(select 1 from allrice_local_browser_workspaces l
+        where l.browser_workspace_id=w.id and l.owner_id=w.owner_id and l.organization_id=w.organization_id
+        and l.workspace_id=w.workspace_id and l.released_at is not null))`;
+    return !!row;
+  });
+}

@@ -20,6 +20,7 @@ import {
   revokeBrowserControlGrant,
   readCurrentBrowserWorkspace,
   recordBrowserStopped,
+  browserStopConfirmed,
   recordBrowserObservation,
 } from './browser-control.ts';
 import {
@@ -75,7 +76,9 @@ async function fixture() {
     db,
   );
   const observation = (fence: number) => {
-    const capturedAt = new Date();
+    // A synthetic capture predates admission; avoid a sub-millisecond
+    // host/database clock race in the separate PostgreSQL process.
+    const capturedAt = new Date(Date.now() - 1000);
     return BrowserObservationSchema.parse({
       version: 1,
       id: randomUUID(),
@@ -121,6 +124,88 @@ async function fixture() {
   return { ...f, w, grant, obs, observation, command };
 }
 suite('P21 real PostgreSQL control and exact admission', () => {
+  it('reads a terminal physical stop without reopening action authority, and binds the originating owner and job', async () => {
+    const f = await fixture();
+    expect(
+      await browserStopConfirmed(
+        f.execution,
+        f.w.id,
+        f.w.job_attempt,
+        f.w.job_lease_token,
+        db,
+      ),
+    ).toBe(false);
+    await requestBrowserControl(
+      f.context,
+      f.w.id,
+      {
+        requestId: randomUUID(),
+        expectedFence: 1,
+        control: 'closed',
+        observationId: null,
+      },
+      db,
+    );
+    await recordBrowserStopped(f.w.id, f.worker, f.w.job_lease_token, true, db);
+    await expect(
+      readCurrentBrowserWorkspace(f.context, f.w.id, db),
+    ).rejects.toThrow();
+    expect(
+      await browserStopConfirmed(
+        f.execution,
+        f.w.id,
+        f.w.job_attempt,
+        f.w.job_lease_token,
+        db,
+      ),
+    ).toBe(true);
+    expect(
+      await browserStopConfirmed(
+        { ...f.execution, worker: { ...f.execution.worker, id: randomUUID() } },
+        f.w.id,
+        f.w.job_attempt,
+        f.w.job_lease_token,
+        db,
+      ),
+    ).toBe(false);
+    expect(
+      await browserStopConfirmed(
+        f.execution,
+        f.w.id,
+        f.w.job_attempt,
+        randomUUID(),
+        db,
+      ),
+    ).toBe(false);
+    const other = await fixture();
+    expect(
+      await browserStopConfirmed(
+        other.execution,
+        f.w.id,
+        f.w.job_attempt,
+        f.w.job_lease_token,
+        db,
+      ),
+    ).toBe(false);
+    const unknown = await fixture();
+    await recordBrowserStopped(
+      unknown.w.id,
+      unknown.worker,
+      unknown.w.job_lease_token,
+      false,
+      db,
+    );
+    expect(
+      await browserStopConfirmed(
+        unknown.execution,
+        unknown.w.id,
+        unknown.w.job_attempt,
+        unknown.w.job_lease_token,
+        db,
+      ),
+    ).toBe(false);
+  });
+
   it('cloud recording and control ACK reject the same overlong observation lifetime as local admission', async () => {
     const f = await fixture();
     const overlong = {

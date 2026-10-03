@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   browserPrincipal,
+  browserStopConfirmed,
   createLocalBrowserWorkspace,
   createBrowserOperation,
   requestBrowserControl,
@@ -14,6 +15,7 @@ import {
 import { LocalBrowserToolInputSchema } from '../../browser-control/local-tool-input.js';
 import { waitBrowserOperationResult } from '../../browser-control/controller.js';
 import type { RiceToolHandler } from '../types.js';
+import { browserScreenshotDelivery } from '../../browser-control/delivery.js';
 import { waitForLocalAdmission } from './local-admission.js';
 
 /** Dispatch only. The Bridge drives local I/O under the existing Run/ledger;
@@ -53,11 +55,25 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
       control: 'closed',
       observationId: null,
     });
+    let stopped = false;
+    const stopDeadline = Date.now() + 8000;
+    while (!input.signal?.aborted && Date.now() < stopDeadline) {
+      stopped = await browserStopConfirmed(
+        input.context,
+        args.workspaceId,
+        input.managedBrowserJobAttempt,
+        input.managedBrowserJobLeaseToken,
+      );
+      if (stopped) break;
+      await delay(100, undefined, { signal: input.signal });
+    }
     return {
-      summary: '已请求关闭本地浏览器，等待 Bridge 实际停止确认',
+      summary: stopped
+        ? '本地浏览器已确认停止'
+        : '已请求关闭本地浏览器，等待 Bridge 实际停止确认',
       modelContent: JSON.stringify({
         requested: true,
-        confirmedStopped: false,
+        confirmedStopped: stopped,
         target: 'local',
       }),
     };
@@ -131,6 +147,7 @@ export const runLocalBrowserWorkspace: RiceToolHandler = async ({
       profileId: op.workspace.profile_id,
       fence: op.workspace.control_fence,
       ...result,
+      ...browserScreenshotDelivery(result),
     }),
   };
 };
