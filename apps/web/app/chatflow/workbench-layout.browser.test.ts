@@ -3692,155 +3692,181 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('lets an ordinary member control three Bridge capabilities in native settings without flashing the panel', async () => {
-    const f = await fixture();
-    const device = {
-      id: id(950),
-      organizationId: org,
-      workspaceId: workspace,
-      ownerId: user,
-      name: 'Synthetic Mac',
-      platform: 'macos-arm64',
-      protocolVersion: 2,
-      capabilities: ['local.fs.list'],
-      status: 'online',
-      lastSeenAt: now,
-      createdAt: now,
-      revokedAt: null,
-      folderGrants: [],
-    };
-    const settings = {
-      localCommand: true,
-      localBrowser: true,
-      development: true,
-    };
-    let revision = 0,
-      pending = false,
-      reads = 0;
-    const writes: string[] = [];
-    const login = {
-      grantId: id(951),
-      deviceId: device.id,
-      enabled: true,
-      persistLogin: true,
-      profile: { network: 'public_https', origins: [] },
-    };
-    const loginWrites: boolean[] = [];
-    try {
-      await f.page.route('**/api/v1/admin/local-browser**', (route) => {
-        if (route.request().method() === 'PATCH') {
-          login.persistLogin = route.request().postDataJSON().rememberLogin;
-          loginWrites.push(login.persistLogin);
-          login.grantId = id(951 + loginWrites.length);
-        }
-        return route.fulfill({ json: { grants: [login] } });
-      });
-      await f.page.route('**/api/v1/bridge/devices**', async (route) => {
-        const request = route.request(),
-          url = new URL(request.url());
-        if (url.pathname === '/api/v1/bridge/devices')
-          return route.fulfill({ json: { devices: [device] } });
-        if (request.method() === 'PATCH') {
-          const change = request.postDataJSON() as {
-            capability: keyof typeof settings;
-            enabled: boolean;
-          };
-          writes.push(change.capability);
-          settings[change.capability] = change.enabled;
-          revision++;
-          pending = true;
-          reads = 0;
-        } else if (pending && ++reads >= 1) pending = false;
-        return route.fulfill({
-          json: {
-            device,
-            settings,
-            revision,
-            pending,
-            supported: true,
-            environment: {
-              version: 1,
-              clientVersion: '0.6.0-dev.8',
-              browserDefaultsVersion: 1,
-              paused: false,
-              browser: settings.localBrowser ? 'ready' : 'paused',
-              sandbox: settings.localCommand ? 'ready' : 'paused',
-              preview: 'ready',
-              development: settings.development ? 'ready' : 'paused',
-              settings,
-              settingsRevision: pending ? revision - 1 : revision,
-            },
-          },
+  it.each([1280, 320])(
+    'lets an ordinary member control three Bridge capabilities in native settings without flashing the panel at %ipx',
+    async (width) => {
+      const f = await fixture({ width, touch: width < 600 });
+      const device = {
+        id: id(950),
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        name: 'Synthetic Mac',
+        platform: 'macos-arm64',
+        protocolVersion: 2,
+        capabilities: ['local.fs.list'],
+        status: 'online',
+        lastSeenAt: now,
+        createdAt: now,
+        revokedAt: null,
+        folderGrants: [],
+      };
+      const settings = {
+        localCommand: true,
+        localBrowser: true,
+        development: true,
+      };
+      let revision = 0,
+        pending = false,
+        reads = 0;
+      const writes: string[] = [];
+      const login = {
+        grantId: id(951),
+        deviceId: device.id,
+        enabled: true,
+        persistLogin: true,
+        profile: { network: 'public_https', origins: [] },
+      };
+      const loginWrites: boolean[] = [];
+      try {
+        await f.page.route('**/api/v1/admin/local-browser**', (route) => {
+          if (route.request().method() === 'PATCH') {
+            login.persistLogin = route.request().postDataJSON().rememberLogin;
+            loginWrites.push(login.persistLogin);
+            login.grantId = id(951 + loginWrites.length);
+          }
+          return route.fulfill({ json: { grants: [login] } });
         });
-      });
-      await f.page.getByRole('button', { name: '设置', exact: true }).click();
-      const dialog = f.page.getByRole('dialog', { name: '设置', exact: true });
-      await selectSettings(dialog, '我的电脑');
-      const browserSwitch = dialog.getByRole('switch', {
-        name: '本地独立浏览器',
-        exact: true,
-      });
-      await browserSwitch.waitFor();
-      await dialog
-        .getByRole('button', { name: '连接与管理电脑', exact: true })
-        .getByText('在线', { exact: true })
-        .waitFor();
-      const remember = dialog.getByRole('switch', {
-        name: '保留浏览器登录',
-        exact: true,
-      });
-      await remember.waitFor();
-      expect(await remember.getAttribute('aria-checked')).toBe('true');
-      await remember.click();
-      await expect
-        .poll(() => remember.getAttribute('aria-checked'))
-        .toBe('false');
-      await dialog.getByRole('button', { name: '清除浏览器登录' }).click();
-      await expect.poll(() => loginWrites.length).toBe(2);
-      expect(loginWrites).toEqual([false, false]);
-      expect(await dialog.getByRole('switch').count()).toBe(4);
-      for (const label of ['本地沙箱命令', '本地独立浏览器', '受控开发协作'])
+        await f.page.route('**/api/v1/bridge/devices**', async (route) => {
+          const request = route.request(),
+            url = new URL(request.url());
+          if (url.pathname === '/api/v1/bridge/devices')
+            return route.fulfill({ json: { devices: [device] } });
+          if (request.method() === 'PATCH') {
+            const change = request.postDataJSON() as {
+              capability: keyof typeof settings;
+              enabled: boolean;
+            };
+            writes.push(change.capability);
+            settings[change.capability] = change.enabled;
+            revision++;
+            pending = true;
+            reads = 0;
+          } else if (pending && ++reads >= 1) pending = false;
+          return route.fulfill({
+            json: {
+              device,
+              settings,
+              revision,
+              pending,
+              supported: true,
+              environment: {
+                version: 1,
+                clientVersion: '0.6.0-dev.8',
+                browserDefaultsVersion: 1,
+                paused: false,
+                browser: settings.localBrowser ? 'ready' : 'paused',
+                sandbox: settings.localCommand ? 'ready' : 'paused',
+                preview: 'ready',
+                development: settings.development ? 'ready' : 'paused',
+                settings,
+                settingsRevision: pending ? revision - 1 : revision,
+              },
+            },
+          });
+        });
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await f.page.getByRole('button', { name: '设置', exact: true }).click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await selectSettings(dialog, '我的电脑');
+        const browserSwitch = dialog.getByRole('switch', {
+          name: '本地独立浏览器',
+          exact: true,
+        });
+        await browserSwitch.waitFor();
+        await dialog
+          .getByRole('button', { name: '连接与管理电脑', exact: true })
+          .getByText('在线', { exact: true })
+          .waitFor();
+        const remember = dialog.getByRole('switch', {
+          name: '保留浏览器登录',
+          exact: true,
+        });
+        await remember.waitFor();
+        const site = dialog
+          .locator('strong')
+          .filter({ hasText: /^业务站点$/ })
+          .locator('..');
+        const address = site.getByRole('textbox', {
+          name: '业务站点地址',
+          exact: true,
+        });
+        await address.waitFor();
+        const siteBox = (await site.boundingBox())!;
+        const addressBox = (await address.boundingBox())!;
+        expect(addressBox.x).toBeGreaterThanOrEqual(siteBox.x);
+        expect(addressBox.x + addressBox.width).toBeLessThanOrEqual(
+          siteBox.x + siteBox.width,
+        );
+        expect(await remember.getAttribute('aria-checked')).toBe('true');
+        await remember.click();
+        await expect
+          .poll(() => remember.getAttribute('aria-checked'))
+          .toBe('false');
+        await dialog.getByRole('button', { name: '清除浏览器登录' }).click();
+        await expect.poll(() => loginWrites.length).toBe(2);
+        expect(loginWrites).toEqual([false, false]);
+        expect(await dialog.getByRole('switch').count()).toBe(4);
+        for (const label of ['本地沙箱命令', '本地独立浏览器', '受控开发协作'])
+          expect(
+            await dialog
+              .getByRole('switch', { name: label, exact: true })
+              .getAttribute('aria-checked'),
+          ).toBe('true');
+        await browserSwitch.evaluate((el) =>
+          el.setAttribute('data-retained', 'yes'),
+        );
+        await browserSwitch.click();
+        await dialog.getByText('正在同步到电脑…', { exact: true }).waitFor();
+        await expect
+          .poll(() => browserSwitch.getAttribute('aria-checked'))
+          .toBe('false');
+        await dialog
+          .getByText('正在同步到电脑…', { exact: true })
+          .waitFor({ state: 'hidden' });
+        expect(await browserSwitch.getAttribute('data-retained')).toBe('yes');
+        const development = dialog.getByRole('switch', {
+          name: '受控开发协作',
+          exact: true,
+        });
+        await development.click();
+        await expect
+          .poll(() => development.getAttribute('aria-checked'))
+          .toBe('false');
         expect(
           await dialog
-            .getByRole('switch', { name: label, exact: true })
+            .getByRole('switch', { name: '本地沙箱命令', exact: true })
             .getAttribute('aria-checked'),
         ).toBe('true');
-      await browserSwitch.evaluate((el) =>
-        el.setAttribute('data-retained', 'yes'),
-      );
-      await browserSwitch.click();
-      await dialog.getByText('正在同步到电脑…', { exact: true }).waitFor();
-      await expect
-        .poll(() => browserSwitch.getAttribute('aria-checked'))
-        .toBe('false');
-      await dialog
-        .getByText('正在同步到电脑…', { exact: true })
-        .waitFor({ state: 'hidden' });
-      expect(await browserSwitch.getAttribute('data-retained')).toBe('yes');
-      const development = dialog.getByRole('switch', {
-        name: '受控开发协作',
-        exact: true,
-      });
-      await development.click();
-      await expect
-        .poll(() => development.getAttribute('aria-checked'))
-        .toBe('false');
-      expect(
         await dialog
-          .getByRole('switch', { name: '本地沙箱命令', exact: true })
-          .getAttribute('aria-checked'),
-      ).toBe('true');
-      await dialog
-        .getByText('正在同步到电脑…', { exact: true })
-        .waitFor({ state: 'hidden' });
-      await f.page.screenshot({
-        path: '/tmp/allrice-bridge-three-switches.png',
-      });
-      expect(writes).toEqual(['localBrowser', 'development']);
-    } finally {
-      await f.close();
-    }
-  }, 15000);
+          .getByText('正在同步到电脑…', { exact: true })
+          .waitFor({ state: 'hidden' });
+        await f.page.screenshot({
+          path: '/tmp/allrice-bridge-three-switches.png',
+        });
+        expect(writes).toEqual(['localBrowser', 'development']);
+      } finally {
+        await f.close();
+      }
+    },
+    15000,
+  );
 
   it('shows the current member monthly balance inside native settings', async () => {
     const f = await fixture();

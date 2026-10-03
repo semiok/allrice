@@ -363,6 +363,10 @@
 .computerPage .capabilitySetting > [role='switch'] {
   justify-self: center;
 }
+.computerPage .capabilitySetting > div:only-child {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
 .computerPage .capabilitySetting p {
   margin: 4px 0 0;
   line-height: 20px;
