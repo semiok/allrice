@@ -3697,7 +3697,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       deviceId: device.id,
       enabled: true,
       persistLogin: true,
-      profile: { network: 'public_https' },
+      profile: { network: 'public_https', origins: [] },
     };
     const loginWrites: boolean[] = [];
     try {
