@@ -36,13 +36,17 @@ suite('MET166 PR3a private project checkpoints', () => {
     await database?.close();
     vi.unstubAllEnvs();
   });
-  async function setup() {
+  async function setup(deferRuntimeRoot = false) {
     const f = await createAssistantLocalCommandFixture(
       database.db,
       'allow',
       false,
-      { skipChild: true, projectWorkspace: true },
+      { skipChild: true, projectWorkspace: true, deferRuntimeRoot },
     );
+    if (deferRuntimeRoot)
+      await f.db`update allrice_runs set input=jsonb_set(input,'{assistantConfiguration,allowAssistants}','false'::jsonb) where id=${f.rootRunId}`;
+    const rootsBefore =
+      await f.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
     const storage = assistantFixtureStorage(f.db);
     const [job] = await f.db<
       { attempt: number }[]
@@ -70,9 +74,31 @@ suite('MET166 PR3a private project checkpoints', () => {
       storage,
       input,
       call,
+      rootsBefore: rootsBefore.length,
       opened: { ...open, project: ProjectVersionRefSchema.parse(open.project) },
     };
   }
+  it('creates the existing ledger root for the first single-employee source call without assistants', async () => {
+    const f = await setup(true);
+    expect(f.rootsBefore).toBe(0);
+    const roots =
+      await f.db`select task from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+    expect(roots).toHaveLength(1);
+    expect(roots[0]?.task.chatSessionId).toBe(f.task.chatSessionId);
+    const links =
+      await f.db`select run_id from allrice_runtime_run_links where root_run_id=${f.rootRunId}`;
+    expect(links).toHaveLength(1);
+    const budgets =
+      await f.db`select capacity from allrice_runtime_budgets where root_run_id=${f.rootRunId} and metric='tool_calls'`;
+    expect(Number(budgets[0]?.capacity)).toBe(32);
+    expect(
+      await f.call({
+        action: 'read',
+        project: f.opened.project,
+        path: 'main.ts',
+      }),
+    ).toMatchObject({ text: 'bad();\n' });
+  });
   it('atomically versions complete source, replays once and reads the exact prior version', async () => {
     const f = await setup();
     const callId = randomUUID();
@@ -216,6 +242,65 @@ suite('MET166 PR3a private project checkpoints', () => {
         ),
       ).rejects.toThrow('forbidden');
     }
+  });
+  it('rejects expired uploads rather than retaining them as a new source snapshot', async () => {
+    const f = await setup();
+    await f.db`update allrice_storage_objects set retention_until=clock_timestamp()+interval '0.1 second' where id=${f.opened.objectId}`;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    await expect(
+      f.call({
+        action: 'open',
+        files: [
+          {
+            path: 'source.json',
+            objectId: f.opened.objectId,
+            checksum: f.opened.project.snapshot.checksum,
+          },
+        ],
+      }),
+    ).rejects.toThrow('source_unavailable');
+    const versions =
+      await f.db`select id from allrice_deliverable_versions where session_id=${f.task.chatSessionId!}`;
+    expect(versions).toHaveLength(1);
+  });
+  it('rolls back a source import whose input expires after reading and before commit', async () => {
+    const f = await setup();
+    await f.db`update allrice_storage_objects set retention_until=clock_timestamp()+interval '1 second' where id=${f.opened.objectId}`;
+    const delayed = {
+      get: f.storage.get.bind(f.storage),
+      delete: f.storage.delete.bind(f.storage),
+      exists: f.storage.exists.bind(f.storage),
+      put: async (...args: Parameters<typeof f.storage.put>) => {
+        await f.storage.put(...args);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+      },
+    };
+    await expect(
+      executeProjectWorkspace(
+        {
+          ...f.input,
+          callId: randomUUID(),
+          arguments: {
+            action: 'open',
+            files: [
+              {
+                path: 'source.json',
+                objectId: f.opened.objectId,
+                checksum: f.opened.project.snapshot.checksum,
+              },
+            ],
+          },
+        },
+        delayed,
+        f.db,
+      ),
+    ).rejects.toThrow('source_unavailable');
+    const versions =
+      await f.db`select id from allrice_deliverable_versions where session_id=${f.task.chatSessionId!}`;
+    expect(versions).toHaveLength(1);
+    const heads =
+      await f.db`select project_id from allrice_project_workspace_heads where root_run_id=${f.rootRunId}`;
+    expect(heads).toHaveLength(1);
   });
   it('enforces real owner, tenant, current membership and exact worker lease', async () => {
     const f = await setup(),

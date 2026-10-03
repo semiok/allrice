@@ -7,6 +7,7 @@ import {
   runtimeContractEqual,
   projectSourceLimits,
   runtimeFeatureEnabled,
+  RuntimeTaskRefSchema,
   type ExecutionContext,
   type RuntimeContentRef,
   type ProjectVersionRef,
@@ -24,6 +25,9 @@ import {
   publishWorkbenchArtifact,
 } from './artifact-review.ts';
 import { getToolBrokerFile } from './execution/tool-broker.ts';
+import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
+import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   projectFail as fail,
   projectSourceFile,
@@ -84,6 +88,7 @@ export async function executeProjectWorkspace(
     !ctx.workspaceId ||
     !input.callId ||
     input.callId.length > 200 ||
+    ctx.policySnapshot.organizationId !== ctx.organizationId ||
     ctx.policySnapshot.subjectId !== ctx.delegatedBy.id
   )
     fail('forbidden');
@@ -92,18 +97,20 @@ export async function executeProjectWorkspace(
     organizationId: ctx.organizationId,
     workspaceId: ctx.workspaceId,
   };
-  async function admit(tx: TransactionSql) {
+  async function admit(tx: TransactionSql, requireRoot = true) {
     if (Date.parse(ctx.policySnapshot.expiresAt) <= Date.now())
       fail('forbidden');
     await lockWorkspaceStorageQuota(tx, ctx.organizationId, ctx.workspaceId);
-    const [root] =
-      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and cancel_requested_at is null and deadline_at>clock_timestamp() for update`;
-    if (!root) fail('run_unavailable');
+    if (requireRoot) {
+      const [root] =
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and cancel_requested_at is null and cancel_request_id is null and deadline_at>clock_timestamp() for update`;
+      if (!root) fail('run_unavailable');
+    }
     const [lease] = await tx`select j.id from allrice_jobs j
-      join allrice_runtime_run_links l on l.run_id=j.run_id and l.root_run_id=j.run_id
       where j.id=${ctx.jobId} and j.run_id=${ctx.runId} and j.organization_id=${ctx.organizationId} and j.workspace_id=${ctx.workspaceId!}
         and j.owner_id=${ctx.policySnapshot.subjectId} and j.worker_id=${ctx.worker.id} and j.attempt=${input.worker.attempt} and j.lease_token=${input.worker.leaseToken}
-        and j.status='running' and j.cancel_requested_at is null and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() for share of j,l`;
+        and j.status='running' and j.cancel_requested_at is null and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
+        and (${!requireRoot} or exists(select 1 from allrice_runtime_run_links l where l.run_id=j.run_id and l.root_run_id=j.run_id and l.organization_id=j.organization_id and l.workspace_id=j.workspace_id)) for share of j`;
     if (!lease) fail('run_unavailable');
     await assertPublishingRun(tx, ctx, input.sessionId, 'workspace.project');
     const [employee] = await tx`select a.id from allrice_employee_runs r
@@ -117,6 +124,54 @@ export async function executeProjectWorkspace(
     if (!employee) fail('run_unavailable');
     await assertWorkbenchSession(tx, principal, input.sessionId, true);
   }
+  // Source is also available to a single employee whose first tool has no
+  // runtime ledger yet. Initialize through the existing immutable root helper
+  // after checking the real task; never invent a Bridge grant or another budget.
+  const bootstrap = await db.begin(async (tx) => {
+    const [existing] =
+      await tx`select root_run_id from allrice_runtime_roots where root_run_id=${ctx.runId}`;
+    if (existing) return null;
+    await admit(tx, false);
+    const [row] = await tx<
+      {
+        project_id: string | null;
+        execution_spec: unknown;
+        employee_version_id: string;
+        timeout_at: Date;
+      }[]
+    >`select r.project_id,r.execution_spec,e.employee_version_id,j.timeout_at from allrice_runs r
+      join allrice_employee_runs e on e.run_id=r.id join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId}
+      where r.id=${ctx.runId}`;
+    if (!row) fail('run_unavailable');
+    return {
+      task: RuntimeTaskRefSchema.parse({
+        scope: {
+          organizationId: ctx.organizationId,
+          workspaceId: ctx.workspaceId!,
+          projectId: row.project_id,
+        },
+        runId: ctx.runId,
+        rootRunId: ctx.runId,
+        parentRunId: null,
+        chatSessionId: input.sessionId,
+        frozenConfiguration: {
+          employeeVersionId: row.employee_version_id,
+          digest: runtimePolicyDigest(row.execution_spec),
+        },
+      }),
+      deadline: row.timeout_at.toISOString(),
+    };
+  });
+  if (bootstrap)
+    await ensureRuntimeOperationRoot(
+      createRuntimeOperationLedger({
+        database: db,
+        admission: async () => fail('forbidden'), // This adapter creates no physical operation.
+      }),
+      bootstrap.task,
+      bootstrap.deadline,
+      db,
+    );
   async function head(tx: TransactionSql, projectId: string) {
     const [row] = await tx<
       Head[]
@@ -184,6 +239,15 @@ export async function executeProjectWorkspace(
     const loaded = await load(tx, ref.snapshot);
     if (loaded.document.projectId !== ref.projectId) fail('project_mismatch');
     return loaded;
+  }
+  async function uploaded(tx: TransactionSql, source: RuntimeContentRef) {
+    const [live] = await tx`select id from allrice_storage_objects
+      where id=${source.id} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
+        and state='ready' and deleted_at is null and (retention_until is null or retention_until>clock_timestamp()) for share`;
+    if (!live) fail('source_unavailable');
+    const file = await getToolBrokerFile(ctx, source.id, tx);
+    if (file.object.checksum !== source.checksum) fail('source_changed');
+    return file;
   }
   if (
     args.action === 'list' ||
@@ -289,8 +353,11 @@ export async function executeProjectWorkspace(
           projectSourceFile(file.path, Buffer.from(file.text, 'utf8')),
         );
       } else {
-        const source = await getToolBrokerFile(ctx, file.objectId, tx);
-        if (source.object.checksum !== file.checksum) fail('source_changed');
+        const source = await uploaded(tx, {
+          kind: 'storage_object',
+          id: file.objectId,
+          checksum: file.checksum,
+        });
         const bytes = await readArtifactBytes(
           storage,
           source.object,
@@ -339,6 +406,12 @@ export async function executeProjectWorkspace(
       runId: ctx.runId,
       admit: async (tx) => {
         await admit(tx);
+        // An inserted/replayed version still needs valid sources at commit.
+        if ('source' in prepared && prepared.source)
+          await load(tx, prepared.source);
+        if (args.action === 'open' && !args.source)
+          for (const source of document.inputs ?? [])
+            await uploaded(tx, source);
         const [replay] =
           await tx`select version_id from allrice_workbench_artifacts where run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and request_id=${input.callId}`;
         if (replay) return; // The common publisher checks the full byte/request digest.
@@ -354,17 +427,6 @@ export async function executeProjectWorkspace(
           )
             fail('head_conflict');
         } else if (current) fail('already_open');
-        if ('source' in prepared && prepared.source)
-          await load(tx, prepared.source);
-        if (args.action === 'open' && !args.source)
-          for (const source of document.inputs ?? []) {
-            await tx`select id from allrice_storage_objects where id=${source.id} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} for share`;
-            if (
-              (await getToolBrokerFile(ctx, source.id, tx)).object.checksum !==
-              source.checksum
-            )
-              fail('source_changed');
-          }
       },
       registered: async (tx, id) => {
         const [row] = await tx<
