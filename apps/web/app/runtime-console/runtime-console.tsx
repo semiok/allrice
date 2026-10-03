@@ -5,7 +5,7 @@ import type {
   OperationsInventory,
   OrganizationPerson,
 } from '@allrice/contracts';
-import { AllriceMark } from '../../components/allrice-mark';
+import { AdminShell } from '../../components/admin/admin-shell';
 
 import { OperationsSummary, OperationsResources } from './operations-resources';
 import { GovernanceConsole } from './governance-console';
@@ -454,53 +454,40 @@ export function RuntimeConsole() {
   }, [timeline, selectedId]);
 
   return (
-    <main className={styles.page}>
-      <header className={styles.topbar}>
-        <div className={styles.brand}>
-          <AllriceMark size={38} />
-          <div>
-            <strong>Allrice 管理后台</strong>
-            <small>公司、员工与工作动态</small>
-          </div>
-        </div>
-      </header>
-
-      <nav className={styles.viewNav} aria-label="管理后台菜单">
-        <button
-          aria-current={view === 'tenants' ? 'page' : undefined}
-          onClick={() => selectView('tenants')}
-        >
-          组织管理
-        </button>
-        <button
-          aria-current={view === 'employees' ? 'page' : undefined}
-          onClick={() => selectView('employees')}
-        >
-          AI 员工
-        </button>
-        <button
-          aria-current={view === 'activity' ? 'page' : undefined}
-          onClick={() => selectView('activity')}
-        >
-          公司看板
-        </button>
-        <button
-          aria-current={
-            [
-              'capabilities',
-              'governance',
-              'apps',
-              'runtimes',
-              'feedback',
-            ].includes(view)
-              ? 'page'
-              : undefined
-          }
-          onClick={() => selectView('capabilities')}
-        >
-          平台设置
-        </button>
-      </nav>
+    <AdminShell
+      items={[
+        {
+          label: '组织管理',
+          icon: 'organization',
+          active: view === 'tenants',
+          onSelect: () => selectView('tenants'),
+        },
+        {
+          label: 'AI 员工',
+          icon: 'employee',
+          active: view === 'employees',
+          onSelect: () => selectView('employees'),
+        },
+        {
+          label: '公司看板',
+          icon: 'activity',
+          active: view === 'activity',
+          onSelect: () => selectView('activity'),
+        },
+        {
+          label: '平台设置',
+          icon: 'settings',
+          active: [
+            'capabilities',
+            'governance',
+            'apps',
+            'runtimes',
+            'feedback',
+          ].includes(view),
+          onSelect: () => selectView('capabilities'),
+        },
+      ]}
+    >
       {['capabilities', 'governance', 'apps', 'runtimes', 'feedback'].includes(
         view,
       ) && (
@@ -931,7 +918,7 @@ export function RuntimeConsole() {
           </div>
         </>
       )}
-    </main>
+    </AdminShell>
   );
 }
 
