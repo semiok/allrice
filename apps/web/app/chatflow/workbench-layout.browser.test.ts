@@ -2490,11 +2490,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await input.fill('保留原有草稿');
         if (recommended) {
           await f.page
-            .getByRole('button', { name: '推荐任务', exact: true })
+            .getByRole('button', { name: '常用任务', exact: true })
             .click();
           if (width === 640)
             await f.page
-              .getByRole('dialog', { name: '推荐任务', exact: true })
+              .getByRole('dialog', { name: '常用任务', exact: true })
               .getByRole('button', { name: '公司范本', exact: true })
               .click();
           else
@@ -3551,7 +3551,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it.each([320, 390, 1440])(
-    'places the daily mode pill between attachment and visibility controls at width %i',
+    'places the daily mode pill between attachment and visibility controls and aligns send with the final tool row at width %i',
     async (width) => {
       const f = await fixture({ width, touch: width < 760 });
       try {
@@ -3587,9 +3587,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const send = await f.page
           .getByRole('button', { name: '发送', exact: true })
           .boundingBox();
+        const tasks = await f.page
+          .getByRole('button', { name: '常用任务', exact: true })
+          .boundingBox();
         expect(
-          Math.abs(send!.y + send!.height / 2 - pill!.y - pill!.height / 2),
+          Math.abs(send!.y + send!.height / 2 - tasks!.y - tasks!.height / 2),
         ).toBeLessThan(2);
+        expect(tasks!.x + tasks!.width).toBeLessThan(send!.x);
+        if (width < 760) expect(tasks!.y).toBeGreaterThan(pill!.y);
+        else expect(Math.abs(tasks!.y - pill!.y)).toBeLessThan(2);
         expect(visibility!.x + visibility!.width).toBeLessThan(send!.x);
         expect(pill!.y).toBeGreaterThanOrEqual(textarea!.y + textarea!.height);
         await input.fill('保留问题和键盘操作');

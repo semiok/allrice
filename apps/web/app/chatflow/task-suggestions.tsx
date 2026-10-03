@@ -25,16 +25,29 @@ import css from './task-suggestions.module.css';
 
 type Preparation = NonNullable<TaskSuggestionDisplay['preparation']>[number];
 const preparationLabels: Record<Preparation, string> = {
-  files: '添加资料',
+  files: '选择资料',
   bridge: '连接与管理电脑',
   connections: '连接应用',
 };
+const commonTaskCount = 3;
+const commonTitles: Record<string, [string, string]> = {
+  'office-word-report': ['制作 Word 报告', '写报告（Word）'],
+  'office-excel-table': ['整理 Excel 表格', '整理表格（Excel）'],
+  'office-ppt-report': ['制作 PPT 汇报', '做汇报（PPT）'],
+  'office-word-notice': ['制作 Word 公文', '写通知或纪要（Word）'],
+};
+function taskTitle(task: TaskSuggestionDisplay) {
+  const title = commonTitles[task.id];
+  return title && task.title === title[0] ? title[1] : task.title;
+}
+function taskDescription(task: TaskSuggestionDisplay) {
+  return task.description?.replace(/^(?:运营|财务|科研|程序员)：\s*/u, '');
+}
 
 export function TaskSuggestions({
   suggestions,
   draft,
   busy,
-  hero,
   compact,
   attachmentCount,
   readiness,
@@ -48,7 +61,6 @@ export function TaskSuggestions({
   suggestions: TaskSuggestionDisplay[];
   draft: string;
   busy: boolean;
-  hero: boolean;
   compact: boolean;
   attachmentCount: number;
   readiness: WorkspaceReadiness | null;
@@ -70,11 +82,14 @@ export function TaskSuggestions({
   const [checking, setChecking] = useState(false);
   const [selected, setSelected] = useState<TaskSuggestionDisplay | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
+  const [requirements, setRequirements] = useState('');
   const [error, setError] = useState('');
   const trigger = useRef<HTMLButtonElement>(null);
   const form = useRef<HTMLDivElement>(null);
-  const actionLabel = draft.length ? '追加到草稿' : '填写草稿';
-  const visible = (snapshot ?? suggestions).slice(page * 5, page * 5 + 5);
+  const actionLabel = draft.length ? '追加到输入框' : '填入输入框';
+  const visible = page
+    ? (snapshot ?? suggestions).slice(commonTaskCount)
+    : (snapshot ?? suggestions).slice(0, commonTaskCount);
   const close = () => {
     setSnapshot(null);
     setNextSnapshot(null);
@@ -91,12 +106,13 @@ export function TaskSuggestions({
     const nodes = () =>
       [
         ...dialog.querySelectorAll<HTMLElement>(
-          'button:not(:disabled),input:not(:disabled),select:not(:disabled),[tabindex="0"]',
+          'button:not(:disabled),input:not(:disabled),textarea:not(:disabled),select:not(:disabled),[tabindex="0"]',
         ),
       ].filter((node) => node.getClientRects().length);
     (
-      form.current?.querySelector<HTMLElement>('input,select,button') ??
-      nodes()[0]
+      form.current?.querySelector<HTMLElement>(
+        'input,textarea,select,button',
+      ) ?? nodes()[0]
     )?.focus();
     const trap = (event: KeyboardEvent) => {
       if (event.key !== 'Tab') return;
@@ -138,32 +154,17 @@ export function TaskSuggestions({
     if (checking) return;
     setSnapshot(null);
     setError('');
-    if (suggestion.slots?.some((slot) => slot.required && !slot.defaultValue)) {
-      setValues(
-        Object.fromEntries(
-          (suggestion.slots ?? []).map((slot) => [
-            slot.name,
-            slot.defaultValue ?? '',
-          ]),
-        ),
-      );
-      setSelected(suggestion);
-      return;
-    }
-    try {
-      onPrepare(renderTaskSuggestion(suggestion));
-    } catch (cause) {
-      setValues(
-        Object.fromEntries(
-          (suggestion.slots ?? []).map((slot) => [
-            slot.name,
-            slot.defaultValue ?? '',
-          ]),
-        ),
-      );
-      setSelected(suggestion);
-      setError(cause instanceof Error ? cause.message : '请补齐参数');
-    }
+    setValues(
+      Object.fromEntries(
+        (suggestion.slots ?? []).map((slot) => [
+          slot.name,
+          slot.defaultValue ??
+            (slot.required ? '' : (slot.options?.[0] ?? slot.label)),
+        ]),
+      ),
+    );
+    setRequirements('');
+    setSelected(suggestion);
   }
   async function pickNext(step: TaskNextStep) {
     if (busy || checking || !nextSnapshot || !onPrepareNextStep) return;
@@ -183,33 +184,43 @@ export function TaskSuggestions({
     }
   }
   function prepare() {
-    if (!selected || busy) return;
+    if (!selected || busy) return false;
     try {
       const prepared = renderTaskSuggestion(selected, values);
-      close();
+      if (requirements.trim())
+        prepared.text += `\n\n补充要求：${requirements.trim()}`;
+      if (prepared.text.length > 40_000)
+        throw Error('任务说明太长，请缩短后重试。');
       onPrepare(prepared);
+      close();
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '请补齐参数');
+      return false;
     }
   }
   function hints(suggestion: TaskSuggestionDisplay) {
     const missing = preparationEntries([suggestion])
       .filter((entry) => entry.id !== 'prepare:files' || !attachmentCount)
       .map((entry) => entry.id.slice(8) as Preparation);
-    const facts = (suggestion.readiness ?? []).map((id) =>
-      readiness?.capabilities.find((capability) => capability.id === id),
-    );
     return [
       ...new Set([
         ...missing.map((id) => preparationLabels[id]),
-        ...facts
-          .filter((fact) => fact && fact.state !== 'ready')
-          .map((fact) => capabilityReasons[fact!.reason]),
-        ...(suggestion.readiness?.length && !readiness
-          ? ['执行条件将在发送时核对；仍可填写草稿。']
-          : []),
+        ...readinessHints(suggestion),
       ]),
     ].join(' · ');
+  }
+  function readinessHints(suggestion: TaskSuggestionDisplay) {
+    if (suggestion.readiness?.length && !readiness)
+      return ['发送时会核对执行条件。'];
+    return [
+      ...new Set(
+        (suggestion.readiness ?? [])
+          .map((id) => readiness?.capabilities.find((fact) => fact.id === id))
+          .filter((fact) => fact && fact.state !== 'ready')
+          .map((fact) => capabilityReasons[fact!.reason]),
+      ),
+    ];
   }
   function preparationEntries(tasks: TaskSuggestionDisplay[]): MenuEntry[] {
     return taskSuggestionPreparations(tasks, readiness).map((id) => ({
@@ -247,17 +258,13 @@ export function TaskSuggestions({
     ...(onOpenCompanyTemplates
       ? [{ id: 'company:templates', label: '公司范本' }]
       : []),
-    ...preparationEntries([
-      ...visible,
-      ...(nextSnapshot?.suggestions.map((s) => s.task) ?? []),
-    ]),
-    ...((snapshot?.length ?? 0) > 5
+    ...((snapshot?.length ?? 0) > commonTaskCount
       ? [
           {
             id: 'page:more',
             label: page
               ? '返回常用任务'
-              : `更多任务（${snapshot!.length - 5}）`,
+              : `更多任务（${snapshot!.length - commonTaskCount}）`,
           },
         ]
       : []),
@@ -277,7 +284,7 @@ export function TaskSuggestions({
           onOpenCompanyTemplates
         )
       }
-      aria-label="推荐任务"
+      aria-label="常用任务"
       aria-haspopup={compact ? 'dialog' : 'menu'}
       aria-expanded={!!snapshot}
       onClick={() => {
@@ -292,7 +299,7 @@ export function TaskSuggestions({
       }}
     >
       <IconChecklistOutlineRegular size={16} aria-hidden="true" />
-      推荐任务
+      常用任务
     </button>
   );
   return (
@@ -317,18 +324,17 @@ export function TaskSuggestions({
               {
                 type: 'label',
                 id: 'heading',
-                text: `常用任务 · ${actionLabel}`,
+                text: '选择任务，补充需求后发送',
               },
               ...visible.map((suggestion) => ({
                 id: `task:${suggestion.id}`,
                 disabled: checking,
                 label: (
                   <span className={css.item}>
-                    <strong>{suggestion.title}</strong>
-                    {suggestion.description && (
-                      <small>{suggestion.description}</small>
+                    <strong>{taskTitle(suggestion)}</strong>
+                    {taskDescription(suggestion) && (
+                      <small>{taskDescription(suggestion)}</small>
                     )}
-                    {hints(suggestion) && <small>{hints(suggestion)}</small>}
                   </span>
                 ),
               })),
@@ -337,7 +343,7 @@ export function TaskSuggestions({
                     {
                       type: 'label' as const,
                       id: 'next-heading',
-                      text: `下一步 · ${actionLabel}`,
+                      text: '下一步建议',
                     },
                     ...(nextSnapshot.notice
                       ? [
@@ -390,30 +396,15 @@ export function TaskSuggestions({
       ) : (
         <span />
       )}
-      {hero && (
-        <div className={css.common}>
-          {suggestions.slice(0, 3).map((suggestion) => (
-            <button
-              key={suggestion.id}
-              type="button"
-              disabled={busy}
-              title={`${suggestion.title} · ${actionLabel}`}
-              onClick={() => pick(suggestion)}
-            >
-              {suggestion.title}
-            </button>
-          ))}
-        </div>
-      )}
       <Modal
         open={!!selected || (!!snapshot && compact)}
-        title={selected ? selected.title : '推荐任务'}
-        closeLabel="关闭推荐任务"
+        title={selected ? taskTitle(selected) : '常用任务'}
+        closeLabel="关闭常用任务"
         onClose={close}
         description={
           selected
-            ? `${actionLabel}，确认后仍需使用原发送按钮。`
-            : `常用任务 · ${actionLabel}`
+            ? '补充需求后填入输入框，你可以修改再发送。'
+            : '选择任务，补充需求后发送'
         }
         className={css.modal}
         contentClassName={css.modalContent}
@@ -431,6 +422,7 @@ export function TaskSuggestions({
         <div ref={form} className={css.parameters}>
           {selected ? (
             <>
+              {taskDescription(selected) && <p>{taskDescription(selected)}</p>}
               {(selected.slots ?? []).map((slot) => (
                 <label key={slot.name}>
                   {slot.label}
@@ -470,20 +462,52 @@ export function TaskSuggestions({
                   )}
                 </label>
               ))}
-              {hints(selected) && <p>{hints(selected)}</p>}
-              {preparationEntries([selected]).map((entry) =>
-                'label' in entry ? (
+              <label>
+                补充要求（可选）
+                <textarea
+                  aria-label="补充要求"
+                  rows={3}
+                  maxLength={4000}
+                  value={requirements}
+                  placeholder="例如：给谁看、重点内容、格式或篇幅要求"
+                  onChange={(event) => setRequirements(event.target.value)}
+                />
+              </label>
+              <p>
+                {attachmentCount
+                  ? `已选择 ${attachmentCount} 份资料。`
+                  : '可以直接填写要求，也可以选择资料或公司范本。'}
+                选择资料或范本时，本次要求会先保存在输入框中。
+              </p>
+              {readinessHints(selected).length > 0 && (
+                <p>{readinessHints(selected).join(' · ')}</p>
+              )}
+              <div className={css.preparationButtons}>
+                {preparationEntries([selected]).map((entry) =>
+                  'label' in entry ? (
+                    <Button
+                      key={entry.id}
+                      disabled={busy}
+                      onClick={() => {
+                        if (prepare())
+                          onPreparation(entry.id.slice(8) as Preparation);
+                      }}
+                    >
+                      {entry.label}
+                    </Button>
+                  ) : null,
+                )}
+                {onOpenCompanyTemplates && (
                   <Button
-                    key={entry.id}
+                    disabled={busy}
                     onClick={() => {
-                      close();
-                      onPreparation(entry.id.slice(8) as Preparation);
+                      if (prepare()) onOpenCompanyTemplates();
                     }}
                   >
-                    {entry.label}
+                    使用公司范本
                   </Button>
-                ) : null,
-              )}
+                )}
+              </div>
               {error && <p role="alert">{error}</p>}
             </>
           ) : (
@@ -496,16 +520,15 @@ export function TaskSuggestions({
                   disabled={checking}
                   onClick={() => pick(suggestion)}
                 >
-                  <strong>{suggestion.title}</strong>
-                  {suggestion.description && (
-                    <small>{suggestion.description}</small>
+                  <strong>{taskTitle(suggestion)}</strong>
+                  {taskDescription(suggestion) && (
+                    <small>{taskDescription(suggestion)}</small>
                   )}
-                  {hints(suggestion) && <small>{hints(suggestion)}</small>}
                 </button>
               ))}
               {nextSnapshot?.suggestions.length || nextSnapshot?.notice ? (
                 <>
-                  <strong>下一步 · {actionLabel}</strong>
+                  <strong>下一步建议</strong>
                   {nextSnapshot.notice && <p>{nextSnapshot.notice}</p>}
                   {nextSnapshot.suggestions.map((step) => (
                     <button
