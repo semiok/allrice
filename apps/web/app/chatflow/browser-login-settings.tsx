@@ -42,7 +42,8 @@ export function BrowserLoginSettings({
             (item) =>
               item.deviceId === deviceId &&
               item.enabled &&
-              item.profile.network === 'public_https',
+              item.profile.network === 'public_https' &&
+              item.profile.origins.length === 0,
           ) ?? null,
         );
         setSiteGrants(
@@ -50,7 +51,7 @@ export function BrowserLoginSettings({
             (item) =>
               item.deviceId === deviceId &&
               item.enabled &&
-              item.profile.network !== 'public_https',
+              item.profile.origins.length > 0,
           ),
         );
       }
