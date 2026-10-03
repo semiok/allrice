@@ -59,7 +59,12 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
       format: 'iife',
       platform: 'browser',
       jsx: 'automatic',
-      define: { 'process.env.NODE_ENV': '"production"' },
+      // Next replaces browser-side environment references during its build.
+      // This standalone fixture also renders the real Next Link component.
+      define: {
+        'process.env': '{}',
+        'process.env.NODE_ENV': '"production"',
+      },
     });
     const js = assets.outputFiles.find((f: { path: string }) =>
       f.path.endsWith('.js'),
@@ -136,6 +141,7 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
     const page = await browser.newPage({
       viewport: { width: 390, height: 844 },
     });
+    page.setDefaultTimeout(8000);
     const errors: string[] = [];
     page.on('pageerror', (e) => errors.push(e.message));
     try {
@@ -184,6 +190,11 @@ suite('member work settings: real browser, route and PostgreSQL', () => {
         ),
       ).toBe(true);
       expect(errors).toEqual([]);
+    } catch (error) {
+      throw new Error(
+        `Work settings browser failed; page errors: ${JSON.stringify(errors)}`,
+        { cause: error },
+      );
     } finally {
       await page.close();
     }

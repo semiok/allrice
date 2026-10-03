@@ -630,6 +630,26 @@ export class FolderTriggerCore {
     );
     const failed = results.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
+    if (code === 'FOLDER_TRIGGER_PAUSED' && !this.closing) {
+      try {
+        const current = await (
+          this.options.readCredentials ??
+          (async () => credentials(await readConfig()))
+        )();
+        // Release can overlap a re-pair. Report the completed physical pause
+        // only while its original device/server/token still owns this scope.
+        if (
+          current.config.server === this.options.server &&
+          current.config.deviceId === this.options.deviceId &&
+          current.token === this.options.token
+        )
+          await this.observe();
+      } catch (error) {
+        // A failed status delivery keeps its digest unacknowledged for the
+        // next scoped check without undoing the physical watcher release.
+        this.options.onDiagnostic?.(this.code(error));
+      }
+    }
   }
   /** Local identity/settings changes also stop listeners during long commands. */
   async checkScope() {

@@ -286,8 +286,7 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
             const listening =
               rule.status === 'enabled' &&
               choice?.ready &&
-              h?.observation?.status === 'listening' &&
-              Date.now() - Date.parse(h.observation.observedAt) < 90_000;
+              h?.observation?.status === 'listening';
             return (
               <section
                 className={styles.card}

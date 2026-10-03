@@ -398,6 +398,78 @@ describe('folder triggers on the existing Core heartbeat', () => {
     },
   );
 
+  it.each(['checkScope', 'synchronize'] as const)(
+    '%s reports a local pause only after physical release and deduplicates later checks',
+    async (method) => {
+      const f = await fixture();
+      await f.initialize();
+      const event = await f.event();
+      const released = deferred();
+      f.handles[0]!.close.mockImplementation(() => released.promise);
+      f.setConfig({ ...f.getConfig(), paused: true });
+      const pausing = f.core[method]().catch((error: unknown) => error);
+      try {
+        await vi.waitFor(() => expect(f.handles[0]!.close).toHaveBeenCalled());
+        expect(
+          f.bodies.filter((v) => v.path.endsWith('/observations')),
+        ).toHaveLength(1);
+      } finally {
+        released.resolve();
+      }
+      const result = await pausing;
+      if (method === 'checkScope')
+        expect(result).toMatchObject({ message: 'FOLDER_TRIGGER_PAUSED' });
+      expect(f.core.canAdvertise).toBe(false);
+      expect(
+        f.bodies
+          .filter((v) => v.path.endsWith('/observations'))
+          .map((v) => v.body),
+      ).toEqual([
+        {
+          ruleId: f.rule.automationId,
+          revision: f.rule.revision,
+          status: 'listening',
+          errorCode: null,
+        },
+        {
+          ruleId: f.rule.automationId,
+          revision: f.rule.revision,
+          status: 'paused',
+          errorCode: 'FOLDER_TRIGGER_PAUSED',
+        },
+      ]);
+      await expect(f.core.checkScope()).rejects.toThrow(
+        'FOLDER_TRIGGER_PAUSED',
+      );
+      await f.core.synchronize();
+      expect(
+        f.bodies.filter((v) => v.path.endsWith('/observations')),
+      ).toHaveLength(2);
+      expect(f.bodies.filter((v) => v.path.endsWith('/events'))).toEqual([]);
+      expect(await f.journal.pendingFolderTriggers(f.rule)).toEqual([event]);
+    },
+  );
+
+  it('does not send a pause observation with an old pairing after credentials change during physical release', async () => {
+    const f = await fixture();
+    await f.initialize();
+    const released = deferred();
+    f.handles[0]!.close.mockImplementation(() => released.promise);
+    f.setConfig({ ...f.getConfig(), paused: true });
+    const pausing = f.core.checkScope().catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(f.handles[0]!.close).toHaveBeenCalled());
+      f.setToken('different-private-token');
+    } finally {
+      released.resolve();
+    }
+    await pausing;
+    expect(
+      f.bodies.filter((v) => v.path.endsWith('/observations')),
+    ).toHaveLength(1);
+    expect(f.core.canAdvertise).toBe(false);
+  });
+
   it('rejects a symlink root and a rule for a different device before its watcher opens', async () => {
     const f = await fixture();
     const alias = join(f.root, '../alias');
