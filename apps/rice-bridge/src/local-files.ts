@@ -20,6 +20,7 @@ import {
   type LocalFileVersion,
   type LocalFileObject,
 } from '@allrice/contracts';
+import { readNativeFileBytes } from './native-file-reader.js';
 import {
   resolveAuthorizedPath,
   resolveAuthorizedWriteTarget,
@@ -133,6 +134,18 @@ export async function inspectLocalFile(root: string, path: string) {
     await file.handle.close();
   }
 }
+/** Descriptor-relative byte read with the original inspect CAS, without upload. */
+export async function readLocalFileBytes(
+  root: string,
+  path: string,
+  expected: LocalFileVersion,
+  options: Pick<LocalFileExecutionOptions, 'authorize' | 'signal'>,
+): Promise<Uint8Array> {
+  return readNativeFileBytes(root, path, expected, {
+    ...options,
+    authorize: () => options.authorize(true),
+  });
+}
 export interface LocalFileTransport {
   download(object: LocalFileObject): Promise<ReadableStream<Uint8Array>>;
   upload(
@@ -150,7 +163,10 @@ export type LocalFileExecutionOptions = {
   openFile?: (absolute: string, reveal: boolean) => Promise<void>;
   checkpoint?: (result: LocalFileResult) => Promise<void>;
 };
-async function permission(options: LocalFileExecutionOptions, force = false) {
+async function permission(
+  options: Pick<LocalFileExecutionOptions, 'authorize' | 'signal'>,
+  force = false,
+) {
   if (options.signal?.aborted || !(await options.authorize(force)))
     throw new LocalFileError('FILE_CANCELED');
 }

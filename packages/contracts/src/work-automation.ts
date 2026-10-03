@@ -40,6 +40,7 @@ export function workAutomationGroup(
       'local.fs.write',
       'local.fs.mkdir',
       'local.file.import',
+      'local.file.derive',
       'local.file.save',
       'local.file.open',
       'local.file.reveal',

@@ -49,6 +49,7 @@ export interface RuntimeBridgeLedgerPort {
     supportsBinaryFiles?: boolean;
     supportsFileSurvey?: boolean;
     supportsFileOrganization?: boolean;
+    supportsFileDerivation?: boolean;
     supportsManagedPython?: boolean;
     supportsPdfRead?: boolean;
     recoverLeaseToken?: (binding: RuntimeActionBinding) => string;
@@ -226,6 +227,7 @@ export function createRuntimeBridgeHttpHandler(input: {
                 'supportsBinaryFiles',
                 'supportsFileSurvey',
                 'supportsFileOrganization',
+                'supportsFileDerivation',
                 'supportsManagedPython',
                 'supportsPdfRead',
                 'supportsProjectDiagnostics',
@@ -247,6 +249,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             typeof selection.supportsFileSurvey !== 'boolean') ||
           ('supportsFileOrganization' in selection &&
             typeof selection.supportsFileOrganization !== 'boolean') ||
+          ('supportsFileDerivation' in selection &&
+            typeof selection.supportsFileDerivation !== 'boolean') ||
           ('supportsManagedPython' in selection &&
             typeof selection.supportsManagedPython !== 'boolean') ||
           ('supportsPdfRead' in selection &&
@@ -271,6 +275,7 @@ export function createRuntimeBridgeHttpHandler(input: {
           supportsBinaryFiles: selection.supportsBinaryFiles === true,
           supportsFileSurvey: selection.supportsFileSurvey === true,
           supportsFileOrganization: selection.supportsFileOrganization === true,
+          supportsFileDerivation: selection.supportsFileDerivation === true,
           supportsManagedPython: selection.supportsManagedPython === true,
           supportsPdfRead: selection.supportsPdfRead === true,
           supportsLocalMcp: selection.supportsLocalMcp === true,

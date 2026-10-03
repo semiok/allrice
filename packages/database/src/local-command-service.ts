@@ -8,6 +8,9 @@ import {
   LocalFileToolArguments,
   localFileMaximumBytes,
   type LocalFilePayload,
+  FileDerivationArgumentsSchema,
+  FileDerivationPayloadSchema,
+  type FileDerivationPayload,
   type BridgeCommandPayload,
   RuntimeActionBindingSchema,
   RuntimeOperationSnapshotSchema,
@@ -76,7 +79,8 @@ async function createLocalBridgeToolOperation(
           BridgeCommandPayload,
           { capability: 'local.fs.write' | 'local.fs.mkdir' | 'local.fs.list' }
         >
-      | LocalFilePayload;
+      | LocalFilePayload
+      | FileDerivationPayload;
     callId: string;
     /** Internal Worker provenance only; deliberately absent from the public
      * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
@@ -252,6 +256,14 @@ async function createLocalBridgeToolOperation(
     input.file.arguments.survey &&
     (target.metadata.environment as { fileSurveyVersion?: unknown } | undefined)
       ?.fileSurveyVersion !== 1
+  )
+    throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (
+    input.file?.capability === 'local.file.derive' &&
+    (
+      target.metadata.environment as
+        { fileDerivationVersion?: unknown } | undefined
+    )?.fileDerivationVersion !== 1
   )
     throw new RuntimePolicyError('local_runner_upgrade_required');
   const profile = input.file
@@ -490,6 +502,34 @@ export async function createLocalBinaryFileOperation(
       capability: input.capability,
       arguments: args,
     });
+  return createLocalBridgeToolOperation(
+    {
+      context: input.context,
+      arguments: null,
+      callId: input.callId,
+      file: payload,
+    },
+    database,
+  );
+}
+
+export async function createLocalFileDerivationOperation(
+  input: {
+    context: ExecutionContext;
+    arguments: unknown;
+    callId: string;
+  },
+  database: Database = getDatabase(),
+) {
+  const args = FileDerivationArgumentsSchema.parse(input.arguments);
+  const payload = FileDerivationPayloadSchema.parse({
+    capability: 'local.file.derive',
+    arguments: args,
+    outputObjectId:
+      args.request.kind === 'zip_list'
+        ? null
+        : id(`local.file.derive:${input.context.runId}:${input.callId}:output`),
+  });
   return createLocalBridgeToolOperation(
     {
       context: input.context,

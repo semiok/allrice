@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { LocalFileToolArguments } from '@allrice/contracts';
+import {
+  LocalFileToolArguments,
+  FileDerivationArgumentsSchema,
+} from '@allrice/contracts';
 
 const descriptions = {
   'local.file.inspect':
@@ -13,12 +16,22 @@ const descriptions = {
   'local.file.reveal':
     '在Finder定位已核验版本的文档或图片；expected来自inspect或save，不允许任意绝对路径。',
 } as const;
-export const localFileToolDefinitions = (
-  Object.keys(descriptions) as (keyof typeof descriptions)[]
-).map((name) => ({
-  name,
-  description: descriptions[name],
-  inputSchema: z.toJSONSchema(LocalFileToolArguments[name], {
-    unrepresentable: 'any',
-  }),
-}));
+export const localFileToolDefinitions = [
+  ...(Object.keys(descriptions) as (keyof typeof descriptions)[]).map(
+    (name) => ({
+      name,
+      description: descriptions[name],
+      inputSchema: z.toJSONSchema(LocalFileToolArguments[name], {
+        unrepresentable: 'any',
+      }),
+    }),
+  ),
+  {
+    name: 'local.file.derive' as const,
+    description:
+      '在已授权电脑目录内对inspect核验的原始文件执行有界ZIP打包、列表核验或单文件提取。每次最多32个源文件、输入与解压结果合计各9000000B。路径、expected必须来自当前inspect，不能使用survey版本。request.kind=zip_pack需fileName以.zip结尾；zip_list无输出；zip_extract指定entry与单个fileName。拒绝危险路径、符号链接、加密包、重复名称、CRC错误或过度膨胀。输出作为现有私有工作区附件；原文件不变，不写主机路径；另行local.file.save即可创建本机文件。',
+    inputSchema: z.toJSONSchema(FileDerivationArgumentsSchema, {
+      unrepresentable: 'any',
+    }),
+  },
+];

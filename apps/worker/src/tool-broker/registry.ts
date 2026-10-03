@@ -127,6 +127,7 @@ export const riceToolHandlerRegistry = Object.freeze({
   'workspace.export.create': registration('delivery', createWorkspaceExport),
   'local.fs.list': registration('local_bridge', executeLocalBridgeTool),
   'local.file.inspect': registration('local_bridge', executeLocalFileTool),
+  'local.file.derive': registration('local_bridge', executeLocalFileTool),
   'local.file.import': registration('local_bridge', executeLocalFileTool),
   'local.file.save': registration('local_bridge', executeLocalFileTool),
   'local.file.open': registration('local_bridge', executeLocalFileTool),

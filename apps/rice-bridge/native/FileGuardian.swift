@@ -9,6 +9,7 @@ umask(0o077)
 let maximumRequestBytes = 16_384
 let maximumFileBytes: Int64 = 9_000_000
 let maximumResultBytes = 512_000
+let maximumReadResultBytes = 12_100_000
 let maximumDepth = 24
 let chunkBytes = 65_536
 let owner = getppid()
@@ -280,6 +281,47 @@ func hashFD(_ fd: Int32, _ identity: stat, count: ((Int) -> Void)? = nil, writeT
     guard sameFile(identity, try statFD(fd)) else { throw GuardianError("FILE_CHANGED") }
     return "sha256:" + hash.finalize().map { String(format: "%02x", $0) }.joined()
 }
+func readFileBytes(_ root: Directory, _ parts: [String], _ expected: [String: Any]) throws -> [String: Any] {
+    guard Set(expected.keys) == Set(["checksum", "sizeBytes", "version", "mediaType"]),
+          let expectedChecksum = expected["checksum"] as? String, validDigest(expectedChecksum),
+          let version = expected["version"] as? String, validDigest(version),
+          let mediaType = expected["mediaType"] as? String, !mediaType.isEmpty, mediaType.utf8.count <= 255 else {
+        throw GuardianError("FILE_REQUEST_INVALID")
+    }
+    let size = try integer(expected["sizeBytes"], Int(maximumFileBytes))
+    let parent = try parentDirectory(root, parts)
+    let file = try RegularFile(parent: parent, name: parts.last!)
+    guard file.identity.st_size == Int64(size) else { throw GuardianError("FILE_CHANGED") }
+    var data = Data(capacity: size), hash = SHA256(), position: Int64 = 0
+    var buffer = [UInt8](repeating: 0, count: chunkBytes)
+    while position < file.identity.st_size {
+        try check()
+        let requested = min(buffer.count, Int(file.identity.st_size - position))
+        let count = buffer.withUnsafeMutableBytes { Darwin.pread(file.fd, $0.baseAddress, requested, off_t(position)) }
+        if count < 0 && errno == EINTR { continue }
+        guard count > 0 else { throw GuardianError(count == 0 ? "FILE_CHANGED" : "FILE_READ_FAILED") }
+        guard data.count <= Int(maximumFileBytes) - count else { throw GuardianError("FILE_TOO_LARGE") }
+        let chunk = Data(buffer.prefix(count)); data.append(chunk); hash.update(data: chunk)
+        position += Int64(count)
+    }
+    let checksum = "sha256:" + hash.finalize().map { String(format: "%02x", $0) }.joined()
+    guard data.count == size, checksum == expectedChecksum else { throw GuardianError("FILE_CHANGED") }
+    let encoded = data.base64EncodedString()
+    try file.validate()
+    guard (try statFD(file.fd)).st_nlink == 1, (try statAt(parent.fd, file.name)).st_nlink == 1 else {
+        throw GuardianError("FILE_HARD_LINK_UNSUPPORTED")
+    }
+    try check()
+    // Match Node/libuv Stats millisecond arithmetic, including sub-ms precision.
+    // JS computes the original PR3 JSON version from these numeric identities.
+    let identity: [String: Any] = [
+        "dev": Double(file.identity.st_dev), "ino": Double(file.identity.st_ino),
+        "size": Double(file.identity.st_size),
+        "mtimeMs": Double(file.identity.st_mtimespec.tv_sec) * 1000 + Double(file.identity.st_mtimespec.tv_nsec) / 1_000_000,
+        "ctimeMs": Double(file.identity.st_ctimespec.tv_sec) * 1000 + Double(file.identity.st_ctimespec.tv_nsec) / 1_000_000
+    ]
+    return ["checksum": checksum, "sizeBytes": size, "identity": identity, "bytesBase64": encoded]
+}
 func syncFD(_ fd: Int32) throws {
     try check()
     while fsync(fd) != 0 { if errno != EINTR { throw systemError("FILE_SYNC_FAILED") }; try check() }
@@ -471,11 +513,18 @@ final class Mutation {
 var mutation: Mutation?
 var response: [String: Any]
 var exitStatus: Int32 = 0
+var resultByteLimit = maximumResultBytes
 do {
     let input = try readRequest()
-    guard let mode = input["mode"] as? String, ["survey", "copy", "move"].contains(mode),
+    guard let mode = input["mode"] as? String, ["survey", "read", "copy", "move"].contains(mode),
           let rootPath = input["root"] as? String, let path = input["path"] as? String else { throw GuardianError("FILE_REQUEST_INVALID") }
-    if mode == "survey" {
+    if mode == "read" {
+        resultByteLimit = maximumReadResultBytes
+        guard Set(input.keys) == Set(["mode", "root", "path", "expected"]),
+              let expected = input["expected"] as? [String: Any] else { throw GuardianError("FILE_REQUEST_INVALID") }
+        let parts = try relativeComponents(path)
+        response = try readFileBytes(authorizedRoot(rootPath), parts, expected)
+    } else if mode == "survey" {
         guard Set(input.keys) == Set(["mode", "root", "path", "maximumEntries", "maximumHashBytes", "hash"]),
               let hash = input["hash"] as? NSNumber, CFGetTypeID(hash) == CFBooleanGetTypeID() else { throw GuardianError("FILE_REQUEST_INVALID") }
         let entries = try integer(input["maximumEntries"], 2000); guard entries > 0 else { throw GuardianError("FILE_REQUEST_INVALID") }
@@ -505,7 +554,7 @@ do {
 }
 do {
     var bytes = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys, .withoutEscapingSlashes])
-    guard bytes.count <= maximumResultBytes else { throw GuardianError("FILE_OUTPUT_TOO_LARGE") }
+    guard bytes.count <= resultByteLimit else { throw GuardianError("FILE_OUTPUT_TOO_LARGE") }
     bytes.append(10)
     try FileHandle.standardOutput.write(contentsOf: bytes)
 } catch { watchdog.finish(); exit(70) }

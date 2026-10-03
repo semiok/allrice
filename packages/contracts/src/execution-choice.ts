@@ -15,6 +15,7 @@ export const BridgeReadinessCapabilitySchema = z.enum([
   'local.file.open',
   'local.file.reveal',
   'local.file.select',
+  'local.file.derive',
   'local.browser',
   'local.process',
   'local.preview',

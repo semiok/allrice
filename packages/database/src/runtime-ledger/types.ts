@@ -80,6 +80,7 @@ export interface RuntimeBridgeClaimSupport {
   supportsBinaryFiles?: boolean;
   supportsFileSurvey?: boolean;
   supportsFileOrganization?: boolean;
+  supportsFileDerivation?: boolean;
   supportsManagedPython?: boolean;
   supportsPdfRead?: boolean;
 }

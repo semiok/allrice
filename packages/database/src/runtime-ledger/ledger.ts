@@ -7,6 +7,8 @@ import {
   LocalFilePayloadSchema,
   LocalFileResultSchema,
   localFileResultMatchesPayload,
+  FileDerivationResultSchema,
+  fileDerivationResultMatches,
   RuntimeAttemptRefSchema,
   RuntimeOperationEventSchema,
   RuntimeOperationSignalSchema,
@@ -948,6 +950,7 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
           and (${input.supportsFileSurvey === true} or not coalesce(bridge_payload->'arguments' ? 'survey',false))
           and (${input.supportsFileOrganization === true} or bridge_payload->'arguments'->>'comparisonScope' is distinct from 'file_organization')
+          and (${input.supportsFileDerivation === true} or bridge_payload->>'capability' is distinct from 'local.file.derive')
           and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => name !== 'local.python.execute' && name !== 'local.pdf.read' && (input.supportsBinaryFiles || !name.startsWith('local.file.'))), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsManagedPython ? ['local.python.execute'] : []), ...(input.supportsPdfRead === true ? ['local.pdf.read'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
@@ -1346,6 +1349,7 @@ export function createRuntimeOperationLedger(options: {
             );
             if (
               payload.capability.startsWith('local.file.') &&
+              payload.capability !== 'local.file.derive' &&
               content.signal.type === 'operation.outcome' &&
               content.signal.result.status === 'succeeded'
             ) {
@@ -1366,6 +1370,36 @@ export function createRuntimeOperationLedger(options: {
                   and size_bytes=${output.file.sizeBytes} and media_type=${output.file.mediaType}`;
                 if (!stored) throw new RuntimeLedgerError('invalid_state');
               }
+            }
+            if (payload.capability === 'local.file.derive') {
+              const success =
+                content.signal.type === 'operation.outcome' &&
+                content.signal.result.status === 'succeeded';
+              const effects =
+                content.signal.type === 'operation.outcome'
+                  ? content.signal.result.effects
+                  : content.signal.type === 'operation.stopped'
+                    ? content.signal.effects
+                    : 'none';
+              if (success) {
+                const output = FileDerivationResultSchema.parse(
+                  (content.evidence as { output?: unknown } | null)?.output,
+                );
+                if (
+                  !fileDerivationResultMatches(payload, output) ||
+                  effects !== (output.status === 'listed' ? 'none' : 'applied')
+                )
+                  throw new RuntimeLedgerError('invalid_state');
+                if (output.object) {
+                  const [stored] =
+                    await tx`select id from allrice_storage_objects where id=${output.object.objectId}
+                    and organization_id=${row.snapshot.binding.task.scope.organizationId} and workspace_id=${row.snapshot.binding.task.scope.workspaceId}
+                    and owner_id=${row.snapshot.binding.requestedBy.id} and state='ready' and checksum=${output.object.checksum}
+                    and size_bytes=${output.object.sizeBytes} and media_type=${output.object.mediaType}`;
+                  if (!stored) throw new RuntimeLedgerError('invalid_state');
+                }
+              } else if (effects !== 'none')
+                throw new RuntimeLedgerError('invalid_state');
             }
             if (
               payload.capability === 'local.process.execute' &&

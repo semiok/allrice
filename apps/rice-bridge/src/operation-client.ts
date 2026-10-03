@@ -20,6 +20,12 @@ import { fileGuardianReady } from './file-guardian-resources.js';
 import { FileGuardianError } from './file-guardian.js';
 import { executeLocalFile, LocalFileError } from './local-files.js';
 import {
+  executeFileDerivation,
+  FileDerivationError,
+} from './file-derivation.js';
+import { FileArchiveError } from './file-archives.js';
+import { fileDerivationHttpTransport } from './file-derivation-client.js';
+import {
   localFileHttpTransport,
   isLocalFilePayload,
   flushLocalFileCommands,
@@ -217,7 +223,11 @@ export class RuntimeBridgeOperationClient {
         supportsChangeset: true,
         supportsBinaryFiles: true,
         ...(fileGuardianReady()
-          ? { supportsFileSurvey: true, supportsFileOrganization: true }
+          ? {
+              supportsFileSurvey: true,
+              supportsFileOrganization: true,
+              supportsFileDerivation: true,
+            }
           : {}),
         ...(this.input.pythonRunner ? { supportsManagedPython: true } : {}),
         ...(this.input.pdfRunner ? { supportsPdfRead: true } : {}),
@@ -422,6 +432,59 @@ export class RuntimeBridgeOperationClient {
     }
     if (dispatch.payload.capability === 'local.pdf.read') {
       await this.executePdf(dispatch);
+      return;
+    }
+    if (dispatch.payload.capability === 'local.file.derive') {
+      const signal = AbortSignal.any([
+        AbortSignal.timeout(30_000),
+        ...(this.input.signal ? [this.input.signal] : []),
+      ]);
+      const channel = fileDerivationHttpTransport({
+        server: config.server,
+        token,
+        id: operationId,
+        leaseToken: dispatch.leaseToken,
+        signal,
+      });
+      let committed = false;
+      try {
+        const output = await executeFileDerivation(root!, dispatch.payload, {
+          ...channel,
+          signal,
+        });
+        committed = output.status === 'derived';
+        await journal.outcome(operationId, {
+          status: 'succeeded',
+          effects: committed ? 'applied' : 'none',
+          output,
+          summary: committed
+            ? '已生成可下载的新文件；原文件保持不变'
+            : '已核验压缩包文件列表；未解压到电脑',
+        });
+      } catch (error) {
+        if (
+          committed ||
+          (error instanceof FileDerivationError && error.unknown)
+        )
+          await journal.uncertain(operationId, 'receipt_missing', {
+            summary: '新文件交付结果待对账，不自动重做',
+          });
+        else
+          await journal.outcome(operationId, {
+            status: 'failed',
+            effects: 'none',
+            summary: '文件处理未完成；原文件保持不变',
+            errorCode:
+              error instanceof FileDerivationError ||
+              error instanceof FileArchiveError ||
+              error instanceof FileGuardianError ||
+              error instanceof LocalFileError
+                ? error.code
+                : signal.aborted
+                  ? 'FILE_CANCELED'
+                  : 'FILE_DERIVATION_FAILED',
+          });
+      }
       return;
     }
     if (isLocalFilePayload(dispatch.payload)) {

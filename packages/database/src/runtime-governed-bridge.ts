@@ -232,6 +232,7 @@ export function createGovernedBridgePolicyOptions(
           'local.process.execute',
           'local.python.execute',
           'local.pdf.read',
+          'local.file.derive',
           'local.fs.changeset',
           'local.mcp.discover',
           'local.mcp.call',
@@ -333,6 +334,14 @@ export function createGovernedBridgePolicyOptions(
         throw new RuntimePolicyError('bridge_authority_changed');
 
       const settings = bridgeSettingsView(target.metadata).settings;
+      if (
+        payload.capability === 'local.file.derive' &&
+        (
+          target.metadata.environment as
+            { fileDerivationVersion?: unknown } | undefined
+        )?.fileDerivationVersion !== 1
+      )
+        throw new RuntimePolicyError('bridge_authority_changed');
       if (
         changeset?.arguments.comparisonScope === 'file_organization' &&
         (

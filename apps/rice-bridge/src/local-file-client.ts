@@ -1,5 +1,6 @@
 import {
   LocalFileObjectSchema,
+  localFileCapabilities,
   type LocalFilePayload,
 } from '@allrice/contracts';
 import { bridgeRequest } from './client.js';
@@ -129,5 +130,7 @@ export async function flushLocalFileCommands(input: {
 export function isLocalFilePayload(payload: {
   capability: string;
 }): payload is LocalFilePayload {
-  return payload.capability.startsWith('local.file.');
+  return localFileCapabilities.some(
+    (capability) => capability === payload.capability,
+  );
 }
