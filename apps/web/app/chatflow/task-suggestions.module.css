@@ -33,6 +33,8 @@
 .menu {
   width: min(350px, calc(100vw - 24px));
   max-height: min(520px, 70dvh);
+  border: 1px solid var(--dsw-alias-border-l2, #d7dde6);
+  box-shadow: var(--dsw-elevation-prominent, 0 8px 24px rgb(22 34 52 / 16%));
 }
 .item {
   display: grid;

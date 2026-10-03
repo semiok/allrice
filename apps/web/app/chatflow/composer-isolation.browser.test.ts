@@ -2021,6 +2021,14 @@ suite(
             width < 760
               ? f.page.getByRole('dialog', { name: '常用任务', exact: true })
               : f.page.getByRole('menu');
+          if (width === 1440) {
+            const surface = await list.evaluate((node) => ({
+              border: getComputedStyle(node).borderTopWidth,
+              shadow: getComputedStyle(node).boxShadow,
+            }));
+            expect(surface.border).toBe('1px');
+            expect(surface.shadow).not.toBe('none');
+          }
           expect(await list.textContent()).toContain('写报告（Word）');
           expect(await list.textContent()).not.toContain('运营：');
           expect(
