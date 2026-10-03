@@ -1,18 +1,64 @@
 import { expect, it } from 'vitest';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
-import { projectFixture } from '../../../rice-bridge/test/project-fixture.js';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 it.each(['pnpm', 'uv'] as const)(
   'exposes %s project preparation to the real DSH provider and forwards every field',
   async (manager) => {
-    const args = RuntimeLocalCommandToolInputSchema.parse(
-      Object.fromEntries(
-        Object.entries(projectFixture(manager).command.arguments).filter(
-          ([name]) => !['imageDigest', 'isolation', 'network'].includes(name),
-        ),
-      ),
-    );
+    // Synthetic transport values only. Native installation/cache evidence is
+    // separate; this test must not import the Bridge app into Worker builds.
+    const checksum = `sha256:${'a'.repeat(64)}`;
+    const args = RuntimeLocalCommandToolInputSchema.parse({
+      executable:
+        manager === 'pnpm'
+          ? '/usr/local/bin/node'
+          : '/workspace/.venv/bin/python',
+      args: [manager === 'pnpm' ? 'verify.cjs' : 'verify.py'],
+      path: '.',
+      files: [
+        {
+          path: manager === 'pnpm' ? 'pnpm-lock.yaml' : 'requirements.lock',
+          sha256: checksum,
+        },
+      ],
+      limits: {
+        timeoutMs: 60000,
+        outputBytes: 16384,
+        memoryMiB: 512,
+        cpuMillis: 1000,
+        pids: 64,
+      },
+      projectPreparation: {
+        version: 1,
+        projectId: '713d721f-f0bf-40dd-aa0b-65f6aa79e49a',
+        sourceDigest: checksum,
+        lockChecksum: checksum,
+        offline: false,
+        manager,
+        managerVersion: manager === 'pnpm' ? '10.33.3' : '0.8.22',
+        lockPath: manager === 'pnpm' ? 'pnpm-lock.yaml' : 'requirements.lock',
+        scripts: 'disabled',
+        packages:
+          manager === 'pnpm'
+            ? [
+                {
+                  name: 'allrice-native-schema',
+                  version: '1.0.0',
+                  integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
+                  archivePath: 'package.tgz',
+                },
+              ]
+            : [
+                {
+                  name: 'allrice_native_schema',
+                  version: '1.0.0',
+                  fileName: 'allrice_native_schema-1.0.0-py3-none-any.whl',
+                  url: 'https://files.pythonhosted.org/packages/schema/allrice_native_schema-1.0.0-py3-none-any.whl',
+                  sha256: checksum,
+                },
+              ],
+      },
+    });
     await nativeBrokerRoundtrip({
       canonicalName: 'local.process.execute',
       wireName: 'local_process_execute',
