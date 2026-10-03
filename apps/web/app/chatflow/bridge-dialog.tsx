@@ -80,7 +80,11 @@ export function BridgeSettings({
     <div className={css.page} data-bridge-settings>
       {!devices.length && (
         <div className={css.emptyState}>
-          <span>尚未连接电脑</span>
+          <span role="status">
+            {bridge.bridgeStatusKnown
+              ? '尚未连接电脑'
+              : bridge.bridgeRefreshError || '正在确认连接状态…'}
+          </span>
           {refreshControl}
         </div>
       )}
