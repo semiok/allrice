@@ -2650,13 +2650,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(box!.x + box!.width).toBeLessThanOrEqual(width);
           expect(
             await selector.evaluate((node) =>
-              [...node.querySelectorAll('*')].every(
-                (child) =>
-                  child.scrollWidth <= child.clientWidth + 1 ||
-                  getComputedStyle(child).display === 'inline',
-              ),
+              [...node.querySelectorAll('*')]
+                .filter(
+                  (child) =>
+                    child.checkVisibility() &&
+                    child.scrollWidth > child.clientWidth + 1 &&
+                    getComputedStyle(child).display !== 'inline',
+                )
+                .map((child) => ({
+                  tag: child.tagName,
+                  className: child.className,
+                  scrollWidth: child.scrollWidth,
+                  clientWidth: child.clientWidth,
+                })),
             ),
-          ).toBe(true);
+          ).toEqual([]);
         };
         await assertFits(picker);
         if (process.env.ALLRICE_DIALOG_SCREENSHOT)
@@ -2736,9 +2744,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '刷新状态', exact: true })
             .boundingBox())!.y,
         ).toBeLessThan(
-          (await computer
-            .getByText('授权文件夹', { exact: true })
-            .boundingBox())!.y,
+          (await computer.locator('[data-bridge-folder]').boundingBox())!.y,
         );
         await settings
           .getByRole('button', { name: '返回我的电脑', exact: true })
@@ -2767,6 +2773,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '生成配对码', exact: true })
             .isVisible(),
         ).toBe(false);
+        const capabilities = computer.locator('[data-bridge-capabilities]');
+        expect(await capabilities.getAttribute('open')).toBeNull();
+        expect(
+          await capabilities
+            .locator('strong')
+            .filter({ hasText: /^文件读取$/ })
+            .isVisible(),
+        ).toBe(false);
+        await capabilities.locator(':scope > summary').click();
+        await capabilities
+          .locator('strong')
+          .filter({ hasText: /^文件读取$/ })
+          .waitFor();
+        await capabilities.locator(':scope > summary').click();
         await assertFits(computer);
         if (process.env.ALLRICE_DIALOG_SCREENSHOT)
           await f.page.screenshot({
@@ -2810,7 +2830,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await computer
           .getByRole('button', { name: '刷新状态', exact: true })
           .click();
-        await computer.getByText('待确认', { exact: true }).waitFor();
+        await computer
+          .locator('[data-bridge-connection]')
+          .getByText('待确认', { exact: true })
+          .waitFor();
         expect(
           await computer.getByText('AI-what', { exact: true }).count(),
         ).toBe(0);
@@ -2879,7 +2902,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await computer
           .getByRole('button', { name: '刷新状态', exact: true })
           .click();
-        await computer.getByText('离线', { exact: true }).waitFor();
+        await computer
+          .locator('[data-bridge-connection]')
+          .getByText('离线', { exact: true })
+          .waitFor();
         expect(
           await computer.getByText('已是最新版', { exact: true }).count(),
         ).toBe(0);
@@ -6030,10 +6056,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '下载 M 芯片版 · v0.6.0-dev.7',
           exact: true,
         });
-        await dialog.getByText('v0.6.0-dev.6', { exact: true }).waitFor();
         await dialog.getByText('有新版本', { exact: true }).waitFor();
         expect(await download.isVisible()).toBe(false);
-        await dialog.locator('summary').click();
+        await dialog.locator('[data-bridge-install] > summary').click();
+        await dialog.getByText('v0.6.0-dev.6', { exact: true }).waitFor();
         await download.waitFor();
         expect(await download.getAttribute('href')).toBe(
           '/api/v1/bridge/client/macos-arm64',
@@ -6052,6 +6078,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog.getByText('已是最新版', { exact: true }).waitFor();
         expect(
           await dialog.getByText('有新版本', { exact: true }).count(),
+        ).toBe(0);
+        installed = 'legacy';
+        await dialog
+          .getByRole('button', { name: '刷新状态', exact: true })
+          .click();
+        await dialog.getByText('vlegacy', { exact: true }).waitFor();
+        await dialog
+          .locator('[data-bridge-install] > summary')
+          .getByText('待确认', { exact: true })
+          .waitFor();
+        expect(
+          await dialog.getByText('已是最新版', { exact: true }).count(),
         ).toBe(0);
         expect(f.writes).toEqual([]);
       } finally {

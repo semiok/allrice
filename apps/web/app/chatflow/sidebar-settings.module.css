@@ -245,31 +245,54 @@
 }
 
 .computerPage {
+  --computer-content-inset: 12px;
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 22px;
+}
+.section > h2.computerHeading {
+  padding-inline: 12px;
+  margin-bottom: 8px;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 500;
 }
 .computerIntro {
-  margin: 0 0 22px;
+  margin: 0;
+  padding-inline: var(--computer-content-inset);
 }
 .computerManagementEntry {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto 16px;
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) auto 44px;
   align-items: center;
   gap: 14px;
   width: 100%;
-  padding: 12px 0;
+  margin: 18px 0 0;
+  padding: 18px var(--computer-content-inset);
   min-height: 64px;
   border: 0;
-  border-bottom: 1px solid var(--dsw-alias-border-primary);
-  border-radius: 0;
+  border-radius: 10px;
   color: var(--dsw-alias-label-primary);
   background: transparent;
   text-align: left;
   font: inherit;
   cursor: pointer;
 }
+.computerManagementEntry::after {
+  content: '';
+  position: absolute;
+  left: var(--computer-content-inset);
+  right: var(--computer-content-inset);
+  bottom: 0;
+  height: 1px;
+  background: var(--dsw-alias-border-primary);
+}
 .computerManagementEntry:hover {
-  background: var(--allrice-sidebar-hover);
+  background: color-mix(
+    in srgb,
+    var(--allrice-employee-bg) 50%,
+    var(--dsw-alias-bg-base)
+  );
 }
 .computerManagementCopy {
   display: grid;
@@ -306,20 +329,43 @@
   color: #70dba3;
 }
 .computerManagementEntry > svg {
+  justify-self: center;
   color: var(--dsw-alias-label-secondary);
 }
 .computerPermissions {
   margin-top: 24px;
 }
 .computerPermissions > h3 {
+  padding-inline: var(--computer-content-inset);
   margin: 0 0 2px;
   color: var(--dsw-alias-label-secondary);
   font-size: 13px;
   font-weight: 500;
 }
 .computerPage .capabilitySetting {
-  gap: 16px;
-  padding: 16px 0;
+  display: grid;
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) 44px;
+  gap: 20px;
+  min-height: 76px;
+  padding: 14px var(--computer-content-inset);
+  border: 0;
+}
+.computerPage .capabilitySetting::after {
+  content: '';
+  position: absolute;
+  left: var(--computer-content-inset);
+  right: var(--computer-content-inset);
+  bottom: 0;
+  height: 1px;
+  background: var(--dsw-alias-border-primary);
+}
+.computerPage .capabilitySetting > [role='switch'] {
+  justify-self: center;
+}
+.computerPage .capabilitySetting p {
+  margin: 4px 0 0;
+  line-height: 20px;
 }
 .computerPage .capabilitySetting strong {
   font-size: 15px;
@@ -329,6 +375,19 @@
   padding: 0;
   background: transparent;
   font-size: 13px;
+}
+.computerPage .browserRetention::after {
+  display: none;
+}
+.computerClearRow {
+  padding-inline: var(--computer-content-inset);
+  margin-bottom: 14px;
+}
+.computerPage > [role='status'],
+.computerPage > [role='alert'],
+.browserLoginPreferences > [role='status'],
+.browserLoginPreferences > [role='alert'] {
+  padding-inline: var(--computer-content-inset);
 }
 .computerPage button:not([role='switch']):not([data-computer-control]) {
   min-height: 32px;
@@ -366,6 +425,22 @@
 }
 .computerBack:hover {
   background: var(--allrice-sidebar-hover);
+}
+@media (max-width: 560px) {
+  .computerManagementEntry {
+    gap: 12px;
+  }
+  .computerStatuses {
+    grid-column: 1;
+    grid-row: 2;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+  }
+  .computerManagementEntry > svg {
+    grid-column: 3;
+    grid-row: 1 / 3;
+  }
 }
 @media (pointer: coarse) {
   .computerBack {

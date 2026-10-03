@@ -33,14 +33,13 @@ const choices = [
   {
     key: 'localBrowser',
     title: '本地独立浏览器',
-    description: '使用独立浏览器访问网页，不影响日常浏览器。',
+    description: '使用专用浏览器访问网页，不影响日常浏览器。',
     state: 'browser',
   },
   {
     key: 'development',
     title: '受控开发协作',
-    description:
-      '允许员工安排助手修改、测试和审查项目。需要本地沙箱和已选择的文件夹。',
+    description: '允许助手修改、测试和审查项目，需沙箱和授权文件夹。',
     state: 'development',
   },
 ] as const;
@@ -162,7 +161,7 @@ export function ComputerSettings({
     }
   }
   return (
-    <div className={styles.computerPage}>
+    <div className={styles.computerPage} data-computer-settings>
       <p className={styles.computerIntro}>设置员工的本地权限和浏览器偏好。</p>
       <button
         data-computer-control
@@ -229,10 +228,9 @@ export function ComputerSettings({
           )}
           {choices.map((choice) => {
             const state = computer.environment?.[choice.state];
-            const status = !computer.settings[choice.key]
-              ? '已关闭'
-              : computer.pending
-                ? '等待同步'
+            const status =
+              !computer.settings[choice.key] || computer.pending
+                ? null
                 : computer.device.status !== 'online'
                   ? '电脑离线'
                   : computer.environment?.paused
@@ -240,19 +238,17 @@ export function ComputerSettings({
                     : choice.key === 'development' &&
                         !computer.settings.localCommand
                       ? '需要开启本地沙箱命令'
-                      : state === 'ready'
-                        ? '可用'
-                        : state === 'preparing'
-                          ? '正在准备'
-                          : state === 'unavailable'
-                            ? '环境尚未就绪'
-                            : '已开启';
+                      : state === 'preparing'
+                        ? '正在准备'
+                        : state === 'unavailable'
+                          ? '环境尚未就绪'
+                          : null;
             return (
               <div key={choice.key} className={styles.capabilitySetting}>
                 <div>
                   <strong>{choice.title}</strong>
                   <p>{choice.description}</p>
-                  <small>{status}</small>
+                  {status && <small role="status">{status}</small>}
                 </div>
                 <Switch
                   label={choice.title}
