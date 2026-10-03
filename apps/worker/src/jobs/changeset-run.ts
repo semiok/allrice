@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { changesetFileAppliedMatches } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import {
   createChangesetOperation,
@@ -74,13 +75,11 @@ export async function executeChangesetRun({
             created.payload.arguments.files.length ||
           evidence.result.files.some(
             (f, i) =>
-              f.status !== 'applied' ||
-              f.path !== created.payload.arguments.files[i]?.path ||
-              f.beforeChecksum !==
-                (created.payload.arguments.files[i]?.before?.checksum ??
-                  null) ||
-              f.afterChecksum !==
-                (created.payload.arguments.files[i]?.after?.checksum ?? null),
+              !created.payload.arguments.files[i] ||
+              !changesetFileAppliedMatches(
+                created.payload.arguments.files[i]!,
+                f,
+              ),
           )
         )
           throw new HandlerError(

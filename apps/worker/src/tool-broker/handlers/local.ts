@@ -97,7 +97,8 @@ export const executeLocalBridgeTool: RiceToolHandler = async ({
 }) => {
   if (
     input.call.name === 'local.fs.write' ||
-    input.call.name === 'local.fs.mkdir'
+    input.call.name === 'local.fs.mkdir' ||
+    (input.call.name === 'local.fs.list' && args.survey !== undefined)
   ) {
     const operation = await waitForLocalAdmission(input, () =>
       createLocalFileOperation({

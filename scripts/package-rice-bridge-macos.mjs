@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { verifyPdfPackage } from './rice-bridge-pdf-runtime.mjs';
+import { verifyFileGuardianPackage } from './rice-bridge-file-runtime.mjs';
 
 assert.equal(process.platform, 'darwin');
 assert.ok(['arm64', 'x64'].includes(process.arch));
@@ -86,6 +87,7 @@ const manifest = {
   binarySha256: sha256(await readFile(binary)),
   browserLauncherSha256: sha256(await readFile(browserLauncher)),
   pdfGuardianSha256: sha256(await readFile(`${binary}.pdf-guardian`)),
+  fileGuardianSha256: sha256(await readFile(`${binary}.file-guardian`)),
   pdfRuntimeManifestSha256: sha256(
     await readFile(`${binary}.pdf-runtime/manifest.json`),
   ),
@@ -105,6 +107,10 @@ await verifyPdfPackage(binary, {
   architecture: targetArch,
   manifestChecksum: manifest.pdfRuntimeManifestSha256,
   guardianSha256: manifest.pdfGuardianSha256,
+});
+await verifyFileGuardianPackage(binary, {
+  architecture: targetArch,
+  sha256: manifest.fileGuardianSha256,
 });
 await writeFile(
   join(folder, 'release.json'),

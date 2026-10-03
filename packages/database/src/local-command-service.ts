@@ -74,7 +74,7 @@ async function createLocalBridgeToolOperation(
     file?:
       | Extract<
           BridgeCommandPayload,
-          { capability: 'local.fs.write' | 'local.fs.mkdir' }
+          { capability: 'local.fs.write' | 'local.fs.mkdir' | 'local.fs.list' }
         >
       | LocalFilePayload;
     callId: string;
@@ -247,6 +247,13 @@ async function createLocalBridgeToolOperation(
     );
   if (choice.status === 'unavailable')
     throw new RuntimePolicyError('local_runner_unavailable');
+  if (
+    input.file?.capability === 'local.fs.list' &&
+    input.file.arguments.survey &&
+    (target.metadata.environment as { fileSurveyVersion?: unknown } | undefined)
+      ?.fileSurveyVersion !== 1
+  )
+    throw new RuntimePolicyError('local_runner_upgrade_required');
   const profile = input.file
     ? null
     : profileParsed.success
@@ -411,7 +418,8 @@ export function createLocalFileOperation(
   const file = BridgeCommandPayloadSchema.parse(input.payload);
   if (
     file.capability !== 'local.fs.write' &&
-    file.capability !== 'local.fs.mkdir'
+    file.capability !== 'local.fs.mkdir' &&
+    !(file.capability === 'local.fs.list' && file.arguments.survey)
   )
     throw new RuntimePolicyError('invalid_tool_call');
   // Explicit null means create-only; absence never permits an unconditional overwrite.

@@ -3,7 +3,7 @@ import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
 import type { ChangesetDocument } from './runtime-v2/artifact-review.ts';
-import { ChangesetProposalSchema } from './runtime-v2/artifact-review.ts';
+import { TextChangesetProposalSchema } from './runtime-v2/artifact-review.ts';
 
 /** Conservative across case-insensitive/NFD filesystems. This is a logical
  * ownership key, NOT physical path resolution or a symlink/sandbox boundary. */
@@ -76,7 +76,7 @@ export const DevelopmentCommandSchema = z.discriminatedUnion('action', [
     .object({
       action: z.literal('publish'),
       assignmentId: UuidSchema,
-      proposal: ChangesetProposalSchema,
+      proposal: TextChangesetProposalSchema,
       previous: DevelopmentArtifactRefSchema.nullable(),
     })
     .strict(),

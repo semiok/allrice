@@ -32,6 +32,7 @@ import {
 } from 'react';
 import {
   type WorkbenchArtifact,
+  type ChangesetDocument,
   type ReviewContinuationInput,
 } from '@allrice/contracts';
 import {
@@ -435,6 +436,65 @@ export function SafeDocument({ text }: { text: string }) {
   );
 }
 
+export function FileOrganizationPreview({
+  document,
+}: {
+  document: ChangesetDocument;
+}) {
+  const labels = { copy: '复制', move: '移动', rename: '重命名' };
+  return (
+    <section aria-label="文件整理方案">
+      <p>
+        按下列版本整理文件；目标位置须为空。复制后保留原文件，移动或重命名逐项记录结果。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>操作</th>
+            <th>原文件</th>
+            <th>目标位置</th>
+            <th>大小</th>
+          </tr>
+        </thead>
+        <tbody>
+          {document.files.map((file) =>
+            'organization' in file ? (
+              <tr key={file.path}>
+                <td>{labels[file.organization.operation]}</td>
+                <td>
+                  <code>{file.path}</code>
+                </td>
+                <td>
+                  <code>{file.organization.target}</code>
+                </td>
+                <td>
+                  {file.organization.source.sizeBytes.toLocaleString()} 字节
+                </td>
+              </tr>
+            ) : null,
+          )}
+        </tbody>
+      </table>
+      <details>
+        <summary>核对文件版本</summary>
+        {document.files.map((file) =>
+          'organization' in file ? (
+            <p key={file.path}>
+              {file.path}
+              <br />
+              <small>
+                内容 {file.organization.source.checksum}
+                <br />
+                选定版本 {file.organization.source.version}
+              </small>
+            </p>
+          ) : null,
+        )}
+      </details>
+    </section>
+  );
+}
+
 /** Shared read-only inspector; deliberately has no feedback, approval, apply or
  * resume callbacks. The server must separately authorize the inspection scope. */
 export function ReadOnlyArtifactPreview({
@@ -444,6 +504,8 @@ export function ReadOnlyArtifactPreview({
 }) {
   if (preview.kind !== 'changeset')
     return <NativeDocumentPreview preview={preview} fileName="文件预览" />;
+  if (preview.changeset.comparisonScope === 'file_organization')
+    return <FileOrganizationPreview document={preview.changeset} />;
   if (preview.kind === 'changeset')
     return (
       <>
@@ -884,6 +946,10 @@ function ArtifactReview({
               <ChangesetPanel
                 key={artifact.id}
                 artifact={artifact}
+                organizationPlan={
+                  preview?.kind === 'changeset' &&
+                  preview.changeset.comparisonScope === 'file_organization'
+                }
                 sessionId={sessionId}
                 workspaceId={workspaceId}
                 headers={tenantHeaders}
@@ -891,7 +957,12 @@ function ArtifactReview({
                 onContinued={onContinued}
               />
             ) : null}
-            {preview?.kind === 'changeset' ? (
+            {preview?.kind === 'changeset' &&
+            preview.changeset.comparisonScope === 'file_organization' ? (
+              <FileOrganizationPreview document={preview.changeset} />
+            ) : null}
+            {preview?.kind === 'changeset' &&
+            preview.changeset.comparisonScope !== 'file_organization' ? (
               <label>
                 提案文件
                 <select
@@ -909,6 +980,10 @@ function ArtifactReview({
               </label>
             ) : null}
             {view === 'diff' &&
+            !(
+              preview?.kind === 'changeset' &&
+              preview.changeset.comparisonScope === 'file_organization'
+            ) &&
             (file ||
               (bodyText !== null &&
                 previous?.preview.kind === 'text' &&
@@ -962,7 +1037,7 @@ function ArtifactReview({
                   : '正在读取上一版基线…'}
               </p>
             ) : null}
-            {file ? (
+            {file && !('organization' in file) ? (
               <details>
                 <summary>查看完整前后文本（分页）</summary>
                 <label>

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { verifyPdfPackage } from './rice-bridge-pdf-runtime.mjs';
+import { verifyFileGuardianPackage } from './rice-bridge-file-runtime.mjs';
 import {
   assertBridgeSigningAvailable,
   bridgeSigningConfiguration,
@@ -147,6 +148,7 @@ const manifest = {
   coreSha256: await digest(core),
   browserLauncherSha256: await digest(browserLauncher),
   pdfGuardianSha256: await digest(`${core}.pdf-guardian`),
+  fileGuardianSha256: await digest(`${core}.file-guardian`),
   pdfRuntimeManifestSha256: await digest(`${core}.pdf-runtime/manifest.json`),
   pdfNativeVerification: 'required-on-device-before-ready',
   browserRuntimeManifestSha256: await digest(`${core}.runtime/manifest.json`),
@@ -167,6 +169,11 @@ const pdfPackageExpectation = {
   guardianSha256: manifest.pdfGuardianSha256,
 };
 await verifyPdfPackage(core, pdfPackageExpectation);
+await verifyFileGuardianPackage(core, {
+  architecture: targetArch,
+  sha256: manifest.fileGuardianSha256,
+  signing: signingConfig,
+});
 await writeFile(
   join(output, 'release.json'),
   JSON.stringify(manifest, null, 2) + '\n',
@@ -208,6 +215,14 @@ if (signingConfig.mode === 'developer-id') {
   await verifyPdfPackage(
     join(verification, 'Rice Bridge.app/Contents/Resources/RiceBridgeCore'),
     pdfPackageExpectation,
+  );
+  await verifyFileGuardianPackage(
+    join(verification, 'Rice Bridge.app/Contents/Resources/RiceBridgeCore'),
+    {
+      architecture: targetArch,
+      sha256: manifest.fileGuardianSha256,
+      signing: signingConfig,
+    },
   );
 }
 const zipSha256 = await digest(zip);

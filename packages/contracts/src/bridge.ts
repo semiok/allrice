@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { BridgeCapabilityReadinessListSchema } from './execution-choice.ts';
 import { LocalFilePayloadSchema } from './local-files.ts';
+import { LocalFileSurveyInputSchema } from './file-survey.ts';
 
 export const BridgeProtocolVersion = 2 as const;
 
@@ -64,6 +65,7 @@ export const LegacyBridgeCommandPayloadSchema = z.discriminatedUnion(
           .object({
             path: RelativePathSchema.default('.'),
             limit: z.number().int().min(1).max(200).default(100),
+            survey: LocalFileSurveyInputSchema.optional(),
           })
           .strict(),
       })
@@ -232,6 +234,8 @@ export const BridgeEnvironmentSchema = z
     clientVersion: z.string().max(80),
     browserDefaultsVersion: z.literal(1).optional(),
     browserLocalSitesVersion: z.literal(1).optional(),
+    fileSurveyVersion: z.literal(1).optional(),
+    fileOrganizationVersion: z.literal(1).optional(),
     browser: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     sandbox: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     preview: z.enum(['preparing', 'ready', 'paused', 'unavailable']),

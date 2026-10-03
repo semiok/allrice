@@ -78,6 +78,8 @@ export interface RuntimeBridgeClaimSupport {
   supportsBackgroundServices?: boolean;
   supportsChangeset?: boolean;
   supportsBinaryFiles?: boolean;
+  supportsFileSurvey?: boolean;
+  supportsFileOrganization?: boolean;
   supportsManagedPython?: boolean;
   supportsPdfRead?: boolean;
 }

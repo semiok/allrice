@@ -34,6 +34,10 @@ import {
   type RuntimeBridgeDispatch,
   type RuntimeBridgeReceipt,
 } from '@allrice/contracts';
+import {
+  changesetFileChecksums,
+  changesetFileAppliedMatches,
+} from '@allrice/contracts';
 import { initialChangesetResults } from './changeset-executor.js';
 import { LocalServiceJournal } from './local-service-journal.js';
 import { BridgeJournalError } from './journal-error.js';
@@ -847,8 +851,13 @@ export class BridgeJournal {
       const f = dispatch.payload.arguments.files[index]!;
       if (
         result.path !== f.path ||
-        result.beforeChecksum !== (f.before?.checksum ?? null) ||
-        result.afterChecksum !== (f.after?.checksum ?? null)
+        result.beforeChecksum !== changesetFileChecksums(f).beforeChecksum ||
+        result.afterChecksum !== changesetFileChecksums(f).afterChecksum ||
+        (result.status === 'applied' &&
+          !changesetFileAppliedMatches(f, result)) ||
+        ('organization' in f &&
+          (result.organization?.target !== f.organization.target ||
+            result.organization.operation !== f.organization.operation))
       )
         throw new BridgeJournalError('JOURNAL_CHANGESET_INVALID');
       const previous = this.database

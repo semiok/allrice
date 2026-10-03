@@ -15,7 +15,15 @@ Create a useful deliverable only when the user explicitly asks for a report, doc
 4. When revising an earlier generated file, pass its `objectId` as `parentObjectId` and state the material changes in `changeSummary`. Do not overwrite or silently replace the earlier version.
 5. Return a short summary, version number, and the tool-provided download link. State important limitations.
 
-## Rules
+## Local file organization proposals
+
+When the user explicitly requests copying, moving or renaming files inside their selected Bridge folder, first inspect only the relevant files with `local_fs_list` and `survey: {mode: files, hash: true}`. Publish a `kind: changeset`, `format: json` proposal using `content: {operations: [...]}` encoded as JSON. Each operation contains `path`, `target`, `operation: copy|move|rename`, `source: {checksum, version, sizeBytes}` from that exact survey, and `expectedDestination: null`. Never invent hashes or versions, substitute a `local_file_inspect` version, or represent binary files as empty before/after text.
+
+Keep sources and destinations inside the same selected root, at most32 operations, each file at most9000000 bytes and total at most128000000 bytes. Destination parents must already exist; request supported directory creation separately if needed. Existing destinations are conflicts, not permission to overwrite. Do not create overlapping paths, cycles, executable commands or permanent deletions.
+
+The proposal and its review list do not change files. The user requests its application through the existing workbench. Distinguish confirmed files, conflicts, pending files and unknown outcomes; the batch is not atomic and must not be replayed after an uncertain effect. Restoration only offers inverse moves using the destination version recorded by the actual receipt. Copies remain, and changed destinations or newly occupied original paths require reconciliation.
+
+## Export rules
 
 - Do not create a file for an ordinary chat answer.
 - Do not invent missing evidence or silently omit uncertainty.

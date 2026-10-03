@@ -21,6 +21,8 @@ import {
   RuntimeLocalPdfResultSchema,
   localPdfResultMatchesPayload,
   localPdfPreExecutionDenialCodes,
+  ChangesetExecutionResultSchema,
+  fileOrganizationResultMatches,
   UuidSchema,
   advanceRuntimeOperation,
   isTerminalRuntimeOperationStatus,
@@ -944,6 +946,8 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))
+          and (${input.supportsFileSurvey === true} or not coalesce(bridge_payload->'arguments' ? 'survey',false))
+          and (${input.supportsFileOrganization === true} or bridge_payload->'arguments'->>'comparisonScope' is distinct from 'file_organization')
           and snapshot->'binding'->>'action'=any(${[...BridgeCapabilities.filter((name) => name !== 'local.python.execute' && name !== 'local.pdf.read' && (input.supportsBinaryFiles || !name.startsWith('local.file.'))), ...(input.supportsLocalMcp ? ['local.mcp.discover', 'local.mcp.call'] : []), ...(input.supportsLocalCommand ? ['local.process.execute'] : []), ...(input.supportsManagedPython ? ['local.python.execute'] : []), ...(input.supportsPdfRead === true ? ['local.pdf.read'] : []), ...(input.supportsChangeset ? ['local.fs.changeset'] : [])]})
         order by updated_at,created_at,id limit 20`;
       for (const candidate of candidates) {
@@ -1464,6 +1468,73 @@ export function createRuntimeOperationLedger(options: {
                   content.signal.effects !== 'none')
               )
                 throw new RuntimeLedgerError('invalid_state');
+            }
+          }
+          if (
+            row.bridge_payload !== null &&
+            [
+              'operation.outcome',
+              'operation.stopped',
+              'operation.uncertain',
+            ].includes(content.signal.type)
+          ) {
+            const payload = RuntimeBridgePayloadSchema.parse(
+              row.bridge_payload,
+            );
+            if (
+              payload.capability === 'local.fs.changeset' &&
+              payload.arguments.comparisonScope === 'file_organization'
+            ) {
+              const output = (content.evidence as { output?: unknown } | null)
+                ?.output;
+              const parsed = ChangesetExecutionResultSchema.safeParse(output);
+              const signal = content.signal;
+              // A rejected start or a crash can lack file evidence; it can never prove applied effects.
+              if (!parsed.success) {
+                if (
+                  output !== undefined ||
+                  (signal.type !== 'operation.uncertain' &&
+                    !(
+                      signal.type === 'operation.outcome' &&
+                      signal.result.status === 'failed' &&
+                      signal.result.effects === 'none'
+                    ))
+                )
+                  throw new RuntimeLedgerError('invalid_state');
+              } else {
+                const files = parsed.data.files,
+                  applied = files.filter((f) => f.status === 'applied').length,
+                  uncertain = files.some((f) =>
+                    ['unknown', 'prepared'].includes(f.status),
+                  );
+                const consistent =
+                  signal.type === 'operation.uncertain'
+                    ? uncertain
+                    : signal.type === 'operation.stopped'
+                      ? signal.effects === 'none' &&
+                        !applied &&
+                        !uncertain &&
+                        files.some((f) => f.status === 'canceled')
+                      : signal.type === 'operation.outcome' &&
+                        !uncertain &&
+                        signal.result.status ===
+                          (applied === files.length
+                            ? 'succeeded'
+                            : applied
+                              ? 'partial'
+                              : 'failed') &&
+                        signal.result.effects ===
+                          (applied === files.length
+                            ? 'applied'
+                            : applied
+                              ? 'partial'
+                              : 'none');
+                if (
+                  !consistent ||
+                  !fileOrganizationResultMatches(payload, parsed.data)
+                )
+                  throw new RuntimeLedgerError('invalid_state');
+              }
             }
           }
           // A finite service may be stopped locally (Bridge shutdown/lease

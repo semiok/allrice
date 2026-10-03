@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import type { FileGuardianControls } from './file-guardian.js';
 import { constants } from 'node:fs';
 import {
   lstat,
@@ -486,9 +487,19 @@ async function gitReadOnly(
 export async function executeLocalCommand(
   root: string,
   payloadInput: BridgeCommandPayload,
+  controls: FileGuardianControls = {},
 ) {
   const payload = LegacyBridgeCommandPayloadSchema.parse(payloadInput);
   if (payload.capability === 'local.fs.list') {
+    if (payload.arguments.survey) {
+      const { executeFileSurvey } = await import('./file-survey.js');
+      return executeFileSurvey(
+        root,
+        payload.arguments.path,
+        payload.arguments.survey,
+        controls,
+      );
+    }
     const output = await listFiles(
       root,
       payload.arguments.path,

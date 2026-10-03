@@ -603,6 +603,78 @@ async function commandFixture(
 
 suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   afterEach(() => vi.unstubAllEnvs());
+  it('PR6 survey uses the persisted ordinary employee scope, requires a compatible client and stops after capability withdrawal', async () => {
+    const f = await commandFixture(['local.fs.list']);
+    await database`delete from allrice_member_work_automation where organization_id=${f.context.organizationId}`;
+    await setRuntimePolicyControls(
+      f.context,
+      {
+        version: 3,
+        enabled: true,
+        mode: 'execute',
+        rules: [{ action: 'local.fs.list', effect: 'allow' }],
+      },
+      2,
+      database,
+    );
+    const ordinaryPolicy = {
+      ...f.policyPayload,
+      memberships: f.policyPayload.memberships.map((m) => ({
+        ...m,
+        role: 'member' as const,
+      })),
+    };
+    await database`update allrice_memberships set role='member' where id=${f.membership}`;
+    await database`update allrice_policy_snapshots set payload=${database.json(ordinaryPolicy)} where id=${f.policy}`;
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+    const context = ExecutionContextSchema.parse({
+      ...f.execution,
+      policySnapshot: { ...f.execution.policySnapshot, ...ordinaryPolicy },
+    });
+    const create = (callId: string) =>
+      createLocalFileOperation(
+        {
+          context,
+          callId,
+          payload: {
+            capability: 'local.fs.list',
+            arguments: { path: '.', survey: { mode: 'duplicates' } },
+          },
+        },
+        database,
+      );
+    await expect(create('pr6-survey')).rejects.toThrow(
+      'local_runner_upgrade_required',
+    );
+    await database`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}','{"fileSurveyVersion":1}'::jsonb) where id=${f.target}`;
+    const created = await create('pr6-survey');
+    expect(created.snapshot.status).toBe('ready');
+    expect(await f.claim()).toBeNull(); // An old client cannot consume the new arguments.
+    const claim = await f.ledger().claimNextBridgeOperation({
+      scope: f.task.scope,
+      deviceId: f.device.id,
+      leaseMs: 30000,
+      supportsFileSurvey: true,
+    });
+    expect(claim?.bridgePayload).toMatchObject({
+      capability: 'local.fs.list',
+      arguments: { survey: { mode: 'duplicates' } },
+    });
+    expect(claim).not.toBeNull();
+    await database`update allrice_execution_targets set metadata=metadata-'environment' where id=${f.target}`;
+    await expect(
+      f.ledger().heartbeat({
+        scope: f.task.scope,
+        operationId: created.snapshot.binding.attempt.operationId,
+        leaseToken: claim!.leaseToken,
+        leaseMs: 30000,
+      }),
+    ).rejects.toThrow('unavailable');
+    const [member] = await database<
+      { role: string }[]
+    >`select role from allrice_memberships where id=${f.membership}`;
+    expect(member?.role).toBe('member');
+  });
   it('MET-159 defaults to actual file delivery, supports manual confirmation, CAS and no replay', async () => {
     const f = await commandFixture(['local.fs.write', 'local.fs.mkdir']);
     await database`delete from allrice_member_work_automation where organization_id=${f.context.organizationId}`;
@@ -866,6 +938,70 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
   // P24 deliberately explored native IDs before P25 had a persistent identity
   // map. Such IDs now fail closed: these are negative migration guards, NOT the
   // replacement production mapped-child command/approval/receipt acceptance.
+  it('PR6 binary proposal binds the reported target, preserves original versions and creates no write operation', async () => {
+    vi.stubEnv('ALLRICE_CHANGESET_ENABLED', '1');
+    const f = await artifactFixture();
+    const operation = {
+      path: 'original.xlsx',
+      target: 'reviewed.xlsx',
+      operation: 'move',
+      source: {
+        checksum: digest('original bytes'),
+        version: digest('native version'),
+        sizeBytes: 10,
+      },
+      expectedDestination: null,
+    };
+    const input = {
+      context: f.execution,
+      sessionId: f.sessionId,
+      callId: 'pr6-binary-proposal',
+      fileName: 'organization.json',
+      proposal: { operations: [operation] },
+    };
+    await expect(
+      publishWorkbenchChangesetProposal(input, f.storage, database),
+    ).rejects.toThrow('target_unavailable');
+    await database`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}','{"fileOrganizationVersion":1}'::jsonb) where id=${f.target}`;
+    const artifact = await publishWorkbenchChangesetProposal(
+      input,
+      f.storage,
+      database,
+    );
+    const document = parseChangesetBytes(
+      await readArtifactBytes(f.storage, artifact.object),
+    );
+    expect(document).toMatchObject({
+      comparisonScope: 'file_organization',
+      execution: {
+        targetId: f.target,
+        grantId: f.grant,
+        deviceId: f.device.id,
+      },
+      files: [
+        {
+          path: operation.path,
+          before: null,
+          after: null,
+          organization: operation,
+        },
+      ],
+    });
+    expect(
+      (await publishWorkbenchChangesetProposal(input, f.storage, database)).id,
+    ).toBe(artifact.id);
+    expect(
+      await database`select id from allrice_runtime_operations where run_id=${f.run}`,
+    ).toHaveLength(0);
+    await database`update allrice_execution_targets set metadata=metadata-'environment' where id=${f.target}`;
+    await expect(
+      publishWorkbenchChangesetProposal(
+        { ...input, callId: 'pr6-withdrawn' },
+        f.storage,
+        database,
+      ),
+    ).rejects.toThrow('target_unavailable');
+  });
   it('UX01-C publishes a model text proposal with server binding/checksums, no action or approval', async () => {
     vi.stubEnv('ALLRICE_CHANGESET_ENABLED', '1');
     const f = await artifactFixture();

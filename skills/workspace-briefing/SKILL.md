@@ -32,6 +32,8 @@ If the user explicitly asks for a deep audit, explain that it will take longer a
 
 ## Reading Strategy
 
+For an explicit inventory, duplicate-file search, or comparison of two subfolders, use `local_fs_list` with `survey` on a supporting Bridge. Choose `mode: files`, `duplicates`, or `compare` (with `comparePath` inside the same selected root). Use filename, extension, size and timestamp filters to narrow the requested scope. `hash: true` returns original-byte checksums and native file versions; duplicate and comparison modes request hashes automatically. Preserve `complete`, `truncated`, `skipped` and missing-hash findings. A missing hash never proves equality or the absence of duplicates. Report duplicate candidates without deleting or moving anything. Do not read binary files as text to obtain their identity.
+
 - Start broad with the root, then narrow into relevant projects.
 - Prefer metadata and small text files before reading large files.
 - Treat directory names as tentative evidence; use concise labels such as “likely” when purpose has not been verified from a file.
