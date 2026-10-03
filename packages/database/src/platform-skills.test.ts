@@ -111,7 +111,11 @@ describe('foundational DSH-native Skills', () => {
     },
     {
       name: 'browser-research',
-      requiredTools: ['browser.workspace', 'browser.run'],
+      requiredTools: [
+        'browser.workspace',
+        'local.browser.workspace',
+        'browser.run',
+      ],
     },
     {
       name: 'governed-memory',

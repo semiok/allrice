@@ -208,7 +208,11 @@
       "createdByLabel": "MET-98 P1-3 browser Skill seed",
       "modelInvocable": true,
       "userInvocable": true,
-      "requiredToolRefs": ["browser.workspace", "browser.run"],
+      "requiredToolRefs": [
+        "browser.workspace",
+        "local.browser.workspace",
+        "browser.run"
+      ],
       "enabled": true
     },
     {

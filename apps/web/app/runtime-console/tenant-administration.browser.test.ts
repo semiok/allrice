@@ -1561,7 +1561,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         });
       await page.getByRole('button', { name: '技能', exact: true }).click();
       await openIndependentTools(page);
-      await page.getByText('云端浏览器工作区', { exact: true }).waitFor();
+      await page.getByText('专用浏览器（本地优先）', { exact: true }).waitFor();
       await page.getByText('本地项目预览', { exact: true }).waitFor();
       await page.getByRole('checkbox', { name: /云端隔离脚本/ }).check();
       const saving = page.waitForResponse(

@@ -7,6 +7,7 @@ import {
   upgradeEmployeeSkillBindings,
   employeeToolDependencySources,
   resolveEmployeeToolDependencies,
+  employeeToolConfigurationErrors,
 } from './employee-tool-catalog.ts';
 import type { PlatformEmployeeDefinition } from './platform-employees.ts';
 function definition(): PlatformEmployeeDefinition {
@@ -38,7 +39,11 @@ it('assembles existing local browser authority for a new public-research draft w
     {
       id: 'selected',
       name: 'browser-research',
-      requiredToolRefs: ['browser.workspace', 'browser.run'],
+      requiredToolRefs: [
+        'browser.workspace',
+        'local.browser.workspace',
+        'browser.run',
+      ],
     },
   ]);
   expect(result.capabilities.toolNames).toEqual(
@@ -56,6 +61,18 @@ it('assembles existing local browser authority for a new public-research draft w
     [],
   );
   expect(removed.capabilities.toolNames).toEqual(['browser.run']);
+});
+it('retains an existing cloud-only browser definition without adding local authority', () => {
+  const original = definition();
+  original.capabilities.nativeSkillIds = [];
+  original.capabilities.toolNames = ['browser.workspace'];
+  expect(employeeToolConfigurationErrors(original)).toEqual([]);
+  expect(resolveEmployeeToolDependencies(['browser.workspace'])).toEqual([
+    'browser.workspace',
+  ]);
+  const assembled = assembleEmployeeCapabilities(original, []);
+  expect(assembled.capabilities.toolNames).toEqual(['browser.workspace']);
+  expect(assembled.securityPolicy.bridgeAccess).toBe('none');
 });
 it.each([
   ['document-analysis'],

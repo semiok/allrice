@@ -128,9 +128,8 @@ const requirements: Partial<Record<AllRiceToolName, ToolRequirements>> = {
     managedOffice: true,
   },
   'browser.workspace': {
-    // Assemble only new drafts; frozen Runs retain their original authority.
-    // The common entry needs the existing local tool for local admission.
-    requiredTools: ['local.browser.workspace'],
+    // Published cloud-only definitions remain valid. The new browser Skill
+    // explicitly assembles local authority when a new draft selects it.
     policyActions: ['cloud.browser.observe', 'cloud.browser.act'],
     services: ['cloud_browser'],
     environment: 'cloud',
