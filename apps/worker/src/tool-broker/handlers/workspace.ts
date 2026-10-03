@@ -74,7 +74,20 @@ async function streamText(stream: ReadableStream<Uint8Array>) {
   } finally {
     reader.releaseLock();
   }
-  return Buffer.concat(chunks).toString('utf8');
+  try {
+    const content = new TextDecoder('utf-8', {
+      fatal: true,
+      ignoreBOM: true,
+    }).decode(Buffer.concat(chunks));
+    if (content.includes('\u0000')) throw new Error('binary content');
+    return content;
+  } catch {
+    throw new HandlerError(
+      'TOOL_FILE_TYPE_UNSUPPORTED',
+      '文件不是有效的 UTF-8 文本，请使用对应的文档或文件工具。',
+      false,
+    );
+  }
 }
 
 export const listWorkspaceFiles: RiceToolHandler = async ({
@@ -118,7 +131,12 @@ export const readWorkspaceFile: RiceToolHandler = async ({
     input.context,
     stringValue(args.objectId, 'objectId'),
   );
-  if (!readableMediaTypes.has(file.object.mediaType)) {
+  // Extracted private attachments may have a generic MIME. Select only the
+  // same supported text extensions, then validate the actual bytes below.
+  const genericText =
+    file.object.mediaType === 'application/octet-stream' &&
+    /\.(txt|md|json)$/i.test(file.fileName);
+  if (!readableMediaTypes.has(file.object.mediaType) && !genericText) {
     throw new HandlerError(
       'TOOL_FILE_TYPE_UNSUPPORTED',
       '当前只支持读取 txt、md 和 json 文本文件',

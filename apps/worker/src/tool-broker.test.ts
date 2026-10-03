@@ -510,6 +510,77 @@ describe('Codex hosted search Tool Broker integration', () => {
     }
   });
 
+  it.each([
+    ['样本.TXT', Buffer.from('金额 123.45\n'), true],
+    ['资料.md', Buffer.from('# 标题\n'), true],
+    ['字节保留.txt', Buffer.from('\uFEFF金额\n'), true],
+    ['结果.json', Buffer.from('{"金额":123}'), true],
+    ['误命名.txt', Buffer.from([0xff, 0xfe]), false],
+    ['二进制.txt', Buffer.from([0x41, 0x00, 0x42]), false],
+    ['样本.zip', Buffer.from('not text metadata'), false],
+  ])(
+    'validates generic-MIME attachment %s before reading',
+    async (fileName, bytes, readable) => {
+      const context = executionContext();
+      const objectId = randomUUID();
+      const object = {
+        id: objectId,
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId!,
+        ownerId: context.policySnapshot.subjectId,
+        key: makeObjectKey({
+          organizationId: context.organizationId,
+          workspaceId: context.workspaceId!,
+          ownerId: context.policySnapshot.subjectId,
+          category: 'uploads',
+          objectId,
+        }),
+        checksum:
+          `sha256:${createHash('sha256').update(bytes).digest('hex')}` as const,
+        mediaType: 'application/octet-stream',
+        sizeBytes: bytes.length,
+        retentionUntil: null,
+        deletedAt: null,
+        immutable: false,
+      };
+      getToolBrokerFile.mockResolvedValue({
+        object,
+        fileName,
+        visibility: 'private',
+      });
+      const storageRoot = await mkdtemp(
+        join(tmpdir(), 'allrice-derived-text-'),
+      );
+      try {
+        await new LocalStorageAdapter(storageRoot).put(
+          object,
+          new Blob([Uint8Array.from(bytes)]).stream(),
+        );
+        const read = executeRiceTool({
+          context,
+          capabilities: ['storage:read'],
+          storageRoot,
+          call: {
+            id: randomUUID(),
+            name: 'workspace.file.read',
+            arguments: { objectId },
+          },
+        });
+        if (readable)
+          expect(JSON.parse((await read).modelContent).content).toBe(
+            bytes.toString('utf8'),
+          );
+        else
+          await expect(read).rejects.toMatchObject({
+            code: 'TOOL_FILE_TYPE_UNSUPPORTED',
+          });
+        expect(getToolBrokerFile).toHaveBeenCalledWith(context, objectId);
+      } finally {
+        await rm(storageRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('keeps authorized read-only tools available without pre-routing side effects', () => {
     expect(riceToolRisk('web.search')).toBe('read_only');
     expect(riceToolRisk('browser.run')).toBe('read_only');

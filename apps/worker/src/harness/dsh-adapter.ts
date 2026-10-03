@@ -588,6 +588,34 @@ export class DshHarnessAdapter implements HarnessAdapter {
               status: 'failed',
             },
           });
+          // These bounded, read-only input failures are tool outcomes. Let DSH
+          // correct the selection without discarding already delivered files.
+          // Admission, cancellation and unknown execution failures remain fatal.
+          if (
+            toolCall.name === 'workspace.file.read' &&
+            error instanceof HandlerError &&
+            ['TOOL_FILE_TYPE_UNSUPPORTED', 'TOOL_FILE_TOO_LARGE'].includes(
+              error.code,
+            )
+          ) {
+            if (input.progress)
+              await input.progress({
+                action: 'finish',
+                kind: 'tool',
+                nativeSessionId: threadId,
+                callId: toolCall.id,
+                outcome: 'error',
+                resultDigest: `sha256:${createHash('sha256')
+                  .update(error.code)
+                  .digest('hex')}`,
+              });
+            prompt = `<allrice_tool_result>${JSON.stringify({
+              id: toolCall.id,
+              ok: false,
+              error: { code: error.code, message: error.message },
+            })}</allrice_tool_result>\n\nContinue the original user request. Correct this read-only file selection or explain the limitation; preserve completed work and do not repeat writes. Any text emitted alongside the preceding tool envelope was not delivered to the user. Return a complete, self-contained answer.`;
+            continue;
+          }
           throw error;
         }
       }

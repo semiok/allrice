@@ -755,6 +755,50 @@ describe('DshHarnessAdapter', () => {
     expect(JSON.stringify(events)).not.toContain('secret-token');
   });
 
+  it.each(['TOOL_FILE_TYPE_UNSUPPORTED', 'TOOL_FILE_TOO_LARGE'])(
+    'returns %s to DSH without replaying file work',
+    async (code) => {
+      const adapter = createAdapter();
+      const events: HarnessEvent[] = [];
+      const onToolCall = vi
+        .fn()
+        .mockRejectedValue(new HandlerError(code, '选择可读取的文件', false));
+      const progress = vi.fn().mockResolvedValue({});
+      const input = executionInput({ prompt: 'use-tool', events, onToolCall });
+      input.progress = progress;
+      const result = await adapter.execute(input);
+      expect(result.answer).toBe('tool-finished');
+      expect(onToolCall).toHaveBeenCalledTimes(1);
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'tool.failed',
+            name: 'workspace.file.read',
+          }),
+        ]),
+      );
+      expect(progress).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'finish', outcome: 'error' }),
+      );
+    },
+  );
+
+  it.each(['TOOL_CAPABILITY_DENIED', 'COMPANY_REFERENCE_UNAVAILABLE'])(
+    'keeps %s fatal at the read admission boundary',
+    async (code) => {
+      const adapter = createAdapter();
+      const onToolCall = vi
+        .fn()
+        .mockRejectedValue(new HandlerError(code, '访问已撤销', false));
+      await expect(
+        adapter.execute(
+          executionInput({ prompt: 'use-tool', events: [], onToolCall }),
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(onToolCall).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('routes tool envelopes only through the AllRice Tool Broker callback', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];
