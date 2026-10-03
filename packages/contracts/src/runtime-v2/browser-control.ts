@@ -48,16 +48,54 @@ export const BrowserUrlSchema = z
       });
     }
   });
+/** Explicit local sites use literal private addresses: no DNS scope, wildcard,
+ * localhost alias or cloud network exception is introduced. */
+export function browserPrivateSiteAddress(host: string) {
+  const parts = host.split('.');
+  if (
+    parts.length !== 4 ||
+    parts.some((p) => !/^\d{1,3}$/.test(p) || Number(p) > 255)
+  )
+    return false;
+  const [a, b] = parts.map(Number);
+  return (
+    a === 10 ||
+    (a === 172 && b! >= 16 && b! <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 100 && b! >= 64 && b! <= 127 && host !== '100.100.100.200')
+  );
+}
+export const LocalBrowserSiteUrlSchema = z
+  .string()
+  .max(2048)
+  .refine((value) => {
+    try {
+      const u = new URL(value);
+      return (
+        ['http:', 'https:'].includes(u.protocol) &&
+        !u.username &&
+        !u.password &&
+        !u.hash &&
+        browserPrivateSiteAddress(u.hostname)
+      );
+    } catch {
+      return false;
+    }
+  }, 'Exact private IPv4 site and port required');
+export const BrowserNavigationUrlSchema = z.union([
+  BrowserUrlSchema,
+  LocalBrowserSiteUrlSchema,
+]);
 export const BrowserProfileSchema = z
   .object({
     version: z.literal(1),
     /** Prepared cloud and supported Bridge browsers can browse public HTTPS without a
      * tenant-maintained website list. Existing exact-origin profiles retain
      * their semantics; both drivers still pin public IPs per connection. */
-    network: z.literal('public_https').optional(),
+    network: z.enum(['public_https', 'local_sites']).optional(),
     origins: z
       .array(
-        BrowserUrlSchema.refine((s) => {
+        BrowserNavigationUrlSchema.refine((s) => {
           try {
             return new URL(s).origin === s;
           } catch {
@@ -79,7 +117,16 @@ export const BrowserProfileSchema = z
   })
   .strict()
   .refine((p) => new Set(p.origins).size === p.origins.length)
-  .refine((p) => p.network === 'public_https' || p.origins.length > 0);
+  .refine((p) => p.network === 'public_https' || p.origins.length > 0)
+  .refine((p) =>
+    p.origins.every(
+      (origin) =>
+        (p.network === 'local_sites'
+          ? LocalBrowserSiteUrlSchema
+          : BrowserUrlSchema
+        ).safeParse(origin).success,
+    ),
+  );
 export type BrowserProfile = z.infer<typeof BrowserProfileSchema>;
 export const BrowserElementSchema = z
   .object({
@@ -111,7 +158,9 @@ export type BrowserObservation = z.infer<typeof BrowserObservationSchema>;
 const elementId = BrowserElementSchema.shape.id;
 export const BrowserActionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('observe') }).strict(),
-  z.object({ type: z.literal('navigate'), url: BrowserUrlSchema }).strict(),
+  z
+    .object({ type: z.literal('navigate'), url: BrowserNavigationUrlSchema })
+    .strict(),
   z.object({ type: z.literal('click'), elementId }).strict(),
   z.object({ type: z.literal('fill'), elementId, value: text }).strict(),
   z
@@ -140,7 +189,7 @@ export const BrowserActionSchema = z.discriminatedUnion('type', [
     .object({
       type: z.literal('request'),
       parentOperationId: UuidSchema,
-      url: BrowserUrlSchema,
+      url: BrowserNavigationUrlSchema,
       method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
       urlDigest: ChecksumSchema,
       bodyDigest: ChecksumSchema,
@@ -233,7 +282,11 @@ export function browserObservationCurrent(
   );
 }
 export function browserOriginAllowed(url: string, profile: BrowserProfile) {
-  const parsed = BrowserUrlSchema.safeParse(url);
+  const parsed = (
+    profile.network === 'local_sites'
+      ? LocalBrowserSiteUrlSchema
+      : BrowserUrlSchema
+  ).safeParse(url);
   return (
     parsed.success &&
     (profile.network === 'public_https' ||

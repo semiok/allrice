@@ -7,7 +7,7 @@ import type postgres from 'postgres';
 import {
   BrowserProfileSchema,
   browserOriginAllowed,
-  BrowserUrlSchema,
+  BrowserNavigationUrlSchema,
   LocalBrowserClaimSchema,
   LocalBrowserWorkspaceSchema,
   LocalBrowserHeartbeatSchema,
@@ -73,7 +73,7 @@ export async function createLocalBrowserWorkspace(
     id = cloudStableId(
       `${input.commonIntent ? 'browser' : 'local-browser'}:${input.context.runId}:${input.callId}`,
     );
-  const url = BrowserUrlSchema.parse(input.url),
+  const url = BrowserNavigationUrlSchema.parse(input.url),
     grantId = UuidSchema.parse(input.grantId);
   if (!input.callId || input.callId.length > 255)
     throw new RuntimePolicyError('invalid_tool_call');
@@ -144,7 +144,13 @@ export async function createLocalBrowserWorkspace(
     if (grant.metadata.environment && readiness.state !== 'ready')
       throw new RuntimePolicyError('local_browser_grant_denied');
     const profile = BrowserProfileSchema.parse(grant.profile);
-    if (!browserOriginAllowed(url, profile) || browserGrantOriginDenial(url))
+    if (
+      !browserOriginAllowed(url, profile) ||
+      (profile.network !== 'local_sites' && browserGrantOriginDenial(url)) ||
+      (profile.network === 'local_sites' &&
+        (grant.metadata.environment as Record<string, unknown> | undefined)
+          ?.browserLocalSitesVersion !== 1)
+    )
       throw new RuntimePolicyError('browser_origin_denied');
     const [busy] =
       await tx`select browser_workspace_id from allrice_local_browser_workspaces where grant_id=${grantId} and released_at is null limit 1`;

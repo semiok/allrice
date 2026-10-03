@@ -231,6 +231,7 @@ export const BridgeEnvironmentSchema = z
     version: z.literal(1),
     clientVersion: z.string().max(80),
     browserDefaultsVersion: z.literal(1).optional(),
+    browserLocalSitesVersion: z.literal(1).optional(),
     browser: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     sandbox: z.enum(['preparing', 'ready', 'paused', 'unavailable']),
     preview: z.enum(['preparing', 'ready', 'paused', 'unavailable']),

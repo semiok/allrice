@@ -33,6 +33,7 @@ export function initialBridgeEnvironment(paused = false): BridgeEnvironment {
     version: 1,
     clientVersion: bridgeVersion,
     browserDefaultsVersion: 1,
+    browserLocalSitesVersion: 1,
     paused,
     browser: paused ? 'paused' : 'preparing',
     sandbox: paused ? 'paused' : 'preparing',

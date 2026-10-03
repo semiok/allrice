@@ -9,7 +9,60 @@ import {
   browserObservationCurrent,
   browserObservationIsFresh,
   browserObservationLifetimeMs,
+  BrowserUrlSchema,
+  LocalBrowserSiteUrlSchema,
 } from './browser-control.ts';
+it('keeps private sites exact and local-only while retaining public HTTPS constraints', () => {
+  const origin = 'http://192.168.1.10:8080';
+  const profile = BrowserProfileSchema.parse({
+    version: 1,
+    network: 'local_sites',
+    origins: [origin],
+  });
+  expect(browserOriginAllowed(origin + '/report?week=1', profile)).toBe(true);
+  for (const denied of [
+    'http://192.168.1.11:8080/',
+    'http://192.168.1.10:8081/',
+    'https://192.168.1.10:8080/',
+    'https://example.com/',
+  ])
+    expect(browserOriginAllowed(denied, profile)).toBe(false);
+  expect(BrowserUrlSchema.safeParse(origin).success).toBe(false);
+  expect(
+    BrowserProfileSchema.safeParse({
+      version: 1,
+      network: 'public_https',
+      origins: [origin],
+    }).success,
+  ).toBe(false);
+  expect(
+    BrowserProfileSchema.safeParse({
+      version: 1,
+      network: 'local_sites',
+      origins: [],
+    }).success,
+  ).toBe(false);
+  for (const denied of [
+    'http://127.0.0.1:8080',
+    'http://[::1]',
+    'http://169.254.169.254',
+    'http://100.100.100.200',
+    'http://198.18.0.1',
+    'http://corp.internal',
+    'http://192.168.1.10:8080/path',
+    'http://user:pass@192.168.1.10:8080',
+  ]) {
+    const exact = BrowserProfileSchema.safeParse({
+      version: 1,
+      network: 'local_sites',
+      origins: [denied],
+    });
+    expect(exact.success).toBe(false);
+  }
+  expect(
+    LocalBrowserSiteUrlSchema.safeParse('http://100.76.154.106:8080/').success,
+  ).toBe(true);
+});
 describe('P21 cloud and Bridge reusable control envelope', () => {
   it('shares the same bounded positive lifetime for renderer and cloud/local admission', () => {
     const capturedAt = new Date(10_000).toISOString();

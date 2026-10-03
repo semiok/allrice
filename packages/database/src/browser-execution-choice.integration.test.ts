@@ -12,6 +12,11 @@ import {
 } from './browser-execution-choice.ts';
 import { installBrowserControlGrant } from './browser-control.ts';
 import {
+  installLocalBrowserGrant,
+  listLocalBrowserGrants,
+  revokeLocalBrowserGrant,
+} from './local-browser-grants.ts';
+import {
   createLocalBrowserWorkspace,
   recordLocalBrowserStopped,
 } from './local-browser-workspaces.ts';
@@ -174,6 +179,118 @@ suite('MET164 real local choice and existing durable admission', () => {
     expect(
       await database.db`select id from allrice_managed_browser_tasks where run_id=${f.run}`,
     ).toHaveLength(0);
+  });
+  it('ordinary owners select an exact private site and profile without cloud or account substitution', async () => {
+    const f = await createLocalBrowserFixture(database.db, storage, {
+      open: false,
+      memberRole: 'member',
+    });
+    await environment(f, 'ready');
+    // Target identity is its paired device key, never a caller supplied tenant.
+    await database.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}',metadata->'environment'||'{"browserDefaultsVersion":1,"browserLocalSitesVersion":1}'::jsonb) where target_key=${`bridge.${f.device.id}`} and organization_id=${f.org} and workspace_id=${f.workspace}`;
+    const grant = await installLocalBrowserGrant(
+      f.context,
+      {
+        deviceId: f.device.id,
+        profile: {
+          ...f.profile,
+          network: 'local_sites',
+          origins: ['http://192.168.10.20:8080'],
+        },
+        persistLogin: true,
+      },
+      database.db,
+    );
+    await cloud(f);
+    const a = {
+      ...(await admission(f)),
+      url: 'http://192.168.10.20:8080/page',
+      grantId: grant.grantId,
+    };
+    expect(await selectBrowserExecution(a, database.db)).toMatchObject({
+      choice: {
+        location: 'local',
+        status: 'execute',
+        reason: 'explicit_local',
+      },
+      deviceId: f.device.id,
+      grantId: grant.grantId,
+    });
+    expect(await listLocalBrowserGrants(f.context, database.db)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ grantId: grant.grantId, persistLogin: true }),
+      ]),
+    );
+    await expect(
+      selectBrowserExecution(
+        { ...a, callId: randomUUID(), grantId: undefined },
+        database.db,
+      ),
+    ).rejects.toThrow('local_site_profile_required');
+    await expect(
+      selectBrowserExecution(
+        { ...a, callId: randomUUID(), location: 'cloud' },
+        database.db,
+      ),
+    ).rejects.toThrow('local_profile_cloud_denied');
+    await expect(
+      selectBrowserExecution(
+        { ...a, url: 'http://192.168.10.20:8081/page', callId: randomUUID() },
+        database.db,
+      ),
+    ).resolves.toMatchObject({
+      choice: { location: 'local', status: 'unavailable' },
+    });
+    const w = await createLocalBrowserWorkspace(
+      { ...a, commonIntent: true },
+      database.db,
+    );
+    expect(w).toMatchObject({ transport: 'local', grant_id: grant.grantId });
+    await revokeLocalBrowserGrant(f.context, grant.grantId, database.db);
+    expect(await selectBrowserExecution(a, database.db)).toMatchObject({
+      choice: { location: 'local', status: 'unavailable' },
+    });
+    expect(
+      await database.db`select id from allrice_managed_browser_tasks where run_id=${f.run}`,
+    ).toHaveLength(0);
+  });
+  it('rejects a private grant on an old client and never selects another owner’s profile', async () => {
+    const f = await fixture();
+    await environment(f, 'ready');
+    const input = {
+      deviceId: f.device.id,
+      profile: {
+        ...f.profile,
+        network: 'local_sites',
+        origins: ['http://192.168.10.20:8080'],
+      },
+    };
+    await expect(
+      installLocalBrowserGrant(f.context, input, database.db),
+    ).rejects.toThrow('local_browser_upgrade_required');
+    const other = await fixture();
+    const a = { ...(await admission(f)), grantId: other.localGrant.grantId };
+    expect(await selectBrowserExecution(a, database.db)).toMatchObject({
+      choice: { location: 'local', status: 'unavailable' },
+      grantId: null,
+    });
+    // A valid second member in the SAME workspace must still own a separate
+    // paired device and browser profile. No frozen Run is rewritten here.
+    await database.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role,active) values(${randomUUID()},${f.org},${f.workspace},${other.user},'member',true)`;
+    const otherContext = {
+      ...f.context,
+      actor: { type: 'user' as const, id: other.user },
+    };
+    expect(
+      await listLocalBrowserGrants(otherContext, database.db),
+    ).toHaveLength(0);
+    await expect(
+      installLocalBrowserGrant(
+        otherContext,
+        { deviceId: f.device.id, profile: f.profile },
+        database.db,
+      ),
+    ).rejects.toThrow('local_browser_device_denied');
   });
   it('adopts the same live local workspace without waiting on itself, while another call stays queued', async () => {
     const f = await fixture();

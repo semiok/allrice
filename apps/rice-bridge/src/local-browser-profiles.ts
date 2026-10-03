@@ -25,7 +25,7 @@ type StoredProfile = {
   serverUrl: string;
   binding: LocalBrowserProfileBinding;
   origins: string[];
-  network?: 'public_https';
+  network?: BrowserProfile['network'];
   revoked: boolean;
   state: LocalBrowserStorageState | null;
 };
@@ -37,7 +37,7 @@ type ProfileIndex = {
   entries: Array<{
     binding: LocalBrowserProfileBinding;
     origins: string[];
-    network?: 'public_https';
+    network?: BrowserProfile['network'];
   }>;
 };
 const limit = { maxBytes: platformFileMaximumBytes };
@@ -70,7 +70,7 @@ function array(value: unknown, max: number): unknown[] {
 export function validateLocalBrowserStorageState(
   value: unknown,
   origins: string[],
-  network?: 'public_https',
+  network?: BrowserProfile['network'],
 ): LocalBrowserStorageState {
   const state = record(value);
   keys(state, ['cookies', 'origins']);
@@ -199,7 +199,10 @@ export class LocalBrowserProfiles {
       const entries = array(value.entries, 128).map((entry) => {
         const item = record(entry);
         keys(item, ['binding', 'origins', 'network']);
-        if (item.network !== undefined && item.network !== 'public_https')
+        if (
+          item.network !== undefined &&
+          !['public_https', 'local_sites'].includes(String(item.network))
+        )
           throw unsafe();
         const binding = LocalBrowserProfileBindingSchema.parse(item.binding);
         if (binding.deviceId !== deviceId || seen.has(binding.logicalProfileId))
@@ -211,7 +214,9 @@ export class LocalBrowserProfiles {
         return {
           binding,
           origins,
-          ...(item.network ? { network: 'public_https' as const } : {}),
+          ...(item.network
+            ? { network: item.network as BrowserProfile['network'] }
+            : {}),
         };
       });
       const names = await readdir(directory);
@@ -238,7 +243,7 @@ export class LocalBrowserProfiles {
   private async indexBeforeState(
     binding: LocalBrowserProfileBinding,
     origins: string[],
-    network?: 'public_https',
+    network?: BrowserProfile['network'],
   ) {
     if (this.deviceBusy.has(binding.deviceId)) throw unsafe();
     this.deviceBusy.add(binding.deviceId);
@@ -294,7 +299,8 @@ export class LocalBrowserProfiles {
       if (
         value.version !== 1 ||
         value.serverUrl !== this.serverUrl ||
-        (value.network !== undefined && value.network !== 'public_https') ||
+        (value.network !== undefined &&
+          !['public_https', 'local_sites'].includes(String(value.network))) ||
         typeof value.revoked !== 'boolean'
       )
         throw unsafe();
@@ -323,7 +329,7 @@ export class LocalBrowserProfiles {
         validateLocalBrowserStorageState(
           value.state,
           origins,
-          value.network as 'public_https' | undefined,
+          value.network as BrowserProfile['network'],
         );
       return { ...value, binding: saved, origins } as StoredProfile;
     } catch {

@@ -150,7 +150,7 @@ export const LocalBrowserManagementRevokeSchema = z
   })
   .strict();
 
-/** An administrator can authorize only their own paired device. This grant
+/** A member can authorize only their own paired device. This grant
  * never implies a folder grant, host shell, personal Chrome or file access. */
 export async function installLocalBrowserGrant(
   ctx: RequestContext,
@@ -163,7 +163,8 @@ export async function installLocalBrowserGrant(
   const input = LocalBrowserGrantInputSchema.parse(raw);
   for (const origin of input.profile.origins) {
     const denial = browserGrantOriginDenial(origin);
-    if (denial) throw new RuntimePolicyError(denial);
+    if (denial && input.profile.network !== 'local_sites')
+      throw new RuntimePolicyError(denial);
   }
   const grantId = randomUUID(),
     logicalProfileId = randomUUID();
@@ -182,6 +183,11 @@ export async function installLocalBrowserGrant(
       where d.id=${input.deviceId} and d.organization_id=${organizationId} and d.workspace_id=${workspaceId}
         and d.owner_id=${ownerId} and d.revoked_at is null for update of d`;
     if (!device) throw new RuntimePolicyError('local_browser_device_denied');
+    if (
+      input.profile.network === 'local_sites' &&
+      device.metadata?.environment?.browserLocalSitesVersion !== 1
+    )
+      throw new RuntimePolicyError('local_browser_upgrade_required');
     if (input.profile.network && device.metadata?.environment?.version !== 1)
       throw new RuntimePolicyError('local_browser_upgrade_required');
     if (
@@ -209,7 +215,7 @@ export async function installLocalBrowserGrant(
 }
 
 export async function listLocalBrowserGrants(
-  ctx: RequestContext,
+  ctx: RequestContext | RuntimePolicyPrincipal,
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
