@@ -21,8 +21,18 @@ export function markdownDeliveryText(
   artifacts: Parameters<typeof artifactDownloadLink>[1],
   allowRemoteImages: boolean,
   origin?: string,
+  accessibleFiles: readonly { id: string; fileName: string }[] = [],
 ) {
-  if (allowRemoteImages && (!artifacts.length || !origin)) return text;
+  const deliveries = [
+    ...artifacts,
+    ...accessibleFiles
+      .filter((file) => !artifacts.some((a) => a.object.id === file.id))
+      .map((file) => ({
+        object: { id: file.id },
+        version: { fileName: file.fileName },
+      })),
+  ];
+  if (allowRemoteImages && (!deliveries.length || !origin)) return text;
   const edits: { start: number; end: number; text: string }[] = [];
   const root = fromMarkdown(text, {
     extensions: [gfm()],
@@ -48,12 +58,12 @@ export function markdownDeliveryText(
     if (origin && (node.type === 'link' || node.type === 'definition')) {
       const resolved = artifactDownloadLink(
         node.url,
-        artifacts,
+        deliveries,
         node.type === 'link' ? linkLabel(node) : undefined,
       );
       if (
         resolved?.startsWith('/api/v1/files/') &&
-        artifacts.some((a) =>
+        deliveries.some((a) =>
           resolved.startsWith(`/api/v1/files/${a.object.id}/download?`),
         )
       ) {

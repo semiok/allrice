@@ -13,7 +13,7 @@ export { SessionReferenceError } from './session-references.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { captureCompanyRunAssets } from '../company-run-assets.ts';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import {
@@ -491,6 +491,7 @@ async function sessionRow(
 export async function createChatSession(
   context: RequestContext,
   input: unknown,
+  options: { sessionId?: string } = {},
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, parsed.workspaceId);
@@ -533,18 +534,37 @@ export async function createChatSession(
       and provider_snapshot ->> 'provider' in ('codex', 'dsh')
   `;
   if (!versions[0]) throw new DataAccessError('authorization_denied');
+  const fixedSessionId = options.sessionId
+    ? UuidSchema.parse(options.sessionId)
+    : randomUUID();
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (
-      organization_id, workspace_id, owner_id, employee_assignment_id,
+      id, organization_id, workspace_id, owner_id, employee_assignment_id,
       employee_version_id, title, visibility
     ) values (
-      ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
+      ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
       ${assignment.id}, ${employeeVersionId}, ${parsed.title}, 'private'
     )
+    on conflict(id) do nothing
     returning *
   `;
-  const row = rows[0];
-  if (!row) throw new Error('session creation failed');
+  const row =
+    rows[0] ??
+    (
+      await sql<
+        SessionRow[]
+      >`select * from allrice_chat_sessions where id=${fixedSessionId}`
+    )[0];
+  if (
+    !row ||
+    row.organization_id !== context.organizationId ||
+    row.workspace_id !== workspaceId ||
+    row.owner_id !== requireUser(context) ||
+    row.employee_assignment_id !== assignment.id ||
+    row.archived_at ||
+    row.visibility !== 'private'
+  )
+    throw new DataAccessError('authorization_denied');
   await audit({
     context,
     workspaceId: workspaceId,
@@ -1149,6 +1169,7 @@ export async function sendChatMessage(
   workspaceId: string,
   sessionId: string,
   input: unknown,
+  options: { folderEventId?: string } = {},
 ) {
   const message = SendChatMessageInputSchema.parse(input);
   const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
@@ -1208,6 +1229,18 @@ export async function sendChatMessage(
     message.text,
   );
   const result = await sql.begin(async (transaction) => {
+    if (options.folderEventId) {
+      const { assertFolderTriggerMessage } =
+        await import('../folder-triggers.ts');
+      await assertFolderTriggerMessage(
+        transaction,
+        options.folderEventId,
+        { ...context, workspaceId },
+        session.id,
+        message.clientMessageId,
+        message.attachmentIds,
+      );
+    }
     await transaction`
       select pg_advisory_xact_lock(
         hashtextextended(${`${session.id}:${message.clientMessageId}`}, 50)
@@ -1592,6 +1625,9 @@ export async function sendChatMessage(
       },
       {
         employeeBinding: binding,
+        ...(options.folderEventId
+          ? { folderEventId: options.folderEventId }
+          : {}),
         ...(message.reviewContinuation
           ? { reviewContinuation: message.reviewContinuation }
           : {}),

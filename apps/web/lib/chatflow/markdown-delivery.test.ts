@@ -8,6 +8,17 @@ const origin = 'https://allrice.example';
 const target = `${origin}${path}?name=${encodeURIComponent('报告.md')}`;
 
 describe('native Markdown SaaS delivery adaptation', () => {
+  it('renders existing authenticated uploads even when the final Run created no new Artifact', () => {
+    const uploaded = [{ id, fileName: '财务 样本.zip' }];
+    const text = `[下载「财务 样本.zip」](${path}?name=wrong)`;
+    expect(markdownDeliveryText(text, [], true, origin, uploaded)).toBe(
+      `[下载「财务 样本.zip」](<${origin}${path}?name=${encodeURIComponent(uploaded[0]!.fileName)}>)`,
+    );
+    expect(markdownDeliveryText(text, [], true, origin, [])).toBe(text);
+    expect(
+      markdownDeliveryText(`\`[代码](${path})\``, [], true, origin, uploaded),
+    ).toBe(`\`[代码](${path})\``);
+  });
   it.each([1, 2])(
     'repairs %i levels of escaped path separators from real deliveries',
     (depth) => {

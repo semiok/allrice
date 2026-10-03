@@ -68,6 +68,7 @@ export function localFileObjectReference(
 export async function enqueueLocalFileCommand(
   context: RequestContext,
   raw: unknown,
+  options: { folderEventId?: string } = {},
 ) {
   const input = LocalFileUserRequestSchema.parse(raw),
     db = getDatabase();
@@ -93,14 +94,16 @@ export async function enqueueLocalFileCommand(
       request_digest: string;
       owner_id: string;
       workspace_id: string;
+      folder_event_id: string | null;
     }[]
   >`
-    select id,request_digest,owner_id,workspace_id from allrice_bridge_commands where organization_id=${context.organizationId} and idempotency_key=${key}`;
+    select id,request_digest,owner_id,workspace_id,folder_event_id from allrice_bridge_commands where organization_id=${context.organizationId} and idempotency_key=${key}`;
   if (prior) {
     if (
       prior.request_digest !== fingerprint ||
       prior.owner_id !== context.actor.id ||
-      prior.workspace_id !== input.workspaceId
+      prior.workspace_id !== input.workspaceId ||
+      prior.folder_event_id !== (options.folderEventId ?? null)
     )
       throw new BridgeDataError('idempotency_conflict');
     return readLocalFileCommand(context, input.workspaceId, prior.id);
@@ -152,6 +155,28 @@ export async function enqueueLocalFileCommand(
               : { path: input.path, expected: input.expected },
   });
   const id = await db.begin(async (tx) => {
+    if (options.folderEventId) {
+      const { assertFolderTriggerEventAuthority } =
+        await import('./folder-triggers.ts');
+      const { row } = await assertFolderTriggerEventAuthority(
+        tx,
+        options.folderEventId,
+        {
+          organizationId: context.organizationId,
+          workspaceId: input.workspaceId,
+          ownerId: context.actor.id,
+        },
+      );
+      if (
+        input.action !== 'import' ||
+        input.deviceId !== row.device_id ||
+        input.folderGrantId !== row.folder_grant_id ||
+        input.sessionId !== row.reserved_session_id ||
+        input.path !== row.path ||
+        digest(input.expected) !== digest(row.expected)
+      )
+        throw new DataAccessError('grant_invalid');
+    }
     const [target] = await tx<
       {
         id: string;
@@ -174,8 +199,8 @@ export async function enqueueLocalFileCommand(
     if (['unsupported', 'paused', 'offline'].includes(readiness.state))
       throw new BridgeDataError('command_unavailable');
     const [row] = await tx<{ id: string; request_digest: string }[]>`
-      insert into allrice_bridge_commands(organization_id,workspace_id,owner_id,device_id,folder_grant_id,folder_grant_version,session_id,capability,arguments,idempotency_key,request_digest,timeout_at)
-      values(${context.organizationId},${input.workspaceId},${context.actor.id},${input.deviceId},${input.folderGrantId},${target.runtime_generation},${input.sessionId},${payload.capability},${tx.json(payload.arguments)},${key},${fingerprint},clock_timestamp()+interval '5 minutes')
+      insert into allrice_bridge_commands(organization_id,workspace_id,owner_id,device_id,folder_grant_id,folder_grant_version,session_id,capability,arguments,idempotency_key,request_digest,folder_event_id,timeout_at)
+      values(${context.organizationId},${input.workspaceId},${context.actor.id},${input.deviceId},${input.folderGrantId},${target.runtime_generation},${input.sessionId},${payload.capability},${tx.json(payload.arguments)},${key},${fingerprint},${options.folderEventId ?? null},clock_timestamp()+interval '5 minutes')
       on conflict(organization_id,idempotency_key) do update set updated_at=allrice_bridge_commands.updated_at
       returning id,request_digest`;
     if (!row || row.request_digest !== fingerprint)
@@ -272,11 +297,17 @@ export async function localFileTransferAuthority(
   };
   let payload: LocalFilePayload | FileDerivationPayload,
     sessionId: string | null;
+  let folderEventId: string | null = null;
   if (kind === 'command') {
     const [row] = await db<
-      { capability: string; arguments: unknown; session_id: string | null }[]
+      {
+        capability: string;
+        arguments: unknown;
+        session_id: string | null;
+        folder_event_id: string | null;
+      }[]
     >`
-      select c.capability,c.arguments,c.session_id from allrice_bridge_commands c
+      select c.capability,c.arguments,c.session_id,c.folder_event_id from allrice_bridge_commands c
       join allrice_bridge_folder_grants g on g.id=c.folder_grant_id and g.device_id=c.device_id
       join allrice_execution_targets t on t.target_key='bridge.'||c.device_id::text and t.organization_id=c.organization_id and t.workspace_id=c.workspace_id
       where c.id=${id} and c.device_id=${device.id} and c.organization_id=${device.organizationId} and c.workspace_id=${device.workspaceId} and c.owner_id=${device.ownerId}
@@ -287,6 +318,18 @@ export async function localFileTransferAuthority(
         and (c.session_id is null or exists(select 1 from allrice_chat_sessions s where s.id=c.session_id and s.organization_id=c.organization_id
           and s.workspace_id=c.workspace_id and s.owner_id=c.owner_id and s.archived_at is null))`;
     if (!row) throw new BridgeDataError('lease_lost');
+    folderEventId = row.folder_event_id;
+    if (folderEventId) {
+      const { assertFolderTriggerEventAuthority } =
+        await import('./folder-triggers.ts');
+      await db.begin((tx) =>
+        assertFolderTriggerEventAuthority(tx, folderEventId!, {
+          organizationId: device.organizationId,
+          workspaceId: device.workspaceId,
+          ownerId: device.ownerId,
+        }),
+      );
+    }
     payload = LocalFilePayloadSchema.parse({
       capability: row.capability,
       arguments: row.arguments,
@@ -318,7 +361,7 @@ export async function localFileTransferAuthority(
       : LocalFilePayloadSchema.parse(row.bridge_payload);
     sessionId = snapshot.binding.task.chatSessionId;
   }
-  return { device, context, payload, sessionId };
+  return { device, context, payload, sessionId, folderEventId };
 }
 
 export async function storeLocalFileUpload(input: {
@@ -472,7 +515,18 @@ async function commitLocalFileUpload(input: {
         await getDatabase().begin((tx) =>
           commitDerivedFileInTransaction(tx, input, false),
         );
-      else if (current.sessionId)
+      else if (current.folderEventId) {
+        const { commitFolderTriggerFileUpload } =
+          await import('./folder-triggers.ts');
+        await commitFolderTriggerFileUpload({
+          token: input.token,
+          commandId: input.id,
+          leaseToken: input.leaseToken,
+          objectId,
+          fileName: object.fileName,
+          markReady: false,
+        });
+      } else if (current.sessionId)
         await linkFileToSession({
           context: current.context,
           workspaceId: current.device.workspaceId,
@@ -543,7 +597,17 @@ async function commitLocalFileUpload(input: {
       await getDatabase().begin((tx) =>
         commitDerivedFileInTransaction(tx, input, true),
       );
-    else {
+    else if (current.folderEventId) {
+      const { commitFolderTriggerFileUpload } =
+        await import('./folder-triggers.ts');
+      await commitFolderTriggerFileUpload({
+        token: input.token,
+        commandId: input.id,
+        leaseToken: input.leaseToken,
+        objectId,
+        fileName: object.fileName,
+      });
+    } else {
       await localFileTransferAuthority(
         input.token,
         input.kind,

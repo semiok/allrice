@@ -78,6 +78,7 @@ interface GrantRow {
 }
 
 interface CommandRow {
+  folder_event_id?: string | null;
   id: string;
   device_id: string;
   folder_grant_id: string;
@@ -888,18 +889,38 @@ export async function claimNextBridgeCommand(token: string) {
   const device = await authenticatedDevice(token);
   const leaseToken = randomUUID();
   const sql = getDatabase();
+  // Expiry needs no new admission and must not hold a command while acquiring
+  // folder/device authority. It also runs when no live command is available.
+  await sql`update allrice_bridge_commands set status='expired',completed_at=now(),updated_at=now(),error_code='command_timeout'
+    where device_id=${device.id} and status='queued' and timeout_at<=now()`;
   const command = await sql.begin(async (transaction) => {
-    await transaction`
-      update allrice_bridge_commands
-      set status = 'expired', completed_at = now(), updated_at = now(),
-        error_code = 'command_timeout'
-      where device_id = ${device.id} and status = 'queued'
-        and timeout_at <= now()
-    `;
+    const [candidate] = await transaction<
+      { id: string; folder_event_id: string | null }[]
+    >`select id,folder_event_id from allrice_bridge_commands where device_id=${device.id} and status='queued' and timeout_at>clock_timestamp() and capability=any(${device.capabilities}) order by created_at limit 1`;
+    if (!candidate) return null;
+    if (candidate.folder_event_id) {
+      try {
+        const { assertFolderTriggerEventAuthority } =
+          await import('./folder-triggers.ts');
+        await assertFolderTriggerEventAuthority(
+          transaction,
+          candidate.folder_event_id,
+          {
+            organizationId: device.organization_id,
+            workspaceId: device.workspace_id,
+            ownerId: device.owner_id,
+          },
+        );
+      } catch (error) {
+        if (!(error instanceof DataAccessError)) throw error;
+        await transaction`update allrice_bridge_commands set status='canceled',error_code='FOLDER_RULE_UNAVAILABLE',completed_at=clock_timestamp(),updated_at=clock_timestamp() where id=${candidate.id} and status='queued'`;
+        return null;
+      }
+    }
     const rows = await transaction<CommandRow[]>`
       with candidate as (
         select id from allrice_bridge_commands
-        where device_id = ${device.id} and status = 'queued'
+        where id = ${candidate.id} and device_id = ${device.id} and status = 'queued'
           and timeout_at > now()
           and capability=any(${device.capabilities})
         order by created_at for update skip locked limit 1
@@ -908,15 +929,19 @@ export async function claimNextBridgeCommand(token: string) {
       set status = 'claimed', lease_token = ${leaseToken},
         claimed_at = now(), updated_at = now()
       from candidate where command.id = candidate.id
-      returning command.id, command.device_id, command.folder_grant_id,
+      returning command.folder_event_id, command.id, command.device_id, command.folder_grant_id,
         command.capability, command.arguments, command.status,
         command.lease_token, command.created_at, command.timeout_at,
         command.result, command.summary, command.error_code
     `;
-    await transaction`
-      update allrice_bridge_devices set last_seen_at = now(), updated_at = now()
-      where id = ${device.id}
-    `;
+    // Folder admission has already frozen the real heartbeat with a SHARE
+    // lock. Do not upgrade it after the command: concurrent claim/revocation
+    // would invert the lock order. The existing heartbeat owns its timestamp.
+    if (!candidate.folder_event_id)
+      await transaction`
+        update allrice_bridge_devices set last_seen_at = now(), updated_at = now()
+        where id = ${device.id}
+      `;
     return rows[0] ?? null;
   });
   return command ? mapCommand(command) : null;

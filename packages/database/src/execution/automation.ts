@@ -4,6 +4,7 @@ import {
   AutomationRunSchema,
   AutomationSchema,
   AutomationScheduleSchema,
+  FolderTriggerConfigSchema,
   CreateAutomationInputSchema,
   type ExecutionContext,
   RequestContextSchema,
@@ -32,7 +33,10 @@ interface AutomationRow {
   name: string;
   description: string;
   prompt: string;
-  trigger_type: 'schedule';
+  trigger_type: 'schedule' | 'folder';
+  folder: unknown;
+  revision: number;
+  deleted_at: Date | null;
   schedule: unknown;
   status: 'enabled' | 'paused';
   conversation_mode: 'new_each_run' | 'reuse';
@@ -75,7 +79,10 @@ function userId(context: RequestContext) {
 }
 
 function mapAutomation(row: AutomationRow): Automation {
-  const schedule = AutomationScheduleSchema.parse(row.schedule);
+  const schedule =
+    row.trigger_type === 'schedule'
+      ? AutomationScheduleSchema.parse(row.schedule)
+      : null;
   return AutomationSchema.parse({
     id: row.id,
     organizationId: row.organization_id,
@@ -86,6 +93,11 @@ function mapAutomation(row: AutomationRow): Automation {
     prompt: row.prompt,
     triggerType: row.trigger_type,
     schedule,
+    folder:
+      row.trigger_type === 'folder'
+        ? FolderTriggerConfigSchema.parse(row.folder)
+        : null,
+    revision: row.revision,
     status: row.status,
     conversationMode: row.conversation_mode,
     employeeAssignmentId: row.employee_assignment_id,
@@ -250,7 +262,7 @@ async function getAutomationRow(
     ) latest on true
     where a.organization_id = ${context.organizationId}
       and a.workspace_id = ${UuidSchema.parse(workspaceId)}
-      and a.id = ${UuidSchema.parse(automationId)}
+      and a.id = ${UuidSchema.parse(automationId)} and a.deleted_at is null
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
@@ -524,11 +536,13 @@ async function audit(
 export async function listAutomations(
   context: RequestContext,
   workspaceIdInput?: string,
+  triggerType?: 'schedule' | 'folder',
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   if (!canAccessWorkspace(context, workspaceId))
     throw new DataAccessError('authorization_denied');
-  await ensureDemoAutomations(context, workspaceId);
+  if (triggerType !== 'folder')
+    await ensureDemoAutomations(context, workspaceId);
   const sql = getDatabase();
   const rows = await sql<AutomationRow[]>`
     select a.*, latest.status as last_run_status,
@@ -542,7 +556,8 @@ export async function listAutomations(
     ) latest on true
     where a.organization_id = ${context.organizationId}
       and a.workspace_id = ${workspaceId}
-      and a.owner_id = ${userId(context)}
+      and a.owner_id = ${userId(context)} and a.deleted_at is null
+      and (${triggerType ?? null}::text is null or a.trigger_type=${triggerType ?? null})
     order by a.updated_at desc, a.created_at desc, a.id desc
   `;
   return { workspaceId, automations: rows.map(mapAutomation) };
@@ -556,7 +571,33 @@ export async function createAutomation(
   const workspaceId = await resolveWorkspaceId(context, parsed.workspaceId);
   if (!canAccessWorkspace(context, workspaceId))
     throw new DataAccessError('authorization_denied');
-  const nextRunAt = parsed.enabled ? nextScheduleAt(parsed.schedule) : null;
+  if (parsed.triggerType === 'folder') {
+    const sql = getDatabase();
+    const row = await sql.begin(async (tx) => {
+      const { validateFolderTriggerConfiguration } =
+        await import('../folder-triggers.ts');
+      await tx`select pg_advisory_xact_lock(hashtextextended(${`${context.organizationId}:${workspaceId}:${userId(context)}:folder-rules`},52))`;
+      await validateFolderTriggerConfiguration(
+        { ...context, workspaceId },
+        parsed.folder,
+        parsed.employeeAssignmentId!,
+        tx,
+      );
+      const [count] = await tx<
+        { n: number }[]
+      >`select count(*)::int as n from allrice_automations where organization_id=${context.organizationId} and workspace_id=${workspaceId} and owner_id=${userId(context)} and trigger_type='folder' and deleted_at is null`;
+      if (!count || count.n >= 32) throw new DataAccessError('quota_exceeded');
+      const [created] = await tx<
+        AutomationRow[]
+      >`insert into allrice_automations(organization_id,workspace_id,owner_id,name,description,prompt,trigger_type,schedule,folder,status,conversation_mode,employee_assignment_id,next_run_at)
+        values(${context.organizationId},${workspaceId},${userId(context)},${parsed.name},${parsed.description},${parsed.prompt},'folder',null,${tx.json(parsed.folder!)},${parsed.enabled ? 'enabled' : 'paused'},'new_each_run',${parsed.employeeAssignmentId!},null) returning *,null::text as last_run_status,null::uuid as last_session_id`;
+      return created;
+    });
+    if (!row) throw new Error('automation creation failed');
+    await audit(context, workspaceId, 'automation.create', row.id);
+    return mapAutomation(row);
+  }
+  const nextRunAt = parsed.enabled ? nextScheduleAt(parsed.schedule!) : null;
   if (parsed.employeeAssignmentId) {
     const sql = getDatabase();
     const assignment = await sql<{ id: string }[]>`
@@ -577,7 +618,7 @@ export async function createAutomation(
     ) values (
       ${context.organizationId}, ${workspaceId}, ${userId(context)}, ${parsed.name},
       ${parsed.description}, ${parsed.prompt}, ${parsed.triggerType},
-      ${sql.json(parsed.schedule)}, ${parsed.enabled ? 'enabled' : 'paused'},
+      ${sql.json(parsed.schedule!)}, ${parsed.enabled ? 'enabled' : 'paused'},
       ${parsed.conversationMode},
       ${parsed.employeeAssignmentId ?? null}, ${nextRunAt}
     ) returning *, null::text as last_run_status,
@@ -677,6 +718,50 @@ export async function updateAutomation(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
   const parsed = UpdateAutomationInputSchema.parse(input);
+  if (current.trigger_type === 'folder') {
+    if (
+      parsed.schedule ||
+      (parsed.conversationMode && parsed.conversationMode !== 'new_each_run') ||
+      parsed.expectedRevision !== current.revision
+    )
+      throw new DataAccessError('grant_invalid');
+    const expectedRevision = current.revision;
+    const sql = getDatabase();
+    const row = await sql.begin(async (tx) => {
+      const [locked] = await tx<
+        AutomationRow[]
+      >`select *,null::text as last_run_status,null::uuid as last_session_id from allrice_automations where id=${current.id} and revision=${expectedRevision} and deleted_at is null for update`;
+      if (!locked) throw new DataAccessError('grant_invalid');
+      const folder = FolderTriggerConfigSchema.parse(
+          parsed.folder ?? locked.folder,
+        ),
+        assignmentId =
+          parsed.employeeAssignmentId === undefined
+            ? locked.employee_assignment_id
+            : parsed.employeeAssignmentId;
+      if (!assignmentId) throw new DataAccessError('authorization_denied');
+      // Pausing/deleting must remain possible while Bridge is offline. Other
+      // edits and resumption require fresh current device/grant readiness.
+      if (parsed.status !== 'paused') {
+        const { validateFolderTriggerConfiguration } =
+          await import('../folder-triggers.ts');
+        await validateFolderTriggerConfiguration(
+          { ...context, workspaceId },
+          folder,
+          assignmentId,
+          tx,
+        );
+      }
+      const [updated] = await tx<
+        AutomationRow[]
+      >`update allrice_automations set name=coalesce(${parsed.name ?? null},name),description=coalesce(${parsed.description ?? null},description),prompt=coalesce(${parsed.prompt ?? null},prompt),folder=${tx.json(folder)},employee_assignment_id=${assignmentId},status=coalesce(${parsed.status ?? null},status),revision=revision+1,updated_at=clock_timestamp() where id=${locked.id} returning *,null::text as last_run_status,null::uuid as last_session_id`;
+      return updated;
+    });
+    if (!row) throw new DataAccessError('grant_invalid');
+    await audit(context, workspaceId, 'automation.update', row.id);
+    return mapAutomation(row);
+  }
+  if (parsed.folder) throw new DataAccessError('grant_invalid');
   const schedule =
     parsed.schedule ?? AutomationScheduleSchema.parse(current.schedule);
   const status = parsed.status ?? current.status;
@@ -734,7 +819,9 @@ export async function deleteAutomation(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
   const sql = getDatabase();
-  await sql`delete from allrice_automations where id = ${current.id}`;
+  if (current.trigger_type === 'folder')
+    await sql`update allrice_automations set status='paused',deleted_at=clock_timestamp(),revision=revision+1,updated_at=clock_timestamp() where id=${current.id}`;
+  else await sql`delete from allrice_automations where id = ${current.id}`;
   await audit(context, workspaceId, 'automation.delete', current.id);
 }
 
@@ -896,7 +983,7 @@ export async function claimDueAutomations(limit = 10) {
       select r.status, r.session_id from allrice_automation_runs r
       where r.automation_id = a.id order by r.created_at desc limit 1
     ) latest on true
-    where a.status = 'enabled' and a.next_run_at is not null and a.next_run_at <= now()
+    where a.trigger_type='schedule' and a.deleted_at is null and a.status = 'enabled' and a.next_run_at is not null and a.next_run_at <= now()
     order by a.next_run_at, a.id
     limit ${limit}
   `;
@@ -968,6 +1055,7 @@ export async function runAutomationNow(
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const row = await getAutomationRow(context, workspaceId, automationId);
+  if (row.trigger_type === 'folder') throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   const runs = await sql<AutomationRunRow[]>`
     insert into allrice_automation_runs (

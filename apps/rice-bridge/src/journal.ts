@@ -42,6 +42,25 @@ import { initialChangesetResults } from './changeset-executor.js';
 import { LocalServiceJournal } from './local-service-journal.js';
 import { BridgeJournalError } from './journal-error.js';
 import { pdfResultMatchesPayload } from './local-pdf-proof.js';
+import {
+  FolderTriggerEventSchema,
+  FolderTriggerFileSchema,
+  FolderTriggerRootIdentitySchema,
+  FolderTriggerScanSchema,
+  folderTriggerEventId,
+  folderTriggerMatches,
+  folderTriggerMaximumFiles,
+  folderTriggerMaximumSnapshotBytes,
+  folderTriggerRuleFingerprint,
+  folderTriggerRuleKey,
+  normalizeFolderTriggerRule,
+  type FolderTriggerEvent,
+  type FolderTriggerFile,
+  type FolderTriggerRootIdentity,
+  type FolderTriggerRule,
+  type FolderTriggerScan,
+  type FolderTriggerSnapshot,
+} from './folder-trigger-watcher.js';
 export { BridgeJournalError } from './journal-error.js';
 
 export const maximumReceiptBytes = 500_000;
@@ -226,6 +245,25 @@ export class BridgeJournal {
           content_bytes INTEGER NOT NULL CHECK(content_bytes>=0),
           delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1)),
           PRIMARY KEY(operation_id,sequence)
+        );
+        CREATE TABLE IF NOT EXISTS folder_trigger_scopes (
+          scope_key TEXT PRIMARY KEY,
+          rule_digest TEXT NOT NULL,
+          root TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS folder_trigger_files (
+          scope_key TEXT NOT NULL REFERENCES folder_trigger_scopes(scope_key),
+          path TEXT NOT NULL,
+          expected TEXT NOT NULL,
+          PRIMARY KEY(scope_key,path)
+        );
+        CREATE TABLE IF NOT EXISTS folder_trigger_events (
+          event_id TEXT PRIMARY KEY,
+          scope_key TEXT NOT NULL REFERENCES folder_trigger_scopes(scope_key),
+          fingerprint TEXT NOT NULL,
+          body TEXT,
+          delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1)),
+          UNIQUE(scope_key,fingerprint)
         );
         PRAGMA user_version=1;
         COMMIT;
@@ -1192,6 +1230,357 @@ export class BridgeJournal {
     });
     // Keep immutable evidence and operation tombstones. An ACK never makes the
     // operation executable again; retention/full-disk requires explicit handling.
+  }
+
+  private folderRule(input: FolderTriggerRule) {
+    const rule = normalizeFolderTriggerRule(input);
+    this.assertIdentity(this.identity.server, rule.deviceId);
+    return rule;
+  }
+
+  private folderScope(
+    rule: FolderTriggerRule,
+    root?: FolderTriggerRootIdentity,
+  ) {
+    const row = this.database
+      .prepare(
+        'SELECT rule_digest,root FROM folder_trigger_scopes WHERE scope_key=?',
+      )
+      .get(folderTriggerRuleKey(rule));
+    if (row && row.rule_digest !== folderTriggerRuleFingerprint(rule))
+      throw new BridgeJournalError('JOURNAL_FOLDER_SCOPE_MISMATCH');
+    if (row && root && String(row.root) !== canonicalRuntimeBridgeJson(root))
+      throw new BridgeJournalError('JOURNAL_FOLDER_ROOT_CHANGED');
+    return row;
+  }
+
+  private folderFiles(rule: FolderTriggerRule): FolderTriggerFile[] {
+    return this.database
+      .prepare(
+        'SELECT path,expected FROM folder_trigger_files WHERE scope_key=? ORDER BY path',
+      )
+      .all(folderTriggerRuleKey(rule))
+      .map((row) =>
+        FolderTriggerFileSchema.parse({
+          path: String(row.path),
+          expected: JSON.parse(String(row.expected)),
+        }),
+      );
+  }
+
+  async folderTriggerSnapshot(
+    input: FolderTriggerRule,
+  ): Promise<FolderTriggerSnapshot | null> {
+    const rule = this.folderRule(input);
+    await this.guard();
+    const row = this.folderScope(rule);
+    return row
+      ? {
+          root: FolderTriggerRootIdentitySchema.parse(
+            JSON.parse(String(row.root)),
+          ),
+          baselineComplete: true,
+          files: this.folderFiles(rule),
+        }
+      : null;
+  }
+
+  /** Folder facts share the existing disk reservation, not operation identities. */
+  private folderCapacity(additionalBytes: number, additionalEvents: number) {
+    const active = this.database
+      .prepare(
+        `SELECT count(*) AS n,
+      coalesce(sum(CASE WHEN json_extract(dispatch,'$.payload.capability')='local.process.execute'
+        AND json_type(dispatch,'$.payload.arguments.background')='object' THEN 1 ELSE 0 END),0) AS services
+      FROM entries WHERE state IN ('received','executing')`,
+      )
+      .get();
+    const pending = Number(
+      this.database
+        .prepare(
+          'SELECT count(*) AS n FROM folder_trigger_events WHERE delivered=0',
+        )
+        .get()?.n,
+    );
+    const pages = Number(
+      this.database.prepare('PRAGMA page_count').get()?.page_count,
+    );
+    const pageSize = Number(
+      this.database.prepare('PRAGMA page_size').get()?.page_size,
+    );
+    if (
+      pending + additionalEvents > Math.min(1_000, this.limits.entries) ||
+      pages * pageSize +
+        Number(active?.n) * reservePerEntry +
+        Number(active?.services) * reservePerService +
+        additionalBytes +
+        32_768 >
+        this.limits.bytes
+    )
+      throw new BridgeJournalError('JOURNAL_FOLDER_CAPACITY_REACHED');
+  }
+
+  async commitFolderTriggerSnapshot(
+    input: FolderTriggerRule,
+    rootInput: FolderTriggerRootIdentity,
+    scanInput: FolderTriggerScan,
+    observedAt: string,
+  ): Promise<FolderTriggerEvent[]> {
+    const rule = this.folderRule(input);
+    const root = FolderTriggerRootIdentitySchema.parse(rootInput);
+    const scan = FolderTriggerScanSchema.parse(scanInput);
+    if (!isAbsolute(root.path))
+      throw new BridgeJournalError('JOURNAL_FOLDER_ROOT_CHANGED');
+    const supplied = new Map(scan.files.map((file) => [file.path, file]));
+    if (
+      supplied.size !== scan.files.length ||
+      scan.files.some((file) => !folderTriggerMatches(rule, file.path))
+    )
+      throw new BridgeJournalError('JOURNAL_FOLDER_INPUT_INVALID');
+    // Validate this timestamp even when the baseline produces no event.
+    FolderTriggerEventSchema.shape.observedAt.parse(observedAt);
+    await this.guard();
+    return this.transaction(() => {
+      if (Date.parse(rule.admissionExpiresAt) <= Date.now())
+        throw new BridgeJournalError('JOURNAL_FOLDER_ADMISSION_EXPIRED');
+      const stored = this.folderScope(rule, root);
+      if (!stored && (!scan.complete || scan.truncated))
+        throw new BridgeJournalError('JOURNAL_FOLDER_BASELINE_INCOMPLETE');
+      if (
+        !stored &&
+        Number(
+          this.database
+            .prepare('SELECT count(*) AS n FROM folder_trigger_scopes')
+            .get()?.n,
+        ) >= 32
+      )
+        throw new BridgeJournalError('JOURNAL_FOLDER_CAPACITY_REACHED');
+      const previous = new Map(
+        this.folderFiles(rule).map((file) => [file.path, file]),
+      );
+      const next =
+        scan.complete && !scan.truncated
+          ? supplied
+          : new Map([...previous, ...supplied]);
+      const files = [...next.values()];
+      const bytes = Buffer.byteLength(canonicalRuntimeBridgeJson(files));
+      if (
+        files.length > folderTriggerMaximumFiles ||
+        bytes > folderTriggerMaximumSnapshotBytes
+      )
+        throw new BridgeJournalError('JOURNAL_FOLDER_CAPACITY_REACHED');
+      const changed = stored
+        ? scan.files.filter(
+            (file) =>
+              canonicalRuntimeBridgeJson(
+                previous.get(file.path)?.expected ?? null,
+              ) !== canonicalRuntimeBridgeJson(file.expected),
+          )
+        : [];
+      const events = changed.map((file) =>
+        FolderTriggerEventSchema.parse({
+          eventId: folderTriggerEventId(rule, file),
+          ruleId: rule.automationId,
+          revision: rule.revision,
+          grantId: rule.folderGrantId,
+          grantVersion: rule.folderGrantVersion,
+          path: file.path,
+          expected: file.expected,
+          observedAt,
+        }),
+      );
+      const fresh = events.filter(
+        (event) =>
+          !this.database
+            .prepare(
+              'SELECT event_id FROM folder_trigger_events WHERE event_id=?',
+            )
+            .get(event.eventId),
+      );
+      const eventBytes = fresh.reduce((total, event) => {
+        const size = Buffer.byteLength(canonicalRuntimeBridgeJson(event));
+        if (size > 8_192)
+          throw new BridgeJournalError('JOURNAL_FOLDER_CAPACITY_REACHED');
+        return total + size;
+      }, 0);
+      this.folderCapacity(
+        bytes + eventBytes + Buffer.byteLength(root.path) + 4_096,
+        fresh.length,
+      );
+      const key = folderTriggerRuleKey(rule);
+      if (!stored)
+        this.database
+          .prepare('INSERT INTO folder_trigger_scopes VALUES(?,?,?)')
+          .run(
+            key,
+            folderTriggerRuleFingerprint(rule),
+            canonicalRuntimeBridgeJson(root),
+          );
+      const queued: FolderTriggerEvent[] = [];
+      for (const event of events) {
+        const fingerprint = bridgeDigest({
+          path: event.path,
+          expected: event.expected,
+        });
+        const existing = this.database
+          .prepare(
+            'SELECT scope_key,fingerprint,body,delivered FROM folder_trigger_events WHERE event_id=?',
+          )
+          .get(event.eventId);
+        if (existing) {
+          if (
+            existing.scope_key !== key ||
+            existing.fingerprint !== fingerprint
+          )
+            throw new BridgeJournalError('JOURNAL_FOLDER_EVENT_CONFLICT');
+          if (existing.delivered === 0)
+            queued.push(
+              FolderTriggerEventSchema.parse(JSON.parse(String(existing.body))),
+            );
+          continue;
+        }
+        // Retain digest-only deduplication across unlink/reappearance. Stop at
+        // a finite history budget rather than dropping authority tombstones.
+        if (
+          Number(
+            this.database
+              .prepare('SELECT count(*) AS n FROM folder_trigger_events')
+              .get()?.n,
+          ) >= Math.max(32, Math.min(10_000, this.limits.entries * 4))
+        )
+          throw new BridgeJournalError('JOURNAL_FOLDER_CAPACITY_REACHED');
+        this.database
+          .prepare(
+            'INSERT INTO folder_trigger_events(event_id,scope_key,fingerprint,body) VALUES(?,?,?,?)',
+          )
+          .run(
+            event.eventId,
+            key,
+            fingerprint,
+            canonicalRuntimeBridgeJson(event),
+          );
+        queued.push(event);
+      }
+      this.database
+        .prepare('DELETE FROM folder_trigger_files WHERE scope_key=?')
+        .run(key);
+      const insert = this.database.prepare(
+        'INSERT INTO folder_trigger_files VALUES(?,?,?)',
+      );
+      for (const file of files)
+        insert.run(key, file.path, canonicalRuntimeBridgeJson(file.expected));
+      return queued;
+    });
+  }
+
+  async recordFolderTrigger(
+    rule: FolderTriggerRule,
+    root: FolderTriggerRootIdentity,
+    path: string,
+    expected: FolderTriggerFile['expected'],
+    observedAt: string,
+  ): Promise<FolderTriggerEvent | null> {
+    return (
+      (
+        await this.commitFolderTriggerSnapshot(
+          rule,
+          root,
+          {
+            files: [{ path, expected }],
+            complete: false,
+            truncated: false,
+          },
+          observedAt,
+        )
+      )[0] ?? null
+    );
+  }
+
+  async forgetFolderTriggerPath(
+    input: FolderTriggerRule,
+    rootInput: FolderTriggerRootIdentity,
+    path: string,
+  ) {
+    const rule = this.folderRule(input),
+      root = FolderTriggerRootIdentitySchema.parse(rootInput);
+    if (!folderTriggerMatches(rule, path))
+      throw new BridgeJournalError('JOURNAL_FOLDER_INPUT_INVALID');
+    await this.guard();
+    this.transaction(() => {
+      if (!this.folderScope(rule, root))
+        throw new BridgeJournalError('JOURNAL_FOLDER_BASELINE_INCOMPLETE');
+      this.database
+        .prepare(
+          'DELETE FROM folder_trigger_files WHERE scope_key=? AND path=?',
+        )
+        .run(folderTriggerRuleKey(rule), path);
+    });
+  }
+
+  async pendingFolderTriggers(
+    input: FolderTriggerRule,
+    limit = 16,
+  ): Promise<FolderTriggerEvent[]> {
+    const rule = this.folderRule(input);
+    await this.guard();
+    if (!this.folderScope(rule)) return [];
+    if (!Number.isFinite(limit))
+      throw new BridgeJournalError('JOURNAL_FOLDER_INPUT_INVALID');
+    return this.database
+      .prepare(
+        'SELECT body FROM folder_trigger_events WHERE scope_key=? AND delivered=0 ORDER BY rowid LIMIT ?',
+      )
+      .all(
+        folderTriggerRuleKey(rule),
+        Math.min(32, Math.max(1, Math.floor(limit))),
+      )
+      .map((row) =>
+        FolderTriggerEventSchema.parse(JSON.parse(String(row.body))),
+      );
+  }
+
+  async acknowledgeFolderTrigger(input: FolderTriggerRule, eventId: string) {
+    const rule = this.folderRule(input);
+    await this.guard();
+    this.transaction(() => {
+      this.folderScope(rule);
+      const existing = this.database
+        .prepare('SELECT scope_key FROM folder_trigger_events WHERE event_id=?')
+        .get(eventId);
+      if (existing && existing.scope_key !== folderTriggerRuleKey(rule))
+        throw new BridgeJournalError('JOURNAL_FOLDER_SCOPE_MISMATCH');
+      this.database
+        .prepare(
+          'UPDATE folder_trigger_events SET body=NULL,delivered=1 WHERE event_id=? AND scope_key=?',
+        )
+        .run(eventId, folderTriggerRuleKey(rule));
+    });
+  }
+
+  async retireFolderTrigger(input: FolderTriggerRule) {
+    const rule = this.folderRule(input);
+    await this.guard();
+    this.transaction(() => {
+      this.folderScope(rule);
+      const key = folderTriggerRuleKey(rule);
+      if (
+        this.database
+          .prepare(
+            'SELECT event_id FROM folder_trigger_events WHERE scope_key=? AND delivered=0 LIMIT 1',
+          )
+          .get(key)
+      )
+        throw new BridgeJournalError('JOURNAL_FOLDER_PENDING_EVENTS');
+      this.database
+        .prepare('DELETE FROM folder_trigger_events WHERE scope_key=?')
+        .run(key);
+      this.database
+        .prepare('DELETE FROM folder_trigger_files WHERE scope_key=?')
+        .run(key);
+      this.database
+        .prepare('DELETE FROM folder_trigger_scopes WHERE scope_key=?')
+        .run(key);
+    });
   }
 
   async close() {
