@@ -80,13 +80,17 @@ export async function assertWorkbenchSession(
   context: WorkbenchPrincipal,
   sessionId: string,
   write = false,
+  lock: 'update' | 'share' = 'update',
 ) {
   UuidSchema.parse(sessionId);
   if (context.actor.type !== 'user' || !context.workspaceId)
     fail('identity_denied');
-  const [session] = await db<
-    { id: string }[]
-  >`select id from allrice_chat_sessions
+  const [session] =
+    lock === 'share'
+      ? await db<{ id: string }[]>`select id from allrice_chat_sessions
+    where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+      and owner_id=${context.actor.id} and (${!write} or archived_at is null) for share`
+      : await db<{ id: string }[]>`select id from allrice_chat_sessions
     where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and owner_id=${context.actor.id} and (${!write} or archived_at is null) for update`;
   if (!session) fail('artifact_not_found');

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProjectVersionRefSchema } from '../project-workspace.ts';
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
@@ -92,6 +93,27 @@ export const RuntimeProjectScopeSchema = z
   .strict();
 export type RuntimeProjectScope = z.infer<typeof RuntimeProjectScopeSchema>;
 
+/** Shared field order for the host/server cache key; callers SHA-256 this JSON. */
+export function projectRuntimeCacheIdentity(input: {
+  spec: RuntimeProjectPreparation;
+  scope: RuntimeProjectScope;
+  image: string;
+  architecture: string;
+}) {
+  const { spec } = input;
+  return {
+    version: 1,
+    scope: RuntimeProjectScopeSchema.parse(input.scope),
+    projectId: spec.projectId,
+    os: 'linux',
+    architecture: input.architecture,
+    image: input.image,
+    manager: spec.manager,
+    managerVersion: spec.managerVersion,
+    lockChecksum: spec.lockChecksum,
+  };
+}
+
 export const RuntimeProjectPreparationEvidenceSchema = z
   .object({
     version: z.literal(1),
@@ -111,6 +133,13 @@ export const RuntimeProjectPreparationEvidenceSchema = z
     cacheVolume: z.string().regex(/^allrice-project-cache-[a-f0-9]{64}$/),
     sourceDirectoryModified: z.literal(false),
     hostEnvironmentModified: z.literal(false),
+    savedSource: z
+      .object({
+        project: ProjectVersionRefSchema,
+        restoredDigest: ChecksumSchema.nullable(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export type RuntimeProjectPreparationEvidence = z.infer<
@@ -118,6 +147,7 @@ export type RuntimeProjectPreparationEvidence = z.infer<
 >;
 
 export const projectPreparationErrorLabels: Record<string, string> = {
+  PROJECT_CACHE_LIMIT: '项目依赖缓存已达到上限，请结束当前运行后重试',
   PROJECT_SOURCE_CHANGED: '项目源码或锁文件版本已改变，请重新读取当前版本',
   PROJECT_LOCK_UNSUPPORTED: '此依赖锁格式或来源当前不支持，未开始安装',
   PROJECT_LOCK_MISMATCH: '锁文件与依赖归档清单不一致，未开始安装',

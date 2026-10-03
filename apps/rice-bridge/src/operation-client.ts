@@ -240,6 +240,7 @@ export class RuntimeBridgeOperationClient {
               supportsProjectDiagnostics: true,
               supportsNpmDependencies: true,
               supportsProjectPreparation: !!this.input.runner.projects,
+              supportsSavedProjectSource: !!this.input.runner?.projects,
               supportsChangesetCandidate: true,
               supportsBackgroundServices:
                 process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0' &&
@@ -287,15 +288,22 @@ export class RuntimeBridgeOperationClient {
     }
     const python = dispatch.payload.capability === 'local.python.execute';
     const pdf = dispatch.payload.capability === 'local.pdf.read';
-    const grant = config.grants.find(
-      (item) => item.id === dispatch.snapshot.binding.execution.grantId,
-    );
+    const savedProject =
+      dispatch.payload.capability === 'local.process.execute' &&
+      !!dispatch.payload.arguments.projectSource;
+    const grant =
+      savedProject || python || pdf
+        ? undefined
+        : config.grants.find(
+            (item) => item.id === dispatch.snapshot.binding.execution.grantId,
+          );
     const root = grant
       ? await realpath(grant.rootPath).catch(() => null)
       : null;
     if (
       !python &&
       !pdf &&
+      !savedProject &&
       (!grant ||
         !root ||
         grant.rootFingerprint !== dispatch.grantRootFingerprint ||
@@ -311,8 +319,8 @@ export class RuntimeBridgeOperationClient {
       return;
     }
     if (
-      python &&
-      (!this.input.pythonRunner ||
+      (python || savedProject) &&
+      ((python ? !this.input.pythonRunner : !this.input.runner?.projects) ||
         dispatch.grantRootFingerprint !==
           createHash('sha256')
             .update(`allrice-managed-python-v1:${config.deviceId}`)
@@ -344,7 +352,7 @@ export class RuntimeBridgeOperationClient {
       return;
     }
     try {
-      if (!python && !pdf) journal.assertWorkspace(root!);
+      if (!python && !pdf && !savedProject) journal.assertWorkspace(root!);
     } catch {
       await journal.outcome(operationId, {
         status: 'failed',
@@ -583,7 +591,7 @@ export class RuntimeBridgeOperationClient {
         }
         return;
       }
-      await this.executeProcess(dispatch, root!);
+      await this.executeProcess(dispatch, root);
       return;
     }
     if (
@@ -1064,7 +1072,10 @@ export class RuntimeBridgeOperationClient {
     }
   }
 
-  private async executeProcess(dispatch: RuntimeBridgeDispatch, root: string) {
+  private async executeProcess(
+    dispatch: RuntimeBridgeDispatch,
+    root: string | null,
+  ) {
     if (
       dispatch.payload.capability !== 'local.process.execute' ||
       !this.input.runner

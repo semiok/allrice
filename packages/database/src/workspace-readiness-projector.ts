@@ -28,6 +28,7 @@ export interface ReadinessFacts {
   localReadiness?: Partial<Record<WorkspaceCapabilityId, BridgeReadinessState>>;
   folder: boolean;
   runner: boolean;
+  savedProjectRunner?: boolean;
   developmentRunner: boolean;
   cloud: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
   cloudBrowser: 'missing' | 'unavailable' | 'ungranted' | 'invalid' | 'ready';
@@ -242,7 +243,11 @@ export function projectWorkspacePrerequisites(
       if (id === 'local_browser' && preparation === 'unavailable')
         add('needs_configuration', 'browser_unavailable', 'user', 'bridge');
       // Local browser is independent of filesystem and command sandbox grants.
-      if (id !== 'local_browser' && !f.folder)
+      if (
+        id !== 'local_browser' &&
+        !(id === 'local_command' && f.savedProjectRunner) &&
+        !f.folder
+      )
         add('needs_configuration', 'folder_missing', 'user', 'bridge');
       if (
         ['local_command', 'local_mcp', 'development'].includes(id) &&

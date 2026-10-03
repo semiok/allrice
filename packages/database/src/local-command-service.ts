@@ -19,6 +19,9 @@ import {
   isLocalCommandProfileForPlatform,
   localCommandRuntimeImage,
   RuntimeLocalCommandToolInputSchema,
+  RuntimeSavedProjectSourceSchema,
+  projectRuntimeCacheIdentity,
+  type RuntimeSavedProjectSource,
   RuntimeActionApprovalRequestSchema,
   UuidSchema,
   type RequestContext,
@@ -27,6 +30,11 @@ import {
   type StoragePort,
   resolveExecutionChoice,
 } from '@allrice/contracts';
+import {
+  assertSavedProjectAuthority,
+  isProjectSourceAuthorityError,
+  readProjectSource,
+} from './saved-project-authority.ts';
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
 
 import { getDatabase } from './core/client.ts';
@@ -87,6 +95,7 @@ async function createLocalBridgeToolOperation(
      * RuntimeLocalCommandToolInputSchema and the user/model ExecutionContext. */
     assistant?: AssistantOperationOrigin;
     storage?: StoragePort;
+    worker?: { attempt: number; leaseToken: string };
   },
   database: Database = getDatabase(),
 ) {
@@ -104,7 +113,7 @@ async function createLocalBridgeToolOperation(
     : RuntimeLocalCommandToolInputSchema.parse(input.arguments);
   if (input.assistant) {
     UuidSchema.parse(input.assistant.runId);
-    if (args?.background)
+    if (args?.background || args?.project)
       throw new RuntimePolicyError('assistant_authority_changed');
   }
   if (args?.background && !localServiceFeatureEnabled())
@@ -136,7 +145,22 @@ async function createLocalBridgeToolOperation(
       and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!row || row.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
-  const { candidate: requestedCandidate, ...commandArgs } = args ?? {};
+  const {
+    candidate: requestedCandidate,
+    project: requestedProject,
+    ...commandArgs
+  } = args ?? {};
+  let savedSource: RuntimeSavedProjectSource | undefined;
+  if (requestedProject) {
+    if (
+      !input.storage ||
+      !input.worker ||
+      !Number.isSafeInteger(input.worker.attempt) ||
+      input.worker.attempt < 0 ||
+      !UuidSchema.safeParse(input.worker.leaseToken).success
+    )
+      throw new RuntimePolicyError('bridge_authority_changed');
+  }
   let ref = requestedCandidate;
   if (input.assistant && !ref) {
     // A development tester already has an immutable, server-assigned version.
@@ -210,7 +234,13 @@ async function createLocalBridgeToolOperation(
     from allrice_bridge_devices d
     left join allrice_bridge_runtime_profiles p on p.device_id=d.id and p.organization_id=d.organization_id and p.workspace_id=d.workspace_id
     join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id and t.target_key='bridge.'||d.id::text and t.kind='rice_bridge' and t.state='online'
-    join lateral (select * from allrice_bridge_folder_grants where device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null order by created_at desc limit 1) g on true
+    join lateral (
+      select id,root_fingerprint,runtime_generation,'已保存项目'::text as label,created_at from allrice_bridge_managed_runtime_grants
+        where ${!!requestedProject} and device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null and profile_version=1
+      union all
+      (select id,root_fingerprint,runtime_generation,label,created_at from allrice_bridge_folder_grants
+        where ${!requestedProject} and device_id=d.id and organization_id=d.organization_id and workspace_id=d.workspace_id and owner_id=d.owner_id and revoked_at is null order by created_at desc limit 1)
+    ) g on true
     where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${owner} and d.revoked_at is null
       and (${candidateTargetId}::uuid is null or t.id=${candidateTargetId}::uuid)
       and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds'
@@ -293,12 +323,94 @@ async function createLocalBridgeToolOperation(
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (candidate && !profile?.features?.includes('changeset_candidate'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (requestedProject) {
+    if (!profile?.features?.includes('saved_project_source'))
+      throw new RuntimePolicyError('local_runner_upgrade_required');
+    const origin = {
+      jobId: ctx.jobId,
+      workerId: ctx.worker.id,
+      attempt: input.worker!.attempt,
+      leaseTokenDigest: createHash('sha256')
+        .update(input.worker!.leaseToken)
+        .digest('hex'),
+    };
+    const loaded = await database
+      .begin(async (tx) => {
+        await assertSavedProjectAuthority(
+          tx,
+          ctx,
+          row.session_id,
+          origin,
+          requestedProject,
+        );
+        const source = await readProjectSource(
+          tx,
+          ctx,
+          requestedProject.snapshot,
+          input.storage!,
+        );
+        await assertSavedProjectAuthority(
+          tx,
+          ctx,
+          row.session_id,
+          origin,
+          requestedProject,
+        );
+        return source;
+      })
+      .catch((error: unknown) => {
+        if (isProjectSourceAuthorityError(error))
+          throw new RuntimePolicyError('bridge_authority_changed');
+        throw error;
+      });
+    const spec = args!.projectPreparation!;
+    if (
+      loaded.document.projectId !== requestedProject.projectId ||
+      spec.projectId !== requestedProject.projectId ||
+      spec.sourceDigest !== loaded.document.sourceDigest ||
+      loaded.document.files.find((f) => f.path === spec.lockPath)?.sha256 !==
+        spec.lockChecksum
+    )
+      throw new RuntimePolicyError('bridge_authority_changed');
+    savedSource = RuntimeSavedProjectSourceSchema.parse({
+      version: 1,
+      project: requestedProject,
+      snapshot: loaded.document,
+      architecture: profile!.architecture,
+      origin,
+      cacheKey: `sha256:${createHash('sha256')
+        .update(
+          JSON.stringify(
+            projectRuntimeCacheIdentity({
+              spec,
+              scope: {
+                organizationId: ctx.organizationId,
+                workspaceId: ctx.workspaceId!,
+                ownerId: owner,
+              },
+              image: localCommandRuntimeImage(profile!, args!)!,
+              architecture: profile!.architecture,
+            }),
+          ),
+        )
+        .digest('hex')}`,
+    });
+  }
   const payload =
     input.file ??
     RuntimeLocalCommandSchema.parse({
       capability: 'local.process.execute',
       arguments: {
         ...commandArgs,
+        ...(savedSource
+          ? {
+              projectSource: savedSource,
+              files: savedSource.snapshot.files.map(({ path, sha256 }) => ({
+                path,
+                sha256,
+              })),
+            }
+          : {}),
         ...(candidate ? { candidate } : {}),
         imageDigest: localCommandRuntimeImage(profile!, commandArgs!),
         isolation: profile!.backend,
@@ -309,8 +421,13 @@ async function createLocalBridgeToolOperation(
     localCommandCandidateEvidence(payload);
   // Leave room for the operation snapshot inside the existing 512 KB ledger
   // envelope; do not enlarge transport limits for a code proposal.
-  if (candidate && Buffer.byteLength(JSON.stringify(payload)) > 480_000)
-    throw new RuntimePolicyError('candidate_payload_too_large');
+  if (
+    (candidate || savedSource) &&
+    Buffer.byteLength(JSON.stringify(payload)) > 480_000
+  )
+    throw new RuntimePolicyError(
+      savedSource ? 'project_payload_too_large' : 'candidate_payload_too_large',
+    );
   const task = {
     scope: {
       organizationId: ctx.organizationId,
@@ -366,9 +483,8 @@ async function createLocalBridgeToolOperation(
     },
   });
   if (input.assistant) {
-    // Idempotent createOperation retries return existing facts before its
-    // admission callback. Authenticate that read here too; new operations are
-    // still admitted again atomically under the ledger's root lock below.
+    // Assistant reads retain their existing precheck. Saved-source replay also
+    // rechecks its exact Worker lease inside the ledger after all lock waits.
     await database.begin(async (transaction) => {
       await ledger.policyOptions.lockCurrentBinding?.({ transaction, binding });
       await ledger.policyOptions.assertFinalBinding?.({ transaction, binding });
@@ -600,7 +716,19 @@ export async function listLocalCommandOperations(
       const localCommand = RuntimeLocalCommandSchema.safeParse(
         row.bridge_payload,
       );
-      const command = localCommand.success ? localCommand.data.arguments : null;
+      const internalCommand = localCommand.success
+        ? localCommand.data.arguments
+        : null;
+      // Private source bytes and Worker origin are dispatch inputs, never UI data.
+      const command = internalCommand
+        ? (() => {
+            const { projectSource, ...publicCommand } = internalCommand;
+            return {
+              ...publicCommand,
+              ...(projectSource ? { project: projectSource.project } : {}),
+            };
+          })()
+        : null;
       const file = localCommand.success
         ? null
         : BridgeCommandPayloadSchema.parse(row.bridge_payload);

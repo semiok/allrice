@@ -68,37 +68,13 @@ import {
   abandonStorageMetadata,
 } from './data.ts';
 
-export function managedPythonRuntimeFingerprint(deviceId: string) {
-  return createHash('sha256')
-    .update(`allrice-managed-python-v1:${UuidSchema.parse(deviceId)}`)
-    .digest('hex');
-}
-
-export async function readManagedPythonRuntimeGrant(
-  device: BridgeDevice,
-  db = getDatabase(),
-) {
-  const [row] = await db<
-    {
-      id: string;
-      root_fingerprint: string;
-      runtime_generation: number;
-      revoked_at: Date | null;
-    }[]
-  >`
-    select id,root_fingerprint,runtime_generation,revoked_at from allrice_bridge_managed_runtime_grants
-    where device_id=${device.id} and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and owner_id=${device.ownerId}`;
-  return row
-    ? {
-        id: row.id,
-        deviceId: device.id,
-        rootFingerprint: row.root_fingerprint,
-        runtimeGeneration: row.runtime_generation,
-        revokedAt: row.revoked_at?.toISOString() ?? null,
-        profileVersion: 1 as const,
-      }
-    : null;
-}
+import {
+  managedRuntimeFingerprint,
+  readManagedRuntimeGrant,
+  upsertManagedRuntimeGrant,
+} from './managed-runtime-grant.ts';
+export const managedPythonRuntimeFingerprint = managedRuntimeFingerprint;
+export const readManagedPythonRuntimeGrant = readManagedRuntimeGrant;
 
 /** A fresh physical probe authorizes only a fixed private runtime, never a folder. */
 export async function reportLocalPythonProfile(
@@ -121,17 +97,13 @@ export async function reportLocalPythonProfile(
       await tx`select id from allrice_bridge_devices where id=${device.id} and organization_id=${device.organizationId}
       and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and revoked_at is null for share`;
     if (!current) throw new RuntimePolicyError('target_unavailable');
+    // Keep the shared grant/profile order consistent with command admission.
+    if (profile.available && profile.stopConfirmed)
+      await upsertManagedRuntimeGrant(tx, device);
     await tx`insert into allrice_bridge_managed_python_profiles(device_id,organization_id,workspace_id,profile)
       values(${device.id},${device.organizationId},${device.workspaceId},${tx.json(profile)})
       on conflict(device_id) do update set profile=excluded.profile,reported_at=clock_timestamp()
       where allrice_bridge_managed_python_profiles.organization_id=excluded.organization_id and allrice_bridge_managed_python_profiles.workspace_id=excluded.workspace_id`;
-    if (profile.available && profile.stopConfirmed)
-      await tx`insert into allrice_bridge_managed_runtime_grants(id,device_id,organization_id,workspace_id,owner_id,profile_version,root_fingerprint)
-        values(${cloudStableId(`managed-python-grant:${device.id}`)},${device.id},${device.organizationId},${device.workspaceId},${device.ownerId},1,${managedPythonRuntimeFingerprint(device.id)})
-        on conflict(device_id) do update set revoked_at=null,
-          runtime_generation=allrice_bridge_managed_runtime_grants.runtime_generation+case when allrice_bridge_managed_runtime_grants.revoked_at is null then 0 else 1 end
-        where allrice_bridge_managed_runtime_grants.organization_id=excluded.organization_id and allrice_bridge_managed_runtime_grants.workspace_id=excluded.workspace_id
-          and allrice_bridge_managed_runtime_grants.owner_id=excluded.owner_id and allrice_bridge_managed_runtime_grants.root_fingerprint=excluded.root_fingerprint`;
   });
   return profile;
 }

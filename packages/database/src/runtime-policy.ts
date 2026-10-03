@@ -426,6 +426,14 @@ async function checkBindingAuthority(
     binding.baseline.length > 0
   )
     throw new RuntimePolicyError('resource_adapter_not_registered');
+  // Exact managed identity is eligible for command admission only; the
+  // production resolver separately requires its immutable saved-source input.
+  const [managedCommand] =
+    binding.action === 'local.process.execute'
+      ? await transaction`select id from allrice_bridge_managed_runtime_grants
+    where id=${binding.execution.grantId} and device_id=${binding.execution.deviceId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId} and owner_id=${context.actor.id} and profile_version=1`
+      : [];
   const [grant] =
     binding.action === 'local.pdf.read'
       ? await transaction<
@@ -442,7 +450,7 @@ async function checkBindingAuthority(
             and g.organization_id=${context.organizationId} and g.workspace_id=${context.workspaceId} and g.owner_id=${context.actor.id}
             and d.organization_id=${context.organizationId} and d.workspace_id=${context.workspaceId} and d.owner_id=${context.actor.id}
           for share of g,d`
-      : binding.action === 'local.python.execute'
+      : binding.action === 'local.python.execute' || !!managedCommand
         ? await transaction<
             {
               root_fingerprint: string;

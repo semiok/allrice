@@ -68,6 +68,32 @@ export const ProjectVersionRefSchema = z
   })
   .strict();
 export type ProjectVersionRef = z.infer<typeof ProjectVersionRefSchema>;
+/** Trusted operation input only. Model input contains the exact version ref,
+ * never source bytes, runtime architecture or Worker lease provenance. */
+export const RuntimeSavedProjectSourceSchema = z
+  .object({
+    version: z.literal(1),
+    project: ProjectVersionRefSchema,
+    snapshot: ProjectSnapshotSchema,
+    architecture: z.enum(['amd64', 'arm64']),
+    cacheKey: ChecksumSchema,
+    origin: z
+      .object({
+        jobId: UuidSchema,
+        workerId: UuidSchema,
+        attempt: z.number().int().nonnegative(),
+        leaseTokenDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine(
+    (s) => s.project.projectId === s.snapshot.projectId,
+    'project_source_identity_changed',
+  );
+export type RuntimeSavedProjectSource = z.infer<
+  typeof RuntimeSavedProjectSourceSchema
+>;
 export const ProjectWorkspaceCommandSchema = z.discriminatedUnion('action', [
   z
     .object({

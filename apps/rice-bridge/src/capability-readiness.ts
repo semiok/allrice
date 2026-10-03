@@ -224,7 +224,7 @@ export function projectBridgeCapabilityReadiness(input: {
     'sandbox',
     env.settings?.localCommand === false,
     runnerVersions,
-    true,
+    !input.runner?.features?.includes('saved_project_source'),
   );
   runtime(
     'local.development',
