@@ -9,6 +9,13 @@ import {
   projectServicePreviewTarget,
 } from './project-services.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
+import { completeJob, failJob } from './execution/queue.ts';
+import type * as CoreClient from './core/client.ts';
+let fixtureDatabase: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+vi.mock('./core/client.ts', async (original) => ({
+  ...(await original<typeof CoreClient>()),
+  getDatabase: () => fixtureDatabase.db,
+}));
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -29,6 +36,7 @@ suite(
       ])
         vi.stubEnv('ALLRICE_' + key + '_ENABLED', '1');
       database = await createAssistantFixtureDatabase();
+      fixtureDatabase = database;
     });
     afterAll(async () => {
       await database?.close();
@@ -92,8 +100,16 @@ suite(
           })
         ).status,
       ).toBe('completed');
-      await f.db`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
-      await f.db`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
+      await completeJob({
+        workerId: f.context.worker.id,
+        jobId: f.context.jobId,
+        leaseToken: f.worker.leaseToken,
+        result: { answer: 'Preview ready' },
+      });
+      const [conversation] =
+        await f.db`select state,active_run_id from allrice_conversation_runtimes where session_id=${f.task.chatSessionId!}`;
+      expect(conversation!.state).toBe('idle');
+      expect(conversation!.active_run_id).toBeNull();
       expect((await f.exchange()).stopRequested).toBe(false);
       const target = await projectServicePreviewTarget(
         f.requestContext,
@@ -119,6 +135,66 @@ suite(
       );
       expect(stopped.stopped).toBe(false);
       expect((await f.exchange()).stopRequested).toBe(true);
+    });
+    it('serializes a service heartbeat with the successful Run and conversation handoff', async () => {
+      const f = await readyFixture();
+      let unblock!: () => void, locked!: () => void;
+      const acquired = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      const blocker = f.db.begin(async (tx) => {
+        await tx`select session_id from allrice_conversation_runtimes where session_id=${f.task.chatSessionId!} for update`;
+        locked();
+        await release;
+      });
+      await acquired;
+      let completed = false,
+        exchanged = false;
+      const completion = completeJob({
+        workerId: f.context.worker.id,
+        jobId: f.context.jobId,
+        leaseToken: f.worker.leaseToken,
+        result: { answer: 'Preview ready' },
+      }).then(() => {
+        completed = true;
+      });
+      await delay(250);
+      const heartbeat = f.exchange().then((value) => {
+        exchanged = true;
+        return value;
+      });
+      try {
+        await delay(250);
+        expect(completed).toBe(false);
+        expect(exchanged).toBe(false);
+      } finally {
+        unblock();
+      }
+      await blocker;
+      await completion;
+      expect((await heartbeat).stopRequested).toBe(false);
+      expect(
+        (await readProjectService(f.requestContext, f.id, f.db)).state,
+      ).toBe('ready');
+    });
+    it('a failed real Job cannot retain a continuing service', async () => {
+      const f = await readyFixture();
+      await failJob({
+        workerId: f.context.worker.id,
+        jobId: f.context.jobId,
+        leaseToken: f.worker.leaseToken,
+        code: 'FIXTURE_FAILURE',
+        message: 'Fixture failed',
+        retryable: false,
+      });
+      expect((await f.exchange()).stopRequested).toBe(true);
+      const [conversation] =
+        await f.db`select state,active_run_id from allrice_conversation_runtimes where session_id=${f.task.chatSessionId!}`;
+      expect(conversation!.state).toBe('error');
+      expect(conversation!.active_run_id).toBeNull();
     });
     it('stop, current grant revocation and expired visible lease close authority without fabricating stop', async () => {
       const f = await readyFixture();

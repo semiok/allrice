@@ -340,6 +340,7 @@ export async function executeEmployeeRun({
   }
   let outcome: 'idle' | 'interrupted' | 'error' = 'error';
   let nativeQuestionParked = false;
+  let completedHandler = false;
   let errorCode: string | undefined;
   let routeDecision: RouteDecision | null = null;
   let routeUsage = {
@@ -438,6 +439,7 @@ export async function executeEmployeeRun({
         workflowLease,
       });
       outcome = 'idle';
+      completedHandler = true;
       return result;
     }
     const capabilitySnapshot =
@@ -1531,6 +1533,7 @@ export async function executeEmployeeRun({
     const priorWaitUsage = questionWait?.resume
       ? await readParkedNativeUsage(execution.context)
       : null;
+    completedHandler = true;
     return {
       ...result,
       ...(priorWaitUsage
@@ -1646,7 +1649,9 @@ export async function executeEmployeeRun({
     throw error;
   } finally {
     try {
-      if (!nativeQuestionParked)
+      // completeJob commits successful Run/Job state and ownership release
+      // together. Releasing here leaves a brief unauthorized service heartbeat.
+      if (!nativeQuestionParked && (!completedHandler || signal.aborted))
         await releaseConversationRuntime({
           ...ownership,
           outcome,

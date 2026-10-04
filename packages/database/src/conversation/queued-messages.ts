@@ -87,8 +87,7 @@ export async function updateQueuedMessage(
       join allrice_jobs j on j.run_id=f.run_id
       join allrice_runs r on r.id=f.run_id
       where f.session_id=${sessionId} and f.user_message_id=${messageId}
-        and f.organization_id=${context.organizationId} and f.workspace_id=${workspaceId}
-      for update of f,j`;
+        and f.organization_id=${context.organizationId} and f.workspace_id=${workspaceId}`;
     if (!row) throw new ArtifactReviewError('queued_message_not_found');
     const removalCode =
       action.action === 'edit'
@@ -109,6 +108,19 @@ export async function updateQueuedMessage(
       !['message', 'queue_next'].includes(row.kind)
     )
       throw new ArtifactReviewError('queued_message_started');
+    // Reject stale started/terminal requests before taking their Job lock.
+    // A completing Run holds that lock while atomically releasing this runtime.
+    // Only eligible queued rows may be locked, with claim eligibility rechecked
+    // after any wait; the runtime lock already serializes edits and receipts.
+    const [eligible] = await tx<{ run_id: string }[]>`
+      select f.run_id from allrice_conversation_followups f
+      join allrice_jobs j on j.run_id=f.run_id
+      where f.run_id=${row.run_id} and f.session_id=${sessionId} and f.user_message_id=${messageId}
+        and f.organization_id=${context.organizationId} and f.workspace_id=${workspaceId}
+        and f.mode='follow_up' and f.state in ('queued','released')
+        and j.status='queued' and j.cancel_requested_at is null
+      for update of f,j`;
+    if (!eligible) throw new ArtifactReviewError('queued_message_started');
     if (action.action === 'steer') {
       if (row.has_company_templates)
         throw new ArtifactReviewError('queued_company_templates_require_turn');
