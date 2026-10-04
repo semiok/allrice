@@ -169,6 +169,10 @@ export function RuntimeConsole() {
     busy: false,
     dirty: false,
   });
+  const [employeeNavigation, setEmployeeNavigation] = useState({
+    busy: false,
+    dirty: false,
+  });
   const [view, setView] = useState<
     | 'activity'
     | 'runtimes'
@@ -226,11 +230,16 @@ export function RuntimeConsole() {
         | 'feedback',
     ) => {
       if (next === view) return;
+      const navigation =
+        view === 'tenants'
+          ? organizationNavigation
+          : view === 'employees'
+            ? employeeNavigation
+            : null;
       if (
-        view === 'tenants' &&
-        (organizationNavigation.busy ||
-          (organizationNavigation.dirty &&
-            !window.confirm('放弃尚未保存的修改？')))
+        navigation &&
+        (navigation.busy ||
+          (navigation.dirty && !window.confirm('放弃尚未保存的修改？')))
       )
         return;
       setView(next);
@@ -238,7 +247,7 @@ export function RuntimeConsole() {
       url.searchParams.set('view', next);
       window.history.replaceState(null, '', url);
     },
-    [view, organizationNavigation],
+    [view, organizationNavigation, employeeNavigation],
   );
 
   const load = useCallback(
@@ -551,7 +560,7 @@ export function RuntimeConsole() {
           onNavigationStateChange={setOrganizationNavigation}
         />
       ) : view === 'employees' ? (
-        <EmployeeProduction />
+        <EmployeeProduction onNavigationStateChange={setEmployeeNavigation} />
       ) : view === 'capabilities' ? (
         <CapabilitySourceView onOpenEmployees={() => selectView('employees')} />
       ) : view === 'apps' ? (

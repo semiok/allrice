@@ -1,7 +1,7 @@
 .tree {
   display: grid;
   gap: 12px;
-  color: #f4f5f6;
+  color: var(--admin-text);
 }
 
 .heading {
@@ -13,22 +13,22 @@
 
 .heading h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--admin-font-body);
 }
 
 .hint {
   margin: 0;
-  color: #aab1bb;
-  font-size: 13px;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
   line-height: 1.6;
 }
 
 .skill,
 .independent {
   min-width: 0;
-  border: 1px solid #34383d;
-  border-radius: 12px;
-  background: #1b1d20;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-sidebar);
 }
 
 .skills,
@@ -43,8 +43,8 @@
 }
 
 .skill[data-selected='true'] {
-  border-color: #576e8b;
-  background: #20252c;
+  border-color: var(--admin-control-border);
+  background: var(--admin-selected);
 }
 
 .skillHeader {
@@ -65,13 +65,13 @@
 
 .badge {
   flex-shrink: 0;
-  color: #b7bec8;
-  font-size: 12px;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
   font-weight: 400;
 }
 
 .badge[data-selected='true'] {
-  color: #a8c7fa;
+  color: var(--admin-link);
 }
 
 .skillBody {
@@ -81,7 +81,7 @@
 }
 
 .skillBody > details {
-  border-top: 1px solid #3c444e;
+  border-top: 1px solid var(--admin-border);
 }
 
 .textButton,
@@ -90,9 +90,9 @@
   padding: 0;
   border: 0;
   background: transparent;
-  color: #aecbfa;
+  color: var(--admin-link);
   font: inherit;
-  font-size: 13px;
+  font-size: var(--admin-font-meta);
   cursor: pointer;
 }
 
@@ -115,7 +115,7 @@
 
 .basics h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--admin-font-body);
 }
 
 .basic {
@@ -123,9 +123,9 @@
   gap: 8px;
   align-content: start;
   padding: 14px;
-  border: 1px solid #34383d;
-  border-radius: 12px;
-  background: #1b1d20;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  background: var(--admin-sidebar);
   overflow-wrap: anywhere;
 }
 
@@ -134,13 +134,13 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  font-size: 14px;
+  font-size: var(--admin-font-body);
 }
 
 .warning {
   margin: 0;
-  color: #e7bb80;
-  font-size: 13px;
+  color: var(--admin-warning);
+  font-size: var(--admin-font-meta);
   line-height: 1.6;
 }
 
@@ -152,24 +152,24 @@
 }
 
 .tree summary::marker {
-  color: #aab1bb;
+  color: var(--admin-muted);
 }
 
 .tree summary:hover {
-  background: #ffffff08;
+  background: var(--admin-hover);
 }
 
 .tree summary:focus-visible,
 .tree button:focus-visible,
 .tree input:focus-visible {
-  outline: 2px solid #a8c7fa;
+  outline: 2px solid var(--admin-link);
   outline-offset: 2px;
 }
 
 .tree small {
   margin-left: 10px;
-  color: #aab1bb;
-  font-size: 12px;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
   font-weight: 400;
 }
 
@@ -184,9 +184,9 @@
   gap: 2px;
   margin: 0 12px 12px 20px;
   padding: 0 0 0 12px;
-  border-left: 1px solid #454a50;
+  border-left: 1px solid var(--admin-border);
   list-style: none;
-  font-size: 13px;
+  font-size: var(--admin-font-meta);
 }
 
 .leaf {
@@ -196,11 +196,11 @@
 
 .checkmark {
   margin-right: 10px;
-  color: #aab1bb;
+  color: var(--admin-muted);
 }
 
 .checkmark[data-configured='true'] {
-  color: #7dbd9b;
+  color: var(--admin-success);
 }
 
 .independent {
@@ -222,8 +222,8 @@
 .tool {
   min-width: 0;
   align-self: start;
-  border: 1px solid #34383d;
-  border-radius: 10px;
+  border: 1px solid var(--admin-border);
+  border-radius: 7px;
 }
 
 .choice {
@@ -237,11 +237,11 @@
 .choice input {
   flex: none;
   margin: 3px 0 0;
-  accent-color: #81aaf1;
+  accent-color: var(--admin-text);
 }
 
 .choice strong {
-  font-size: 14px;
+  font-size: var(--admin-font-body);
   overflow-wrap: anywhere;
 }
 
@@ -253,7 +253,7 @@
 
 .bundle {
   margin: 0 8px 8px;
-  font-size: 13px;
+  font-size: var(--admin-font-meta);
 }
 
 @media (max-width: 900px) {
