@@ -8,17 +8,15 @@ import {
   ChangesetDocumentSchema,
   commandCandidateManifest,
   type RuntimeLocalCommand,
-  projectSourceLimits,
 } from '@allrice/contracts';
 
-export class LocalCommandError extends Error {
-  constructor(readonly code: string) {
-    super(code);
-  }
-}
+import { RuntimeCommandError as LocalCommandError } from '@allrice/project-runtime';
+export { RuntimeCommandError as LocalCommandError } from '@allrice/project-runtime';
 
-const privatePart =
-  /^(?:\.env(?:\..*)?|\.git|\.ssh|\.aws|\.gnupg|\.codex|\.gemini|\.config|\.kube|\.docker|\.azure|\.npmrc|\.netrc|id_rsa|id_ed25519)$|\.(?:pem|key|p12|pfx)$/i;
+import {
+  privateProjectPart as privatePart,
+  readSavedProjectSource,
+} from '@allrice/project-runtime';
 
 const hash = (bytes: string | Buffer) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -212,38 +210,9 @@ export async function readLocalCommandInputs(
   return { command, files, ...evidence };
 }
 
-/** Exact immutable platform source; deliberately performs no host filesystem reads. */
+/** Exact immutable source; host-file reading remains a separate adapter. */
 export function readSavedProjectInputs(input: RuntimeLocalCommand) {
-  const command = RuntimeLocalCommandSchema.parse(input).arguments;
-  const source = command.projectSource;
-  if (
-    !source ||
-    hash(JSON.stringify(source.snapshot)) !==
-      source.project.snapshot.checksum ||
-    hash(
-      JSON.stringify(
-        source.snapshot.files
-          .map(({ path, sha256 }) => ({ path, sha256 }))
-          .sort((a, b) => a.path.localeCompare(b.path)),
-      ),
-    ) !== source.snapshot.sourceDigest
-  )
-    throw new LocalCommandError('PROJECT_SOURCE_CHANGED');
-  let total = 0;
-  const files = source.snapshot.files.map((f) => {
-    if (f.path.split('/').some((p) => privatePart.test(p)))
-      throw new LocalCommandError('SENSITIVE_INPUT');
-    const bytes = Buffer.from(f.contentBase64, 'base64');
-    total += bytes.length;
-    if (
-      bytes.toString('base64') !== f.contentBase64 ||
-      bytes.length !== f.sizeBytes ||
-      bytes.length > projectSourceLimits.fileBytes ||
-      total > projectSourceLimits.totalBytes ||
-      hash(bytes) !== f.sha256
-    )
-      throw new LocalCommandError('PROJECT_SOURCE_CHANGED');
-    return { path: f.path, content: f.contentBase64 };
-  });
-  return { command, files };
+  return readSavedProjectSource(
+    RuntimeLocalCommandSchema.parse(input).arguments,
+  );
 }

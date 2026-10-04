@@ -1,6 +1,11 @@
+import { createHash } from 'node:crypto';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
-  CloudCommandSchema,
+  CloudExecutionPayloadSchema,
+  projectRuntimeCacheIdentity,
+  cloudPythonImageV1,
+  cloudToolchainImageV1,
+  type CloudExecutionPayload,
   CloudCommandInputSchema,
   CloudExecutionProfileSchema,
   cloudRuntimeImage,
@@ -18,6 +23,13 @@ import {
   type RuntimePolicyPrincipal,
 } from './runtime-policy.ts';
 
+import {
+  assertSavedProjectAuthority,
+  savedProjectContext,
+  isProjectSourceAuthorityError,
+} from './saved-project-authority.ts';
+import { assertProjectExecutionOrigin } from './project-execution.ts';
+
 export const cloudExecutionEnabled = () =>
   runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
   runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED');
@@ -33,9 +45,37 @@ export function normalizeCloudPythonArguments(original: unknown) {
     limits: args.limits,
   });
 }
-export function cloudCommandBinding(
-  payload: ReturnType<typeof CloudCommandSchema.parse>,
-) {
+export function cloudCommandBinding(payload: CloudExecutionPayload) {
+  if ('kind' in payload)
+    return {
+      executableDigest: digest({
+        runtime: payload.runtime,
+        executable: payload.arguments.executable,
+      }),
+      argumentsDigest: digest({
+        args: payload.arguments.args,
+        preparation: payload.arguments.projectPreparation,
+      }),
+      workingDirectoryDigest: digest({
+        kind: 'cloud_copy',
+        project: payload.arguments.projectSource.project,
+        path: payload.arguments.path,
+        files: payload.arguments.files,
+      }),
+      effectiveEnvironmentDigest: digest({
+        backend: payload.backend,
+        credentials: 'none',
+        user: '1000',
+        preparation: 'trusted_root_supervisor',
+      }),
+      networkPolicyDigest: digest({ network: 'none' }),
+      toolchainDigest: digest({
+        backend: payload.backend,
+        imageDigest: payload.imageDigest,
+        architecture: 'amd64',
+      }),
+      budgetDigest: digest(payload.arguments.limits),
+    };
   return {
     executableDigest: digest({
       runtime: payload.runtime,
@@ -90,9 +130,10 @@ export async function checkCloudBindingAuthority(
     )
   )
     throw new RuntimePolicyError('cloud_input_changed');
-  const payload = CloudCommandSchema.parse(stored.payload),
-    origin = payload.origin;
-  if (Boolean(origin) !== (stored.original_arguments !== null))
+  const payload = CloudExecutionPayloadSchema.parse(stored.payload);
+  const project = 'kind' in payload ? payload : null;
+  const origin = 'kind' in payload ? undefined : payload.origin;
+  if (Boolean(origin || project) !== (stored.original_arguments !== null))
     throw new RuntimePolicyError('cloud_input_changed');
   if (origin) {
     const normalized = normalizeCloudPythonArguments(stored.original_arguments);
@@ -122,7 +163,7 @@ export async function checkCloudBindingAuthority(
     )
   )
     throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
-  if (origin) {
+  if (origin && !('kind' in payload)) {
     const f = snapshot.data;
     if (
       f.employee.definition.schemaVersion !== 2 ||
@@ -190,6 +231,86 @@ export async function checkCloudBindingAuthority(
   const [worker] =
     await tx`select j.id from allrice_cloud_execution_inputs i join allrice_jobs j on j.id=i.job_id and j.run_id=i.run_id and j.organization_id=i.organization_id and j.workspace_id=i.workspace_id and j.owner_id=i.owner_id and j.worker_id=i.worker_id and j.lease_token=i.job_lease_token where i.operation_id=${binding.attempt.operationId} and j.status='running' and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null for share of j`;
   if (!worker) throw new RuntimePolicyError('cloud_worker_lease_changed');
+  if (project) {
+    const source = project.arguments.projectSource;
+    const needsOutbound =
+      !project.arguments.projectPreparation.offline &&
+      project.arguments.projectPreparation.packages.some((p) => !p.archivePath);
+    if (
+      needsOutbound &&
+      (!snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
+        'network:outbound',
+      ) ||
+        (snapshot.data.employee.definition.schemaVersion === 2 &&
+          snapshot.data.employee.definition.securityPolicy.deniedCapabilities.includes(
+            'network:outbound',
+          )))
+    )
+      throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
+    if (
+      !source.executionOrigin ||
+      digest(stored.original_arguments) !==
+        source.executionOrigin.argumentsDigest ||
+      !snapshot.data.capabilitySnapshot.bindings.toolNames.includes(
+        'workspace.project',
+      ) ||
+      project.imageDigest !==
+        (project.arguments.projectPreparation.manager === 'uv'
+          ? cloudPythonImageV1
+          : cloudToolchainImageV1) ||
+      digest(payload) !== binding.inputDigest ||
+      !runtimeContractEqual(cloudCommandBinding(payload), binding.command) ||
+      !runtimeContractEqual(binding.baseline, [source.project.snapshot]) ||
+      !runtimeContractEqual(binding.dataScope, [
+        {
+          content: source.project.snapshot,
+          sourceTargetId: null,
+          purpose: 'execution_input',
+          destination: 'cloud_execution',
+          authorizationId: binding.attempt.operationId,
+          authorizationVersion: 1,
+        },
+      ]) ||
+      source.cacheKey !==
+        'sha256:' +
+          createHash('sha256')
+            .update(
+              JSON.stringify(
+                projectRuntimeCacheIdentity({
+                  spec: project.arguments.projectPreparation,
+                  scope: {
+                    organizationId: binding.task.scope.organizationId,
+                    workspaceId: binding.task.scope.workspaceId!,
+                    ownerId: binding.requestedBy.id,
+                  },
+                  image: project.imageDigest,
+                  architecture: 'amd64',
+                }),
+              ),
+            )
+            .digest('hex')
+    )
+      throw new RuntimePolicyError('cloud_project_identity_changed');
+    const ctx = await savedProjectContext(tx, binding, source);
+    await assertProjectExecutionOrigin(tx, binding, project.arguments, 'cloud');
+    try {
+      await assertSavedProjectAuthority(
+        tx,
+        ctx,
+        binding.task.chatSessionId!,
+        source.origin,
+        source.project,
+        'cloud.process.execute',
+      );
+    } catch (error) {
+      if (isProjectSourceAuthorityError(error))
+        throw new RuntimePolicyError('cloud_input_not_authorized');
+      throw error;
+    }
+    return { binding, payload, profile };
+  }
+  // Project branch has returned; existing script/Office/Python identities stay byte-for-byte stable.
+  if ('kind' in payload) throw new RuntimePolicyError('cloud_input_changed');
   if (
     digest(payload) !== binding.inputDigest ||
     !runtimeContractEqual(cloudCommandBinding(payload), binding.command) ||

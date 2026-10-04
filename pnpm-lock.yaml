@@ -118,6 +118,9 @@ importers:
       '@allrice/office-runtime':
         specifier: workspace:*
         version: link:../../packages/office-runtime
+      '@allrice/project-runtime':
+        specifier: workspace:*
+        version: link:../../packages/project-runtime
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@4.4.3)
@@ -318,6 +321,9 @@ importers:
       '@allrice/office-runtime':
         specifier: workspace:*
         version: link:../../packages/office-runtime
+      '@allrice/project-runtime':
+        specifier: workspace:*
+        version: link:../../packages/project-runtime
       '@allrice/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -576,6 +582,15 @@ importers:
       pdf-parse:
         specifier: 2.4.5
         version: 2.4.5
+
+  packages/project-runtime:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
 
   packages/storage:
     dependencies:

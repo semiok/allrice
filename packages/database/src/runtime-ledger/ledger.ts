@@ -526,6 +526,12 @@ export function createRuntimeOperationLedger(options: {
     transaction: Tx;
     binding: RuntimeActionBinding;
   }) => Promise<void>;
+  /** Adapter-specific physical/source evidence, after operation and lease locks. Does not authorize new execution. */
+  assertReceiptEvidence?: (input: {
+    transaction: Tx;
+    binding: RuntimeActionBinding;
+    receipt: RuntimeLedgerReceipt;
+  }) => Promise<void>;
   /** Trusted server-only private recovery journal; never returned to a client.
    * Atomic with dispatch so ACK loss cannot orphan the authenticated lease. */
   persistLease?: (input: {
@@ -1351,6 +1357,11 @@ export function createRuntimeOperationLedger(options: {
         )
           disposition = 'stale';
         else {
+          await options.assertReceiptEvidence?.({
+            transaction: tx,
+            binding: row.snapshot.binding,
+            receipt: input,
+          });
           if (
             row.bridge_payload !== null &&
             ['operation.outcome', 'operation.stopped'].includes(

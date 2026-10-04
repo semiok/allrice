@@ -4,6 +4,16 @@ import { linkTaskOperationCall } from './task-clock.ts';
 import {
   CloudCommandInputSchema,
   CloudCommandSchema,
+  CloudProjectCommandSchema,
+  CloudProjectRunResultSchema,
+  ProjectExecuteInputSchema,
+  RuntimeSavedProjectSourceSchema,
+  projectRuntimeCacheIdentity,
+  cloudPythonImageV1,
+  cloudToolchainImageV1,
+  cloudProjectResultMatchesPayload,
+  type CloudExecutionPayload,
+  type RuntimeContentRef,
   PythonExecuteArgsSchema,
   CloudExecutionProfileSchema,
   cloudRuntimeImage,
@@ -50,6 +60,13 @@ import {
   createToolBrokerExportObject,
   registerToolBrokerExport,
 } from './execution/tool-broker.ts';
+
+import {
+  assertSavedProjectAuthority,
+  readProjectSource,
+  isProjectSourceAuthorityError,
+} from './saved-project-authority.ts';
+import { type ProjectExecutionSelection } from './project-execution.ts';
 
 type Database = ReturnType<typeof getDatabase>;
 export { cloudExecutionEnabled } from './cloud-authority.ts';
@@ -117,9 +134,72 @@ export function createCloudOperationLedger(
     }) =>
       (await checkCloudBindingAuthority(transaction, context, binding)).binding,
   };
+  Object.assign(policyOptions, {
+    assertFinalBinding: async ({
+      transaction,
+      binding,
+    }: {
+      transaction: Parameters<typeof checkCloudBindingAuthority>[0];
+      binding: RuntimeActionBinding;
+    }) => {
+      await checkCloudBindingAuthority(transaction, context, binding);
+    },
+  });
   const policy = createRuntimePolicyAdmission(policyOptions);
   const ledger = createRuntimeOperationLedger({
     database,
+    assertCreateReplayAuthority: async ({ transaction, binding }) => {
+      const [stored] =
+        await transaction`select payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId}`;
+      if (stored?.payload?.kind === 'project')
+        await checkCloudBindingAuthority(transaction, context, binding);
+    },
+    assertReceiptEvidence: async ({ transaction, binding, receipt }) => {
+      const [stored] =
+        await transaction`select i.payload,a.outcome from allrice_cloud_execution_inputs i
+        left join allrice_cloud_execution_attempts a on a.operation_id=i.operation_id where i.operation_id=${binding.attempt.operationId}`;
+      if (
+        stored?.payload?.kind !== 'project' ||
+        !['operation.outcome', 'operation.stopped'].includes(
+          receipt.signal.type,
+        )
+      )
+        return;
+      const payload = CloudProjectCommandSchema.parse(stored.payload);
+      const result = CloudProjectRunResultSchema.safeParse(stored.outcome);
+      const evidence = receipt.evidence as {
+        projectPreparation?: unknown;
+        imageDigest?: unknown;
+        stopped?: unknown;
+        reason?: unknown;
+        exitCode?: unknown;
+      } | null;
+      const success =
+        receipt.signal.type === 'operation.outcome' &&
+        receipt.signal.result.status === 'succeeded';
+      const effects =
+        receipt.signal.type === 'operation.outcome'
+          ? receipt.signal.result.effects
+          : receipt.signal.type === 'operation.stopped'
+            ? receipt.signal.effects
+            : 'none';
+      if (
+        effects !== 'none' ||
+        !result.success ||
+        !cloudProjectResultMatchesPayload(payload, result.data) ||
+        !runtimeContractEqual(
+          evidence?.projectPreparation,
+          result.data.projectPreparation,
+        ) ||
+        evidence?.imageDigest !== result.data.imageDigest ||
+        evidence?.stopped !== true ||
+        evidence?.reason !== result.data.reason ||
+        evidence?.exitCode !== result.data.exitCode ||
+        (success &&
+          (result.data.reason !== 'completed' || result.data.exitCode !== 0))
+      )
+        throw new RuntimePolicyError('cloud_project_receipt_changed');
+    },
     persistLease: async ({ transaction, lease }) => {
       if (lease.snapshot.binding.action !== 'cloud.process.execute')
         throw new RuntimePolicyError('resource_adapter_not_registered');
@@ -189,6 +269,174 @@ export async function createCloudPythonOperation(
   );
 }
 
+/** Saved-source cloud ingress: the selected target and original Worker are mandatory. */
+export async function createCloudProjectOperation(
+  input: {
+    context: ExecutionContext;
+    callId: string;
+    projectSelection: ProjectExecutionSelection;
+    worker: { attempt: number; leaseToken: string };
+    storage: StoragePort;
+  },
+  database: Database = getDatabase(),
+) {
+  const ctx = input.context,
+    selected = input.projectSelection;
+  const args = ProjectExecuteInputSchema.parse(selected.originalArguments);
+  if (
+    !cloudExecutionEnabled() ||
+    !ctx.workspaceId ||
+    selected.choice.location !== 'cloud' ||
+    selected.choice.status !== 'execute' ||
+    selected.callId !== input.callId ||
+    selected.runId !== ctx.runId ||
+    selected.workerOrigin.attempt !== input.worker.attempt ||
+    selected.workerOrigin.leaseTokenDigest !==
+      createHash('sha256').update(input.worker.leaseToken).digest('hex')
+  )
+    throw new RuntimePolicyError('project_execution_origin_changed');
+  const key = `cloud-project:${ctx.runId}:${input.callId}`,
+    operationId = cloudStableId(key);
+  if (selected.operationId !== operationId)
+    throw new RuntimePolicyError('project_execution_origin_changed');
+  const prepared = await database
+    .begin(async (tx) => {
+      const [run] = await tx<
+        {
+          session_id: string;
+          employee_version_id: string;
+          execution_spec: unknown;
+          policy_snapshot_id: string;
+          payload: unknown;
+          thread_generation: number;
+          timeout_at: Date;
+          lease_token: string;
+        }[]
+      >`
+      select e.session_id,e.employee_version_id,r.execution_spec,r.policy_snapshot_id,p.payload,c.thread_generation,j.timeout_at,j.lease_token::text
+      from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
+      join allrice_jobs j on j.id=${ctx.jobId} and j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
+      join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
+      join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id and c.active_run_id=r.id and c.state='running'
+      where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${ctx.policySnapshot.subjectId}
+        and r.state='running' and r.policy_snapshot_id=${ctx.policySnapshot.id} and j.worker_id=${ctx.worker.id} and j.attempt=${input.worker.attempt}
+        and j.lease_token=${input.worker.leaseToken} and j.status='running' and j.lease_expires_at>clock_timestamp()
+        and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null for share of j,r,e,c,p`;
+      if (!run || run.session_id !== selected.sessionId)
+        throw new RuntimePolicyError('cloud_worker_lease_changed');
+      const [grant] = await tx<
+        { id: string; version: number; target_id: string; profile: unknown }[]
+      >`
+      select g.id,g.version,g.target_id,g.profile from allrice_cloud_execution_grants g
+        join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id
+      where g.id=${selected.grantId} and g.target_id=${selected.targetId} and g.organization_id=${ctx.organizationId}
+        and g.workspace_id=${ctx.workspaceId} and g.owner_id=${ctx.policySnapshot.subjectId} and g.enabled and g.revoked_at is null
+        and t.kind='cloud_sandbox' and t.state='online'
+        and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp())
+      for share of g,t`;
+      if (!grant) throw new RuntimePolicyError('cloud_grant_unavailable');
+      const profile = CloudExecutionProfileSchema.parse(grant.profile);
+      if (digest(profile) !== selected.profileDigest)
+        throw new RuntimePolicyError('cloud_profile_changed');
+      const source = await readProjectSource(
+        tx,
+        ctx,
+        args.project.snapshot,
+        input.storage,
+      );
+      await assertSavedProjectAuthority(
+        tx,
+        ctx,
+        run.session_id,
+        selected.workerOrigin,
+        args.project,
+        'cloud.process.execute',
+      );
+      const spec = args.projectPreparation;
+      if (
+        source.document.projectId !== args.project.projectId ||
+        source.document.sourceDigest !== spec.sourceDigest ||
+        source.document.files.find((f) => f.path === spec.lockPath)?.sha256 !==
+          spec.lockChecksum
+      )
+        throw new RuntimePolicyError('cloud_input_changed');
+      const imageDigest =
+        spec.manager === 'uv' ? cloudPythonImageV1 : cloudToolchainImageV1;
+      const projectSource = RuntimeSavedProjectSourceSchema.parse({
+        version: 1,
+        project: args.project,
+        snapshot: source.document,
+        architecture: 'amd64',
+        origin: selected.workerOrigin,
+        executionOrigin: {
+          toolName: 'workspace.project',
+          callId: input.callId,
+          argumentsDigest: selected.argumentsDigest,
+          selectionId: selected.selectionId,
+        },
+        cacheKey:
+          'sha256:' +
+          createHash('sha256')
+            .update(
+              JSON.stringify(
+                projectRuntimeCacheIdentity({
+                  spec,
+                  scope: {
+                    organizationId: ctx.organizationId,
+                    workspaceId: ctx.workspaceId!,
+                    ownerId: ctx.policySnapshot.subjectId,
+                  },
+                  image: imageDigest,
+                  architecture: 'amd64',
+                }),
+              ),
+            )
+            .digest('hex'),
+      });
+      const commandArgs = {
+        executable: args.executable,
+        args: args.args,
+        path: args.path,
+        projectPreparation: args.projectPreparation,
+        limits: args.limits,
+      };
+      const payload = CloudProjectCommandSchema.parse({
+        kind: 'project',
+        capability: 'cloud.process.execute',
+        arguments: {
+          ...commandArgs,
+          projectSource,
+          files: source.document.files.map(({ path, sha256 }) => ({
+            path,
+            sha256,
+          })),
+          imageDigest,
+        },
+        imageDigest,
+        backend: profile.backend,
+        runtime: profile.runtime,
+        network: 'none',
+      });
+      // Canonical origin is checked again under ledger locks, not only at this preparation read.
+      return { run, grant, profile, payload };
+    })
+    .catch((error: unknown) => {
+      if (isProjectSourceAuthorityError(error))
+        throw new RuntimePolicyError('cloud_input_not_authorized');
+      throw error;
+    });
+  return finishCloudOperation({
+    input,
+    database,
+    ...prepared,
+    key,
+    operationId,
+    content: [args.project.snapshot],
+    originalArguments: args as unknown as Record<string, unknown>,
+    workerAttempt: input.worker.attempt,
+  });
+}
+
 async function createCloudOperation(
   input: { context: ExecutionContext; arguments: unknown; callId: string },
   database: Database,
@@ -241,11 +489,60 @@ async function createCloudOperation(
   }
   const key = `${python ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`,
     operationId = cloudStableId(key);
-  const content = args.inputs.map((f) => ({
-    kind: 'storage_object' as const,
-    id: f.objectId,
-    checksum: f.checksum,
-  }));
+  return finishCloudOperation({
+    input,
+    database,
+    run,
+    grant,
+    profile,
+    payload,
+    key,
+    operationId,
+    content: args.inputs.map((f) => ({
+      kind: 'storage_object' as const,
+      id: f.objectId,
+      checksum: f.checksum,
+    })),
+    originalArguments: python?.originalArguments,
+  });
+}
+
+async function finishCloudOperation<P extends CloudExecutionPayload>({
+  input,
+  database,
+  run,
+  grant,
+  profile,
+  payload,
+  key,
+  operationId,
+  content,
+  originalArguments,
+  workerAttempt,
+}: {
+  input: { context: ExecutionContext; callId: string };
+  database: Database;
+  run: {
+    session_id: string;
+    employee_version_id: string;
+    execution_spec: unknown;
+    policy_snapshot_id: string;
+    payload: unknown;
+    thread_generation: number;
+    timeout_at: Date;
+    lease_token: string;
+  };
+  grant: { id: string; version: number; target_id: string };
+  profile: unknown;
+  payload: P;
+  key: string;
+  operationId: string;
+  content: RuntimeContentRef[];
+  originalArguments?: Record<string, unknown>;
+  workerAttempt?: number;
+}) {
+  const ctx = input.context,
+    owner = ctx.policySnapshot.subjectId;
   const binding = RuntimeActionBindingSchema.parse({
     task: {
       scope: {
@@ -293,7 +590,7 @@ async function createCloudOperation(
       authorizationVersion: 1,
     })),
   });
-  await database`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload,original_arguments) values(${operationId},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},${grant.id},${ctx.jobId},${ctx.worker.id},${run.lease_token},${database.json(binding)},${database.json(payload)},${python ? database.json(python.originalArguments as Parameters<Database['json']>[0]) : null}) on conflict(operation_id) do nothing`;
+  await database`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload,original_arguments) values(${operationId},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},${grant.id},${ctx.jobId},${ctx.worker.id},${run.lease_token},${database.json(binding)},${database.json(payload)},${originalArguments ? database.json(originalArguments as Parameters<Database['json']>[0]) : null}) on conflict(operation_id) do nothing`;
   const [stored] = await database<
     {
       binding: unknown;
@@ -309,7 +606,7 @@ async function createCloudOperation(
     !runtimeContractEqual(stored?.payload, payload) ||
     !runtimeContractEqual(
       stored?.original_arguments,
-      python?.originalArguments ?? null,
+      originalArguments ?? null,
     ) ||
     stored?.job_id !== ctx.jobId ||
     stored?.worker_id !== ctx.worker.id ||
@@ -348,9 +645,12 @@ async function createCloudOperation(
         b.metric === 'tool_calls'
           ? 1
           : b.metric === 'wall_time'
-            ? args.limits.timeoutMs
+            ? payload.arguments.limits.timeoutMs
             : b.metric === 'output_bytes'
-              ? args.limits.artifactBytes + args.limits.outputBytes
+              ? ('kind' in payload
+                  ? 0
+                  : payload.arguments.limits.artifactBytes) +
+                payload.arguments.limits.outputBytes
               : 0,
     })),
   });
@@ -374,6 +674,7 @@ async function createCloudOperation(
     deadlineAt: run.timeout_at.toISOString(),
     context: ctx,
     jobLeaseToken: run.lease_token,
+    jobAttempt: workerAttempt,
     callId: input.callId,
   };
 }

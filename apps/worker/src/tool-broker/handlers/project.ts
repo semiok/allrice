@@ -1,10 +1,24 @@
 import {
   executeProjectWorkspace,
   ProjectWorkspaceError,
+  selectProjectExecution,
+  createLocalCommandOperation,
+  waitLocalCommandOperation,
+  createCloudProjectOperation,
+  RuntimePolicyError,
+  cloudExecutionEnabled,
 } from '@allrice/database';
+import {
+  ProjectExecuteInputSchema,
+  cloudPythonImageV1,
+  cloudToolchainImageV1,
+} from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
+import { waitForLocalAdmission } from './local-admission.js';
+import { CloudRunnerBackend } from '../../cloud-runner/backend.js';
+import { runCloudCommandOperation } from '../../cloud-runner/executor.js';
 
 export const runProjectWorkspace: RiceToolHandler = async ({
   input,
@@ -21,6 +35,133 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       false,
     );
   try {
+    if (args.action === 'execute') {
+      const command = ProjectExecuteInputSchema.parse(args),
+        storage = new LocalStorageAdapter(input.storageRoot);
+      const worker = {
+        attempt: input.managedBrowserJobAttempt,
+        leaseToken: input.managedBrowserJobLeaseToken,
+      };
+      const backend = new CloudRunnerBackend();
+      let cloudReady = false;
+      const selected = await waitForLocalAdmission(input, async () => {
+        let selection = await selectProjectExecution({
+          context: input.context,
+          arguments: command,
+          callId: input.call.id,
+          worker,
+          cloudReady,
+        });
+        if (
+          cloudExecutionEnabled() &&
+          !cloudReady &&
+          (selection.choice.location === 'none' ||
+            selection.choice.location === 'cloud') &&
+          selection.choice.reason === 'cloud_unavailable'
+        ) {
+          // Local-ready/busy/preparing paths never spend a cloud probe or cloud slot.
+          cloudReady = await backend
+            .preflight(
+              command.projectPreparation.manager === 'uv'
+                ? cloudPythonImageV1
+                : cloudToolchainImageV1,
+            )
+            .then(() => true)
+            .catch(() => false);
+          if (cloudReady)
+            selection = await selectProjectExecution({
+              context: input.context,
+              arguments: command,
+              callId: input.call.id,
+              worker,
+              cloudReady,
+            });
+        }
+        if (selection.choice.status === 'wait')
+          throw new RuntimePolicyError(
+            selection.choice.reason === 'local_busy'
+              ? 'local_runner_busy'
+              : 'local_runner_preparing',
+          );
+        if (selection.choice.status !== 'execute')
+          return { selection, local: null };
+        if (selection.choice.location === 'local') {
+          const localArgs = {
+            project: command.project,
+            executable: command.executable,
+            args: command.args,
+            path: command.path,
+            projectPreparation: command.projectPreparation,
+            limits: command.limits,
+          };
+          const local = await createLocalCommandOperation({
+            context: input.context,
+            arguments: localArgs,
+            callId: input.call.id,
+            worker,
+            storage,
+            projectSelection: selection,
+          });
+          return { selection, local };
+        }
+        return { selection, local: null };
+      });
+      if (selected.selection.choice.status !== 'execute')
+        return {
+          modelContent: JSON.stringify({
+            status:
+              selected.selection.choice.status === 'reconcile'
+                ? 'unknown'
+                : 'environment_unavailable',
+            executed: false,
+            executionChoice: selected.selection.choice,
+            project: command.project,
+            nextAction:
+              '本次调用未启动新的执行；恢复原执行环境或核对原操作状态，不得自动换端重跑。',
+          }),
+          summary: '项目执行环境暂不可用',
+        };
+      if (selected.local) {
+        const result = await waitLocalCommandOperation(
+          selected.local,
+          input.signal,
+        );
+        return {
+          modelContent: JSON.stringify({
+            ...result,
+            project: command.project,
+            executionLocation: 'local',
+            executionChoice: selected.selection.choice,
+            workCopy: 'local_isolated_copy',
+            sourceDirectoryModified: false,
+          }),
+          summary: `本地项目执行 · ${result.status}`,
+        };
+      }
+      const created = await createCloudProjectOperation({
+        context: input.context,
+        callId: input.call.id,
+        projectSelection: selected.selection,
+        worker,
+        storage,
+      });
+      const result = await runCloudCommandOperation(created, {
+        storage,
+        backend,
+        ...(input.signal ? { signal: input.signal } : {}),
+      });
+      return {
+        modelContent: JSON.stringify({
+          ...result,
+          project: command.project,
+          executionLocation: 'cloud',
+          executionChoice: selected.selection.choice,
+          workCopy: 'cloud_copy',
+          sourceDirectoryModified: false,
+        }),
+        summary: `云端项目执行 · ${result.status}`,
+      };
+    }
     const result = await executeProjectWorkspace(
       {
         context: input.context,

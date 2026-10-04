@@ -26,6 +26,7 @@ export async function createAssistantLocalCommandFixture(
     development?: boolean;
     skipChild?: boolean;
     projectWorkspace?: boolean;
+    projectCloud?: boolean;
   } = {},
 ) {
   const f = await createAssistantAuthorityFixture(database, {
@@ -42,6 +43,7 @@ export async function createAssistantLocalCommandFixture(
         ? ['assistant.development', 'workspace.export.create']
         : []),
       ...(options.projectWorkspace ? ['workspace.project'] : []),
+      ...(options.projectCloud ? ['cloud.process.execute'] : []),
     ],
     controls: {
       version: 1,
@@ -50,6 +52,9 @@ export async function createAssistantLocalCommandFixture(
       rules: [
         { action: 'assistant.delegate', effect: 'allow' },
         { action: 'local.process.execute', effect },
+        ...(options.projectCloud
+          ? [{ action: 'cloud.process.execute' as const, effect }]
+          : []),
       ],
     },
   });

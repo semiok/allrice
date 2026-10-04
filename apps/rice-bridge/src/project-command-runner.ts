@@ -20,7 +20,10 @@ import {
   readLocalCommandInputs,
   readSavedProjectInputs,
 } from './local-command-inputs.js';
-import { createLocalPythonArchive } from './local-python-archive.js';
+import {
+  ProjectEvents,
+  projectStagingArchives,
+} from '@allrice/project-runtime';
 import {
   projectCacheKey,
   projectSourceDigest,
@@ -31,7 +34,6 @@ import {
   nodeProjectSupervisor,
   pythonProjectSupervisor,
 } from './project-supervisor.js';
-import { LocalCommandOutputFilter } from './local-command-output.js';
 import type { LocalCommandOutput } from './local-command-runner.js';
 
 const attemptLabel = 'xyz.bplabs.allrice.attempt',
@@ -566,57 +568,15 @@ export class ProjectCommandRunner {
       };
       signal.addEventListener('abort', abort, { once: true });
       try {
-        const staged = [
-          {
-            path: '.allrice/config.json',
-            bytes: Buffer.from(
-              JSON.stringify({
-                command: {
-                  ...a,
-                  projectSource: undefined,
-                  files: [...a.files].sort((f, g) =>
-                    f.path.localeCompare(g.path),
-                  ),
-                },
-                deadlineUnixMs,
-                deadlineReason,
-              }),
-            ),
-          },
-          { path: '.allrice/empty.conf', bytes: Buffer.from('') },
+        for (const bytes of projectStagingArchives({
+          command,
+          files: bundle.files,
           tool,
-          ...prepared.files,
-          ...bundle.files.map((f) => ({
-            path: 'project/' + f.path,
-            bytes: Buffer.from(f.content, 'base64'),
-          })),
-        ];
-        // Use the existing bounded binary channel; don't enlarge ledger envelopes.
-        let batch: typeof staged = [];
-        let size = 0;
-        for (const f of staged) {
-          if (size + f.bytes.length + 2048 > 23_000_000 && batch.length) {
-            await this.input.api.putArchive(
-              id,
-              '/tmp/work',
-              createLocalPythonArchive(
-                batch.map((f) => ({ ...f, mode: 0o444 })),
-              ),
-              signal,
-            );
-            batch = [];
-            size = 0;
-          }
-          batch.push(f);
-          size += f.bytes.length + 2048;
-        }
-        if (batch.length)
-          await this.input.api.putArchive(
-            id,
-            '/tmp/work',
-            createLocalPythonArchive(batch.map((f) => ({ ...f, mode: 0o444 }))),
-            signal,
-          );
+          prepared,
+          deadlineUnixMs,
+          deadlineReason,
+        }))
+          await this.input.api.putArchive(id, '/tmp/work', bytes, signal);
         await check();
         startRequested = true;
         start = this.input.api.json('POST', `/containers/${id}/start`);
@@ -701,103 +661,11 @@ export class ProjectCommandRunner {
     timeout: number,
     onOutput?: Options['onOutput'],
   ) {
-    let pending = '',
-      stdout = '',
-      stderr = '',
-      size = 0,
-      sequence = 0,
-      truncated = false,
-      exit: Exit | undefined,
-      sourceDigest: string | undefined;
-    const filters = {
-      stdout: new LocalCommandOutputFilter(),
-      stderr: new LocalCommandOutputFilter(),
-    };
-    const publish = (stream: 'stdout' | 'stderr', text: string) => {
-      if (!text) return;
-      if (sequence >= 256) {
-        truncated = true;
-        return;
-      }
-      if (size + Buffer.byteLength(text) > maximum) {
-        truncated = true;
-        return;
-      }
-      size += Buffer.byteLength(text);
-      if (stream === 'stdout') stdout += text;
-      else stderr += text;
-      onOutput?.({ sequence: sequence++, stream, text });
-    };
-    await this.input.api.logs(
-      id,
-      (b) => {
-        pending += b.toString('utf8');
-        if (pending.length > 250000)
-          throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
-        let n;
-        while ((n = pending.indexOf('\n')) >= 0) {
-          const e = JSON.parse(pending.slice(0, n));
-          pending = pending.slice(n + 1);
-          if (e.type === 'stdout' || e.type === 'stderr') {
-            if (typeof e.data !== 'string')
-              throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
-            publish(
-              e.type,
-              filters[e.type as 'stdout' | 'stderr'].push(
-                Buffer.from(e.data, 'base64'),
-              ),
-            );
-          } else if (e.type === 'source_verified') {
-            if (sourceDigest || !/^sha256:[a-f0-9]{64}$/.test(e.sourceDigest))
-              throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
-            sourceDigest = e.sourceDigest;
-          } else if (e.type === 'stage') {
-            if (!['preparing', 'running'].includes(e.stage))
-              throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
-            publish(
-              'stderr',
-              e.stage === 'preparing'
-                ? '正在准备项目依赖…\n'
-                : '依赖准备完成，正在运行项目…\n',
-            );
-          } else if (e.type === 'exit') {
-            if (
-              ![
-                'exited',
-                'timeout',
-                'lease_lost',
-                'output_limit',
-                'cache_limit',
-                'supervisor_failed',
-              ].includes(e.reason) ||
-              !Number.isInteger(e.code) ||
-              !['succeeded', 'failed'].includes(e.installation)
-            )
-              throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
-            exit = {
-              reason: e.reason,
-              code: e.code,
-              installation: e.installation,
-            };
-          } else throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
-        }
-      },
-      timeout,
-    );
-    for (const stream of ['stdout', 'stderr'] as const)
-      publish(stream, filters[stream].push(Buffer.alloc(0), true));
-    return {
-      stdout,
-      stderr,
-      exit,
-      sourceDigest,
-      truncated:
-        truncated ||
-        !!pending ||
-        filters.stdout.truncated ||
-        filters.stderr.truncated,
-    };
+    const events = new ProjectEvents(maximum, onOutput);
+    await this.input.api.logs(id, (bytes) => events.push(bytes), timeout);
+    return events.finish();
   }
+
   async recover(attempt: string, command: RuntimeLocalCommand) {
     let c: Container;
     try {

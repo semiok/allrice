@@ -36,6 +36,10 @@ import {
   readProjectSource,
 } from './saved-project-authority.ts';
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
+import {
+  projectProfileDigest,
+  type ProjectExecutionSelection,
+} from './project-execution.ts';
 
 import { getDatabase } from './core/client.ts';
 import { getToolBrokerFile } from './execution/tool-broker.ts';
@@ -96,6 +100,7 @@ async function createLocalBridgeToolOperation(
     assistant?: AssistantOperationOrigin;
     storage?: StoragePort;
     worker?: { attempt: number; leaseToken: string };
+    projectSelection?: ProjectExecutionSelection;
   },
   database: Database = getDatabase(),
 ) {
@@ -243,6 +248,8 @@ async function createLocalBridgeToolOperation(
     ) g on true
     where d.organization_id=${ctx.organizationId} and d.workspace_id=${ctx.workspaceId} and d.owner_id=${owner} and d.revoked_at is null
       and (${candidateTargetId}::uuid is null or t.id=${candidateTargetId}::uuid)
+      and (${input.projectSelection?.deviceId ?? null}::uuid is null or d.id=${input.projectSelection?.deviceId ?? null}::uuid)
+      and (${input.projectSelection?.grantId ?? null}::uuid is null or g.id=${input.projectSelection?.grantId ?? null}::uuid)
       and d.platform in ('macos-x64','macos-arm64') and d.last_seen_at>clock_timestamp()-interval '90 seconds'
     order by d.last_seen_at desc limit 1`;
   if (!target) throw new RuntimePolicyError('local_runner_unavailable');
@@ -271,6 +278,13 @@ async function createLocalBridgeToolOperation(
     ? `local-command:${ctx.runId}:assistant:${input.assistant.runId}:${input.callId}`
     : `${input.file ? input.file.capability : 'local-command'}:${ctx.runId}:${input.callId}`;
   const operationId = id(key);
+  if (
+    input.projectSelection &&
+    (!requestedProject ||
+      input.projectSelection.choice.location !== 'local' ||
+      input.projectSelection.operationId !== operationId)
+  )
+    throw new RuntimePolicyError('project_execution_origin_changed');
   const [prior] =
     await database`select id from allrice_runtime_operations where id=${operationId}
     and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId}`;
@@ -324,6 +338,11 @@ async function createLocalBridgeToolOperation(
   if (candidate && !profile?.features?.includes('changeset_candidate'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (requestedProject) {
+    if (
+      input.projectSelection?.profileDigest &&
+      input.projectSelection.profileDigest !== projectProfileDigest(profile!)
+    )
+      throw new RuntimePolicyError('project_execution_origin_changed');
     if (!profile?.features?.includes('saved_project_source'))
       throw new RuntimePolicyError('local_runner_upgrade_required');
     const origin = {
@@ -376,6 +395,16 @@ async function createLocalBridgeToolOperation(
       version: 1,
       project: requestedProject,
       snapshot: loaded.document,
+      ...(input.projectSelection
+        ? {
+            executionOrigin: {
+              toolName: 'workspace.project',
+              callId: input.callId,
+              argumentsDigest: input.projectSelection.argumentsDigest,
+              selectionId: input.projectSelection.selectionId,
+            },
+          }
+        : {}),
       architecture: profile!.architecture,
       origin,
       cacheKey: `sha256:${createHash('sha256')

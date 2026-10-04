@@ -26,6 +26,7 @@ import {
 import {
   RuntimeProjectPreparationSchema,
   RuntimeProjectPreparationEvidenceSchema,
+  projectPreparationResultMatches,
 } from './project-preparation.ts';
 import {
   RuntimeProjectDiagnosticsRequestSchema,
@@ -346,33 +347,13 @@ export function localProjectResultMatchesPayload(
     proof = result.projectPreparation;
   return !spec
     ? proof === undefined
-    : !!proof &&
-        proof.version === spec.version &&
-        proof.projectId === spec.projectId &&
-        proof.sourceDigest === spec.sourceDigest &&
-        proof.lockChecksum === spec.lockChecksum &&
-        proof.manager === spec.manager &&
-        proof.managerVersion === spec.managerVersion &&
-        proof.runtimeImage === payload.arguments.imageDigest &&
-        result.imageDigest === payload.arguments.imageDigest &&
-        proof.packageCount === spec.packages.length &&
-        (payload.arguments.projectSource
-          ? !!proof.savedSource &&
-            runtimeContractEqual(
-              proof.savedSource.project,
-              payload.arguments.projectSource.project,
-            ) &&
-            proof.cacheKey === payload.arguments.projectSource.cacheKey &&
-            proof.cacheVolume ===
-              `allrice-project-cache-${payload.arguments.projectSource.cacheKey.slice(7)}` &&
-            proof.platform ===
-              `linux-${payload.arguments.projectSource.architecture}` &&
-            (proof.savedSource.restoredDigest === spec.sourceDigest ||
-              (proof.savedSource.restoredDigest === null &&
-                proof.installation !== 'succeeded' &&
-                result.reason !== 'exited'))
-          : proof.savedSource === undefined) &&
-        (result.reason !== 'exited' ||
-          result.exitCode !== 0 ||
-          proof.installation === 'succeeded');
+    : result.imageDigest === payload.arguments.imageDigest &&
+        projectPreparationResultMatches({
+          spec,
+          source: payload.arguments.projectSource,
+          imageDigest: payload.arguments.imageDigest,
+          proof,
+          succeeded: result.reason === 'exited' && result.exitCode === 0,
+          commandFinished: result.reason === 'exited',
+        });
 }

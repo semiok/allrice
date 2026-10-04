@@ -28,7 +28,8 @@ const suite =
     : describe.skip;
 const backend = new CloudRunnerBackend();
 // DB-only admissions never create a physical container. This adapter only
-// models authoritative absence; real execution cases below always use runsc.
+// reports current absence, which cannot prove a delayed create will not appear;
+// real execution cases below always use runsc.
 class NoContainersBackend extends CloudRunnerBackend {
   override async inspect() {
     return null;
@@ -223,7 +224,7 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
         backend: new NoContainersBackend(),
         database: db,
       }),
-    ).toEqual({ recovered: 1, failed: 0 });
+    ).toEqual({ recovered: 0, failed: 0 });
     expect(
       (
         await c.ledger.readOperation(
@@ -232,6 +233,15 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
         )
       ).status,
     ).toBe('unknown');
+    const [attempt] =
+      await db`select cleanup_confirmed_at,outcome from allrice_cloud_execution_attempts where operation_id=${c.snapshot.binding.attempt.operationId}`;
+    expect(attempt).toMatchObject({
+      cleanup_confirmed_at: null,
+      outcome: null,
+    });
+    const [receipt] =
+      await db`select payload->'evidence' as evidence from allrice_runtime_operation_receipts where operation_id=${c.snapshot.binding.attempt.operationId} order by received_at desc limit 1`;
+    expect(receipt!.evidence).toMatchObject({ physicallyStopped: false });
     const [job] =
       await db`select lease_token::text,cancel_requested_at from allrice_jobs where run_id=${f.run}`;
     expect(job).toMatchObject({
