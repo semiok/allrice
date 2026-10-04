@@ -160,7 +160,7 @@ export function WorkProcess({
     const renderPart = (part: WorkProgressPart, index: number) =>
       part.kind === 'reply' ? (
         <div
-          key={part.id}
+          key={part.id === final?.id ? 'final-reply' : part.id}
           className={styles.processReply}
           data-work-reply={part.id}
           hidden={!showHistory && part.id !== final?.id}

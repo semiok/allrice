@@ -377,13 +377,32 @@ export function ChatTranscript({
                             streamingOutput,
                             operations,
                           );
+                          // History text arrives before the native event trace.
+                          // Keep a settled streaming reply in the same process
+                          // frame while its steps and timing are being restored.
+                          const processParts =
+                            timeline.parts ??
+                            (streamingOutput &&
+                            !messageIsRunning &&
+                            message.status === 'completed' &&
+                            message.runId &&
+                            responseText
+                              ? [
+                                  {
+                                    kind: 'reply' as const,
+                                    id: 'history-reply',
+                                    sequence: 0,
+                                    text: responseText,
+                                  },
+                                ]
+                              : undefined);
                           return (
                             <>
                               {feedback}
                               <WorkProcess
                                 accessibleFiles={accessibleFiles}
                                 items={timeline.items}
-                                parts={timeline.parts}
+                                parts={processParts}
                                 renderOperation={renderOperation}
                                 artifacts={linkedArtifacts}
                                 onOpenArtifact={onOpenArtifact}
@@ -484,7 +503,7 @@ export function ChatTranscript({
                                   runActive={messageIsRunning}
                                 />
                               )}
-                              {responseText && !timeline.parts ? (
+                              {responseText && !processParts ? (
                                 <div
                                   className={`${assistantUi.body} ${styles.assistantCopy}`}
                                   data-streaming={

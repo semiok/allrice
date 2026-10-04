@@ -366,6 +366,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       messageStatus: options.running ? 'pending' : 'completed',
       streamRequests: 0,
       events: [] as ChatFlowEventEnvelope[],
+      eventsDelay: null as Promise<void> | null,
       streamEvents: null as ChatFlowEventEnvelope[] | null,
       employeeName: 'Rice',
       runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
@@ -1026,8 +1027,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           state.timingError ? 503 : 200,
         );
       if (path.endsWith('/events')) {
-        if (url.searchParams.get('format') === 'json' || !options.running)
+        if (url.searchParams.get('format') === 'json' || !options.running) {
+          if (state.eventsDelay) await state.eventsDelay;
           return answer({ events: state.events });
+        }
         state.streamRequests++;
         await streamGate;
         return route.fulfill({
@@ -4123,6 +4126,98 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([
+    [1440, true],
+    [390, true],
+    [1440, false],
+    [390, false],
+  ] as const)(
+    'keeps settled reply and scroll positions while restoring native process at %ipx streaming=%s',
+    async (width, streamingOutput) => {
+      const f = await fixture({ width, streamingOutput });
+      let releaseTrace!: () => void;
+      try {
+        const reply = '111+222=333，111×222=24642。';
+        f.state.reply = reply;
+        f.state.events = [
+          {
+            schemaVersion: 3,
+            eventId: id(8901),
+            organizationId: org,
+            workspaceId: workspace,
+            conversationId: A,
+            runId: run,
+            generation: 1,
+            sequence: 1,
+            cursor: `${run}:1`,
+            harness: 'dsh',
+            occurredAt: now,
+            sourceEvent: null,
+            type: 'tool.completed',
+            payload: { toolCallId: 'calculate', name: 'calculate' },
+          },
+          {
+            schemaVersion: 3,
+            eventId: id(8902),
+            organizationId: org,
+            workspaceId: workspace,
+            conversationId: A,
+            runId: run,
+            generation: 1,
+            sequence: 2,
+            cursor: `${run}:2`,
+            harness: 'dsh',
+            occurredAt: now,
+            sourceEvent: null,
+            type: 'assistant.text.completed',
+            payload: { replyId: 'final', text: reply },
+          },
+        ];
+        f.state.eventsDelay = new Promise<void>((resolve) => {
+          releaseTrace = resolve;
+        });
+        await f.page.reload();
+        const process = f.page.getByRole('region', {
+          name: '工作过程',
+          exact: true,
+        });
+        await process.getByText('加载过程…', { exact: true }).waitFor();
+        const text = f.page.getByText(reply, { exact: true });
+        await text.waitFor();
+        await f.page.evaluate(() => document.fonts.ready);
+        await f.page.waitForTimeout(100);
+        const measure = () =>
+          text.evaluate((node) => {
+            const scroll = document.querySelector(
+              '[data-conversation-scroll]',
+            )!;
+            const bounds = node.getBoundingClientRect();
+            return {
+              top: bounds.top,
+              height: bounds.height,
+              scrollTop: scroll.scrollTop,
+              scrollHeight: scroll.scrollHeight,
+            };
+          });
+        const before = await measure();
+        const handle = await text.elementHandle();
+        releaseTrace();
+        await expect
+          .poll(() => process.getByText('加载过程…', { exact: true }).count())
+          .toBe(0);
+        await f.page.waitForTimeout(100);
+        expect(await measure()).toEqual(before);
+        // Restoring native reply IDs must preserve the displayed Markdown node.
+        expect(
+          await text.evaluate((node, previous) => node === previous, handle),
+        ).toBe(true);
+      } finally {
+        releaseTrace?.();
+        await f.close();
+      }
+    },
+  );
 
   it('saves the native streaming switch per account, defaults to unified output and never reveals live text while off', async () => {
     const f = await fixture({ running: true });
