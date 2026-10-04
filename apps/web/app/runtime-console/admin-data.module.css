@@ -1,0 +1,223 @@
+.page {
+  padding: 28px 28px 40px;
+  color: var(--admin-text);
+  min-width: 0;
+}
+.pageHeader {
+  margin-bottom: 24px;
+}
+.pageHeader h1 {
+  margin: 0;
+  font-size: var(--admin-font-title);
+  font-weight: 500;
+}
+.pageHeader p {
+  margin: 6px 0 0;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.page h2,
+.page h3,
+.page h4,
+.editor h3 {
+  margin: 0;
+  font-size: var(--admin-font-body);
+  font-weight: 500;
+}
+.page :where(p, small, span, strong),
+.editor :where(p, small, span, strong) {
+  overflow-wrap: anywhere;
+}
+.page > p,
+.editor > p {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+  line-height: 1.6;
+}
+.page [role='alert'],
+.editor [role='alert'] {
+  color: var(--admin-danger);
+}
+.selectors {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin: 16px 0;
+}
+.selectors > label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.selectors > label:has(input[type='checkbox']) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--admin-control-height);
+}
+.selectors select,
+.selectors input:not([type='checkbox']) {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--admin-control-height);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: var(--admin-font-body);
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+}
+.selectors select {
+  min-width: 140px;
+}
+.tabs {
+  display: flex;
+  gap: 16px;
+  margin-top: 24px;
+  border-bottom: 1px solid var(--admin-border);
+  overflow-x: auto;
+}
+.tabs > button {
+  flex: none;
+  padding: 10px 2px;
+  color: var(--admin-muted);
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  font-size: var(--admin-font-body);
+}
+.tabs > button[aria-selected='true'] {
+  color: var(--admin-text);
+  border-bottom-color: var(--admin-text);
+}
+.editor {
+  padding: 24px 0 0;
+  min-width: 0;
+}
+.table {
+  margin: 16px 0;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+}
+.table table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+}
+.table th {
+  padding: 10px 12px;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+  font-weight: 400;
+  background: var(--admin-sidebar);
+  white-space: nowrap;
+}
+.table td {
+  padding: 12px;
+  border-top: 1px solid var(--admin-border);
+  font-size: var(--admin-font-body);
+  vertical-align: middle;
+  overflow-wrap: anywhere;
+}
+.table td:first-child {
+  min-width: 180px;
+  max-width: 320px;
+}
+.table td:last-child {
+  white-space: nowrap;
+}
+.table tbody tr:hover {
+  background: var(--admin-hover);
+}
+.table strong {
+  display: block;
+  font-weight: 500;
+}
+.table small {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--admin-font-meta);
+  color: var(--admin-muted);
+}
+.table td > button,
+.table td > a {
+  font-size: var(--admin-font-meta);
+}
+.table :where(button, a) + :where(button, a) {
+  margin-left: 4px;
+}
+@media (max-width: 900px) {
+  .selectors > label {
+    flex: 1 1 160px;
+  }
+}
+@media (max-width: 650px) {
+  .page {
+    padding: 24px 16px 32px;
+  }
+  .selects {
+    gap: 8px;
+  }
+  .selectors > label {
+    flex-basis: 100%;
+  }
+  .table {
+    overflow: visible;
+    border: 0;
+  }
+  .table table,
+  .table tbody {
+    display: block;
+  }
+  .table thead {
+    display: none;
+  }
+  .table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    padding: 16px;
+    margin: 0 0 12px;
+    border: 1px solid var(--admin-border);
+    border-radius: 8px;
+  }
+  .table td {
+    display: block;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+    font-size: var(--admin-font-body);
+  }
+  .table td:first-child {
+    grid-column: 1 / -1;
+    min-width: 0;
+    max-width: none;
+  }
+  .table td:last-child {
+    grid-column: 1 / -1;
+    white-space: normal;
+  }
+  .table td::before {
+    content: attr(data-label);
+    display: block;
+    color: var(--admin-muted);
+    font-size: var(--admin-font-meta);
+    margin-bottom: 4px;
+  }
+  .table td > button,
+  .table td > a {
+    max-width: 100%;
+    white-space: normal;
+  }
+  .tabs {
+    gap: 12px;
+  }
+}

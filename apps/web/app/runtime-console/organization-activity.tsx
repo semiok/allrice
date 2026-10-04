@@ -1,10 +1,10 @@
 'use client';
 import { useEffect, useState } from 'react';
 import type { OrganizationActivityOverview } from '@allrice/contracts';
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import { AdminButton as Button } from '../../components/admin/admin-ui';
 import { useActivityPages } from './organization-activity-data';
 import { CompanyDashboard } from './company-dashboard';
-import styles from './tenant-administration.module.css';
+import styles from './admin-data.module.css';
 
 export function OrganizationActivity() {
   const [organizationId, setOrganizationId] = useState('');
@@ -33,9 +33,9 @@ export function OrganizationActivity() {
     window.history.replaceState(null, '', url);
   }
   return (
-    <section className={styles.panel} aria-label="公司看板">
-      <header>
-        <h2>公司看板</h2>
+    <section className={styles.page} aria-label="公司看板">
+      <header className={styles.pageHeader}>
+        <h1>公司看板</h1>
         <p>查看公司的实际工作、交付成果和已记录用量。</p>
       </header>
       <div className={styles.selectors}>
@@ -59,6 +59,8 @@ export function OrganizationActivity() {
           </select>
         </label>
         <Button
+          icon="refresh"
+          variant="quiet"
           disabled={overview.loading}
           onClick={() => void overview.load()}
         >

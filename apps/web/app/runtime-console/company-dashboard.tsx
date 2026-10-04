@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import { AdminButton as Button } from '../../components/admin/admin-ui';
 import type {
   OrganizationActivityPeople,
   OrganizationDashboard,
@@ -9,7 +9,7 @@ import { useActivityPages } from './organization-activity-data';
 import { CompanyWorkList } from './company-work-list';
 import { CompanyDeliverableLibrary } from './company-deliverables';
 import { CompanyAssetsPanel } from './company-assets-panel';
-import styles from './tenant-administration.module.css';
+import styles from './admin-data.module.css';
 import css from './company-dashboard.module.css';
 
 const dateInput = (date: Date) =>
@@ -25,6 +25,7 @@ export function CompanyDashboard({
   selectedUserId: string;
   onUser: (id: string) => void;
 }) {
+  const [section, setSection] = useState('overview');
   const [employeeId, setEmployeeId] = useState('');
   const [jobTitle, setJobTitle] = useState('');
   const [rangeChoice, setRangeChoice] = useState('7d');
@@ -73,6 +74,7 @@ export function CompanyDashboard({
   }
   function show(status: string, measure: string) {
     setRequested({ status, measure });
+    setSection('work');
   }
   const work = data?.work;
   const metrics = work
@@ -122,7 +124,7 @@ export function CompanyDashboard({
       ]
     : [];
   return (
-    <section aria-label="公司工作概况">
+    <section className={css.dashboard} aria-label="公司工作概况">
       <h3>{data?.organization.name ?? '工作概况'}</h3>
       <div className={styles.selectors}>
         <label>
@@ -198,7 +200,12 @@ export function CompanyDashboard({
             <option value="custom">自定义</option>
           </select>
         </label>
-        <Button disabled={loading} onClick={() => void summary.load()}>
+        <Button
+          icon="refresh"
+          variant="quiet"
+          disabled={loading}
+          onClick={() => void summary.load()}
+        >
           刷新工作概况
         </Button>
         <label>
@@ -252,113 +259,190 @@ export function CompanyDashboard({
           <Button type="submit">应用时间范围</Button>
         </form>
       )}
+      <nav className={styles.tabs} role="tablist" aria-label="公司看板内容">
+        {(
+          [
+            ['overview', '概况'],
+            ['work', '工作记录'],
+            ['deliverables', '交付成果'],
+            ['assets', '规矩与范本'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            id={`dashboard-tab-${id}`}
+            aria-selected={section === id}
+            aria-controls={`dashboard-panel-${id}`}
+            tabIndex={section === id ? 0 : -1}
+            onKeyDown={(event) => {
+              const tabs = Array.from(
+                event.currentTarget.parentElement!.querySelectorAll<HTMLButtonElement>(
+                  '[role="tab"]',
+                ),
+              );
+              const index = tabs.indexOf(event.currentTarget);
+              const next =
+                event.key === 'ArrowRight'
+                  ? (index + 1) % tabs.length
+                  : event.key === 'ArrowLeft'
+                    ? (index + tabs.length - 1) % tabs.length
+                    : event.key === 'Home'
+                      ? 0
+                      : event.key === 'End'
+                        ? tabs.length - 1
+                        : null;
+              if (next === null) return;
+              event.preventDefault();
+              tabs[next].click();
+              tabs[next].focus();
+            }}
+            onClick={() => setSection(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
       {error && <p role="alert">{error}</p>}
       {!data && loading && <p role="status">正在读取公司概况…</p>}
-      {data && (
-        <>
-          <p className={css.caption}>
-            {new Date(data.period.from).toLocaleString()} —{' '}
-            {new Date(data.period.to).toLocaleString()} · {data.period.timeZone}{' '}
-            · 最近更新 {new Date(data.updatedAt).toLocaleTimeString()}
-          </p>
-          <div className={css.people}>
-            <span>
-              可用员工 <strong>{data.people.activeEmployees}</strong>
-            </span>
-            <span>
-              已配发 AI <strong>{data.people.assignedEmployees}</strong>
-            </span>
-            <span>
-              本期活跃 <strong>{data.people.activeParticipants}</strong>
-            </span>
-            <span>
-              已停用 / 离职 <strong>{data.people.inactiveEmployees}</strong>
-            </span>
-            <span>
-              配发覆盖{' '}
-              {data.people.activeEmployees
-                ? `${Math.round((data.people.assignedEmployees / data.people.activeEmployees) * 100)}%`
-                : '暂无可统计员工'}
-            </span>
-            {data.people.historicalParticipants > 0 && (
-              <span>历史参与员工 {data.people.historicalParticipants} 人</span>
-            )}
-          </div>
-          <div className={css.metrics}>
-            {metrics.map((m) => (
-              <Button
-                key={m.label}
-                className={css.metric}
-                onClick={() => show(m.status, m.measure)}
-              >
-                <span>{m.label}</span>
-                <strong>{m.value.toLocaleString()}</strong>
-                <small>查看工作</small>
-              </Button>
-            ))}
-          </div>
-          <p className={css.caption}>
-            发起按开始时间，完成、失败和取消按结束时间；正在处理、等待和排队显示当前状态。归档会话仍计入历史。
-          </p>
-          <div className={css.facts}>
-            <section>
-              <h4>交付成果</h4>
-              <p>
-                当前可用成果 {data.deliverables.availableSeries} 项 ·
-                本期首次交付 {data.deliverables.firstDeliveries} 项 · 本期修订{' '}
-                {data.deliverables.revisedSeries} 项
-              </p>
-              <small>
-                按成果系列去重，版本修改另列；工具日志、分页结果和附件上传不计为交付。
-              </small>
-            </section>
-            <section>
-              <h4>已记录模型用量</h4>
-              <p>
-                {data.usage.inputTokens === null &&
-                data.usage.outputTokens === null
-                  ? '暂无可确认用量，不代表没有消耗'
-                  : data.usage.inputTokens === null ||
-                      data.usage.outputTokens === null
-                    ? `已确认部分：输入 ${data.usage.inputTokens?.toLocaleString() ?? '待补全'}，输出 ${data.usage.outputTokens?.toLocaleString() ?? '待补全'} Token；总量待补全`
-                    : `${(data.usage.inputTokens + data.usage.outputTokens).toLocaleString()} Token${data.usage.incompleteReceipts ? '（已确认部分）' : ''}`}
-              </p>
-              <small>
-                本期有 {data.usage.receiptCount} 条回执；
-                {data.usage.terminalRuns} 项终态工作中，
-                {data.usage.terminalRunsWithReceipts}{' '}
-                项已有用量回执。缓存已包含在输入中。
-              </small>
-              <p>费用尚无完整账单</p>
-              <small>
-                已计价回执 {data.usage.pricedReceipts} 条 · 订阅回执{' '}
-                {data.usage.subscriptionReceipts} 条 · 待计价{' '}
-                {data.usage.unknownCostReceipts} 条。订阅用量不按 API
-                单价重算，未确认费用不显示为零。
-              </small>
-            </section>
-          </div>
-        </>
-      )}
-      <CompanyWorkList
-        organizationId={organizationId}
-        userId={selectedUserId || null}
-        name={
-          people.data?.people.find((p) => p.userId === selectedUserId)
-            ?.displayName ?? '全公司'
-        }
-        scopeQuery={scopeQuery}
-        automatic={automatic && current > 0}
-        requested={requested}
-      />
-      <CompanyDeliverableLibrary
-        organizationId={organizationId}
-        scopeQuery={scopeQuery}
-      />
-      <CompanyAssetsPanel
-        key={organizationId}
-        organizationId={organizationId}
-      />
+      <div
+        role="tabpanel"
+        id="dashboard-panel-overview"
+        aria-labelledby="dashboard-tab-overview"
+        hidden={section !== 'overview'}
+      >
+        {data && (
+          <>
+            <p className={css.caption}>
+              {new Date(data.period.from).toLocaleString()} —{' '}
+              {new Date(data.period.to).toLocaleString()} ·{' '}
+              {data.period.timeZone} · 最近更新{' '}
+              {new Date(data.updatedAt).toLocaleTimeString()}
+            </p>
+            <div className={css.people}>
+              <span>
+                可用员工 <strong>{data.people.activeEmployees}</strong>
+              </span>
+              <span>
+                已配发 AI <strong>{data.people.assignedEmployees}</strong>
+              </span>
+              <span>
+                本期活跃 <strong>{data.people.activeParticipants}</strong>
+              </span>
+              <span>
+                已停用 / 离职 <strong>{data.people.inactiveEmployees}</strong>
+              </span>
+              <span>
+                配发覆盖{' '}
+                {data.people.activeEmployees
+                  ? `${Math.round((data.people.assignedEmployees / data.people.activeEmployees) * 100)}%`
+                  : '暂无可统计员工'}
+              </span>
+              {data.people.historicalParticipants > 0 && (
+                <span>
+                  历史参与员工 {data.people.historicalParticipants} 人
+                </span>
+              )}
+            </div>
+            <div className={css.metrics}>
+              {metrics.map((m) => (
+                <Button
+                  key={m.label}
+                  className={css.metric}
+                  variant="quiet"
+                  onClick={() => show(m.status, m.measure)}
+                >
+                  <span>{m.label}</span>
+                  <strong>{m.value.toLocaleString()}</strong>
+                  <small>查看工作</small>
+                </Button>
+              ))}
+            </div>
+            <p className={css.caption}>
+              发起按开始时间，完成、失败和取消按结束时间；正在处理、等待和排队显示当前状态。归档会话仍计入历史。
+            </p>
+            <div className={css.facts}>
+              <section>
+                <h4>交付成果</h4>
+                <p>
+                  当前可用成果 {data.deliverables.availableSeries} 项 ·
+                  本期首次交付 {data.deliverables.firstDeliveries} 项 · 本期修订{' '}
+                  {data.deliverables.revisedSeries} 项
+                </p>
+                <small>
+                  按成果系列去重，版本修改另列；工具日志、分页结果和附件上传不计为交付。
+                </small>
+              </section>
+              <section>
+                <h4>已记录模型用量</h4>
+                <p>
+                  {data.usage.inputTokens === null &&
+                  data.usage.outputTokens === null
+                    ? '暂无可确认用量，不代表没有消耗'
+                    : data.usage.inputTokens === null ||
+                        data.usage.outputTokens === null
+                      ? `已确认部分：输入 ${data.usage.inputTokens?.toLocaleString() ?? '待补全'}，输出 ${data.usage.outputTokens?.toLocaleString() ?? '待补全'} Token；总量待补全`
+                      : `${(data.usage.inputTokens + data.usage.outputTokens).toLocaleString()} Token${data.usage.incompleteReceipts ? '（已确认部分）' : ''}`}
+                </p>
+                <small>
+                  本期有 {data.usage.receiptCount} 条回执；
+                  {data.usage.terminalRuns} 项终态工作中，
+                  {data.usage.terminalRunsWithReceipts}{' '}
+                  项已有用量回执。缓存已包含在输入中。
+                </small>
+                <p>费用尚无完整账单</p>
+                <small>
+                  已计价回执 {data.usage.pricedReceipts} 条 · 订阅回执{' '}
+                  {data.usage.subscriptionReceipts} 条 · 待计价{' '}
+                  {data.usage.unknownCostReceipts} 条。订阅用量不按 API
+                  单价重算，未确认费用不显示为零。
+                </small>
+              </section>
+            </div>
+          </>
+        )}
+      </div>
+      <div
+        role="tabpanel"
+        id="dashboard-panel-work"
+        aria-labelledby="dashboard-tab-work"
+        hidden={section !== 'work'}
+      >
+        <CompanyWorkList
+          organizationId={organizationId}
+          userId={selectedUserId || null}
+          name={
+            people.data?.people.find((p) => p.userId === selectedUserId)
+              ?.displayName ?? '全公司'
+          }
+          scopeQuery={scopeQuery}
+          automatic={automatic && current > 0}
+          requested={requested}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="dashboard-panel-deliverables"
+        aria-labelledby="dashboard-tab-deliverables"
+        hidden={section !== 'deliverables'}
+      >
+        <CompanyDeliverableLibrary
+          organizationId={organizationId}
+          scopeQuery={scopeQuery}
+        />
+      </div>
+      <div
+        role="tabpanel"
+        id="dashboard-panel-assets"
+        aria-labelledby="dashboard-tab-assets"
+        hidden={section !== 'assets'}
+      >
+        <CompanyAssetsPanel
+          key={organizationId}
+          organizationId={organizationId}
+        />
+      </div>
     </section>
   );
 }
