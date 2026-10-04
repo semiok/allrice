@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 
 import { useState } from 'react';
 import styles from './governance-console.module.css';
@@ -79,7 +80,7 @@ export function CodexAuthorizationPanel({
                 </p>
               ) : null}
               <div className={styles.authorizationActions}>
-                <button
+                <AdminButton
                   type="button"
                   onClick={() => {
                     void (async () => {
@@ -95,7 +96,7 @@ export function CodexAuthorizationPanel({
                   }}
                 >
                   复制授权码
-                </button>
+                </AdminButton>
                 <a
                   href={authorization.verificationUri}
                   target="_blank"
@@ -108,9 +109,9 @@ export function CodexAuthorizationPanel({
           ) : (
             <p role="status">正在获取官方授权码，连接不稳定时会自动重试…</p>
           )}
-          <button type="button" disabled={busy} onClick={onCancel}>
+          <AdminButton type="button" disabled={busy} onClick={onCancel}>
             取消本次授权
-          </button>
+          </AdminButton>
         </>
       ) : (
         <>
@@ -121,9 +122,9 @@ export function CodexAuthorizationPanel({
               {connected ? '当前已保存的授权不受影响。' : ''}
             </p>
           ) : null}
-          <button type="button" disabled={busy} onClick={onStart}>
+          <AdminButton type="button" disabled={busy} onClick={onStart}>
             {connected ? '开始重新授权' : '连接 Codex 订阅'}
-          </button>
+          </AdminButton>
         </>
       )}
       {notice ? <p role="status">{notice}</p> : null}

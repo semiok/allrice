@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 
 import Link from 'next/link';
 import { useCallback, useEffect, useState } from 'react';
@@ -413,11 +414,9 @@ export function GovernanceConsole() {
     <div className={styles.embedded}>
       <header className={styles.header}>
         <div>
-          <p>PLATFORM OPERATIONS</p>
-          <h1>模型与运行治理</h1>
+          <h1>模型与用量</h1>
           <span>平台统一托管凭据、Provider 可用性、租户额度和生产熔断。</span>
         </div>
-        <i>Platform admin</i>
       </header>
 
       <PlatformModelSettingsPanel />
@@ -506,7 +505,7 @@ export function GovernanceConsole() {
                     governance.circuitState !== 'closed') ? (
                     <footer>
                       {provider?.key !== 'codex' && (
-                        <button
+                        <AdminButton
                           className={
                             governance.killSwitch
                               ? styles.dangerActive
@@ -520,10 +519,10 @@ export function GovernanceConsole() {
                           }
                         >
                           {governance.killSwitch ? '解除紧急停用' : '紧急停用'}
-                        </button>
+                        </AdminButton>
                       )}
                       {governance.circuitState !== 'closed' ? (
-                        <button
+                        <AdminButton
                           disabled={busy}
                           onClick={() =>
                             void updateProvider(connection.id, {
@@ -532,7 +531,7 @@ export function GovernanceConsole() {
                           }
                         >
                           重置熔断
-                        </button>
+                        </AdminButton>
                       ) : null}
                     </footer>
                   ) : null}
@@ -617,9 +616,15 @@ export function GovernanceConsole() {
                 }
               />
             </label>
-            <button disabled={busy} onClick={() => void saveQuota()}>
-              保存额度
-            </button>
+            <div className={styles.formActions}>
+              <AdminButton
+                variant="primary"
+                disabled={busy}
+                onClick={() => void saveQuota()}
+              >
+                保存额度
+              </AdminButton>
+            </div>
           </div>
         </section>
       ) : null}

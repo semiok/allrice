@@ -6,6 +6,12 @@ import type {
   OrganizationPerson,
 } from '@allrice/contracts';
 import { AdminShell } from '../../components/admin/admin-shell';
+import {
+  AdminButton,
+  AdminDialog,
+  AdminIcon,
+  type AdminIconName,
+} from '../../components/admin/admin-ui';
 
 import { OperationsSummary, OperationsResources } from './operations-resources';
 import { GovernanceConsole } from './governance-console';
@@ -30,6 +36,8 @@ import {
 } from './dsh-upgrade-capabilities';
 import {
   aggregateRuntimeTimelineEvents,
+  runtimeTimelineCategory,
+  runtimeTimelineStatus,
   type RuntimeTimelineEvent,
   type RuntimeTimelineItem,
   type RuntimeTimelineTurn,
@@ -467,6 +475,7 @@ export function RuntimeConsole() {
           ...turn,
           items: aggregateRuntimeTimelineEvents(
             turn.events.filter((event) => event.kind !== 'answer'),
+            { runStatus: turn.run.status },
           ),
           answerText: answerEvent?.detail ?? turn.assistantMessage.text,
         };
@@ -545,11 +554,6 @@ export function RuntimeConsole() {
           </button>
         </nav>
       )}
-      {view === 'capabilities' && (
-        <DshReleaseSummary
-          onOpenCapabilities={() => selectView('capabilities')}
-        />
-      )}
 
       {view === 'activity' ? (
         <OrganizationActivity />
@@ -569,6 +573,10 @@ export function RuntimeConsole() {
         <GovernanceConsole />
       ) : (
         <>
+          <header className={styles.platformHeader}>
+            <h1>运行技术详情</h1>
+            <p>查看员工、设备与执行环境的实际状态。</p>
+          </header>
           <section className={styles.summary}>
             <div>
               <span>公司</span>
@@ -1010,48 +1018,146 @@ function RuntimeTurn(props: {
 }
 
 function RuntimeEventItem(props: { item: RuntimeTimelineItem }) {
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const open =
+    expanded ??
+    (props.item.type === 'group' && props.item.kind === 'compaction');
   if (props.item.type === 'event') {
     return <RuntimeEvent event={props.item.event} />;
   }
   return (
-    <li className={styles.eventGroup} data-kind={props.item.kind}>
-      <i>G</i>
-      <div>
-        <details>
-          <summary>
-            <span>
+    <li
+      className={styles.eventGroup}
+      data-kind={props.item.kind}
+      data-category={runtimeTimelineCategory(props.item)}
+      data-event-key={props.item.key}
+    >
+      <i className={styles.eventNode} aria-hidden="true">
+        <AdminIcon name={runtimeEventIcon(props.item)} />
+      </i>
+      <div className={styles.eventBody}>
+        <details open={open}>
+          <summary
+            className={styles.eventRow}
+            aria-expanded={open}
+            onClick={(event) => {
+              event.preventDefault();
+              setExpanded(!open);
+            }}
+          >
+            <span className={styles.eventPrimary}>
               <strong>{props.item.title}</strong>
-              <em>{props.item.status}</em>
+              <RuntimeEventStatus status={props.item.status} />
             </span>
-            <small>展开明细</small>
+            <span className={styles.eventEnd}>
+              <RuntimeEventTime value={props.item.occurredAt} />
+              <span className={styles.eventChevron} aria-hidden="true">
+                <AdminIcon name="chevron" />
+              </span>
+            </span>
           </summary>
-          <ol>
+          <ol
+            className={styles.eventGroupList}
+            aria-label={`${props.item.title}明细`}
+          >
             {props.item.events.map((event) => (
-              <li key={event.key}>
-                <span>{event.detail ?? event.title}</span>
-                <em>{event.title}</em>
+              <li key={event.key} data-event-key={event.key}>
+                <span className={styles.eventDot} aria-hidden="true" />
+                <div className={styles.eventGroupContent}>
+                  <div className={styles.eventRow}>
+                    <strong>{event.title}</strong>
+                    <span className={styles.eventEnd}>
+                      <RuntimeEventStatus status={event.status} />
+                      <RuntimeEventTime value={event.occurredAt} />
+                    </span>
+                  </div>
+                  {event.detail ? <p>{event.detail}</p> : null}
+                </div>
               </li>
             ))}
           </ol>
         </details>
       </div>
-      <time>{time(props.item.occurredAt)}</time>
     </li>
+  );
+}
+
+function runtimeEventIcon(
+  event: Pick<RuntimeTimelineEvent, 'kind' | 'title'>,
+): AdminIconName {
+  if (event.title.startsWith('Skill 已加载')) return 'book';
+  switch (runtimeTimelineCategory(event)) {
+    case 'prepare':
+      return 'folder';
+    case 'context':
+      return event.title.startsWith('上下文占用') ? 'gauge' : 'layers';
+    case 'tool':
+      return 'wrench';
+    case 'think':
+      return 'thought';
+    case 'search':
+      return 'search';
+    case 'answer':
+      return 'message';
+    case 'todo':
+      return 'list';
+    default:
+      return 'info';
+  }
+}
+
+function RuntimeEventStatus({ status }: { status: string }) {
+  const { label, tone, icon } = runtimeTimelineStatus(status);
+  return (
+    <span
+      className={styles.eventStatus}
+      data-tone={tone}
+      data-state={status}
+      title={status}
+    >
+      {icon && <AdminIcon name={icon} />}
+      {label}
+    </span>
+  );
+}
+
+function RuntimeEventTime({ value }: { value: string | null }) {
+  return (
+    <time dateTime={value ?? undefined} title={time(value)}>
+      {value
+        ? new Intl.DateTimeFormat('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          }).format(new Date(value))
+        : '—'}
+    </time>
   );
 }
 
 function RuntimeEvent(props: { event: RuntimeTimelineEvent }) {
   return (
-    <li data-kind={props.event.kind}>
-      <i>{props.event.kind.slice(0, 1).toUpperCase()}</i>
-      <div>
-        <span>
-          <strong>{props.event.title}</strong>
-          <em>{props.event.status}</em>
-        </span>
+    <li
+      data-kind={props.event.kind}
+      data-category={runtimeTimelineCategory(props.event)}
+      data-event-key={props.event.key}
+    >
+      <i className={styles.eventNode} aria-hidden="true">
+        <AdminIcon name={runtimeEventIcon(props.event)} />
+      </i>
+      <div className={styles.eventBody}>
+        <div className={styles.eventRow}>
+          <span className={styles.eventPrimary}>
+            <strong>{props.event.title}</strong>
+            <RuntimeEventStatus status={props.event.status} />
+          </span>
+          <span className={styles.eventEnd}>
+            <RuntimeEventTime value={props.event.occurredAt} />
+            <span className={styles.eventChevronSpace} />
+          </span>
+        </div>
         {props.event.detail ? <p>{props.event.detail}</p> : null}
       </div>
-      <time>{time(props.event.occurredAt)}</time>
     </li>
   );
 }
@@ -1149,35 +1255,34 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
     };
   }, []);
 
-  useEffect(() => {
-    if (!coreOpen) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setCoreOpen(false);
-    };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [coreOpen]);
-
   return (
     <section className={styles.capabilityPage}>
       <header className={styles.capabilityHeader}>
         <div>
-          <p>DSH 升级与 AllRice 能力</p>
           <h1>版本与能力</h1>
+          <DshReleaseSummary />
           <span>
             按当前 Worker 安装与配置、平台 Skill 目录和租户员工发布版本展示。每
             10 秒刷新。
           </span>
         </div>
-        <aside>
-          <strong>{facts.componentCount}</strong>
-          <span>已安装配置组件 / Worker</span>
-          <strong>{facts.enhancementCount}</strong>
-          <span>其中增强插件 / Worker</span>
-          <strong>{inventory ? availableSkills.length : '—'}</strong>
-          <span>可绑定业务 Skill</span>
-          <strong>{inventory ? facts.publishedSkillIds.size : '—'}</strong>
-          <span>租户员工已发布 Skill</span>
+        <aside aria-label="能力统计">
+          <div>
+            <strong>{facts.componentCount}</strong>
+            <span>已安装配置组件 / Worker</span>
+          </div>
+          <div>
+            <strong>{facts.enhancementCount}</strong>
+            <span>其中增强插件 / Worker</span>
+          </div>
+          <div>
+            <strong>{inventory ? availableSkills.length : '—'}</strong>
+            <span>可绑定业务 Skill</span>
+          </div>
+          <div>
+            <strong>{inventory ? facts.publishedSkillIds.size : '—'}</strong>
+            <span>租户员工已发布 Skill</span>
+          </div>
         </aside>
       </header>
 
@@ -1224,9 +1329,13 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
             不等同于空闲时已有 DSH 进程装载。增强插件包含在组件总数内。
           </p>
         </div>
-        <button type="button" onClick={() => setCoreOpen(true)}>
+        <AdminButton
+          type="button"
+          onClick={() => setCoreOpen(true)}
+          aria-haspopup="dialog"
+        >
           查看实际组件
-        </button>
+        </AdminButton>
       </section>
 
       <div className={styles.capabilityGroups}>
@@ -1280,13 +1389,9 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
                 后，才会进入对应租户 Runtime。
               </p>
             </div>
-            <button
-              className={styles.groupAction}
-              type="button"
-              onClick={props.onOpenEmployees}
-            >
+            <AdminButton type="button" onClick={props.onOpenEmployees}>
               前往 AI 员工装配
-            </button>
+            </AdminButton>
           </header>
           {skillsLoading ? (
             <p className={styles.capabilityStatus}>正在读取平台 Skill 目录…</p>
@@ -1334,36 +1439,16 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
       </footer>
 
       {coreOpen ? (
-        <div
-          className={styles.modalBackdrop}
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setCoreOpen(false);
-          }}
+        <AdminDialog
+          title="Worker 实际配置组件"
+          size="wide"
+          onClose={() => setCoreOpen(false)}
         >
-          <section
-            aria-labelledby="dsh-core-title"
-            aria-modal="true"
-            className={styles.coreModal}
-            role="dialog"
-          >
-            <header>
-              <div>
-                <span>DSH Restricted Runtime</span>
-                <h2 id="dsh-core-title">Worker 实际配置组件</h2>
-                <p>
-                  逐个 Worker
-                  显示安装版本和配置状态；停用、条件加载及缺失的组件不计入已配置总数。
-                </p>
-              </div>
-              <button
-                aria-label="关闭实际组件弹窗"
-                type="button"
-                onClick={() => setCoreOpen(false)}
-              >
-                ×
-              </button>
-            </header>
+          <section className={styles.coreContents}>
+            <p className={styles.capabilityStatus}>
+              逐个 Worker
+              显示安装版本和配置状态；停用、条件加载及缺失的组件不计入已配置总数。
+            </p>
             {inventory?.workers.map((worker) => (
               <div key={worker.workerId}>
                 <p className={styles.capabilityStatus}>
@@ -1405,7 +1490,7 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
               <p className={styles.capabilityStatus}>暂无 Worker 上报</p>
             ) : null}
           </section>
-        </div>
+        </AdminDialog>
       ) : null}
     </section>
   );
