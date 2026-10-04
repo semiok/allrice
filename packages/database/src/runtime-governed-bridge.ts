@@ -30,6 +30,7 @@ import {
   savedProjectContext,
 } from './saved-project-authority.ts';
 import { getDatabase } from './core/client.ts';
+import { assertProjectExecutionOrigin } from './project-execution.ts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 import {
   createAssistantOperationAuthority,
@@ -86,6 +87,7 @@ const unavailablePolicyCodes = new Set([
   'no_matching_policy',
   'action_not_registered',
   'bridge_authority_changed',
+  'project_execution_origin_changed',
   'assistant_authority_changed',
 ]);
 
@@ -199,6 +201,12 @@ export function createGovernedBridgePolicyOptions(
             throw new RuntimePolicyError('bridge_authority_changed');
           throw error;
         });
+        await assertProjectExecutionOrigin(
+          tx,
+          binding,
+          payload.arguments,
+          'local',
+        );
       }
     },
     async resolveCurrentBinding({ transaction: tx, binding: requested }) {
@@ -771,6 +779,12 @@ export function createGovernedBridgePolicyOptions(
             throw new RuntimePolicyError('bridge_authority_changed');
           throw error;
         });
+        await assertProjectExecutionOrigin(
+          tx,
+          binding,
+          command!.arguments,
+          'local',
+        );
       }
       // All locks/waits precede this temporal check; the initiating JS timestamp is not authority.
       const job =

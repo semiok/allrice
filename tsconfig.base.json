@@ -23,7 +23,8 @@
       ],
       "@allrice/office-runtime/pdf-reader": [
         "packages/office-runtime/src/pdf-reader.ts"
-      ]
+      ],
+      "@allrice/project-runtime": ["packages/project-runtime/src/index.ts"]
     },
     "resolveJsonModule": true,
     "rewriteRelativeImportExtensions": true,

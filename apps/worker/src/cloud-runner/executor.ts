@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   type createCloudCommandOperation,
+  type createCloudProjectOperation,
   createCloudOperationLedger,
   loadCloudCommandInputs,
   publishCloudOperationArtifacts,
@@ -12,19 +13,27 @@ import {
   taskDeadlineOpen,
 } from '@allrice/database';
 import {
-  CloudCommandSchema,
+  CloudExecutionPayloadSchema,
+  type CloudProjectRunResult,
   RuntimeOperationSnapshotSchema,
   type StoragePort,
   type RuntimeUsageObservation,
 } from '@allrice/contracts';
-import { CloudRunnerBackend, type CloudRunResult } from './backend.js';
+import {
+  CloudRunnerBackend,
+  CloudProjectPreparationError,
+  type CloudRunResult,
+} from './backend.js';
 
-type Created = Awaited<ReturnType<typeof createCloudCommandOperation>>;
+type Created = Awaited<
+  | ReturnType<typeof createCloudCommandOperation>
+  | ReturnType<typeof createCloudProjectOperation>
+>;
 type Db = ReturnType<typeof getDatabase>;
 async function currentWorker(created: Created, db: Db) {
   const c = created.context;
   const [row] =
-    await db`select id from allrice_jobs where id=${c.jobId} and run_id=${c.runId} and organization_id=${c.organizationId} and workspace_id=${c.workspaceId} and owner_id=${c.policySnapshot.subjectId} and worker_id=${c.worker.id} and lease_token::text=${created.jobLeaseToken} and status='running' and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() and cancel_requested_at is null`;
+    await db`select id from allrice_jobs where id=${c.jobId} and run_id=${c.runId} and organization_id=${c.organizationId} and workspace_id=${c.workspaceId} and owner_id=${c.policySnapshot.subjectId} and worker_id=${c.worker.id} and lease_token::text=${created.jobLeaseToken} and (${created.jobAttempt ?? null}::integer is null or attempt=${created.jobAttempt ?? null}::integer) and status='running' and lease_expires_at>clock_timestamp() and timeout_at>clock_timestamp() and cancel_requested_at is null`;
   return !!row;
 }
 
@@ -119,6 +128,21 @@ export async function runCloudCommandOperation(
     };
   }
   const receipt = { scope, operationId, leaseToken, attempt: binding.attempt };
+  const uncertain = async (code?: string) => {
+    const receiptId = cloudStableId(`${operationId}:unknown`);
+    if (
+      (await ledger.readReceipts(scope, operationId)).some(
+        (r) => r.receipt_id === receiptId,
+      )
+    )
+      return;
+    await ledger.recordReceipt({
+      ...receipt,
+      receiptId,
+      signal: { type: 'operation.uncertain', reason: 'receipt_missing' },
+      ...(code ? { evidence: { code } } : {}),
+    });
+  };
   const maintainLease = async () => {
     if (options.signal?.aborted || !(await currentWorker(created, db))) {
       if (options.signal?.aborted) await cancel();
@@ -152,21 +176,21 @@ export async function runCloudCommandOperation(
           container.State.Running ? 'unknown' : 'completed',
         );
       else {
-        await ledger.recordReceipt({
-          ...receipt,
-          receiptId: cloudStableId(`${operationId}:unknown`),
-          signal: { type: 'operation.uncertain', reason: 'receipt_missing' },
-        });
-        await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${operationId}`;
+        await uncertain();
+        // Absence after uncertain create is not physical cleanup. Recovery must
+        // still inspect this attempt and reclaim its separately named project work volume.
         return { operationId, status: 'unknown', artifacts: [], output: '' };
       }
     } else {
       try {
-        const files = await loadCloudCommandInputs(
-          created.context,
-          payload,
-          options.storage,
-        );
+        const files =
+          'kind' in payload
+            ? []
+            : await loadCloudCommandInputs(
+                created.context,
+                payload,
+                options.storage,
+              );
         const observer = executionResourceObserver(
           {
             context: created.context,
@@ -179,7 +203,19 @@ export async function runCloudCommandOperation(
         );
         outcome = await backend.execute(payload, files, {
           attemptId,
-          deadlineAt: new Date(Date.now() + 3_600_000).toISOString(),
+          deadlineAt:
+            'kind' in payload
+              ? created.deadlineAt
+              : new Date(Date.now() + 3_600_000).toISOString(),
+          ...('kind' in payload
+            ? {
+                projectScope: {
+                  organizationId: scope.organizationId,
+                  workspaceId: scope.workspaceId!,
+                  ownerId: binding.requestedBy.id,
+                },
+              }
+            : {}),
           isTurn: observer.isTurn,
           observe: observer.observe,
           ...(options.signal ? { signal: options.signal } : {}),
@@ -189,14 +225,24 @@ export async function runCloudCommandOperation(
           },
         });
       } catch (error) {
-        let absenceConfirmed = false;
-        const container = await backend
-          .inspect(attemptId)
-          .then((c) => {
-            absenceConfirmed = c === null;
-            return c;
-          })
-          .catch(() => null);
+        if (
+          'kind' in payload &&
+          error instanceof CloudProjectPreparationError
+        ) {
+          // Trusted preparation returned before any create request. This is a failed operation, not start-ACK uncertainty.
+          outcome = {
+            containerId: '',
+            exitCode: null,
+            stopped: true,
+            reason: 'failed',
+            output: '',
+            artifacts: [],
+            elapsedMs: 0,
+            imageDigest: payload.imageDigest,
+            errorCode: error.message.slice(0, 128),
+          } satisfies CloudProjectRunResult;
+        }
+        const container = await backend.inspect(attemptId).catch(() => null);
         if (container) {
           await backend.stop(attemptId).catch(() => false);
           outcome = await backend
@@ -204,19 +250,9 @@ export async function runCloudCommandOperation(
             .catch(() => null);
         }
         if (!outcome) {
-          await ledger.recordReceipt({
-            ...receipt,
-            receiptId: cloudStableId(`${operationId}:unknown`),
-            signal: { type: 'operation.uncertain', reason: 'receipt_missing' },
-            evidence: {
-              code:
-                error instanceof Error
-                  ? error.message
-                  : 'cloud_execution_failed',
-            },
-          });
-          if (absenceConfirmed)
-            await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${operationId}`;
+          await uncertain(
+            error instanceof Error ? error.message : 'cloud_execution_failed',
+          );
           return { operationId, status: 'unknown', artifacts: [], output: '' };
         }
       }
@@ -226,7 +262,7 @@ export async function runCloudCommandOperation(
   // No deletion until durable bytes/versions AND result receipt. Failed writes
   // leave the stopped container, daemon logs and journal available for recovery.
   const artifacts =
-    outcome.reason === 'completed'
+    outcome.reason === 'completed' && !('kind' in payload)
       ? await publishCloudOperationArtifacts(
           {
             context: created.context,
@@ -250,6 +286,15 @@ export async function runCloudCommandOperation(
     reason: outcome.reason,
     stopped: outcome.stopped,
     output: outcome.output,
+    ...('kind' in payload
+      ? {
+          imageDigest: outcome.imageDigest,
+          ...(outcome.projectPreparation
+            ? { projectPreparation: outcome.projectPreparation }
+            : {}),
+          ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+        }
+      : {}),
     artifacts: artifacts.map((a) => ({
       objectId: a.object.id,
       versionId: a.versionId,
@@ -328,7 +373,7 @@ export async function runCloudCommandOperation(
       });
     }
   }
-  await backend.cleanup(attemptId);
+  await backend.cleanup(attemptId, payload);
   await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${operationId} and cleanup_confirmed_at is null`;
   const snapshot = await ledger.readOperation(scope, operationId);
   return {
@@ -338,6 +383,16 @@ export async function runCloudCommandOperation(
     output: outcome.output,
     exitCode: outcome.exitCode,
     cleanupConfirmed: true,
+    ...('kind' in payload
+      ? {
+          project: payload.arguments.projectSource.project,
+          projectPreparation: outcome.projectPreparation,
+          executionLocation: 'cloud' as const,
+          imageDigest: outcome.imageDigest,
+          errorCode: outcome.errorCode,
+          workCopy: 'cloud_copy' as const,
+        }
+      : {}),
   };
 }
 
@@ -368,7 +423,7 @@ export async function recoverCloudCommandOperations(
       >`select pg_try_advisory_lock(15,hashtext(${row.operation_id})) as locked`;
       if (!lock?.locked) continue;
       const { binding } = RuntimeOperationSnapshotSchema.parse(row.snapshot),
-        payload = CloudCommandSchema.parse(row.payload),
+        payload = CloudExecutionPayloadSchema.parse(row.payload),
         attemptId = binding.attempt.attemptId;
       const container = await backend.inspect(attemptId);
       if (container?.State.Running && !(await backend.stop(attemptId)))
@@ -410,7 +465,11 @@ export async function recoverCloudCommandOperations(
             cloudJournalPreserved: true,
           },
         });
-      await backend.cleanup(attemptId);
+      // A missing attempt without a durable not-started/result fact can still
+      // have an in-flight create request. Keep its journal and work volume for
+      // the next recovery; neither absence nor deadline authorizes replay.
+      if (!container && !row.outcome) continue;
+      await backend.cleanup(attemptId, payload);
       await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${row.operation_id}`;
       recovered++;
     } catch {

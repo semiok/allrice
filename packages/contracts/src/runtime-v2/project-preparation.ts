@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { ProjectVersionRefSchema } from '../project-workspace.ts';
+import {
+  ProjectVersionRefSchema,
+  type RuntimeSavedProjectSource,
+} from '../project-workspace.ts';
+import { runtimeContractEqual } from './identity.ts';
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
@@ -145,6 +149,42 @@ export const RuntimeProjectPreparationEvidenceSchema = z
 export type RuntimeProjectPreparationEvidence = z.infer<
   typeof RuntimeProjectPreparationEvidenceSchema
 >;
+
+/** Same source, lock, cache and installation proof on either physical backend. */
+export function projectPreparationResultMatches(input: {
+  spec: RuntimeProjectPreparation;
+  source?: RuntimeSavedProjectSource;
+  imageDigest: string;
+  proof?: RuntimeProjectPreparationEvidence;
+  succeeded: boolean;
+  commandFinished: boolean;
+}) {
+  const { spec, source, proof } = input;
+  return (
+    !!proof &&
+    proof.version === spec.version &&
+    proof.projectId === spec.projectId &&
+    proof.sourceDigest === spec.sourceDigest &&
+    proof.lockChecksum === spec.lockChecksum &&
+    proof.manager === spec.manager &&
+    proof.managerVersion === spec.managerVersion &&
+    proof.runtimeImage === input.imageDigest &&
+    proof.packageCount === spec.packages.length &&
+    (source
+      ? !!proof.savedSource &&
+        runtimeContractEqual(proof.savedSource.project, source.project) &&
+        proof.cacheKey === source.cacheKey &&
+        proof.cacheVolume ===
+          `allrice-project-cache-${source.cacheKey.slice(7)}` &&
+        proof.platform === `linux-${source.architecture}` &&
+        (proof.savedSource.restoredDigest === spec.sourceDigest ||
+          (proof.savedSource.restoredDigest === null &&
+            proof.installation !== 'succeeded' &&
+            !input.commandFinished))
+      : proof.savedSource === undefined) &&
+    (!input.succeeded || proof.installation === 'succeeded')
+  );
+}
 
 export const projectPreparationErrorLabels: Record<string, string> = {
   PROJECT_CACHE_LIMIT: '项目依赖缓存已达到上限，请结束当前运行后重试',

@@ -50,6 +50,7 @@ import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import {
   projectNativeTools,
   projectVersionParameter,
+  projectPreparationParameter,
 } from './allrice-project-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
@@ -422,40 +423,7 @@ const brokerNativeTools = [
         description:
           'manager=npm,strategy=locked_ci,registry=https://registry.npmjs.org,scripts=disabled or allow_in_isolated_copy. Exact v3 package-lock/package.json and all transitive versions/SHA512 required. Max8 packages,total archives128KiB. Explicit archivePath avoids download; otherwise frozen network:outbound required. npm ci then requested verification, ephemeral isolated copy only.',
       },
-      projectPreparation: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          version: { type: 'integer', required: true },
-          projectId: { type: 'string', required: true },
-          sourceDigest: { type: 'string', required: true },
-          lockChecksum: { type: 'string', required: true },
-          offline: { type: 'boolean', required: true },
-          manager: { type: 'string', required: true },
-          managerVersion: { type: 'string', required: true },
-          lockPath: { type: 'string', required: true },
-          scripts: { type: 'string', required: true },
-          packages: {
-            type: 'array',
-            required: true,
-            items: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                name: { type: 'string', required: true },
-                version: { type: 'string', required: true },
-                integrity: { type: 'string' },
-                fileName: { type: 'string' },
-                url: { type: 'string' },
-                sha256: { type: 'string' },
-                archivePath: { type: 'string' },
-              },
-            },
-          },
-        },
-        description:
-          'version=1. pnpm requires managerVersion=10.33.3, a v9 pnpm-lock.yaml and exact npm name/version/integrity. uv requires managerVersion=0.8.22, requirements.lock with exact name==version and SHA256, plus compatible wheel fileName/url/sha256. scripts=disabled by default; only pnpm permits allow_in_isolated_copy. sourceDigest is SHA256 of the path-sorted files manifest JSON; lockChecksum is SHA256 of lock bytes. Offline cache misses fail explicitly. Installation and verification share one isolated copy and deadline; original source is unchanged. Cache scope is assigned by the platform, never supplied here.',
-      },
+      projectPreparation: projectPreparationParameter,
       background: {
         type: 'object',
         additionalProperties: false,

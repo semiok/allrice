@@ -68,6 +68,18 @@ export const ProjectVersionRefSchema = z
   })
   .strict();
 export type ProjectVersionRef = z.infer<typeof ProjectVersionRefSchema>;
+/** Canonical project execution call, added by the trusted selector only. */
+export const ProjectExecutionOriginSchema = z
+  .object({
+    toolName: z.literal('workspace.project'),
+    callId: z.string().min(1).max(255),
+    argumentsDigest: ChecksumSchema,
+    selectionId: UuidSchema,
+  })
+  .strict();
+export type ProjectExecutionOrigin = z.infer<
+  typeof ProjectExecutionOriginSchema
+>;
 /** Trusted operation input only. Model input contains the exact version ref,
  * never source bytes, runtime architecture or Worker lease provenance. */
 export const RuntimeSavedProjectSourceSchema = z
@@ -77,6 +89,7 @@ export const RuntimeSavedProjectSourceSchema = z
     snapshot: ProjectSnapshotSchema,
     architecture: z.enum(['amd64', 'arm64']),
     cacheKey: ChecksumSchema,
+    executionOrigin: ProjectExecutionOriginSchema.optional(),
     origin: z
       .object({
         jobId: UuidSchema,

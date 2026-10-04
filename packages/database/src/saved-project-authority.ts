@@ -114,6 +114,8 @@ export async function assertSavedProjectAuthority(
   sessionId: string,
   origin: RuntimeSavedProjectSource['origin'],
   project: ProjectVersionRef,
+  executionTool:
+    'local.process.execute' | 'cloud.process.execute' = 'local.process.execute',
 ) {
   if (
     ctx.jobId !== origin.jobId ||
@@ -138,7 +140,7 @@ export async function assertSavedProjectAuthority(
   }
   await job();
   await assertPublishingRun(tx, ctx, sessionId, 'workspace.project');
-  await assertPublishingRun(tx, ctx, sessionId, 'local.process.execute');
+  await assertPublishingRun(tx, ctx, sessionId, executionTool);
   const [employee] = await tx`select a.id from allrice_employee_runs r
     join allrice_employee_assignments a on a.id=r.employee_assignment_id and a.organization_id=r.organization_id and a.workspace_id=r.workspace_id and a.user_id=r.owner_id and a.active
     join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id and e.status='active'

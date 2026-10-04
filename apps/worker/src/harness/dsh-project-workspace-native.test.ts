@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { ProjectWorkspaceCommandSchema } from '@allrice/contracts';
+import { ProjectWorkspaceToolInputSchema } from '@allrice/contracts';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 const project = {
   projectId: 'db0bbe7d-1e71-4d27-89e2-fb09559d4b3f',
@@ -36,8 +36,8 @@ it.each([
         expect(schema.properties).not.toHaveProperty('ownerId');
       },
       onToolCall: async (call) => {
-        expect(ProjectWorkspaceCommandSchema.parse(call.arguments)).toEqual(
-          ProjectWorkspaceCommandSchema.parse(args),
+        expect(ProjectWorkspaceToolInputSchema.parse(call.arguments)).toEqual(
+          ProjectWorkspaceToolInputSchema.parse(args),
         );
         return {
           modelContent: 'Synthetic project transport accepted.',
@@ -48,3 +48,53 @@ it.each([
   },
   45000,
 );
+
+it('canonical project execution reaches real DSH with original bounded arguments and no backend-owned fields', async () => {
+  const args = {
+    action: 'execute',
+    project,
+    executable: '/usr/local/bin/node',
+    args: ['verify.cjs'],
+    path: '.',
+    limits: {
+      timeoutMs: 10000,
+      outputBytes: 16384,
+      memoryMiB: 256,
+      cpuMillis: 1000,
+      pids: 64,
+    },
+    projectPreparation: {
+      version: 1,
+      projectId: project.projectId,
+      sourceDigest: 'sha256:' + 'a'.repeat(64),
+      lockChecksum: 'sha256:' + 'b'.repeat(64),
+      offline: true,
+      manager: 'pnpm',
+      managerVersion: '10.33.3',
+      lockPath: 'pnpm-lock.yaml',
+      scripts: 'disabled',
+      packages: [],
+    },
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.project',
+    wireName: 'workspace_project',
+    args,
+    invalidArgs: { ...args, deviceId: project.projectId },
+    inspectSchema(schema) {
+      const props = schema.properties as Record<string, unknown>;
+      expect(props).toHaveProperty('projectPreparation');
+      expect(props).not.toHaveProperty('projectSource');
+      expect(props).not.toHaveProperty('deviceId');
+    },
+    onToolCall: async (call) => {
+      expect(ProjectWorkspaceToolInputSchema.parse(call.arguments)).toEqual(
+        args,
+      );
+      return {
+        modelContent: 'Synthetic execution route accepted.',
+        summary: '合成原生项目执行接线验证',
+      };
+    },
+  });
+}, 45000);

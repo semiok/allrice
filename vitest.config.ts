@@ -17,6 +17,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/project-runtime': fileURLToPath(
+        new URL('./packages/project-runtime/src/index.ts', import.meta.url),
+      ),
       '@allrice/office-runtime/pdf-reader': fileURLToPath(
         new URL('./packages/office-runtime/src/pdf-reader.ts', import.meta.url),
       ),

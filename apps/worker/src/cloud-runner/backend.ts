@@ -12,7 +12,11 @@ import {
   cloudPythonImageV1,
   cloudRuntimeImage,
   SandboxResourcesSchema,
-  CloudCommandSchema,
+  CloudExecutionPayloadSchema,
+  type CloudExecutionPayload,
+  type CloudProjectCommand,
+  type RuntimeProjectScope,
+  type RuntimeProjectPreparationEvidence,
   CloudCommandInputSchema,
   type CloudCommandInput,
   type CloudCommand,
@@ -23,8 +27,22 @@ import {
   type PngArtifactValidation,
 } from '@allrice/storage';
 import { officeSandboxImage } from '../office/runtime.js';
+import {
+  ProjectPreparation,
+  createLocalPythonArchive,
+} from '@allrice/project-runtime';
+import {
+  prepareCloudProject,
+  assertCloudProjectContainer,
+  collectCloudProject,
+  cleanupCloudProject,
+} from './project.js';
 
 export class CloudRunnerError extends Error {}
+/** Preparation failed before any create request. Start/create ACK uncertainty never carries this flag. */
+export class CloudProjectPreparationError extends CloudRunnerError {
+  readonly notStarted = true;
+}
 export type CloudRunResult = {
   containerId: string;
   exitCode: number | null;
@@ -44,10 +62,14 @@ export type CloudRunResult = {
     png?: PngArtifactValidation;
   }[];
   elapsedMs: number;
+  imageDigest?: string;
+  projectPreparation?: RuntimeProjectPreparationEvidence;
+  errorCode?: string;
 };
 type Container = {
   Id: string;
-  Config: { Labels: Record<string, string> };
+  Config: { Image?: string; Labels: Record<string, string> };
+  Mounts?: { Type: string; Name: string; Destination: string }[];
   HostConfig: { Runtime: string };
   State: {
     Running: boolean;
@@ -193,6 +215,11 @@ function redact(text: string) {
 }
 
 export class CloudRunnerBackend {
+  private readonly uncertainCreates = new Set<string>();
+  readonly projectPreparation = new ProjectPreparation(
+    process.env.ALLRICE_PROJECT_RUNTIME_CACHE_ROOT ??
+      join(homedir(), '.cache', 'allrice-cloud-project-runtime'),
+  );
   constructor(readonly socketPath = configuredSocket()) {
     if (socketPath !== configuredSocket() || !socketPath.startsWith('/'))
       throw new CloudRunnerError('CLOUD_DEDICATED_BACKEND_REQUIRED');
@@ -244,6 +271,41 @@ export class CloudRunnerBackend {
   async json<T>(method: string, path: string, body?: unknown): Promise<T> {
     const data = await this.call(method, path, body);
     return data.length ? (JSON.parse(data.toString()) as T) : (null as T);
+  }
+  async putArchive(id: string, bytes: Uint8Array, signal: AbortSignal) {
+    if (!/^[a-f0-9]{64}$/.test(id) || bytes.byteLength > 24_000_000)
+      throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
+    signal.throwIfAborted();
+    return new Promise<void>((resolve, reject) => {
+      const req = request(
+        {
+          socketPath: this.socketPath,
+          path: `/v1.45/containers/${id}/archive?path=%2Ftmp%2Fwork&noOverwriteDirNonDir=1`,
+          method: 'PUT',
+          signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+          headers: {
+            'Content-Type': 'application/x-tar',
+            'Content-Length': bytes.byteLength,
+          },
+        },
+        (res) => {
+          let size = 0;
+          res.on('data', (b: Buffer) => {
+            size += b.length;
+            if (size > 4096)
+              req.destroy(new CloudRunnerError('CLOUD_RESPONSE_LIMIT'));
+          });
+          res.once('error', reject);
+          res.once('end', () =>
+            res.statusCode && res.statusCode >= 200 && res.statusCode < 300
+              ? resolve()
+              : reject(new CloudRunnerError(`CLOUD_DAEMON_${res.statusCode}`)),
+          );
+        },
+      );
+      req.once('error', reject);
+      req.end(bytes);
+    });
   }
   async preflight(imageDigest = cloudToolchainImageV1) {
     if (
@@ -388,19 +450,28 @@ export class CloudRunnerBackend {
         c.HostConfig.Runtime !== 'runsc'
       )
         throw new CloudRunnerError('CLOUD_CONTAINER_IDENTITY_CHANGED');
+      if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'project')
+        await assertCloudProjectContainer(this, c);
       return c;
     } catch (e) {
       if (e instanceof Error && e.message === 'CLOUD_DAEMON_404') return null;
       throw e;
     }
   }
-  async cleanup(attemptId: string) {
+  async cleanup(attemptId: string, command?: CloudExecutionPayload) {
     const c = await this.inspect(attemptId);
-    if (!c) return;
+    if (!c) {
+      if (command && 'kind' in command)
+        await cleanupCloudProject(this, attemptId);
+      return;
+    }
     if (c.State.Running) throw new CloudRunnerError('CLOUD_NOT_STOPPED');
     await this.call('DELETE', `/containers/${c.Id}?v=true`);
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_CLEANUP_UNCONFIRMED');
+    if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'project')
+      await cleanupCloudProject(this, attemptId, c);
+    this.uncertainCreates.delete(attemptId);
   }
   async stop(attemptId: string) {
     const c = await this.inspect(attemptId);
@@ -415,7 +486,7 @@ export class CloudRunnerBackend {
   }
   async collect(
     attemptId: string,
-    command: Pick<CloudCommand, 'arguments'>,
+    command: Pick<CloudCommand, 'arguments'> | CloudProjectCommand,
     startedAt: number,
     reason: CloudRunResult['reason'] = 'completed',
   ): Promise<CloudRunResult> {
@@ -426,8 +497,8 @@ export class CloudRunnerBackend {
       'GET',
       `/containers/${c.Id}/logs?stdout=1&stderr=1&follow=0`,
     );
-    let at = 0,
-      text = '';
+    let at = 0;
+    const chunks: Buffer[] = [];
     while (at < raw.length) {
       if (at + 8 > raw.length || ![1, 2].includes(raw[at]!))
         throw new CloudRunnerError('CLOUD_LOG_INVALID');
@@ -435,9 +506,15 @@ export class CloudRunnerBackend {
       at += 8;
       if (n > 12_000_000 || at + n > raw.length)
         throw new CloudRunnerError('CLOUD_LOG_INVALID');
-      text += raw.subarray(at, at + n).toString();
+      chunks.push(raw.subarray(at, at + n));
       at += n;
     }
+    const bytes = Buffer.concat(chunks);
+    if ('kind' in command) {
+      await assertCloudProjectContainer(this, c, command);
+      return collectCloudProject(c, command, bytes, startedAt, reason);
+    }
+    const text = bytes.toString();
     const output: Buffer[] = [];
     const artifacts: CloudRunResult['artifacts'] = [];
     let size = 0,
@@ -524,7 +601,7 @@ export class CloudRunnerBackend {
     };
   }
   async execute(
-    commandInput: CloudCommand,
+    commandInput: CloudExecutionPayload,
     files: { path: string; contentBase64: string }[],
     options: {
       attemptId: string;
@@ -532,11 +609,19 @@ export class CloudRunnerBackend {
       signal?: AbortSignal;
       maintainLease: () => Promise<boolean>;
       onCreated?: (id: string) => Promise<void>;
+      projectScope?: RuntimeProjectScope;
       isTurn?: () => Promise<boolean>;
       observe?: (event: ExecutionDiagnosticEvent) => Promise<void>;
     },
   ): Promise<CloudRunResult> {
-    const command = CloudCommandSchema.parse(commandInput);
+    const command = CloudExecutionPayloadSchema.parse(commandInput);
+    if ('kind' in command)
+      return this.executeWithSlot(
+        command.arguments.limits,
+        command.imageDigest,
+        options,
+        (validOptions) => this.executeAdmittedProject(command, validOptions),
+      );
     return this.executeScript(
       command.arguments,
       files,
@@ -566,6 +651,29 @@ export class CloudRunnerBackend {
     office: boolean,
     imageDigest: string,
   ): Promise<CloudRunResult> {
+    return this.executeWithSlot(
+      args.limits,
+      imageDigest,
+      options,
+      (validOptions) =>
+        this.executeAdmittedScript(
+          args,
+          files,
+          validOptions,
+          office,
+          imageDigest,
+        ),
+    );
+  }
+
+  private async executeWithSlot(
+    limits: { memoryMiB: number },
+    imageDigest: string,
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    admit: (
+      options: Parameters<CloudRunnerBackend['execute']>[2],
+    ) => Promise<CloudRunResult>,
+  ) {
     const queuedAt = Date.now();
     await options.observe?.({ stage: 'queued', reason: 'sandbox_capacity' });
     let reservation:
@@ -575,23 +683,17 @@ export class CloudRunnerBackend {
       reservation = await this.acquireSlot(
         options,
         imageDigest,
-        (args.limits.memoryMiB + 128) * 1024 ** 2,
+        (limits.memoryMiB + 128) * 1024 ** 2,
       );
       await options.observe?.({
         stage: 'acquired',
         waitMs: Date.now() - queuedAt,
       });
-      const result = await this.executeAdmittedScript(
-        args,
-        files,
-        {
-          ...options,
-          maintainLease: async () =>
-            (await reservation!.valid()) && options.maintainLease(),
-        },
-        office,
-        imageDigest,
-      );
+      const result = await admit({
+        ...options,
+        maintainLease: async () =>
+          (await reservation!.valid()) && options.maintainLease(),
+      });
       await options.observe?.({
         stage:
           result.reason === 'completed'
@@ -618,12 +720,15 @@ export class CloudRunnerBackend {
       throw error;
     } finally {
       // Uncertain/live executions keep their reservation until physically stopped.
-      if (
-        reservation &&
-        !(await this.inspect(options.attemptId))?.State.Running
-      )
+      if (reservation && (await this.canReleaseAttempt(options.attemptId)))
         await reservation.release();
     }
+  }
+
+  private async canReleaseAttempt(attempt: string) {
+    if (this.uncertainCreates.has(attempt)) return false;
+    const c = await this.inspect(attempt);
+    return !c || c.State.Status === 'exited'; // Created is not proof a delayed start request cannot still arrive.
   }
 
   /** Docker names are atomic across Worker processes and databases sharing this
@@ -789,6 +894,79 @@ export class CloudRunnerBackend {
     throw new CloudRunnerError('CLOUD_CAPACITY_WAIT_TIMEOUT');
   }
 
+  private async executeAdmittedProject(
+    command: CloudProjectCommand,
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+  ): Promise<CloudRunResult> {
+    const startedAt = Date.now(),
+      deadline = Math.min(
+        Date.parse(options.deadlineAt),
+        startedAt + command.arguments.limits.timeoutMs,
+      );
+    await this.preflight(command.imageDigest);
+    if (await this.inspect(options.attemptId))
+      throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
+    if (!options.projectScope)
+      throw new CloudProjectPreparationError('PROJECT_SCOPE_REQUIRED');
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+      ...(options.signal ? [options.signal] : []),
+    ]);
+    let prepared;
+    try {
+      prepared = await prepareCloudProject(this, this.projectPreparation, {
+        command,
+        scope: options.projectScope,
+        attemptId: options.attemptId,
+        deadline,
+        signal,
+        maintainLease: options.maintainLease,
+      });
+    } catch (error) {
+      throw new CloudProjectPreparationError(
+        error && typeof error === 'object' && 'code' in error
+          ? String(error.code)
+          : error instanceof Error
+            ? error.message
+            : 'CLOUD_PROJECT_PREPARATION_FAILED',
+      );
+    }
+    try {
+      return await this.executeAdmittedPlan(
+        {
+          command,
+          config: prepared.config,
+          afterStart: async (id) => {
+            for (const bytes of prepared.archives)
+              await this.putArchive(id, bytes, prepared.signal);
+            if (!(await prepared.maintainLease()))
+              throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+            await this.putArchive(
+              id,
+              createLocalPythonArchive([
+                {
+                  path: '.allrice/staging-ready',
+                  bytes: Buffer.from('ready'),
+                  mode: 0o444,
+                },
+              ]),
+              prepared.signal,
+            );
+          },
+        },
+        {
+          ...options,
+          signal: prepared.signal,
+          maintainLease: prepared.maintainLease,
+        },
+        startedAt,
+        deadline,
+      );
+    } finally {
+      await prepared.release(this.uncertainCreates.has(options.attemptId));
+    }
+  }
+
   protected async executeAdmittedScript(
     args: CloudCommandInput,
     files: { path: string; contentBase64: string }[],
@@ -847,63 +1025,111 @@ export class CloudRunnerBackend {
         outputBytes: limits.outputBytes,
         deadline,
       }) + '\n';
-    const c = await this.json<{ Id: string }>(
-      'POST',
-      `/containers/create?name=allrice-cloud-${attemptId}`,
+    return this.executeAdmittedPlan(
       {
-        Image: imageDigest,
-        Entrypoint: ['/usr/local/bin/node'],
-        Cmd: ['--input-type=module', '--eval', cloudSupervisor],
-        User: '65532:65532',
-        WorkingDir: '/tmp',
-        OpenStdin: true,
-        StdinOnce: false,
-        Tty: false,
-        Env: [],
-        Labels: {
-          [attemptLabel]: attemptId,
-          'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
-          'xyz.bplabs.allrice.cloud.deadline': String(deadline),
-        },
-        HostConfig: {
-          Runtime: 'runsc',
-          NetworkMode: 'none',
-          ReadonlyRootfs: true,
-          CapDrop: ['ALL'],
-          SecurityOpt: ['no-new-privileges'],
-          PidsLimit: limits.pids,
-          Memory: limits.memoryMiB * 1024 * 1024,
-          MemorySwap: limits.memoryMiB * 1024 * 1024,
-          CpuPeriod: 100_000,
-          CpuQuota: limits.cpuMillis * 100,
-          Tmpfs: {
-            '/tmp': `rw,nosuid,nodev,noexec,size=${office ? 96 : 32}m,mode=1777`,
+        command,
+        encoded,
+        config: {
+          Image: imageDigest,
+          Entrypoint: ['/usr/local/bin/node'],
+          Cmd: ['--input-type=module', '--eval', cloudSupervisor],
+          User: '65532:65532',
+          WorkingDir: '/tmp',
+          OpenStdin: true,
+          StdinOnce: false,
+          Tty: false,
+          Env: [],
+          Labels: {
+            [attemptLabel]: attemptId,
+            'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
+            'xyz.bplabs.allrice.cloud.deadline': String(deadline),
           },
-          ShmSize: 8 * 1024 * 1024,
-          LogConfig: {
-            Type: 'json-file',
-            Config: { 'max-size': office ? '12m' : '8m', 'max-file': '1' },
+          HostConfig: {
+            Runtime: 'runsc',
+            NetworkMode: 'none',
+            ReadonlyRootfs: true,
+            CapDrop: ['ALL'],
+            SecurityOpt: ['no-new-privileges'],
+            PidsLimit: limits.pids,
+            Memory: limits.memoryMiB * 1024 * 1024,
+            MemorySwap: limits.memoryMiB * 1024 * 1024,
+            CpuPeriod: 100_000,
+            CpuQuota: limits.cpuMillis * 100,
+            Tmpfs: {
+              '/tmp': `rw,nosuid,nodev,noexec,size=${office ? 96 : 32}m,mode=1777`,
+            },
+            ShmSize: 8 * 1024 * 1024,
+            LogConfig: {
+              Type: 'json-file',
+              Config: { 'max-size': office ? '12m' : '8m', 'max-file': '1' },
+            },
+            RestartPolicy: { Name: 'no' },
+            AutoRemove: false,
+            Ulimits: [
+              { Name: 'nofile', Soft: 128, Hard: 128 },
+              { Name: 'core', Soft: 0, Hard: 0 },
+            ],
           },
-          RestartPolicy: { Name: 'no' },
-          AutoRemove: false,
-          Ulimits: [
-            { Name: 'nofile', Soft: 128, Hard: 128 },
-            { Name: 'core', Soft: 0, Hard: 0 },
-          ],
         },
       },
+      options,
+      startedAt,
+      deadline,
     );
+  }
+
+  private async executeAdmittedPlan(
+    plan: {
+      command: Pick<CloudCommand, 'arguments'> | CloudProjectCommand;
+      config: Record<string, unknown>;
+      encoded?: string;
+      afterStart?: (id: string) => Promise<void>;
+    },
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    startedAt: number,
+    deadline: number,
+  ): Promise<CloudRunResult> {
+    const { attemptId } = options;
+    let c: { Id: string };
+    try {
+      c = await this.json<{ Id: string }>(
+        'POST',
+        `/containers/create?name=allrice-cloud-${attemptId}`,
+        plan.config,
+      );
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        /^CLOUD_DAEMON_(400|401|403|404|422)$/.test(error.message)
+      ) {
+        // Explicit create rejection is a not-started fact. Timeout, 409 and
+        // server errors remain uncertain and preserve physical reservations.
+        if ('kind' in plan.command)
+          throw new CloudProjectPreparationError(error.message);
+      } else this.uncertainCreates.add(attemptId);
+      throw error;
+    }
     if (!/^[a-f0-9]{64}$/.test(c.Id))
       throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
     await options.onCreated?.(c.Id);
     if (options.signal?.aborted || !(await options.maintainLease()))
       throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
-    const stdin = await this.attachInput(c.Id);
+    if (
+      options.signal?.aborted ||
+      Date.now() >= deadline ||
+      !(await options.maintainLease())
+    )
+      throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+    const stdin = plan.encoded ? await this.attachInput(c.Id) : undefined;
     try {
       await this.call('POST', `/containers/${c.Id}/start`);
-      await new Promise<void>((resolve, reject) =>
-        stdin.write(encoded, (error) => (error ? reject(error) : resolve())),
-      );
+      await plan.afterStart?.(c.Id);
+      if (stdin)
+        await new Promise<void>((resolve, reject) =>
+          stdin.write(plan.encoded!, (error) =>
+            error ? reject(error) : resolve(),
+          ),
+        );
       await options.observe?.({
         stage: 'executing',
         containerId: c.Id,
@@ -934,9 +1160,9 @@ export class CloudRunnerBackend {
         }
         await delay(150);
       }
-      return this.collect(attemptId, command, startedAt, reason);
+      return this.collect(attemptId, plan.command, startedAt, reason);
     } finally {
-      stdin.destroy();
+      stdin?.destroy();
     }
   }
 }
