@@ -328,6 +328,7 @@ export const DeliveryFormatSchema = z.enum([
   'markdown',
   'text',
   'html',
+  'zip',
   'json',
   'docx',
   'xlsx',

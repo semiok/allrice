@@ -262,7 +262,7 @@ export async function runCloudCommandOperation(
   // No deletion until durable bytes/versions AND result receipt. Failed writes
   // leave the stopped container, daemon logs and journal available for recovery.
   const artifacts =
-    outcome.reason === 'completed' && !('kind' in payload)
+    outcome.reason === 'completed'
       ? await publishCloudOperationArtifacts(
           {
             context: created.context,
@@ -302,7 +302,11 @@ export async function runCloudCommandOperation(
       checksum: a.object.checksum,
     })),
   };
-  const stopped = ['canceled', 'deadline'].includes(outcome.reason);
+  // The finite project command's timeout is a failed check, with a confirmed
+  // physical stop. It does not cancel the Run or prevent a later source fix.
+  const stopped =
+    outcome.reason === 'canceled' ||
+    (outcome.reason === 'deadline' && !('kind' in payload));
   const signal = stopped
     ? { type: 'operation.stopped' as const, evidence, effects: 'none' as const }
     : outcome.reason === 'unknown'

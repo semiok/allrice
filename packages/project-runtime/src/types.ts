@@ -10,6 +10,7 @@ export type ProjectRuntimeArguments = Pick<
   | 'limits'
   | 'projectPreparation'
   | 'projectSource'
+  | 'outputs'
 >;
 export type ProjectRuntimeCommand = { arguments: ProjectRuntimeArguments };
 export interface ProjectEngine {

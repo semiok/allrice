@@ -6,6 +6,11 @@ import { generateDeliverable } from './deliverable-generator.js';
 import { parseDocument } from './document-reader.js';
 
 describe('formal deliverable generation', () => {
+  it('requires actual ZIP bytes from the project publisher instead of renaming text', async () => {
+    await expect(
+      generateDeliverable({ format: 'zip', content: 'not an archive' }),
+    ).rejects.toThrow('ZIP');
+  });
   it('generates readable PPTX through the real development ESM loader', async () => {
     const moduleUrl = new URL('./deliverable-generator.ts', import.meta.url)
       .href;

@@ -12,6 +12,11 @@ export const projectSourceLimits = Object.freeze({
   totalBytes: 256_000,
   snapshotBytes: 512_000,
 });
+export const projectWorkflowBudget = Object.freeze({
+  executions: 8,
+  edits: 3,
+  elapsedMs: 1_800_000,
+});
 const path = z.string().min(1).max(240).refine(isRuntimeRelativePath);
 export const ProjectFileInputSchema = z.union([
   z
@@ -135,6 +140,13 @@ export const ProjectWorkspaceCommandSchema = z.discriminatedUnion('action', [
       query: z.string().min(1).max(200),
       offset: z.number().int().min(0).max(100_000).default(0),
       limit: z.number().int().min(1).max(50).default(20),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('deliver'),
+      project: ProjectVersionRefSchema,
+      baseline: ProjectVersionRefSchema.optional(),
     })
     .strict(),
   z

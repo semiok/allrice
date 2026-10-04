@@ -18,6 +18,9 @@ import {
   createLocalCommandOperation,
   listLocalCommandOperations,
 } from './local-command-service.ts';
+import { publishLocalProjectArtifacts } from './project-delivery.ts';
+import { selectProjectExecution } from './project-execution.ts';
+import { listWorkbenchArtifacts } from './artifact-review.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { reportLocalPythonProfile } from './local-python-execution.ts';
 import { readManagedRuntimeGrant } from './managed-runtime-grant.ts';
@@ -43,7 +46,7 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
     await database?.close();
     vi.unstubAllEnvs();
   });
-  async function setup() {
+  async function setup(withOutput = false) {
     const f = await createAssistantLocalCommandFixture(
       database.db,
       'allow',
@@ -104,6 +107,17 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
       args: ['main.cjs'],
       path: '.',
       project,
+      ...(withOutput
+        ? {
+            outputs: [
+              {
+                path: 'dist/index.html',
+                fileName: 'index.html',
+                format: 'html',
+              },
+            ],
+          }
+        : {}),
       limits: {
         timeoutMs: 10000,
         outputBytes: 16384,
@@ -125,6 +139,39 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
       },
     };
     const callId = randomUUID();
+    if (withOutput)
+      await f.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}',${f.db.json(
+        {
+          version: 1,
+          clientVersion: '0.6.0-dev.31',
+          browser: 'unavailable',
+          sandbox: 'ready',
+          preview: 'unavailable',
+          paused: false,
+          readiness: [
+            {
+              capability: 'local.process',
+              state: 'ready',
+              reason: 'synthetic_ready',
+              missing: [],
+              versions: {},
+              observedAt: new Date().toISOString(),
+            },
+          ],
+        },
+      )}) where target_key=${'bridge.' + f.device.id}`;
+    const projectSelection = withOutput
+      ? await selectProjectExecution(
+          {
+            context: f.context,
+            callId,
+            arguments: { action: 'execute', ...args },
+            worker,
+            cloudReady: false,
+          },
+          f.db,
+        )
+      : undefined;
     const create = async (override: Record<string, unknown> = {}) => {
       const op = await createLocalCommandOperation(
         {
@@ -133,6 +180,7 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
           worker,
           storage,
           callId,
+          ...(projectSelection ? { projectSelection } : {}),
           ...override,
         },
         f.db,
@@ -386,6 +434,140 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
     },
   );
 
+  it('publishes only an exact stopped receipt; raw bytes are private and revoked managed grants deny publication', async () => {
+    const f = await setup(true),
+      op = await f.create(),
+      ledger = f.freshLedger(),
+      operationId = op.snapshot.binding.attempt.operationId;
+    const lease = await ledger.dispatch({
+      scope: f.task.scope,
+      operationId,
+      leaseOwner: randomUUID(),
+      leaseMs: 30000,
+    });
+    const identity = {
+      scope: f.task.scope,
+      operationId,
+      attempt: lease.snapshot.binding.attempt,
+      leaseToken: lease.leaseToken,
+    };
+    await ledger.startOperation({ ...identity, receiptId: randomUUID() });
+    const [stored] =
+      await f.db`select bridge_payload from allrice_runtime_operations where id=${operationId}`;
+    const payload = RuntimeLocalCommandSchema.parse(stored!.bridge_payload),
+      p = payload.arguments.projectPreparation!,
+      s = payload.arguments.projectSource!;
+    const proof = {
+      version: 1,
+      projectId: p.projectId,
+      sourceDigest: p.sourceDigest,
+      lockChecksum: p.lockChecksum,
+      cacheKey: s.cacheKey,
+      manager: p.manager,
+      managerVersion: p.managerVersion,
+      platform: 'linux-amd64',
+      runtimeImage: payload.arguments.imageDigest,
+      packageCount: 0,
+      archiveHits: 0,
+      downloadedArchives: 0,
+      downloadedBytes: 0,
+      installation: 'succeeded',
+      cacheVolume: `allrice-project-cache-${s.cacheKey.slice(7)}`,
+      sourceDirectoryModified: false,
+      hostEnvironmentModified: false,
+      savedSource: { project: s.project, restoredDigest: p.sourceDigest },
+    };
+    const output = {
+      backend: 'local-vm-container-v1',
+      containerId: 'a'.repeat(64),
+      imageDigest: payload.arguments.imageDigest,
+      stopped: true,
+      exitCode: 0,
+      reason: 'exited',
+      stdout: 'synthetic receipt validation only',
+      stderr: '',
+      truncated: false,
+      workCopy: 'local_isolated_copy',
+      sourceDirectoryModified: false,
+      projectPreparation: proof,
+    };
+
+    const bytes = Buffer.from(
+      '<html>synthetic authority fixture, not native execution</html>',
+    );
+    const result = {
+      ...output,
+      artifacts: [
+        {
+          path: 'dist/index.html',
+          checksum:
+            'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+          sizeBytes: bytes.length,
+          contentBase64: bytes.toString('base64'),
+        },
+      ],
+    };
+    await expect(
+      publishLocalProjectArtifacts(
+        { context: f.context, operationId },
+        f.storage,
+        f.db,
+      ),
+    ).rejects.toThrow('result_unconfirmed');
+    await ledger.recordReceipt({
+      ...identity,
+      receiptId: randomUUID(),
+      signal: {
+        type: 'operation.outcome',
+        result: {
+          status: 'succeeded',
+          effects: 'none',
+          evidence: {
+            id: randomUUID(),
+            recordedAt: new Date().toISOString(),
+            digest: 'sha256:' + 'b'.repeat(64),
+          },
+        },
+      },
+      evidence: { output: result },
+    });
+    const published = await publishLocalProjectArtifacts(
+      { context: f.context, operationId },
+      f.storage,
+      f.db,
+    );
+    expect(published).toHaveLength(1);
+    expect(
+      await publishLocalProjectArtifacts(
+        { context: f.context, operationId },
+        f.storage,
+        f.db,
+      ),
+    ).toEqual(published);
+    expect(
+      JSON.stringify(
+        await listLocalCommandOperations(f.requestContext, f.rootRunId, f.db),
+      ),
+    ).not.toContain('contentBase64');
+    expect(
+      (
+        await listWorkbenchArtifacts(
+          f.requestContext,
+          f.task.chatSessionId!,
+          undefined,
+          f.db,
+        )
+      ).artifacts,
+    ).toHaveLength(1);
+    await f.db`update allrice_bridge_managed_runtime_grants set revoked_at=clock_timestamp() where device_id=${f.device.id}`;
+    await expect(
+      publishLocalProjectArtifacts(
+        { context: f.context, operationId },
+        f.storage,
+        f.db,
+      ),
+    ).rejects.toThrow();
+  });
   it('requires exact source/architecture/no-effects receipts and reconciles stopped facts after the Worker lease is revoked', async () => {
     const f = await setup(),
       op = await f.create(),

@@ -541,6 +541,9 @@ importers:
       '@allrice/storage':
         specifier: workspace:*
         version: link:../storage
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       postgres:
         specifier: ^3.4.7
         version: 3.4.9

@@ -23,6 +23,7 @@ const formatMetadata: Record<
   markdown: { extension: '.md', mediaType: 'text/markdown' },
   text: { extension: '.txt', mediaType: 'text/plain' },
   html: { extension: '.html', mediaType: 'text/html' },
+  zip: { extension: '.zip', mediaType: 'application/zip' },
   json: { extension: '.json', mediaType: 'application/json' },
   docx: {
     extension: '.docx',
@@ -222,6 +223,8 @@ export async function generateDeliverable(input: {
 }): Promise<GeneratedDeliverable> {
   if (['png', 'jpeg', 'webp'].includes(input.format))
     throw new Error('图片必须通过图片生成工具交付，不能将文本伪装成图片。');
+  if (input.format === 'zip')
+    throw new Error('源码包必须通过项目工具交付，不能将文本伪装成 ZIP。');
   const metadata = formatMetadata[input.format];
   let bytes: Buffer;
   if (input.format === 'docx') bytes = await generateDocx(input.content);

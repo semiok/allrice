@@ -4,7 +4,8 @@
  */
 export const nodeProjectSupervisor = String.raw`
 import { spawn } from 'node:child_process';
-import { readFile,writeFile,mkdir,chown,chmod,readdir,lstat } from 'node:fs/promises';
+import { readFile,writeFile,mkdir,chown,chmod,readdir,lstat,open,realpath } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { constants } from 'node:os';
 import { createHash } from 'node:crypto';
 const root='/tmp/work',bootDeadline=Number(process.argv[1]||0);
@@ -28,6 +29,24 @@ const run=(exe,args,tenant=true)=>new Promise(resolve=>{
  p.once('close',(c,s)=>{clearTimeout(drain);resolve(Number.isInteger(c)?c:128+(constants.signals[s]||0));});
 });
 async function ownership(path){await chown(path,1000,1000);await chmod(path,0o700);for(const e of await readdir(path,{withFileTypes:true})){const p=path+'/'+e.name;if(e.isDirectory())await ownership(p);else{await chown(p,1000,1000);await chmod(p,0o600);}}}
+async function collect(){let total=0;for(const f of a.command.outputs||[]){
+ const p=root+'/project/'+f.path,parts=f.path.split('/');
+ // Hold each actual directory while traversing. O_NOFOLLOW on a full path
+ // alone would leave ancestors open to a tenant rename/symlink race.
+ const directoryFlags=fsConstants.O_RDONLY|fsConstants.O_DIRECTORY|fsConstants.O_NOFOLLOW;
+ let directory=await open(root+'/project',directoryFlags),h;
+ try{
+  for(const part of parts.slice(0,-1)){const next=await open('/proc/self/fd/'+directory.fd+'/'+part,directoryFlags);await directory.close();directory=next;}
+  h=await open('/proc/self/fd/'+directory.fd+'/'+parts.at(-1),fsConstants.O_RDONLY|fsConstants.O_NOFOLLOW|fsConstants.O_NONBLOCK);
+  if(await realpath('/proc/self/fd/'+h.fd)!==p)throw Error('PROJECT_OUTPUT_UNSAFE');
+  const s=await h.stat();if(!s.isFile()||s.nlink!==1||s.size>100000-total)throw Error('PROJECT_OUTPUT_LIMIT');
+  const chunks=[];let size=0;for(;;){const part=Buffer.alloc(Math.min(16384,s.size+1-size));if(!part.length)break;const {bytesRead}=await h.read(part,0,part.length,null);if(!bytesRead)break;chunks.push(part.subarray(0,bytesRead));size+=bytesRead;}
+  const b=Buffer.concat(chunks),after=await h.stat();total+=b.length;
+  if(total>100000||b.length!==s.size||after.size!==s.size||after.mtimeMs!==s.mtimeMs||await realpath('/proc/self/fd/'+h.fd)!==p)throw Error('PROJECT_OUTPUT_CHANGED');
+  emit({type:'artifact',path:f.path,data:b.toString('base64'),sizeBytes:b.length,checksum:'sha256:'+createHash('sha256').update(b).digest('hex')});
+ }finally{await h?.close();await directory.close();}
+}}
+
 try{
  await checkCache();
  for(const dir of ['project','home','tmp','tools'])await mkdir(root+'/'+dir,{recursive:true,mode:0o755});
@@ -47,8 +66,8 @@ try{
  // Restore with tenant privileges, never as root after lifecycle scripts.
  const restored=await run('/usr/local/bin/node',['-e',"const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync('/tmp/work/.allrice/pnpm-original-lock');const h=fs.openSync('pnpm-lock.yaml',fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);try{fs.writeFileSync(h,b);}finally{fs.closeSync(h);}if('sha256:'+crypto.createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex')!=="+JSON.stringify(s.lockChecksum)+")process.exit(125);"]);
  if(installed||restored){clearTimeout(timer);end(restored?'supervisor_failed':'exited',restored||installed);}
- if(!finished){await checkCache();installation='succeeded';emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args);await checkCache();clearTimeout(timer);end('exited',c);}
-}catch(e){clearTimeout(timer);end(e?.message==='cache limit'?'cache_limit':'supervisor_failed',e?.message==='cache limit'?123:125);}
+ if(!finished){await checkCache();installation='succeeded';emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args);await checkCache();if(c===0&&!finished)await collect();clearTimeout(timer);end('exited',c);}
+}catch(e){emit({type:'stderr',data:Buffer.from(String(e?.message||'project failure').slice(0,200)).toString('base64')});clearTimeout(timer);end(e?.message==='cache limit'?'cache_limit':'supervisor_failed',e?.message==='cache limit'?123:125);}
 `;
 
 export const pythonProjectSupervisor = String.raw`
@@ -79,6 +98,24 @@ def check_cache():
                 if total>128000000:end('cache_limit',123)
 def demote():
     os.setgroups([]);os.setgid(1000);os.setuid(1000)
+def collect():
+    total=0
+    for f in command.get('outputs',[]):
+        fd=os.open(ROOT+'/project',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        try:
+            parts=f['path'].split('/')
+            for part in parts[:-1]:
+                nextfd=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=nextfd
+            output=os.open(parts[-1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=fd)
+            try:
+                s=os.fstat(output)
+                if not stat.S_ISREG(s.st_mode) or s.st_nlink!=1 or s.st_size>100000-total:raise RuntimeError('PROJECT_OUTPUT_LIMIT')
+                with os.fdopen(os.dup(output),'rb') as stream:b=stream.read(100001-total)
+                after=os.fstat(output);total+=len(b)
+                if total>100000 or len(b)!=s.st_size or after.st_size!=s.st_size or after.st_mtime_ns!=s.st_mtime_ns:raise RuntimeError('PROJECT_OUTPUT_CHANGED')
+                emit(dict(type='artifact',path=f['path'],data=base64.b64encode(b).decode(),sizeBytes=len(b),checksum='sha256:'+hashlib.sha256(b).hexdigest()))
+            finally:os.close(output)
+        finally:os.close(fd)
 def own(path):
     os.chown(path,1000,1000);os.chmod(path,0o700)
     for current,dirs,files in os.walk(path):
@@ -129,7 +166,9 @@ try:
         c=run(uv,args)
         if c:end('exited',c)
     installation='succeeded';emit(dict(type='stage',stage='running'))
-    c=run(ROOT+'/project/'+('' if command['path']=='.' else command['path']+'/')+'.venv/bin/python',command['args']);end('exited',c)
+    c=run(ROOT+'/project/'+('' if command['path']=='.' else command['path']+'/')+'.venv/bin/python',command['args'])
+    if c==0:collect()
+    end('exited',c)
 except Exception as e:
     emit(dict(type='stderr',data=base64.b64encode(str(e).encode()).decode()));end('supervisor_failed',125)
 `;

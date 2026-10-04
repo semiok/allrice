@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -8,7 +8,11 @@ import {
   CloudProjectRunResultSchema,
   cloudProjectResultMatchesPayload,
 } from '@allrice/contracts';
-import { projectToolReleases } from '@allrice/project-runtime';
+import {
+  projectSourceDigest,
+  projectCacheKey,
+  projectToolReleases,
+} from '@allrice/project-runtime';
 import {
   CloudRunnerBackend,
   CloudProjectPreparationError,
@@ -119,6 +123,74 @@ suite(
       }
       throw Error('actual tenant command did not start');
     }
+    it.each(['regular', 'ancestor-link', 'oversized'] as const)(
+      'collects only bounded declared regular outputs: %s',
+      async (kind) => {
+        const f = cloudProjectFixture(),
+          a = f.command.arguments,
+          source = a.projectSource.snapshot;
+        const sourceFile = source.files.find((f) => f.path === 'verify.cjs')!;
+        const script =
+          "const fs=require('node:fs');" +
+          (kind === 'ancestor-link'
+            ? "fs.symlinkSync('/tmp/work/.allrice','dist');"
+            : "fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/result.html'," +
+              (kind === 'oversized'
+                ? 'Buffer.alloc(100001)'
+                : "'<html>verified output</html>'") +
+              ');');
+        const bytes = Buffer.from(script);
+        Object.assign(sourceFile, {
+          contentBase64: bytes.toString('base64'),
+          sizeBytes: bytes.length,
+          sha256: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+        });
+        a.files = source.files.map(({ path, sha256 }) => ({ path, sha256 }));
+        source.sourceDigest = projectSourceDigest(a.files);
+        a.projectPreparation.sourceDigest = source.sourceDigest;
+        a.projectSource.project.snapshot.checksum =
+          'sha256:' +
+          createHash('sha256').update(JSON.stringify(source)).digest('hex');
+        a.projectSource.cacheKey = projectCacheKey({
+          spec: a.projectPreparation,
+          scope: f.scope,
+          image: f.command.imageDigest,
+          architecture: 'amd64',
+        });
+        a.outputs = [
+          {
+            path:
+              kind === 'ancestor-link'
+                ? 'dist/config.json'
+                : 'dist/result.html',
+            fileName: 'result.html',
+            format: 'html',
+          },
+        ];
+        a.limits.timeoutMs = 60000;
+        const { result } = await run(f);
+        if (kind === 'regular') {
+          expect(result.reason, result.output).toBe('completed');
+          expect(result.artifacts).toHaveLength(1);
+          expect(
+            Buffer.from(
+              result.artifacts[0]!.contentBase64,
+              'base64',
+            ).toString(),
+          ).toBe('<html>verified output</html>');
+        } else {
+          expect(result.reason, result.output).toBe('failed');
+          expect(result.artifacts).toEqual([]);
+        }
+        expect(
+          cloudProjectResultMatchesPayload(
+            f.command,
+            CloudProjectRunResultSchema.parse(result),
+          ),
+        ).toBe(true);
+      },
+      90000,
+    );
     it.each(['pnpm', 'uv'] as const)(
       'installs %s cold, warm, offline and restores exact source on bounded work volumes',
       async (manager) => {

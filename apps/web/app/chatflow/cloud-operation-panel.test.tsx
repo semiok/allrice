@@ -61,6 +61,9 @@ describe('Cloud/MCP approval presentation', () => {
       args: ['verify.cjs', '<script>'],
       path: '.',
       files: [],
+      outputs: [
+        { path: 'dist/index.html', fileName: 'result.html', format: 'html' },
+      ],
       preparation: {
         version: 1,
         projectId: 'project-id',
@@ -86,6 +89,7 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('云端项目命令');
     expect(html).toContain('项目版本');
     expect(html).toContain('verify.cjs');
+    expect(html).toContain('result.html');
     expect(html).not.toContain('云端待执行脚本');
     expect(html).not.toContain('第三方服务');
     expect(html).not.toContain('<script>');

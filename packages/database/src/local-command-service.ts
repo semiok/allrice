@@ -19,6 +19,7 @@ import {
   isLocalCommandProfileForPlatform,
   localCommandRuntimeImage,
   RuntimeLocalCommandToolInputSchema,
+  ProjectOutputSpecsSchema,
   RuntimeSavedProjectSourceSchema,
   projectRuntimeCacheIdentity,
   type RuntimeSavedProjectSource,
@@ -115,7 +116,12 @@ async function createLocalBridgeToolOperation(
     throw new RuntimePolicyError('runtime_policy_disabled');
   const args = input.file
     ? null
-    : RuntimeLocalCommandToolInputSchema.parse(input.arguments);
+    : (input.projectSelection
+        ? RuntimeLocalCommandToolInputSchema.safeExtend({
+            outputs: ProjectOutputSpecsSchema.optional(),
+          })
+        : RuntimeLocalCommandToolInputSchema
+      ).parse(input.arguments);
   if (input.assistant) {
     UuidSchema.parse(input.assistant.runId);
     if (args?.background || args?.project)
@@ -761,6 +767,15 @@ export async function listLocalCommandOperations(
       const file = localCommand.success
         ? null
         : BridgeCommandPayloadSchema.parse(row.bridge_payload);
+      const evidence = receipt?.evidence as
+        { summary: string; output?: Record<string, unknown> } | undefined;
+      const publicEvidence =
+        internalCommand?.projectSource && evidence?.output?.artifacts
+          ? {
+              ...evidence,
+              output: { ...evidence.output, artifacts: undefined },
+            }
+          : evidence;
       if (
         file &&
         file.capability !== 'local.fs.write' &&
@@ -797,7 +812,7 @@ export async function listLocalCommandOperations(
             }
           : null,
         output,
-        evidence: receipt?.evidence ?? null,
+        evidence: publicEvidence ?? null,
         service: localServiceFeatureEnabled()
           ? await readLocalService(row.id, database)
           : null,

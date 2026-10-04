@@ -1,5 +1,6 @@
 import {
   executeProjectWorkspace,
+  publishLocalProjectArtifacts,
   ProjectWorkspaceError,
   selectProjectExecution,
   createLocalCommandOperation,
@@ -10,6 +11,7 @@ import {
 } from '@allrice/database';
 import {
   ProjectExecuteInputSchema,
+  projectWorkflowBudget,
   cloudPythonImageV1,
   cloudToolchainImageV1,
 } from '@allrice/contracts';
@@ -92,6 +94,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
             args: command.args,
             path: command.path,
             projectPreparation: command.projectPreparation,
+            ...(command.outputs ? { outputs: command.outputs } : {}),
             limits: command.limits,
           };
           const local = await createLocalCommandOperation({
@@ -126,9 +129,29 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           selected.local,
           input.signal,
         );
+        const artifacts =
+          result.status === 'succeeded' && command.outputs?.length
+            ? await publishLocalProjectArtifacts(
+                { context: input.context, operationId: result.operationId },
+                storage,
+              )
+            : [];
+        const evidence = result.evidence as {
+          output?: { artifacts?: unknown[] };
+        } | null;
+        const publicResult = evidence?.output?.artifacts
+          ? {
+              ...result,
+              evidence: {
+                ...evidence,
+                output: { ...evidence.output, artifacts: undefined },
+              },
+            }
+          : result;
         return {
           modelContent: JSON.stringify({
-            ...result,
+            ...publicResult,
+            artifacts,
             project: command.project,
             executionLocation: 'local',
             executionChoice: selected.selection.choice,
@@ -176,13 +199,27 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       new LocalStorageAdapter(input.storageRoot),
     );
     return {
-      modelContent: JSON.stringify(result),
+      modelContent: JSON.stringify({
+        ...result,
+        workflowBudget: projectWorkflowBudget,
+      }),
       summary:
         args.action === 'open' || args.action === 'apply'
           ? '项目源码已保存；尚未执行构建'
-          : '已读取指定版本的项目源码',
+          : args.action === 'deliver'
+            ? '项目源码与真实测试记录已交付'
+            : '已读取指定版本的项目源码',
     };
   } catch (error) {
+    if (
+      error instanceof RuntimePolicyError &&
+      error.code === 'project_workflow_budget_exhausted'
+    )
+      throw new HandlerError(
+        'PROJECT_WORKFLOW_BUDGET_EXHAUSTED',
+        '本轮项目执行预算已用完。保留当前源码和失败记录，用 deliver 交付结果；不要继续修改、执行或换端重试。',
+        false,
+      );
     if (error instanceof ProjectWorkspaceError)
       throw new HandlerError(
         `PROJECT_${error.code.toUpperCase()}`,

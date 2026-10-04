@@ -587,6 +587,7 @@ export class ProjectCommandRunner {
           a.limits.outputBytes,
           a.limits.timeoutMs + 15000,
           options.onOutput,
+          a.outputs,
         );
         await stopPromise;
         const c = await this.inspect(options.attemptId, id, command);
@@ -605,6 +606,14 @@ export class ProjectCommandRunner {
           truncated: observed.truncated,
           workCopy: 'local_isolated_copy',
           sourceDirectoryModified: false,
+          ...(a.outputs
+            ? {
+                artifacts:
+                  reason === 'exited' && c.State.ExitCode === 0
+                    ? observed.artifacts
+                    : [],
+              }
+            : {}),
           projectPreparation: {
             ...evidence,
             installation: stopReason
@@ -660,8 +669,9 @@ export class ProjectCommandRunner {
     maximum: number,
     timeout: number,
     onOutput?: Options['onOutput'],
+    outputs?: RuntimeLocalCommand['arguments']['outputs'],
   ) {
-    const events = new ProjectEvents(maximum, onOutput);
+    const events = new ProjectEvents(maximum, onOutput, outputs);
     await this.input.api.logs(id, (bytes) => events.push(bytes), timeout);
     return events.finish();
   }
@@ -686,6 +696,8 @@ export class ProjectCommandRunner {
       c.Id,
       command.arguments.limits.outputBytes,
       10000,
+      undefined,
+      command.arguments.outputs,
     );
     c = await this.inspect(attempt, c.Id, command);
     if (c.State.Running || c.State.Status !== 'exited')
@@ -722,6 +734,15 @@ export class ProjectCommandRunner {
       truncated: observed.truncated,
       workCopy: 'local_isolated_copy',
       sourceDirectoryModified: false,
+      ...(command.arguments.outputs
+        ? {
+            artifacts:
+              this.exitReason(c, observed.exit, undefined, 'lease_lost') ===
+                'exited' && c.State.ExitCode === 0
+                ? observed.artifacts
+                : [],
+          }
+        : {}),
       projectPreparation: evidence,
     });
     if (!localProjectResultMatchesPayload(command, result))

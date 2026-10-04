@@ -1,4 +1,6 @@
 /** Real isolated PostgreSQL; physical runsc/Bridge evidence is collected separately. */
+import { writeFile } from 'node:fs/promises';
+import { unzipSync } from 'fflate';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -21,6 +23,11 @@ import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import { selectProjectExecution } from './project-execution.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
 import { createCloudProjectOperation } from './cloud-execution.ts';
+import {
+  listWorkbenchArtifacts,
+  readArtifactBytes,
+} from './artifact-review.ts';
+import { getToolBrokerFile } from './execution/tool-broker.ts';
 import {
   CloudRunnerBackend,
   CloudProjectPreparationError,
@@ -54,7 +61,7 @@ suite(
       await database?.close();
       vi.unstubAllEnvs();
     });
-    async function setup(cloud = true) {
+    async function setup(cloud = true, knownBug = false) {
       const f = await createAssistantLocalCommandFixture(
         database.db,
         'allow',
@@ -67,7 +74,20 @@ suite(
         >`select attempt from allrice_jobs where id=${f.context.jobId}`;
       const worker = { attempt: job!.attempt, leaseToken: f.worker.leaseToken };
       const files = [
-        { path: 'main.cjs', text: "console.log('saved-project:42')\n" },
+        {
+          path: 'main.cjs',
+          text: knownBug
+            ? 'module.exports=(a,b)=>a-b;\n'
+            : "console.log('saved-project:42')\n",
+        },
+        ...(knownBug
+          ? [
+              {
+                path: 'verify.cjs',
+                text: "const assert=require('node:assert/strict'),fs=require('node:fs'),add=require('./main.cjs');assert.equal(add(20,22),42);fs.mkdirSync('dist',{recursive:true});fs.writeFileSync('dist/index.html','<!doctype html><meta charset=\"utf-8\"><title>Known bug verified</title><button onclick=\"document.querySelector(\\\"output\\\").textContent=20+22\">Compute</button><output>42</output>');console.log('original assertion passed:42');\n",
+              },
+            ]
+          : []),
         {
           path: 'package.json',
           text: '{"name":"saved-project","version":"1.0.0","packageManager":"pnpm@10.33.3"}',
@@ -168,7 +188,9 @@ suite(
           sourceDigest: opened.sourceDigest,
           lockChecksum:
             'sha256:' +
-            createHash('sha256').update(files[2]!.text).digest('hex'),
+            createHash('sha256')
+              .update(files.find((f) => f.path === 'pnpm-lock.yaml')!.text)
+              .digest('hex'),
           offline: true,
           manager: 'pnpm',
           managerVersion: '10.33.3',
@@ -210,8 +232,248 @@ suite(
         request,
         cloudTarget: target,
         cloudGrant: grant,
+        opened,
       };
     }
+    it.runIf(process.env.ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION === '1')(
+      'first closed loop: known error -> actual runsc failure -> source fix -> original assertion -> details/private static + source download',
+      async () => {
+        const f = await setup(true, true);
+        await f.setState('offline');
+        const backend = new CloudRunnerBackend();
+        let args = {
+          ...f.args,
+          limits: { ...f.args.limits, timeoutMs: 30000 },
+          args: ['verify.cjs'],
+          outputs: [
+            {
+              path: 'dist/index.html',
+              fileName: 'index.html',
+              format: 'html' as const,
+            },
+          ],
+        };
+        const execute = async () => {
+          const callId = randomUUID(),
+            selection = await selectProjectExecution(
+              {
+                context: f.context,
+                callId,
+                arguments: args,
+                worker: f.worker,
+                cloudReady: true,
+              },
+              f.db,
+            );
+          const created = await createCloudProjectOperation(
+            {
+              context: f.context,
+              callId,
+              projectSelection: selection,
+              worker: f.worker,
+              storage: f.storage,
+            },
+            f.db,
+          );
+          let result;
+          try {
+            result = await runCloudCommandOperation(created, {
+              database: f.db,
+              storage: f.storage,
+              backend,
+            });
+          } catch (error) {
+            if (process.env.ALLRICE_PROJECT_FIRST_LOOP_EVIDENCE)
+              await writeFile(
+                process.env.ALLRICE_PROJECT_FIRST_LOOP_EVIDENCE,
+                JSON.stringify(
+                  {
+                    error: String(error),
+                    operations:
+                      await f.db`select snapshot from allrice_runtime_operations where run_id=${f.rootRunId}`,
+                    receipts:
+                      await f.db`select disposition,payload->'signal' as signal from allrice_runtime_operation_receipts where operation_id=${created.snapshot.binding.attempt.operationId}`,
+                    attempts:
+                      await f.db`select outcome from allrice_cloud_execution_attempts where operation_id=${created.snapshot.binding.attempt.operationId}`,
+                  },
+                  null,
+                  2,
+                ),
+              );
+            throw error;
+          }
+          return {
+            result,
+            operationId: created.snapshot.binding.attempt.operationId,
+          };
+        };
+        const failed = await execute();
+        expect(failed.result.status).toBe('failed');
+        expect(failed.result.output).toContain('AssertionError');
+        expect(failed.result.artifacts).toEqual([]);
+        const saved = (await executeProjectWorkspace(
+          {
+            context: f.context,
+            sessionId: f.task.chatSessionId!,
+            callId: randomUUID(),
+            worker: f.worker,
+            arguments: {
+              action: 'apply',
+              expectedHead: args.project,
+              proposal: {
+                files: [
+                  {
+                    path: 'main.cjs',
+                    before: 'module.exports=(a,b)=>a-b;\n',
+                    after: 'module.exports=(a,b)=>a+b;\n',
+                  },
+                ],
+              },
+            },
+          },
+          f.storage,
+          f.db,
+        )) as { project: unknown; sourceDigest: string };
+        args = {
+          ...args,
+          project: ProjectVersionRefSchema.parse(saved.project),
+          projectPreparation: {
+            ...args.projectPreparation,
+            sourceDigest: saved.sourceDigest,
+          },
+        };
+        const passed = await execute();
+        expect(passed.result.status).toBe('succeeded');
+        expect(passed.result.output).toContain('original assertion passed:42');
+        expect(passed.result.artifacts).toHaveLength(1);
+        const detail = await listCloudRuntimeOperations(
+          f.requestContext,
+          f.rootRunId,
+          f.db,
+        );
+        expect(
+          detail.find(
+            (o) =>
+              o.snapshot.binding.attempt.operationId === passed.operationId,
+          )?.proposal,
+        ).toMatchObject({
+          kind: 'project',
+          project: args.project,
+          outputs: args.outputs,
+        });
+        const delivered = (await executeProjectWorkspace(
+          {
+            context: f.context,
+            sessionId: f.task.chatSessionId!,
+            worker: f.worker,
+            callId: randomUUID(),
+            arguments: {
+              action: 'deliver',
+              project: args.project,
+              baseline: f.args.project,
+            },
+          },
+          f.storage,
+          f.db,
+        )) as {
+          artifacts: { objectId: string; fileName: string }[];
+          report: { executions: { status: string }[] };
+        };
+        expect(delivered.report.executions.map((r) => r.status)).toEqual([
+          'failed',
+          'succeeded',
+        ]);
+        const listed = await listWorkbenchArtifacts(
+          {
+            actor: { type: 'user', id: f.user },
+            organizationId: f.org,
+            workspaceId: f.workspace,
+          },
+          f.task.chatSessionId!,
+          undefined,
+          f.db,
+        );
+        expect(listed.artifacts).toHaveLength(4);
+        const archive = delivered.artifacts.find(
+          (a) => a.fileName === 'project-source.zip',
+        )!;
+        const { object } = await getToolBrokerFile(
+          f.context,
+          archive.objectId,
+          f.db,
+        );
+        const zip = unzipSync(await readArtifactBytes(f.storage, object));
+        expect(Buffer.from(zip['main.cjs']!).toString()).toBe(
+          'module.exports=(a,b)=>a+b;\n',
+        );
+        expect(Buffer.from(zip['verify.cjs']!).toString()).toContain(
+          'assert.equal(add(20,22),42)',
+        );
+        const html = passed.result.artifacts[0]!,
+          stored = await getToolBrokerFile(f.context, html.objectId, f.db);
+        expect(
+          (await readArtifactBytes(f.storage, stored.object)).toString(),
+        ).toContain('<output>42</output>');
+        const other = await setup();
+        await expect(
+          listCloudRuntimeOperations(other.requestContext, f.rootRunId, f.db),
+        ).rejects.toThrow();
+        await expect(
+          getToolBrokerFile(other.context, html.objectId, f.db),
+        ).rejects.toThrow();
+      },
+      120000,
+    );
+    it('shares an eight-call and elapsed budget across projects, preserves same-call replay and read/delivery', async () => {
+      const f = await setup();
+      let replayInput: Parameters<typeof selectProjectExecution>[0] | undefined;
+      for (let i = 0; i < 8; i++) {
+        const input = {
+          context: f.context,
+          callId: randomUUID(),
+          arguments: f.args,
+          worker: f.worker,
+          cloudReady: true,
+        };
+        const selected = await selectProjectExecution(input, f.db);
+        expect(selected.choice.location).toBe('local');
+        replayInput = input;
+      }
+      expect(
+        (await selectProjectExecution(replayInput!, f.db)).choice.location,
+      ).toBe('local');
+      await expect(
+        selectProjectExecution({ ...replayInput!, callId: randomUUID() }, f.db),
+      ).rejects.toThrow('project_workflow_budget_exhausted');
+      const g = await setup();
+      await g.select();
+      await g.db`update allrice_audit_events set occurred_at=clock_timestamp()-interval '31 minutes' where action='execution.location' and metadata->>'runId'=${g.rootRunId}`;
+      await expect(
+        selectProjectExecution(
+          {
+            context: g.context,
+            callId: randomUUID(),
+            arguments: g.args,
+            worker: g.worker,
+            cloudReady: true,
+          },
+          g.db,
+        ),
+      ).rejects.toThrow('project_workflow_budget_exhausted');
+      expect(
+        await executeProjectWorkspace(
+          {
+            context: g.context,
+            sessionId: g.task.chatSessionId!,
+            worker: g.worker,
+            callId: randomUUID(),
+            arguments: { action: 'deliver', project: g.args.project },
+          },
+          g.storage,
+          g.db,
+        ),
+      ).toHaveProperty('artifacts');
+    });
     it('chooses the ready local target, keeps original call/source/Worker, and creates one operation on replay', async () => {
       const f = await setup(),
         selection = await f.select();
@@ -470,6 +732,101 @@ suite(
         reason: 'failed',
         errorCode: 'CLOUD_DAEMON_400',
       });
+    });
+    it('records a finite project deadline as a failed check, settles it once and permits the next check in the same Run', async () => {
+      const f = await setup();
+      await f.setState('offline');
+      const created = await createCloudProjectOperation(
+        {
+          context: f.context,
+          callId: f.callId,
+          projectSelection: await f.select(),
+          worker: f.worker,
+          storage: f.storage,
+        },
+        f.db,
+      );
+      // Synthetic physical port: this tests persisted receipt/Run semantics,
+      // not a native VM timeout. The real deadline has separate evidence.
+      class FiniteDeadline extends CloudRunnerBackend {
+        executions = 0;
+        override async execute(
+          payload: Parameters<CloudRunnerBackend['execute']>[0],
+        ) {
+          this.executions++;
+          if (!('kind' in payload)) throw Error('Project required');
+          const a = payload.arguments,
+            s = a.projectSource,
+            p = a.projectPreparation;
+          return {
+            containerId: 'a'.repeat(64),
+            exitCode: null,
+            stopped: true as const,
+            reason: 'deadline' as const,
+            output: 'verification deadline',
+            artifacts: [],
+            elapsedMs: 1000,
+            imageDigest: payload.imageDigest,
+            projectPreparation: {
+              version: 1 as const,
+              projectId: p.projectId,
+              sourceDigest: p.sourceDigest,
+              lockChecksum: p.lockChecksum,
+              cacheKey: s.cacheKey,
+              manager: p.manager,
+              managerVersion: p.managerVersion,
+              platform: 'linux-amd64' as const,
+              runtimeImage: payload.imageDigest,
+              packageCount: p.packages.length,
+              archiveHits: 0,
+              downloadedArchives: 0,
+              downloadedBytes: 0,
+              installation: 'interrupted' as const,
+              cacheVolume: `allrice-project-cache-${s.cacheKey.slice(7)}`,
+              sourceDirectoryModified: false as const,
+              hostEnvironmentModified: false as const,
+              savedSource: {
+                project: s.project,
+                restoredDigest: p.sourceDigest,
+              },
+            },
+          };
+        }
+        override async cleanup() {}
+      }
+      const backend = new FiniteDeadline(),
+        options = { database: f.db, storage: f.storage, backend };
+      expect((await runCloudCommandOperation(created, options)).status).toBe(
+        'failed',
+      );
+      expect((await runCloudCommandOperation(created, options)).status).toBe(
+        'failed',
+      );
+      expect(backend.executions).toBe(1);
+      const [root] =
+        await f.db`select cancel_request_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+      expect(root!.cancel_request_id).toBeNull();
+      const [receipt] =
+        await f.db`select payload,disposition from allrice_runtime_operation_receipts where operation_id=${created.snapshot.binding.attempt.operationId} and payload->'signal'->>'type'='operation.outcome'`;
+      expect(receipt!.disposition).toBe('applied');
+      expect(receipt!.payload.signal.result.status).toBe('failed');
+      const [usage] =
+        await f.db`select observation from allrice_runtime_reservations where operation_id=${created.snapshot.binding.attempt.operationId} and metric='tool_calls'`;
+      expect(usage!.observation).toMatchObject({ amount: 1, state: 'settled' });
+      expect(
+        (
+          await selectProjectExecution(
+            {
+              context: f.context,
+              callId: randomUUID(),
+              arguments: f.args,
+              worker: f.worker,
+              cloudReady: true,
+            },
+            f.db,
+          )
+        ).choice.status,
+      ).toBe('execute');
     });
     it('rejects a changed canonical call and old Worker before creating another backend input', async () => {
       const f = await setup();

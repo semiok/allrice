@@ -118,3 +118,4 @@ export * from './task-next-steps.ts';
 export * from './managed-node-payload.ts';
 export * from './project-workspace.ts';
 export * from './project-execution.ts';
+export * from './project-outputs.ts';

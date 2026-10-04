@@ -1,4 +1,11 @@
 import { StringDecoder } from 'node:string_decoder';
+import { createHash } from 'node:crypto';
+import {
+  ProjectCollectedArtifactSchema,
+  projectArtifactLimits,
+  type ProjectCollectedArtifact,
+  type ProjectOutputSpec,
+} from '@allrice/contracts';
 import { RuntimeCommandError } from './errors.js';
 import { LocalCommandOutputFilter } from './command-output.js';
 
@@ -30,6 +37,7 @@ export class ProjectEvents {
   exit?: ProjectExit;
   sourceDigest?: string;
   stage?: 'preparing' | 'running';
+  artifacts: ProjectCollectedArtifact[] = [];
   constructor(
     private maximum: number,
     private onOutput?: (chunk: {
@@ -37,6 +45,7 @@ export class ProjectEvents {
       stream: 'stdout' | 'stderr';
       text: string;
     }) => void,
+    private outputs: ProjectOutputSpec[] = [],
   ) {}
   private publish(stream: 'stdout' | 'stderr', text: string) {
     if (!text) return;
@@ -79,6 +88,26 @@ export class ProjectEvents {
             Buffer.from(e.data, 'base64'),
           ),
         );
+      } else if (e.type === 'artifact') {
+        const artifact = ProjectCollectedArtifactSchema.parse({
+          path: e.path,
+          contentBase64: e.data,
+          checksum: e.checksum,
+          sizeBytes: e.sizeBytes,
+        });
+        const bytes = Buffer.from(artifact.contentBase64, 'base64');
+        if (
+          !this.outputs.some((f) => f.path === artifact.path) ||
+          this.artifacts.some((f) => f.path === artifact.path) ||
+          bytes.length !== artifact.sizeBytes ||
+          bytes.toString('base64') !== artifact.contentBase64 ||
+          'sha256:' + createHash('sha256').update(bytes).digest('hex') !==
+            artifact.checksum ||
+          bytes.length + this.artifacts.reduce((n, f) => n + f.sizeBytes, 0) >
+            projectArtifactLimits.bytes
+        )
+          throw new RuntimeCommandError('INVALID_SUPERVISOR_OUTPUT');
+        this.artifacts.push(artifact);
       } else if (e.type === 'source_verified') {
         if (this.sourceDigest || !/^sha256:[a-f0-9]{64}$/.test(e.sourceDigest))
           throw new RuntimeCommandError('INVALID_SUPERVISOR_OUTPUT');
@@ -126,6 +155,7 @@ export class ProjectEvents {
       exit: this.exit,
       sourceDigest: this.sourceDigest,
       stage: this.stage,
+      artifacts: this.artifacts,
       truncated:
         this.truncated ||
         !!this.pending ||

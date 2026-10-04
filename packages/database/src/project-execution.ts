@@ -6,6 +6,7 @@ import {
   EmployeeExecutionSnapshotSchema,
   CloudExecutionProfileSchema,
   ProjectExecuteInputSchema,
+  projectWorkflowBudget,
   ExecutionChoiceSchema,
   isLocalCommandProfileForPlatform,
   resolveExecutionChoice,
@@ -128,6 +129,20 @@ export async function selectProjectExecution(
     )
       throw new RuntimePolicyError('idempotency_conflict');
     const constraints = executionRequestConstraints(run.text);
+    if (!prior) {
+      const [budget] = await tx<
+        { calls: number; expired: boolean }[]
+      >`select count(distinct metadata->>'callId')::int as calls,
+        coalesce(min(occurred_at)<clock_timestamp()-interval '30 minutes',false) as expired
+        from allrice_audit_events where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId}
+          and actor_id=${owner} and action='execution.location' and resource_type='saved_project' and metadata->>'runId'=${ctx.runId}`;
+      if (
+        !budget ||
+        budget.calls >= projectWorkflowBudget.executions ||
+        budget.expired
+      )
+        throw new RuntimePolicyError('project_workflow_budget_exhausted');
+    }
     // A model cannot force cloud to bypass the user's local-first default.
     const location =
       constraints.location !== 'auto'
@@ -328,6 +343,7 @@ export async function assertProjectExecutionOrigin(
     args: string[];
     path: string;
     limits: unknown;
+    outputs?: unknown;
   },
   location: 'local' | 'cloud',
 ) {
@@ -367,6 +383,7 @@ export async function assertProjectExecutionOrigin(
         args: args.args,
         path: args.path,
         limits: args.limits,
+        ...(args.outputs ? { outputs: args.outputs } : {}),
       },
       {
         project: source.project,
@@ -375,6 +392,7 @@ export async function assertProjectExecutionOrigin(
         args: command.args,
         path: command.path,
         limits: command.limits,
+        ...(command.outputs ? { outputs: command.outputs } : {}),
       },
     )
   )

@@ -13,6 +13,7 @@ it.each([
   { action: 'open', files: [{ path: 'main.ts', text: 'const n=1;' }] },
   { action: 'open', source: project.snapshot },
   { action: 'read', project, path: 'main.ts' },
+  { action: 'deliver', project, baseline: project },
   {
     action: 'apply',
     expectedHead: project,
@@ -56,6 +57,9 @@ it('canonical project execution reaches real DSH with original bounded arguments
     executable: '/usr/local/bin/node',
     args: ['verify.cjs'],
     path: '.',
+    outputs: [
+      { path: 'dist/index.html', fileName: 'index.html', format: 'html' },
+    ],
     limits: {
       timeoutMs: 10000,
       outputBytes: 16384,
@@ -84,6 +88,7 @@ it('canonical project execution reaches real DSH with original bounded arguments
     inspectSchema(schema) {
       const props = schema.properties as Record<string, unknown>;
       expect(props).toHaveProperty('projectPreparation');
+      expect(props).toHaveProperty('outputs');
       expect(props).not.toHaveProperty('projectSource');
       expect(props).not.toHaveProperty('deviceId');
     },
