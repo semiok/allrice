@@ -60,6 +60,7 @@ export type CloudOperationView = {
         path: string;
         files: CloudProjectCommand['arguments']['files'];
         preparation: CloudProjectCommand['arguments']['projectPreparation'];
+        outputs?: CloudProjectCommand['arguments']['outputs'];
         limits: CloudProjectCommand['arguments']['limits'];
       }
     | {
@@ -243,6 +244,9 @@ export async function listCloudRuntimeOperations(
           'kind' in payload
             ? {
                 kind: 'project',
+                ...(payload.arguments.outputs
+                  ? { outputs: payload.arguments.outputs }
+                  : {}),
                 project: payload.arguments.projectSource.project,
                 sourceDigest:
                   payload.arguments.projectSource.snapshot.sourceDigest,

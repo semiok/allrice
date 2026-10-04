@@ -5,6 +5,7 @@ import {
   ProjectWorkspaceCommandSchema,
   runtimeContractEqual,
   projectSourceLimits,
+  projectWorkflowBudget,
   runtimeFeatureEnabled,
   RuntimeTaskRefSchema,
   type ExecutionContext,
@@ -15,6 +16,11 @@ import {
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 import { readProjectSource } from './saved-project-authority.ts';
+import {
+  projectSourceArchive,
+  projectSourceDiff,
+  projectExecutionReport,
+} from './project-delivery.ts';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
@@ -261,6 +267,91 @@ export async function executeProjectWorkspace(
       };
     });
   }
+  if (args.action === 'deliver') {
+    const prepared = await db.begin(async (tx) => {
+      await admit(tx);
+      const source = await loadedProject(tx, args.project);
+      const baseline = args.baseline
+        ? await loadedProject(tx, args.baseline)
+        : null;
+      await admit(tx);
+      return { source, baseline };
+    });
+    const report = await projectExecutionReport(ctx, args.project, db);
+    const files = [
+      {
+        name: 'project-source.zip',
+        format: 'zip' as const,
+        mediaType: 'application/zip',
+        bytes: projectSourceArchive(prepared.source.document),
+      },
+      {
+        name: 'project-test-report.json',
+        format: 'json' as const,
+        mediaType: 'application/json',
+        bytes: Buffer.from(JSON.stringify(report, null, 2)),
+      },
+      ...(prepared.baseline
+        ? [
+            {
+              name: 'project-changes.diff',
+              format: 'text' as const,
+              mediaType: 'text/plain',
+              bytes: Buffer.from(
+                projectSourceDiff(
+                  prepared.baseline.document,
+                  prepared.source.document,
+                ),
+              ),
+            },
+          ]
+        : []),
+    ];
+    const artifacts = [];
+    for (const [index, file] of files.entries()) {
+      const a = await publishWorkbenchArtifact(
+        {
+          context: ctx,
+          sessionId: input.sessionId,
+          callId: `${input.callId}:delivery:${index}`,
+          kind: 'document',
+          fileName: file.name,
+          format: file.format,
+          mediaType: file.mediaType,
+          bytes: file.bytes,
+          changeSummary: `项目版本 ${args.project.snapshot.id}；源码 ${prepared.source.document.sourceDigest}`,
+        },
+        storage,
+        db,
+        {
+          requiredTool: 'workspace.project',
+          runId: ctx.runId,
+          projectDelivery: { operationId: null, execution: null },
+          admit: async (tx) => {
+            await admit(tx);
+            await loadedProject(tx, args.project);
+            if (args.baseline) await loadedProject(tx, args.baseline);
+          },
+        },
+      );
+      artifacts.push({
+        artifactId: a.id,
+        objectId: a.object.id,
+        versionId: a.id,
+        fileName: a.version.fileName,
+        checksum: a.object.checksum,
+        downloadUrl: `/api/v1/files/${a.object.id}/download?workspaceId=${ctx.workspaceId}&name=${encodeURIComponent(file.name)}`,
+      });
+    }
+    return {
+      project: args.project,
+      sourceDigest: prepared.source.document.sourceDigest,
+      artifacts,
+      report,
+      executed: false,
+      saved: true,
+    };
+  }
   const prepared = await db.begin(async (tx) => {
     await admit(tx);
     if (args.action === 'apply') {
@@ -364,6 +455,11 @@ export async function executeProjectWorkspace(
         if (replay) return; // The common publisher checks the full byte/request digest.
         const current = await head(tx, projectId);
         if (args.action === 'apply') {
+          const [edits] = await tx<
+            { n: number }[]
+          >`select coalesce(sum(revision),0)::int as n from allrice_project_workspace_heads where root_run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!} and owner_id=${ctx.policySnapshot.subjectId}`;
+          if (!edits || edits.n >= projectWorkflowBudget.edits)
+            fail('workflow_budget_exhausted');
           if (
             !current ||
             !('expectedArtifact' in prepared) ||

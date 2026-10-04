@@ -12,6 +12,8 @@ import {
   cloudPythonImageV1,
   cloudToolchainImageV1,
   cloudProjectResultMatchesPayload,
+  ProjectCollectedArtifactsSchema,
+  projectArtifactLimits,
   type CloudExecutionPayload,
   type RuntimeContentRef,
   PythonExecuteArgsSchema,
@@ -156,7 +158,7 @@ export function createCloudOperationLedger(
     },
     assertReceiptEvidence: async ({ transaction, binding, receipt }) => {
       const [stored] =
-        await transaction`select i.payload,a.outcome from allrice_cloud_execution_inputs i
+        await transaction`select i.payload,a.outcome,a.artifacts from allrice_cloud_execution_inputs i
         left join allrice_cloud_execution_attempts a on a.operation_id=i.operation_id where i.operation_id=${binding.attempt.operationId}`;
       if (
         stored?.payload?.kind !== 'project' ||
@@ -173,6 +175,7 @@ export function createCloudOperationLedger(
         stopped?: unknown;
         reason?: unknown;
         exitCode?: unknown;
+        artifacts?: unknown;
       } | null;
       const success =
         receipt.signal.type === 'operation.outcome' &&
@@ -183,8 +186,22 @@ export function createCloudOperationLedger(
           : receipt.signal.type === 'operation.stopped'
             ? receipt.signal.effects
             : 'none';
+      const published = stored.artifacts as {
+        object: StorageObject;
+        versionId: string;
+        fileName: string;
+      }[];
+      const delivered = published.map((a) => ({
+        objectId: a.object.id,
+        versionId: a.versionId,
+        fileName: a.fileName,
+        checksum: a.object.checksum,
+      }));
       if (
-        effects !== 'none' ||
+        effects !== (success && published.length ? 'applied' : 'none') ||
+        !runtimeContractEqual(evidence?.artifacts, delivered) ||
+        (success &&
+          published.length !== (payload.arguments.outputs?.length ?? 0)) ||
         !result.success ||
         !cloudProjectResultMatchesPayload(payload, result.data) ||
         !runtimeContractEqual(
@@ -398,6 +415,7 @@ export async function createCloudProjectOperation(
         args: args.args,
         path: args.path,
         projectPreparation: args.projectPreparation,
+        ...(args.outputs ? { outputs: args.outputs } : {}),
         limits: args.limits,
       };
       const payload = CloudProjectCommandSchema.parse({
@@ -648,7 +666,9 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
             ? payload.arguments.limits.timeoutMs
             : b.metric === 'output_bytes'
               ? ('kind' in payload
-                  ? 0
+                  ? payload.arguments.outputs?.length
+                    ? projectArtifactLimits.bytes
+                    : 0
                   : payload.arguments.limits.artifactBytes) +
                 payload.arguments.limits.outputBytes
               : 0,
@@ -721,7 +741,7 @@ export async function publishCloudOperationArtifacts(
   input: {
     context: ExecutionContext;
     binding: RuntimeActionBinding;
-    payload: CloudCommand;
+    payload: CloudExecutionPayload;
     artifacts: {
       path: string;
       contentBase64: string;
@@ -783,13 +803,33 @@ export async function publishCloudOperationArtifacts(
       versionId: string;
     }[] = [];
     let artifactBytes = 0;
-    for (const output of payload.arguments.outputs) {
+    const projectArtifacts =
+      'kind' in payload
+        ? ProjectCollectedArtifactsSchema.parse(input.artifacts)
+        : null;
+    for (const output of payload.arguments.outputs ?? []) {
       const artifact = input.artifacts.find((a) => a.path === output.path);
       if (!artifact) throw new RuntimePolicyError('cloud_artifact_missing');
       const bytes = Buffer.from(artifact.contentBase64, 'base64');
       artifactBytes += bytes.length;
-      if (artifactBytes > payload.arguments.limits.artifactBytes)
+      if (
+        artifactBytes >
+        ('kind' in payload
+          ? projectArtifactLimits.bytes
+          : payload.arguments.limits.artifactBytes)
+      )
         throw new RuntimePolicyError('cloud_artifact_limit');
+      if (projectArtifacts) {
+        const proof = projectArtifacts.find((a) => a.path === output.path);
+        if (
+          !proof ||
+          bytes.length !== proof.sizeBytes ||
+          bytes.toString('base64') !== proof.contentBase64 ||
+          'sha256:' + createHash('sha256').update(bytes).digest('hex') !==
+            proof.checksum
+        )
+          throw new RuntimePolicyError('cloud_artifact_invalid');
+      }
       if (output.format === 'png') {
         try {
           validatePngArtifact(bytes, artifact.png);
@@ -807,7 +847,11 @@ export async function publishCloudOperationArtifacts(
                 ? 'application/json'
                 : output.format === 'csv'
                   ? 'text/csv'
-                  : 'text/plain',
+                  : output.format === 'html'
+                    ? 'text/html'
+                    : output.format === 'zip'
+                      ? 'application/zip'
+                      : 'text/plain',
           sizeBytes: bytes.length,
           checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
         }),
@@ -832,8 +876,17 @@ export async function publishCloudOperationArtifacts(
               ? 'png'
               : output.format === 'json'
                 ? 'json'
-                : 'text',
+                : output.format === 'html'
+                  ? 'html'
+                  : output.format === 'zip'
+                    ? 'zip'
+                    : 'text',
           object,
+          ...('kind' in payload
+            ? {
+                changeSummary: `项目版本 ${payload.arguments.projectSource.project.snapshot.id}；源码 ${payload.arguments.projectSource.snapshot.sourceDigest}；操作 ${binding.attempt.operationId}`,
+              }
+            : {}),
         },
         tx,
       );

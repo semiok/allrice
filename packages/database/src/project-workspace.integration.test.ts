@@ -1,5 +1,6 @@
 /** Real isolated PostgreSQL and storage. No model, Bridge or cloud is mocked
  * as successful; this slice saves source only. */
+import { unzipSync } from 'fflate';
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { ProjectVersionRefSchema } from '@allrice/contracts';
@@ -157,6 +158,105 @@ suite('MET166 PR3a private project checkpoints', () => {
       f.db,
     );
     expect(listed.artifacts).toHaveLength(0);
+  });
+  it('delivers exact ZIP, diff and factual report through ordinary private results, replays once and rejects foreign source', async () => {
+    const f = await setup(),
+      other = await setup();
+    const edited = (await f.call({
+      action: 'apply',
+      expectedHead: f.opened.project,
+      proposal: {
+        files: [{ path: 'main.ts', before: 'bad();\n', after: 'good();\n' }],
+      },
+    })) as { project: unknown };
+    const project = ProjectVersionRefSchema.parse(edited.project),
+      callId = randomUUID();
+    const args = { action: 'deliver', project, baseline: f.opened.project };
+    const delivery = (await f.call(args, callId)) as {
+      artifacts: { objectId: string; fileName: string }[];
+      report: { executions: unknown[] };
+    };
+    expect(await f.call(args, callId)).toEqual(delivery);
+    expect(delivery.artifacts.map((a) => a.fileName)).toEqual([
+      'project-source.zip',
+      'project-test-report.json',
+      'project-changes.diff',
+    ]);
+    const files = new Map<string, Buffer>();
+    for (const a of delivery.artifacts) {
+      const { object } = await getToolBrokerFile(f.context, a.objectId, f.db);
+      files.set(a.fileName, await readArtifactBytes(f.storage, object));
+      await expect(
+        getToolBrokerFile(other.context, a.objectId, f.db),
+      ).rejects.toThrow();
+    }
+    const source = unzipSync(files.get('project-source.zip')!);
+    expect(Object.keys(source).sort()).toEqual(['main.ts', 'pnpm-lock.yaml']);
+    expect(Buffer.from(source['main.ts']!).toString()).toBe('good();\n');
+    expect(Buffer.from(source['pnpm-lock.yaml']!).toString()).toBe(
+      'lockfileVersion: 9.0\n',
+    );
+    expect(files.get('project-changes.diff')!.toString()).toContain(
+      '-bad();\n+good();',
+    );
+    expect(
+      JSON.parse(files.get('project-test-report.json')!.toString()).executions,
+    ).toEqual([]);
+    const listed = await listWorkbenchArtifacts(
+      {
+        actor: { type: 'user', id: f.user },
+        organizationId: f.org,
+        workspaceId: f.workspace,
+      },
+      f.task.chatSessionId!,
+      undefined,
+      f.db,
+    );
+    expect(listed.artifacts).toHaveLength(3);
+    expect(listed.artifacts.map((a) => a.provenance.kind)).toEqual([
+      'tool_result',
+      'tool_result',
+      'tool_result',
+    ]);
+    await expect(other.call({ action: 'deliver', project })).rejects.toThrow();
+  });
+  it('allows exactly three saved edits per Run; replay/read/delivery remain usable after exhaustion', async () => {
+    const f = await setup();
+    let project = f.opened.project,
+      before = 'bad();\n',
+      lastArgs: unknown,
+      lastCall = randomUUID();
+    for (let index = 1; index <= 3; index++) {
+      const after = `fixed${index}();\n`;
+      lastCall = randomUUID();
+      lastArgs = {
+        action: 'apply',
+        expectedHead: project,
+        proposal: { files: [{ path: 'main.ts', before, after }] },
+      };
+      project = ProjectVersionRefSchema.parse(
+        ((await f.call(lastArgs, lastCall)) as { project: unknown }).project,
+      );
+      before = after;
+    }
+    expect(
+      ((await f.call(lastArgs, lastCall)) as { project: unknown }).project,
+    ).toEqual(project);
+    await expect(
+      f.call({
+        action: 'apply',
+        expectedHead: project,
+        proposal: {
+          files: [{ path: 'main.ts', before, after: 'fourth();\n' }],
+        },
+      }),
+    ).rejects.toThrow('workflow_budget_exhausted');
+    expect(
+      await f.call({ action: 'read', project, path: 'main.ts' }),
+    ).toMatchObject({ text: before });
+    expect(await f.call({ action: 'deliver', project })).toHaveProperty(
+      'artifacts',
+    );
   });
   it('rejects concurrent stale edits without publishing a losing version', async () => {
     const f = await setup();

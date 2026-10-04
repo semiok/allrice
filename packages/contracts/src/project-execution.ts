@@ -11,6 +11,11 @@ import {
 } from './runtime-v2/project-preparation.ts';
 import { ExecutionLocationSchema } from './execution-choice.ts';
 import { ChecksumSchema } from './runs.ts';
+import {
+  ProjectOutputSpecsSchema,
+  ProjectCollectedArtifactsSchema,
+  projectArtifactsMatchOutputs,
+} from './project-outputs.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
 import {
   CloudCommandSchema,
@@ -40,6 +45,7 @@ const ProjectExecuteObjectSchema = z
       .max(32),
     path: z.union([z.literal('.'), path]),
     projectPreparation: RuntimeProjectPreparationSchema,
+    outputs: ProjectOutputSpecsSchema.optional(),
     limits: z
       .object({
         timeoutMs: z.number().int().min(500).max(60_000),
@@ -148,7 +154,7 @@ export const CloudProjectRunResultSchema = z
       'unknown',
     ]),
     output: z.string().max(65_536),
-    artifacts: z.array(z.never()).length(0),
+    artifacts: ProjectCollectedArtifactsSchema,
     elapsedMs: z.number().finite().min(0),
     imageDigest: ChecksumSchema,
     projectPreparation: RuntimeProjectPreparationEvidenceSchema.optional(),
@@ -161,6 +167,14 @@ export function cloudProjectResultMatchesPayload(
   result: CloudProjectRunResult,
 ) {
   if (result.imageDigest !== payload.imageDigest) return false;
+  if (
+    !projectArtifactsMatchOutputs(
+      payload.arguments.outputs,
+      result.artifacts,
+      result.reason === 'completed' && result.exitCode === 0,
+    )
+  )
+    return false;
   if (!result.containerId)
     return (
       result.reason === 'failed' &&

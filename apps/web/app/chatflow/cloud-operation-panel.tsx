@@ -593,10 +593,10 @@ export function CloudOperationCard({
               </OperationDetail>
             )}
           </div>
-          {proposal.kind === 'cloud' ? (
+          {proposal.kind !== 'mcp' ? (
             <p className={styles.plannedOutputs}>
               <span>计划输出：</span>
-              {proposal.outputs.length
+              {proposal.outputs?.length
                 ? proposal.outputs.map((output) => (
                     <code key={output.path}>
                       {output.fileName} ({output.format})

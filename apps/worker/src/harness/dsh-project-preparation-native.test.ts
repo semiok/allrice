@@ -159,6 +159,7 @@ it('forwards an exact saved project to the real DSH provider without requiring a
       expect(schema.required).not.toContain('files');
       expect(schema.properties).toHaveProperty('project');
       expect(schema.properties).not.toHaveProperty('projectSource');
+      expect(schema.properties).not.toHaveProperty('outputs');
       expect(schema.properties).not.toHaveProperty('architecture');
     },
     onToolCall: async (call) => {

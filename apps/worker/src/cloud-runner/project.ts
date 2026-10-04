@@ -467,7 +467,11 @@ export function collectCloudProject(
     | 'failed'
     | 'unknown' = 'completed',
 ) {
-  const events = new ProjectEvents(command.arguments.limits.outputBytes);
+  const events = new ProjectEvents(
+    command.arguments.limits.outputBytes,
+    undefined,
+    command.arguments.outputs,
+  );
   events.push(text);
   const observed = events.finish();
   const installation: 'interrupted' | 'succeeded' | 'failed' =
@@ -507,7 +511,10 @@ export function collectCloudProject(
     stopped: true,
     reason,
     output: observed.combined,
-    artifacts: [],
+    artifacts:
+      reason === 'completed' && c.State.ExitCode === 0
+        ? observed.artifacts
+        : [],
     elapsedMs: Math.max(0, Date.now() - startedAt),
     imageDigest: command.imageDigest,
     projectPreparation: proof,

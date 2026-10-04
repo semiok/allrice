@@ -23,6 +23,7 @@ import {
   type StorageObject,
   type StoragePort,
   type DeliveryFormat,
+  type RuntimeExecutionScope,
 } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
@@ -711,6 +712,11 @@ export async function publishWorkbenchArtifact(
    * assignment/version each time. Storage still uses the real root job. */
   development?: {
     requiredTool?: 'assistant.development' | 'workspace.project';
+    /** Internal verified project output/source delivery, never model input. */
+    projectDelivery?: {
+      operationId: string | null;
+      execution: RuntimeExecutionScope | null;
+    };
     runId: string;
     admit: (tx: TransactionSql) => Promise<void>;
     registered?: (tx: TransactionSql, artifactId: string) => Promise<void>;
@@ -741,9 +747,17 @@ export async function publishWorkbenchArtifact(
     fail('invalid_publication');
   if (
     development?.requiredTool === 'workspace.project' &&
+    !development.projectDelivery &&
     (input.kind !== 'document' ||
       input.format !== 'json' ||
       input.mediaType !== 'application/json')
+  )
+    fail('invalid_publication');
+  if (
+    development?.projectDelivery &&
+    (development.requiredTool !== 'workspace.project' ||
+      input.kind !== 'document' ||
+      !['zip', 'json', 'text', 'html'].includes(input.format))
   )
     fail('invalid_publication');
   if (
@@ -906,7 +920,9 @@ export async function publishWorkbenchArtifact(
               input.bytes,
               !!development,
             )
-          : (derivedSource?.execution ?? null);
+          : (development?.projectDelivery?.execution ??
+            derivedSource?.execution ??
+            null);
       // The entry's quota gate still covers this increment across all storage sources.
       created = {
         ...createToolBrokerExportObject({
@@ -940,8 +956,9 @@ export async function publishWorkbenchArtifact(
         tx,
       );
       const provenance = {
-        kind:
-          requiredTool === 'workspace.project'
+        kind: development?.projectDelivery
+          ? 'tool_result'
+          : requiredTool === 'workspace.project'
             ? 'project_snapshot'
             : derivedSource ||
                 input.trustedImageOperation ||
@@ -949,7 +966,10 @@ export async function publishWorkbenchArtifact(
               ? 'tool_result'
               : 'model_proposal',
         runId: publishingRunId,
-        operationId: derivedSource?.provenance.operationId ?? null,
+        operationId:
+          development?.projectDelivery?.operationId ??
+          derivedSource?.provenance.operationId ??
+          null,
         stepId: null,
       };
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)

@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import {
+  ProjectOutputSpecsSchema,
+  ProjectCollectedArtifactsSchema,
+  projectArtifactsMatchOutputs,
+} from '../project-outputs.ts';
+import {
   ProjectVersionRefSchema,
   RuntimeSavedProjectSourceSchema,
 } from '../project-workspace.ts';
@@ -94,6 +99,7 @@ export const RuntimeLocalCommandSchema = z
         dependencies: RuntimeDependencyPreparationSchema.optional(),
         projectPreparation: RuntimeProjectPreparationSchema.optional(),
         projectSource: RuntimeSavedProjectSourceSchema.optional(),
+        outputs: ProjectOutputSpecsSchema.optional(),
         background: RuntimeLocalServiceConfigSchema.optional(),
         candidate: CommandCandidateSchema.optional(),
         files: z
@@ -118,6 +124,11 @@ export const RuntimeLocalCommandSchema = z
   .strict()
   .superRefine((value, context) => {
     const a = value.arguments;
+    if (a.outputs && !a.projectSource)
+      context.addIssue({
+        code: 'custom',
+        message: 'project_outputs_require_saved_source',
+      });
     if (
       a.projectSource &&
       (!a.projectPreparation ||
@@ -214,6 +225,9 @@ export const RuntimeLocalCommandToolInputSchema =
       network: true,
       candidate: true,
       projectSource: true,
+      // Collected output publication belongs to workspace.project, whose
+      // Worker resolves and checks a canonical execution selection.
+      outputs: true,
     })
     .extend({
       candidate: CommandCandidateRefSchema.optional(),
@@ -332,6 +346,7 @@ export const RuntimeLocalCommandResultSchema = z
     diagnostics: RuntimeProjectDiagnosticsSchema.optional(),
     dependencies: RuntimeDependencyPreparationResultSchema.optional(),
     projectPreparation: RuntimeProjectPreparationEvidenceSchema.optional(),
+    artifacts: ProjectCollectedArtifactsSchema.optional(),
     candidate: CommandCandidateEvidenceSchema.optional(),
   })
   .strict();
@@ -345,6 +360,14 @@ export function localProjectResultMatchesPayload(
 ) {
   const spec = payload.arguments.projectPreparation,
     proof = result.projectPreparation;
+  if (
+    !projectArtifactsMatchOutputs(
+      payload.arguments.outputs,
+      result.artifacts,
+      result.reason === 'exited' && result.exitCode === 0,
+    )
+  )
+    return false;
   return !spec
     ? proof === undefined
     : result.imageDigest === payload.arguments.imageDigest &&
