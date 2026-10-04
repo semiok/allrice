@@ -26,6 +26,9 @@ export async function publishBrowserObservationArtifact(
   db = getDatabase(),
 ) {
   if (!runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED')) return null;
+  // Finite saved-page verification publishes its final report/PNG together
+  // after confirmed stop. Intermediate observations remain private captures.
+  if (w.staticTarget) return null;
   const obs = BrowserObservationSchema.parse(observation),
     bytes = Buffer.from(
       JSON.stringify({

@@ -244,6 +244,7 @@ function publicWorkspace(
     expiresAt: w.expires_at.toISOString(),
     revoked,
     ...(w.preview && !revoked ? { preview: w.preview } : {}),
+    ...(w.staticTarget && !revoked ? { staticTarget: w.staticTarget } : {}),
   });
 }
 
@@ -269,7 +270,7 @@ export async function claimLocalBrowserWorkspace(
       from allrice_browser_workspaces w join allrice_local_browser_workspaces l on l.browser_workspace_id=w.id
       join allrice_local_browser_grants g on g.grant_id=l.grant_id
       where l.device_id=${device.id} and l.organization_id=${device.organizationId} and l.workspace_id=${device.workspaceId} and l.owner_id=${device.ownerId}
-        and (g.purpose='public' or (${acceptPreview} and g.purpose='local_preview'))
+        and (g.purpose in ('public','static_artifact') or (${acceptPreview} and g.purpose='local_preview'))
         and l.released_at is null and w.expires_at>clock_timestamp() and w.state not in ('closed','unknown','close_pending')
         and ((l.controller_lease_token is null and w.state='starting') or (l.controller_id=${UuidSchema.parse(controllerId)} and l.lease_expires_at>clock_timestamp()))
       order by w.created_at limit 8`;
@@ -382,7 +383,10 @@ export async function heartbeatLocalBrowserWorkspace(
 
 export async function recordLocalBrowserStopped(
   device: BridgeDevice,
-  input: LocalControllerIdentity & { confirmed: boolean },
+  input: LocalControllerIdentity & {
+    confirmed: boolean;
+    browserVersion?: string;
+  },
   db = getDatabase(),
 ) {
   return db.begin(async (tx) => {
@@ -399,6 +403,10 @@ export async function recordLocalBrowserStopped(
       stopped_at=case when ${input.confirmed} then clock_timestamp() else null end where id=${w.id}`;
     if (input.confirmed)
       await tx`update allrice_local_browser_workspaces set released_at=coalesce(released_at,clock_timestamp()) where browser_workspace_id=${w.id}`;
+    if (input.confirmed && input.browserVersion)
+      await tx`update allrice_static_browser_verifications set browser_version=${input.browserVersion}
+        where browser_workspace_id=${w.id} and organization_id=${device.organizationId}
+          and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and device_id=${device.id}`;
     await tx`update allrice_browser_direct_inputs set envelope=null,consumed_at=coalesce(consumed_at,clock_timestamp()) where browser_workspace_id=${w.id}`;
     return { confirmed: input.confirmed };
   });

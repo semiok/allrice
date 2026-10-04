@@ -20,7 +20,19 @@ import {
   CloudCommandInputSchema,
   type CloudCommandInput,
   type CloudCommand,
+  StaticBrowserDocumentSchema,
+  BrowserVerificationPlanSchema,
+  BrowserVerificationReportSchema,
+  runtimeContractEqual,
+  canonicalRuntimeBridgeJson,
+  type StaticBrowserDocument,
+  type BrowserVerificationPlan,
+  type BrowserVerificationReport,
 } from '@allrice/contracts';
+import {
+  staticBrowserImageV1,
+  staticBrowserLimits,
+} from '../browser-control/static-runtime.js';
 import type { ExecutionDiagnosticEvent } from '@allrice/database';
 import {
   validatePngArtifact,
@@ -65,7 +77,21 @@ export type CloudRunResult = {
   imageDigest?: string;
   projectPreparation?: RuntimeProjectPreparationEvidence;
   errorCode?: string;
+  staticVerification?: {
+    report: BrowserVerificationReport;
+    browserVersion: string;
+    screenshotBase64: string;
+    screenshotObservationId: string;
+  };
 };
+type StaticBrowserCommand = {
+  kind: 'static_browser';
+  document: StaticBrowserDocument;
+  plan: BrowserVerificationPlan;
+  arguments: { limits: typeof staticBrowserLimits };
+};
+type CollectCommand =
+  Pick<CloudCommand, 'arguments'> | CloudProjectCommand | StaticBrowserCommand;
 type Container = {
   Id: string;
   Config: { Image?: string; Labels: Record<string, string> };
@@ -309,9 +335,12 @@ export class CloudRunnerBackend {
   }
   async preflight(imageDigest = cloudToolchainImageV1) {
     if (
-      ![cloudToolchainImageV1, cloudPythonImageV1, officeSandboxImage].includes(
-        imageDigest,
-      )
+      ![
+        cloudToolchainImageV1,
+        cloudPythonImageV1,
+        officeSandboxImage,
+        staticBrowserImageV1,
+      ].includes(imageDigest)
     )
       throw new CloudRunnerError('CLOUD_TOOLCHAIN_CHANGED');
     const stat = await lstat(await realpath(this.socketPath));
@@ -486,7 +515,7 @@ export class CloudRunnerBackend {
   }
   async collect(
     attemptId: string,
-    command: Pick<CloudCommand, 'arguments'> | CloudProjectCommand,
+    command: CollectCommand,
     startedAt: number,
     reason: CloudRunResult['reason'] = 'completed',
   ): Promise<CloudRunResult> {
@@ -510,6 +539,65 @@ export class CloudRunnerBackend {
       at += n;
     }
     const bytes = Buffer.concat(chunks);
+    if ('kind' in command && command.kind === 'static_browser') {
+      let verification: CloudRunResult['staticVerification'];
+      if (bytes.length > 7_000_000)
+        throw new CloudRunnerError('STATIC_BROWSER_OUTPUT_LIMIT');
+      if (
+        reason === 'completed' &&
+        c.State.ExitCode === 0 &&
+        !c.State.OOMKilled
+      ) {
+        const v = JSON.parse(bytes.toString());
+        const report = BrowserVerificationReportSchema.parse(v.report);
+        const screenshot = Buffer.from(v.screenshotBase64 ?? '', 'base64');
+        if (
+          v.type !== 'static_verification' ||
+          typeof v.browserVersion !== 'string' ||
+          v.browserVersion.length > 100 ||
+          screenshot.length < 45 ||
+          screenshot.length > 5_000_000 ||
+          screenshot.toString('base64') !== v.screenshotBase64 ||
+          !screenshot
+            .subarray(0, 8)
+            .equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+          screenshot.toString('ascii', 12, 16) !== 'IHDR' ||
+          screenshot.readUInt32BE(16) !== 1280 ||
+          screenshot.readUInt32BE(20) !== 720 ||
+          !runtimeContractEqual(report.target, command.document.target) ||
+          !uuid.test(v.screenshotObservationId ?? '') ||
+          (report.verdict !== 'unknown' &&
+            report.steps.length &&
+            report.steps.at(-1)?.observationId !== v.screenshotObservationId) ||
+          report.planDigest !==
+            `sha256:${createHash('sha256').update(canonicalRuntimeBridgeJson(command.plan)).digest('hex')}`
+        )
+          throw new CloudRunnerError('STATIC_BROWSER_RESULT_CHANGED');
+        verification = {
+          report,
+          browserVersion: v.browserVersion,
+          screenshotBase64: v.screenshotBase64,
+          screenshotObservationId: v.screenshotObservationId,
+        };
+      }
+      return {
+        containerId: c.Id,
+        exitCode: c.State.ExitCode,
+        stopped: true,
+        reason: c.State.OOMKilled
+          ? 'oom'
+          : verification
+            ? 'completed'
+            : reason === 'completed'
+              ? 'failed'
+              : reason,
+        output: verification ? '' : bytes.toString().slice(0, 65536),
+        artifacts: [],
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+        imageDigest: staticBrowserImageV1,
+        ...(verification ? { staticVerification: verification } : {}),
+      };
+    }
     if ('kind' in command) {
       await assertCloudProjectContainer(this, c, command);
       return collectCloudProject(c, command, bytes, startedAt, reason);
@@ -642,6 +730,97 @@ export class CloudRunnerBackend {
     const parsed = CloudCommandInputSchema.parse(args);
     parsed.limits.artifactBytes = 8_000_000;
     return this.executeScript(parsed, files, options, true, officeSandboxImage);
+  }
+
+  /** One finite verification, reusing the same weighted capacity, watchdog,
+   * lease, stop and recovery mechanisms as existing cloud executions. */
+  async executeStaticBrowser(
+    documentInput: StaticBrowserDocument,
+    planInput: BrowserVerificationPlan,
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+  ) {
+    const document = StaticBrowserDocumentSchema.parse(documentInput),
+      plan = BrowserVerificationPlanSchema.parse(planInput);
+    return this.executeWithSlot(
+      staticBrowserLimits,
+      staticBrowserImageV1,
+      options,
+      async (owned) => {
+        if (!uuid.test(owned.attemptId))
+          throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
+        await this.preflight(staticBrowserImageV1);
+        if (await this.inspect(owned.attemptId))
+          throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
+        const startedAt = Date.now(),
+          deadline = Math.min(
+            Date.parse(owned.deadlineAt),
+            startedAt + staticBrowserLimits.timeoutMs,
+          );
+        if (
+          !Number.isFinite(deadline) ||
+          deadline <= startedAt + 250 ||
+          owned.signal?.aborted ||
+          !(await owned.maintainLease())
+        )
+          throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+        return this.executeAdmittedPlan(
+          {
+            command: {
+              kind: 'static_browser',
+              document,
+              plan,
+              arguments: { limits: staticBrowserLimits },
+            },
+            encoded: JSON.stringify({ document, plan }) + '\n',
+            config: {
+              Image: staticBrowserImageV1,
+              Entrypoint: ['/usr/local/bin/node'],
+              Cmd: ['/opt/allrice-static-browser/runner.mjs'],
+              User: '1000:1000',
+              WorkingDir: '/opt/allrice-static-browser',
+              OpenStdin: true,
+              StdinOnce: false,
+              Tty: false,
+              Env: ['HOME=/tmp/browser-home', 'TMPDIR=/tmp'],
+              Labels: {
+                [attemptLabel]: owned.attemptId,
+                'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
+                'xyz.bplabs.allrice.cloud.deadline': String(deadline),
+              },
+              HostConfig: {
+                Runtime: 'runsc',
+                NetworkMode: 'none',
+                ReadonlyRootfs: true,
+                CapDrop: ['ALL'],
+                SecurityOpt: ['no-new-privileges'],
+                PidsLimit: 256,
+                Memory: 768 * 1024 ** 2,
+                MemorySwap: 768 * 1024 ** 2,
+                CpuPeriod: 100_000,
+                CpuQuota: 100_000,
+                Tmpfs: {
+                  '/tmp': 'rw,nosuid,nodev,size=128m,uid=1000,gid=1000',
+                },
+                ShmSize: 64 * 1024 ** 2,
+                LogConfig: {
+                  Type: 'json-file',
+                  Config: { 'max-size': '8m', 'max-file': '1' },
+                },
+                RestartPolicy: { Name: 'no' },
+                AutoRemove: false,
+                Ulimits: [
+                  { Name: 'nofile', Soft: 1024, Hard: 1024 },
+                  { Name: 'core', Soft: 0, Hard: 0 },
+                ],
+              },
+            },
+          },
+          owned,
+          startedAt,
+          deadline,
+        );
+      },
+    );
   }
 
   private async executeScript(
@@ -1080,7 +1259,7 @@ export class CloudRunnerBackend {
 
   private async executeAdmittedPlan(
     plan: {
-      command: Pick<CloudCommand, 'arguments'> | CloudProjectCommand;
+      command: CollectCommand;
       config: Record<string, unknown>;
       encoded?: string;
       afterStart?: (id: string) => Promise<void>;
@@ -1104,7 +1283,7 @@ export class CloudRunnerBackend {
       ) {
         // Explicit create rejection is a not-started fact. Timeout, 409 and
         // server errors remain uncertain and preserve physical reservations.
-        if ('kind' in plan.command)
+        if ('kind' in plan.command && plan.command.kind !== 'static_browser')
           throw new CloudProjectPreparationError(error.message);
       } else this.uncertainCreates.add(attemptId);
       throw error;

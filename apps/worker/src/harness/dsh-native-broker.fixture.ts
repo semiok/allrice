@@ -21,6 +21,8 @@ export async function nativeBrokerRoundtrip(input: {
   invalidResultIncludes?: string;
   /** Loopback-only transient provider failures after the first tool result. */
   retryAfterTool?: number;
+  /** Fixed real backends may take longer than a transport-only stub. */
+  timeoutMs?: number;
   inspectSchema?: (schema: Record<string, unknown>) => void;
   onToolCall?: HarnessExecutionInput['onToolCall'];
 }) {
@@ -176,9 +178,11 @@ export async function nativeBrokerRoundtrip(input: {
     });
     await client.prompt(session, 'Invoke the selected native tool.');
     await expect
-      .poll(() => requests.length, { timeout: 15000 })
+      .poll(() => requests.length, { timeout: input.timeoutMs ?? 15000 })
       .toBe(2 + (input.retryAfterTool ?? 0));
-    await expect.poll(() => completed, { timeout: 15000 }).toBe(1);
+    await expect
+      .poll(() => completed, { timeout: input.timeoutMs ?? 15000 })
+      .toBe(1);
     const tools = requests[0]!.tools as {
       function?: { name?: string; parameters?: Record<string, unknown> };
     }[];

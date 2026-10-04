@@ -35,6 +35,7 @@ export function initialBridgeEnvironment(paused = false): BridgeEnvironment {
     clientVersion: bridgeVersion,
     browserDefaultsVersion: 1,
     browserLocalSitesVersion: 1,
+    staticBrowserVersion: 1,
     ...(fileGuardianReady()
       ? {
           fileSurveyVersion: 1 as const,

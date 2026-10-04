@@ -34,6 +34,8 @@ export async function createCloudExecutionFixture(
   db: ReturnType<typeof postgres>,
   storageRoot: string,
   options: {
+    /** Test-only finite policy expiry, persisted once with the frozen Run. */
+    policyLifetimeMs?: number;
     /** Test-only initial membership; no mutation of a frozen Run. */
     memberRole?: 'admin' | 'member';
     frozenTool?: boolean;
@@ -301,7 +303,7 @@ export async function createCloudExecutionFixture(
     await tx`insert into allrice_organizations(id,slug,name) values(${org},${`p15-${org}`},'P15 synthetic')`;
     await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${org},'test','P15 synthetic')`;
     await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membership},${org},${workspace},${user},${memberships[0]!.role})`;
-    await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policy},${org},${user},1,${tx.json(policyPayload)},clock_timestamp()+interval '1 hour')`;
+    await tx`insert into allrice_policy_snapshots(id,organization_id,subject_id,version,payload,expires_at) values(${policy},${org},${user},1,${tx.json(policyPayload)},clock_timestamp()+${options.policyLifetimeMs ?? 3_600_000}*interval '1 millisecond')`;
     await tx`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,policy_snapshot_id,execution_spec,input) values(${run},${org},${workspace},${user},'running',${policy},${tx.json(options.localPreview || options.localProcess || nativeManifest ? { employeeVersionId: version } : {})},'{}')`;
     await tx`insert into allrice_employees(id,organization_id,workspace_id,employee_key,name) values(${employee},${org},${workspace},'p15','P15')`;
     await tx`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest) values(${version},${org},${workspace},${employee},1,'P15','synthetic','synthetic','[]',${definitionChecksum},${tx.json(nativeManifest ?? {})})`;
@@ -329,7 +331,9 @@ export async function createCloudExecutionFixture(
       subjectId: user,
       version: 1,
       issuedAt: now,
-      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      expiresAt: new Date(
+        Date.now() + (options.policyLifetimeMs ?? 3_600_000),
+      ).toISOString(),
       ...policyPayload,
     },
     startedAt: now,

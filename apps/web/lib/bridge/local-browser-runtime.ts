@@ -18,6 +18,7 @@ import {
   publishBrowserObservationArtifact,
   readCurrentBrowserWorkspace,
   localBrowserPrincipal,
+  readLocalStaticBrowserDocument,
 } from '@allrice/database';
 import { getStorageAdapter } from '../storage/runtime.ts';
 import { createLocalBrowserHttpHandler } from './local-browser-http.ts';
@@ -44,6 +45,12 @@ export const handleLocalBrowserRequest = createLocalBrowserHttpHandler({
       }
       case 'next':
         return nextLocalBrowserOperation(device, input);
+      case 'static_document':
+        return readLocalStaticBrowserDocument(
+          device,
+          input,
+          getStorageAdapter(),
+        );
       case 'start':
         return startLocalBrowserOperation(device, input);
       case 'receipt':

@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { platformFileMaximumBytes } from '../storage.ts';
+import {
+  StaticBrowserTargetSchema,
+  staticBrowserDocumentUrl,
+} from '../static-browser.ts';
 import { RuntimeScopeSchema } from './identity.ts';
 import { RuntimeOperationSnapshotSchema } from './operations.ts';
 import {
@@ -64,9 +68,26 @@ export const LocalBrowserWorkspaceSchema = z
     expiresAt: TimestampSchema,
     revoked: z.boolean(),
     preview: LocalPreviewLeaseSchema.optional(),
+    staticTarget: StaticBrowserTargetSchema.optional(),
   })
   .strict()
   .superRefine((w, context) => {
+    if (
+      w.staticTarget &&
+      (w.preview ||
+        w.persistLogin ||
+        w.profile.allowUploads ||
+        w.profile.allowDownloads ||
+        w.profile.allowHumanCredentials ||
+        w.profile.network ||
+        w.profile.origins.length !== 1 ||
+        w.profile.origins[0] !==
+          new URL(staticBrowserDocumentUrl(w.staticTarget)).origin)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Saved document requires an isolated temporary profile',
+      });
     if (!w.preview) return;
     const t = w.preview.target;
     if (
@@ -206,6 +227,7 @@ export const LocalBrowserHttpRequestSchema = z.discriminatedUnion('kind', [
     .strict(),
   z.object({ kind: z.literal('heartbeat'), ...owned }).strict(),
   z.object({ kind: z.literal('next'), ...owned }).strict(),
+  z.object({ kind: z.literal('static_document'), ...owned }).strict(),
   z
     .object({ kind: z.literal('start'), ...owned, operationId: UuidSchema })
     .strict(),
@@ -231,6 +253,7 @@ export const LocalBrowserHttpRequestSchema = z.discriminatedUnion('kind', [
       kind: z.literal('stopped'),
       ...owned,
       confirmed: z.boolean(),
+      browserVersion: z.string().min(1).max(100).optional(),
       errorCode: LocalBrowserErrorCodeSchema.nullable(),
     })
     .strict(),

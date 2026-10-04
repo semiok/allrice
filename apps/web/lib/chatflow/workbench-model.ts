@@ -2,6 +2,8 @@ import {
   ChangesetDocumentSchema,
   ReviewFeedbackSchema,
   WorkbenchArtifactSchema,
+  ArtifactBrowserVerificationSchema,
+  type ArtifactBrowserVerification,
   WorkbenchCursorSchema,
   OfficePreviewSchema,
   type OfficePreview,
@@ -94,15 +96,32 @@ export function parseArtifactList(input: unknown): {
 export function parseArtifactDetail(input: unknown): {
   artifact: WorkbenchArtifact;
   feedback: ReviewFeedback[];
+  browserVerification: ArtifactBrowserVerification | null;
 } {
-  const v = input as { artifact: unknown; feedback: unknown[] };
+  const v = input as {
+    artifact: unknown;
+    feedback: unknown[];
+    browserVerification?: unknown;
+  };
   if (!v || !Array.isArray(v.feedback) || v.feedback.length > 100)
     throw Error('版本反馈格式无效');
   const artifact = WorkbenchArtifactSchema.parse(v.artifact),
     feedback = v.feedback.map((f) => ReviewFeedbackSchema.parse(f));
   if (feedback.some((f) => f.artifactId !== artifact.id))
     throw Error('版本反馈不匹配');
-  return { artifact, feedback };
+  const browserVerification =
+    v.browserVerification == null
+      ? null
+      : ArtifactBrowserVerificationSchema.parse(v.browserVerification);
+  if (
+    browserVerification &&
+    ![
+      browserVerification.reportArtifactId,
+      browserVerification.screenshotArtifactId,
+    ].includes(artifact.id)
+  )
+    throw Error('页面验证记录与成果不匹配');
+  return { artifact, feedback, browserVerification };
 }
 export function parseArtifactPreview(input: unknown): ArtifactPreview {
   const v = input as Record<string, unknown>;

@@ -4,10 +4,20 @@ import {
   BrowserNavigationUrlSchema,
   UuidSchema,
   ExecutionLocationSchema,
+  StaticBrowserReferenceSchema,
+  BrowserVerificationPlanSchema,
 } from '@allrice/contracts';
 
 export const BrowserWorkspaceToolInputSchema = z.discriminatedUnion('command', [
   z.object({ command: z.literal('profiles') }).strict(),
+  z
+    .object({
+      command: z.literal('verify'),
+      artifact: StaticBrowserReferenceSchema,
+      plan: BrowserVerificationPlanSchema,
+      location: ExecutionLocationSchema.optional(),
+    })
+    .strict(),
   z
     .object({
       command: z.literal('open'),

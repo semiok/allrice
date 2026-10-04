@@ -140,6 +140,9 @@ async function controlsFor(
   return parsed.data;
 }
 
+/** Existing policy authority, also used by finite saved-page verification. */
+export { controlsFor as readRuntimePolicyControls };
+
 async function audit(
   transaction: Transaction,
   context: RuntimePolicyPrincipal,

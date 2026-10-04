@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   WorkbenchArtifactSchema,
+  ArtifactBrowserVerificationSchema,
   type RuntimeExecutionScope,
 } from '@allrice/contracts';
 import {
@@ -150,6 +151,98 @@ describe('workbench UI boundary', () => {
     expect(
       parseArtifactPreview({ kind: 'download_only', reason: 'download' }).kind,
     ).toBe('download_only');
+  });
+  it('parses saved-page results, preserves older records, and refuses a mismatched or incomplete passed report', () => {
+    const observationId = randomUUID();
+    const verification = ArtifactBrowserVerificationSchema.parse({
+      reportArtifactId: artifact.id,
+      screenshotArtifactId: randomUUID(),
+      outcome: {
+        version: 1,
+        verificationId: randomUUID(),
+        location: 'cloud',
+        executionReason: 'local_offline',
+        targetId: randomUUID(),
+        deviceId: null,
+        attemptId: randomUUID(),
+        containerId: 'a'.repeat(64),
+        imageDigest: checksum,
+        browserVersion: 'synthetic-contract',
+        physicalStopConfirmed: true,
+        screenshotChecksum: checksum,
+        screenshotObjectId: null,
+        screenshotObservationId: observationId,
+        plan: {
+          version: 1,
+          timeoutMs: 30000,
+          steps: [{ type: 'text_contains', expected: '42' }],
+        },
+        report: {
+          version: 1,
+          target: {
+            version: 1,
+            versionId: randomUUID(),
+            objectId: randomUUID(),
+            checksum,
+            sizeBytes: 42,
+            mediaType: 'text/html',
+            fileName: 'index.html',
+            sourceOperationId: null,
+            sourceSessionId: artifact.version.sessionId,
+          },
+          planDigest: checksum,
+          startedAt: now,
+          completedAt: now,
+          verdict: 'passed',
+          errorCode: null,
+          steps: [
+            {
+              index: 0,
+              type: 'text_contains',
+              status: 'passed',
+              observationId,
+              pageDigest: checksum,
+              expected: '42',
+              actual: '42',
+              errorCode: null,
+            },
+          ],
+        },
+      },
+    });
+    expect(
+      parseArtifactDetail({
+        artifact,
+        feedback: [],
+        browserVerification: verification,
+      }).browserVerification?.outcome.report.verdict,
+    ).toBe('passed');
+    expect(
+      parseArtifactDetail({ artifact, feedback: [] }).browserVerification,
+    ).toBeNull();
+    expect(() =>
+      parseArtifactDetail({
+        artifact,
+        feedback: [],
+        browserVerification: {
+          ...verification,
+          reportArtifactId: randomUUID(),
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      parseArtifactDetail({
+        artifact,
+        feedback: [],
+        browserVerification: {
+          ...verification,
+          outcome: {
+            ...verification.outcome,
+            report: { ...verification.outcome.report, steps: [] },
+          },
+        },
+      }),
+    ).toThrow();
   });
   it.each(['image/png', 'image/jpeg', 'image/webp'])(
     'admits %s images above the text cap up to 32 MiB, including base64 padding',

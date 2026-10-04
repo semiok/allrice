@@ -537,7 +537,7 @@ export async function assertPublishingRun(
     !parsed.data.capabilitySnapshot.grantedCapabilities.includes(
       'storage:write',
     ) ||
-    (requiredTool === 'workspace.project' &&
+    (['workspace.project', 'browser.workspace'].includes(requiredTool) &&
       !parsed.data.capabilitySnapshot.grantedCapabilities.includes(
         'storage:read',
       )) ||
@@ -711,7 +711,10 @@ export async function publishWorkbenchArtifact(
    * Admission takes root locks before the session lock and validates the exact
    * assignment/version each time. Storage still uses the real root job. */
   development?: {
-    requiredTool?: 'assistant.development' | 'workspace.project';
+    requiredTool?:
+      'assistant.development' | 'workspace.project' | 'browser.workspace';
+    /** Server-only finite saved-document verification result. */
+    browserVerification?: { execution: RuntimeExecutionScope };
     /** Internal verified project output/source delivery, never model input. */
     projectDelivery?: {
       operationId: string | null;
@@ -921,6 +924,7 @@ export async function publishWorkbenchArtifact(
               !!development,
             )
           : (development?.projectDelivery?.execution ??
+            development?.browserVerification?.execution ??
             derivedSource?.execution ??
             null);
       // The entry's quota gate still covers this increment across all storage sources.
@@ -956,15 +960,16 @@ export async function publishWorkbenchArtifact(
         tx,
       );
       const provenance = {
-        kind: development?.projectDelivery
-          ? 'tool_result'
-          : requiredTool === 'workspace.project'
-            ? 'project_snapshot'
-            : derivedSource ||
-                input.trustedImageOperation ||
-                input.trustedOfficePdfLease
-              ? 'tool_result'
-              : 'model_proposal',
+        kind:
+          development?.projectDelivery || development?.browserVerification
+            ? 'tool_result'
+            : requiredTool === 'workspace.project'
+              ? 'project_snapshot'
+              : derivedSource ||
+                  input.trustedImageOperation ||
+                  input.trustedOfficePdfLease
+                ? 'tool_result'
+                : 'model_proposal',
         runId: publishingRunId,
         operationId:
           development?.projectDelivery?.operationId ??

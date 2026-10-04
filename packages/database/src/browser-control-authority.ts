@@ -24,6 +24,8 @@ import {
 } from './runtime-policy.ts';
 import { getDatabase } from './core/client.ts';
 import { currentLocalPreviewAuthority } from './local-preview-authority.ts';
+import { currentStaticBrowserTarget } from './static-browser.ts';
+import type { StaticBrowserTarget } from '@allrice/contracts';
 
 export const browserControlEnabled = () =>
   runtimeFeatureEnabled('ALLRICE_BROWSER_CONTROL_ENABLED') &&
@@ -145,6 +147,7 @@ export type BrowserWorkspaceRow = {
   target_capabilities: string[];
   target_metadata: Record<string, unknown>;
   preview?: LocalPreviewLease;
+  staticTarget?: StaticBrowserTarget;
 };
 /** Same current identity check for HTTP and Worker. Never accepts stale membership arrays. */
 export async function browserIdentity(
@@ -254,6 +257,21 @@ export async function currentBrowserWorkspace(
     )
       throw new RuntimePolicyError('local_browser_upgrade_required');
     w.device_id = local.device_id;
+    if (local.purpose === 'static_artifact') {
+      if (
+        local.persist_login ||
+        (w.target_metadata.environment as Record<string, unknown> | undefined)
+          ?.staticBrowserVersion !== 1
+      )
+        throw new RuntimePolicyError('static_browser_authority_lost');
+      try {
+        w.staticTarget = await currentStaticBrowserTarget(tx, w);
+      } catch (error) {
+        if (error instanceof RuntimePolicyError)
+          throw new RuntimePolicyError('browser_authority_unavailable');
+        throw error;
+      }
+    }
     if (local.purpose === 'local_preview') {
       if (local.persist_login)
         throw new RuntimePolicyError('browser_authority_unavailable');

@@ -32,6 +32,7 @@ import {
 } from 'react';
 import {
   type WorkbenchArtifact,
+  type ArtifactBrowserVerification,
   type ChangesetDocument,
   type ReviewContinuationInput,
 } from '@allrice/contracts';
@@ -627,7 +628,9 @@ function ArtifactReview({
   onReload: () => Promise<void>;
 }) {
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
-    [preview, setPreview] = useState<ArtifactPreview | null>(null);
+    [preview, setPreview] = useState<ArtifactPreview | null>(null),
+    [browserVerification, setBrowserVerification] =
+      useState<ArtifactBrowserVerification | null>(null);
   const [planSent, setPlanSent] = useState(false);
   async function continuePlan(
     review: Extract<ReviewContinuationInput, { kind: 'plan_review' }>,
@@ -706,6 +709,7 @@ function ArtifactReview({
           throw Error('成果所属会话不匹配');
         if (token !== generation.current) return;
         setArtifact(result.artifact);
+        setBrowserVerification(result.browserVerification);
         setReadError('');
         setReady(true);
       } catch (cause) {
@@ -724,6 +728,7 @@ function ArtifactReview({
           setReady(false);
           if (reset || revoked) {
             setArtifact(null);
+            setBrowserVerification(null);
             setPreview(null);
           }
         }
@@ -928,6 +933,40 @@ function ArtifactReview({
                 />
               )}
           </DocumentToolbar>
+          {browserVerification ? (
+            <section aria-label="页面验证">
+              <p>
+                页面验证：
+                {
+                  { passed: '通过', failed: '未通过', unknown: '未能确认' }[
+                    browserVerification.outcome.report.verdict
+                  ]
+                }
+                {' · '}
+                {browserVerification.outcome.location === 'local'
+                  ? '我的电脑'
+                  : '云端隔离环境'}
+                {' · '}浏览器已停止
+              </p>
+              <details>
+                <summary>查看验证来源与结果</summary>
+                <p>
+                  来源：{browserVerification.outcome.report.target.fileName}
+                </p>
+                <p>
+                  版本：{browserVerification.outcome.report.target.versionId}
+                </p>
+                <p>
+                  内容校验：{browserVerification.outcome.report.target.checksum}
+                </p>
+                <p>浏览器：{browserVerification.outcome.browserVersion}</p>
+                <p>
+                  已记录 {browserVerification.outcome.report.steps.length}{' '}
+                  个步骤。验证期间未重新构建项目。
+                </p>
+              </details>
+            </section>
+          ) : null}
           <div
             className={`${reader.content} ${hasNativeViewport(preview) && view === 'preview' ? reader.officeContent : ''}`}
           >

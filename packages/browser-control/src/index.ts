@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+export { verifyStaticBrowser } from './static-verification.ts';
 import type {
   Browser,
   BrowserContext,
@@ -10,6 +11,10 @@ import {
   browserObservationLifetimeMs,
   reservedLocalPreviewUrl,
   runtimeContractEqual,
+  StaticBrowserDocumentSchema,
+  staticBrowserDocumentUrl,
+  reservedStaticBrowserUrl,
+  type StaticBrowserDocument,
   type BrowserAction,
   type BrowserObservation,
   type BrowserProfile,
@@ -47,6 +52,9 @@ export type BrowserDriverOptions = {
   requestSent: () => void;
   /** Synchronous ownership reservation before any asynchronous request checks. */
   requestStarted: () => () => void;
+  /** Trusted, authenticated immutable artifact adapter. This context has no
+   * network, cookies, uploads/downloads, live service or user filesystem. */
+  staticDocument?: StaticBrowserDocument;
   /** P23 trusted process adapter only. Reserved origins NEVER fall back to
    * normal network/DNS, and this hook runs after the same current-authority
    * and exact write-request approval gates as ordinary browser traffic. */
@@ -82,6 +90,26 @@ export async function createControlledBrowserRenderer(
   options: BrowserDriverOptions,
   closeProxy: () => Promise<void>,
 ): Promise<BrowserDriver> {
+  const staticDocument = options.staticDocument
+    ? StaticBrowserDocumentSchema.parse(options.staticDocument)
+    : null;
+  const staticBytes = staticDocument
+    ? Buffer.from(staticDocument.contentBase64, 'base64')
+    : null;
+  const staticUrl = staticDocument
+    ? staticBrowserDocumentUrl(staticDocument.target)
+    : null;
+  if (
+    staticDocument &&
+    staticBytes &&
+    (staticBytes.toString('base64') !== staticDocument.contentBase64 ||
+      staticBytes.length !== staticDocument.target.sizeBytes ||
+      hash(staticBytes) !== staticDocument.target.checksum ||
+      options.profile.allowHumanCredentials ||
+      options.profile.allowUploads ||
+      options.profile.allowDownloads)
+  )
+    throw Error('STATIC_BROWSER_DOCUMENT_INVALID');
   const page = await context.newPage();
   page.setDefaultTimeout(5000);
   page.setDefaultNavigationTimeout(15000);
@@ -125,6 +153,34 @@ export async function createControlledBrowserRenderer(
       ? options.requestStarted()
       : () => {};
     try {
+      // No request, redirect, subresource, write or reserved-origin fallback
+      // escapes a saved-document context. Authority is checked before bytes.
+      if (staticDocument) {
+        if (
+          closed ||
+          ++requestCount > 200 ||
+          request.url() !== staticUrl ||
+          request.method() !== 'GET' ||
+          request.resourceType() !== 'document' ||
+          request.redirectedFrom()
+        )
+          throw Error('STATIC_BROWSER_NETWORK_DENIED');
+        await options.assertCurrent();
+        await route.fulfill({
+          status: 200,
+          contentType: 'text/html; charset=utf-8',
+          headers: {
+            'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer',
+            'Content-Security-Policy':
+              "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; frame-src 'none'; base-uri 'none'",
+          },
+          body: staticBytes!,
+        });
+        return;
+      }
+      if (reservedStaticBrowserUrl(request.url()))
+        throw Error('STATIC_BROWSER_TARGET_REQUIRED');
       if (
         closed ||
         ++requestCount > 200 ||

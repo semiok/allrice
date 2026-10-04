@@ -8,6 +8,7 @@ import {
   listArtifactFeedback,
   saveArtifactFeedback,
   addressArtifactFeedback,
+  readArtifactBrowserVerification,
 } from '@allrice/database';
 import {
   WorkbenchCursorSchema,
@@ -88,6 +89,11 @@ export async function artifactHttp(
         {
           artifact,
           feedback: await listArtifactFeedback(context, sessionId, id),
+          browserVerification: await readArtifactBrowserVerification(
+            context,
+            sessionId,
+            id,
+          ),
         },
         { headers },
       );

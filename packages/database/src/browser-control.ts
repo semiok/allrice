@@ -415,7 +415,8 @@ export async function requestBrowserControl(
     }
     if (
       w.control_fence !== request.expectedFence ||
-      ['closed', 'unknown'].includes(w.state)
+      w.state === 'closed' ||
+      (w.state === 'unknown' && request.control !== 'closed')
     )
       throw new RuntimePolicyError('browser_control_changed');
     const current =

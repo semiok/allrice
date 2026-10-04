@@ -237,6 +237,7 @@ export const BridgeEnvironmentSchema = z
     clientVersion: z.string().max(80),
     browserDefaultsVersion: z.literal(1).optional(),
     browserLocalSitesVersion: z.literal(1).optional(),
+    staticBrowserVersion: z.literal(1).optional(),
     fileSurveyVersion: z.literal(1).optional(),
     fileOrganizationVersion: z.literal(1).optional(),
     fileDerivationVersion: z.literal(1).optional(),
