@@ -321,9 +321,6 @@ importers:
       '@allrice/office-runtime':
         specifier: workspace:*
         version: link:../../packages/office-runtime
-      '@allrice/project-runtime':
-        specifier: workspace:*
-        version: link:../../packages/project-runtime
       '@allrice/storage':
         specifier: workspace:*
         version: link:../../packages/storage
@@ -513,7 +510,16 @@ importers:
       zod:
         specifier: ^4.4.3
         version: 4.4.3
+      ws:
+        specifier: 8.21.3
+        version: 8.21.3
+      '@allrice/project-runtime':
+        specifier: workspace:*
+        version: link:../../packages/project-runtime
     devDependencies:
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
       '@types/pdfkit':
         specifier: 0.17.4
         version: 0.17.4
@@ -594,6 +600,13 @@ importers:
       yaml:
         specifier: 2.9.0
         version: 2.9.0
+      ws:
+        specifier: 8.21.3
+        version: 8.21.3
+    devDependencies:
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
 
   packages/storage:
     dependencies:

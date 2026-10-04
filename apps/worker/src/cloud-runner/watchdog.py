@@ -10,6 +10,8 @@ import http.client
 import json
 import os
 import re
+import select
+import stat
 import socket
 import subprocess
 import sys
@@ -19,6 +21,9 @@ import urllib.parse
 LABEL = "xyz.bplabs.allrice.backend"
 ATTEMPT = "xyz.bplabs.allrice.cloud.attempt"
 DEADLINE = "xyz.bplabs.allrice.cloud.deadline"
+SERVICE_LEASES = "/run/allrice-cloud-project-leases"
+SERVICE = "xyz.bplabs.allrice.cloud.service"
+SERVICE_ID = "xyz.bplabs.allrice.cloud.service-id"
 STATE = "/run/allrice-cloud-watchdog.json"
 CAPACITY = "/run/allrice-cloud-capacity.json"
 EXPECTED = "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a"
@@ -113,6 +118,79 @@ def detect_capacity():
     return result
 
 
+def service_lease_valid(labels, created, deadline, now):
+    if labels.get(SERVICE) != 'project-v1' or labels.get('xyz.bplabs.allrice.cloud.kind') != 'project':
+        return False
+    attempt = labels.get(ATTEMPT, '')
+    if not re.fullmatch(r'[a-f0-9-]{36}', attempt) or not re.fullmatch(r'[a-f0-9-]{36}', labels.get(SERVICE_ID, '')):
+        return False
+    if deadline > created + 3_601_000:
+        return False
+    try:
+        filename = SERVICE_LEASES + '/' + attempt + '.json'
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, encoding='utf8') as source:
+            metadata = os.fstat(source.fileno())
+            if metadata.st_uid != 0 or not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 1024 or metadata.st_mode & 0o077:
+                return False
+            lease = json.load(source)
+        return lease['attempt'] == attempt and lease['hardDeadline'] == deadline and now < lease['expiresAt'] <= min(deadline, now + 5500)
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
+def service_lease_channel(attempt, hard_text):
+    # Fixed root-owned infrastructure ingress, never reachable by project code.
+    hard = int(hard_text)
+    if os.getuid() != 0 or not re.fullmatch(r'[a-f0-9-]{36}', attempt) or not int(time.time()*1000) < hard <= int(time.time()*1000)+3_600_000:
+        return 1
+    os.makedirs(SERVICE_LEASES, mode=0o700, exist_ok=True)
+    metadata = os.lstat(SERVICE_LEASES)
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
+        return 1
+    filename = SERVICE_LEASES + '/' + attempt + '.json'
+    # A second owner cannot replace an established physical lease channel.
+    fd = os.open(filename + ".owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    inode = os.fstat(fd).st_ino
+    def save(expiry):
+        data = json.dumps({'attempt':attempt,'hardDeadline':hard,'expiresAt':expiry}).encode()
+        temporary = filename + '.new'
+        writer = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(writer, data); os.fsync(writer)
+        finally:
+            os.close(writer)
+        os.replace(temporary, filename)
+    sequence = 0
+    try:
+        save(min(hard, int(time.time()*1000)+5000))
+        print(json.dumps({'sequence':-1,'ready':True}), flush=True)
+        while time.time()*1000 < hard:
+            if not select.select([sys.stdin], [], [], 5)[0]:
+                return 1
+            line = sys.stdin.buffer.readline(1025)
+            if not line or len(line)>1024 or not line.endswith(b'\n'):
+                return 1
+            frame = json.loads(line)
+            now = int(time.time()*1000)
+            expiry = frame['expiresAt']
+            if frame['sequence'] != sequence or not isinstance(expiry,int) or not now < expiry <= min(hard,now+5500):
+                return 1
+            save(expiry)
+            print(json.dumps({'sequence':sequence,'ready':True}),flush=True)
+            sequence += 1
+    finally:
+        os.close(fd)
+        try:
+            if os.lstat(filename + '.owner').st_ino == inode:
+                try: os.unlink(filename)
+                except FileNotFoundError: pass
+                os.unlink(filename + '.owner')
+        except FileNotFoundError:
+            pass
+    return 0
+
+
 def tick(capacity):
     filters = urllib.parse.quote(json.dumps({"label": [LABEL + "=cloud-gvisor-v1"]}))
     containers = call("GET", "/containers/json?all=1&filters=" + filters)
@@ -136,7 +214,8 @@ def tick(capacity):
                 and c["HostConfig"]["Runtime"] == "runsc"
                 and c["HostConfig"]["NetworkMode"] == "none"
                 and deadline > int(time.time() * 1000)
-                and deadline <= created + 65_000
+                and (service_lease_valid(labels, created, deadline, int(time.time()*1000))
+                     if SERVICE in labels else deadline <= created + 65_000)
                 and running <= capacity['slots']
             )
         except (TypeError, ValueError):
@@ -179,13 +258,15 @@ def attest():
         and active
         and 0 <= time.time() - heartbeat["at"] < 4
     )
-    print(json.dumps({"ready": ready, "runtimeChecksum": checksum, "watchdog": "met162-v2",
+    print(json.dumps({"ready": ready, "runtimeChecksum": checksum, "watchdog": "met166-service-v1", "projectServices": True,
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))
     return 0 if ready else 1
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == '--project-service-lease':
+        sys.exit(service_lease_channel(sys.argv[2], sys.argv[3]))
     if sys.argv[1:] == ["--attest"]:
         sys.exit(attest())
     if len(sys.argv) != 1 or os.getuid() != 0:

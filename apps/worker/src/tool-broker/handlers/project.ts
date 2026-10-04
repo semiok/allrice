@@ -23,7 +23,10 @@ import { HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
 import { waitForLocalAdmission } from './local-admission.js';
 import { CloudRunnerBackend } from '../../cloud-runner/backend.js';
-import { runCloudCommandOperation } from '../../cloud-runner/executor.js';
+import {
+  runCloudCommandOperation,
+  startCloudProjectService,
+} from '../../cloud-runner/executor.js';
 
 export const runProjectWorkspace: RiceToolHandler = async ({
   input,
@@ -81,7 +84,6 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           cloudReady,
         });
         if (
-          command.action === 'execute' &&
           cloudExecutionEnabled() &&
           !cloudReady &&
           (selection.choice.location === 'none' ||
@@ -94,6 +96,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
               command.projectPreparation.manager === 'uv'
                 ? cloudPythonImageV1
                 : cloudToolchainImageV1,
+              command.action === 'service_start',
             )
             .then(() => true)
             .catch(() => false);
@@ -232,12 +235,6 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           summary: `本地项目执行 · ${result.status}`,
         };
       }
-      if (command.action !== 'execute')
-        throw new HandlerError(
-          'PROJECT_SERVICE_UNAVAILABLE',
-          '当前项目服务需要已就绪的本地 Bridge。',
-          false,
-        );
       const created = await createCloudProjectOperation({
         context: input.context,
         callId: input.call.id,
@@ -245,6 +242,22 @@ export const runProjectWorkspace: RiceToolHandler = async ({
         worker,
         storage,
       });
+      if (command.action === 'service_start') {
+        const service = await startCloudProjectService(created, {
+          storage,
+          backend,
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        return {
+          modelContent: JSON.stringify({
+            service,
+            executionChoice: selected.selection.choice,
+            project: command.project,
+            sourceDirectoryModified: false,
+          }),
+          summary: `云端项目服务 · ${service.state}`,
+        };
+      }
       const result = await runCloudCommandOperation(created, {
         storage,
         backend,

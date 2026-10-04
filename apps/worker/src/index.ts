@@ -1,3 +1,4 @@
+import { startCloudProjectPreviewTransport } from './cloud-runner/project-preview-transport.js';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { startExecutionPressureLog } from './execution-pressure.js';
 import { detectWorkerCapacity } from './worker-capacity.js';
@@ -32,7 +33,10 @@ import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { executeNextMcpDiscovery } from './mcp/lifecycle.js';
 import { recoverMcpRuntimeOperations } from './mcp/executor.js';
-import { recoverCloudCommandOperations } from './cloud-runner/executor.js';
+import {
+  recoverCloudCommandOperations,
+  stopCloudProjectServices,
+} from './cloud-runner/executor.js';
 import { readWorkerCapabilities } from './harness/runtime-capabilities.js';
 import { refreshManagedCloudEnvironments } from './managed-cloud-environments.js';
 
@@ -369,6 +373,11 @@ codexAuthorizationBroker.tick();
 void refreshDshRuntimeInventory();
 managedCloudTick();
 
+const cloudPreviewTransport = process.env.ALLRICE_CLOUD_PREVIEW_SOCKET
+  ? await startCloudProjectPreviewTransport(
+      process.env.ALLRICE_CLOUD_PREVIEW_SOCKET,
+    )
+  : null;
 server.listen(port, '0.0.0.0', () => {
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
     workerId,
@@ -398,6 +407,8 @@ async function shutdown(signal: string) {
   platformEmployeeTestAborter?.abort();
   server.close();
   await Promise.allSettled(activeExecutions);
+  await stopCloudProjectServices();
+  await cloudPreviewTransport?.close();
   if (mcpDiscoveryTask) await mcpDiscoveryTask;
   if (cloudRecoveryTask) await cloudRecoveryTask;
   if (managedCloudTask) await managedCloudTask;

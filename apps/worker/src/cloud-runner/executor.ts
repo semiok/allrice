@@ -11,6 +11,8 @@ import {
   getDatabase,
   runtimePolicyDigest,
   taskDeadlineOpen,
+  readProjectService,
+  projectServiceUserAction,
 } from '@allrice/database';
 import {
   CloudExecutionPayloadSchema,
@@ -18,6 +20,8 @@ import {
   RuntimeOperationSnapshotSchema,
   type StoragePort,
   type RuntimeUsageObservation,
+  type RuntimeLocalServiceEvent,
+  type ProjectServiceView,
 } from '@allrice/contracts';
 import {
   CloudRunnerBackend,
@@ -46,6 +50,7 @@ export async function runCloudCommandOperation(
     signal?: AbortSignal;
     backend?: CloudRunnerBackend;
     database?: Db;
+    onServiceReady?: () => Promise<void>;
   },
 ) {
   const db = options.database ?? getDatabase(),
@@ -64,8 +69,21 @@ export async function runCloudCommandOperation(
     }[]
   >`select lease_token,container_id,outcome,cleanup_confirmed_at from allrice_cloud_execution_attempts where operation_id=${operationId}`;
   let leaseToken = prior?.lease_token;
+  const service =
+    'kind' in payload && !!payload.arguments.background?.projectService;
   const cancel = () =>
-    ledger.cancelRoot(scope, binding.task.rootRunId, randomUUID());
+    service
+      ? projectServiceUserAction(
+          {
+            organizationId: scope.organizationId,
+            workspaceId: scope.workspaceId,
+            actor: binding.requestedBy,
+          },
+          operationId,
+          { action: 'stop' },
+          db,
+        )
+      : ledger.cancelRoot(scope, binding.task.rootRunId, randomUUID());
   if (!leaseToken) {
     while (
       await taskDeadlineOpen(db, binding.task.rootRunId, created.deadlineAt)
@@ -143,12 +161,21 @@ export async function runCloudCommandOperation(
       ...(code ? { evidence: { code } } : {}),
     });
   };
+  const serviceExchange = (
+    events: RuntimeLocalServiceEvent[] = [],
+    sourceReceipts: { updateId: string; sourceDigest: string }[] = [],
+  ) =>
+    ledger.exchangeCloudProjectService({ ...receipt, events, sourceReceipts });
   const maintainLease = async () => {
-    if (options.signal?.aborted || !(await currentWorker(created, db))) {
+    if (
+      options.signal?.aborted ||
+      (!service && !(await currentWorker(created, db)))
+    ) {
       if (options.signal?.aborted) await cancel();
       return false;
     }
     try {
+      if (service) return !(await serviceExchange()).stopRequested;
       await ledger.heartbeat({ ...receipt, leaseMs: 15_000 });
       return true;
     } catch {
@@ -216,8 +243,30 @@ export async function runCloudCommandOperation(
                 },
               }
             : {}),
+          ...(service
+            ? {
+                projectService: {
+                  id: operationId,
+                  hardDeadlineAt: (await serviceExchange()).hardDeadlineAt,
+                  exchange: () => serviceExchange(),
+                  onEvent: async (event: RuntimeLocalServiceEvent) => {
+                    const response = await serviceExchange([event]);
+                    if (event.type === 'ready' && !response.stopRequested)
+                      await options.onServiceReady?.();
+                  },
+                  onSourceApplied: async (receipt: {
+                    updateId: string;
+                    sourceDigest: string;
+                  }) => {
+                    await serviceExchange([], [receipt]);
+                  },
+                },
+              }
+            : {}),
           isTurn: observer.isTurn,
-          observe: observer.observe,
+          observe: service
+            ? (event) => observer.observe(event).catch(() => undefined)
+            : observer.observe,
           ...(options.signal ? { signal: options.signal } : {}),
           maintainLease,
           onCreated: async (id) => {
@@ -306,6 +355,7 @@ export async function runCloudCommandOperation(
   // physical stop. It does not cancel the Run or prevent a later source fix.
   const stopped =
     outcome.reason === 'canceled' ||
+    (service && outcome.reason === 'deadline') ||
     (outcome.reason === 'deadline' && !('kind' in payload));
   const signal = stopped
     ? { type: 'operation.stopped' as const, evidence, effects: 'none' as const }
@@ -400,6 +450,119 @@ export async function runCloudCommandOperation(
   };
 }
 
+const activeCloudProjectServices = new Map<
+  string,
+  {
+    ready: Promise<ProjectServiceView>;
+    task: Promise<unknown>;
+    abort: AbortController;
+  }
+>();
+export async function startCloudProjectService(
+  created: Created,
+  options: {
+    storage: StoragePort;
+    backend?: CloudRunnerBackend;
+    database?: Db;
+    signal?: AbortSignal;
+  },
+) {
+  const id = created.snapshot.binding.attempt.operationId,
+    prior = activeCloudProjectServices.get(id);
+  if (prior) return prior.ready;
+  const db = options.database ?? getDatabase(),
+    abort = new AbortController();
+  let resolveReady!: (view: ProjectServiceView) => void,
+    rejectReady!: (error: Error) => void,
+    ready = false;
+  const result = new Promise<ProjectServiceView>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
+  });
+  const abortAdmission = () => abort.abort();
+  options.signal?.addEventListener('abort', abortAdmission, { once: true });
+  const timeout = setTimeout(
+    () => {
+      if (!ready) {
+        rejectReady(Error('CLOUD_SERVICE_ADMISSION_TIMEOUT'));
+        abort.abort();
+      }
+    },
+    Math.max(1, Math.min(120_000, Date.parse(created.deadlineAt) - Date.now())),
+  );
+  const task = (async () => {
+    const connection = await db.reserve();
+    let locked = false;
+    try {
+      const [owner] = await connection<
+        { locked: boolean }[]
+      >`select pg_try_advisory_lock(15,hashtext(${id})) as locked`;
+      if (!owner?.locked) throw Error('CLOUD_SERVICE_RECONCILE_REQUIRED');
+      locked = true;
+      if (options.signal?.aborted) abort.abort();
+      return await runCloudCommandOperation(created, {
+        ...options,
+        signal: abort.signal,
+        onServiceReady: async () => {
+          const scope = created.snapshot.binding.task.scope;
+          const view = await readProjectService(
+            {
+              organizationId: scope.organizationId,
+              workspaceId: scope.workspaceId,
+              actor: created.snapshot.binding.requestedBy,
+            },
+            id,
+            db,
+          );
+          if (view.state !== 'ready' || view.stopRequested)
+            throw Error('CLOUD_SERVICE_NOT_READY');
+          ready = true;
+          clearTimeout(timeout);
+          options.signal?.removeEventListener('abort', abortAdmission);
+          resolveReady(view);
+        },
+      });
+    } finally {
+      if (locked)
+        await connection`select pg_advisory_unlock(15,hashtext(${id}))`;
+      connection.release();
+    }
+  })();
+  activeCloudProjectServices.set(id, { ready: result, task, abort });
+  void task
+    .then(
+      () => {
+        if (!ready) rejectReady(Error('CLOUD_SERVICE_NOT_READY'));
+      },
+      (error) => {
+        if (!ready)
+          rejectReady(
+            error instanceof Error ? error : Error('CLOUD_SERVICE_FAILED'),
+          );
+        console.error(
+          JSON.stringify({
+            event: 'cloud_project_service_failed',
+            operationId: id,
+            code: error instanceof Error ? error.message : 'unknown',
+          }),
+        );
+      },
+    )
+    .finally(() => {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', abortAdmission);
+      activeCloudProjectServices.delete(id);
+    });
+  return result;
+}
+export async function stopCloudProjectServices() {
+  for (const service of activeCloudProjectServices.values())
+    service.abort.abort();
+  await Promise.allSettled(
+    [...activeCloudProjectServices.values()].map((service) => service.task),
+  );
+}
+
 /** Cold recovery never launches a script or expands authority. Stopped bytes
  * remain in the private journal if the originating Run lost authorization;
  * they are not misrepresented as an approved/downloadable success. */
@@ -416,10 +579,11 @@ export async function recoverCloudCommandOperations(
       payload: unknown;
       outcome: CloudRunResult | null;
     }[]
-  >`select a.operation_id,a.lease_token,o.snapshot,i.payload,a.outcome from allrice_cloud_execution_attempts a join allrice_runtime_operations o on o.id=a.operation_id join allrice_cloud_execution_inputs i on i.operation_id=o.id join allrice_runtime_roots r on r.root_run_id=o.root_run_id where a.cleanup_confirmed_at is null and (r.cancel_request_id is not null or r.deadline_at<=clock_timestamp() or not exists(select 1 from allrice_jobs j where j.id=i.job_id and j.run_id=o.run_id and j.worker_id=i.worker_id and j.lease_token=i.job_lease_token and j.status='running' and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null)) order by a.created_at limit 20`;
+  >`select a.operation_id,a.lease_token,o.snapshot,i.payload,a.outcome from allrice_cloud_execution_attempts a join allrice_runtime_operations o on o.id=a.operation_id join allrice_cloud_execution_inputs i on i.operation_id=o.id join allrice_runtime_roots r on r.root_run_id=o.root_run_id where a.cleanup_confirmed_at is null and (exists(select 1 from allrice_project_services ps where ps.id=o.id and ps.backend='cloud' and (ps.stop_requested or ps.expires_at<=clock_timestamp() or ps.heartbeat_at<clock_timestamp()-interval '5 seconds' or o.lease_expires_at<=clock_timestamp())) or r.cancel_request_id is not null or r.deadline_at<=clock_timestamp() or not exists(select 1 from allrice_jobs j where j.id=i.job_id and j.run_id=o.run_id and j.worker_id=i.worker_id and j.lease_token=i.job_lease_token and j.status='running' and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null)) order by a.created_at limit 20`;
   let recovered = 0,
     failed = 0;
   for (const row of rows) {
+    if (activeCloudProjectServices.has(row.operation_id)) continue;
     const connection = await db.reserve();
     try {
       const [lock] = await connection<

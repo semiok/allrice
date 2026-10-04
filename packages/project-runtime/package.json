@@ -16,6 +16,10 @@
   },
   "dependencies": {
     "@allrice/contracts": "workspace:*",
-    "yaml": "2.9.0"
+    "yaml": "2.9.0",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1"
   }
 }

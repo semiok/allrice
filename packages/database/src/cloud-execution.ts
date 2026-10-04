@@ -1,3 +1,4 @@
+import { initializeProjectServiceLease } from './project-services.ts';
 import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
@@ -6,7 +7,7 @@ import {
   CloudCommandSchema,
   CloudProjectCommandSchema,
   CloudProjectRunResultSchema,
-  ProjectExecuteInputSchema,
+  ProjectRunnableInputSchema,
   RuntimeSavedProjectSourceSchema,
   projectRuntimeCacheIdentity,
   cloudPythonImageV1,
@@ -221,6 +222,14 @@ export function createCloudOperationLedger(
       if (lease.snapshot.binding.action !== 'cloud.process.execute')
         throw new RuntimePolicyError('resource_adapter_not_registered');
       await transaction`insert into allrice_cloud_execution_attempts(operation_id,lease_token) values(${lease.snapshot.binding.attempt.operationId},${lease.leaseToken})`;
+      const [input] =
+        await transaction`select payload from allrice_cloud_execution_inputs where operation_id=${lease.snapshot.binding.attempt.operationId}`;
+      if (input?.payload?.kind === 'project')
+        await initializeProjectServiceLease(
+          transaction,
+          lease.snapshot,
+          CloudProjectCommandSchema.parse(input.payload),
+        );
     },
     admission: async (input) => {
       // Physical capacity is acquired in the shared Office/cloud executor.
@@ -299,7 +308,7 @@ export async function createCloudProjectOperation(
 ) {
   const ctx = input.context,
     selected = input.projectSelection;
-  const args = ProjectExecuteInputSchema.parse(selected.originalArguments);
+  const args = ProjectRunnableInputSchema.parse(selected.originalArguments);
   if (
     !cloudExecutionEnabled() ||
     !ctx.workspaceId ||
@@ -415,7 +424,27 @@ export async function createCloudProjectOperation(
         args: args.args,
         path: args.path,
         projectPreparation: args.projectPreparation,
-        ...(args.outputs ? { outputs: args.outputs } : {}),
+        ...('outputs' in args && args.outputs ? { outputs: args.outputs } : {}),
+        ...(args.action === 'service_start'
+          ? {
+              background: {
+                durationMs: 3_600_000,
+                readiness: {
+                  kind: 'http',
+                  port: args.service.port,
+                  path: args.service.path,
+                  timeoutMs: args.service.readinessTimeoutMs,
+                },
+                stdin: {
+                  mode: 'none',
+                  maxRequests: 1,
+                  maxBytes: 1,
+                  requestTimeoutMs: 1000,
+                },
+                projectService: args.service,
+              },
+            }
+          : {}),
         limits: args.limits,
       };
       const payload = CloudProjectCommandSchema.parse({

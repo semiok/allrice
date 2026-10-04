@@ -1,3 +1,4 @@
+import { createCloudProjectPreviewTransport } from './server/cloud-project-preview.mjs';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import console from 'node:console';
 import { Server } from 'node:http';
@@ -57,6 +58,11 @@ export async function startAllRiceWeb({
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('INVALID_WEB_PORT');
   const server = new AllRiceHttpServer();
+  const cloudPreview = process.env.ALLRICE_CLOUD_PREVIEW_SOCKET
+    ? createCloudProjectPreviewTransport(
+        process.env.ALLRICE_CLOUD_PREVIEW_SOCKET,
+      )
+    : null;
   const app = next({
     dev,
     dir: fileURLToPath(new URL('.', import.meta.url)),
@@ -81,14 +87,26 @@ export async function startAllRiceWeb({
       dispatch: createBridgeLoopbackDispatch(port),
     });
   }
-  if (process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX && server.bridgeGateway) {
+  if (
+    process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX &&
+    (server.bridgeGateway || cloudPreview)
+  ) {
     server.previewGateway = createProjectPreviewGateway({
       suffix: process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX,
       mainOrigin: new URL(
         process.env.ALLRICE_PUBLIC_URL ?? 'https://allrice.bplabs.xyz',
       ).origin,
       resolveAccess: resolveProjectPreviewAccess,
-      transport: server.bridgeGateway,
+      transport: {
+        openPreview: (input) => {
+          const adapter =
+            input.target.backend === 'cloud'
+              ? cloudPreview
+              : server.bridgeGateway;
+          if (!adapter) throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+          return adapter.openPreview(input);
+        },
+      },
     });
   }
   await new Promise((resolve, reject) => {
@@ -99,6 +117,7 @@ export async function startAllRiceWeb({
     server,
     async close() {
       await server.previewGateway?.close();
+      cloudPreview?.close();
       await server.bridgeGateway?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

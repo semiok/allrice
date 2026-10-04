@@ -43,6 +43,12 @@ export type CloudProjectContainer = {
   Id: string;
   Config: { Image?: string; Labels: Record<string, string> };
   Mounts?: { Type: string; Name: string; Destination: string }[];
+  HostConfig?: {
+    Runtime?: string;
+    NetworkMode?: string;
+    PortBindings?: Record<string, unknown>;
+    Privileged?: boolean;
+  };
   State: {
     Running: boolean;
     Status: string;
@@ -211,6 +217,15 @@ export async function assertCloudProjectContainer(
     c.Mounts?.some((m) => m.Type === 'bind')
   )
     throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
+  if (
+    command?.arguments.background &&
+    (c.HostConfig?.Runtime !== 'runsc' ||
+      c.HostConfig.NetworkMode !== 'none' ||
+      c.HostConfig.Privileged ||
+      Object.keys(c.HostConfig.PortBindings ?? {}).length ||
+      c.Config.Labels['xyz.bplabs.allrice.cloud.service'] !== 'project-v1')
+  )
+    throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
   await inspectVolume(
     api,
     `allrice-project-work-${attempt}`,
@@ -236,6 +251,8 @@ export async function prepareCloudProject(
     deadline: number;
     signal: AbortSignal;
     maintainLease: () => Promise<boolean>;
+    serviceId?: string;
+    previewHost?: string | null;
   },
 ) {
   const command = CloudProjectCommandSchema.parse(input.command),
@@ -324,6 +341,12 @@ export async function prepareCloudProject(
       'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
       'xyz.bplabs.allrice.cloud.deadline': String(input.deadline),
       'xyz.bplabs.allrice.project.image': command.imageDigest,
+      ...(command.arguments.background
+        ? {
+            'xyz.bplabs.allrice.cloud.service': 'project-v1',
+            'xyz.bplabs.allrice.cloud.service-id': input.serviceId!,
+          }
+        : {}),
       [payloadLabel]: payloadDigest(command),
       [cacheLabel]: cacheKey,
       [evidenceLabel]: JSON.stringify(evidence),
@@ -387,8 +410,16 @@ export async function prepareCloudProject(
         User: '0:0',
         WorkingDir: '/tmp/work',
         Tty: false,
-        OpenStdin: false,
-        Env: [],
+        OpenStdin: !!command.arguments.background,
+        Env: command.arguments.background
+          ? [
+              'ALLRICE_SERVICE_ID=' + input.serviceId,
+              'ALLRICE_SERVICE_ATTEMPT=' + input.attemptId,
+              ...(input.previewHost
+                ? ['ALLRICE_SERVICE_PREVIEW_HOST=' + input.previewHost]
+                : []),
+            ]
+          : [],
         Labels: labels,
         HostConfig: {
           Runtime: 'runsc',
@@ -471,6 +502,7 @@ export function collectCloudProject(
     command.arguments.limits.outputBytes,
     undefined,
     command.arguments.outputs,
+    command.arguments.background ? () => undefined : undefined,
   );
   events.push(text);
   const observed = events.finish();
@@ -478,6 +510,7 @@ export function collectCloudProject(
     observed.exit?.installation ??
     (observed.stage === 'running' ? 'succeeded' : 'interrupted');
   if (c.State.OOMKilled) reason = 'oom';
+  else if (observed.exit?.reason === 'canceled') reason = 'canceled';
   else if (reason === 'completed') {
     if (
       observed.exit?.reason === 'timeout' ||

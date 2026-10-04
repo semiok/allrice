@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   projectPreviewHost,
+  CloudProjectCommandSchema,
   localProjectResultMatchesPayload,
   BridgeCapabilities,
   BrowserCommandSchema,
@@ -1176,6 +1177,170 @@ export function createRuntimeOperationLedger(options: {
       });
     },
 
+    /** The existing operation lease carries one cloud ProjectService, including
+     * a successful parent Run. It never renews a model or root budget. */
+    async exchangeCloudProjectService(input: {
+      scope: RuntimeScope;
+      operationId: string;
+      leaseToken: string;
+      attempt: RuntimeAttemptRef;
+      events: RuntimeLocalServiceEvent[];
+      sourceReceipts?: { updateId: string; sourceDigest: string }[];
+    }) {
+      const events = z
+        .array(RuntimeLocalServiceEventSchema)
+        .max(16)
+        .parse(input.events);
+      return db.begin(async (tx) => {
+        // The physical lease lasts five seconds. Lock contention must fail
+        // closed rather than leave an authority renewal waiting indefinitely.
+        await tx`set local statement_timeout='2500ms'`;
+        await tx`set local lock_timeout='2000ms'`;
+        const { row } = await lockOperation(tx, input.scope, input.operationId);
+        verifyLease(row, input.leaseToken);
+        if (
+          row.snapshot.binding.action !== 'cloud.process.execute' ||
+          !runtimeContractEqual(input.attempt, row.snapshot.binding.attempt)
+        )
+          throw new RuntimeLedgerError('scope_mismatch');
+        const [stored] = await tx<
+          {
+            payload: unknown;
+            container_id: string | null;
+            service_events: RuntimeLocalServiceEvent[];
+          }[]
+        >`select i.payload,a.container_id,a.service_events from allrice_cloud_execution_inputs i join allrice_cloud_execution_attempts a on a.operation_id=i.operation_id where i.operation_id=${row.id} and a.lease_token=${input.leaseToken} for update of a`;
+        const command = CloudProjectCommandSchema.parse(stored?.payload),
+          config = command.arguments.background?.projectService;
+        if (!stored || !config) throw new RuntimeLedgerError('unavailable');
+        const [service] = await tx<
+          {
+            hard_deadline_at: Date;
+            expires_at: Date;
+            pending_update: unknown | null;
+            stop_requested: boolean;
+          }[]
+        >`select * from allrice_project_services where id=${row.id} and backend='cloud' for update`;
+        if (!service) throw new RuntimeLedgerError('unavailable');
+        const at = await now(tx);
+        let allowed = false;
+        if (
+          row.snapshot.status === 'running' &&
+          !row.snapshot.cancelRequestId &&
+          row.lease_expires_at &&
+          row.lease_expires_at > at
+        ) {
+          try {
+            await currentProjectService(tx, row.id);
+            allowed = true;
+          } catch {
+            /* Fail closed; ordered physical facts may still arrive. */
+          }
+        }
+        const stopRequested = !allowed || service.stop_requested;
+        const history = stored.service_events;
+        for (const event of events) {
+          if (
+            event.processId !== row.id ||
+            event.attemptId !== input.attempt.attemptId
+          )
+            throw new RuntimeLedgerError('scope_mismatch');
+          const prior = history[event.sequence];
+          if (prior) {
+            if (!runtimeContractEqual(prior, event))
+              throw new RuntimeLedgerError('receipt_conflict');
+            continue;
+          }
+          if (event.sequence !== history.length)
+            throw new RuntimeLedgerError('receipt_conflict');
+          if (event.type === 'starting') {
+            if (
+              event.sequence !== 0 ||
+              event.containerId !== stored.container_id ||
+              event.hardDeadlineAt !== service.hard_deadline_at.toISOString()
+            )
+              throw new RuntimeLedgerError('receipt_conflict');
+          } else if (event.type === 'ready') {
+            if (
+              !stored.container_id ||
+              history.length !== 1 ||
+              event.port !== config.port
+            )
+              throw new RuntimeLedgerError('receipt_conflict');
+            if (!stopRequested)
+              await tx`update allrice_cloud_execution_attempts set service_ready=true where operation_id=${row.id}`;
+          } else throw new RuntimeLedgerError('invalid_state');
+          history.push(event);
+        }
+        await tx`update allrice_cloud_execution_attempts set service_events=${json(tx, history)} where operation_id=${row.id}`;
+        if (
+          history.length &&
+          row.snapshot.processId === null &&
+          ['running', 'cancel_requested', 'unknown'].includes(
+            row.snapshot.status,
+          )
+        )
+          await append(tx, row, {
+            type: 'operation.started',
+            processId: row.id,
+          });
+        if (stopRequested) {
+          await tx`update allrice_project_services set stop_requested=true where id=${row.id}`;
+          if (
+            row.snapshot.status === 'running' &&
+            !row.snapshot.cancelRequestId
+          )
+            await append(tx, row, {
+              type: 'operation.cancel_requested',
+              requestId: randomUUID(),
+            });
+        }
+        for (const receipt of input.sourceReceipts ?? [])
+          await applyProjectServiceSourceReceipt(tx, row.id, receipt);
+        const [fresh] = await tx<
+          { pending_update: unknown | null }[]
+        >`select pending_update from allrice_project_services where id=${row.id}`;
+        let expiry = row.lease_expires_at ?? at;
+        if (allowed && !stopRequested) {
+          if (!row.lease_expires_at || row.lease_expires_at <= (await now(tx)))
+            throw new RuntimeLedgerError('lease_lost');
+          expiry = new Date(
+            Math.min(
+              (await now(tx)).getTime() + 15_000,
+              service.expires_at.getTime(),
+              service.hard_deadline_at.getTime(),
+            ),
+          );
+          if (expiry <= (await now(tx)))
+            throw new RuntimeLedgerError('lease_lost');
+          await tx`update allrice_runtime_operations set lease_expires_at=${expiry},updated_at=clock_timestamp() where id=${row.id}`;
+          await currentProjectService(tx, row.id);
+          await tx`update allrice_project_services set heartbeat_at=clock_timestamp() where id=${row.id}`;
+          const committedAt = await now(tx);
+          if (expiry <= committedAt || row.lease_expires_at <= committedAt)
+            throw new RuntimeLedgerError('lease_lost');
+        }
+        return {
+          hardDeadlineAt: service.hard_deadline_at.toISOString(),
+          acceptedSequence: history.length - 1,
+          stopRequested,
+          leaseExpiresAt: expiry.toISOString(),
+          snapshot: row.snapshot,
+          projectService: {
+            id: row.id,
+            expiresAt: service.expires_at.toISOString(),
+            sourceUpdate: fresh?.pending_update ?? null,
+            previewHost: process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX
+              ? projectPreviewHost(
+                  row.id,
+                  process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX,
+                )
+              : null,
+          },
+        };
+      });
+    },
+
     async recordOutput(input: {
       scope: RuntimeScope;
       operationId: string;
@@ -1682,6 +1847,19 @@ export function createRuntimeOperationLedger(options: {
                   throw new RuntimeLedgerError('invalid_state');
               }
             }
+          }
+          if (
+            content.signal.type === 'operation.stopped' &&
+            row.snapshot.status === 'running' &&
+            row.snapshot.binding.action === 'cloud.process.execute'
+          ) {
+            const [service] =
+              await tx`select id from allrice_project_services where id=${row.id} and backend='cloud'`;
+            if (service)
+              await append(tx, row, {
+                type: 'operation.cancel_requested',
+                requestId: randomUUID(),
+              });
           }
           // A finite service may be stopped locally (Bridge shutdown/lease
           // loss) before the server saw a stop request. Preserve the targeted
