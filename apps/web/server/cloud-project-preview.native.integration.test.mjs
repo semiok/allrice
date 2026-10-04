@@ -21,6 +21,7 @@ import {
   resolveProjectPreviewAccess,
 } from '../../../packages/database/src/project-services.ts';
 import { listCloudRuntimeOperations } from '../../../packages/database/src/cloud-operation-view.ts';
+import { completeJob } from '../../../packages/database/src/execution/queue.ts';
 import { runProjectWorkspace } from '../../worker/src/tool-broker/handlers/project.ts';
 import { nativeBrokerRoundtrip } from '../../worker/src/harness/dsh-native-broker.fixture.ts';
 import { CloudRunnerBackend } from '../../worker/src/cloud-runner/backend.ts';
@@ -382,8 +383,16 @@ suite('cloud project first complete native chain', () => {
         worker: f.assistantWorker,
       });
       expect(finalized.status).toBe('completed');
-      await database`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
-      await database`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
+      await completeJob({
+        workerId: f.context.worker.id,
+        jobId: f.context.jobId,
+        leaseToken: f.worker.leaseToken,
+        result: { answer: 'Preview ready' },
+      });
+      const [conversation] =
+        await database`select state,active_run_id from allrice_conversation_runtimes where session_id=${f.task.chatSessionId}`;
+      expect(conversation.state).toBe('idle');
+      expect(conversation.active_run_id).toBeNull();
       await delay(70000);
       await recoverCloudCommandOperations({ database, backend });
       expect(

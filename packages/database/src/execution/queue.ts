@@ -50,6 +50,7 @@ import {
 import { resolveWorkspaceId } from '../workspace/service.ts';
 import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
+import { releaseConversationRuntimeTransaction } from '../conversation/conversation-runtime.ts';
 import { prepareChangesetAction } from '../changeset-service.ts';
 import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
 import { unboundedTaskDeadline } from '../task-runtime-policy.ts';
@@ -1104,6 +1105,34 @@ async function transitionTerminal(
     type: input.eventType,
     payload: input.payload,
   });
+  if (job.worker_id) {
+    // A successful handler retains ownership until this terminal transaction.
+    // Older handlers may already have released it; never release another Run.
+    // If final event flushing fails or cancellation wins, release that retained
+    // ownership with the real terminal outcome rather than leaving it running.
+    const [conversation] = await transaction<{ session_id: string }[]>`
+      select c.session_id from allrice_conversation_runtimes c
+      join allrice_employee_runs e on e.session_id=c.session_id
+        and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id
+      where e.run_id=${job.run_id} and c.organization_id=${job.organization_id} and c.workspace_id=${job.workspace_id}
+        and c.state='running' and c.active_run_id=${job.run_id} and c.worker_id=${job.worker_id}
+      for update of c`;
+    if (conversation)
+      await releaseConversationRuntimeTransaction(transaction, {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id,
+        sessionId: conversation.session_id,
+        runId: job.run_id,
+        workerId: job.worker_id,
+        outcome:
+          input.runStatus === 'succeeded'
+            ? 'idle'
+            : input.runStatus === 'canceled'
+              ? 'interrupted'
+              : 'error',
+        ...(input.code ? { errorCode: input.code } : {}),
+      });
+  }
 }
 
 async function settleManagedBrowserTasksForJobAttempt(

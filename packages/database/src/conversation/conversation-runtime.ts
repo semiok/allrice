@@ -1067,11 +1067,22 @@ export async function releaseConversationRuntime(input: {
   outcome: 'idle' | 'interrupted' | 'error';
   errorCode?: string;
 }) {
-  const values = ownedValues(input);
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    await lockedOwnedRuntime(transaction, values);
-    const rows = await transaction<ConversationRuntimeRow[]>`
+  return sql.begin((transaction) =>
+    releaseConversationRuntimeTransaction(transaction, input),
+  );
+}
+
+/** Successful Job completion holds the runtime-root lock and commits this
+ * release with the Run state. A service heartbeat must never see idle ownership
+ * while its Run is still running. Paused/error callers retain the public API. */
+export async function releaseConversationRuntimeTransaction(
+  transaction: postgres.TransactionSql,
+  input: Parameters<typeof releaseConversationRuntime>[0],
+) {
+  const values = ownedValues(input);
+  await lockedOwnedRuntime(transaction, values);
+  const rows = await transaction<ConversationRuntimeRow[]>`
       update allrice_conversation_runtimes
       set state = ${input.outcome}, active_run_id = null,
           active_turn_id = null, worker_id = null,
@@ -1080,7 +1091,7 @@ export async function releaseConversationRuntime(input: {
       where session_id = ${values.sessionId}
       returning *
     `;
-    await transaction`
+  await transaction`
       update allrice_conversation_commands
       set state = 'rejected', error_code = 'TURN_CLOSED', updated_at = now()
       where organization_id = ${values.organizationId}
@@ -1088,8 +1099,7 @@ export async function releaseConversationRuntime(input: {
         and session_id = ${values.sessionId}
         and state in ('pending', 'claimed')
     `;
-    await cancelUnadoptedSteers(transaction, values.sessionId);
-    await releaseNextConversationFollowup(transaction, values.sessionId);
-    return mapBinding(rows[0]!);
-  });
+  await cancelUnadoptedSteers(transaction, values.sessionId);
+  await releaseNextConversationFollowup(transaction, values.sessionId);
+  return mapBinding(rows[0]!);
 }

@@ -2427,6 +2427,51 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     });
     await f.change(next.userMessage.id, { action: 'remove' });
   });
+  it.each(['edit', 'remove'])(
+    'QueueDock rejects a started followup %s without waiting for its completing Job lock',
+    async (action) => {
+      const f = await queuedFixture();
+      const next = await f.send('already started request');
+      await f.release();
+      // Only the real row-lock conflict is under test; no second worker/model
+      // or synthetic successful completion is needed to mark a started input.
+      const [claimed] = await database<
+        { id: string }[]
+      >`update allrice_jobs set status='running' where run_id=${next.run.id} returning id`;
+      await database`update allrice_conversation_followups set state='running' where run_id=${next.run.id}`;
+      let unblock!: () => void, locked!: () => void;
+      const acquired = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      const blocker = database.begin(async (tx) => {
+        await tx`select id from allrice_jobs where id=${claimed!.id} for update`;
+        locked();
+        await release;
+      });
+      await acquired;
+      const reply = f.change(next.userMessage.id, { action }).then(
+        () => 'unexpected_success',
+        (error: Error) => error.message,
+      );
+      let result: string;
+      try {
+        result = await Promise.race([
+          reply,
+          new Promise<string>((resolve) =>
+            setTimeout(() => resolve('blocked_on_job'), 800),
+          ),
+        ]);
+      } finally {
+        unblock();
+      }
+      await blocker;
+      await reply;
+      expect(result).toBe('queued_message_started');
+    },
+  );
   it('QueueDock keeps attachments on edit/resend and rejects foreign users, stale turns and attachment steering', async () => {
     const f = await queuedFixture();
     const artifact = await f.publish();
