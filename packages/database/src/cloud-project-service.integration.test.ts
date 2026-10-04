@@ -1,0 +1,222 @@
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import { cloudProjectServiceFixture } from './cloud-project-service.fixture.ts';
+import {
+  readProjectService,
+  projectServiceUserAction,
+  projectServicePreviewTarget,
+} from './project-services.ts';
+import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
+const suite =
+  process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
+    ? describe.sequential
+    : describe.skip;
+suite(
+  'shared cloud ProjectService authority and durable physical facts',
+  () => {
+    let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+    beforeAll(async () => {
+      for (const key of [
+        'ASSISTANTS',
+        'WORKBENCH',
+        'RUNTIME_POLICY',
+        'CLOUD_RUNNER',
+        'LOCAL_COMMAND',
+        'LOCAL_SERVICE',
+        'BRIDGE_OPERATION_LEDGER',
+      ])
+        vi.stubEnv('ALLRICE_' + key + '_ENABLED', '1');
+      database = await createAssistantFixtureDatabase();
+    });
+    afterAll(async () => {
+      await database?.close();
+      vi.unstubAllEnvs();
+    });
+    const readyFixture = async (markReady = true) => {
+      const f = await cloudProjectServiceFixture(database.db),
+        ledger = f.created.ledger,
+        binding = f.created.snapshot.binding;
+      const lease = await ledger.dispatch({
+          scope: binding.task.scope,
+          operationId: f.id,
+          leaseOwner: f.context.worker.id,
+          leaseMs: 15000,
+        }),
+        identity = {
+          scope: binding.task.scope,
+          operationId: f.id,
+          attempt: binding.attempt,
+          leaseToken: lease.leaseToken,
+        };
+      await ledger.startOperation({ ...identity, receiptId: randomUUID() });
+      await f.db`update allrice_cloud_execution_attempts set container_id=${'a'.repeat(64)} where operation_id=${f.id}`;
+      const exchange = (
+        events: Parameters<
+          typeof ledger.exchangeCloudProjectService
+        >[0]['events'] = [],
+      ) => ledger.exchangeCloudProjectService({ ...identity, events });
+      const first = await exchange();
+      await exchange([
+        {
+          type: 'starting',
+          processId: f.id,
+          attemptId: binding.attempt.attemptId,
+          sequence: 0,
+          containerId: 'a'.repeat(64),
+          hardDeadlineAt: first.hardDeadlineAt,
+        },
+      ]);
+      if (markReady)
+        await exchange([
+          {
+            type: 'ready',
+            processId: f.id,
+            attemptId: binding.attempt.attemptId,
+            sequence: 1,
+            port: 4173,
+            visibility: 'container_only',
+          },
+        ]);
+      return { ...f, ledger, identity, exchange, first };
+    };
+    it('the same ready service survives successful Run completion and has no device or new agent budget', async () => {
+      const f = await readyFixture();
+      expect(
+        (
+          await f.runtime.finalizeRoot({
+            scope: f.task.scope,
+            rootRunId: f.context.runId,
+            worker: f.assistantWorker,
+          })
+        ).status,
+      ).toBe('completed');
+      await f.db`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
+      await f.db`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
+      expect((await f.exchange()).stopRequested).toBe(false);
+      const target = await projectServicePreviewTarget(
+        f.requestContext,
+        f.id,
+        f.db,
+      );
+      expect(target.backend).toBe('cloud');
+      expect(target.deviceId).toBeNull();
+      const view = (
+        await listCloudRuntimeOperations(
+          f.requestContext,
+          f.context.runId,
+          f.db,
+        )
+      )[0]!;
+      expect(view.projectService?.state).toBe('ready');
+      expect(JSON.stringify(view)).not.toContain(f.identity.leaseToken);
+      const stopped = await projectServiceUserAction(
+        f.requestContext,
+        f.id,
+        { action: 'stop' },
+        f.db,
+      );
+      expect(stopped.stopped).toBe(false);
+      expect((await f.exchange()).stopRequested).toBe(true);
+    });
+    it('stop, current grant revocation and expired visible lease close authority without fabricating stop', async () => {
+      const f = await readyFixture();
+      await f.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.grant}`;
+      expect((await f.exchange()).stopRequested).toBe(true);
+      expect(
+        (await readProjectService(f.requestContext, f.id, f.db)).stopped,
+      ).toBe(false);
+      await expect(
+        projectServicePreviewTarget(f.requestContext, f.id, f.db),
+      ).rejects.toThrow('project_service_unavailable');
+      const expired = await readyFixture();
+      await expired.db`update allrice_project_services set expires_at=clock_timestamp()-interval '1 second' where id=${expired.id}`;
+      expect((await expired.exchange()).stopRequested).toBe(true);
+    });
+    it('ordered readiness cannot change its container, port, attempt or one-time hard ceiling', async () => {
+      const f = await readyFixture();
+      await expect(
+        f.exchange([
+          {
+            type: 'starting',
+            processId: f.id,
+            attemptId: f.identity.attempt.attemptId,
+            sequence: 0,
+            containerId: 'b'.repeat(64),
+            hardDeadlineAt: f.first.hardDeadlineAt,
+          },
+        ]),
+      ).rejects.toThrow('receipt_conflict');
+      await expect(
+        projectServiceUserAction(
+          { ...f.requestContext, actor: { type: 'user', id: randomUUID() } },
+          f.id,
+          { action: 'status' },
+          f.db,
+        ),
+      ).rejects.toThrow('project_service_unavailable');
+    });
+    it('does not renew or commit readiness when the old lease expires while waiting for current authority', async () => {
+      const f = await readyFixture(false);
+      await f.db`update allrice_runtime_operations set lease_expires_at=clock_timestamp()+interval '400 milliseconds' where id=${f.id}`;
+      const [before] =
+        await f.db`select lease_expires_at from allrice_runtime_operations where id=${f.id}`;
+      let unblock!: () => void, locked!: () => void;
+      const acquired = new Promise<void>((resolve) => {
+          locked = resolve;
+        }),
+        release = new Promise<void>((resolve) => {
+          unblock = resolve;
+        });
+      const blocker = f.db.begin(async (tx) => {
+        await tx`select id from allrice_cloud_execution_grants where id=${f.grant} for update`;
+        locked();
+        await release;
+      });
+      await acquired;
+      const renewing = f.exchange([
+        {
+          type: 'ready',
+          processId: f.id,
+          attemptId: f.identity.attempt.attemptId,
+          sequence: 1,
+          port: 4173,
+          visibility: 'container_only',
+        },
+      ]);
+      await delay(700);
+      unblock();
+      await blocker;
+      await expect(renewing).rejects.toThrow('lease_lost');
+      const [after] =
+        await f.db`select o.lease_expires_at,a.service_ready,a.service_events from allrice_runtime_operations o join allrice_cloud_execution_attempts a on a.operation_id=o.id where o.id=${f.id}`;
+      expect(after!.lease_expires_at).toEqual(before!.lease_expires_at);
+      expect(after!.service_ready).toBe(false);
+      expect(after!.service_events).toHaveLength(1);
+    });
+    it('rolls back renewal if the original lease expires between its update and the final authority fence', async () => {
+      const f = await readyFixture();
+      await f.db`update allrice_runtime_operations set lease_expires_at=clock_timestamp()+interval '500 milliseconds' where id=${f.id}`;
+      const [before] =
+        await f.db`select lease_expires_at from allrice_runtime_operations where id=${f.id}`;
+      await f.db.unsafe(
+        'create function fixture_slow_renewal() returns trigger language plpgsql as $$ begin perform pg_sleep(0.7);return NEW;end $$',
+      );
+      await f.db.unsafe(
+        `create trigger fixture_slow_renewal after update of lease_expires_at on allrice_runtime_operations for each row when (OLD.id='${f.id}'::uuid) execute function fixture_slow_renewal()`,
+      );
+      try {
+        await expect(f.exchange()).rejects.toThrow('lease_lost');
+        const [after] =
+          await f.db`select lease_expires_at from allrice_runtime_operations where id=${f.id}`;
+        expect(after!.lease_expires_at).toEqual(before!.lease_expires_at);
+      } finally {
+        await f.db.unsafe(
+          'drop trigger fixture_slow_renewal on allrice_runtime_operations',
+        );
+        await f.db.unsafe('drop function fixture_slow_renewal()');
+      }
+    });
+  },
+);

@@ -1,3 +1,4 @@
+import { readProjectService } from './project-services.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import {
@@ -12,6 +13,7 @@ import {
   type RuntimeOperationSnapshot,
   type CloudCommand,
   type CloudProjectCommand,
+  type ProjectServiceView,
   type McpExecutionPayload,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
@@ -40,6 +42,7 @@ export type CloudOperationView = {
   createdAt?: string;
   snapshot: RuntimeOperationSnapshot;
   enabled: boolean;
+  projectService?: ProjectServiceView | null;
   /** Current display availability only, never an approval or execution grant. */
   mcpAuthorization: McpDisplayAuthorization | null;
   proposal:
@@ -232,11 +235,20 @@ export async function listCloudRuntimeOperations(
       });
     } else {
       const payload = CloudExecutionPayloadSchema.parse(row.cloud_payload);
+      const projectService =
+        'kind' in payload && payload.arguments.background?.projectService
+          ? await readProjectService(
+              context,
+              snapshot.binding.attempt.operationId,
+              database,
+            )
+          : null;
       views.push({
         nativeCallId: row.native_call_id,
         createdAt: row.created_at.toISOString(),
         snapshot,
         mcpAuthorization: null,
+        ...(projectService ? { projectService } : {}),
         enabled:
           runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),

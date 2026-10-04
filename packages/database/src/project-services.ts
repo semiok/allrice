@@ -9,6 +9,8 @@ import {
   ProjectServiceUserActionSchema,
   ProjectServiceControlInputSchema,
   RuntimeLocalCommandSchema,
+  CloudProjectCommandSchema,
+  type CloudProjectCommand,
   RuntimeOperationSnapshotSchema,
   RuntimePolicyControlsSchema,
   RuntimeActionApprovalRequestSchema,
@@ -38,6 +40,7 @@ import {
   assertPublishingRun,
 } from './artifact-review.ts';
 import { readProjectSource } from './saved-project-authority.ts';
+import { checkContinuingCloudProjectAuthority } from './cloud-authority.ts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 
 type DB = ReturnType<typeof getDatabase>;
@@ -75,7 +78,7 @@ function denied(): never {
 export async function initializeProjectServiceLease(
   tx: TransactionSql,
   snapshot: RuntimeOperationSnapshot,
-  command: RuntimeLocalCommand,
+  command: RuntimeLocalCommand | CloudProjectCommand,
 ) {
   const config = command.arguments.background?.projectService;
   if (!config) return null;
@@ -92,7 +95,7 @@ export async function initializeProjectServiceLease(
   await tx`insert into allrice_project_services(id,organization_id,workspace_id,owner_id,run_id,session_id,
       backend,device_id,project_ref,source_digest,configuration,expires_at,hard_deadline_at)
     values(${b.attempt.operationId},${b.task.scope.organizationId},${b.task.scope.workspaceId},${b.requestedBy.id},
-      ${b.task.runId},${origin.session_id},'local',${b.execution.deviceId},${json(tx, source.project)},
+      ${b.task.runId},${origin.session_id},${b.execution.targetKind === 'cloud_sandbox' ? 'cloud' : 'local'},${b.execution.deviceId},${json(tx, source.project)},
       ${source.snapshot.sourceDigest},${json(tx, config)},clock_timestamp()+${config.leaseMs}*interval '1 millisecond',
       clock_timestamp()+${projectServiceLimits.maximumLifetimeMs}*interval '1 millisecond') on conflict(id) do nothing`;
   const [row] = await tx<
@@ -104,7 +107,8 @@ export async function initializeProjectServiceLease(
     row.owner_id !== b.requestedBy.id ||
     row.organization_id !== b.task.scope.organizationId ||
     row.workspace_id !== b.task.scope.workspaceId ||
-    row.backend !== 'local' ||
+    row.backend !==
+      (b.execution.targetKind === 'cloud_sandbox' ? 'cloud' : 'local') ||
     row.device_id !== b.execution.deviceId ||
     !runtimeContractEqual(
       ProjectServiceConfigSchema.parse(row.configuration),
@@ -128,6 +132,7 @@ export async function currentProjectService(
     (Row & {
       snapshot: unknown;
       bridge_payload: unknown;
+      cloud_payload: unknown;
       clock: Date;
       run_state: string;
       policy_expires: Date;
@@ -135,7 +140,7 @@ export async function currentProjectService(
       active_job: boolean;
     })[]
   >`
-    select s.*,o.snapshot,o.bridge_payload,clock_timestamp() as clock,r.state as run_state,
+    select s.*,o.snapshot,o.bridge_payload,ci.payload as cloud_payload,clock_timestamp() as clock,r.state as run_state,
       p.expires_at as policy_expires,e.execution_snapshot,
       exists(select 1 from allrice_jobs j join allrice_conversation_runtimes c on c.session_id=e.session_id
         and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id
@@ -143,6 +148,7 @@ export async function currentProjectService(
           and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()
           and c.active_run_id=r.id and c.state='running') as active_job
     from allrice_project_services s join allrice_runtime_operations o on o.id=s.id
+    left join allrice_cloud_execution_inputs ci on ci.operation_id=s.id
     join allrice_runs r on r.id=s.run_id and r.organization_id=s.organization_id and r.workspace_id=s.workspace_id and r.owner_id=s.owner_id
     join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
     join allrice_employee_assignments a on a.id=e.employee_assignment_id and a.organization_id=s.organization_id and a.workspace_id=s.workspace_id and a.user_id=s.owner_id and a.active
@@ -186,7 +192,10 @@ export async function currentProjectService(
     binding.attempt.operationId !== id
   )
     denied();
-  const command = RuntimeLocalCommandSchema.parse(row.bridge_payload),
+  const command =
+      row.backend === 'cloud'
+        ? CloudProjectCommandSchema.parse(row.cloud_payload)
+        : RuntimeLocalCommandSchema.parse(row.bridge_payload),
     origin = command.arguments.projectSource?.origin;
   if (!origin) denied();
   if (row.run_state === 'running') {
@@ -304,8 +313,22 @@ export async function currentProjectService(
       )
     )
       denied();
-  } else denied(); // PR5b supplies the real cloud backend authority; never fake a device.
-  return { row, snapshot };
+  } else {
+    if (
+      !command.arguments.background?.projectService ||
+      !runtimeContractEqual(
+        command.arguments.background.projectService,
+        row.configuration,
+      )
+    )
+      denied();
+    await checkContinuingCloudProjectAuthority(
+      tx,
+      { ...actor, requestId: id },
+      binding,
+    );
+  }
+  return { row, snapshot, command };
 }
 
 /** Ready, currently authorized services are continuing deliverables rather
@@ -318,8 +341,9 @@ export async function continuingProjectServiceIds(
   const rows = await tx<
     { id: string }[]
   >`select s.id from allrice_project_services s
-    join allrice_local_services l on l.operation_id=s.id
-    where s.run_id=${rootRunId} and l.ready and not l.stop_requested and l.container_id is not null
+    left join allrice_local_services l on l.operation_id=s.id
+    left join allrice_cloud_execution_attempts c on c.operation_id=s.id
+    where s.run_id=${rootRunId} and ((s.backend='local' and l.ready and not l.stop_requested and l.container_id is not null) or (s.backend='cloud' and c.service_ready and c.container_id is not null and c.outcome is null and c.cleanup_confirmed_at is null))
       and not s.stop_requested and s.expires_at>clock_timestamp() and s.hard_deadline_at>clock_timestamp()`;
   const ids: string[] = [];
   for (const candidate of rows) {
@@ -403,8 +427,9 @@ export async function readProjectService(
   return db.begin(async (tx) => {
     const [r] = await tx<
       (Row & { snapshot: unknown; ready: boolean })[]
-    >`select s.*,o.snapshot,l.ready from allrice_project_services s
+    >`select s.*,o.snapshot,case when s.backend='cloud' then c.service_ready else l.ready end as ready from allrice_project_services s
       join allrice_runtime_operations o on o.id=s.id left join allrice_local_services l on l.operation_id=s.id
+      left join allrice_cloud_execution_attempts c on c.operation_id=s.id
       where s.id=${id} and s.organization_id=${p.organizationId} and s.workspace_id=${p.workspaceId!} and s.owner_id=${p.actor.id}`;
     if (!r || p.actor.type !== 'user') denied();
     await assertWorkbenchSession(tx, p, r.session_id, false, 'share');
@@ -495,7 +520,7 @@ export async function projectServiceWorkerControl(
       return;
     }
     await authorizeControl(tx);
-    const { snapshot } = await currentProjectService(tx, row.id, p, true);
+    const { command } = await currentProjectService(tx, row.id, p, true);
     if (
       row.pending_update ||
       row.update_count >= projectServiceLimits.maximumUpdates ||
@@ -509,11 +534,7 @@ export async function projectServiceWorkerControl(
       args.project.snapshot,
       storage,
     );
-    const [op] = await tx<
-      { bridge_payload: unknown }[]
-    >`select bridge_payload from allrice_runtime_operations where id=${snapshot.binding.attempt.operationId}`;
-    const command = RuntimeLocalCommandSchema.parse(op?.bridge_payload),
-      prep = command.arguments.projectPreparation!;
+    const prep = command.arguments.projectPreparation!;
     if (
       loaded.document.projectId !== args.project.projectId ||
       loaded.document.files.find((f) => f.path === prep.lockPath)?.sha256 !==
@@ -589,15 +610,17 @@ export async function projectServicePreviewTarget(
   db: DB = getDatabase(),
 ) {
   return db.begin(async (tx) => {
-    const { row, snapshot } = await currentProjectService(tx, id, p, true);
+    const { row, snapshot, command } = await currentProjectService(
+      tx,
+      id,
+      p,
+      true,
+    );
     const [local] = await tx<
       { container_id: string; ready: boolean }[]
-    >`select container_id,ready from allrice_local_services where operation_id=${id} and ready and not stop_requested`;
+    >`select container_id,ready from allrice_local_services where operation_id=${id} and ready and not stop_requested and ${row.backend === 'local'}
+      union all select container_id,service_ready as ready from allrice_cloud_execution_attempts where operation_id=${id} and service_ready and outcome is null and cleanup_confirmed_at is null and ${row.backend === 'cloud'}`;
     if (!local?.container_id || !local.ready) denied();
-    const [op] = await tx<
-      { bridge_payload: unknown }[]
-    >`select bridge_payload from allrice_runtime_operations where id=${id}`;
-    const command = RuntimeLocalCommandSchema.parse(op?.bridge_payload);
     return ProjectServiceTargetSchema.parse({
       serviceId: id,
       organizationId: row.organization_id,

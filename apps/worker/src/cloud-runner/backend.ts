@@ -1,4 +1,5 @@
 import { request } from 'node:http';
+import { openCloudProjectServiceGuard } from './project-service-guard.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +26,8 @@ import {
   BrowserVerificationReportSchema,
   runtimeContractEqual,
   canonicalRuntimeBridgeJson,
+  ProjectServiceSourceUpdateSchema,
+  type RuntimeLocalServiceEvent,
   type StaticBrowserDocument,
   type BrowserVerificationPlan,
   type BrowserVerificationReport,
@@ -41,6 +44,8 @@ import {
 import { officeSandboxImage } from '../office/runtime.js';
 import {
   ProjectPreparation,
+  ProjectEvents,
+  streamProjectLogs,
   createLocalPythonArchive,
 } from '@allrice/project-runtime';
 import {
@@ -50,7 +55,41 @@ import {
   cleanupCloudProject,
 } from './project.js';
 
+export type CloudProjectServiceHooks = {
+  id: string;
+  hardDeadlineAt: string;
+  exchange: () => Promise<{
+    stopRequested: boolean;
+    leaseExpiresAt: string;
+    projectService: {
+      expiresAt: string;
+      previewHost: string | null;
+      sourceUpdate: unknown | null;
+    };
+  }>;
+  onEvent: (event: RuntimeLocalServiceEvent) => Promise<void>;
+  onSourceApplied: (receipt: {
+    updateId: string;
+    sourceDigest: string;
+  }) => Promise<void>;
+};
 export class CloudRunnerError extends Error {}
+async function serviceCall<T>(task: Promise<T>, timeoutMs = 3000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  try {
+    return await Promise.race([
+      task,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new CloudRunnerError('CLOUD_SERVICE_CONTROL_TIMEOUT')),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
 /** Preparation failed before any create request. Start/create ACK uncertainty never carries this flag. */
 export class CloudProjectPreparationError extends CloudRunnerError {
   readonly notStarted = true;
@@ -333,7 +372,10 @@ export class CloudRunnerBackend {
       req.end(bytes);
     });
   }
-  async preflight(imageDigest = cloudToolchainImageV1) {
+  async preflight(
+    imageDigest = cloudToolchainImageV1,
+    requireProjectService = false,
+  ) {
     if (
       ![
         cloudToolchainImageV1,
@@ -395,6 +437,9 @@ export class CloudRunnerBackend {
     const attestation = JSON.parse(stdout);
     if (
       attestation.ready !== true ||
+      (requireProjectService &&
+        (attestation.projectServices !== true ||
+          attestation.watchdog !== 'met166-service-v1')) ||
       attestation.runtimeChecksum !==
         '1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a'
     )
@@ -698,6 +743,7 @@ export class CloudRunnerBackend {
       maintainLease: () => Promise<boolean>;
       onCreated?: (id: string) => Promise<void>;
       projectScope?: RuntimeProjectScope;
+      projectService?: CloudProjectServiceHooks;
       isTurn?: () => Promise<boolean>;
       observe?: (event: ExecutionDiagnosticEvent) => Promise<void>;
     },
@@ -1078,11 +1124,15 @@ export class CloudRunnerBackend {
     options: Parameters<CloudRunnerBackend['execute']>[2],
   ): Promise<CloudRunResult> {
     const startedAt = Date.now(),
-      deadline = Math.min(
-        Date.parse(options.deadlineAt),
-        startedAt + command.arguments.limits.timeoutMs,
-      );
-    await this.preflight(command.imageDigest);
+      deadline = options.projectService
+        ? Date.parse(options.projectService.hardDeadlineAt)
+        : Math.min(
+            Date.parse(options.deadlineAt),
+            startedAt + command.arguments.limits.timeoutMs,
+          );
+    if (!!command.arguments.background !== !!options.projectService)
+      throw new CloudProjectPreparationError('CLOUD_SERVICE_IDENTITY');
+    await this.preflight(command.imageDigest, !!options.projectService);
     if (await this.inspect(options.attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
     if (!options.projectScope)
@@ -1100,6 +1150,13 @@ export class CloudRunnerBackend {
         deadline,
         signal,
         maintainLease: options.maintainLease,
+        ...(options.projectService
+          ? {
+              serviceId: options.projectService.id,
+              previewHost: (await options.projectService.exchange())
+                .projectService.previewHost,
+            }
+          : {}),
       });
     } catch (error) {
       throw new CloudProjectPreparationError(
@@ -1257,6 +1314,239 @@ export class CloudRunnerBackend {
     );
   }
 
+  private async runProjectService(
+    id: string,
+    command: CloudProjectCommand,
+    options: Parameters<CloudRunnerBackend['execute']>[2],
+    stdin: Duplex,
+    startedAt: number,
+    deadline: number,
+    stage: ((id: string) => Promise<void>) | undefined,
+    guard: Awaited<ReturnType<typeof openCloudProjectServiceGuard>>,
+  ): Promise<CloudRunResult> {
+    const service = options.projectService!;
+    const logsAbort = new AbortController(),
+      controlAbort = new AbortController();
+    let sequence = 0,
+      ended = false,
+      busy = false,
+      facts = Promise.resolve(),
+      reason: CloudRunResult['reason'] = 'completed';
+    let controlReady = false,
+      stopTask: Promise<void> | undefined,
+      stopDeadline: ReturnType<typeof setTimeout> | undefined;
+    const acks = new Map<
+      number,
+      {
+        resolve: () => void;
+        reject: (error: Error) => void;
+        timer: ReturnType<typeof setTimeout>;
+      }
+    >();
+    const updates = new Set<string>();
+    const stop = () => {
+      reason = 'canceled';
+      controlAbort.abort();
+      guard.close();
+      stdin.destroy();
+      for (const ack of acks.values()) {
+        clearTimeout(ack.timer);
+        ack.reject(new CloudRunnerError('CLOUD_SERVICE_STOPPED'));
+      }
+      acks.clear();
+      if (!stopTask) {
+        // Allow finite terminal-log delivery, never an hour-long warm owner.
+        stopDeadline = setTimeout(() => logsAbort.abort(), 4000);
+        stopTask = serviceCall(this.stop(options.attemptId), 3500)
+          .then(() => undefined)
+          .catch(() => undefined);
+      }
+      return stopTask;
+    };
+    const events = new ProjectEvents(
+      command.arguments.limits.outputBytes,
+      undefined,
+      [],
+      (event) => {
+        if (event.type === 'control_ack') {
+          const ack = acks.get(Number(event.sequence));
+          if (!ack) throw new CloudRunnerError('CLOUD_SERVICE_CONTROL_ACK');
+          clearTimeout(ack.timer);
+          acks.delete(Number(event.sequence));
+          ack.resolve();
+        } else if (event.type === 'service') {
+          const ready = event.event as RuntimeLocalServiceEvent;
+          if (
+            ready.type !== 'ready' ||
+            ready.processId !== service.id ||
+            ready.attemptId !== options.attemptId ||
+            events.sourceDigest !==
+              command.arguments.projectPreparation.sourceDigest ||
+            events.stage !== 'running'
+          )
+            throw new CloudRunnerError('CLOUD_SERVICE_READY_PROOF');
+          facts = facts.then(() => serviceCall(service.onEvent(ready)));
+        } else
+          facts = facts.then(() =>
+            serviceCall(
+              service.onSourceApplied({
+                updateId: String(event.updateId),
+                sourceDigest: String(event.sourceDigest),
+              }),
+            ),
+          );
+        void facts.catch(() => stop().catch(() => undefined));
+      },
+    );
+    const send = async (frame: Record<string, unknown>) => {
+      controlAbort.signal.throwIfAborted();
+      const index = sequence++;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          acks.delete(index);
+          reject(new CloudRunnerError('CLOUD_SERVICE_CONTROL_TIMEOUT'));
+        }, 2000);
+        acks.set(index, { resolve, reject, timer });
+        stdin.write(
+          JSON.stringify({
+            ...frame,
+            attemptId: options.attemptId,
+            sequence: index,
+          }) + '\n',
+          (error) => {
+            if (error) {
+              clearTimeout(timer);
+              acks.delete(index);
+              reject(error);
+            }
+          },
+        );
+      });
+    };
+    const logs = streamProjectLogs(
+      this.socketPath,
+      id,
+      (b) => events.push(b),
+      Math.max(1000, deadline - Date.now()) + 15_000,
+      logsAbort.signal,
+    );
+    void logs.catch(() => stop().catch(() => undefined));
+    let tickTask: Promise<void> | undefined,
+      timer: ReturnType<typeof setInterval> | undefined;
+    const tick = async () => {
+      if (ended || busy) return;
+      busy = true;
+      try {
+        const lease = await serviceCall(service.exchange());
+        if (ended || controlAbort.signal.aborted) return;
+        const expiry = Math.min(
+          Date.parse(lease.leaseExpiresAt),
+          Date.parse(lease.projectService.expiresAt),
+          deadline,
+          Date.now() + 5000,
+        );
+        if (
+          lease.stopRequested ||
+          options.signal?.aborted ||
+          expiry <= Date.now() ||
+          !(await serviceCall(options.maintainLease()))
+        ) {
+          await stop();
+          return;
+        }
+        controlAbort.signal.throwIfAborted();
+        // PID1's listener is installed only after the trusted staging marker.
+        // The outer physical guard covers staging without guessing an ACK.
+        if (!controlReady) return;
+        await send({ type: 'renew', leaseDeadlineMs: expiry });
+        if (lease.projectService.sourceUpdate) {
+          const update = ProjectServiceSourceUpdateSchema.parse(
+            lease.projectService.sourceUpdate,
+          );
+          if (!updates.has(update.updateId)) {
+            // Mark before staging: lost ACKs cannot reapply an uncertain update.
+            updates.add(update.updateId);
+            const physical = await this.inspect(options.attemptId);
+            if (!physical || physical.Id !== id)
+              throw new CloudRunnerError('CLOUD_SERVICE_IDENTITY');
+            await assertCloudProjectContainer(this, physical, command);
+            const bytes = Buffer.from(JSON.stringify(update)),
+              checksum =
+                'sha256:' + createHash('sha256').update(bytes).digest('hex');
+            await this.putArchive(
+              id,
+              createLocalPythonArchive([
+                {
+                  path: '.allrice/source-' + update.updateId + '.json',
+                  bytes,
+                  mode: 0o444,
+                },
+              ]),
+              AbortSignal.any([
+                controlAbort.signal,
+                AbortSignal.timeout(15_000),
+                ...(options.signal ? [options.signal] : []),
+              ]),
+            );
+            await send({ type: 'source', updateId: update.updateId, checksum });
+            await serviceCall(facts);
+          }
+        }
+      } catch {
+        if (!ended) await stop().catch(() => undefined);
+      } finally {
+        busy = false;
+      }
+    };
+    const onAbort = () => {
+      void stop();
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      await serviceCall(
+        service.onEvent({
+          processId: service.id,
+          attemptId: options.attemptId,
+          sequence: 0,
+          type: 'starting',
+          containerId: id,
+          hardDeadlineAt: service.hardDeadlineAt,
+        }),
+      );
+      // Start lease control before waiting for dependency install/readiness.
+      timer = setInterval(() => {
+        if (!tickTask)
+          tickTask = tick().finally(() => {
+            tickTask = undefined;
+          });
+      }, 1000);
+      await stage?.(id);
+      controlReady = true;
+      await tick();
+      await logs;
+      ended = true;
+      await serviceCall(facts);
+      const physical = await this.inspect(options.attemptId);
+      if (physical?.State.Running)
+        throw new CloudRunnerError('CLOUD_SERVICE_MISSING_EXIT');
+      return this.collect(options.attemptId, command, startedAt, reason);
+    } finally {
+      ended = true;
+      controlAbort.abort();
+      logsAbort.abort();
+      options.signal?.removeEventListener('abort', onAbort);
+      if (stopDeadline) clearTimeout(stopDeadline);
+      if (timer) clearInterval(timer);
+      guard.close();
+      if (tickTask) await serviceCall(tickTask, 3500).catch(() => undefined);
+      for (const ack of acks.values()) {
+        clearTimeout(ack.timer);
+        ack.reject(new CloudRunnerError('CLOUD_SERVICE_STOPPED'));
+      }
+      acks.clear();
+    }
+  }
+
   private async executeAdmittedPlan(
     plan: {
       command: CollectCommand;
@@ -1299,9 +1589,87 @@ export class CloudRunnerBackend {
       !(await options.maintainLease())
     )
       throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
-    const stdin = plan.encoded ? await this.attachInput(c.Id) : undefined;
+    const stdin =
+      plan.encoded || options.projectService
+        ? await this.attachInput(c.Id)
+        : undefined;
+    let serviceGuard:
+      Awaited<ReturnType<typeof openCloudProjectServiceGuard>> | undefined;
+    let physicalClosing = false,
+      physicalTask: Promise<void> | undefined,
+      physicalTimer: ReturnType<typeof setInterval> | undefined;
+    const physicalFailure = new AbortController();
+    const executionOptions = {
+      ...options,
+      signal: AbortSignal.any([
+        physicalFailure.signal,
+        ...(options.signal ? [options.signal] : []),
+      ]),
+    };
     try {
+      // No process is running yet. Open the physical lease immediately before
+      // start so slow Docker creation cannot consume its five-second lifetime.
+      if (options.projectService)
+        serviceGuard = await openCloudProjectServiceGuard(
+          attemptId,
+          options.projectService.hardDeadlineAt,
+        );
+      if (serviceGuard) {
+        const beat = async () => {
+          const lease = await serviceCall(options.projectService!.exchange());
+          if (physicalClosing) return;
+          executionOptions.signal.throwIfAborted();
+          const expiry = Math.min(
+            Date.parse(lease.leaseExpiresAt),
+            Date.parse(lease.projectService.expiresAt),
+            deadline,
+            Date.now() + 5000,
+          );
+          if (
+            lease.stopRequested ||
+            expiry <= Date.now() ||
+            !(await serviceCall(options.maintainLease()))
+          )
+            throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+          if (physicalClosing) return;
+          executionOptions.signal.throwIfAborted();
+          await serviceGuard!.renew(expiry);
+        };
+        await beat();
+        physicalTimer = setInterval(() => {
+          if (!physicalClosing && !physicalTask)
+            physicalTask = beat()
+              .catch(() => {
+                serviceGuard?.close();
+                physicalFailure.abort();
+                stdin?.destroy();
+              })
+              .finally(() => {
+                physicalTask = undefined;
+              });
+        }, 1000);
+      }
       await this.call('POST', `/containers/${c.Id}/start`);
+      executionOptions.signal.throwIfAborted();
+      if (options.projectService) {
+        if (
+          !('kind' in plan.command) ||
+          plan.command.kind !== 'project' ||
+          !stdin ||
+          !serviceGuard
+        )
+          throw new CloudRunnerError('CLOUD_SERVICE_IDENTITY');
+        return await this.runProjectService(
+          c.Id,
+          plan.command,
+          executionOptions,
+          stdin,
+          startedAt,
+          deadline,
+          plan.afterStart,
+          serviceGuard,
+        );
+      }
       await plan.afterStart?.(c.Id);
       if (stdin)
         await new Promise<void>((resolve, reject) =>
@@ -1341,7 +1709,13 @@ export class CloudRunnerBackend {
       }
       return this.collect(attemptId, plan.command, startedAt, reason);
     } finally {
+      physicalClosing = true;
+      physicalFailure.abort();
+      if (physicalTimer) clearInterval(physicalTimer);
+      serviceGuard?.close();
       stdin?.destroy();
+      if (physicalTask)
+        await serviceCall(physicalTask, 3500).catch(() => undefined);
     }
   }
 }

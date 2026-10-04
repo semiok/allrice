@@ -1,4 +1,5 @@
 'use client';
+import { ProjectServiceCard } from './project-service-card';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
   IconCheckOutlineRegular,
@@ -186,8 +187,14 @@ export function CloudOperationCard({
   runActive = true,
   laterSuccessId,
   onAct,
+  projectServiceContext,
 }: {
   op: CloudOperationView;
+  projectServiceContext?: {
+    workspaceId: string;
+    tenantHeaders: Record<string, string>;
+    onChanged: () => void;
+  };
   busy: boolean;
   cancelPending?: boolean;
   runActive?: boolean;
@@ -331,6 +338,12 @@ export function CloudOperationCard({
       id={`operation-${op.snapshot.binding.attempt.operationId}`}
       data-status={op.snapshot.status}
     >
+      {op.projectService && projectServiceContext && (
+        <ProjectServiceCard
+          service={op.projectService}
+          {...projectServiceContext}
+        />
+      )}
       <header className={compact ? styles.compactHeader : undefined}>
         <strong className={compact ? styles.compactTitle : styles.title}>
           <span className={styles.icon} aria-hidden="true">
@@ -816,6 +829,11 @@ export function CloudOperationPanel({
     );
     return op ? (
       <CloudOperationCard
+        projectServiceContext={{
+          workspaceId,
+          tenantHeaders,
+          onChanged: () => setRevision((value) => value + 1),
+        }}
         key={op.snapshot.binding.attempt.operationId}
         op={op}
         runActive={runActive}

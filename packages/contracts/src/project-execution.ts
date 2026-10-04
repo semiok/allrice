@@ -9,6 +9,7 @@ import {
   RuntimeProjectPreparationEvidenceSchema,
   projectPreparationResultMatches,
 } from './runtime-v2/project-preparation.ts';
+import { RuntimeLocalServiceConfigSchema } from './runtime-v2/local-service.ts';
 import { ExecutionLocationSchema } from './execution-choice.ts';
 import { ChecksumSchema } from './runs.ts';
 import {
@@ -122,6 +123,7 @@ export const CloudProjectCommandSchema = z
       project: true,
       location: true,
     }).extend({
+      background: RuntimeLocalServiceConfigSchema.optional(),
       projectSource: RuntimeSavedProjectSourceSchema,
       files: z
         .array(z.object({ path, sha256: ChecksumSchema }).strict())
@@ -141,6 +143,21 @@ export const CloudProjectCommandSchema = z
   .superRefine((c, ctx) => {
     const a = c.arguments,
       s = a.projectSource;
+    const background = a.background;
+    if (
+      background &&
+      (!background.projectService ||
+        a.projectPreparation.manager !== 'pnpm' ||
+        a.outputs ||
+        background.durationMs !== 3_600_000 ||
+        background.readiness.timeoutMs !==
+          background.projectService.readinessTimeoutMs ||
+        background.readiness.path !== background.projectService.path)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'cloud_project_service_configuration_changed',
+      });
     const image =
       a.projectPreparation.manager === 'uv'
         ? cloudPythonImageV1

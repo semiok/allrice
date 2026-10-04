@@ -55,6 +55,9 @@ export function cloudCommandBinding(payload: CloudExecutionPayload) {
       argumentsDigest: digest({
         args: payload.arguments.args,
         preparation: payload.arguments.projectPreparation,
+        ...(payload.arguments.background
+          ? { background: payload.arguments.background }
+          : {}),
       }),
       workingDirectoryDigest: digest({
         kind: 'cloud_copy',
@@ -105,10 +108,19 @@ export function cloudCommandBinding(payload: CloudExecutionPayload) {
 
 /** DB authority for a declared cloud transfer. Never authorizes before the exact
  * P04 approval is consumed; this function runs at proposal/dispatch/heartbeat. */
+export async function checkContinuingCloudProjectAuthority(
+  tx: postgres.TransactionSql,
+  context: RuntimePolicyPrincipal,
+  binding: RuntimeActionBinding,
+) {
+  return checkCloudBindingAuthority(tx, context, binding, true);
+}
+
 export async function checkCloudBindingAuthority(
   tx: postgres.TransactionSql,
   context: RuntimePolicyPrincipal,
   binding: RuntimeActionBinding,
+  continuingService = false,
 ) {
   if (
     !cloudExecutionEnabled() ||
@@ -133,6 +145,8 @@ export async function checkCloudBindingAuthority(
   const payload = CloudExecutionPayloadSchema.parse(stored.payload);
   const project = 'kind' in payload ? payload : null;
   const origin = 'kind' in payload ? undefined : payload.origin;
+  if (continuingService && !project?.arguments.background?.projectService)
+    throw new RuntimePolicyError('cloud_input_changed');
   if (Boolean(origin || project) !== (stored.original_arguments !== null))
     throw new RuntimePolicyError('cloud_input_changed');
   if (origin) {
@@ -144,7 +158,7 @@ export async function checkCloudBindingAuthority(
       throw new RuntimePolicyError('cloud_input_changed');
   }
   const [frozen] =
-    await tx`select e.execution_snapshot from allrice_employee_runs e join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id where e.run_id=${binding.task.runId} and e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId} and e.owner_id=${context.actor.id} and e.session_id=${binding.task.chatSessionId} and e.employee_version_id=${binding.task.frozenConfiguration.employeeVersionId} and c.active_run_id=e.run_id and c.state='running' and c.thread_generation=${binding.attempt.generation} for share of e,c`;
+    await tx`select e.execution_snapshot from allrice_employee_runs e join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id where e.run_id=${binding.task.runId} and e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId} and e.owner_id=${context.actor.id} and e.session_id=${binding.task.chatSessionId} and e.employee_version_id=${binding.task.frozenConfiguration.employeeVersionId} and (${continuingService} or (c.active_run_id=e.run_id and c.state='running' and c.thread_generation=${binding.attempt.generation})) for share of e,c`;
   const snapshot = EmployeeExecutionSnapshotSchema.safeParse(
     frozen?.execution_snapshot,
   );
@@ -215,7 +229,7 @@ export async function checkCloudBindingAuthority(
       revoked_at: Date | null;
       capabilities: unknown;
     }[]
-  >`select g.profile,g.version,g.enabled,g.revoked_at,t.capabilities from allrice_cloud_execution_grants g join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id where g.id=${binding.execution.grantId} and g.organization_id=${context.organizationId} and g.workspace_id=${context.workspaceId} and g.owner_id=${context.actor.id} and g.target_id=${binding.execution.targetId} for share of g,t`;
+  >`select g.profile,g.version,g.enabled,g.revoked_at,t.capabilities from allrice_cloud_execution_grants g join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id where g.id=${binding.execution.grantId} and g.organization_id=${context.organizationId} and g.workspace_id=${context.workspaceId} and g.owner_id=${context.actor.id} and g.target_id=${binding.execution.targetId} and t.kind='cloud_sandbox' and t.state='online' and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp()) for share of g,t`;
   if (
     !row ||
     !row.enabled ||
@@ -230,7 +244,8 @@ export async function checkCloudBindingAuthority(
     throw new RuntimePolicyError('cloud_profile_changed');
   const [worker] =
     await tx`select j.id from allrice_cloud_execution_inputs i join allrice_jobs j on j.id=i.job_id and j.run_id=i.run_id and j.organization_id=i.organization_id and j.workspace_id=i.workspace_id and j.owner_id=i.owner_id and j.worker_id=i.worker_id and j.lease_token=i.job_lease_token where i.operation_id=${binding.attempt.operationId} and j.status='running' and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null for share of j`;
-  if (!worker) throw new RuntimePolicyError('cloud_worker_lease_changed');
+  if (!worker && !continuingService)
+    throw new RuntimePolicyError('cloud_worker_lease_changed');
   if (project) {
     const source = project.arguments.projectSource;
     const needsOutbound =
@@ -291,17 +306,17 @@ export async function checkCloudBindingAuthority(
             .digest('hex')
     )
       throw new RuntimePolicyError('cloud_project_identity_changed');
-    const ctx = await savedProjectContext(tx, binding, source);
     await assertProjectExecutionOrigin(tx, binding, project.arguments, 'cloud');
     try {
-      await assertSavedProjectAuthority(
-        tx,
-        ctx,
-        binding.task.chatSessionId!,
-        source.origin,
-        source.project,
-        'cloud.process.execute',
-      );
+      if (!continuingService)
+        await assertSavedProjectAuthority(
+          tx,
+          await savedProjectContext(tx, binding, source),
+          binding.task.chatSessionId!,
+          source.origin,
+          source.project,
+          'cloud.process.execute',
+        );
     } catch (error) {
       if (isProjectSourceAuthorityError(error))
         throw new RuntimePolicyError('cloud_input_not_authorized');
