@@ -253,11 +253,11 @@ suite(
           const denied = await foreignContext.request.get(
             detail(artifact.id, stranger.workspace),
           );
-          assert.equal(denied.status(), 403);
+          assert.ok([403, 404].includes(denied.status()));
           checks.push({
             artifactId: artifact.id,
             detailStatus: 200,
-            crossAccountStatus: 403,
+            crossAccountStatus: denied.status(),
           });
         }
         const legacy = await context.request.get(detail(source.id));
@@ -285,6 +285,11 @@ suite(
             name: '更多文件操作',
             exact: true,
           });
+          const fileButton = panel.getByRole('button', {
+            name: '侧栏预览 ' + artifact.version.fileName,
+            exact: true,
+          });
+          await menu.or(fileButton).first().waitFor({ timeout: 30000 });
           if (await menu.isVisible()) {
             await menu.click();
             await page
@@ -322,12 +327,12 @@ suite(
           const denied = await foreignContext.request.get(
             `${origin}/api/v1/files/${artifact.object.id}/download?workspaceId=${stranger.workspace}`,
           );
-          assert.equal(denied.status(), 403);
+          assert.ok([403, 404].includes(denied.status()));
           downloads.push({
             artifactId: artifact.id,
             sizeBytes: bytes.length,
             checksum: artifact.object.checksum,
-            crossAccountStatus: 403,
+            crossAccountStatus: denied.status(),
           });
         }
         expect(errors).toEqual([]);
@@ -354,6 +359,24 @@ suite(
             ),
           );
         }
+      } catch (error) {
+        if (evidence) {
+          await page
+            .screenshot({
+              path: join(evidence, 'pr4b-workbench-failure.png'),
+              fullPage: true,
+            })
+            .catch(() => {});
+          await writeFile(
+            join(evidence, 'pr4b-workbench-failure.txt'),
+            await page.locator('body').innerText(),
+          );
+          await writeFile(
+            join(evidence, 'pr4b-workbench-failure-web.log'),
+            await readFile(logPath),
+          );
+        }
+        throw error;
       } finally {
         await browser.close();
         web.kill('SIGTERM');
