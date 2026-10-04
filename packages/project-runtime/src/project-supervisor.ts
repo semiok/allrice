@@ -19,8 +19,22 @@ const emit=e=>process.stdout.write(JSON.stringify(e)+'\n');
 const end=(reason,code)=>{if(finished)return;finished=true;emit({type:'exit',reason,code,installation});process.stdout.write('',()=>process.exit(code));setTimeout(()=>process.exit(code),100).unref();};
 ${projectServiceSupervisor}
 let cacheChecking=false;
-async function checkCache(){let total=0,count=0;const dirs=['/cache'];while(dirs.length){const dir=dirs.pop();for(const e of await readdir(dir,{withFileTypes:true})){if(++count>20000)throw Error('cache limit');const p=dir+'/'+e.name;if(e.isDirectory())dirs.push(p);else if(e.isFile())total+=(await lstat(p)).size;if(total>128000000)throw Error('cache limit');}}}
-const cacheTimer=setInterval(()=>{if(cacheChecking||finished)return;cacheChecking=true;void checkCache().catch(()=>end('cache_limit',123)).finally(()=>cacheChecking=false);},500);cacheTimer.unref();
+async function checkCache(){
+ let total=0,count=0;const dirs=['/cache'];
+ while(dirs.length){const dir=dirs.pop();let entries;
+  // Installers atomically publish/remove temporary store files and directories.
+  // Only vanished descendants are benign; loss of the mount or other I/O errors fails closed.
+  try{entries=await readdir(dir,{withFileTypes:true});}catch(e){if(dir!=='/cache'&&e.code==='ENOENT')continue;throw e;}
+  for(const e of entries){if(++count>20000)throw Error('cache limit');const p=dir+'/'+e.name;
+   if(e.isDirectory())dirs.push(p);else if(e.isFile()){
+    try{total+=(await lstat(p)).size;}catch(error){if(error.code==='ENOENT')continue;throw error;}
+   }
+   if(total>128000000)throw Error('cache limit');
+  }
+ }
+ const cacheRoot=await lstat('/cache');if(!cacheRoot.isDirectory()||cacheRoot.isSymbolicLink())throw Error('cache mount changed');
+}
+const cacheTimer=setInterval(()=>{if(cacheChecking||finished)return;cacheChecking=true;void checkCache().catch(e=>{emit({type:'stderr',data:Buffer.from('Project cache validation failed: '+String(e?.code||e?.message||'unknown').slice(0,160)).toString('base64')});end('cache_limit',123);}).finally(()=>cacheChecking=false);},500);cacheTimer.unref();
 const timer=setTimeout(()=>end(a.deadlineReason||'timeout',124),Math.max(0,a.deadlineUnixMs-Date.now()));
 const run=(exe,args,tenant=true,live=false)=>new Promise(resolve=>{
  const p=spawn(exe,args,{cwd:root+'/project/'+(a.command.path==='.'?'':a.command.path),uid:tenant?1000:0,gid:tenant?1000:0,stdio:['ignore','pipe','pipe'],
