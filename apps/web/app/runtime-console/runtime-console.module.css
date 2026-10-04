@@ -751,9 +751,7 @@
   margin-top: 14px;
 }
 .timeline > header,
-.timeline > header div,
-.eventList > li,
-.eventList > li > div > span {
+.timeline > header div {
   display: flex;
 }
 .timeline > header {
@@ -793,76 +791,146 @@
   list-style: none;
 }
 .eventList > li {
+  --event-color: var(--admin-muted);
   position: relative;
-  align-items: flex-start;
-  gap: 13px;
-  padding: 12px 0;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 5px 0;
 }
 .eventList > li:not(:last-child)::after {
   position: absolute;
-  top: 42px;
-  bottom: -8px;
-  left: 14px;
+  top: 43px;
+  bottom: -5px;
+  left: 15.5px;
   width: 1px;
   background: var(--admin-border);
   content: '';
 }
-.eventList > li > i {
-  width: 29px;
-  height: 29px;
-  flex: 0 0 auto;
+.eventList > li[data-category='prepare'],
+.eventList > li[data-category='search'] {
+  --event-color: var(--admin-process-prepare);
+}
+.eventList > li[data-category='tool'] {
+  --event-color: var(--admin-process-tool);
+}
+.eventList > li[data-category='context'],
+.eventList > li[data-category='think'] {
+  --event-color: var(--admin-process-context);
+}
+.eventList > li[data-category='answer'] {
+  --event-color: var(--admin-success);
+}
+.eventList > li[data-category='todo'] {
+  --event-color: var(--admin-warning);
+}
+.eventNode {
+  width: 32px;
+  height: 32px;
+  margin-top: 8px;
   display: grid;
   place-items: center;
   border-radius: 9px;
-  background: var(--admin-border);
-  color: var(--admin-muted);
-  font-size: var(--admin-font-meta);
+  background: color-mix(in srgb, var(--event-color) 16%, var(--admin-sidebar));
+  color: var(--event-color);
   font-style: normal;
-  font-weight: 500;
 }
-.eventList > li[data-kind='search'] > i {
-  color: var(--admin-link);
-  background: var(--admin-raised);
-}
-.eventList > li[data-kind='think'] > i {
-  color: var(--admin-link);
-  background: var(--admin-raised);
-}
-.eventList > li[data-kind='answer'] > i {
-  color: var(--admin-success);
-  background: var(--admin-raised);
-}
-.eventList > li > div {
+.eventBody {
   min-width: 0;
-  flex: 1;
+  overflow-wrap: anywhere;
 }
-.eventList > li > div > span {
+.eventRow {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  min-height: 48px;
+  padding: 12px;
+  gap: 8px 12px;
+}
+.eventPrimary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+.eventEnd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  gap: 8px;
 }
 .eventList > li strong {
+  min-width: 0;
   color: var(--admin-text);
   font-size: var(--admin-font-body);
 }
-.eventList > li > div em {
-  color: var(--admin-muted);
+.eventStatus {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
   font-size: var(--admin-font-meta);
-  font-style: normal;
-  text-transform: uppercase;
+  line-height: 19px;
+  white-space: nowrap;
+  color: var(--admin-muted);
+  background: var(--admin-border);
+}
+.eventStatus > svg {
+  width: 12px;
+  height: 12px;
+}
+.eventStatus[data-tone='success'] {
+  color: var(--admin-success);
+  background: color-mix(in srgb, var(--admin-success) 16%, var(--admin-canvas));
+}
+.eventStatus[data-tone='active'] {
+  color: var(--admin-link);
+  background: color-mix(in srgb, var(--admin-link) 16%, var(--admin-canvas));
+}
+.eventStatus[data-tone='updated'] {
+  color: var(--admin-process-context);
+  background: color-mix(
+    in srgb,
+    var(--admin-process-context) 16%,
+    var(--admin-canvas)
+  );
+}
+.eventStatus[data-tone='danger'] {
+  color: var(--admin-danger);
+  background: color-mix(in srgb, var(--admin-danger) 16%, var(--admin-canvas));
+}
+.eventChevron,
+.eventChevronSpace {
+  display: flex;
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  color: var(--admin-muted);
 }
 .eventList > li p {
   max-height: 220px;
-  margin: 7px 0 0;
+  margin: 0;
+  padding: 0 12px 12px;
   overflow: auto;
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
   line-height: 1.65;
   white-space: pre-wrap;
 }
-.eventList > li > time {
-  flex: 0 0 auto;
+.eventList time {
+  flex: none;
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .turnList {
   display: grid;
@@ -946,8 +1014,11 @@
   color: var(--admin-danger);
 }
 .dialogueMessage {
-  position: relative;
-  padding: 15px 74px 15px 56px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+  padding: 16px;
   border-bottom: 1px solid var(--admin-border);
 }
 .dialogueMessage[data-role='assistant'] {
@@ -956,9 +1027,6 @@
   background: var(--admin-canvas);
 }
 .dialogueMessage > span {
-  position: absolute;
-  top: 16px;
-  left: 14px;
   color: var(--admin-link);
   font-size: var(--admin-font-meta);
   font-weight: 500;
@@ -971,84 +1039,121 @@
   margin: 0;
   overflow: auto;
   color: var(--admin-text);
-  font-size: var(--admin-font-meta);
+  font-size: var(--admin-font-body);
   line-height: 1.7;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
 .dialogueMessage time {
-  position: absolute;
-  top: 17px;
-  right: 14px;
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
 .turn > .eventList {
-  padding: 5px 14px;
+  padding: 12px 16px;
   background: var(--admin-sidebar);
 }
-.eventGroup > i {
-  color: var(--admin-link);
-  background: var(--admin-raised);
+.eventGroup[data-kind='compaction'] > .eventBody {
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--admin-process-context) 8%,
+    var(--admin-canvas)
+  );
 }
 .eventGroup details,
 .eventGroup summary {
   width: 100%;
 }
 .eventGroup summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
   list-style: none;
   cursor: pointer;
+}
+.eventGroup summary:hover {
+  border-radius: 8px;
+  background: var(--admin-hover);
+}
+.eventGroup summary:focus-visible {
+  outline: 2px solid var(--admin-focus);
+  outline-offset: 2px;
 }
 .eventGroup summary::-webkit-details-marker {
   display: none;
 }
-.eventGroup summary > span {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.eventGroup details[open] > summary .eventChevron {
+  transform: rotate(180deg);
 }
-.eventGroup summary small {
-  color: var(--admin-muted);
-  font-size: var(--admin-font-meta);
-}
-.eventGroup details[open] summary small::after {
-  content: '收起';
-}
-.eventGroup details[open] summary small {
-  font-size: 0;
-}
-.eventGroup details[open] summary small::after {
-  font-size: var(--admin-font-meta);
-}
-.eventGroup ol {
-  margin: 10px 0 0;
-  padding: 8px 10px;
+.eventGroupList {
+  margin: 0;
+  padding: 0 12px 12px;
   display: grid;
-  gap: 7px;
-  border-radius: 9px;
-  background: var(--admin-raised);
   list-style: none;
 }
-.eventGroup ol li {
+.eventGroupList > li {
+  position: relative;
   min-width: 0;
   display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 14px;
+  grid-template-columns: 8px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+  padding: 10px 0;
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
-.eventGroup ol li > span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.eventGroupList > li:not(:last-child)::after {
+  position: absolute;
+  top: 22px;
+  bottom: -9px;
+  left: 2.5px;
+  width: 1px;
+  background: var(--admin-control-border);
+  content: '';
 }
-.eventGroup ol li > em {
-  color: var(--admin-muted);
-  font-size: var(--admin-font-meta);
-  font-style: normal;
+.eventDot {
+  position: relative;
+  z-index: 1;
+  width: 6px;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: var(--event-color);
+}
+.eventGroupContent {
+  min-width: 0;
+}
+.eventGroupContent .eventRow {
+  min-height: 24px;
+  padding: 0;
+}
+.eventGroupContent strong {
+  font-weight: 400;
+}
+.eventGroupContent p {
+  padding: 8px 0 0;
+}
+@media (max-width: 650px) {
+  .dialogueMessage {
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 8px;
+  }
+  .dialogueMessage time {
+    grid-column: 2;
+  }
+  .turnHeader > div {
+    flex-wrap: wrap;
+  }
+  .eventRow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .eventEnd {
+    justify-content: space-between;
+  }
+}
+@media (pointer: coarse) {
+  .eventGroup summary {
+    min-height: 44px;
+  }
 }
 .timelineEmpty,
 .timelineError {
