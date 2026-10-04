@@ -1,3 +1,4 @@
+import admin from '../components/admin/admin-ui.module.css';
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
@@ -21,7 +22,10 @@ function Fixture() {
       : null,
   );
   return (
-    <main className={styles.embedded}>
+    <main
+      data-admin-theme="dark"
+      className={`${admin.theme} ${styles.embedded}`}
+    >
       <div className={styles.codexAuth}>
         <CodexAuthorizationPanel
           status={

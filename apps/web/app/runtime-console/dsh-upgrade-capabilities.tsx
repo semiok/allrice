@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 
 import catalog from '../../../../packages/dsh-runtime-diff/capabilities.json';
 import upstream from '../../../worker/dsh/upstream.json';
@@ -31,9 +32,9 @@ export function DshUpgradeCapabilities(props: {
             </p>
           ) : null}
         </div>
-        <button className={styles.groupAction} onClick={props.onOpenEmployees}>
+        <AdminButton variant="secondary" onClick={props.onOpenEmployees}>
           配置 Rice 并试用
-        </button>
+        </AdminButton>
       </header>
       {catalog.groups.map((group) => (
         <section key={group.id}>
@@ -54,7 +55,9 @@ export function DshUpgradeCapabilities(props: {
                 <h4>{item.name}</h4>
                 <p>{item.detail}</p>
                 {'action' in item && item.action === 'employees' ? (
-                  <button onClick={props.onOpenEmployees}>配置并试用 →</button>
+                  <AdminButton variant="quiet" onClick={props.onOpenEmployees}>
+                    配置并试用 →
+                  </AdminButton>
                 ) : null}
               </article>
             ))}
@@ -72,11 +75,10 @@ export function DshUpgradeCapabilities(props: {
   );
 }
 
-export function DshReleaseSummary(props: { onOpenCapabilities: () => void }) {
+export function DshReleaseSummary() {
   return (
-    <div className={styles.releaseSummary}>
-      <span>当前构建 · DSH {upstream.version}</span>
-      <button onClick={props.onOpenCapabilities}>查看升级能力 →</button>
-    </div>
+    <span className={styles.releaseSummary}>
+      当前构建 · DSH {upstream.version}
+    </span>
   );
 }

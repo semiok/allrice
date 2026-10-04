@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 
 import { useEffect, useState } from 'react';
 import {
@@ -132,18 +133,27 @@ export function PlatformModelSettingsPanel() {
               </option>
             </select>
           </label>
-          <button type="button" disabled={busy} onClick={() => void save()}>
-            {busy ? '保存中…' : '保存配置'}
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() =>
-              void load().catch((error) => setNotice(error.message))
-            }
-          >
-            刷新配置
-          </button>
+          <div className={styles.formActions}>
+            <AdminButton
+              variant="primary"
+              type="button"
+              disabled={busy}
+              onClick={() => void save()}
+            >
+              {busy ? '保存中…' : '保存配置'}
+            </AdminButton>
+            <AdminButton
+              variant="quiet"
+              icon="refresh"
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                void load().catch((error) => setNotice(error.message))
+              }
+            >
+              刷新配置
+            </AdminButton>
+          </div>
         </div>
       ) : (
         <p>正在读取配置…</p>

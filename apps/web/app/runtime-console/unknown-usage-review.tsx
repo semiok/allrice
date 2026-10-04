@@ -1,5 +1,7 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 import { useState } from 'react';
+import styles from './governance-console.module.css';
 
 export interface UnknownUsageReview {
   decisionId: string;
@@ -36,7 +38,7 @@ export function UnknownUsageReviewCard({
   const [accepted, setAccepted] = useState(false);
   const amount = Number(tokens);
   return (
-    <article>
+    <article className={styles.usageReview}>
       <h3>
         {entry.organizationName ? `${entry.organizationName} · ` : ''}Run{' '}
         {entry.runId.slice(0, 8)} · 用量待核对
@@ -93,7 +95,8 @@ export function UnknownUsageReviewCard({
             />
             我确认接受此任务用量仍未知的风险，并保留原记录
           </label>
-          <button
+          <AdminButton
+            variant="primary"
             disabled={
               busy ||
               !accepted ||
@@ -112,7 +115,7 @@ export function UnknownUsageReviewCard({
             }
           >
             批准预算预留
-          </button>
+          </AdminButton>
         </>
       ) : (
         <p>

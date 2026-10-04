@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 import type { CodexProviderStatus } from '@allrice/contracts';
 import {
   CodexAuthorizationPanel,
@@ -71,7 +72,7 @@ export function CodexSubscriptionsPanel({
           </header>
           <CodexSubscriptionQuota quota={account.provider.quota ?? null} />
           <div className={styles.authorizationActions}>
-            <button
+            <AdminButton
               type="button"
               disabled={
                 busy ||
@@ -82,7 +83,7 @@ export function CodexSubscriptionsPanel({
               {account.enabled
                 ? `停用 ${account.slot} 号`
                 : `启用 ${account.slot} 号`}
-            </button>
+            </AdminButton>
             {!account.enabled && account.provider.status !== 'connected' && (
               <span>完成授权后即可启用。</span>
             )}
@@ -102,13 +103,13 @@ export function CodexSubscriptionsPanel({
           )}
         </section>
       ))}
-      <button
+      <AdminButton
         type="button"
         disabled={busy || !selected}
         onClick={() => onSelect(null)}
       >
         全部停用
-      </button>
+      </AdminButton>
     </section>
   );
 }

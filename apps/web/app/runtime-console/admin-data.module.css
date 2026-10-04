@@ -221,3 +221,60 @@
     gap: 12px;
   }
 }
+
+.inspection {
+  min-width: 0;
+  font-size: var(--admin-font-body);
+  color: var(--admin-text);
+}
+.inspection :where(p, small) {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.inspection :where(h3, h4, h5) {
+  font-size: var(--admin-font-body);
+  font-weight: 500;
+  margin: 16px 0 12px;
+}
+.inspection :where(button, a) {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.inspection label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.inspection :where(input, select) {
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--admin-control-height);
+  padding: 6px 10px;
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  font: inherit;
+  font-size: var(--admin-font-body);
+}
+.inspection > section > details {
+  padding: 16px;
+  margin-top: 12px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+}
+.inspection summary {
+  cursor: pointer;
+}
+.inspection details[open] > summary {
+  margin-bottom: 12px;
+}
+.inspection pre {
+  max-width: 100%;
+  overflow: auto;
+}
