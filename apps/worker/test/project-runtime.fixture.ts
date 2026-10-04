@@ -6,7 +6,7 @@ import {
   cloudPythonImageV1,
 } from '@allrice/contracts';
 import { projectCacheKey } from '@allrice/project-runtime';
-import { savedProjectFixture } from '../../../rice-bridge/test/saved-project-fixture.js';
+import { savedProjectFixture } from '../../rice-bridge/test/saved-project-fixture.js';
 export function cloudProjectFixture(manager: 'pnpm' | 'uv' = 'pnpm') {
   const f = savedProjectFixture(manager),
     a = f.command.arguments,

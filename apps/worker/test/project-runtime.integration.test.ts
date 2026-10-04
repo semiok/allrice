@@ -13,8 +13,8 @@ import {
   CloudRunnerBackend,
   CloudProjectPreparationError,
   CloudRunnerError,
-} from './backend.js';
-import { cloudProjectFixture } from './project.fixture.js';
+} from '../src/cloud-runner/backend.js';
+import { cloudProjectFixture } from './project-runtime.fixture.js';
 
 const suite =
   process.env.ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION === '1'
