@@ -192,7 +192,10 @@ export function createProjectPreviewGateway({
           request: {
             method: req.method,
             path: url.pathname + url.search,
-            host: projectPreviewHost(id, suffix),
+            // The public Host was authenticated above. This private hop reaches
+            // only the bound container's loopback port, including dev servers
+            // that do not support Vite's additional-host environment setting.
+            host: `127.0.0.1:${target.port}`,
             headers: forward,
             websocket: false,
           },
@@ -340,7 +343,7 @@ export function createProjectPreviewGateway({
           request: {
             method: 'GET',
             path: url.pathname + url.search,
-            host: projectPreviewHost(id, suffix),
+            host: `127.0.0.1:${target.port}`,
             headers: headers(req, id),
             websocket: true,
             ...(protocolHeader ? { protocol: protocolHeader } : {}),

@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { createServer, request } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
+import WebSocket from 'ws';
 import { createProjectPreviewGateway } from './project-preview.mjs';
 
 const cleanups = [];
@@ -68,6 +69,10 @@ async function fixture() {
       },
     },
   });
+  server.on(
+    'upgrade',
+    (req, socket, head) => void gateway.upgrade(req, socket, head),
+  );
   cleanups.push(async () => {
     await gateway.close();
     server.closeAllConnections();
@@ -108,6 +113,9 @@ async function fixture() {
     return { req, response };
   };
   return {
+    host,
+    port,
+    token,
     frames,
     target,
     send,
@@ -119,6 +127,65 @@ async function fixture() {
   };
 }
 describe('private preview live transfer authority', () => {
+  it('preserves the public WebSocket origin, token query and protocol on the private loopback hop', async () => {
+    const f = await fixture(),
+      path = '/?token=vite-hmr-test',
+      socket = new WebSocket(`ws://127.0.0.1:${f.port}${path}`, 'vite-hmr', {
+        headers: {
+          host: f.host,
+          origin: `http://${f.host}`,
+          cookie: `allrice_preview_test=${f.token}`,
+        },
+      });
+    socket.on('error', () => undefined);
+    cleanups.push(async () => socket.terminate());
+    await until(() => f.opened() !== undefined);
+    expect(f.opened().request).toEqual({
+      method: 'GET',
+      path,
+      host: '127.0.0.1:4173',
+      headers: { origin: `http://${f.host}` },
+      websocket: true,
+      protocol: 'vite-hmr',
+    });
+    const ready = once(socket, 'open');
+    await f.opened().onFrame({
+      type: 'preview.response',
+      status: 101,
+      headers: { 'sec-websocket-protocol': 'vite-hmr' },
+    });
+    await ready;
+  });
+  it('rejects a foreign public WebSocket origin before opening the private transfer', async () => {
+    const f = await fixture(),
+      socket = new WebSocket(`ws://127.0.0.1:${f.port}/`, 'vite-hmr', {
+        headers: {
+          host: f.host,
+          origin: 'http://other.invalid',
+          cookie: `allrice_preview_test=${f.token}`,
+        },
+      });
+    socket.on('error', () => undefined);
+    cleanups.push(async () => socket.terminate());
+    const [request, response] = await once(socket, 'unexpected-response');
+    expect(response.statusCode).toBe(403);
+    expect(f.opened()).toBeUndefined();
+    response.destroy();
+    request.destroy();
+  });
+  it('uses the bound loopback host only after authenticating the public request', async () => {
+    const f = await fixture(),
+      { req, response } = f.send('GET');
+    req.end();
+    await until(() => f.opened() !== undefined);
+    expect(f.opened().request.host).toBe('127.0.0.1:4173');
+    expect(f.opened().request.headers.origin).toMatch(
+      /^http:\/\/rice-preview-/,
+    );
+    expect(f.opened().request.headers.cookie).toBeUndefined();
+    f.opened().onClose();
+    await response.catch(() => undefined);
+  });
   it('revocation during an upload denies later body chunks and the end marker', async () => {
     const f = await fixture(),
       { req, response } = f.send('POST');
