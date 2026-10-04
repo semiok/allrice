@@ -8,14 +8,26 @@ import {
   BrowserVerificationPlanSchema,
   staticBrowserDocumentUrl,
   ArtifactBrowserVerificationSchema,
+  BrowserObservationSchema,
 } from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createLocalBrowserFixture } from './local-browser.fixture.ts';
 import {
   installBrowserControlGrant,
   browserStopConfirmed,
+  createBrowserOperation,
 } from './browser-control.ts';
-import { claimLocalBrowserWorkspace } from './local-browser-workspaces.ts';
+import {
+  claimLocalBrowserWorkspace,
+  heartbeatLocalBrowserWorkspace,
+} from './local-browser-workspaces.ts';
+import type postgres from 'postgres';
+import { captureLocalBrowserFile } from './local-browser-files.ts';
+import {
+  publishLocalBrowserObservation,
+  acknowledgeLocalBrowserControl,
+} from './local-browser-operations.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   publishWorkbenchArtifact,
   getWorkbenchArtifact,
@@ -51,6 +63,19 @@ const plan = BrowserVerificationPlanSchema.parse({
     { type: 'text_contains', expected: '42' },
   ],
 });
+const assertionPlan = BrowserVerificationPlanSchema.parse({
+  version: 1,
+  timeoutMs: 30000,
+  steps: [{ type: 'title_equals', expected: 'Known bug verified' }],
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 suite(
   'saved HTML verification: exact authority, native wire, real runsc and workbench parsing',
   () => {
@@ -152,6 +177,7 @@ suite(
     async function admit(
       f: Awaited<ReturnType<typeof fixture>>,
       callId = randomUUID(),
+      verificationPlan = plan,
     ) {
       const selected = await selectBrowserExecution(
         {
@@ -171,7 +197,7 @@ suite(
           sessionId: f.session,
           callId,
           target: f.document.target,
-          plan,
+          plan: verificationPlan,
           jobAttempt: f.job.attempt,
           jobLeaseToken: f.job.lease_token,
           location: selected.choice.location as 'cloud' | 'local',
@@ -293,11 +319,18 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'static_browser_source_denied' });
     });
-    it.each(['deny', 'plan_only', 'confirmation'] as const)(
-      'live %s controls cannot be bypassed by a cloud static verifier',
-      async (kind) => {
+    it.each(
+      (['deny', 'plan_only', 'confirmation'] as const).flatMap((kind) =>
+        [plan, assertionPlan].map((verificationPlan) => ({
+          kind,
+          verificationPlan,
+        })),
+      ),
+    )(
+      'live $kind controls cannot be bypassed by a cloud static verifier ($verificationPlan.steps)',
+      async ({ kind, verificationPlan }) => {
         const f = await fixture(),
-          row = await admit(f);
+          row = await admit(f, randomUUID(), verificationPlan);
         if (kind === 'confirmation') {
           const automation = await getWorkAutomation(
             f.context,
@@ -358,6 +391,221 @@ suite(
         ).rejects.toThrow();
       },
     );
+    function scheduleQueries(
+      hook: (sql: string, execute: () => Promise<unknown>) => Promise<unknown>,
+    ) {
+      return new Proxy(database.db, {
+        get(target, key) {
+          if (key !== 'begin') return Reflect.get(target, key, target);
+          return (work: (tx: postgres.TransactionSql) => Promise<unknown>) =>
+            target.begin((tx) =>
+              work(
+                new Proxy(tx, {
+                  apply(query, thisArg, args: unknown[]) {
+                    const fragments = args[0];
+                    if (!Array.isArray(fragments) || !('raw' in fragments))
+                      return Reflect.apply(query, thisArg, args);
+                    const sql = fragments
+                      .join('?')
+                      .replaceAll(/\s+/g, ' ')
+                      .toLowerCase();
+                    return hook(
+                      sql,
+                      async () => await Reflect.apply(query, thisArg, args),
+                    );
+                  },
+                }),
+              ),
+            );
+        },
+      });
+    }
+    async function claimedStatic() {
+      const f = await fixture(true);
+      await database.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}',
+        '{"version":1,"clientVersion":"synthetic-static","staticBrowserVersion":1,"browser":"ready","sandbox":"unavailable","preview":"unavailable","paused":false}'::jsonb)
+        where target_key=${'bridge.' + f.device.id}`;
+      const row = await admit(f);
+      const claimed = await claimLocalBrowserWorkspace(
+        f.device,
+        randomUUID(),
+        true,
+        database.db,
+      );
+      const workspace = claimed.workspace!;
+      const identity = {
+        workspaceId: workspace.id,
+        controllerLeaseToken: claimed.lease!.token,
+      };
+      const observationId = randomUUID();
+      const capture = await captureLocalBrowserFile(
+        f.device,
+        {
+          ...identity,
+          kind: 'screenshot',
+          fence: workspace.fence,
+          observationId,
+        },
+        Buffer.from('89504e470d0a1a0a', 'hex'),
+        f.storage,
+        database.db,
+      );
+      const observation = BrowserObservationSchema.parse({
+        version: 1,
+        id: observationId,
+        profileId: workspace.profileId,
+        fence: workspace.fence,
+        revision: 1,
+        capturedAt: new Date().toISOString(),
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        url: staticBrowserDocumentUrl(f.document.target),
+        title: 'Known bug verified',
+        text: '0',
+        pageDigest: runtimePolicyDigest('synthetic-static'),
+        screenshotObjectId: capture.objectId,
+        elements: [],
+      });
+      await publishLocalBrowserObservation(
+        f.device,
+        { ...identity, observation },
+        database.db,
+      );
+      await acknowledgeLocalBrowserControl(
+        f.device,
+        { ...identity, fence: workspace.fence, state: 'agent', observationId },
+        database.db,
+      );
+      const command = {
+        version: 1,
+        workspaceId: workspace.id,
+        profileId: workspace.profileId,
+        actor: 'agent',
+        fence: workspace.fence,
+        observationId,
+        action: { type: 'observe' },
+      };
+      await createBrowserOperation(
+        f.context,
+        command,
+        randomUUID(),
+        database.db,
+      );
+      return { f, row, identity, command };
+    }
+    it('static heartbeat enters root before workspace while ledger holds controls, without deadlock', async () => {
+      const { f, identity, command } = await claimedStatic();
+      const controlsLocked = deferred<void>(),
+        release = deferred<void>(),
+        firstLock = deferred<string>();
+      let paused = false;
+      const ledgerDb = scheduleQueries(async (sql, execute) => {
+        const result = await execute();
+        if (
+          !paused &&
+          sql.startsWith(
+            ' select version, controls from allrice_runtime_policy_controls',
+          )
+        ) {
+          paused = true;
+          controlsLocked.resolve();
+          await release.promise;
+        }
+        return result;
+      });
+      const heartbeatDb = scheduleQueries(async (sql, execute) => {
+        if (sql.includes('for update'))
+          firstLock.resolve(
+            sql.includes('from allrice_runtime_roots') ? 'root' : sql,
+          );
+        return execute();
+      });
+      const operation = createBrowserOperation(
+        f.context,
+        command,
+        randomUUID(),
+        ledgerDb,
+      );
+      void operation.catch(() => undefined);
+      await controlsLocked.promise;
+      const heartbeat = heartbeatLocalBrowserWorkspace(
+        f.device,
+        identity,
+        heartbeatDb,
+      );
+      void heartbeat.catch(() => undefined);
+      try {
+        expect(await firstLock.promise).toBe('root');
+      } finally {
+        release.resolve();
+      }
+      await expect(operation).resolves.toBeDefined();
+      await expect(heartbeat).resolves.toMatchObject({
+        workspace: { desiredControl: 'agent' },
+      });
+    }, 15000);
+    it('a heartbeat blocked by live policy observes committed Deny, and stop survives invalid controls', async () => {
+      const { f, row, identity } = await claimedStatic();
+      const locked = deferred<void>(),
+        release = deferred<void>();
+      const deny = database.db.begin(async (tx) => {
+        const [p] = await tx<
+          {
+            version: number;
+            controls: {
+              version: number;
+              rules: { action: string; effect: string }[];
+            };
+          }[]
+        >`
+          select version,controls from allrice_runtime_policy_controls where organization_id=${f.org} and workspace_id=${f.workspace} for update`;
+        locked.resolve();
+        await release.promise;
+        const controls = {
+          ...p!.controls,
+          version: p!.version + 1,
+          rules: p!.controls.rules.map((rule) =>
+            rule.action === 'local.browser.act'
+              ? { ...rule, effect: 'deny' }
+              : rule,
+          ),
+        };
+        await tx`update allrice_runtime_policy_controls set version=${controls.version},controls=${tx.json(controls)}
+          where organization_id=${f.org} and workspace_id=${f.workspace}`;
+      });
+      await locked.promise;
+      const atControls = deferred<void>();
+      const heartbeatDb = scheduleQueries(async (sql, execute) => {
+        if (
+          sql.includes('from allrice_runtime_policy_controls') &&
+          sql.includes('for update')
+        )
+          atControls.resolve();
+        return execute();
+      });
+      const heartbeat = heartbeatLocalBrowserWorkspace(
+        f.device,
+        identity,
+        heartbeatDb,
+      );
+      void heartbeat.catch(() => undefined);
+      try {
+        await atControls.promise;
+      } finally {
+        release.resolve();
+      }
+      await deny;
+      await expect(heartbeat).resolves.toMatchObject({
+        workspace: { desiredControl: 'closed' },
+      });
+      await database.db`update allrice_runtime_policy_controls set controls='{}'::jsonb
+        where organization_id=${f.org} and workspace_id=${f.workspace}`;
+      await expect(
+        requestStaticBrowserStop(row, database.db),
+      ).resolves.toBeUndefined();
+      await expect(
+        heartbeatLocalBrowserWorkspace(f.device, identity, database.db),
+      ).resolves.toMatchObject({ workspace: { desiredControl: 'closed' } });
+    }, 15000);
     it('closes an unclaimed unknown verification and skips expired static intents during later claims', async () => {
       const f = await fixture(true);
       await database.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{environment}',

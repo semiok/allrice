@@ -24,7 +24,10 @@ import {
 } from './runtime-policy.ts';
 import { getDatabase } from './core/client.ts';
 import { currentLocalPreviewAuthority } from './local-preview-authority.ts';
-import { currentStaticBrowserTarget } from './static-browser.ts';
+import {
+  currentStaticBrowserTarget,
+  lockStaticBrowserWorkspacePolicy,
+} from './static-browser.ts';
 import type { StaticBrowserTarget } from '@allrice/contracts';
 
 export const browserControlEnabled = () =>
@@ -180,6 +183,7 @@ export async function currentBrowserWorkspace(
   if (!browserControlEnabled())
     throw new RuntimePolicyError('browser_control_disabled');
   await browserIdentity(tx, ctx);
+  await lockStaticBrowserWorkspacePolicy(tx, ctx, id);
   // Queue event writers lock Job before Run. A multi-table FOR SHARE below
   // does not guarantee that order (the planner can lock Run first). Pin the
   // same-owner Job first so concurrent event flush/heartbeat cannot deadlock
@@ -308,6 +312,7 @@ export async function lockBrowserWorkspaceGrant(
   ctx: RuntimePolicyPrincipal,
   id: string,
 ) {
+  await lockStaticBrowserWorkspacePolicy(tx, ctx, id);
   await tx`select g.id from allrice_browser_control_grants g join allrice_browser_workspaces w on w.grant_id=g.id
     where w.id=${id} and w.organization_id=${ctx.organizationId} and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id}
       and g.organization_id=w.organization_id and g.workspace_id=w.workspace_id and g.owner_id=w.owner_id for share of g`;

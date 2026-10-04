@@ -50,6 +50,7 @@ import {
   RuntimePolicyError,
   runtimePolicyDigest as digest,
   readRuntimePolicyControls,
+  type RuntimePolicyPrincipal,
 } from './runtime-policy.ts';
 import { readWorkAutomation } from './work-automation.ts';
 
@@ -401,38 +402,39 @@ export async function currentStaticBrowserVerification(
   if (!browserControlEnabled())
     throw new RuntimePolicyError('browser_control_disabled');
   await browserIdentity(tx, ctx);
-  // Match browser/queue writers: lock the exact Job before the Run/root rows.
+  const [intent] = await tx<
+    { run_id: string; job_id: string; location: 'local' | 'cloud' }[]
+  >`
+    select run_id,job_id,location from allrice_static_browser_verifications where id=${id}
+      and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id}`;
+  if (!intent) throw new RuntimePolicyError('static_browser_authority_lost');
+  await lockStaticBrowserPolicy(tx, ctx, intent.run_id, intent.job_id);
   await tx`select j.id from allrice_jobs j join allrice_static_browser_verifications v on v.job_id=j.id
     where v.id=${id} and v.organization_id=${ctx.organizationId} and v.workspace_id=${ctx.workspaceId}
       and v.owner_id=${ctx.actor.id} for share of j`;
-  const [intent] = await tx<
-    { location: 'local' | 'cloud'; plan: BrowserVerificationPlan }[]
-  >`
-    select location,plan from allrice_static_browser_verifications where id=${id}
-      and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id}`;
-  if (!intent) throw new RuntimePolicyError('static_browser_authority_lost');
   // Preserve the shared controls-before-browser lock order. Local mutations
   // retain their exact ledger approvals; the isolated cloud verifier has no
   // approval port and must require the member's current automation setting.
   const controls = await readRuntimePolicyControls(tx, ctx);
-  const automation = await readWorkAutomation(tx, {
-    organizationId: ctx.organizationId,
-    workspaceId: ctx.workspaceId!,
-    userId: ctx.actor.id,
-  });
-  const actions = [`${intent.location}.browser.observe`];
-  if (
-    intent.plan.steps.some(
-      (step) => step.type === 'click' || step.type === 'fill',
-    )
-  )
-    actions.push(`${intent.location}.browser.act`);
+  const automation =
+    intent.location === 'cloud'
+      ? await readWorkAutomation(tx, {
+          organizationId: ctx.organizationId,
+          workspaceId: ctx.workspaceId!,
+          userId: ctx.actor.id,
+        })
+      : undefined;
+  // Every plan navigates before observing, including assertion-only plans.
+  const actions = [
+    `${intent.location}.browser.observe`,
+    `${intent.location}.browser.act`,
+  ];
   for (const action of actions) {
     const decision = runtimePolicyActionDecision(
       controls,
       action,
       [],
-      automation.settings,
+      automation?.settings,
     );
     if (
       decision.effect === 'deny' ||
@@ -476,6 +478,47 @@ export async function currentStaticBrowserVerification(
   return row;
 }
 
+/** Lock ordering only. The stored same-owner intent supplies the run/job;
+ * active state and policy validity are checked by admission, never by cleanup.
+ * Root precedes Job (task clock/publisher), then controls precede browser rows
+ * (ledger admission). An invalid/revoked intent must still be stoppable. */
+async function lockStaticBrowserPolicy(
+  tx: postgres.TransactionSql,
+  ctx: ReturnType<typeof browserPrincipal>,
+  runId: string,
+  jobId: string,
+) {
+  const roots =
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId}
+    and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} for update`;
+  if (!roots.length) {
+    // Same absent-root creation fence as ledger.createRoot. Acquire it only
+    // when absent: an existing ledger already holds root before entering here.
+    // This prevents first-operation root creation between nested checks while
+    // this transaction holds controls/browser locks.
+    await tx`select pg_advisory_xact_lock(hashtextextended(${runId},703))`;
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${runId}
+      and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} for update`;
+  }
+  await tx`select id from allrice_jobs where id=${jobId} and run_id=${runId}
+    and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id} for share`;
+  await tx`select version from allrice_runtime_policy_controls
+    where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} for update`;
+}
+
+export async function lockStaticBrowserWorkspacePolicy(
+  tx: postgres.TransactionSql,
+  ctx: RuntimePolicyPrincipal,
+  workspaceId: string,
+) {
+  const [intent] = await tx<{ run_id: string; job_id: string }[]>`
+    select run_id,job_id from allrice_static_browser_verifications
+    where browser_workspace_id=${workspaceId} and organization_id=${ctx.organizationId}
+      and workspace_id=${ctx.workspaceId} and owner_id=${ctx.actor.id}`;
+  if (intent)
+    await lockStaticBrowserPolicy(tx, ctx, intent.run_id, intent.job_id);
+}
+
 /** Fresh private browser profile derived from the selected public grant, never
  * its cookies/login state. The same row also owns a fixed cloud attempt. */
 export async function admitStaticBrowserVerification(
@@ -512,7 +555,13 @@ export async function admitStaticBrowserVerification(
     });
   return db.begin(async (tx) => {
     await browserIdentity(tx, ctx);
-    // Job first, matching the queue and browser controller lock order.
+    await lockStaticBrowserPolicy(
+      tx,
+      ctx,
+      input.context.runId,
+      input.context.jobId!,
+    );
+    // Pin the exact Job before the later multi-table authority checks.
     const [job] =
       await tx`select id from allrice_jobs where id=${input.context.jobId}
       and worker_id=${input.context.worker.id} and attempt=${input.jobAttempt} and lease_token=${input.jobLeaseToken}
