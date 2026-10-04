@@ -294,9 +294,11 @@ export function CompanyDashboard({
                         ? tabs.length - 1
                         : null;
               if (next === null) return;
+              const target = tabs[next];
+              if (!target) return;
               event.preventDefault();
-              tabs[next].click();
-              tabs[next].focus();
+              target.click();
+              target.focus();
             }}
             onClick={() => setSection(id)}
           >
