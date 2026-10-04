@@ -6,7 +6,12 @@ import type {
   OrganizationPerson,
 } from '@allrice/contracts';
 import { AdminShell } from '../../components/admin/admin-shell';
-import { AdminButton, AdminDialog } from '../../components/admin/admin-ui';
+import {
+  AdminButton,
+  AdminDialog,
+  AdminIcon,
+  type AdminIconName,
+} from '../../components/admin/admin-ui';
 
 import { OperationsSummary, OperationsResources } from './operations-resources';
 import { GovernanceConsole } from './governance-console';
@@ -31,6 +36,8 @@ import {
 } from './dsh-upgrade-capabilities';
 import {
   aggregateRuntimeTimelineEvents,
+  runtimeTimelineCategory,
+  runtimeTimelineStatus,
   type RuntimeTimelineEvent,
   type RuntimeTimelineItem,
   type RuntimeTimelineTurn,
@@ -1010,48 +1017,145 @@ function RuntimeTurn(props: {
 }
 
 function RuntimeEventItem(props: { item: RuntimeTimelineItem }) {
+  const [expanded, setExpanded] = useState(
+    props.item.type === 'group' && props.item.kind === 'compaction',
+  );
   if (props.item.type === 'event') {
     return <RuntimeEvent event={props.item.event} />;
   }
   return (
-    <li className={styles.eventGroup} data-kind={props.item.kind}>
-      <i>G</i>
-      <div>
-        <details>
-          <summary>
-            <span>
+    <li
+      className={styles.eventGroup}
+      data-kind={props.item.kind}
+      data-category={runtimeTimelineCategory(props.item)}
+      data-event-key={props.item.key}
+    >
+      <i className={styles.eventNode} aria-hidden="true">
+        <AdminIcon name={runtimeEventIcon(props.item)} />
+      </i>
+      <div className={styles.eventBody}>
+        <details open={expanded}>
+          <summary
+            className={styles.eventRow}
+            aria-expanded={expanded}
+            onClick={(event) => {
+              event.preventDefault();
+              setExpanded(!expanded);
+            }}
+          >
+            <span className={styles.eventPrimary}>
               <strong>{props.item.title}</strong>
-              <em>{props.item.status}</em>
+              <RuntimeEventStatus status={props.item.status} />
             </span>
-            <small>展开明细</small>
+            <span className={styles.eventEnd}>
+              <RuntimeEventTime value={props.item.occurredAt} />
+              <span className={styles.eventChevron} aria-hidden="true">
+                <AdminIcon name="chevron" />
+              </span>
+            </span>
           </summary>
-          <ol>
+          <ol
+            className={styles.eventGroupList}
+            aria-label={`${props.item.title}明细`}
+          >
             {props.item.events.map((event) => (
-              <li key={event.key}>
-                <span>{event.detail ?? event.title}</span>
-                <em>{event.title}</em>
+              <li key={event.key} data-event-key={event.key}>
+                <span className={styles.eventDot} aria-hidden="true" />
+                <div className={styles.eventGroupContent}>
+                  <div className={styles.eventRow}>
+                    <strong>{event.title}</strong>
+                    <span className={styles.eventEnd}>
+                      <RuntimeEventStatus status={event.status} />
+                      <RuntimeEventTime value={event.occurredAt} />
+                    </span>
+                  </div>
+                  {event.detail ? <p>{event.detail}</p> : null}
+                </div>
               </li>
             ))}
           </ol>
         </details>
       </div>
-      <time>{time(props.item.occurredAt)}</time>
     </li>
+  );
+}
+
+function runtimeEventIcon(
+  event: Pick<RuntimeTimelineEvent, 'kind' | 'title'>,
+): AdminIconName {
+  if (event.title.startsWith('Skill 已加载')) return 'book';
+  switch (runtimeTimelineCategory(event)) {
+    case 'prepare':
+      return 'folder';
+    case 'context':
+      return event.title.startsWith('上下文占用') ? 'gauge' : 'layers';
+    case 'tool':
+      return 'wrench';
+    case 'think':
+      return 'thought';
+    case 'search':
+      return 'search';
+    case 'answer':
+      return 'message';
+    case 'todo':
+      return 'list';
+    default:
+      return 'info';
+  }
+}
+
+function RuntimeEventStatus({ status }: { status: string }) {
+  const { label, tone, icon } = runtimeTimelineStatus(status);
+  return (
+    <span
+      className={styles.eventStatus}
+      data-tone={tone}
+      data-state={status}
+      title={status}
+    >
+      {icon && <AdminIcon name={icon} />}
+      {label}
+    </span>
+  );
+}
+
+function RuntimeEventTime({ value }: { value: string | null }) {
+  return (
+    <time dateTime={value ?? undefined} title={time(value)}>
+      {value
+        ? new Intl.DateTimeFormat('zh-CN', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+          }).format(new Date(value))
+        : '—'}
+    </time>
   );
 }
 
 function RuntimeEvent(props: { event: RuntimeTimelineEvent }) {
   return (
-    <li data-kind={props.event.kind}>
-      <i>{props.event.kind.slice(0, 1).toUpperCase()}</i>
-      <div>
-        <span>
-          <strong>{props.event.title}</strong>
-          <em>{props.event.status}</em>
-        </span>
+    <li
+      data-kind={props.event.kind}
+      data-category={runtimeTimelineCategory(props.event)}
+      data-event-key={props.event.key}
+    >
+      <i className={styles.eventNode} aria-hidden="true">
+        <AdminIcon name={runtimeEventIcon(props.event)} />
+      </i>
+      <div className={styles.eventBody}>
+        <div className={styles.eventRow}>
+          <span className={styles.eventPrimary}>
+            <strong>{props.event.title}</strong>
+            <RuntimeEventStatus status={props.event.status} />
+          </span>
+          <span className={styles.eventEnd}>
+            <RuntimeEventTime value={props.event.occurredAt} />
+            <span className={styles.eventChevronSpace} />
+          </span>
+        </div>
         {props.event.detail ? <p>{props.event.detail}</p> : null}
       </div>
-      <time>{time(props.event.occurredAt)}</time>
     </li>
   );
 }

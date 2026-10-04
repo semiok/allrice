@@ -22,7 +22,19 @@ export type AdminIconName =
   | 'chevron'
   | 'more'
   | 'close'
-  | 'edit';
+  | 'edit'
+  | 'book'
+  | 'folder'
+  | 'wrench'
+  | 'layers'
+  | 'gauge'
+  | 'thought'
+  | 'message'
+  | 'list'
+  | 'info'
+  | 'check'
+  | 'play'
+  | 'warning';
 
 export function AdminIcon({ name }: { name: AdminIconName }) {
   const paths: Record<AdminIconName, ReactNode> = {
@@ -91,6 +103,53 @@ export function AdminIcon({ name }: { name: AdminIconName }) {
       <>
         <path d="m16 3 5 5-12 12-6 1 1-6L16 3Z" />
         <path d="m13 6 5 5" />
+      </>
+    ),
+    book: (
+      <>
+        <path d="M12 5v16M3 3h5a4 4 0 0 1 4 2 4 4 0 0 1 4-2h5v16h-5a4 4 0 0 0-4 2 4 4 0 0 0-4-2H3V3Z" />
+      </>
+    ),
+    folder: (
+      <path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v2M3 7h18l-3 13H3V7Z" />
+    ),
+    wrench: (
+      <path d="M14 6a6 6 0 0 0-7 7L3 17a3 3 0 0 0 4 4l4-4a6 6 0 0 0 7-7l-4 4-4-4 4-4Z" />
+    ),
+    layers: (
+      <>
+        <path d="m12 3 10 5-10 5L2 8l10-5Zm-10 9 10 5 10-5M2 16l10 5 10-5" />
+      </>
+    ),
+    gauge: (
+      <>
+        <path d="M4 19a10 10 0 1 1 16 0M12 13l5-5" />
+        <circle cx="12" cy="13" r="1.5" />
+      </>
+    ),
+    thought: (
+      <path d="M8 20H5l-2 2v-5a9 9 0 1 1 9 4h-1M8 10h.01M12 10h.01M16 10h.01" />
+    ),
+    message: (
+      <path d="M21 15a3 3 0 0 1-3 3H8l-5 4V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v9Z" />
+    ),
+    list: (
+      <>
+        <path d="m3 6 1 1 2-2m-3 7 1 1 2-2m-3 7 1 1 2-2M10 6h11M10 12h11M10 18h11" />
+      </>
+    ),
+    info: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 11v6M12 7h.01" />
+      </>
+    ),
+    check: <path d="m5 12 4 4L19 6" />,
+    play: <path d="m6 3 15 9-15 9V3Z" />,
+    warning: (
+      <>
+        <circle cx="12" cy="12" r="9" />
+        <path d="M12 6v7M12 17h.01" />
       </>
     ),
   };
