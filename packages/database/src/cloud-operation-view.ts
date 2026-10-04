@@ -1,7 +1,7 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
 import {
-  CloudCommandSchema,
+  CloudExecutionPayloadSchema,
   McpExecutionPayloadSchema,
   RuntimeActionApprovalSnapshotSchema,
   RuntimeOperationSnapshotSchema,
@@ -11,6 +11,7 @@ import {
   type RuntimeActionApprovalSnapshot,
   type RuntimeOperationSnapshot,
   type CloudCommand,
+  type CloudProjectCommand,
   type McpExecutionPayload,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
@@ -49,6 +50,17 @@ export type CloudOperationView = {
         inputs: CloudCommand['arguments']['inputs'];
         outputs: CloudCommand['arguments']['outputs'];
         limits: CloudCommand['arguments']['limits'];
+      }
+    | {
+        kind: 'project';
+        project: CloudProjectCommand['arguments']['projectSource']['project'];
+        sourceDigest: string;
+        executable: string;
+        args: string[];
+        path: string;
+        files: CloudProjectCommand['arguments']['files'];
+        preparation: CloudProjectCommand['arguments']['projectPreparation'];
+        limits: CloudProjectCommand['arguments']['limits'];
       }
     | {
         kind: 'mcp';
@@ -218,7 +230,7 @@ export async function listCloudRuntimeOperations(
           : null,
       });
     } else {
-      const payload = CloudCommandSchema.parse(row.cloud_payload);
+      const payload = CloudExecutionPayloadSchema.parse(row.cloud_payload);
       views.push({
         nativeCallId: row.native_call_id,
         createdAt: row.created_at.toISOString(),
@@ -227,16 +239,30 @@ export async function listCloudRuntimeOperations(
         enabled:
           runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED'),
-        proposal: {
-          kind: 'cloud',
-          ...(payload.arguments.language
-            ? { language: payload.arguments.language }
-            : {}),
-          script: payload.arguments.script,
-          inputs: payload.arguments.inputs,
-          outputs: payload.arguments.outputs,
-          limits: payload.arguments.limits,
-        },
+        proposal:
+          'kind' in payload
+            ? {
+                kind: 'project',
+                project: payload.arguments.projectSource.project,
+                sourceDigest:
+                  payload.arguments.projectSource.snapshot.sourceDigest,
+                executable: payload.arguments.executable,
+                args: payload.arguments.args,
+                path: payload.arguments.path,
+                files: payload.arguments.files,
+                preparation: payload.arguments.projectPreparation,
+                limits: payload.arguments.limits,
+              }
+            : {
+                kind: 'cloud',
+                ...(payload.arguments.language
+                  ? { language: payload.arguments.language }
+                  : {}),
+                script: payload.arguments.script,
+                inputs: payload.arguments.inputs,
+                outputs: payload.arguments.outputs,
+                limits: payload.arguments.limits,
+              },
         approval,
         result: row.cloud_outcome
           ? {
