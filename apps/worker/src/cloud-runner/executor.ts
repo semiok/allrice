@@ -461,7 +461,7 @@ export async function recoverCloudCommandOperations(
           receiptId: cloudStableId(`${row.operation_id}:cold-unknown`),
           signal: { type: 'operation.uncertain', reason: 'receipt_missing' },
           evidence: {
-            physicallyStopped: !container || outcome?.stopped === true,
+            physicallyStopped: outcome?.stopped === true,
             cloudJournalPreserved: true,
           },
         });
