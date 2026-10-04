@@ -1,8 +1,8 @@
 .card {
-  padding: 18px;
+  padding: 16px;
   border: 1px solid var(--line, #34363b);
-  border-radius: 12px;
-  background: #232529;
+  border-radius: 8px;
+  background: var(--admin-raised);
   color: var(--ink, #f2f3f4);
 }
 
@@ -15,7 +15,7 @@
 .checked,
 .windows small {
   color: var(--muted, #8f939b);
-  font-size: 13px;
+  font-size: var(--admin-font-meta);
   line-height: 1.6;
 }
 
@@ -25,7 +25,7 @@
 
 .windows {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
   gap: 12px;
   padding: 0;
   list-style: none;
@@ -36,12 +36,12 @@
   flex-direction: column;
   gap: 6px;
   padding: 12px;
-  border: 1px solid #404349;
+  border: 1px solid var(--admin-control-border);
   border-radius: 8px;
 }
 
 .exhausted {
-  color: #f08a8a;
+  color: var(--admin-danger);
 }
 
 .checked {

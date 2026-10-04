@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 import { useEffect, useState } from 'react';
 import { FeedbackCategorySchema } from '@allrice/contracts';
 import type { getTenantFeedback, listTenantFeedback } from '@allrice/database';
@@ -111,15 +112,17 @@ export function TenantFeedback() {
     <section className={css.root} aria-label="租户反馈">
       <header className={css.heading}>
         <div>
-          <h1>租户反馈</h1>
+          <h1>员工反馈</h1>
           <p>查看真实使用意见，关联问答并跟进改进。</p>
         </div>
-        <button
+        <AdminButton
+          variant="quiet"
+          icon="refresh"
           onClick={() => setRevision((n) => n + 1)}
           disabled={loading || saving}
         >
           刷新反馈
-        </button>
+        </AdminButton>
       </header>
       <div className={css.filters}>
         <label>
@@ -241,19 +244,19 @@ export function TenantFeedback() {
             </button>
           ))}
           <div className={css.pagination}>
-            <button
+            <AdminButton
               disabled={page <= 1 || loading}
               onClick={() => setPage((n) => n - 1)}
             >
               上一页
-            </button>
+            </AdminButton>
             <span>第 {page} 页</span>
-            <button
+            <AdminButton
               disabled={loading || page * 20 >= (inbox?.total ?? 0)}
               onClick={() => setPage((n) => n + 1)}
             >
               下一页
-            </button>
+            </AdminButton>
           </div>
         </div>
         <aside className={css.detail} aria-label="反馈详情">
@@ -328,13 +331,14 @@ export function TenantFeedback() {
                     placeholder="记录排查结果、改进方案或对应工单…"
                   />
                 </label>
-                <button
+                <AdminButton
+                  variant="primary"
                   className={css.primary}
                   disabled={saving}
                   onClick={() => void save()}
                 >
                   {saving ? '保存中…' : '保存处理记录'}
-                </button>
+                </AdminButton>
               </div>
             </>
           )}

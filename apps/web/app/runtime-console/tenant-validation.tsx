@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   TenantValidationSummary,
@@ -22,6 +23,7 @@ import { ExecutionDiagnostics } from './execution-diagnostics';
 import { DevelopmentInspection } from './development-inspection';
 import type { TenantResourceProps } from './tenant-resource-editor';
 import styles from './tenant-administration.module.css';
+import common from './admin-data.module.css';
 
 export function TenantValidation(
   props: TenantResourceProps & { subjectId: string; initialRunId?: string },
@@ -159,25 +161,32 @@ export function TenantValidation(
     }
   }
   return (
-    <section aria-label="租户运行检查">
+    <section className={common.inspection} aria-label="租户运行检查">
       {!props.initialRunId && (
         <>
           <h3>运行检查</h3>
           <p>
             这里检查实际使用者的配置与历史结果，不冒用其身份发起任务、批准操作或借用其设备。调试页的模型试用成功不能替代租户本人验收。
           </p>
-          <button disabled={loading} onClick={() => void refresh()}>
+          <AdminButton
+            variant="quiet"
+            icon="refresh"
+            disabled={loading}
+            onClick={() => void refresh()}
+          >
             刷新配置与就绪检查
-          </button>
+          </AdminButton>
         </>
       )}
       {props.initialRunId && (
-        <button
+        <AdminButton
+          variant="quiet"
+          icon="refresh"
           disabled={loading}
           onClick={() => void inspect(props.initialRunId!, true)}
         >
           刷新工作详情
-        </button>
+        </AdminButton>
       )}
       {loading ? <p role="status">读取中…</p> : null}
       {error ? <p role="alert">{error}</p> : null}
@@ -354,7 +363,9 @@ export function TenantValidation(
                 placeholder="粘贴完整 Run ID，可检查列表外的旧任务"
               />
             </label>
-            <button disabled={loading || !runId.trim()}>检查此 Run</button>
+            <AdminButton type="submit" disabled={loading || !runId.trim()}>
+              检查此 Run
+            </AdminButton>
           </form>
           {data.runsTruncated ? (
             <p>列表仅显示最近 50 次；历史任务可粘贴完整 ID，仍逐次校验归属。</p>
@@ -442,12 +453,12 @@ export function TenantValidation(
           <h5>交付成果</h5>
           {detail.artifacts.map((a) => (
             <article key={a.id}>
-              <button
+              <AdminButton
                 disabled={loading}
                 onClick={() => void inspectArtifact(a.id)}
               >
                 {a.version.fileName} · v{a.version.version} · {a.kind}
-              </button>
+              </AdminButton>
               <small> {a.object.sizeBytes.toLocaleString()} 字节</small>
               <a
                 href={`${base}&runId=${detail.run.id}&artifactId=${a.id}&download=1`}

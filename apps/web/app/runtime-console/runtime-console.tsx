@@ -6,6 +6,7 @@ import type {
   OrganizationPerson,
 } from '@allrice/contracts';
 import { AdminShell } from '../../components/admin/admin-shell';
+import { AdminButton, AdminDialog } from '../../components/admin/admin-ui';
 
 import { OperationsSummary, OperationsResources } from './operations-resources';
 import { GovernanceConsole } from './governance-console';
@@ -545,11 +546,6 @@ export function RuntimeConsole() {
           </button>
         </nav>
       )}
-      {view === 'capabilities' && (
-        <DshReleaseSummary
-          onOpenCapabilities={() => selectView('capabilities')}
-        />
-      )}
 
       {view === 'activity' ? (
         <OrganizationActivity />
@@ -569,6 +565,10 @@ export function RuntimeConsole() {
         <GovernanceConsole />
       ) : (
         <>
+          <header className={styles.platformHeader}>
+            <h1>运行技术详情</h1>
+            <p>查看员工、设备与执行环境的实际状态。</p>
+          </header>
           <section className={styles.summary}>
             <div>
               <span>公司</span>
@@ -1149,35 +1149,34 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
     };
   }, []);
 
-  useEffect(() => {
-    if (!coreOpen) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setCoreOpen(false);
-    };
-    window.addEventListener('keydown', close);
-    return () => window.removeEventListener('keydown', close);
-  }, [coreOpen]);
-
   return (
     <section className={styles.capabilityPage}>
       <header className={styles.capabilityHeader}>
         <div>
-          <p>DSH 升级与 AllRice 能力</p>
           <h1>版本与能力</h1>
+          <DshReleaseSummary />
           <span>
             按当前 Worker 安装与配置、平台 Skill 目录和租户员工发布版本展示。每
             10 秒刷新。
           </span>
         </div>
-        <aside>
-          <strong>{facts.componentCount}</strong>
-          <span>已安装配置组件 / Worker</span>
-          <strong>{facts.enhancementCount}</strong>
-          <span>其中增强插件 / Worker</span>
-          <strong>{inventory ? availableSkills.length : '—'}</strong>
-          <span>可绑定业务 Skill</span>
-          <strong>{inventory ? facts.publishedSkillIds.size : '—'}</strong>
-          <span>租户员工已发布 Skill</span>
+        <aside aria-label="能力统计">
+          <div>
+            <strong>{facts.componentCount}</strong>
+            <span>已安装配置组件 / Worker</span>
+          </div>
+          <div>
+            <strong>{facts.enhancementCount}</strong>
+            <span>其中增强插件 / Worker</span>
+          </div>
+          <div>
+            <strong>{inventory ? availableSkills.length : '—'}</strong>
+            <span>可绑定业务 Skill</span>
+          </div>
+          <div>
+            <strong>{inventory ? facts.publishedSkillIds.size : '—'}</strong>
+            <span>租户员工已发布 Skill</span>
+          </div>
         </aside>
       </header>
 
@@ -1224,9 +1223,13 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
             不等同于空闲时已有 DSH 进程装载。增强插件包含在组件总数内。
           </p>
         </div>
-        <button type="button" onClick={() => setCoreOpen(true)}>
+        <AdminButton
+          type="button"
+          onClick={() => setCoreOpen(true)}
+          aria-haspopup="dialog"
+        >
           查看实际组件
-        </button>
+        </AdminButton>
       </section>
 
       <div className={styles.capabilityGroups}>
@@ -1280,13 +1283,9 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
                 后，才会进入对应租户 Runtime。
               </p>
             </div>
-            <button
-              className={styles.groupAction}
-              type="button"
-              onClick={props.onOpenEmployees}
-            >
+            <AdminButton type="button" onClick={props.onOpenEmployees}>
               前往 AI 员工装配
-            </button>
+            </AdminButton>
           </header>
           {skillsLoading ? (
             <p className={styles.capabilityStatus}>正在读取平台 Skill 目录…</p>
@@ -1334,36 +1333,16 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
       </footer>
 
       {coreOpen ? (
-        <div
-          className={styles.modalBackdrop}
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setCoreOpen(false);
-          }}
+        <AdminDialog
+          title="Worker 实际配置组件"
+          size="wide"
+          onClose={() => setCoreOpen(false)}
         >
-          <section
-            aria-labelledby="dsh-core-title"
-            aria-modal="true"
-            className={styles.coreModal}
-            role="dialog"
-          >
-            <header>
-              <div>
-                <span>DSH Restricted Runtime</span>
-                <h2 id="dsh-core-title">Worker 实际配置组件</h2>
-                <p>
-                  逐个 Worker
-                  显示安装版本和配置状态；停用、条件加载及缺失的组件不计入已配置总数。
-                </p>
-              </div>
-              <button
-                aria-label="关闭实际组件弹窗"
-                type="button"
-                onClick={() => setCoreOpen(false)}
-              >
-                ×
-              </button>
-            </header>
+          <section className={styles.coreContents}>
+            <p className={styles.capabilityStatus}>
+              逐个 Worker
+              显示安装版本和配置状态；停用、条件加载及缺失的组件不计入已配置总数。
+            </p>
             {inventory?.workers.map((worker) => (
               <div key={worker.workerId}>
                 <p className={styles.capabilityStatus}>
@@ -1405,7 +1384,7 @@ function CapabilitySourceView(props: { onOpenEmployees: () => void }) {
               <p className={styles.capabilityStatus}>暂无 Worker 上报</p>
             ) : null}
           </section>
-        </div>
+        </AdminDialog>
       ) : null}
     </section>
   );

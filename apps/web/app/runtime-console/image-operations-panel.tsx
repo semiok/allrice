@@ -1,4 +1,5 @@
 'use client';
+import { AdminButton } from '../../components/admin/admin-ui';
 import { useState } from 'react';
 import styles from './image-operations-panel.module.css';
 type ImageOperation = {
@@ -54,9 +55,15 @@ export function ImageOperationsPanel() {
         最近 50 次生成与编辑。Token
         为服务返回的已知用量，图片调用单独记录；不代表订阅余额或图片价格。
       </p>
-      <button type="button" disabled={busy} onClick={() => void load()}>
+      <AdminButton
+        variant="quiet"
+        icon="refresh"
+        type="button"
+        disabled={busy}
+        onClick={() => void load()}
+      >
         {busy ? '读取中…' : '刷新记录'}
-      </button>
+      </AdminButton>
       {error ? <p role="alert">{error}</p> : null}
       {items?.length === 0 ? (
         <p>暂无图片调用。</p>

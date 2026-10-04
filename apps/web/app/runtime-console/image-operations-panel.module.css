@@ -4,11 +4,11 @@
 }
 .root summary {
   cursor: pointer;
-  font-weight: 600;
+  font-weight: 500;
 }
 .root p {
   color: var(--muted, #8f939b);
-  font-size: 13px;
+  font-size: var(--admin-font-meta);
 }
 .scroll {
   overflow: auto;
@@ -19,12 +19,12 @@
   width: 100%;
   border-collapse: collapse;
   text-align: left;
-  font-size: 13px;
+  font-size: var(--admin-font-meta);
 }
 .scroll th,
 .scroll td {
   padding: 10px;
-  border-bottom: 1px solid #8884;
+  border-bottom: 1px solid var(--admin-border);
   white-space: nowrap;
 }
 .scroll caption {
@@ -32,17 +32,11 @@
   margin-bottom: 8px;
 }
 
-.root button {
-  padding: 7px 12px;
-  border: 1px solid var(--line, #404349);
-  border-radius: 8px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
+.scroll table {
+  font-size: var(--admin-font-body);
 }
-.root button:disabled {
-  opacity: 0.5;
-  cursor: default;
+.scroll th {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+  font-weight: 400;
 }
