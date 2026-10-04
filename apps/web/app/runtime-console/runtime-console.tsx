@@ -1017,9 +1017,10 @@ function RuntimeTurn(props: {
 }
 
 function RuntimeEventItem(props: { item: RuntimeTimelineItem }) {
-  const [expanded, setExpanded] = useState(
-    props.item.type === 'group' && props.item.kind === 'compaction',
-  );
+  const [expanded, setExpanded] = useState<boolean | null>(null);
+  const open =
+    expanded ??
+    (props.item.type === 'group' && props.item.kind === 'compaction');
   if (props.item.type === 'event') {
     return <RuntimeEvent event={props.item.event} />;
   }
@@ -1034,13 +1035,13 @@ function RuntimeEventItem(props: { item: RuntimeTimelineItem }) {
         <AdminIcon name={runtimeEventIcon(props.item)} />
       </i>
       <div className={styles.eventBody}>
-        <details open={expanded}>
+        <details open={open}>
           <summary
             className={styles.eventRow}
-            aria-expanded={expanded}
+            aria-expanded={open}
             onClick={(event) => {
               event.preventDefault();
-              setExpanded(!expanded);
+              setExpanded(!open);
             }}
           >
             <span className={styles.eventPrimary}>
