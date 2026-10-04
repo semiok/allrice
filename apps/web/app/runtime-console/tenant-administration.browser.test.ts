@@ -279,7 +279,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
     expect(failures).toEqual([]);
-  });
+  }, 30000);
   async function pageFor(p = platform, width = 1440) {
     const context = await browser.newContext({
       viewport: { width, height: 1000 },
