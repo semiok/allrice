@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
+import { ProjectServiceConfigSchema } from '../project-service.ts';
 
 /** P09-c: finite, Run-owned service. Readiness is inside the private container,
  * never a promise that a browser on another machine can reach this port. */
 export const RuntimeLocalServiceConfigSchema = z
   .object({
-    durationMs: z.number().int().min(1000).max(300_000),
+    durationMs: z.number().int().min(1000).max(3_600_000),
+    projectService: ProjectServiceConfigSchema.optional(),
     readiness: z
       .object({
         kind: z.enum(['tcp', 'http']),
@@ -28,7 +30,24 @@ export const RuntimeLocalServiceConfigSchema = z
       })
       .strict(),
   })
-  .strict();
+  .strict()
+  .superRefine((a, c) => {
+    if (!a.projectService && a.durationMs > 300_000)
+      c.addIssue({
+        code: 'custom',
+        message: 'ordinary_background_service_limit',
+      });
+    if (
+      a.projectService &&
+      (a.readiness.kind !== 'http' ||
+        a.readiness.port !== a.projectService.port ||
+        a.stdin.mode !== 'none')
+    )
+      c.addIssue({
+        code: 'custom',
+        message: 'project_service_configuration_changed',
+      });
+  });
 export type RuntimeLocalServiceConfig = z.infer<
   typeof RuntimeLocalServiceConfigSchema
 >;

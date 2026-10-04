@@ -8,6 +8,9 @@ import {
   canonicalRuntimeBridgeJson,
   type RuntimeLocalServiceEvent,
   type RuntimeLocalServiceInput,
+  ProjectServiceSourceUpdateSchema,
+  ProjectServiceSourceReceiptSchema,
+  type ProjectServiceSourceUpdate,
 } from '@allrice/contracts';
 
 /** Uses the existing Bridge SQLite transaction/OS owner lock. Not a second
@@ -30,6 +33,12 @@ export class LocalServiceJournal {
         request_id TEXT NOT NULL, input_id TEXT NOT NULL UNIQUE,
         body TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('prepared','delivered')),
         PRIMARY KEY(operation_id,request_id));
+      CREATE TABLE IF NOT EXISTS service_sources (
+        operation_id TEXT NOT NULL REFERENCES entries(operation_id),
+        update_id TEXT NOT NULL, body TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('prepared','delivered')),
+        receipt TEXT, acknowledged INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(operation_id,update_id));
     `);
   }
 
@@ -108,6 +117,116 @@ export class LocalServiceJournal {
           RuntimeLocalServiceEventSchema.parse(JSON.parse(String(row.body))),
         ),
     );
+  }
+
+  async prepareSource(
+    id: string,
+    raw: ProjectServiceSourceUpdate,
+  ): Promise<'new' | 'delivered'> {
+    const update = ProjectServiceSourceUpdateSchema.parse(raw);
+    return this.access(id, () => {
+      const body = canonicalRuntimeBridgeJson(update);
+      const prior = this.db
+        .prepare(
+          'SELECT body,state FROM service_sources WHERE operation_id=? AND update_id=?',
+        )
+        .get(id, update.updateId);
+      if (prior) {
+        if (prior.body !== body)
+          throw new BridgeJournalError('SERVICE_SOURCE_CONFLICT');
+        if (prior.state !== 'delivered')
+          throw new BridgeJournalError('SERVICE_SOURCE_EFFECT_UNKNOWN');
+        return 'delivered';
+      }
+      const owned = this.db
+        .prepare('SELECT dispatch FROM entries WHERE operation_id=?')
+        .get(id);
+      const dispatch = RuntimeBridgeDispatchSchema.parse(
+        JSON.parse(String(owned?.dispatch)),
+      );
+      const command = dispatch.payload;
+      if (
+        command.capability !== 'local.process.execute' ||
+        !command.arguments.background?.projectService ||
+        command.arguments.projectSource?.project.projectId !==
+          update.project.projectId ||
+        Number(
+          this.db
+            .prepare(
+              'SELECT count(*) AS n FROM service_sources WHERE operation_id=?',
+            )
+            .get(id)?.n,
+        ) >= 8
+      )
+        throw new BridgeJournalError('SERVICE_SOURCE_IDENTITY');
+      this.db
+        .prepare(
+          "INSERT INTO service_sources(operation_id,update_id,body,state) VALUES(?,?,?,'prepared')",
+        )
+        .run(id, update.updateId, body);
+      return 'new';
+    });
+  }
+  async sourceApplied(
+    id: string,
+    raw: { updateId: string; sourceDigest: string },
+  ) {
+    const receipt = ProjectServiceSourceReceiptSchema.parse(raw);
+    await this.access(id, () => {
+      const prior = this.db
+        .prepare(
+          'SELECT body,receipt FROM service_sources WHERE operation_id=? AND update_id=?',
+        )
+        .get(id, receipt.updateId);
+      if (
+        !prior ||
+        ProjectServiceSourceUpdateSchema.parse(JSON.parse(String(prior.body)))
+          .snapshot.sourceDigest !== receipt.sourceDigest ||
+        (prior.receipt && prior.receipt !== canonicalRuntimeBridgeJson(receipt))
+      )
+        throw new BridgeJournalError('SERVICE_SOURCE_CONFLICT');
+      this.db
+        .prepare(
+          "UPDATE service_sources SET state='delivered',receipt=? WHERE operation_id=? AND update_id=?",
+        )
+        .run(canonicalRuntimeBridgeJson(receipt), id, receipt.updateId);
+    });
+  }
+  async pendingSources(id: string) {
+    return this.access(id, () =>
+      this.db
+        .prepare(
+          "SELECT receipt FROM service_sources WHERE operation_id=? AND state='delivered' AND acknowledged=0 ORDER BY rowid LIMIT 1",
+        )
+        .all(id)
+        .map((r) =>
+          ProjectServiceSourceReceiptSchema.parse(
+            JSON.parse(String(r.receipt)),
+          ),
+        ),
+    );
+  }
+  async acknowledgeSources(
+    id: string,
+    receipts: { updateId: string; sourceDigest: string }[],
+  ) {
+    await this.access(id, () => {
+      for (const raw of receipts) {
+        const receipt = ProjectServiceSourceReceiptSchema.parse(raw);
+        const r = this.db
+          .prepare(
+            "SELECT receipt FROM service_sources WHERE operation_id=? AND update_id=? AND state='delivered'",
+          )
+          .get(id, receipt.updateId);
+        if (!r || r.receipt !== canonicalRuntimeBridgeJson(receipt))
+          throw new BridgeJournalError('SERVICE_SOURCE_ACK');
+        this.db
+          .prepare(
+            'UPDATE service_sources SET acknowledged=1 WHERE operation_id=? AND update_id=?',
+          )
+          .run(id, receipt.updateId);
+      }
+    });
   }
 
   async acknowledge(id: string, sequence: number) {

@@ -69,7 +69,7 @@ async function device() {
   await database`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspace},${organization},'test','P11')`;
   await database`insert into allrice_bridge_devices(id,organization_id,workspace_id,owner_id,name,platform,protocol_version,capabilities,token_hash,last_seen_at)
     values(${id},${organization},${workspace},${user},'P11 synthetic','macos-x64',2,array['local.fs.read'],${createHash('sha256').update(token).digest('hex')},clock_timestamp())`;
-  return { id, token };
+  return { id, token, organization, workspace, user };
 }
 
 async function gateway(options = {}) {
@@ -138,6 +138,7 @@ async function gateway(options = {}) {
   });
   return {
     authority,
+    previewTransport: server.bridgeGateway,
     origin: `http://127.0.0.1:${port}`,
     url: `ws://127.0.0.1:${port}${bridgeSocketPath}`,
     operations: () => operations,
@@ -357,6 +358,77 @@ suite(
       const newer = await connect(await gateway(), d.token);
       await waitUntil(() => old.closed() !== null);
       expect(await newer.call()).toMatchObject({ status: 200 });
+    });
+
+    it('malformed authenticated type closes that socket without crashing or reaching authority', async () => {
+      const d = await device(),
+        g = await gateway();
+      const malformed = await connect(g, d.token);
+      malformed.ws.send(JSON.stringify({ type: 1 }));
+      await waitUntil(() => malformed.closed() !== null);
+      expect(g.operations()).toBe(0);
+      const healthy = await connect(g, d.token);
+      expect(await healthy.call()).toMatchObject({ status: 200 });
+    });
+
+    it('an outbound preview chunk checks the PG epoch even when NOTIFY and heartbeat have not run', async () => {
+      const d = await device();
+      const authority = createBridgeConnectionAuthority(database, {
+        leaseMs: 2000,
+      });
+      const g = await gateway({
+        authority: { ...authority, subscribe: async () => async () => {} },
+        heartbeatMs: 10000,
+      });
+      const old = await connect(g, d.token),
+        id = randomUUID(),
+        operationId = randomUUID();
+      let closed = false;
+      const channel = await g.previewTransport.openPreview({
+        id,
+        target: {
+          serviceId: operationId,
+          operationId,
+          deviceId: d.id,
+          organizationId: d.organization,
+          workspaceId: d.workspace,
+          ownerId: d.user,
+          backend: 'local',
+          attemptId: randomUUID(),
+          containerId: 'a'.repeat(64),
+          imageDigest: 'sha256:' + 'b'.repeat(64),
+          port: 4173,
+          expiresAt: new Date(Date.now() + 60000).toISOString(),
+          hardDeadlineAt: new Date(Date.now() + 120000).toISOString(),
+        },
+        request: {
+          method: 'POST',
+          path: '/',
+          host: 'rice-preview-' + operationId + '.example.test',
+          headers: {},
+          websocket: false,
+        },
+        onFrame: async () => {},
+        onClose: () => {
+          closed = true;
+        },
+      });
+      await waitUntil(() =>
+        old.messages.some((frame) => frame.type === 'preview.open'),
+      );
+      const replacement = await connect(await gateway(), d.token);
+      expect(replacement.welcome.epoch).toBe('2');
+      expect(
+        await channel.send({
+          type: 'preview.data',
+          data: Buffer.from('must not reach old connection').toString('base64'),
+        }),
+      ).toBe(false);
+      await waitUntil(() => closed);
+      expect(old.messages.some((frame) => frame.type === 'preview.data')).toBe(
+        false,
+      );
+      expect(await replacement.call()).toMatchObject({ status: 200 });
     });
 
     it('device revocation closes only that tenant connection and cannot register again', async () => {

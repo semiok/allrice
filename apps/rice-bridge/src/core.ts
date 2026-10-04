@@ -981,10 +981,12 @@ async function startSession(
     : null;
   let transport: BridgeDualTransport | null = null;
   let transportIdentity = '';
+  const { ProjectPreviewRelay } = await import('./project-preview-relay.js');
+  let projectPreviewRelay: InstanceType<typeof ProjectPreviewRelay> | undefined;
   const currentTransport = () => {
     if (
       !operationLedgerEnabled ||
-      process.env.ALLRICE_BRIDGE_WSS_ENABLED !== '1'
+      process.env.ALLRICE_BRIDGE_WSS_ENABLED === '0'
     )
       return null;
     // Credential/config changes close the old connection instead of borrowing it
@@ -996,6 +998,20 @@ async function startSession(
         server: config.server,
         deviceId: config.deviceId,
         token,
+        onPreview: (frame, send) => {
+          if (!runner || !journal) {
+            void send({
+              version: 1,
+              type: 'preview.end',
+              id: frame.id,
+              error: true,
+            });
+            return;
+          }
+          projectPreviewRelay ??= new ProjectPreviewRelay(runner, journal);
+          projectPreviewRelay.receive(frame, send);
+        },
+        onPreviewDisconnect: () => projectPreviewRelay?.close(),
       });
       transportIdentity = identity;
     }

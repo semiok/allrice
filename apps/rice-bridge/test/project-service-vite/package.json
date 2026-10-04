@@ -1,0 +1,10 @@
+{
+  "name": "allrice-pr5a-vite",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.3",
+  "devDependencies": {
+    "vite": "4.5.14"
+  }
+}

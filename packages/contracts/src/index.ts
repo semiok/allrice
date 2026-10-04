@@ -120,3 +120,6 @@ export * from './managed-node-payload.ts';
 export * from './project-workspace.ts';
 export * from './project-execution.ts';
 export * from './project-outputs.ts';
+
+export * from './project-service.ts';
+export * from './project-preview.ts';

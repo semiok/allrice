@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
 import { UuidSchema } from '../common.ts';
+import {
+  ProjectPreviewRequestSchema,
+  ProjectPreviewDataSchema,
+  ProjectPreviewEndSchema,
+} from '../project-preview.ts';
 
 export const bridgeSocketPath = '/api/v1/bridge/socket';
 export const bridgeSocketProtocol = 'allrice.bridge.v1';
@@ -64,6 +69,9 @@ export const BridgeSocketMessageSchema = z.discriminatedUnion('type', [
   BridgeSocketResponseSchema,
   BridgeSocketWelcomeSchema,
   BridgeSocketWakeupSchema,
+  ProjectPreviewRequestSchema,
+  ProjectPreviewDataSchema,
+  ProjectPreviewEndSchema,
 ]);
 
 export function bridgeSocketOperationPath(input: BridgeSocketRequest) {

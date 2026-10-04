@@ -69,6 +69,7 @@ export interface RuntimeBridgeLedgerPort {
     attempt: RuntimeBridgeReceipt['attempt'];
     events: RuntimeLocalServiceEvent[];
     deliveryOnly?: boolean;
+    sourceReceipts?: { updateId: string; sourceDigest: string }[];
   }): Promise<{
     snapshot: Snapshot;
     leaseExpiresAt: string;

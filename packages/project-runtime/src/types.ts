@@ -11,6 +11,7 @@ export type ProjectRuntimeArguments = Pick<
   | 'projectPreparation'
   | 'projectSource'
   | 'outputs'
+  | 'background'
 >;
 export type ProjectRuntimeCommand = { arguments: ProjectRuntimeArguments };
 export interface ProjectEngine {

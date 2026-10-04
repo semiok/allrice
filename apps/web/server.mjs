@@ -8,6 +8,7 @@ import { bridgeSocketPath } from '@allrice/contracts';
 import {
   closeDatabase,
   createBridgeConnectionAuthority,
+  resolveProjectPreviewAccess,
 } from '@allrice/database';
 import next from 'next';
 
@@ -15,13 +16,24 @@ import {
   createBridgeLoopbackDispatch,
   createBridgeSocketGateway,
 } from './server/bridge-socket.mjs';
+import { createProjectPreviewGateway } from './server/project-preview.mjs';
 
 /** Next registers its own upgrade listener after the first HTTP request. Route
  * only the dedicated Bridge path before normal EventEmitter dispatch; every
  * other upgrade (including development HMR) remains Next's responsibility. */
 export class AllRiceHttpServer extends Server {
   bridgeGateway = null;
+  previewGateway = null;
   emit(event, ...args) {
+    if (
+      (event === 'request' || event === 'upgrade') &&
+      this.previewGateway?.matches(args[0])
+    ) {
+      void this.previewGateway[event === 'request' ? 'request' : 'upgrade'](
+        ...args,
+      );
+      return true;
+    }
     if (
       event === 'upgrade' &&
       args[0]?.url?.split('?')[0] === bridgeSocketPath
@@ -69,6 +81,16 @@ export async function startAllRiceWeb({
       dispatch: createBridgeLoopbackDispatch(port),
     });
   }
+  if (process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX && server.bridgeGateway) {
+    server.previewGateway = createProjectPreviewGateway({
+      suffix: process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX,
+      mainOrigin: new URL(
+        process.env.ALLRICE_PUBLIC_URL ?? 'https://allrice.bplabs.xyz',
+      ).origin,
+      resolveAccess: resolveProjectPreviewAccess,
+      transport: server.bridgeGateway,
+    });
+  }
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, hostname, resolve);
@@ -76,6 +98,7 @@ export async function startAllRiceWeb({
   return {
     server,
     async close() {
+      await server.previewGateway?.close();
       await server.bridgeGateway?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

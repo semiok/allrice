@@ -15,6 +15,8 @@ import {
   bridgeSocketOperationPath,
   bridgeSocketPath,
   bridgeSocketProtocol,
+  ProjectPreviewClientFrameSchema,
+  ProjectPreviewServerFrameSchema,
 } from '@allrice/contracts';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -111,6 +113,7 @@ export async function createBridgeSocketGateway({
       protocols.has(bridgeSocketProtocol) ? bridgeSocketProtocol : false,
   });
   const clients = new Set();
+  const previews = new Map();
   let stopping = false,
     authenticating = 0,
     pendingBytes = 0;
@@ -205,6 +208,75 @@ export async function createBridgeSocketGateway({
   timer.unref();
 
   return {
+    async openPreview({ target, request, id, onFrame, onClose }) {
+      if (stopping || !enabled()) throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+      const client = [...clients].find(
+        (c) =>
+          c.connection.deviceId === target.deviceId &&
+          c.connection.organizationId === target.organizationId &&
+          c.connection.workspaceId === target.workspaceId &&
+          !c.closing,
+      );
+      if (
+        !client ||
+        !(await current(client)) ||
+        previews.size >= 64 ||
+        [...previews.values()].filter((p) => p.client === client).length >= 8 ||
+        previews.has(id)
+      )
+        throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+      const entry = {
+        client,
+        onFrame,
+        onClose,
+        queue: Promise.resolve(),
+        bytes: 0,
+      };
+      previews.set(id, entry);
+      const close = () => {
+        if (previews.get(id) !== entry) return;
+        previews.delete(id);
+        send(client, { version: 1, type: 'preview.end', id, error: true });
+        onClose();
+      };
+      if (
+        !send(
+          client,
+          ProjectPreviewServerFrameSchema.parse({
+            version: 1,
+            type: 'preview.open',
+            id,
+            target,
+            request,
+          }),
+        )
+      ) {
+        close();
+        throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+      }
+      return {
+        send: async (frame) => {
+          if (previews.get(id) !== entry || client.closing) return false;
+          if (!(await current(client))) {
+            terminate(client);
+            return false;
+          }
+          if (previews.get(id) !== entry || client.closing) return false;
+          const text = JSON.stringify(
+            ProjectPreviewServerFrameSchema.parse({ ...frame, version: 1, id }),
+          );
+          if (
+            client.ws.bufferedAmount + Buffer.byteLength(text) >
+            bridgeSocketMaximumBufferedBytes
+          )
+            return false;
+          return new Promise((resolve) =>
+            client.ws.send(text, (error) => resolve(!error)),
+          );
+        },
+        close,
+      };
+    },
     matches(request) {
       return request.url?.split('?')[0] === bridgeSocketPath;
     },
@@ -288,10 +360,73 @@ export async function createBridgeSocketGateway({
           });
           ws.on('close', () => {
             clients.delete(client);
+            for (const [id, p] of previews)
+              if (p.client === client) {
+                previews.delete(id);
+                p.onClose();
+              }
             void authority.release(connection).catch(() => undefined);
           });
           ws.on('message', (data, isBinary) => {
             if (client.closing) return;
+            if (!isBinary && data.length <= bridgeSocketMaximumFrameBytes) {
+              let parsed;
+              try {
+                parsed = JSON.parse(data.toString('utf8'));
+              } catch {
+                /* strict RPC path rejects below */
+              }
+              if (
+                typeof parsed?.type === 'string' &&
+                parsed.type.startsWith('preview.')
+              ) {
+                let f;
+                try {
+                  f = ProjectPreviewClientFrameSchema.parse(parsed);
+                } catch {
+                  terminate(client, 4000, 'INVALID_PREVIEW_FRAME');
+                  return;
+                }
+                const p = previews.get(f.id);
+                if (!p) return;
+                if (p.client !== client) {
+                  terminate(client, 4000, 'PREVIEW_IDENTITY');
+                  return;
+                }
+                p.bytes += data.length;
+                if (p.bytes > bridgeSocketMaximumBufferedBytes) {
+                  terminate(client, 4013, 'PREVIEW_BACKPRESSURE');
+                  return;
+                }
+                p.queue = p.queue
+                  .then(async () => {
+                    if (previews.get(f.id) !== p) return;
+                    if (!(await current(client))) {
+                      terminate(client);
+                      return;
+                    }
+                    await p.onFrame(f);
+                    if (f.type === 'preview.end') {
+                      previews.delete(f.id);
+                      p.onClose();
+                    }
+                  })
+                  .catch(() => {
+                    previews.delete(f.id);
+                    p.onClose();
+                    send(client, {
+                      version: 1,
+                      type: 'preview.end',
+                      id: f.id,
+                      error: true,
+                    });
+                  })
+                  .finally(() => {
+                    p.bytes -= data.length;
+                  });
+                return;
+              }
+            }
             if (
               isBinary ||
               client.pending >= 8 ||
@@ -377,6 +512,8 @@ export async function createBridgeSocketGateway({
     },
     async close() {
       stopping = true;
+      for (const p of previews.values()) p.onClose();
+      previews.clear();
       clearInterval(timer);
       await unsubscribe();
       await Promise.all(

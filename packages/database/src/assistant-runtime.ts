@@ -24,6 +24,7 @@ import {
 import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import { createDevelopmentCooperation } from './development-cooperation.ts';
 import { refreshTaskClock, readTaskClock } from './task-clock.ts';
+import { continuingProjectServiceIds } from './project-services.ts';
 import {
   observesExecutionUsage,
   isTokenMetric,
@@ -223,13 +224,19 @@ export function createAssistantRuntime(
     (root.observeTokens && isTokenMetric(metric)) ||
     (root.observeCalls && isCallMetric(metric));
 
-  async function unsettledUsage(tx: Tx, root: Root, runId?: string) {
+  async function unsettledUsage(
+    tx: Tx,
+    root: Root,
+    runId?: string,
+    continuingServices: string[] = [],
+  ) {
     const rows = await tx<{ blocking: boolean }[]>`
       select not (${root.observeTokens} and metric in ('input_tokens','output_tokens')) as blocking
       from allrice_assistant_usage where root_run_id=${root.root_run_id}
         and (${runId ?? null}::uuid is null or run_id=${runId ?? null}) and settled_amount is null
       union all
-      select o.snapshot->>'status' not in ('succeeded','failed','partial','canceled') as blocking from allrice_runtime_reservations u
+      select o.snapshot->>'status' not in ('succeeded','failed','partial','canceled')
+        and not (o.id=any(${continuingServices}::uuid[])) as blocking from allrice_runtime_reservations u
       join allrice_runtime_operations o on o.id=u.operation_id
       where u.root_run_id=${root.root_run_id} and u.settled_amount is null
         and (${runId ?? null}::uuid is null or o.initial_snapshot->>'agentInstanceId'=${runId ?? null})`;
@@ -725,11 +732,22 @@ export function createAssistantRuntime(
         const children = await tx<
           Instance[]
         >`select * from allrice_assistant_instances where root_run_id=${root.root_run_id} and depth>0 for update`;
-        const unsettled = await unsettledUsage(tx, root);
+        const continuingServices = await continuingProjectServiceIds(
+          tx,
+          root.root_run_id,
+        );
+        const unsettled = await unsettledUsage(
+          tx,
+          root,
+          undefined,
+          continuingServices,
+        );
         if (terminal.has(main.status))
           return summary(main.status, !unsettled.unknown);
         const [pending] =
-          await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id} and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
+          await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id}
+            and not (id=any(${continuingServices}::uuid[]))
+            and snapshot->>'status' not in ('succeeded','failed','partial','canceled') limit 1`;
         const [unadopted] =
           await tx`select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id where i.root_run_id=${root.root_run_id} and i.depth>0 and (r.delivery_id is null or r.parent_adopted_seq is null) limit 1`;
         const [undelivered] =

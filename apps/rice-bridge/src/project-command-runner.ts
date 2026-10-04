@@ -12,6 +12,7 @@ import {
   type RuntimeLocalCommand,
   type RuntimeProjectScope,
   type RuntimeLocalCommandResult,
+  ProjectServiceSourceUpdateSchema,
 } from '@allrice/contracts';
 import { mutateProjectCache, reserveProjectVolume } from './project-cache.js';
 import type { LocalDockerApi } from './local-docker-api.js';
@@ -23,6 +24,7 @@ import {
 import {
   ProjectEvents,
   projectStagingArchives,
+  createLocalPythonArchive,
 } from '@allrice/project-runtime';
 import {
   projectCacheKey,
@@ -35,6 +37,8 @@ import {
   pythonProjectSupervisor,
 } from './project-supervisor.js';
 import type { LocalCommandOutput } from './local-command-runner.js';
+import type { ProjectServiceRunnerOptions } from './local-service-runner.js';
+import { LocalServiceControl } from './local-service-control.js';
 
 const attemptLabel = 'xyz.bplabs.allrice.attempt',
   payloadLabel = 'xyz.bplabs.allrice.project.payload',
@@ -52,6 +56,7 @@ type Options = {
   signal?: AbortSignal;
   maintainLease?: () => Promise<boolean>;
   onOutput?: (chunk: LocalCommandOutput) => void;
+  service?: ProjectServiceRunnerOptions;
 };
 type Container = {
   Id: string;
@@ -273,6 +278,33 @@ export class ProjectCommandRunner {
       ? this.input.pythonImage
       : this.input.nodeImage;
   }
+  async assertServiceTarget(
+    attempt: string,
+    id: string,
+    command: RuntimeLocalCommand,
+    serviceId: string,
+  ) {
+    const c = await this.inspect(attempt, id, command);
+    const host = await this.input.api.json<{
+      HostConfig: {
+        NetworkMode: string;
+        ReadonlyRootfs: boolean;
+        Binds: unknown[] | null;
+        PortBindings: Record<string, unknown> | null;
+      };
+    }>('GET', `/containers/${id}/json`);
+    if (
+      !c.State.Running ||
+      c.Config.Labels['xyz.bplabs.allrice.service'] !== serviceId ||
+      c.Config.Labels['xyz.bplabs.allrice.backend'] !==
+        'local-vm-container-v1' ||
+      host.HostConfig.NetworkMode !== 'none' ||
+      !host.HostConfig.ReadonlyRootfs ||
+      host.HostConfig.Binds?.length ||
+      Object.keys(host.HostConfig.PortBindings ?? {}).length
+    )
+      throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
+  }
   private async inspect(
     attempt: string,
     id: string,
@@ -340,6 +372,24 @@ export class ProjectCommandRunner {
   ) {
     const command = RuntimeLocalCommandSchema.parse(input),
       a = command.arguments;
+    if (
+      !!a.background?.projectService !== !!options.service ||
+      (options.service && !a.projectSource)
+    )
+      throw new LocalCommandError('SERVICE_CONFIG_INVALID');
+    const serviceLease = options.service
+      ? await options.service.maintainLease()
+      : null;
+    const previewHost = serviceLease?.projectService?.previewHost;
+    if (
+      options.service &&
+      (!previewHost ||
+        !previewHost.startsWith(`rice-preview-${options.service.processId}.`) ||
+        !/^[a-z0-9.-]+(?::[0-9]{1,5})?$/.test(previewHost) ||
+        serviceLease?.stopRequested ||
+        Date.parse(serviceLease!.leaseExpiresAt) <= Date.now())
+    )
+      throw new LocalCommandError('SERVICE_PREVIEW_UNAVAILABLE');
     const scope = RuntimeProjectScopeSchema.safeParse(options.scope);
     if (!scope.success) throw new LocalCommandError('PROJECT_SCOPE_REQUIRED');
     if (
@@ -494,8 +544,26 @@ export class ProjectCommandRunner {
               User: '0:0',
               WorkingDir: '/tmp/work',
               Tty: false,
-              OpenStdin: false,
-              Labels: labels,
+              OpenStdin: !!options.service,
+              StdinOnce: false,
+              ...(options.service
+                ? {
+                    Env: [
+                      `ALLRICE_SERVICE_ID=${options.service.processId}`,
+                      `ALLRICE_SERVICE_ATTEMPT=${options.attemptId}`,
+                      `ALLRICE_SERVICE_PREVIEW_HOST=${previewHost}`,
+                    ],
+                  }
+                : {}),
+              Labels: {
+                ...labels,
+                ...(options.service
+                  ? {
+                      'xyz.bplabs.allrice.service': options.service.processId,
+                      'xyz.bplabs.allrice.backend': 'local-vm-container-v1',
+                    }
+                  : {}),
+              },
               HostConfig: {
                 NetworkMode: 'none',
                 ReadonlyRootfs: true,
@@ -538,6 +606,15 @@ export class ProjectCommandRunner {
       const id = c.Id;
       createdContainer = id;
       await this.inspect(options.attemptId, id, command);
+      if (options.service)
+        await options.service.onEvent({
+          type: 'starting',
+          processId: options.service.processId,
+          attemptId: options.attemptId,
+          sequence: 0,
+          containerId: id,
+          hardDeadlineAt: options.service.hardDeadlineAt,
+        });
       let start: Promise<unknown> | undefined,
         stopPromise: Promise<void> | undefined,
         stopReason: Exit['reason'] | undefined;
@@ -582,13 +659,15 @@ export class ProjectCommandRunner {
         start = this.input.api.json('POST', `/containers/${id}/start`);
         await start;
         if (signal.aborted) await stop(abortReason());
-        const observed = await this.read(
-          id,
-          a.limits.outputBytes,
-          a.limits.timeoutMs + 15000,
-          options.onOutput,
-          a.outputs,
-        );
+        const observed = options.service
+          ? await this.readService(id, command, options.service, signal, stop)
+          : await this.read(
+              id,
+              a.limits.outputBytes,
+              a.limits.timeoutMs + 15000,
+              options.onOutput,
+              a.outputs,
+            );
         await stopPromise;
         const c = await this.inspect(options.attemptId, id, command);
         if (c.State.Running || c.State.Status !== 'exited')
@@ -664,14 +743,181 @@ export class ProjectCommandRunner {
       clearInterval(heartbeat);
     }
   }
+  /** Same container, dependency preparation and physical receipt as foreground
+   * projects. Only trusted PID1 owns control; source changes are journaled before
+   * staging and acknowledged before the server advances its visible revision. */
+  private async readService(
+    id: string,
+    command: RuntimeLocalCommand,
+    options: ProjectServiceRunnerOptions,
+    signal: AbortSignal,
+    stop: (reason: Exit['reason']) => Promise<void>,
+  ) {
+    let sequence = 0,
+      control: LocalServiceControl | undefined,
+      busy = false,
+      ended = false;
+    const acks = new Map<
+      number,
+      {
+        resolve: () => void;
+        reject: (e: Error) => void;
+        timer: ReturnType<typeof setTimeout>;
+      }
+    >();
+    let facts = Promise.resolve();
+    const events = new ProjectEvents(
+      command.arguments.limits.outputBytes,
+      (output) => {
+        facts = facts.then(() => options.onOutput?.(output));
+      },
+      [],
+      (event) => {
+        if (event.type === 'control_ack') {
+          const ack = acks.get(Number(event.sequence));
+          if (!ack) throw new LocalCommandError('INVALID_CONTROL_ACK');
+          clearTimeout(ack.timer);
+          acks.delete(Number(event.sequence));
+          ack.resolve();
+        } else if (event.type === 'service') {
+          const value = event.event as Parameters<
+            ProjectServiceRunnerOptions['onEvent']
+          >[0];
+          if (
+            value.processId !== options.processId ||
+            value.attemptId !== options.attemptId ||
+            value.type !== 'ready'
+          )
+            throw new LocalCommandError('SERVICE_ACK_MISMATCH');
+          facts = facts.then(() => options.onEvent(value));
+        } else
+          facts = facts.then(() =>
+            options.onSourceApplied?.({
+              updateId: String(event.updateId),
+              sourceDigest: String(event.sourceDigest),
+            }),
+          );
+        void facts.catch(() => stop('lease_lost').catch(() => undefined));
+      },
+    );
+    const send = async (frame: Record<string, unknown>) => {
+      const index = sequence++;
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          acks.delete(index);
+          reject(new LocalCommandError('SERVICE_CONTROL_TIMEOUT'));
+        }, 2000);
+        acks.set(index, { resolve, reject, timer });
+        void control!
+          .send({ ...frame, attemptId: options.attemptId, sequence: index })
+          .catch((error) => {
+            clearTimeout(timer);
+            acks.delete(index);
+            reject(error);
+          });
+      });
+    };
+    const logs = this.input.api.logs(
+      id,
+      (bytes) => events.push(bytes),
+      Math.max(1000, Date.parse(options.hardDeadlineAt) - Date.now()) + 15000,
+    );
+    void logs.catch(() => stop('supervisor_failed').catch(() => undefined));
+    let tickTask: Promise<void> | undefined,
+      timer: ReturnType<typeof setInterval> | undefined;
+    const tick = async () => {
+      if (busy || ended) return;
+      busy = true;
+      try {
+        const lease = await options.maintainLease();
+        if (ended) return;
+        const deadline = Math.min(
+          Date.parse(options.hardDeadlineAt),
+          Date.parse(lease.leaseExpiresAt),
+          Date.now() + 5000,
+        );
+        if (lease.stopRequested || signal.aborted || deadline <= Date.now()) {
+          await stop(signal.aborted ? 'canceled' : 'lease_lost');
+          return;
+        }
+        await send({ type: 'renew', leaseDeadlineMs: deadline });
+        const update = lease.projectService?.sourceUpdate;
+        if (update) {
+          const parsed = ProjectServiceSourceUpdateSchema.parse(update);
+          if (!options.prepareSource || !options.onSourceApplied)
+            throw new LocalCommandError('SERVICE_SOURCE_JOURNAL_REQUIRED');
+          if ((await options.prepareSource(parsed)) === 'new') {
+            await this.inspect(options.attemptId, id, command);
+            const bytes = Buffer.from(JSON.stringify(parsed)),
+              checksum =
+                'sha256:' + createHash('sha256').update(bytes).digest('hex');
+            await this.input.api.putArchive(
+              id,
+              '/tmp/work',
+              createLocalPythonArchive([
+                {
+                  path: '.allrice/source-' + parsed.updateId + '.json',
+                  bytes,
+                  mode: 0o444,
+                },
+              ]),
+              signal,
+            );
+            // Staging cannot authorize applying beyond the short lease.
+            await send({ type: 'source', updateId: parsed.updateId, checksum });
+            await facts;
+          }
+        }
+      } catch {
+        if (!ended) await stop('lease_lost').catch(() => undefined);
+      } finally {
+        busy = false;
+      }
+    };
+    try {
+      control = await LocalServiceControl.connect(
+        this.input.api.socketPath,
+        id,
+      );
+      await tick();
+      timer = setInterval(() => {
+        if (!tickTask)
+          tickTask = tick().finally(() => {
+            tickTask = undefined;
+          });
+      }, 1000);
+      await logs;
+      ended = true;
+      await facts;
+      return events.finish();
+    } finally {
+      ended = true;
+      clearInterval(timer);
+      control?.close();
+      for (const a of acks.values()) {
+        clearTimeout(a.timer);
+        a.reject(new LocalCommandError('SERVICE_CONTROL_UNAVAILABLE'));
+      }
+      acks.clear();
+      await tickTask?.catch(() => undefined);
+    }
+  }
   private async read(
     id: string,
     maximum: number,
     timeout: number,
     onOutput?: Options['onOutput'],
     outputs?: RuntimeLocalCommand['arguments']['outputs'],
+    serviceReceiptOnly = false,
   ) {
-    const events = new ProjectEvents(maximum, onOutput, outputs);
+    // Recovery reads trusted facts only after killing the original container.
+    // Accept its service/source receipts without renewing or replaying controls.
+    const events = new ProjectEvents(
+      maximum,
+      onOutput,
+      outputs,
+      serviceReceiptOnly ? () => undefined : undefined,
+    );
     await this.input.api.logs(id, (bytes) => events.push(bytes), timeout);
     return events.finish();
   }
@@ -698,6 +944,7 @@ export class ProjectCommandRunner {
       10000,
       undefined,
       command.arguments.outputs,
+      !!command.arguments.background?.projectService,
     );
     c = await this.inspect(attempt, c.Id, command);
     if (c.State.Running || c.State.Status !== 'exited')

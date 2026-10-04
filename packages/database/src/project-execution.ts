@@ -5,14 +5,14 @@ import {
   RuntimeLocalCommandProfileSchema,
   EmployeeExecutionSnapshotSchema,
   CloudExecutionProfileSchema,
-  ProjectExecuteInputSchema,
+  ProjectRunnableInputSchema,
   projectWorkflowBudget,
   ExecutionChoiceSchema,
   isLocalCommandProfileForPlatform,
   resolveExecutionChoice,
   runtimeContractEqual,
   type ExecutionContext,
-  type ProjectExecuteInput,
+  type ProjectRunnableInput,
   type ExecutionChoice,
   type RuntimeSavedProjectSource,
   type RuntimeActionBinding,
@@ -38,7 +38,7 @@ export interface ProjectExecutionSelection {
   runId: string;
   operationId: string | null;
   choice: ExecutionChoice;
-  originalArguments: ProjectExecuteInput;
+  originalArguments: ProjectRunnableInput;
   argumentsDigest: string;
   sessionId: string;
   deviceId: string | null;
@@ -73,7 +73,7 @@ export async function selectProjectExecution(
 ): Promise<ProjectExecutionSelection> {
   const ctx = input.context,
     owner = ctx.policySnapshot.subjectId;
-  const args = ProjectExecuteInputSchema.parse(input.arguments);
+  const args = ProjectRunnableInputSchema.parse(input.arguments);
   if (!ctx.workspaceId || !input.callId || input.callId.length > 255)
     throw new RuntimePolicyError('invalid_tool_call');
   const selectionId = cloudStableId(
@@ -206,7 +206,9 @@ export async function selectProjectExecution(
         (!parsed.success ||
           !isLocalCommandProfileForPlatform(device.platform, parsed.data) ||
           !parsed.data.features?.includes('saved_project_source') ||
-          !parsed.data.features.includes('project_preparation'))
+          !parsed.data.features.includes('project_preparation') ||
+          (args.action === 'service_start' &&
+            !parsed.data.features.includes('project_services')))
       )
         state = 'unsupported';
       else if (
@@ -344,6 +346,7 @@ export async function assertProjectExecutionOrigin(
     path: string;
     limits: unknown;
     outputs?: unknown;
+    background?: { projectService?: unknown };
   },
   location: 'local' | 'cloud',
 ) {
@@ -372,7 +375,14 @@ export async function assertProjectExecutionOrigin(
     selection.selectionId !== origin.selectionId
   )
     fail();
-  const args = ProjectExecuteInputSchema.parse(selection!.originalArguments);
+  const args = ProjectRunnableInputSchema.parse(selection!.originalArguments);
+  if (
+    args.action === 'service_start' &&
+    (!command.background?.projectService ||
+      !runtimeContractEqual(command.background.projectService, args.service))
+  )
+    fail();
+  if (args.action === 'execute' && command.background) fail();
   if (
     digest(args) !== origin.argumentsDigest ||
     !runtimeContractEqual(
@@ -383,7 +393,7 @@ export async function assertProjectExecutionOrigin(
         args: args.args,
         path: args.path,
         limits: args.limits,
-        ...(args.outputs ? { outputs: args.outputs } : {}),
+        ...('outputs' in args && args.outputs ? { outputs: args.outputs } : {}),
       },
       {
         project: source.project,

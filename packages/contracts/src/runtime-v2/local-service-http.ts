@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  ProjectServiceSourceReceiptSchema,
+  ProjectServiceSourceUpdateSchema,
+} from '../project-service.ts';
 import { UuidSchema } from '../common.ts';
 import { RuntimeAttemptRefSchema } from './identity.ts';
 import { RuntimeOperationSnapshotSchema } from './operations.ts';
@@ -13,6 +17,10 @@ export const RuntimeLocalServiceExchangeSchema = z
     leaseToken: UuidSchema,
     events: z.array(RuntimeLocalServiceEventSchema).max(16),
     deliveryOnly: z.boolean().optional(),
+    sourceReceipts: z
+      .array(ProjectServiceSourceReceiptSchema)
+      .max(1)
+      .optional(),
   })
   .strict();
 export const RuntimeLocalServiceExchangeResponseSchema = z
@@ -23,6 +31,23 @@ export const RuntimeLocalServiceExchangeResponseSchema = z
     acceptedSequence: z.number().int().min(-1).max(63),
     inputs: z.array(RuntimeLocalServiceInputSchema).max(1),
     stopRequested: z.boolean(),
+    acceptedSourceReceipts: z
+      .array(ProjectServiceSourceReceiptSchema)
+      .max(1)
+      .optional(),
+    projectService: z
+      .object({
+        id: UuidSchema,
+        expiresAt: z.iso.datetime(),
+        previewHost: z
+          .string()
+          .max(253)
+          .regex(/^[a-z0-9.-]+(?::[0-9]{1,5})?$/)
+          .nullable(),
+        sourceUpdate: ProjectServiceSourceUpdateSchema.nullable(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 export const RuntimeLocalServiceUserActionSchema = z

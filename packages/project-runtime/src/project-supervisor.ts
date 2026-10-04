@@ -1,10 +1,12 @@
+import { projectServiceSupervisor } from './project-service-supervisor.js';
 /** Project code and package scripts run below the immutable PID 1 supervisor.
  * Manager archives are release-pinned; all dependency archives were hash checked
  * outside this container. Neither install nor project code has a network.
  */
 export const nodeProjectSupervisor = String.raw`
 import { spawn } from 'node:child_process';
-import { readFile,writeFile,mkdir,chown,chmod,readdir,lstat,open,realpath } from 'node:fs/promises';
+import { readFile,writeFile,mkdir,chown,chmod,readdir,lstat,open,realpath,rename,unlink } from 'node:fs/promises';
+import {get as httpGet} from 'node:http';
 import { constants as fsConstants } from 'node:fs';
 import { constants } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -15,16 +17,19 @@ const a=JSON.parse(await readFile(root+'/.allrice/config.json','utf8'));
 let finished=false,size=0,frames=0,installation='failed';
 const emit=e=>process.stdout.write(JSON.stringify(e)+'\n');
 const end=(reason,code)=>{if(finished)return;finished=true;emit({type:'exit',reason,code,installation});process.stdout.write('',()=>process.exit(code));setTimeout(()=>process.exit(code),100).unref();};
+${projectServiceSupervisor}
 let cacheChecking=false;
 async function checkCache(){let total=0,count=0;const dirs=['/cache'];while(dirs.length){const dir=dirs.pop();for(const e of await readdir(dir,{withFileTypes:true})){if(++count>20000)throw Error('cache limit');const p=dir+'/'+e.name;if(e.isDirectory())dirs.push(p);else if(e.isFile())total+=(await lstat(p)).size;if(total>128000000)throw Error('cache limit');}}}
 const cacheTimer=setInterval(()=>{if(cacheChecking||finished)return;cacheChecking=true;void checkCache().catch(()=>end('cache_limit',123)).finally(()=>cacheChecking=false);},500);cacheTimer.unref();
 const timer=setTimeout(()=>end(a.deadlineReason||'timeout',124),Math.max(0,a.deadlineUnixMs-Date.now()));
-const run=(exe,args,tenant=true)=>new Promise(resolve=>{
+const run=(exe,args,tenant=true,live=false)=>new Promise(resolve=>{
  const p=spawn(exe,args,{cwd:root+'/project/'+(a.command.path==='.'?'':a.command.path),uid:tenant?1000:0,gid:tenant?1000:0,stdio:['ignore','pipe','pipe'],
  env:{PATH:root+'/tools/package/bin:/usr/local/bin:/usr/bin:/bin',HOME:root+'/home',TMPDIR:root+'/tmp',LANG:'C.UTF-8',CI:'1',
- npm_config_userconfig:root+'/.allrice/empty.conf',npm_config_globalconfig:root+'/.allrice/empty.conf',npm_config_update_notifier:'false',COREPACK_ENABLE_NETWORK:'0',PNPM_HOME:root+'/home/pnpm'}});
+ npm_config_userconfig:root+'/.allrice/empty.conf',npm_config_globalconfig:root+'/.allrice/empty.conf',npm_config_update_notifier:'false',COREPACK_ENABLE_NETWORK:'0',PNPM_HOME:root+'/home/pnpm',
+ ...(live?{__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:process.env.ALLRICE_SERVICE_PREVIEW_HOST?.split(':')[0]}:{})}});
  for(const s of ['stdout','stderr'])p[s].on('data',b=>{const keep=b.subarray(0,Math.max(0,a.command.limits.outputBytes-size));size+=b.length;if(keep.length&&frames++<254)emit({type:s,data:keep.toString('base64')});if(size>a.command.limits.outputBytes||frames>=254)end('output_limit',122);});
  p.once('error',()=>end('supervisor_failed',125));let drain;
+ if(live)void projectServiceStarted(p).catch(()=>end('supervisor_failed',125));
  p.once('exit',()=>{drain=setTimeout(()=>end('output_limit',125),250);});
  p.once('close',(c,s)=>{clearTimeout(drain);resolve(Number.isInteger(c)?c:128+(constants.signals[s]||0));});
 });
@@ -50,6 +55,7 @@ async function collect(){let total=0;for(const f of a.command.outputs||[]){
 try{
  await checkCache();
  for(const dir of ['project','home','tmp','tools'])await mkdir(root+'/'+dir,{recursive:true,mode:0o755});
+ await chmod(root+'/.allrice',0o755);
  const manifest=[];
  for(const f of a.command.files){const b=await readFile(root+'/project/'+f.path),sha256='sha256:'+createHash('sha256').update(b).digest('hex');if(sha256!==f.sha256)throw Error('project source changed');manifest.push({path:f.path,sha256});}
  const sourceDigest='sha256:'+createHash('sha256').update(JSON.stringify(manifest)).digest('hex');if(sourceDigest!==a.command.projectPreparation.sourceDigest)throw Error('project source changed');
@@ -66,7 +72,7 @@ try{
  // Restore with tenant privileges, never as root after lifecycle scripts.
  const restored=await run('/usr/local/bin/node',['-e',"const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync('/tmp/work/.allrice/pnpm-original-lock');const h=fs.openSync('pnpm-lock.yaml',fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);try{fs.writeFileSync(h,b);}finally{fs.closeSync(h);}if('sha256:'+crypto.createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex')!=="+JSON.stringify(s.lockChecksum)+")process.exit(125);"]);
  if(installed||restored){clearTimeout(timer);end(restored?'supervisor_failed':'exited',restored||installed);}
- if(!finished){await checkCache();installation='succeeded';emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args);await checkCache();if(c===0&&!finished)await collect();clearTimeout(timer);end('exited',c);}
+ if(!finished){await checkCache();installation='succeeded';emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args,true,!!service);await checkCache();if(c===0&&!finished)await collect();clearTimeout(timer);end('exited',c);}
 }catch(e){emit({type:'stderr',data:Buffer.from(String(e?.message||'project failure').slice(0,200)).toString('base64')});clearTimeout(timer);end(e?.message==='cache limit'?'cache_limit':'supervisor_failed',e?.message==='cache limit'?123:125);}
 `;
 
