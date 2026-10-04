@@ -14,6 +14,7 @@ import {
   localPreviewUrlAllowed,
   localPreviewOrigin,
   runtimeContractEqual,
+  staticBrowserDocumentUrl,
   type LocalPreviewLease,
   type LocalBrowserProfileBinding,
 } from '@allrice/contracts';
@@ -243,10 +244,11 @@ export async function startLocalBrowserDriver(input: {
     )
       throw Error('LOCAL_BROWSER_UNAVAILABLE');
     const launcherPath = await resolveLocalBrowserLauncher();
-    const state = await input.profiles.load(
-      input.binding,
-      input.options.profile,
-    );
+    if (input.options.staticDocument && input.binding.persistLogin)
+      throw Error('LOCAL_BROWSER_PROFILE_UNSAFE');
+    const state = input.options.staticDocument
+      ? { cookies: [], origins: [] }
+      : await input.profiles.load(input.binding, input.options.profile);
     await input.options.assertCurrent();
     directory = await mkdtemp(join(tmpdir(), 'allrice-browser-'));
     directoryIdentity = await lstat(directory);
@@ -309,9 +311,12 @@ export async function startLocalBrowserDriver(input: {
       {
         ...input.options,
         authorizeUrl: (url) =>
-          preview
-            ? localPreviewUrlAllowed(preview.target, url)
-            : localBrowserUrlAllowed(url, input.options.profile),
+          input.options.staticDocument
+            ? url ===
+              staticBrowserDocumentUrl(input.options.staticDocument.target)
+            : preview
+              ? localPreviewUrlAllowed(preview.target, url)
+              : localBrowserUrlAllowed(url, input.options.profile),
         localPreviewRelay:
           preview && relay
             ? async (request) =>

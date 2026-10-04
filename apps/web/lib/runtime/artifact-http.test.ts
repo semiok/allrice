@@ -13,6 +13,7 @@ const ports = vi.hoisted(() => ({
   context: vi.fn(),
   list: vi.fn(),
   get: vi.fn(),
+  verification: vi.fn(),
   feedback: vi.fn(),
   save: vi.fn(),
   address: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock('@allrice/database', async (original) => ({
   workbenchEnabled: ports.enabled,
   listWorkbenchArtifacts: ports.list,
   getWorkbenchArtifact: ports.get,
+  readArtifactBrowserVerification: ports.verification,
   listArtifactFeedback: ports.feedback,
   saveArtifactFeedback: ports.save,
   addressArtifactFeedback: ports.address,
@@ -62,6 +64,7 @@ describe('authenticated workbench HTTP boundary', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ports.enabled.mockReturnValue(true);
+    ports.verification.mockResolvedValue(null);
     ports.context.mockResolvedValue(context);
     ports.list.mockResolvedValue({ artifacts: [], nextCursor: null });
     ports.get.mockResolvedValue({
@@ -382,6 +385,27 @@ describe('authenticated workbench HTTP boundary', () => {
     expect(response.status).toBe(500);
     expectPrivateHeaders(response);
     expect(await response.text()).toBe('{"code":"ARTIFACT_UNAVAILABLE"}');
+  });
+  it('includes saved-page verification only after the original private artifact authorizes the request', async () => {
+    const verification = {
+      reportArtifactId: id,
+      screenshotArtifactId: randomUUID(),
+      outcome: { report: { verdict: 'failed' } },
+    };
+    ports.verification.mockResolvedValue(verification);
+    const response = await artifactHttp(request(), 'detail', sessionId, id);
+    expect(response.status).toBe(200);
+    expectPrivateHeaders(response);
+    expect((await response.json()).browserVerification).toEqual(verification);
+    expect(ports.verification).toHaveBeenCalledWith(context, sessionId, id);
+    ports.verification.mockClear();
+    ports.get.mockRejectedValueOnce(
+      new DataAccessError('authorization_denied'),
+    );
+    expect(
+      (await artifactHttp(request(), 'detail', sessionId, id)).status,
+    ).toBe(403);
+    expect(ports.verification).not.toHaveBeenCalled();
   });
   it('records preview failure codes without recording backend secrets', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});

@@ -219,6 +219,9 @@ export class LocalBrowserController {
           kind: 'stopped',
           ...this.owned(active),
           confirmed,
+          ...(active.workspace.staticTarget && active.driver
+            ? { browserVersion: active.driver.version }
+            : {}),
           errorCode: confirmed ? null : 'LOCAL_BROWSER_CLEANUP_PENDING',
         });
       } catch {
@@ -296,6 +299,10 @@ export class LocalBrowserController {
         response.workspace.id !== active.workspace.id ||
         response.workspace.runId !== active.workspace.runId ||
         response.workspace.profileId !== active.workspace.profileId ||
+        !runtimeContractEqual(
+          response.workspace.staticTarget ?? null,
+          active.workspace.staticTarget ?? null,
+        ) ||
         !runtimeContractEqual(
           response.workspace.preview?.target ?? null,
           active.workspace.preview?.target ?? null,
@@ -547,6 +554,19 @@ export class LocalBrowserController {
     this.active = active;
     try {
       if (workspace.preview) await this.currentPreview(active);
+      const staticDocument = workspace.staticTarget
+        ? await this.input.authority.staticDocument?.({
+            kind: 'static_document',
+            ...this.owned(active),
+          })
+        : undefined;
+      if (
+        workspace.staticTarget &&
+        (!staticDocument ||
+          !runtimeContractEqual(staticDocument.target, workspace.staticTarget))
+      )
+        throw Error('LOCAL_BROWSER_STATIC_TARGET_CHANGED');
+      await this.assertCurrent(active);
       active.starting = (this.input.startDriver ?? startLocalBrowserDriver)({
         binding: localBrowserProfileBinding(workspace),
         profiles: this.input.profiles,
@@ -560,6 +580,7 @@ export class LocalBrowserController {
               }
             : undefined,
         options: {
+          ...(staticDocument ? { staticDocument } : {}),
           profileId: workspace.profileId,
           profile: workspace.profile,
           assertCurrent: () => this.assertCurrent(active),

@@ -11,6 +11,7 @@ import {
   type ExecutionLocation,
   type ExecutionChoice,
   type BridgeReadinessState,
+  type StaticBrowserTarget,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
@@ -61,6 +62,8 @@ export async function selectBrowserExecution(
     location?: ExecutionLocation;
     requireLocalInputs?: boolean;
     grantId?: string;
+    /** Trusted adapter: already authorized saved bytes, not local filesystem inputs. */
+    staticArtifact?: StaticBrowserTarget;
   },
   db = getDatabase(),
 ) {
@@ -78,6 +81,7 @@ export async function selectBrowserExecution(
     ...(grantId ? { grantId } : {}),
     location: requested,
     requireLocalInputs: input.requireLocalInputs ?? false,
+    ...(input.staticArtifact ? { staticArtifact: input.staticArtifact } : {}),
   });
   return db.begin(async (tx) => {
     await browserIdentity(tx, ctx);
@@ -121,7 +125,7 @@ export async function selectBrowserExecution(
     const location = grantId ? 'local' : requestedLocation;
     const localInputs =
       !!grantId ||
-      !!run.local_device ||
+      (!input.staticArtifact && !!run.local_device) ||
       constraints.localOnly ||
       input.requireLocalInputs;
     const [prior] = await tx<
@@ -154,7 +158,9 @@ export async function selectBrowserExecution(
       where w.id=${id} and w.organization_id=${ctx.organizationId}
         and w.workspace_id=${ctx.workspaceId} and w.owner_id=${ctx.actor.id} and w.run_id=${input.context.runId}`;
     const boundDevice =
-      existing?.device_id ?? prior?.metadata.deviceId ?? run.local_device;
+      existing?.device_id ??
+      prior?.metadata.deviceId ??
+      (input.staticArtifact ? null : run.local_device);
     const devices =
       localBrowserEnabled() && run.local_tool
         ? await tx<
@@ -164,12 +170,14 @@ export async function selectBrowserExecution(
               online: boolean;
               metadata: Record<string, unknown>;
               grant_id: string | null;
+              grant_version: number | null;
+              target_id: string;
               profile: unknown;
               busy: boolean;
             }[]
           >`select d.id,d.protocol_version,
       coalesce(d.last_seen_at between clock_timestamp()-interval '90 seconds' and clock_timestamp(),false) and t.state='online' as online,
-      coalesce(t.metadata,'{}'::jsonb) as metadata,g.id as grant_id,g.profile,
+      coalesce(t.metadata,'{}'::jsonb) as metadata,g.id as grant_id,g.version as grant_version,t.id as target_id,g.profile,
       exists(select 1 from allrice_local_browser_workspaces w where w.grant_id=g.id and w.released_at is null
         and w.browser_workspace_id<>${id}) as busy
       from allrice_bridge_devices d join allrice_execution_targets t on t.target_key='bridge.'||d.id::text
@@ -196,7 +204,14 @@ export async function selectBrowserExecution(
         state = 'ready'; // old v2 explicit grant
       if (
         d.grant_id &&
-        (!profile.success || !browserOriginAllowed(url, profile.data))
+        (!profile.success ||
+          (!input.staticArtifact && !browserOriginAllowed(url, profile.data)))
+      )
+        state = 'unsupported';
+      if (
+        input.staticArtifact &&
+        (d.metadata.environment as Record<string, unknown> | undefined)
+          ?.staticBrowserVersion !== 1
       )
         state = 'unsupported';
       if (
@@ -229,13 +244,15 @@ export async function selectBrowserExecution(
     candidates.sort((a, b) => rank.indexOf(a.state) - rank.indexOf(b.state));
     const device = candidates[0];
     const cloudGrants = await tx<
-      { profile: unknown }[]
-    >`select g.profile from allrice_browser_control_grants g
+      { id: string; version: number; target_id: string; profile: unknown }[]
+    >`select g.id,g.version,g.target_id,g.profile from allrice_browser_control_grants g
       join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id
       where g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${ctx.actor.id}
         and g.transport='cloud' and g.enabled and g.revoked_at is null and t.state='online'
-        and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp())`;
-    const cloudAvailable = cloudGrants.some((g) => {
+        and t.kind='cloud_sandbox' and t.capabilities ? 'browser.navigate'
+        and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp())
+      order by g.created_at,g.id`;
+    const cloudGrant = cloudGrants.find((g) => {
       const p = BrowserProfileSchema.safeParse(g.profile);
       return p.success && browserOriginAllowed(url, p.data);
     });
@@ -255,7 +272,7 @@ export async function selectBrowserExecution(
         : resolveExecutionChoice({
             location,
             local: device?.state ?? null,
-            cloudAvailable,
+            cloudAvailable: !!cloudGrant,
             localInputs,
             boundLocation,
             outcomeUnknown: existing?.state === 'unknown',
@@ -267,7 +284,18 @@ export async function selectBrowserExecution(
     return {
       choice,
       deviceId: existing?.device_id ?? device?.id ?? null,
-      grantId: existing?.grant_id ?? device?.grant_id ?? null,
+      grantId:
+        choice.location === 'cloud'
+          ? (cloudGrant?.id ?? null)
+          : (existing?.grant_id ?? device?.grant_id ?? null),
+      grantVersion:
+        choice.location === 'cloud'
+          ? (cloudGrant?.version ?? null)
+          : (device?.grant_version ?? null),
+      targetId:
+        choice.location === 'cloud'
+          ? (cloudGrant?.target_id ?? null)
+          : (device?.target_id ?? null),
       deadlineAt: run.timeout_at.toISOString(),
       workspaceId: id,
       selectionReason: prior?.reason ?? choice.reason,

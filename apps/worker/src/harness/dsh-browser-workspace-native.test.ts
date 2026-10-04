@@ -1,6 +1,32 @@
 import { randomUUID } from 'node:crypto';
 import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+it('passes exact saved HTML and finite verification plan through real DSH, rejecting raw HTML/URLs', async () => {
+  const args = {
+    command: 'verify',
+    artifact: { versionId: randomUUID(), checksum: 'sha256:' + 'a'.repeat(64) },
+    plan: {
+      version: 1,
+      steps: [
+        { type: 'click', selector: { tag: 'button', label: 'Compute' } },
+        { type: 'text_contains', expected: '42' },
+      ],
+    },
+    location: 'auto',
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'browser.workspace',
+    wireName: 'browser_workspace',
+    args,
+    invalidArgs: {
+      ...args,
+      artifact: {
+        ...args.artifact,
+        html: '<script>fetch("https://example.com")</script>',
+      },
+    },
+  });
+}, 45000);
 it('P21 browser uses native DSH to the existing Broker, with exact action envelope', async () => {
   await nativeBrokerRoundtrip({
     canonicalName: 'browser.workspace',

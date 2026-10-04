@@ -32,6 +32,7 @@ export async function createLocalBrowserFixture(
     persistLogin?: boolean;
     workbench?: boolean;
     memberRole?: 'admin' | 'member';
+    policyLifetimeMs?: number;
   } = {},
 ) {
   const f = await createCloudExecutionFixture(db, storageRoot, {
@@ -39,6 +40,7 @@ export async function createLocalBrowserFixture(
     localBrowser: options.frozen !== false,
     workbench: options.workbench,
     memberRole: options.memberRole,
+    policyLifetimeMs: options.policyLifetimeMs,
   });
   const deviceId = randomUUID(),
     targetId = randomUUID(),

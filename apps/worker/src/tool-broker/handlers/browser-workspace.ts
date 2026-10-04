@@ -26,6 +26,7 @@ import {
 } from '../../browser-control/controller.js';
 import type { RiceToolHandler } from '../types.js';
 import { browserScreenshotDelivery } from '../../browser-control/delivery.js';
+import { runStaticBrowserVerification } from '../../browser-control/static-verify.js';
 
 export const runBrowserWorkspace: RiceToolHandler = async ({
   input,
@@ -35,6 +36,8 @@ export const runBrowserWorkspace: RiceToolHandler = async ({
     ctx = browserPrincipal(input.context);
   if (!input.managedBrowserJobAttempt || !input.managedBrowserJobLeaseToken)
     throw Error('BROWSER_JOB_LEASE_REQUIRED');
+  if (args.command === 'verify')
+    return runStaticBrowserVerification(input, args);
   if (args.command === 'profiles') {
     const profiles = (await listLocalBrowserGrants(ctx)).filter(
       (p) => p.enabled,

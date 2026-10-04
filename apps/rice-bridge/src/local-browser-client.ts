@@ -6,6 +6,8 @@ import {
   LocalBrowserNextSchema,
   LocalBrowserRequestApprovalSchema,
   LocalBrowserStartSchema,
+  StaticBrowserDocumentSchema,
+  type StaticBrowserDocument,
   UuidSchema,
   localBrowserCaptureMaximumBytes,
   platformFileMaximumBytes,
@@ -66,6 +68,9 @@ export interface LocalBrowserAuthority {
     maximumBytes: number,
   ) => Promise<Buffer>;
   capture: (metadata: LocalBrowserCapture, bytes: Buffer) => Promise<string>;
+  staticDocument?: (
+    request: RequestOf<'static_document'>,
+  ) => Promise<StaticBrowserDocument>;
 }
 async function bounded(response: Response, maximum: number) {
   const reader = response.body?.getReader();
@@ -91,6 +96,9 @@ async function bounded(response: Response, maximum: number) {
  * Browser site requests never share this fetch/token or the SaaS authority URL. */
 export class LocalBrowserHttpAuthority implements LocalBrowserAuthority {
   private previewUnsupported = false;
+  async staticDocument(request: RequestOf<'static_document'>) {
+    return StaticBrowserDocumentSchema.parse(await this.json(request));
+  }
   constructor(private readonly input: { server: string; token: string }) {
     const url = new URL(input.server);
     if (

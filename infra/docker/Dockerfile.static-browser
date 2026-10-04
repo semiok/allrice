@@ -1,0 +1,20 @@
+# One-shot saved-HTML verification only; no Worker credentials or project code.
+# The release operator builds a small context containing this file and runner.mjs.
+FROM node@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS engine
+RUN apt-get update -qq \
+    && apt-get install -y --no-install-recommends \
+       chromium=154.0.8037.92-1~deb12u1 \
+       fonts-noto-cjk=1:20220127+repack1-1 \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/allrice-static-browser
+RUN npm install --ignore-scripts --no-audit --no-fund --omit=dev \
+    --save-exact playwright-core@1.62.1
+LABEL allrice.runtime="static-browser-v1" \
+      allrice.browser="chromium-154.0.8037.92" \
+      allrice.playwright="1.62.1"
+
+FROM engine AS runtime
+COPY runner.mjs /opt/allrice-static-browser/runner.mjs
+ENV HOME=/tmp/browser-home TMPDIR=/tmp
+USER 1000:1000
+ENTRYPOINT ["/usr/local/bin/node", "/opt/allrice-static-browser/runner.mjs"]
