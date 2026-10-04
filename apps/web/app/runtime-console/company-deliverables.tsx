@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import { AdminButton as Button } from '../../components/admin/admin-ui';
 import {
   CompanyDeliverableEvidenceSchema,
   type CompanyDeliverableEvidence,
@@ -8,7 +8,7 @@ import {
   type CompanyDeliverables,
 } from '@allrice/contracts';
 import { useActivityPages } from './organization-activity-data';
-import { DshDialog } from '../chatflow/dsh-upstream/Dialog';
+import { AdminDialog } from '../../components/admin/admin-ui';
 import { NativeDocumentPreview } from '../chatflow/native-document-preview';
 import { FontNotice } from '../chatflow/dsh-upstream/document/office/FontNotice';
 import { zh as officeZh } from '../chatflow/dsh-upstream/document/office/locales';
@@ -18,7 +18,7 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import { TenantValidation } from './tenant-validation';
-import styles from './tenant-administration.module.css';
+import styles from './admin-data.module.css';
 const stateLabels = {
   ready: '可用',
   expired: '已过期',
@@ -114,7 +114,7 @@ export function CompanyDeliverableLibrary({
           <tbody>
             {page.data?.deliverables.map((row) => (
               <tr key={row.seriesId}>
-                <td>
+                <td data-label="成果">
                   <strong>{row.fileName}</strong>
                   <small>
                     {row.format.toUpperCase()} · v{row.version} ·{' '}
@@ -124,11 +124,11 @@ export function CompanyDeliverableLibrary({
                       : ''}
                   </small>
                 </td>
-                <td>
+                <td data-label="员工 / AI 员工">
                   {row.ownerName}
                   <small>{row.employeeName ?? '历史成果未记录 AI 员工'}</small>
                 </td>
-                <td>
+                <td data-label="来源工作">
                   {row.sessionTitle}
                   <small>{row.runId ? '已有来源轮次' : '来源轮次未记录'}</small>
                   {row.runStatus && row.runStatus !== 'succeeded' && (
@@ -141,8 +141,10 @@ export function CompanyDeliverableLibrary({
                     </small>
                   )}
                 </td>
-                <td>{new Date(row.createdAt).toLocaleString()}</td>
-                <td>
+                <td data-label="更新时间">
+                  {new Date(row.createdAt).toLocaleString()}
+                </td>
+                <td data-label="操作">
                   <Button
                     aria-haspopup="dialog"
                     onClick={() => setSelected(row)}
@@ -165,12 +167,11 @@ export function CompanyDeliverableLibrary({
         </Button>
       )}
       {selected && (
-        <DshDialog
+        <AdminDialog
           ariaLabel="公司成果预览"
           title={selected.fileName}
           eyebrow={`${selected.ownerName} · ${selected.employeeName ?? '历史来源未完整记录'}`}
-          className={`${styles.panel} ${styles.workDialog}`}
-          bodyClassName={styles.workDialogBody}
+          size="wide"
           onClose={() => setSelected(null)}
         >
           <CompanyFilePreview
@@ -181,15 +182,14 @@ export function CompanyDeliverableLibrary({
               setWork(row);
             }}
           />
-        </DshDialog>
+        </AdminDialog>
       )}
       {work?.runId && (
-        <DshDialog
+        <AdminDialog
           ariaLabel="成果来源工作"
           title={work.sessionTitle}
           eyebrow={`${work.ownerName} · ${work.employeeName}`}
-          className={`${styles.panel} ${styles.workDialog}`}
-          bodyClassName={styles.workDialogBody}
+          size="wide"
           onClose={() => setWork(null)}
         >
           <TenantValidation
@@ -200,7 +200,7 @@ export function CompanyDeliverableLibrary({
             onDirty={() => undefined}
             onBusy={() => undefined}
           />
-        </DshDialog>
+        </AdminDialog>
       )}
     </section>
   );

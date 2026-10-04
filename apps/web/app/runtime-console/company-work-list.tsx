@@ -5,9 +5,13 @@ import type {
   OrganizationActivityRuns,
 } from '@allrice/contracts';
 import { TenantValidation } from './tenant-validation';
-import { DshDialog } from '../chatflow/dsh-upstream/Dialog';
+import {
+  AdminDialog,
+  AdminButton,
+  AdminStatus,
+} from '../../components/admin/admin-ui';
 import { useActivityPages } from './organization-activity-data';
-import styles from './tenant-administration.module.css';
+import styles from './admin-data.module.css';
 const labels: Record<keyof ActivityCounts, string> = {
   running: '进行中',
   waiting: '等待处理',
@@ -17,7 +21,7 @@ const labels: Record<keyof ActivityCounts, string> = {
   canceled: '已取消',
 };
 const duration = (ms: number) =>
-  `${Math.floor(ms / 60000)} 分 ${Math.floor((ms % 60000) / 1000)} 秒`;
+  `${Math.floor(ms / 60000)}分 ${Math.floor((ms % 60000) / 1000)}秒`;
 
 export function CompanyWorkList({
   organizationId,
@@ -85,9 +89,14 @@ export function CompanyWorkList({
             ))}
           </select>
         </label>
-        <button disabled={page.loading} onClick={() => void page.load()}>
+        <AdminButton
+          variant="quiet"
+          icon="refresh"
+          disabled={page.loading}
+          onClick={() => void page.load()}
+        >
           刷新工作列表
-        </button>
+        </AdminButton>
       </div>
       {page.error && <p role="alert">{page.error}</p>}
       <div className={styles.table}>
@@ -104,22 +113,34 @@ export function CompanyWorkList({
           <tbody>
             {page.data?.runs.map((r) => (
               <tr key={r.id}>
-                <td>
+                <td data-label="工作">
                   <strong>{r.title}</strong>
                   <small>
                     {new Date(r.createdAt).toLocaleString()}
                     {r.sessionArchived ? ' · 会话已归档' : ''}
                   </small>
                 </td>
-                <td>
+                <td data-label="员工 / AI 员工">
                   <strong>{r.ownerName}</strong>
                   <small>{r.employeeName}</small>
                 </td>
-                <td>
-                  {labels[r.status]}
+                <td data-label="进展">
+                  <AdminStatus
+                    tone={
+                      r.status === 'succeeded'
+                        ? 'success'
+                        : r.status === 'failed'
+                          ? 'danger'
+                          : ['running', 'waiting', 'queued'].includes(r.status)
+                            ? 'warning'
+                            : 'muted'
+                    }
+                  >
+                    {labels[r.status]}
+                  </AdminStatus>
                   <small>{r.stage}</small>
                 </td>
-                <td>
+                <td data-label="耗时">
                   {r.timing ? (
                     <>
                       <span>工作 {duration(r.timing.activeMs)}</span>
@@ -129,14 +150,15 @@ export function CompanyWorkList({
                     '历史任务未记录时钟'
                   )}
                 </td>
-                <td>
-                  <button
+                <td data-label="操作">
+                  <AdminButton
+                    variant="quiet"
                     aria-haspopup="dialog"
                     aria-expanded={selected?.id === r.id}
                     onClick={() => setSelected(r)}
                   >
                     查看工作与成果
-                  </button>
+                  </AdminButton>
                 </td>
               </tr>
             ))}
@@ -146,17 +168,19 @@ export function CompanyWorkList({
       {!page.data && page.loading && <p role="status">正在读取工作…</p>}
       {page.data && !page.data.runs.length && <p>还没有匹配的工作。</p>}
       {page.data?.nextCursor && (
-        <button disabled={page.loading} onClick={() => void page.load(true)}>
+        <AdminButton
+          disabled={page.loading}
+          onClick={() => void page.load(true)}
+        >
           更早的工作
-        </button>
+        </AdminButton>
       )}
       {selected && (
-        <DshDialog
+        <AdminDialog
           ariaLabel="工作与成果"
           title={selected.title}
           eyebrow={`${selected.ownerName} · ${selected.employeeName}`}
-          className={`${styles.panel} ${styles.workDialog}`}
-          bodyClassName={styles.workDialogBody}
+          size="wide"
           onClose={() => setSelected(null)}
         >
           <TenantValidation
@@ -168,7 +192,7 @@ export function CompanyWorkList({
             onDirty={() => undefined}
             onBusy={() => undefined}
           />
-        </DshDialog>
+        </AdminDialog>
       )}
     </section>
   );

@@ -1,19 +1,33 @@
 .panel {
   min-width: 0;
-  padding: 18px 0;
+  padding: 24px 0 0;
+  color: var(--admin-text);
 }
 .panel p {
   line-height: 1.6;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.panel h3 {
+  margin: 0;
+  font-size: var(--admin-font-body);
+}
+.panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
 }
 .panel select {
+  min-height: var(--admin-control-height);
   max-width: 100%;
-  margin: 0 8px;
-  padding: 7px;
-  border: 1px solid var(--dsw-alias-border-l2, #394452);
-  border-radius: 8px;
-  background: var(--dsw-specific-input-major, #202630);
-  color: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+  background: var(--admin-canvas);
+  color: var(--admin-text);
   font: inherit;
+  font-size: var(--admin-font-body);
 }
 .items {
   display: grid;
@@ -21,8 +35,59 @@
   gap: 12px;
   margin: 16px 0;
 }
+.items article {
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  border-color: var(--admin-border);
+  border-radius: 8px;
+  padding: 16px;
+}
+.items small {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.items button {
+  font-size: var(--admin-font-meta);
+}
 .check {
   display: inline-flex !important;
   align-items: center;
-  margin: 6px 14px 6px 0;
+  margin: 6px 12px 6px 0;
+}
+.editor label input:not([type='checkbox']),
+.editor label textarea,
+.editor label select {
+  min-height: var(--admin-control-height);
+  padding: 8px 10px;
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+  font: inherit;
+  font-size: var(--admin-font-body);
+}
+.editor label {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.editor p {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.editor {
+  color: var(--admin-text);
+  font-size: var(--admin-font-body);
+}
+.editor fieldset {
+  min-width: 0;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.editor legend {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.editor input[type='checkbox'] {
+  accent-color: var(--admin-text);
 }

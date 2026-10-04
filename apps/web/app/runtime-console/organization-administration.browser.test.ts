@@ -369,6 +369,86 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     },
   );
 
+  it('opens metric-filtered work from the overview and keeps company scope across all dashboard tabs', async () => {
+    const a = await tenantValidationFixture(fixture.db);
+    await fixture.db`update allrice_organizations set name='Dashboard tabs fixture' where id=${a.target.organizationId}`;
+    const context = await browser.newContext({
+      viewport: { width: 320, height: 900 },
+    });
+    await context.addCookies([
+      { name: 'fixture_session', value: adminToken, url: origin },
+    ]);
+    const page = await context.newPage();
+    try {
+      await page.goto(
+        `${origin}/runtime-console?view=activity&organizationId=${a.target.organizationId}`,
+      );
+      await page
+        .getByRole('heading', { name: 'Dashboard tabs fixture', exact: true })
+        .waitFor();
+      await page
+        .getByLabel('员工', { exact: true })
+        .selectOption(a.target.subjectId);
+      const overview = page.getByRole('tabpanel', {
+        name: '概况',
+        exact: true,
+      });
+      await overview.getByRole('button', { name: /^本期发起工作/ }).waitFor();
+      const response = page.waitForResponse((r) => {
+        const u = new URL(r.url());
+        return (
+          u.pathname === '/api/v1/admin/activity' &&
+          u.searchParams.get('view') === 'companyRuns' &&
+          u.searchParams.get('measure') === 'started' &&
+          u.searchParams.get('userId') === a.target.subjectId
+        );
+      });
+      await overview.getByRole('button', { name: /^本期发起工作/ }).click();
+      expect((await response).status()).toBe(200);
+      await page
+        .getByRole('tabpanel', { name: '工作记录', exact: true })
+        .waitFor();
+      expect(
+        await page
+          .getByRole('tab', { name: '工作记录', exact: true })
+          .getAttribute('aria-selected'),
+      ).toBe('true');
+      for (const name of ['交付成果', '规矩与范本', '概况']) {
+        await page.getByRole('tab', { name, exact: true }).click();
+        await page.getByRole('tabpanel', { name, exact: true }).waitFor();
+        expect(
+          await page.getByLabel('员工', { exact: true }).inputValue(),
+        ).toBe(a.target.subjectId);
+        expect(
+          await page.getByLabel('公司', { exact: true }).inputValue(),
+        ).toBe(a.target.organizationId);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+      }
+      await page.getByRole('tab', { name: '概况', exact: true }).focus();
+      await page.keyboard.press('ArrowRight');
+      await page
+        .getByRole('tabpanel', { name: '工作记录', exact: true })
+        .waitFor();
+      expect(
+        await page
+          .getByRole('tab', { name: '工作记录', exact: true })
+          .evaluate((element) => element === document.activeElement),
+      ).toBe(true);
+      await page.keyboard.press('End');
+      await page
+        .getByRole('tabpanel', { name: '规矩与范本', exact: true })
+        .waitFor();
+      await page.keyboard.press('Home');
+      await overview.waitFor();
+    } finally {
+      await context.close();
+    }
+  });
+
   it.each([1440, 390])(
     'opens work and files in a visible dialog, retains detail on refresh, and rejects foreign downloads (%i)',
     async (width) => {
@@ -398,6 +478,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page
           .getByRole('heading', { name: companyName, exact: true })
           .waitFor();
+        await page.getByRole('tab', { name: '工作记录', exact: true }).click();
         stage = 'select employee';
         expect(
           await page.getByLabel('员工', { exact: true }).inputValue(),
@@ -528,7 +609,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await dialog
           .getByRole('region', { name: '真实任务检查结果' })
           .waitFor();
-        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        await dialog
+          .getByRole('button', { name: '关闭工作与成果', exact: true })
+          .click();
         expect(await dialog.count()).toBe(0);
         expect(errors).toEqual([]);
         expect(failures).toEqual([]);
@@ -593,6 +676,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page
           .getByLabel('公司', { exact: true })
           .selectOption(a.target.organizationId);
+        await page.getByRole('tab', { name: '交付成果', exact: true }).click();
         const library = page.getByRole('region', {
           name: '公司交付成果',
           exact: true,
@@ -718,6 +802,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page
           .getByRole('heading', { name: companyName, exact: true })
           .waitFor();
+        await page
+          .getByRole('tab', { name: '规矩与范本', exact: true })
+          .click();
         const panel = page.getByRole('region', {
           name: '公司规矩与范本',
           exact: true,

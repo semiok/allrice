@@ -138,11 +138,17 @@ export function AdminDialog({
   children,
   onClose,
   busy = false,
+  size = 'default',
+  ariaLabel,
+  eyebrow,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   busy?: boolean;
+  size?: 'default' | 'wide';
+  ariaLabel?: string;
+  eyebrow?: string;
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -152,23 +158,27 @@ export function AdminDialog({
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
     element.showModal();
     element.querySelector<HTMLElement>('[data-autofocus]')?.focus();
     return () => {
       element.close();
+      document.body.style.overflow = previousOverflow;
       if (opener?.isConnected) opener.focus();
     };
   }, []);
   return (
     <dialog
       ref={dialog}
-      className={styles.dialog}
-      aria-labelledby={titleId}
+      className={`${styles.dialog} ${size === 'wide' ? styles.wideDialog : ''}`}
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabel ? undefined : titleId}
       onKeyDown={(event) => {
         if (event.key !== 'Tab') return;
         const controls = [
           ...event.currentTarget.querySelectorAll<HTMLElement>(
-            'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href]',
+            'button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], summary',
           ),
         ].filter((element) => element.getClientRects().length > 0);
         const first = controls[0],
@@ -201,11 +211,14 @@ export function AdminDialog({
       }}
     >
       <header className={styles.dialogHeader}>
-        <h2 id={titleId}>{title}</h2>
+        <div>
+          <h2 id={titleId}>{title}</h2>
+          {eyebrow && <p className={styles.dialogEyebrow}>{eyebrow}</p>}
+        </div>
         <AdminButton
           variant="icon"
           icon="close"
-          aria-label={`关闭${title}`}
+          aria-label={`关闭${ariaLabel ?? title}`}
           disabled={busy}
           onClick={onClose}
         />

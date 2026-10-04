@@ -366,3 +366,12 @@
     min-height: 44px;
   }
 }
+
+.wideDialog {
+  width: min(1100px, calc(100% - 32px));
+}
+.dialogEyebrow {
+  margin: 4px 0 0;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}

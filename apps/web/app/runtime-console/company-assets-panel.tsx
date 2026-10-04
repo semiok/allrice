@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives';
+import {
+  AdminButton as Button,
+  AdminDialog,
+} from '../../components/admin/admin-ui';
 import { z } from 'zod';
 import {
   CompanyAssetContentSchema,
@@ -11,7 +14,6 @@ import {
   type CompanyAsset,
   type CompanyAssetContent,
 } from '@allrice/contracts';
-import { DshDialog } from '../chatflow/dsh-upstream/Dialog';
 import { CompanyAssetRevisionView } from '../chatflow/company-template-browser';
 import {
   CompanyAssetStateActions,
@@ -183,7 +185,10 @@ function CompanyRuleEditor({
   const disabled =
     busy || saved?.state === 'archived' || (saved !== null && !saved.canEdit);
   return (
-    <section className={common.editor} aria-label="公司规矩草稿">
+    <section
+      className={`${common.editor} ${styles.editor}`}
+      aria-label="公司规矩草稿"
+    >
       <p>
         先保存草稿，再明确发布。规矩正文由你核对和编辑，不会自动搬入私人会话或触发任务。
       </p>
@@ -199,7 +204,7 @@ function CompanyRuleEditor({
       )}
       <label>
         规矩标题
-        <Input
+        <input
           aria-label="规矩标题"
           value={content.title}
           maxLength={160}
@@ -220,7 +225,7 @@ function CompanyRuleEditor({
       </label>
       <label>
         分类（可选）
-        <Input
+        <input
           aria-label="规矩分类"
           value={content.category}
           maxLength={80}
@@ -230,7 +235,7 @@ function CompanyRuleEditor({
       </label>
       <label>
         任务关键词（可选）
-        <Input
+        <input
           aria-label="规矩任务关键词"
           value={keywords}
           disabled={disabled}
@@ -401,6 +406,8 @@ function Panel({ organizationId }: { organizationId: string }) {
           </select>
         </label>
         <Button
+          icon="refresh"
+          variant="quiet"
           disabled={directory.loading}
           onClick={() => {
             setSelected(null);
@@ -411,6 +418,8 @@ function Panel({ organizationId }: { organizationId: string }) {
           刷新公司资料
         </Button>
         <Button
+          variant="primary"
+          icon="plus"
           onClick={() => {
             setSelected(null);
             setEditor({});
@@ -461,12 +470,11 @@ function Panel({ organizationId }: { organizationId: string }) {
         </Button>
       )}
       {selected && !directory.error && (
-        <DshDialog
+        <AdminDialog
           ariaLabel="公司资料修订"
           title={selected.latest.content.title}
           onClose={() => setSelected(null)}
-          className={common.dialog}
-          bodyClassName={common.body}
+          size="wide"
         >
           <CompanyAssetRevisionView
             key={selected.id}
@@ -475,15 +483,14 @@ function Panel({ organizationId }: { organizationId: string }) {
             headers={adminHeaders}
             onChange={(next) => setSelected(next)}
           />
-        </DshDialog>
+        </AdminDialog>
       )}
       {editor && !directory.error && (
-        <DshDialog
+        <AdminDialog
           ariaLabel="编辑公司规矩"
           title={editor.initial ? '编辑公司规矩' : '新增公司规矩'}
           onClose={() => setEditor(null)}
-          className={common.dialog}
-          bodyClassName={common.body}
+          size="wide"
         >
           <CompanyRuleEditor
             key={editor.initial?.id ?? 'new-rule'}
@@ -491,7 +498,7 @@ function Panel({ organizationId }: { organizationId: string }) {
             initial={editor.initial}
             onSaved={() => void directory.load()}
           />
-        </DshDialog>
+        </AdminDialog>
       )}
     </section>
   );
