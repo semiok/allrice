@@ -82,6 +82,8 @@ export function runtimeTimelineStatus(status: string) {
       return { label: '已更新', tone: 'updated', icon: 'refresh' } as const;
     case 'info':
       return { label: '信息', tone: 'muted', icon: null } as const;
+    case 'incomplete':
+      return { label: '无结束记录', tone: 'muted', icon: 'info' } as const;
     default:
       return { label: status, tone: 'muted', icon: null } as const;
   }
@@ -150,6 +152,7 @@ export function projectRuntimeTimelineEvents(events: RuntimeTimelineEvent[]) {
 
 export function aggregateRuntimeTimelineEvents(
   events: RuntimeTimelineEvent[],
+  options: { runStatus?: string } = {},
 ): RuntimeTimelineItem[] {
   const projected = projectRuntimeTimelineEvents(events);
   const result: RuntimeTimelineItem[] = [];
@@ -178,6 +181,14 @@ export function aggregateRuntimeTimelineEvents(
     if (grouped.length === 1) {
       result.push({ type: 'event', key: event.key, event });
     } else {
+      const status = groupStatus(grouped);
+      const runEnded = [
+        'succeeded',
+        'failed',
+        'canceled',
+        'cancelled',
+        'completed',
+      ].includes(options.runStatus ?? '');
       result.push({
         type: 'group',
         key: `${event.runId}:${bucket}:${event.sequence}`,
@@ -192,7 +203,7 @@ export function aggregateRuntimeTimelineEvents(
               : bucket === 'context-activity'
                 ? `${grouped.some((item) => item.kind === 'compaction') ? '上下文整理' : '上下文占用'} · ${grouped.length} 条记录`
                 : `${event.title} · 连续调用 ${grouped.length} 次`,
-        status: groupStatus(grouped),
+        status: status === 'running' && runEnded ? 'incomplete' : status,
         occurredAt: grouped.at(-1)?.occurredAt ?? event.occurredAt,
         events: grouped,
       });

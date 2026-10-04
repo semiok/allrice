@@ -475,6 +475,7 @@ export function RuntimeConsole() {
           ...turn,
           items: aggregateRuntimeTimelineEvents(
             turn.events.filter((event) => event.kind !== 'answer'),
+            { runStatus: turn.run.status },
           ),
           answerText: answerEvent?.detail ?? turn.assistantMessage.text,
         };

@@ -250,6 +250,33 @@ describe('runtime timeline projection', () => {
     expect(items.map((item) => item.type)).toEqual(['event', 'event']);
   });
 
+  it('does not present an ended run with a missing phase end as still running', () => {
+    const events = [
+      event(1, '正在整理上下文', null, {
+        kind: 'compaction',
+        status: 'started',
+      }),
+      event(2, '上下文摘要已生成', null, {
+        kind: 'compaction',
+        status: 'updated',
+      }),
+    ];
+    for (const runStatus of ['succeeded', 'failed', 'canceled']) {
+      expect(
+        aggregateRuntimeTimelineEvents(events, { runStatus })[0],
+      ).toMatchObject({ type: 'group', status: 'incomplete', events });
+    }
+    expect(
+      aggregateRuntimeTimelineEvents(events, { runStatus: 'running' })[0],
+    ).toMatchObject({ type: 'group', status: 'running' });
+    expect(
+      aggregateRuntimeTimelineEvents(
+        [...events, event(3, '上下文已整理', null, { kind: 'compaction' })],
+        { runStatus: 'failed' },
+      )[0],
+    ).toMatchObject({ type: 'group', status: 'completed' });
+  });
+
   it('distinguishes preparation from maintenance and preserves unknown statuses', () => {
     expect(
       runtimeTimelineCategory(

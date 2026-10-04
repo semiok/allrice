@@ -858,8 +858,11 @@
 }
 .eventEnd {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   flex: none;
+  min-width: 0;
+  max-width: 100%;
   gap: 8px;
 }
 .eventList > li strong {
