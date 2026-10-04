@@ -179,7 +179,9 @@ suite('project service first complete native chain', () => {
       await once(server, 'listening');
       const port = server.address().port,
         origin = `http://127.0.0.1:${port}`,
-        suffix = `preview.localhost:${port}`;
+        // Vite auto-allows .localhost: use a real non-localhost shape so a
+        // production Host forwarding omission cannot pass this acceptance.
+        suffix = `preview.allrice.test:${port}`;
       vi.stubEnv('ALLRICE_PROJECT_PREVIEW_SUFFIX', suffix);
       server.bridgeGateway = await createBridgeSocketGateway({
         authority: createBridgeConnectionAuthority(database),
@@ -421,10 +423,31 @@ suite('project service first complete native chain', () => {
           process.env.CHROME_PATH ??
           '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
         headless: true,
-        args: ['--no-proxy-server'],
+        args: [
+          '--no-proxy-server',
+          '--host-resolver-rules=MAP *.preview.allrice.test 127.0.0.1',
+        ],
       });
       const page = await browser.newPage(),
         frames = [];
+      proof.previewResponses = [];
+      proof.browserErrors = [];
+      page.on('pageerror', (error) => proof.browserErrors.push(String(error)));
+      page.on('console', (message) => {
+        if (message.type() === 'error')
+          proof.browserErrors.push(message.text());
+      });
+      page.on('requestfailed', (request) =>
+        proof.browserErrors.push(
+          `${new URL(request.url()).pathname}: ${request.failure()?.errorText}`,
+        ),
+      );
+      page.on('response', (response) => {
+        proof.previewResponses.push({
+          path: new URL(response.url()).pathname,
+          status: response.status(),
+        });
+      });
       page.on('websocket', (ws) =>
         ws.on('framereceived', (frame) => frames.push(String(frame.payload))),
       );
@@ -433,7 +456,14 @@ suite('project service first complete native chain', () => {
         { waitUntil: 'networkidle', timeout: 30000 },
       );
       expect(response.status()).toBe(200);
-      await page.locator('#result').filter({ hasText: 'source:42' }).waitFor();
+      await page
+        .locator('#result')
+        .filter({ hasText: 'source:42' })
+        .waitFor({ timeout: 10000 })
+        .catch(async (error) => {
+          proof.previewBody = await page.locator('body').innerText();
+          throw error;
+        });
       expect(page.url()).toBe(url);
       const original = files.find((f) => f.path === 'main.js').text,
         changed = original.replace('source:42', 'source:43');
