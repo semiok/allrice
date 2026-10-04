@@ -12,6 +12,7 @@ import {
   type RequestContext,
   type ExecutionContext,
 } from '@allrice/contracts';
+import { initializeProjectServiceLease } from './project-services.ts';
 import { getDatabase } from './core/client.ts';
 import {
   RuntimeLedgerError,
@@ -72,16 +73,26 @@ export async function exchangeLocalServiceLocked(
       { n: number; same_run: number }[]
     >`select count(*)::int as n,count(*) filter(where o.run_id=${snapshot.binding.task.runId})::int as same_run from allrice_local_services s
       join allrice_runtime_operations o on o.id=s.operation_id
-      where o.device_id=${snapshot.binding.execution.deviceId} and s.hard_deadline_at>clock_timestamp()
-        and o.snapshot->>'status' in ('running','dispatched','cancel_requested')`;
+      where o.device_id=${snapshot.binding.execution.deviceId}
+        and (o.snapshot->>'status' in ('running','dispatched','cancel_requested')
+          or (o.snapshot->>'status'='unknown' and exists(select 1 from allrice_project_services ps where ps.id=o.id)))`;
     if ((active?.n ?? 0) >= 2 || (active?.same_run ?? 0) >= 1)
       throw new RuntimeLedgerError('unavailable');
-    const deadline = new Date(
-      Math.min(
-        input.rootDeadlineAt.getTime(),
-        now.getTime() + config.durationMs,
-      ),
-    );
+    const projectLease = config.projectService
+      ? await initializeProjectServiceLease(
+          tx,
+          snapshot,
+          RuntimeLocalCommandSchema.parse(input.payload),
+        )
+      : null;
+    const deadline =
+      projectLease?.hard_deadline_at ??
+      new Date(
+        Math.min(
+          input.rootDeadlineAt.getTime(),
+          now.getTime() + config.durationMs,
+        ),
+      );
     [service] = await tx<
       ServiceRow[]
     >`insert into allrice_local_services(operation_id,hard_deadline_at)

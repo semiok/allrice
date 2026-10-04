@@ -1,4 +1,4 @@
-import { lookup } from 'node:dns/promises';
+import { resolvePublicAddress } from './public-address.js';
 import { request } from 'node:https';
 import { BlockList, isIP } from 'node:net';
 import {
@@ -33,7 +33,8 @@ export function publicRegistryAddress(address: string) {
 
 /** GET a canonical, explicitly approved public archive. No auth, proxy, redirect,
  * project URL, host cookies, npmrc, second DNS lookup, or automatic retry.
- * IPv6-only/proxied registries are unsupported, never an implicit unsafe fallback.
+ * Synthetic DNS uses the existing verified public resolver boundary. Private
+ * or mixed answers remain denied; the package socket connects to one pinned IP.
  */
 export async function downloadNpmArchive(
   pkg: RuntimeNpmPackage,
@@ -70,7 +71,11 @@ export async function downloadPublicPackage(
     signal.addEventListener('abort', onAbort, { once: true });
   });
   const addresses = await Promise.race([
-    lookup(url.hostname, { family: 4, all: true }),
+    resolvePublicAddress(url.hostname, publicRegistryAddress)
+      .then((answer) => [answer])
+      .catch(() => {
+        throw new LocalCommandError('DEPENDENCY_SOURCE_DENIED');
+      }),
     aborted,
   ]).finally(() => signal.removeEventListener('abort', onAbort));
   signal.throwIfAborted();

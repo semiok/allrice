@@ -8,6 +8,9 @@ import {
   bridgeSocketPath,
   bridgeSocketProtocol,
   type BridgeSocketRequest,
+  ProjectPreviewClientFrameSchema,
+  type ProjectPreviewServerFrame,
+  type ProjectPreviewClientFrame,
 } from '@allrice/contracts';
 import {
   bridgeRequest,
@@ -53,6 +56,11 @@ export class BridgeDualTransport {
       // Transport timing only. Tests still use real network sockets.
       retryBaseMs?: number;
       handshakeTimeoutMs?: number;
+      onPreview?: (
+        frame: ProjectPreviewServerFrame,
+        send: (frame: ProjectPreviewClientFrame) => Promise<boolean>,
+      ) => void;
+      onPreviewDisconnect?: () => void;
     },
   ) {
     const url = new URL(config.server);
@@ -107,6 +115,7 @@ export class BridgeDualTransport {
       const failed = () => {
         if (this.socket !== socket) return;
         this.ready = false;
+        this.config.onPreviewDisconnect?.();
         this.socket = null;
         const base = this.config.retryBaseMs ?? 1000;
         this.nextConnectAt =
@@ -158,9 +167,40 @@ export class BridgeDualTransport {
             settle(true);
           } else {
             if (!this.ready) throw Error();
-            if (frame.type === 'wakeup')
+            if (frame.type.startsWith('preview.')) {
+              if (!this.config.onPreview)
+                throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+              this.config.onPreview(
+                frame as ProjectPreviewServerFrame,
+                async (output) => {
+                  if (
+                    this.socket !== socket ||
+                    !this.ready ||
+                    socket.readyState !== WebSocket.OPEN
+                  )
+                    return false;
+                  const text = JSON.stringify(
+                    ProjectPreviewClientFrameSchema.parse(output),
+                  );
+                  if (
+                    Buffer.byteLength(text) > bridgeSocketMaximumFrameBytes ||
+                    socket.bufferedAmount + Buffer.byteLength(text) >
+                      bridgeSocketMaximumBufferedBytes
+                  ) {
+                    socket.terminate();
+                    return false;
+                  }
+                  return new Promise<boolean>((resolve) =>
+                    socket.send(text, (error) => {
+                      if (error) socket.terminate();
+                      resolve(!error);
+                    }),
+                  );
+                },
+              );
+            } else if (frame.type === 'wakeup')
               for (const wake of this.wakeups) wake();
-            else {
+            else if (frame.type === 'response') {
               const p = this.pending.get(frame.id);
               if (!p) return; // a late response never authorizes another request
               this.pending.delete(frame.id);
@@ -297,6 +337,7 @@ export class BridgeDualTransport {
   }
 
   close() {
+    this.config.onPreviewDisconnect?.();
     this.closed = true;
     for (const wake of this.wakeups) wake();
     this.socket?.terminate();

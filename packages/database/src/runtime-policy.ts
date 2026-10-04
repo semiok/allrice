@@ -91,7 +91,7 @@ async function clock(transaction: Transaction) {
   return row.now;
 }
 
-async function identity(
+export async function assertRuntimePolicyIdentity(
   transaction: Transaction,
   context: RuntimePolicyPrincipal,
   admin = false,
@@ -124,6 +124,8 @@ async function identity(
     throw new RuntimePolicyError('membership_denied');
   return ctx;
 }
+
+const identity = assertRuntimePolicyIdentity;
 
 async function controlsFor(
   transaction: Transaction,
@@ -694,7 +696,10 @@ export function createRuntimePolicyAdmission(options: RuntimePolicyOptions) {
   };
 }
 
-async function operationWorkAutomation(tx: Transaction, operationId: string) {
+export async function operationWorkAutomation(
+  tx: Transaction,
+  operationId: string,
+) {
   const [row] = await tx<
     { member_automation: { revision: number; settings: unknown } | null }[]
   >`select to_jsonb(o)->'member_automation' as member_automation from allrice_runtime_operations o where id=${operationId}`;

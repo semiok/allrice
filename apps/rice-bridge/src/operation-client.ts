@@ -580,7 +580,7 @@ export class RuntimeBridgeOperationClient {
           await localProcessManager({
             ...this.input,
             runner: this.input.runner,
-          }).start(dispatch, root!);
+          }).start(dispatch, root ?? null);
         } catch {
           await journal.outcome(operationId, {
             status: 'failed',

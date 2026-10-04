@@ -1051,7 +1051,7 @@ export class BridgeJournal {
     await this.guard();
     return this.database
       .prepare(
-        "SELECT e.dispatch FROM entries e WHERE e.state IN ('completed','unknown') AND EXISTS (SELECT 1 FROM service_events s WHERE s.operation_id=e.operation_id AND s.acknowledged=0) ORDER BY e.rowid LIMIT 4",
+        "SELECT e.dispatch FROM entries e WHERE e.state IN ('completed','unknown') AND (EXISTS (SELECT 1 FROM service_events s WHERE s.operation_id=e.operation_id AND s.acknowledged=0) OR EXISTS (SELECT 1 FROM service_sources s WHERE s.operation_id=e.operation_id AND s.state='delivered' AND s.acknowledged=0)) ORDER BY e.rowid LIMIT 4",
       )
       .all()
       .map((row) =>

@@ -153,7 +153,13 @@ export class LocalCommandRunner {
           : []),
         ...((await this.localMcpEnabled()) ? ['local_mcp'] : []),
         ...(process.env.ALLRICE_LOCAL_SERVICE_ENABLED !== '0'
-          ? ['background_services']
+          ? [
+              'background_services',
+              ...(projectPreparation &&
+              process.env.ALLRICE_BRIDGE_WSS_ENABLED !== '0'
+                ? ['project_services']
+                : []),
+            ]
           : []),
       ],
       ...(projectPreparation ? { projectPreparation } : {}),

@@ -2,6 +2,7 @@ import {
   RuntimeLocalServiceExchangeResponseSchema,
   runtimeContractEqual,
   type RuntimeBridgeDispatch,
+  type ProjectServiceTarget,
 } from '@allrice/contracts';
 import { bridgeRequest } from './client.js';
 import type { BridgeConfig } from './config.js';
@@ -25,6 +26,12 @@ export async function stopLocalProcesses(journal: BridgeJournal) {
 export function activeLocalProcessCount(journal: BridgeJournal) {
   return managers.get(journal)?.activeCount ?? 0;
 }
+export function currentLocalProjectService(
+  journal: BridgeJournal,
+  target: ProjectServiceTarget,
+) {
+  return managers.get(journal)?.currentProject(target) ?? null;
+}
 
 /** Recovery/terminal delivery only. Ignores all control values and cannot write
  * stdin or resume a service; the server must not renew leases for this request. */
@@ -39,7 +46,8 @@ export async function flushLocalServiceEvents(input: {
     const id = dispatch.snapshot.binding.attempt.operationId;
     for (let batch = 0; batch < 4; batch++) {
       const events = await services.pending(id);
-      if (!events.length) break;
+      const sourceReceipts = await services.pendingSources(id);
+      if (!events.length && !sourceReceipts.length) break;
       const response = RuntimeLocalServiceExchangeResponseSchema.parse(
         await (input.request ?? bridgeRequest)({
           server: input.config.server,
@@ -51,9 +59,10 @@ export async function flushLocalServiceEvents(input: {
             attempt: dispatch.snapshot.binding.attempt,
             leaseToken: dispatch.leaseToken,
             events,
+            ...(sourceReceipts.length ? { sourceReceipts } : {}),
             deliveryOnly: true,
           },
-          maximumResponseBytes: 100000,
+          maximumResponseBytes: 700000,
           timeoutMs: 2500,
         }),
       );
@@ -66,7 +75,12 @@ export async function flushLocalServiceEvents(input: {
       )
         throw new LocalCommandError('SERVICE_ACK_MISMATCH');
       await services.acknowledge(id, response.acceptedSequence);
-      if (response.acceptedSequence < events.at(-1)!.sequence) break;
+      await services.acknowledgeSources(
+        id,
+        response.acceptedSourceReceipts ?? [],
+      );
+      if (events.length && response.acceptedSequence < events.at(-1)!.sequence)
+        break;
     }
   }
 }
@@ -84,7 +98,14 @@ interface ManagerInput {
 export class LocalProcessManager {
   private readonly active = new Map<
     string,
-    { runId: string; abort: AbortController; done: Promise<void> }
+    {
+      runId: string;
+      abort: AbortController;
+      done: Promise<void>;
+      dispatch: RuntimeBridgeDispatch;
+      lastAuthorizedAt: number;
+      expiresAt: string;
+    }
   >();
   constructor(private input: ManagerInput) {}
   update(input: ManagerInput) {
@@ -96,8 +117,34 @@ export class LocalProcessManager {
   get activeCount() {
     return this.active.size;
   }
+  currentProject(target: ProjectServiceTarget) {
+    const active = this.active.get(target.operationId),
+      d = active?.dispatch,
+      b = d?.snapshot.binding,
+      p = d?.payload;
+    if (
+      !active ||
+      active.abort.signal.aborted ||
+      active.lastAuthorizedAt < Date.now() - 3000 ||
+      p?.capability !== 'local.process.execute' ||
+      !p.arguments.background?.projectService ||
+      b?.attempt.attemptId !== target.attemptId ||
+      b.execution.deviceId !== target.deviceId ||
+      b.task.scope.organizationId !== target.organizationId ||
+      b.task.scope.workspaceId !== target.workspaceId ||
+      b.requestedBy.id !== target.ownerId ||
+      target.serviceId !== target.operationId ||
+      target.backend !== 'local' ||
+      p.arguments.imageDigest !== target.imageDigest ||
+      p.arguments.background.projectService.port !== target.port ||
+      Date.parse(active.expiresAt) <= Date.now() ||
+      Date.parse(target.hardDeadlineAt) <= Date.now()
+    )
+      return null;
+    return p;
+  }
 
-  async start(dispatch: RuntimeBridgeDispatch, root: string) {
+  async start(dispatch: RuntimeBridgeDispatch, root: string | null) {
     const { journal, runner } = this.input;
     const payload = dispatch.payload;
     const { operationId, attemptId } = dispatch.snapshot.binding.attempt;
@@ -119,6 +166,8 @@ export class LocalProcessManager {
       ? AbortSignal.any([abort.signal, this.input.signal])
       : abort.signal;
     let hardDeadlineAt: string | undefined;
+    let physicalReleased = false;
+    let terminalRecorded = false;
     const exchange = async () => {
       const response = RuntimeLocalServiceExchangeResponseSchema.parse(
         await (this.input.request ?? bridgeRequest)({
@@ -131,8 +180,14 @@ export class LocalProcessManager {
             attempt: dispatch.snapshot.binding.attempt,
             leaseToken: dispatch.leaseToken,
             events: await serviceJournal.pending(operationId),
+            ...(payload.arguments.background?.projectService
+              ? {
+                  sourceReceipts:
+                    await serviceJournal.pendingSources(operationId),
+                }
+              : {}),
           },
-          maximumResponseBytes: 100000,
+          maximumResponseBytes: 700000,
           timeoutMs: 2500,
         }),
       );
@@ -146,7 +201,21 @@ export class LocalProcessManager {
       )
         throw new LocalCommandError('SERVICE_AUTHORITY_CHANGED');
       hardDeadlineAt = response.hardDeadlineAt;
+      const active = this.active.get(operationId);
+      if (
+        active &&
+        !response.stopRequested &&
+        response.snapshot.status === 'running'
+      ) {
+        active.lastAuthorizedAt = Date.now();
+        active.expiresAt =
+          response.projectService?.expiresAt ?? response.leaseExpiresAt;
+      }
       await serviceJournal.acknowledge(operationId, response.acceptedSequence);
+      await serviceJournal.acknowledgeSources(
+        operationId,
+        response.acceptedSourceReceipts ?? [],
+      );
       return {
         ...response,
         stopRequested:
@@ -165,6 +234,16 @@ export class LocalProcessManager {
           root,
           payload,
           {
+            scope: {
+              organizationId:
+                dispatch.snapshot.binding.task.scope.organizationId,
+              workspaceId: dispatch.snapshot.binding.task.scope.workspaceId,
+              ownerId: dispatch.snapshot.binding.requestedBy.id,
+            },
+            prepareSource: (update) =>
+              serviceJournal.prepareSource(operationId, update),
+            onSourceApplied: (receipt) =>
+              serviceJournal.sourceApplied(operationId, receipt),
             processId: operationId,
             attemptId,
             hardDeadlineAt: first.hardDeadlineAt,
@@ -204,10 +283,15 @@ export class LocalProcessManager {
             output: result,
             summary: `后台服务退出 ${result.exitCode}（${result.reason}）；原工作区未修改`,
           });
-        await runner
-          .cleanup(attemptId, result.containerId)
-          .catch(() => undefined);
+        terminalRecorded = true;
+        await runner.cleanup(attemptId, result.containerId);
+        physicalReleased = true;
       } catch (error) {
+        // A confirmed process exit is immutable evidence. A failed resource
+        // cleanup retains capacity and surfaces an unconfirmed stop instead of
+        // attempting to rewrite the terminal journal entry as "unknown".
+        if (terminalRecorded)
+          throw new LocalCommandError('LOCAL_STOP_UNCONFIRMED');
         const noExecution =
           error instanceof LocalCommandError &&
           [
@@ -221,22 +305,28 @@ export class LocalProcessManager {
             'SENSITIVE_INPUT',
             'INPUT_LIMIT',
           ].includes(error.code);
-        if (noExecution)
+        if (noExecution) {
+          physicalReleased = true;
           await journal.outcome(operationId, {
             status: 'failed',
             effects: 'none',
             errorCode: error.code,
             summary: '后台服务未开始；隔离环境或授权条件不满足',
           });
-        else
+        } else
           await journal.uncertain(operationId, 'receipt_missing', {
             summary: '后台服务结果待核对；不自动重启或重放输入',
           });
       }
-    })().finally(() => this.active.delete(operationId));
+    })().finally(() => {
+      if (physicalReleased) this.active.delete(operationId);
+    });
     // A journal failure is surfaced during polling/close, not an unhandled rejection.
     void done.catch(() => abort.abort());
     this.active.set(operationId, {
+      dispatch,
+      lastAuthorizedAt: Date.now(),
+      expiresAt: first.projectService?.expiresAt ?? first.leaseExpiresAt,
       runId: dispatch.snapshot.binding.task.runId,
       abort,
       done,
@@ -247,7 +337,10 @@ export class LocalProcessManager {
     const current = [...this.active.values()];
     for (const task of current) task.abort.abort();
     const results = await Promise.allSettled(current.map((task) => task.done));
-    if (results.some((result) => result.status === 'rejected'))
+    if (
+      this.active.size ||
+      results.some((result) => result.status === 'rejected')
+    )
       throw new LocalCommandError('LOCAL_STOP_UNCONFIRMED');
   }
 }

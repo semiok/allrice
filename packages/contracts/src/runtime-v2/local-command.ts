@@ -124,6 +124,16 @@ export const RuntimeLocalCommandSchema = z
   .strict()
   .superRefine((value, context) => {
     const a = value.arguments;
+    if (
+      a.background?.projectService &&
+      (!a.projectSource ||
+        a.projectPreparation?.manager !== 'pnpm' ||
+        a.outputs)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'project_service_requires_exact_saved_source',
+      });
     if (a.outputs && !a.projectSource)
       context.addIssue({
         code: 'custom',
@@ -132,7 +142,7 @@ export const RuntimeLocalCommandSchema = z
     if (
       a.projectSource &&
       (!a.projectPreparation ||
-        a.background ||
+        (a.background && !a.background.projectService) ||
         a.dependencies ||
         a.diagnostics ||
         a.candidate ||
@@ -153,7 +163,10 @@ export const RuntimeLocalCommandSchema = z
       });
     if (
       a.projectPreparation &&
-      (a.background || a.dependencies || a.diagnostics || a.candidate)
+      ((a.background && !a.background.projectService) ||
+        a.dependencies ||
+        a.diagnostics ||
+        a.candidate)
     )
       context.addIssue({
         code: 'custom',
@@ -250,7 +263,7 @@ export const RuntimeLocalCommandToolInputSchema =
       if (
         c.project &&
         (!c.projectPreparation ||
-          c.background ||
+          (c.background && !c.background.projectService) ||
           c.candidate ||
           c.dependencies ||
           c.diagnostics)
@@ -283,6 +296,7 @@ export const RuntimeLocalCommandProfileSchema = z
           'project_diagnostics',
           'npm_dependencies',
           'background_services',
+          'project_services',
           'local_mcp',
           'changeset_candidate',
           'project_preparation',

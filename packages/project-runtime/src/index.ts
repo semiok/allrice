@@ -11,3 +11,5 @@ export * from './project-source.js';
 export * from './command-output.js';
 export * from './project-events.js';
 export * from './project-staging.js';
+
+export { resolvePublicAddress } from './public-address.js';

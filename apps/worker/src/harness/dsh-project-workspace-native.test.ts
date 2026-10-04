@@ -103,3 +103,77 @@ it('canonical project execution reaches real DSH with original bounded arguments
     },
   });
 }, 45000);
+
+const serviceId = 'f4008668-b158-4280-b43a-6d2e99cb2e20';
+const requestId = 'bd2b4d85-2716-4e0c-983f-f615d7a56ac7';
+it.each([
+  {
+    action: 'service_start',
+    project,
+    executable: '/usr/local/bin/node',
+    args: ['node_modules/vite/bin/vite.js'],
+    path: '.',
+    service: {
+      port: 3100,
+      path: '/',
+      readinessTimeoutMs: 10000,
+      leaseMs: 600000,
+    },
+    limits: {
+      timeoutMs: 30000,
+      outputBytes: 16384,
+      memoryMiB: 512,
+      cpuMillis: 1000,
+      pids: 64,
+    },
+    projectPreparation: {
+      version: 1,
+      projectId: project.projectId,
+      sourceDigest: 'sha256:' + 'a'.repeat(64),
+      lockChecksum: 'sha256:' + 'b'.repeat(64),
+      offline: true,
+      manager: 'pnpm',
+      managerVersion: '10.33.3',
+      lockPath: 'pnpm-lock.yaml',
+      scripts: 'disabled',
+      packages: [],
+    },
+  },
+  { action: 'service_status', serviceId },
+  { action: 'service_stop', serviceId },
+  { action: 'service_renew', serviceId, requestId, leaseMs: 600000 },
+  {
+    action: 'service_sync',
+    serviceId,
+    requestId,
+    expectedProject: project,
+    project,
+  },
+])(
+  'project service parameters survive real DSH and Broker unchanged (%j)',
+  async (args) => {
+    await nativeBrokerRoundtrip({
+      canonicalName: 'workspace.project',
+      wireName: 'workspace_project',
+      args,
+      invalidArgs: { ...args, containerId: 'a'.repeat(64) },
+      inspectSchema(schema) {
+        expect(schema.properties).toHaveProperty('service');
+        expect(schema.properties).toHaveProperty('expectedProject');
+        expect(schema.properties).not.toHaveProperty('containerId');
+        expect(schema.properties).not.toHaveProperty('deviceId');
+        expect(schema.properties).not.toHaveProperty('previewHost');
+      },
+      onToolCall: async (call) => {
+        expect(ProjectWorkspaceToolInputSchema.parse(call.arguments)).toEqual(
+          args,
+        );
+        return {
+          modelContent: 'Synthetic native service roundtrip accepted.',
+          summary: '项目服务原生参数往返验证',
+        };
+      },
+    });
+  },
+  45000,
+);

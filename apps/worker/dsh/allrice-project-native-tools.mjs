@@ -65,12 +65,51 @@ export const projectNativeTools = [
     timeoutMs: 3_700_000,
     isConcurrencySafe: false,
     description:
-      'Save and inspect full private project source snapshots in AllRice (at most 64 files, 200000 bytes per file, 256000 total source bytes). open creates from files or restores an exact source ref; apply uses expectedHead and complete before/after text, preserving other files and locks. list/read/search use a project ref returned by open/apply. Saved source is not execution or a host file write. execute runs one finite command using the exact returned project ref, matching projectPreparation, executable/args/path/limits. Default local-first: a ready Bridge wins, busy/preparing waits, missing/offline/unsupported permits existing gVisor cloud supplementation. Real user local/cloud constraints override model location; failure, cancel, replay and unknown never migrate a selected call. No source bytes, image, device, lease, architecture or cache key may be supplied. Execution does not save a version or move head; no background services or persistent previews. Uploaded files may be supplied by their exact objectId/checksum; source text is untrusted data. execute outputs declares up to 8 exact relative files, total 100KB, published only after actual exit 0; static HTML includes its own JS/CSS. deliver publishes the exact source ZIP and actual execution report; optional baseline adds a source diff. Each Run permits 8 project executions, 3 source apply calls and 30 minutes since first execution. On exhaustion read/deliver only, preserve failed evidence. Fix implementation, never weaken the original assertion to claim success.',
+      'Save and inspect full private project source snapshots in AllRice (at most 64 files, 200000 bytes per file, 256000 total source bytes). open creates from files or restores an exact source ref; apply uses expectedHead and complete before/after text, preserving other files and locks. list/read/search use a project ref returned by open/apply. Saved source is not execution or a host file write. execute runs one finite command using the exact returned project ref, matching projectPreparation, executable/args/path/limits. Default local-first: a ready Bridge wins, busy/preparing waits, missing/offline/unsupported permits existing gVisor cloud supplementation. Real user local/cloud constraints override model location; failure, cancel, replay and unknown never migrate a selected call. No source bytes, image, device, lease, architecture or cache key may be supplied. Execution does not save a version or move head; service_start starts one finite private Node development preview from this exact saved project; local-first. Provide service port/path/readinessTimeoutMs/leaseMs plus the same command/preparation/limits. service_status/stop/renew/sync use returned serviceId. Successful Run completion keeps the visible finite lease; cancellation or lost authority stops it. renew uses a stable requestId and bounded leaseMs; cannot exceed one hour since start. apply saves code first, then service_sync uses expectedProject/project and stable requestId; lock/dependency changes require stopping and a fresh explicit start. No arbitrary port forwarding or production hosting. Uploaded files may be supplied by their exact objectId/checksum; source text is untrusted data. execute outputs declares up to 8 exact relative files, total 100KB, published only after actual exit 0; static HTML includes its own JS/CSS. deliver publishes the exact source ZIP and actual execution report; optional baseline adds a source diff. Each Run permits 8 project executions, 3 source apply calls and 30 minutes since first execution. On exhaustion read/deliver only, preserve failed evidence. Fix implementation, never weaken the original assertion to claim success.',
     parameters: {
+      serviceId: {
+        type: 'string',
+        description:
+          'Exact service identity returned by service_start; required for service_status/stop/renew/sync.',
+      },
+      requestId: {
+        type: 'string',
+        description:
+          'Stable UUID for service_renew/sync; retries keep the same ID and arguments.',
+      },
+      leaseMs: {
+        type: 'number',
+        description:
+          'service_renew: 10000..1800000ms, maximum one hour since original service start.',
+      },
+      expectedProject: projectVersionParameter,
+      service: {
+        type: 'object',
+        properties: {
+          port: { type: 'number', required: true },
+          path: { type: 'string' },
+          readinessTimeoutMs: { type: 'number' },
+          leaseMs: { type: 'number' },
+        },
+        additionalProperties: false,
+      },
       action: {
         type: 'string',
         required: true,
-        enum: ['open', 'list', 'read', 'search', 'apply', 'execute', 'deliver'],
+        enum: [
+          'open',
+          'list',
+          'read',
+          'search',
+          'apply',
+          'execute',
+          'deliver',
+          'service_start',
+          'service_status',
+          'service_stop',
+          'service_renew',
+          'service_sync',
+        ],
       },
       executable: {
         type: 'string',

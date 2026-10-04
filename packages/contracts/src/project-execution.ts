@@ -24,6 +24,11 @@ import {
   cloudPythonImageV1,
 } from './runtime-v2/cloud-command.ts';
 
+import {
+  ProjectServiceConfigSchema,
+  ProjectServiceControlInputSchema,
+} from './project-service.ts';
+
 const path = z.string().min(1).max(240).refine(isRuntimeRelativePath);
 /** Saved source executes one finite command; no model-owned device, lease, image or network. */
 const ProjectExecuteObjectSchema = z
@@ -72,10 +77,39 @@ export const ProjectExecuteInputSchema = ProjectExecuteObjectSchema.superRefine(
   },
 );
 export type ProjectExecuteInput = z.infer<typeof ProjectExecuteInputSchema>;
+export const ProjectServiceStartInputSchema = ProjectExecuteObjectSchema.omit({
+  action: true,
+  outputs: true,
+})
+  .extend({
+    action: z.literal('service_start'),
+    service: ProjectServiceConfigSchema,
+  })
+  .superRefine((a, c) => {
+    if (
+      a.project.projectId !== a.projectPreparation.projectId ||
+      a.projectPreparation.manager !== 'pnpm' ||
+      a.executable === '/workspace/.venv/bin/python'
+    )
+      c.addIssue({
+        code: 'custom',
+        message: 'project_service_requires_saved_node_project',
+      });
+  });
+export const ProjectRunnableInputSchema = z.union([
+  ProjectExecuteInputSchema,
+  ProjectServiceStartInputSchema,
+]);
+export type ProjectRunnableInput = z.infer<typeof ProjectRunnableInputSchema>;
+export type ProjectServiceStartInput = z.infer<
+  typeof ProjectServiceStartInputSchema
+>;
 /** Keep the source-only database command separate; avoids source/installer schema cycles. */
 export const ProjectWorkspaceToolInputSchema = z.union([
   ProjectWorkspaceCommandSchema,
   ProjectExecuteInputSchema,
+  ProjectServiceStartInputSchema,
+  ProjectServiceControlInputSchema,
 ]);
 
 /** Internal cloud payload only. Its canonical call and Worker provenance come from admission. */

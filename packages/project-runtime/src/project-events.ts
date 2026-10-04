@@ -5,6 +5,8 @@ import {
   projectArtifactLimits,
   type ProjectCollectedArtifact,
   type ProjectOutputSpec,
+  RuntimeLocalServiceEventSchema,
+  ProjectServiceSourceReceiptSchema,
 } from '@allrice/contracts';
 import { RuntimeCommandError } from './errors.js';
 import { LocalCommandOutputFilter } from './command-output.js';
@@ -16,7 +18,11 @@ export type ProjectExit = {
     | 'lease_lost'
     | 'output_limit'
     | 'cache_limit'
-    | 'supervisor_failed';
+    | 'supervisor_failed'
+    | 'canceled'
+    | 'readiness_timeout'
+    | 'port_conflict';
+  // Existing result evidence accepts these service-specific stop reasons.
   code: number;
   installation: 'succeeded' | 'failed' | 'interrupted';
 };
@@ -46,6 +52,10 @@ export class ProjectEvents {
       text: string;
     }) => void,
     private outputs: ProjectOutputSpec[] = [],
+    private onService?: (event: {
+      type: 'service' | 'control_ack' | 'source_applied';
+      [key: string]: unknown;
+    }) => void,
   ) {}
   private publish(stream: 'stdout' | 'stderr', text: string) {
     if (!text) return;
@@ -88,6 +98,19 @@ export class ProjectEvents {
             Buffer.from(e.data, 'base64'),
           ),
         );
+      } else if (
+        ['service', 'control_ack', 'source_applied'].includes(e.type) &&
+        this.onService
+      ) {
+        if (e.type === 'service') RuntimeLocalServiceEventSchema.parse(e.event);
+        else if (e.type === 'source_applied')
+          ProjectServiceSourceReceiptSchema.parse({
+            updateId: e.updateId,
+            sourceDigest: e.sourceDigest,
+          });
+        else if (!Number.isInteger(e.sequence) || e.sequence < 0)
+          throw new RuntimeCommandError('INVALID_SUPERVISOR_OUTPUT');
+        this.onService(e);
       } else if (e.type === 'artifact') {
         const artifact = ProjectCollectedArtifactSchema.parse({
           path: e.path,
@@ -131,6 +154,9 @@ export class ProjectEvents {
             'output_limit',
             'cache_limit',
             'supervisor_failed',
+            ...(this.onService
+              ? ['canceled', 'readiness_timeout', 'port_conflict']
+              : []),
           ].includes(e.reason) ||
           !Number.isInteger(e.code) ||
           !['succeeded', 'failed'].includes(e.installation)

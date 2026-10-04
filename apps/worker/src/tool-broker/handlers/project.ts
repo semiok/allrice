@@ -8,9 +8,12 @@ import {
   createCloudProjectOperation,
   RuntimePolicyError,
   cloudExecutionEnabled,
+  projectServiceWorkerControl,
+  readProjectService,
 } from '@allrice/database';
 import {
-  ProjectExecuteInputSchema,
+  ProjectRunnableInputSchema,
+  projectServiceLimits,
   projectWorkflowBudget,
   cloudPythonImageV1,
   cloudToolchainImageV1,
@@ -37,8 +40,31 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       false,
     );
   try {
-    if (args.action === 'execute') {
-      const command = ProjectExecuteInputSchema.parse(args),
+    if (
+      [
+        'service_status',
+        'service_stop',
+        'service_renew',
+        'service_sync',
+      ].includes(String(args.action))
+    ) {
+      const result = await projectServiceWorkerControl(
+        input.context,
+        input.sessionId,
+        args,
+        {
+          attempt: input.managedBrowserJobAttempt,
+          leaseToken: input.managedBrowserJobLeaseToken,
+        },
+        new LocalStorageAdapter(input.storageRoot),
+      );
+      return {
+        modelContent: JSON.stringify({ service: result }),
+        summary: `项目服务 · ${result.state}`,
+      };
+    }
+    if (args.action === 'execute' || args.action === 'service_start') {
+      const command = ProjectRunnableInputSchema.parse(args),
         storage = new LocalStorageAdapter(input.storageRoot);
       const worker = {
         attempt: input.managedBrowserJobAttempt,
@@ -55,6 +81,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           cloudReady,
         });
         if (
+          command.action === 'execute' &&
           cloudExecutionEnabled() &&
           !cloudReady &&
           (selection.choice.location === 'none' ||
@@ -94,7 +121,29 @@ export const runProjectWorkspace: RiceToolHandler = async ({
             args: command.args,
             path: command.path,
             projectPreparation: command.projectPreparation,
-            ...(command.outputs ? { outputs: command.outputs } : {}),
+            ...('outputs' in command && command.outputs
+              ? { outputs: command.outputs }
+              : {}),
+            ...(command.action === 'service_start'
+              ? {
+                  background: {
+                    durationMs: projectServiceLimits.maximumLifetimeMs,
+                    readiness: {
+                      kind: 'http',
+                      port: command.service.port,
+                      path: command.service.path,
+                      timeoutMs: command.service.readinessTimeoutMs,
+                    },
+                    stdin: {
+                      mode: 'none',
+                      maxRequests: 1,
+                      maxBytes: 1,
+                      requestTimeoutMs: 1000,
+                    },
+                    projectService: command.service,
+                  },
+                }
+              : {}),
             limits: command.limits,
           };
           const local = await createLocalCommandOperation({
@@ -129,6 +178,28 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           selected.local,
           input.signal,
         );
+        if (command.action === 'service_start') {
+          const service = await readProjectService(
+            {
+              organizationId: input.context.organizationId,
+              workspaceId: input.context.workspaceId,
+              actor: {
+                type: 'user',
+                id: input.context.policySnapshot.subjectId,
+              },
+            },
+            result.operationId,
+          );
+          return {
+            modelContent: JSON.stringify({
+              service,
+              executionChoice: selected.selection.choice,
+              project: command.project,
+              sourceDirectoryModified: false,
+            }),
+            summary: `本地项目服务 · ${service.state}`,
+          };
+        }
         const artifacts =
           result.status === 'succeeded' && command.outputs?.length
             ? await publishLocalProjectArtifacts(
@@ -161,6 +232,12 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           summary: `本地项目执行 · ${result.status}`,
         };
       }
+      if (command.action !== 'execute')
+        throw new HandlerError(
+          'PROJECT_SERVICE_UNAVAILABLE',
+          '当前项目服务需要已就绪的本地 Bridge。',
+          false,
+        );
       const created = await createCloudProjectOperation({
         context: input.context,
         callId: input.call.id,

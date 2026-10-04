@@ -7,6 +7,8 @@ import {
   type RuntimeLocalCommandResult,
   type RuntimeLocalServiceEvent,
   type RuntimeLocalServiceInput,
+  type ProjectServiceSourceUpdate,
+  type RuntimeProjectScope,
 } from '@allrice/contracts';
 import type {
   LocalCommandRunner,
@@ -24,6 +26,29 @@ export interface LocalServiceLease {
   leaseExpiresAt: string;
   stopRequested: boolean;
   inputs: RuntimeLocalServiceInput[];
+  projectService?: {
+    id: string;
+    expiresAt: string;
+    previewHost: string | null;
+    sourceUpdate: ProjectServiceSourceUpdate | null;
+  };
+}
+export interface ProjectServiceRunnerOptions {
+  processId: string;
+  attemptId: string;
+  hardDeadlineAt: string;
+  scope?: RuntimeProjectScope;
+  signal?: AbortSignal;
+  maintainLease: () => Promise<LocalServiceLease>;
+  onEvent: (event: RuntimeLocalServiceEvent) => Promise<void>;
+  prepareSource?: (
+    update: ProjectServiceSourceUpdate,
+  ) => Promise<'new' | 'delivered'>;
+  onSourceApplied?: (receipt: {
+    updateId: string;
+    sourceDigest: string;
+  }) => Promise<void>;
+  onOutput?: (output: LocalCommandOutput) => Promise<void>;
 }
 type Reason = RuntimeLocalCommandResult['reason'];
 
@@ -60,7 +85,7 @@ export class LocalServiceRunner {
   constructor(private readonly runner: LocalCommandRunner) {}
 
   async execute(
-    root: string,
+    root: string | null,
     input: RuntimeLocalCommand,
     options: {
       processId: string;
@@ -73,9 +98,23 @@ export class LocalServiceRunner {
         input: RuntimeLocalServiceInput,
       ) => Promise<'new' | 'delivered'>;
       onOutput?: (output: LocalCommandOutput) => Promise<void>;
+      scope?: RuntimeProjectScope;
+      prepareSource?: ProjectServiceRunnerOptions['prepareSource'];
+      onSourceApplied?: ProjectServiceRunnerOptions['onSourceApplied'];
     },
   ): Promise<RuntimeLocalCommandResult> {
     const command = RuntimeLocalCommandSchema.parse(input);
+    if (command.arguments.background?.projectService) {
+      if (!this.runner.projects)
+        throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
+      return this.runner.projects.execute(root, command, {
+        attemptId: options.attemptId,
+        scope: options.scope,
+        signal: options.signal,
+        deadlineUnixMs: Date.parse(options.hardDeadlineAt),
+        service: options,
+      });
+    }
     if (command.arguments.imageDigest !== this.runner.config.imageDigest)
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
     const config = command.arguments.background;
@@ -90,6 +129,7 @@ export class LocalServiceRunner {
     )
       throw new LocalCommandError('SERVICE_CONFIG_INVALID');
     const profile = await this.runner.preflight();
+    if (root === null) throw new LocalCommandError('GRANT_MISMATCH');
     const bundle = await readLocalCommandInputs(root, command);
     const first = await options.maintainLease();
     if (

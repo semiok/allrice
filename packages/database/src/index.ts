@@ -117,3 +117,5 @@ export * from './task-next-steps.ts';
 export * from './managed-runtime-grant.ts';
 export * from './project-execution.ts';
 export * from './static-browser.ts';
+
+export * from './project-services.ts';

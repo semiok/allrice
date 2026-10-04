@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
+  projectPreviewHost,
   localProjectResultMatchesPayload,
   BridgeCapabilities,
   BrowserCommandSchema,
   RuntimeBridgePayloadSchema,
+  RuntimeLocalCommandSchema,
   LocalFilePayloadSchema,
   LocalFileResultSchema,
   localFileResultMatchesPayload,
@@ -55,6 +57,10 @@ import {
   type RuntimeLedgerTransaction,
   type RuntimeBridgeClaimSupport,
 } from './types.ts';
+import {
+  currentProjectService,
+  applyProjectServiceSourceReceipt,
+} from '../project-services.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
 import { localCommandCandidateEvidence } from '../local-command-candidate.ts';
 import { refreshTaskClock, readTaskClock } from '../task-clock.ts';
@@ -294,7 +300,18 @@ async function cancelLocked(
   const rows = await tx<
     OperationRow[]
   >`select * from allrice_runtime_operations where root_run_id=${root.root_run_id} order by id for update`;
-  return cancelOperationRows(tx, rows, acceptedId);
+  const continuing =
+    reason === 'deadline'
+      ? await tx<
+          { id: string }[]
+        >`select s.id from allrice_project_services s join allrice_runs r on r.id=s.run_id
+    where s.run_id=${root.root_run_id} and r.state='succeeded' and not s.stop_requested and s.expires_at>clock_timestamp()`
+      : [];
+  return cancelOperationRows(
+    tx,
+    rows.filter((r) => !continuing.some((s) => s.id === r.id)),
+    acceptedId,
+  );
 }
 
 /** Trusted caller already holds the shared root scheduling lock. Child
@@ -309,6 +326,8 @@ export async function cancelRuntimeAgentOperationsTransaction(
   const rows = await tx<OperationRow[]>`select * from allrice_runtime_operations
     where root_run_id=${rootRunId} and (${childRunIds === undefined}::boolean or snapshot->>'agentInstanceId'=any(${[...(childRunIds ?? [])]}::text[]))
     order by id for update`;
+  // Explicit cancellation also stops a service detached after successful Run
+  // completion. Only normal completion/deadline accounting may retain it.
   return cancelOperationRows(tx, rows, requestId);
 }
 
@@ -1024,6 +1043,7 @@ export function createRuntimeOperationLedger(options: {
       attempt: RuntimeAttemptRef;
       events: RuntimeLocalServiceEvent[];
       deliveryOnly?: boolean;
+      sourceReceipts?: { updateId: string; sourceDigest: string }[];
     }) {
       const events = z
         .array(RuntimeLocalServiceEventSchema)
@@ -1042,6 +1062,13 @@ export function createRuntimeOperationLedger(options: {
         )
           throw new RuntimeLedgerError('scope_mismatch');
         const at = await now(tx);
+        const command = RuntimeLocalCommandSchema.parse(row.bridge_payload);
+        const continuing = !!command.arguments.background?.projectService;
+        const [established] = continuing
+          ? await tx<
+              { id: string }[]
+            >`select id from allrice_project_services where id=${row.id}`
+          : [];
         let allowed = false;
         if (
           row.snapshot.status === 'running' &&
@@ -1050,9 +1077,12 @@ export function createRuntimeOperationLedger(options: {
           row.lease_expires_at > at
         ) {
           try {
-            ensureRootAdmits(root, at);
-            await admit(tx, row, 'heartbeat', at);
-            ensureRootAdmits(root, await now(tx));
+            if (established) await currentProjectService(tx, row.id);
+            else {
+              ensureRootAdmits(root, at);
+              await admit(tx, row, 'heartbeat', at);
+              ensureRootAdmits(root, await now(tx));
+            }
             allowed = true;
           } catch {
             /* A revoked/ended Run may still request a bounded stop, never more input. */
@@ -1088,6 +1118,14 @@ export function createRuntimeOperationLedger(options: {
             type: 'operation.cancel_requested',
             requestId: randomUUID(),
           });
+        if (continuing && input.sourceReceipts?.length)
+          for (const receipt of input.sourceReceipts)
+            await applyProjectServiceSourceReceipt(tx, row.id, receipt);
+        const [projectLease] = continuing
+          ? await tx<
+              { expires_at: Date; pending_update: unknown | null }[]
+            >`select expires_at,pending_update from allrice_project_services where id=${row.id}`
+          : [];
         let expiry = row.lease_expires_at ?? at;
         if (!input.deliveryOnly && allowed && !service.stopRequested) {
           if (!row.lease_expires_at || row.lease_expires_at <= (await now(tx)))
@@ -1096,21 +1134,44 @@ export function createRuntimeOperationLedger(options: {
             Math.min(
               Date.parse(service.hardDeadlineAt),
               (await now(tx)).getTime() + 120_000,
-              root.deadline_at.getTime(),
+              projectLease?.expires_at.getTime() ?? root.deadline_at.getTime(),
             ),
           );
           await tx`update allrice_runtime_operations set lease_expires_at=${expiry},updated_at=clock_timestamp() where id=${row.id}`;
-          await admit(tx, row, 'heartbeat', await now(tx));
-          ensureRootAdmits(root, await now(tx));
+          if (continuing) await currentProjectService(tx, row.id);
+          else {
+            await admit(tx, row, 'heartbeat', await now(tx));
+            ensureRootAdmits(root, await now(tx));
+          }
           await tx`update allrice_local_services set preview_heartbeat_at=clock_timestamp() where operation_id=${row.id}`;
+          if (continuing)
+            await tx`update allrice_project_services set heartbeat_at=clock_timestamp() where id=${row.id}`;
           const committedAt = await now(tx);
           if (expiry <= committedAt || row.lease_expires_at <= committedAt)
             throw new RuntimeLedgerError('lease_lost');
         }
         return {
           ...service,
+          ...(continuing
+            ? { acceptedSourceReceipts: input.sourceReceipts ?? [] }
+            : {}),
           snapshot: row.snapshot,
           leaseExpiresAt: expiry.toISOString(),
+          ...(projectLease
+            ? {
+                projectService: {
+                  id: row.id,
+                  expiresAt: projectLease.expires_at.toISOString(),
+                  previewHost: process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX
+                    ? projectPreviewHost(
+                        row.id,
+                        process.env.ALLRICE_PROJECT_PREVIEW_SUFFIX,
+                      )
+                    : null,
+                  sourceUpdate: projectLease.pending_update,
+                },
+              }
+            : {}),
         };
       });
     },

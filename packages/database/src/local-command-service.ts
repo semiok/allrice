@@ -1,3 +1,4 @@
+import { readProjectService } from './project-services.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -339,6 +340,11 @@ async function createLocalBridgeToolOperation(
       !profile.projectPreparation?.available)
   )
     throw new RuntimePolicyError('local_runner_preparing');
+  if (
+    args?.background?.projectService &&
+    !profile?.features?.includes('project_services')
+  )
+    throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args?.background && !profile?.features?.includes('background_services'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (candidate && !profile?.features?.includes('changeset_candidate'))
@@ -814,7 +820,19 @@ export async function listLocalCommandOperations(
         output,
         evidence: publicEvidence ?? null,
         service: localServiceFeatureEnabled()
-          ? await readLocalService(row.id, database)
+          ? await (async () => {
+              const service = await readLocalService(row.id, database);
+              return service && internalCommand?.background?.projectService
+                ? {
+                    ...service,
+                    projectService: await readProjectService(
+                      context,
+                      row.id,
+                      database,
+                    ),
+                  }
+                : service;
+            })()
           : null,
       };
     }),

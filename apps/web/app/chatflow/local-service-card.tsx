@@ -4,11 +4,14 @@ import {
   canonicalRuntimeBridgeJson,
   type RuntimeLocalServiceConfig,
   type RuntimeLocalServiceRequest,
+  ProjectServiceViewSchema,
+  type ProjectServiceView,
 } from '@allrice/contracts';
 import {
   localPreviewAvailability,
   type LocalPreviewView,
 } from '../../lib/chatflow/local-preview-state';
+import { NativeHtmlPreview } from './native-html-preview';
 export interface LocalServiceView {
   processId: string;
   attemptId: string;
@@ -19,6 +22,7 @@ export interface LocalServiceView {
   stopRequested: boolean;
   previewEnabled?: boolean;
   preview?: LocalPreviewView | null;
+  projectService?: ProjectServiceView | null;
   requests: {
     request: RuntimeLocalServiceRequest;
     submitted: boolean;
@@ -53,11 +57,13 @@ export function LocalServiceCard({
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [error, setError] = useState('');
+  const [liveSrc, setLiveSrc] = useState<string>();
   const [previewIntent, setPreviewIntent] = useState<LocalPreviewView | null>(
     null,
   );
   useEffect(() => {
     setPreviewIntent(null);
+    setLiveSrc(undefined);
   }, [service?.processId]);
   const previewState = localPreviewAvailability({
     enabled: service?.previewEnabled === true,
@@ -141,6 +147,101 @@ export function LocalServiceCard({
       busyRef.current = false;
       setBusy(false);
     }
+  }
+  async function projectAct(action: 'stop' | 'renew' | 'preview') {
+    const project = service?.projectService;
+    if (!project || busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const response = await fetch(
+        `/api/v1/runtime/project-services?workspaceId=${encodeURIComponent(workspaceId)}&serviceId=${project.id}`,
+        {
+          method: 'POST',
+          headers: { ...tenantHeaders, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            action,
+            ...(action === 'renew'
+              ? { requestId: crypto.randomUUID(), leaseMs: 600000 }
+              : {}),
+          }),
+        },
+      );
+      if (!response.ok) throw Error('服务已停止或暂不可用，请刷新状态。');
+      const data = (await response.json()) as {
+        service: unknown;
+        previewUrl?: string;
+      };
+      ProjectServiceViewSchema.parse(data.service);
+      if (action === 'preview') {
+        if (!data.previewUrl) throw Error('预览地址不可用。');
+        setLiveSrc(data.previewUrl);
+      }
+      if (action === 'stop') setLiveSrc(undefined);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '操作未确认，请刷新状态。');
+      onChanged();
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+  if (config.projectService) {
+    const project = service?.projectService;
+    const labels: Record<string, string> = {
+      starting: '正在启动',
+      ready: '预览已就绪',
+      offline: '电脑暂未连接',
+      stopping: '正在停止',
+      stopped: '已停止',
+      failed: '未能完成',
+      unknown: '状态待核实',
+    };
+    const available = project?.state === 'ready' && !project.stopRequested;
+    return (
+      <section aria-label="项目实时预览">
+        <p role="status">
+          {project ? labels[project.state] : '正在准备预览'}
+          {project &&
+            ` · ${project.backend === 'local' ? '本地' : '云端'} · ${new Date(project.expiresAt).toLocaleTimeString()} 到期`}
+        </p>
+        {project && !project.stopped && (
+          <p>本轮回复结束后，预览在到期前继续运行。</p>
+        )}
+        <button
+          type="button"
+          disabled={busy || !available}
+          onClick={() => void projectAct('preview')}
+        >
+          {liveSrc ? '刷新预览' : '打开预览'}
+        </button>
+        <button
+          type="button"
+          disabled={busy || !project?.canRenew}
+          onClick={() => void projectAct('renew')}
+        >
+          继续 10 分钟
+        </button>
+        <button
+          type="button"
+          disabled={
+            busy || !project || project.stopped || project.stopRequested
+          }
+          onClick={() => void projectAct('stop')}
+        >
+          停止预览
+        </button>
+        {project?.updatePending && <p>正在同步最新源码…</p>}
+        {liveSrc && available && (
+          <div style={{ height: 480 }}>
+            <NativeHtmlPreview liveSrc={liveSrc} />
+          </div>
+        )}
+        {error && <p role="alert">{error}</p>}
+      </section>
+    );
   }
   return (
     <section aria-label="有限后台服务">

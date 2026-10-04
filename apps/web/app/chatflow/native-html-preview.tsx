@@ -15,11 +15,13 @@ const missingRelated: ReadHtmlRelative = async () => {
 /** Native HTML packing and iframe isolation. The host reader only resolves files
  * explicitly related to the authorized source; the frame receives no host bridge. */
 export function NativeHtmlPreview({
-  base64,
+  base64 = '',
   interactive = false,
   readRelative = missingRelated,
+  liveSrc,
 }: {
-  base64: string;
+  base64?: string;
+  liveSrc?: string;
   interactive?: boolean;
   readRelative?: ReadHtmlRelative;
 }) {
@@ -32,6 +34,7 @@ export function NativeHtmlPreview({
     error?: string;
   }>();
   useEffect(() => {
+    if (liveSrc) return;
     const controller = new AbortController();
     let url: string | undefined;
     void (async () => {
@@ -58,7 +61,31 @@ export function NativeHtmlPreview({
       controller.abort();
       if (url) URL.revokeObjectURL(url);
     };
-  }, [data, interactive, readRelative]);
+  }, [data, interactive, readRelative, liveSrc]);
+  if (liveSrc) {
+    const url = new URL(liveSrc);
+    if (
+      !url.hostname.startsWith('rice-preview-') ||
+      url.username ||
+      url.password ||
+      (url.protocol !== 'https:' &&
+        !(url.protocol === 'http:' && url.hostname.endsWith('.localhost'))) ||
+      (typeof window !== 'undefined' && url.origin === window.location.origin)
+    )
+      return <p role="alert">项目预览地址不可用。</p>;
+    return (
+      <iframe
+        key={liveSrc}
+        className={native.frame}
+        src={liveSrc}
+        sandbox="allow-scripts allow-same-origin allow-forms"
+        referrerPolicy="no-referrer"
+        title="项目实时预览"
+        data-html-preview
+        data-project-service-preview
+      />
+    );
+  }
   if (frame?.data !== data || frame.interactive !== interactive)
     return <LoadingIndicator label="正在打开网页…" />;
   if (frame.error) return <p role="alert">{frame.error}</p>;
