@@ -153,6 +153,7 @@ export function AdminDialog({
         ? document.activeElement
         : null;
     element.showModal();
+    element.querySelector<HTMLElement>('[data-autofocus]')?.focus();
     return () => {
       element.close();
       if (opener?.isConnected) opener.focus();

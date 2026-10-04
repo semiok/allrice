@@ -19,6 +19,12 @@ import {
 } from '@allrice/contracts';
 
 import styles from './employee-production.module.css';
+import {
+  AdminButton,
+  AdminDialog,
+  AdminIcon,
+  AdminStatus,
+} from '../../components/admin/admin-ui';
 import { EmployeeSkills } from './employee-skills';
 import { EmployeeTaskSuggestions } from './employee-task-suggestions';
 
@@ -109,6 +115,22 @@ const lifecycleActionLabels: Record<string, string> = {
 
 const publicationActions = new Set(Object.keys(lifecycleActionLabels));
 
+const employeeStatuses = {
+  draft: '草稿',
+  testing: '测试中',
+  published: '已发布',
+  disabled: '已停用',
+  archived: '已归档',
+} as const;
+
+function employeeTone(status: Employee['status']) {
+  return status === 'published'
+    ? 'success'
+    : status === 'draft'
+      ? 'warning'
+      : 'muted';
+}
+
 async function api<T>(path: string, init?: RequestInit) {
   const response = await fetch(path, {
     cache: 'no-store',
@@ -185,7 +207,11 @@ function RuntimeFieldLabel(props: {
   );
 }
 
-export function EmployeeProduction() {
+export function EmployeeProduction({
+  onNavigationStateChange,
+}: {
+  onNavigationStateChange?: (state: { busy: boolean; dirty: boolean }) => void;
+}) {
   const [review, setReview] = useState<PublicationReview | null>(null),
     [confirmed, setConfirmed] = useState(false);
   const reviewSequence = useRef(0);
@@ -228,6 +254,8 @@ export function EmployeeProduction() {
   const [newEmployeeKey, setNewEmployeeKey] = useState('');
   const [newEmployeeName, setNewEmployeeName] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
   const hasPendingTestRuns = testRuns.some(
     (run) => run.status === 'queued' || run.status === 'running',
   );
@@ -383,9 +411,43 @@ export function EmployeeProduction() {
     () => auditEvents.filter((event) => publicationActions.has(event.action)),
     [auditEvents],
   );
+  const dirty = Boolean(
+    draft &&
+    JSON.stringify(draft) !==
+      JSON.stringify(
+        selected?.currentDraft?.definition ??
+          selected?.currentPublished?.definition,
+      ),
+  );
+  const createDirty = showCreate && Boolean(newEmployeeName || newEmployeeKey);
+  useEffect(() => {
+    onNavigationStateChange?.({ busy, dirty: dirty || createDirty });
+  }, [busy, dirty, createDirty, onNavigationStateChange]);
+  useEffect(() => {
+    const protect = (event: BeforeUnloadEvent) => {
+      if (!busy && !dirty && !createDirty) return;
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', protect);
+    return () => window.removeEventListener('beforeunload', protect);
+  }, [busy, dirty, createDirty]);
+
+  function mayDiscard() {
+    return !busy && (!dirty || window.confirm('放弃尚未保存的修改？'));
+  }
+
+  function closeCreate() {
+    if (busy || (createDirty && !window.confirm('放弃尚未创建的员工草稿？')))
+      return;
+    setShowCreate(false);
+    setNewEmployeeName('');
+    setNewEmployeeKey('');
+    setError('');
+  }
 
   function choose(employee: Employee) {
-    if (busy) return;
+    if (employee.id === selectedId || !mayDiscard()) return;
     invalidateReview();
     skillSequence.current++;
     setSkillView(null);
@@ -459,6 +521,7 @@ export function EmployeeProduction() {
   }
 
   async function refresh() {
+    if (!mayDiscard()) return;
     await load(selectedId ?? undefined);
     if (tab === 'debug' && selectedId) {
       try {
@@ -839,11 +902,94 @@ export function EmployeeProduction() {
     }
   }
 
+  const createDialog = showCreate ? (
+    <AdminDialog title="新建员工草稿" onClose={closeCreate} busy={busy}>
+      <form
+        className={styles.createForm}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (!busy) void createEmployee();
+        }}
+      >
+        <label className={styles.field}>
+          <span>员工名称</span>
+          <input
+            data-autofocus
+            value={newEmployeeName}
+            onChange={(event) => setNewEmployeeName(event.target.value)}
+          />
+        </label>
+        <label className={styles.field}>
+          <span>员工 Key</span>
+          <input
+            placeholder="lowercase-key"
+            value={newEmployeeKey}
+            onChange={(event) => setNewEmployeeKey(event.target.value)}
+          />
+        </label>
+        <p className={styles.muted}>
+          {selected
+            ? `从「${selected.name}」复制为未发布草稿，不继承租户分配。`
+            : '创建未发布草稿，不会自动配发给租户。'}
+        </p>
+        {error && (
+          <p className={styles.error} role="alert">
+            {error}
+          </p>
+        )}
+        <div className={styles.dialogActions}>
+          <AdminButton disabled={busy} onClick={closeCreate}>
+            取消
+          </AdminButton>
+          <AdminButton
+            type="submit"
+            variant="primary"
+            disabled={busy || !newEmployeeName.trim() || !newEmployeeKey.trim()}
+          >
+            {busy ? '正在创建…' : '创建草稿'}
+          </AdminButton>
+        </div>
+      </form>
+    </AdminDialog>
+  ) : null;
+
   if (!directory || !selected || !draft) {
     return (
-      <p className={error ? styles.error : styles.notice}>
-        {error || '正在读取 AI 员工…'}
-      </p>
+      <section className={styles.page} aria-label="AI 员工管理">
+        <header className={styles.pageHeader}>
+          <div>
+            <h1>AI 员工</h1>
+            <p>管理员工配置、草稿测试与发布。</p>
+          </div>
+          <AdminButton
+            variant="primary"
+            icon="plus"
+            disabled={busy || !directory}
+            onClick={() => setShowCreate(true)}
+          >
+            新建员工草稿
+          </AdminButton>
+        </header>
+        <p
+          className={error ? styles.error : styles.notice}
+          role={error ? 'alert' : 'status'}
+        >
+          {error ||
+            (directory
+              ? '当前没有 AI 员工，创建草稿后开始配置。'
+              : '正在读取 AI 员工…')}
+        </p>
+        {error && (
+          <AdminButton
+            icon="refresh"
+            disabled={busy}
+            onClick={() => void load()}
+          >
+            重新读取
+          </AdminButton>
+        )}
+        {createDialog}
+      </section>
     );
   }
 
@@ -1243,7 +1389,24 @@ export function EmployeeProduction() {
             testRuns.map((run) => (
               <article className={styles.testRun} key={run.id}>
                 <header>
-                  <strong>{run.status}</strong>
+                  <AdminStatus
+                    tone={
+                      run.status === 'succeeded'
+                        ? 'success'
+                        : run.status === 'failed'
+                          ? 'danger'
+                          : 'warning'
+                    }
+                  >
+                    {
+                      {
+                        queued: '等待测试',
+                        running: '测试中',
+                        succeeded: '测试成功',
+                        failed: '测试失败',
+                      }[run.status]
+                    }
+                  </AdminStatus>
                   <time>{new Date(run.createdAt).toLocaleString('zh-CN')}</time>
                 </header>
                 <p className={styles.testPrompt}>{run.input.prompt}</p>
@@ -1429,8 +1592,6 @@ export function EmployeeProduction() {
             {busy ? '发布中…' : '确认更新到租户'}
           </button>
         )}
-        {error ? <p className={styles.error}>{error}</p> : null}
-        {message ? <p className={styles.notice}>{message}</p> : null}
         <section className={styles.dangerZone}>
           <h3>回滚发布</h3>
           <p className={styles.muted}>
@@ -1557,114 +1718,195 @@ export function EmployeeProduction() {
     );
   }
 
+  const query = search.trim().toLocaleLowerCase();
+  const visibleEmployees = directory.employees.filter(
+    (employee) =>
+      (!statusFilter || employee.status === statusFilter) &&
+      (!query ||
+        `${employee.name} ${employee.employeeKey}`
+          .toLocaleLowerCase()
+          .includes(query)),
+  );
+  const accent = resolveEmployeeAccent(
+    draft.name,
+    draft.appearance.accentColor,
+  );
+
   return (
-    <section className={styles.shell}>
-      <aside className={styles.rail}>
-        <h2>AI 员工</h2>
-        <p className={styles.muted}>平台生产后台 · 租户不可见</p>
-        <button
-          className={styles.createToggle}
-          disabled={busy}
-          onClick={() => setShowCreate((current) => !current)}
-        >
-          + 新建员工草稿
-        </button>
-        {showCreate ? (
-          <div className={styles.createForm}>
-            <label>
-              <span>员工名称</span>
-              <input
-                value={newEmployeeName}
-                onChange={(event) => setNewEmployeeName(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>员工 Key</span>
-              <input
-                placeholder="lowercase-key"
-                value={newEmployeeKey}
-                onChange={(event) => setNewEmployeeKey(event.target.value)}
-              />
-            </label>
-            <small>从当前员工复制为未发布草稿，不继承租户分配。</small>
-            <button
-              className={styles.button}
-              data-primary="true"
-              disabled={
-                busy || !newEmployeeName.trim() || !newEmployeeKey.trim()
-              }
-              onClick={() => void createEmployee()}
-            >
-              创建草稿
-            </button>
-          </div>
-        ) : null}
-        <div className={styles.employeeList}>
-          {directory.employees.map((employee) => (
-            <button
-              className={styles.employee}
-              data-active={employee.id === selectedId}
-              key={employee.id}
-              disabled={busy}
-              onClick={() => choose(employee)}
-            >
-              <strong>{employee.name}</strong>
-              <small>
-                {employee.status} · {employee.assignedWorkspaceIds.length}{' '}
-                个工作区
-              </small>
-            </button>
-          ))}
+    <section className={styles.page} aria-label="AI 员工管理">
+      <header className={styles.pageHeader}>
+        <div>
+          <h1>AI 员工</h1>
+          <p>管理员工配置、草稿测试与发布。</p>
         </div>
-      </aside>
-      <div className={styles.main}>
-        <header className={styles.header}>
-          <div>
-            <h1>{selected.name}</h1>
-            <div className={styles.headerStatuses}>
-              <span className={styles.status}>{selected.status}</span>
+        <AdminButton
+          variant="primary"
+          icon="plus"
+          disabled={busy}
+          onClick={() => {
+            setError('');
+            setShowCreate(true);
+          }}
+        >
+          新建员工草稿
+        </AdminButton>
+      </header>
+      <div className={styles.shell}>
+        <aside className={styles.rail} aria-label="AI 员工目录">
+          <div className={styles.directoryHeading}>
+            <strong>员工目录</strong>
+            <span>{directory.employees.length} 位</span>
+          </div>
+          <label className={styles.search}>
+            <AdminIcon name="search" />
+            <input
+              type="search"
+              aria-label="查找 AI 员工"
+              placeholder="搜索名称或 Key"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </label>
+          <select
+            className={styles.statusFilter}
+            aria-label="员工发布状态"
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value)}
+          >
+            <option value="">全部状态</option>
+            {Object.entries(employeeStatuses).map(([status, label]) => (
+              <option key={status} value={status}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <div className={styles.employeeList}>
+            {visibleEmployees.map((employee) => {
+              const definition =
+                employee.currentDraft?.definition ??
+                employee.currentPublished?.definition;
+              const color = resolveEmployeeAccent(
+                employee.name,
+                definition?.appearance.accentColor,
+              );
+              return (
+                <button
+                  className={styles.employee}
+                  aria-pressed={employee.id === selectedId}
+                  key={employee.id}
+                  disabled={busy}
+                  onClick={() => choose(employee)}
+                >
+                  <span
+                    className={styles.avatar}
+                    style={{
+                      backgroundColor: employeeColorPalette[color].value,
+                      color: employeeColorForeground(color),
+                    }}
+                    aria-hidden="true"
+                  >
+                    {employee.name.slice(0, 1)}
+                  </span>
+                  <span className={styles.employeeCopy}>
+                    <strong>{employee.name}</strong>
+                    <small>
+                      {employeeStatuses[employee.status]} ·{' '}
+                      {employee.assignedWorkspaceIds.length} 个工作区
+                    </small>
+                  </span>
+                </button>
+              );
+            })}
+            {!visibleEmployees.length && (
+              <p className={styles.empty} role="status">
+                没有匹配的员工。
+              </p>
+            )}
+          </div>
+        </aside>
+        <div className={styles.main}>
+          <header className={styles.header}>
+            <div className={styles.identity}>
+              <span
+                className={styles.avatar}
+                style={{
+                  backgroundColor: employeeColorPalette[accent].value,
+                  color: employeeColorForeground(accent),
+                }}
+                aria-hidden="true"
+              >
+                {draft.name.slice(0, 1)}
+              </span>
+              <div>
+                <h2>{selected.name}</h2>
+                <span className={styles.muted}>{selected.employeeKey}</span>
+              </div>
             </div>
+            <div className={styles.actions}>
+              <AdminStatus tone={employeeTone(selected.status)}>
+                {employeeStatuses[selected.status]}
+              </AdminStatus>
+              <AdminButton
+                variant="icon"
+                icon="refresh"
+                aria-label="刷新员工配置"
+                title="刷新员工配置"
+                disabled={busy}
+                onClick={() => void refresh()}
+              />
+              <AdminButton
+                variant="primary"
+                disabled={busy}
+                onClick={() => void save()}
+              >
+                {busy ? '处理中…' : '保存草稿'}
+              </AdminButton>
+            </div>
+          </header>
+          <div className={styles.revisions}>
+            <span>
+              {selected.currentPublished
+                ? `正式版本 r${selected.currentPublished.revision}`
+                : '尚未发布'}
+            </span>
+            {selected.currentDraft && (
+              <span>草稿 r{selected.currentDraft.revision}</span>
+            )}
+            {dirty && <span className={styles.pending}>有未保存修改</span>}
           </div>
-          <div className={styles.actions}>
-            <button
-              className={styles.button}
-              disabled={busy}
-              onClick={() => void refresh()}
-            >
-              刷新
-            </button>
-            <button
-              className={styles.button}
-              data-primary="true"
-              disabled={busy}
-              onClick={() => void save()}
-            >
-              {busy ? '处理中…' : '保存草稿'}
-            </button>
-          </div>
-        </header>
-        <nav className={styles.tabs}>
-          {tabs.map(([id, label]) => (
-            <button
-              className={styles.tab}
-              data-active={tab === id}
-              key={id}
-              onClick={() => setTab(id)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
-        <div className={styles.panel}>{panel}</div>
-        {error && tab !== 'publish' ? (
-          <p className={styles.error}>{error}</p>
-        ) : null}
-        {message &&
-        tab !== 'publish' &&
-        !message.startsWith('Snow Rice Bridge') ? (
-          <p className={styles.notice}>{message}</p>
-        ) : null}
+          <nav className={styles.tabs} aria-label="员工配置">
+            {tabs.map(([id, label]) => (
+              <button
+                className={styles.tab}
+                aria-current={tab === id ? 'page' : undefined}
+                key={id}
+                disabled={busy}
+                onClick={() => setTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </nav>
+          {error && !showCreate && (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
+          )}
+          {message && !message.startsWith('Snow Rice Bridge') && (
+            <p className={styles.notice} role="status">
+              {message}
+            </p>
+          )}
+          <fieldset
+            className={styles.panel}
+            disabled={busy}
+            aria-label={`${selected.name} 配置`}
+          >
+            {panel}
+          </fieldset>
+        </div>
       </div>
+      {createDialog}
     </section>
   );
 }

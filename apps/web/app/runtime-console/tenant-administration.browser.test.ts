@@ -29,7 +29,10 @@ import { tenantResourcesHttp } from '../../lib/tenant-administration/resources-h
 import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
-import { GET as employeeDirectory } from '../api/v1/admin/platform-employees/route';
+import {
+  GET as employeeDirectory,
+  POST as createEmployeeDraft,
+} from '../api/v1/admin/platform-employees/route';
 import {
   GET as employeeTestRuns,
   POST as queueEmployeeTest,
@@ -161,7 +164,11 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           const result =
             parts[4] === 'platform-employees'
               ? !parts[5]
-                ? await employeeDirectory(request)
+                ? await (
+                    request.method === 'POST'
+                      ? createEmployeeDraft
+                      : employeeDirectory
+                  )(request)
                 : parts[6] === 'test-runs'
                   ? await (
                       request.method === 'POST'
@@ -1144,6 +1151,131 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         (await directory()).currentDraft.definition.securityPolicy
           .deniedCapabilities,
       ).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+  it('filters the dark employee directory and protects unsaved drafts on refresh and selection', async () => {
+    const first = await createEmployeeAdministrationFixture(fixture.db);
+    const second = await createEmployeeAdministrationFixture(fixture.db);
+    await savePlatformEmployeeDraft(first.employeeId, {
+      definition: { ...first.definition, name: 'Directory guard first' },
+    });
+    await savePlatformEmployeeDraft(second.employeeId, {
+      definition: { ...second.definition, name: 'Directory guard second' },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(`${origin}/runtime-console?view=employees`);
+      const directory = page.getByRole('complementary', {
+        name: 'AI 员工目录',
+      });
+      await directory
+        .getByRole('button')
+        .filter({ hasText: 'Directory guard first' })
+        .click();
+      const revision = await first.revision();
+      const requestStart = requests.length;
+      await page.getByLabel('查找 AI 员工').fill('Directory guard');
+      expect(await directory.getByRole('button').count()).toBe(2);
+      await page.getByLabel('员工发布状态').selectOption('disabled');
+      await page.getByText('没有匹配的员工。', { exact: true }).waitFor();
+      await page.getByLabel('员工发布状态').selectOption('');
+      await page
+        .getByLabel('名称', { exact: true })
+        .fill('Unsaved protected name');
+      page.once('dialog', (d) => d.dismiss());
+      await page
+        .getByRole('button', { name: '刷新员工配置', exact: true })
+        .click();
+      expect(await page.getByLabel('名称', { exact: true }).inputValue()).toBe(
+        'Unsaved protected name',
+      );
+      page.once('dialog', (d) => d.dismiss());
+      await directory
+        .getByRole('button')
+        .filter({ hasText: 'Directory guard second' })
+        .click();
+      expect(
+        await page
+          .getByRole('heading', { name: 'Directory guard first', exact: true })
+          .count(),
+      ).toBe(1);
+      await page.setViewportSize({ width: 320, height: 1000 });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+      page.once('dialog', (d) => d.accept());
+      await directory
+        .getByRole('button')
+        .filter({ hasText: 'Directory guard second' })
+        .click();
+      await page
+        .getByRole('heading', { name: 'Directory guard second', exact: true })
+        .waitFor();
+      expect(await first.revision()).toEqual(revision);
+      expect(
+        requests
+          .slice(requestStart)
+          .filter((r) => /^(POST|PUT|PATCH) /.test(r)),
+      ).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+  it('creates an unassigned copied draft in the shared modal and retains the source revision', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db);
+    await savePlatformEmployeeDraft(f.employeeId, {
+      definition: { ...f.definition, name: 'Modal copy source' },
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(`${origin}/runtime-console?view=employees`);
+      await page
+        .getByRole('complementary', { name: 'AI 员工目录' })
+        .getByRole('button')
+        .filter({ hasText: 'Modal copy source' })
+        .click();
+      const source = await getPlatformEmployee(f.employeeId);
+      await page
+        .getByRole('button', { name: '新建员工草稿', exact: true })
+        .click();
+      const dialog = page.getByRole('dialog', {
+        name: '新建员工草稿',
+        exact: true,
+      });
+      expect(
+        await dialog
+          .getByLabel('员工名称')
+          .evaluate((n) => n === document.activeElement),
+      ).toBe(true);
+      await dialog.getByLabel('员工名称').fill('Design copied draft');
+      await dialog.getByLabel('员工 Key').fill(`design-copy-${randomUUID()}`);
+      const [response] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url() === `${origin}/api/v1/admin/platform-employees` &&
+            r.request().method() === 'POST',
+        ),
+        dialog.getByRole('button', { name: '创建草稿', exact: true }).click(),
+      ]);
+      expect(response.status()).toBe(201);
+      const { employee } = await response.json();
+      expect(response.request().postDataJSON().sourceEmployeeId).toBe(
+        f.employeeId,
+      );
+      expect(employee.assignedWorkspaceIds).toEqual([]);
+      expect(employee.currentPublished).toBeNull();
+      expect(employee.currentDraft.definition.capabilities).toEqual(
+        source!.currentDraft!.definition.capabilities,
+      );
+      await page
+        .getByRole('heading', { name: 'Design copied draft', exact: true })
+        .waitFor();
+      expect(await dialog.count()).toBe(0);
+      expect(await getPlatformEmployee(f.employeeId)).toEqual(source);
     } finally {
       await context.close();
     }
