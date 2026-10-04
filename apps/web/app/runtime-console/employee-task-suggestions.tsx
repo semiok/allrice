@@ -8,6 +8,7 @@ import {
   type TaskSuggestionSlot,
 } from '@allrice/contracts';
 import styles from './employee-production.module.css';
+import { AdminButton } from '../../components/admin/admin-ui';
 
 export function EmployeeTaskSuggestions({
   value,
@@ -158,7 +159,7 @@ export function EmployeeTaskSuggestions({
                 />
                 必需参数（没有默认值时先填写表单）
               </label>
-              <button
+              <AdminButton
                 type="button"
                 onClick={() =>
                   edit(index, {
@@ -167,10 +168,10 @@ export function EmployeeTaskSuggestions({
                 }
               >
                 移除参数 {slotIndex + 1}
-              </button>
+              </AdminButton>
             </fieldset>
           ))}
-          <button
+          <AdminButton
             type="button"
             disabled={(suggestion.slots?.length ?? 0) >= 8}
             onClick={() =>
@@ -187,7 +188,7 @@ export function EmployeeTaskSuggestions({
             }
           >
             添加参数
-          </button>
+          </AdminButton>
           <fieldset className={styles.taskSlot}>
             <legend>实际能力引用</legend>
             <p>
@@ -314,7 +315,7 @@ export function EmployeeTaskSuggestions({
             </label>
           </fieldset>
           <div className={styles.taskActions}>
-            <button
+            <AdminButton
               type="button"
               disabled={index === 0}
               onClick={() => {
@@ -327,8 +328,8 @@ export function EmployeeTaskSuggestions({
               }}
             >
               上移
-            </button>
-            <button
+            </AdminButton>
+            <AdminButton
               type="button"
               disabled={index === suggestions.length - 1}
               onClick={() => {
@@ -341,20 +342,20 @@ export function EmployeeTaskSuggestions({
               }}
             >
               下移
-            </button>
-            <button
+            </AdminButton>
+            <AdminButton
               type="button"
               onClick={() =>
                 onChange(suggestions.filter((_, i) => i !== index))
               }
             >
               移除任务
-            </button>
+            </AdminButton>
           </div>
         </details>
       ))}
       <div className={styles.taskActions}>
-        <button
+        <AdminButton
           type="button"
           disabled={suggestions.length >= 8}
           onClick={() =>
@@ -369,11 +370,11 @@ export function EmployeeTaskSuggestions({
           }
         >
           新增推荐任务
-        </button>
+        </AdminButton>
         {value !== undefined && (
-          <button type="button" onClick={() => onChange(undefined)}>
+          <AdminButton type="button" onClick={() => onChange(undefined)}>
             恢复按能力匹配的默认任务
-          </button>
+          </AdminButton>
         )}
       </div>
     </section>

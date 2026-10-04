@@ -572,7 +572,8 @@ export function EmployeeProduction({
   }
 
   async function createEmployee() {
-    if (!newEmployeeKey.trim() || !newEmployeeName.trim()) return;
+    if (!newEmployeeKey.trim() || !newEmployeeName.trim() || !mayDiscard())
+      return;
     setBusy(true);
     setMessage('');
     setError('');
@@ -915,6 +916,7 @@ export function EmployeeProduction({
           <span>员工名称</span>
           <input
             data-autofocus
+            disabled={busy}
             value={newEmployeeName}
             onChange={(event) => setNewEmployeeName(event.target.value)}
           />
@@ -923,6 +925,7 @@ export function EmployeeProduction({
           <span>员工 Key</span>
           <input
             placeholder="lowercase-key"
+            disabled={busy}
             value={newEmployeeKey}
             onChange={(event) => setNewEmployeeKey(event.target.value)}
           />
