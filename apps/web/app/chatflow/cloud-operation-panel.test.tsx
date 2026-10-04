@@ -40,6 +40,56 @@ const render = (op: CloudOperationView, busy = false) =>
     <CloudOperationCard op={op} busy={busy} onAct={() => {}} />,
   );
 describe('Cloud/MCP approval presentation', () => {
+  it('shows saved-project commands and versions without presenting them as scripts or third-party calls', () => {
+    const op = view();
+    op.snapshot.status = 'succeeded';
+    op.approval = null;
+    op.mcpAuthorization = null;
+    op.proposal = {
+      kind: 'project',
+      project: {
+        projectId: 'project-id',
+        snapshot: {
+          kind: 'artifact',
+          id: 'snapshot-id',
+          version: '1',
+          checksum: 'sha256:' + 'a'.repeat(64),
+        },
+      },
+      sourceDigest: 'sha256:' + 'b'.repeat(64),
+      executable: '/usr/local/bin/node',
+      args: ['verify.cjs', '<script>'],
+      path: '.',
+      files: [],
+      preparation: {
+        version: 1,
+        projectId: 'project-id',
+        sourceDigest: 'sha256:' + 'b'.repeat(64),
+        manager: 'pnpm',
+        managerVersion: '10.33.3',
+        lockPath: 'pnpm-lock.yaml',
+        lockChecksum: 'sha256:' + 'a'.repeat(64),
+        offline: true,
+        scripts: 'disabled',
+        packages: [],
+      },
+      limits: {
+        timeoutMs: 60000,
+        outputBytes: 16384,
+        memoryMiB: 256,
+        cpuMillis: 1000,
+        pids: 64,
+      },
+    } as CloudOperationView['proposal'];
+    const html = render(op);
+    expect(html).toContain('云端项目');
+    expect(html).toContain('云端项目命令');
+    expect(html).toContain('项目版本');
+    expect(html).toContain('verify.cjs');
+    expect(html).not.toContain('云端待执行脚本');
+    expect(html).not.toContain('第三方服务');
+    expect(html).not.toContain('<script>');
+  });
   it('keeps compact statuses distinct from unconfirmed remote outcomes', () => {
     const op = view();
     for (const [status, label] of [

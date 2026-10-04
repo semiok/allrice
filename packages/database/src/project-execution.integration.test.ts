@@ -17,6 +17,7 @@ import {
 import { createAssistantLocalCommandFixture } from './local-command-assistant.fixture.ts';
 import { executeProjectWorkspace } from './project-workspace.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
+import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import { selectProjectExecution } from './project-execution.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
 import { createCloudProjectOperation } from './cloud-execution.ts';
@@ -309,6 +310,28 @@ suite(
         destination: 'cloud_execution',
         content: f.args.project.snapshot,
       });
+      const [view] = await listCloudRuntimeOperations(
+        f.requestContext,
+        f.rootRunId,
+        f.db,
+      );
+      expect(view!.proposal).toMatchObject({
+        kind: 'project',
+        project: f.args.project,
+        executable: f.args.executable,
+        args: f.args.args,
+        sourceDigest: f.args.projectPreparation.sourceDigest,
+      });
+      expect(JSON.stringify(view)).not.toContain('contentBase64');
+      expect(JSON.stringify(view)).not.toContain('leaseTokenDigest');
+      expect(JSON.stringify(view)).not.toContain('executionOrigin');
+      await expect(
+        listCloudRuntimeOperations(
+          { ...f.requestContext, actor: { type: 'user', id: randomUUID() } },
+          f.rootRunId,
+          f.db,
+        ),
+      ).rejects.toThrow('run_not_owned');
       const replay = await createCloudProjectOperation(
         {
           context: f.context,

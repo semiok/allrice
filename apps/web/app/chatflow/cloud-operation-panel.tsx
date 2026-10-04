@@ -320,7 +320,7 @@ export function CloudOperationCard({
             : '未收到完整的执行回执。'}
           {proposal.kind === 'mcp'
             ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
-            : '云端需等待实际停止和结果回执；不会自动重跑脚本。'}
+            : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
         </p>
       )}
     </>
@@ -342,7 +342,7 @@ export function CloudOperationCard({
               stroke="currentColor"
               strokeWidth="1.7"
             >
-              {proposal.kind === 'cloud' ? (
+              {proposal.kind !== 'mcp' ? (
                 <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
               ) : (
                 <>
@@ -353,8 +353,12 @@ export function CloudOperationCard({
               )}
             </svg>
           </span>
-          {proposal.kind === 'cloud' ? (
-            '云端计算'
+          {proposal.kind !== 'mcp' ? (
+            proposal.kind === 'project' ? (
+              '云端项目'
+            ) : (
+              '云端计算'
+            )
           ) : (
             <span className={styles.toolName}>
               {proposal.tool.startsWith('mcp__app__') ? (
@@ -395,9 +399,9 @@ export function CloudOperationCard({
         </div>
       </header>
       {!compact && notices}
-      {proposal.kind === 'cloud' && (
+      {proposal.kind !== 'mcp' && (
         <p className={styles.scope}>
-          {`${proposal.inputs.length} 个输入文件 · 仅在云端执行 · 不联网`}
+          {`${proposal.kind === 'project' ? proposal.files.length : proposal.inputs.length} 个输入文件 · 仅在云端执行 · 不联网`}
         </p>
       )}
       <div className={styles.executionFooter}>
@@ -425,9 +429,11 @@ export function CloudOperationCard({
               {notices}
             </>
           )}
-          {proposal.kind === 'cloud' ? (
+          {proposal.kind !== 'mcp' ? (
             <p className={styles.detailScope}>
-              只读本次授权的上传文件，不访问你的电脑。
+              {proposal.kind === 'project'
+                ? '执行本次保存的项目副本，不访问你的电脑。'
+                : '只读本次授权的上传文件，不访问你的电脑。'}
             </p>
           ) : (
             <>
@@ -445,7 +451,58 @@ export function CloudOperationCard({
             </>
           )}
           <div className={styles.detailSections}>
-            {proposal.kind === 'cloud' ? (
+            {proposal.kind === 'project' ? (
+              <>
+                <OperationDetail
+                  title="执行命令"
+                  meta={
+                    proposal.preparation.manager === 'uv'
+                      ? 'Python 3.11'
+                      : 'Node.js 22'
+                  }
+                  icon={<IconCodeOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  <pre aria-label="云端项目命令">
+                    {JSON.stringify(
+                      {
+                        executable: proposal.executable,
+                        args: proposal.args,
+                        path: proposal.path,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </OperationDetail>
+                <OperationDetail
+                  title="项目版本"
+                  icon={<IconCopyOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  <pre>
+                    {JSON.stringify(
+                      {
+                        project: proposal.project,
+                        sourceDigest: proposal.sourceDigest,
+                        files: proposal.files,
+                        preparation: proposal.preparation,
+                      },
+                      null,
+                      2,
+                    )}
+                  </pre>
+                </OperationDetail>
+                <OperationDetail
+                  title="运行限制"
+                  meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
+                  icon={<IconSlidersTwoOutlineRegular size={16} />}
+                  open={!!pending}
+                >
+                  <pre>{JSON.stringify(proposal.limits, null, 2)}</pre>
+                </OperationDetail>
+              </>
+            ) : proposal.kind === 'cloud' ? (
               <>
                 <OperationDetail
                   title="执行脚本"
@@ -547,12 +604,12 @@ export function CloudOperationCard({
                   ))
                 : '无'}
             </p>
-          ) : (
+          ) : proposal.kind === 'mcp' ? (
             <small className={styles.authorizationScope}>
               仅授权这一次调用、当前工具 schema
               和连接版本；管理员保存的服务密钥不会展示在页面上。
             </small>
-          )}
+          ) : null}
           {compact && receiptNotes}
         </div>
       </div>
