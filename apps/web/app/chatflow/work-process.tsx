@@ -92,6 +92,7 @@ export function WorkProcess({
   renderOperation?: (operationId: string) => ReactNode;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [settledOnMount] = useState(!running);
   const process = summarizeWorkProcess(items);
   const microStatus = running && (!streaming || !!parts);
   const waiting = timing?.phase === 'waiting';
@@ -160,7 +161,9 @@ export function WorkProcess({
     const renderPart = (part: WorkProgressPart, index: number) =>
       part.kind === 'reply' ? (
         <div
-          key={part.id}
+          key={
+            settledOnMount && part.id === final?.id ? 'final-reply' : part.id
+          }
           className={styles.processReply}
           data-work-reply={part.id}
           hidden={!showHistory && part.id !== final?.id}
