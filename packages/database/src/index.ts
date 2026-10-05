@@ -1,4 +1,5 @@
 export * from './image-operations.ts';
+export { readQualityEvidenceBundle } from './platform-quality-evidence-bundle.ts';
 export * from './project-workspace.ts';
 export * from './project-delivery.ts';
 export * from './core/client.ts';

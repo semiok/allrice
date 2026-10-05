@@ -12,6 +12,7 @@ import {
 } from '@allrice/contracts';
 import { ProjectServiceCard } from '../chatflow/project-service-card';
 import { PlatformQualitySchedule } from './platform-quality-schedule';
+import { PlatformQualityEvidence } from './platform-quality-evidence';
 const endpoint = '/api/v1/admin/technical-assistant/quality';
 const labels = {
   queued: '排队中',
@@ -350,6 +351,7 @@ export function PlatformQuality() {
           )}
         </article>
       )}
+      <PlatformQualityEvidence />
     </section>
   );
 }

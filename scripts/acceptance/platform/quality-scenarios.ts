@@ -9,42 +9,27 @@ import {
   statSync,
   readdirSync,
 } from 'node:fs';
-import { dirname, resolve, relative, isAbsolute } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   qualityRegressionScenarios,
-  qualityScenarioRegistryVersion,
   type QualityRegressionGroup,
 } from '../../../packages/database/src/platform-quality-scenarios.ts';
 import { managedPythonPayloadsV1 } from '../../../packages/contracts/src/managed-python-payload.ts';
+import { bundleQualityEvidence } from '../../../packages/database/src/platform-quality-evidence-bundle.ts';
 
 const root = fileURLToPath(new URL('../../..', import.meta.url));
 const digest = (bytes: string | Buffer) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');
-type Source = ReturnType<typeof currentSource>;
-type Capture = {
-  version: 1;
-  group: QualityRegressionGroup;
-  capturedAt: string;
-  registryDigest: string;
-  source: Source;
-  versions: Record<string, unknown>;
-};
-type Assertion = {
-  fullName: string;
-  status: string;
-  failureMessages?: string[];
-};
-type Suite = {
-  name: string;
-  status: string;
-  assertionResults: Assertion[];
-};
-export type VitestEvidence = {
-  startTime: number;
-  success: boolean;
-  testResults: Suite[];
-};
+import {
+  collectQualityEvidence,
+  type Capture,
+  type VitestEvidence,
+} from '../../../packages/database/src/platform-quality-evidence.ts';
+export {
+  collectQualityEvidence,
+  type VitestEvidence,
+} from '../../../packages/database/src/platform-quality-evidence.ts';
 export function currentSource(cwd = root) {
   const sha = execFileSync('git', ['rev-parse', 'HEAD'], {
     cwd,
@@ -89,175 +74,6 @@ export function currentSource(cwd = root) {
     }).trim(),
   };
 }
-export function collectQualityEvidence(input: {
-  capture: Capture;
-  current: Source;
-  report: VitestEvidence;
-  reportChecksum: string;
-  reportPath: string;
-  exitCode: number;
-  cwd?: string;
-}) {
-  const { capture, current, report } = input;
-  if (
-    capture.version !== 1 ||
-    !['native', 'postgres', 'office'].includes(capture.group)
-  )
-    throw Error('CAPTURE_INVALID');
-  if (
-    !Number.isFinite(Date.parse(capture.capturedAt)) ||
-    !Number.isInteger(input.exitCode) ||
-    input.exitCode < 0
-  )
-    throw Error('CAPTURE_INVALID');
-  if (
-    capture.registryDigest !==
-    digest(JSON.stringify(qualityRegressionScenarios))
-  )
-    throw Error('REGISTRY_CHANGED');
-  if (
-    capture.source.sha !== current.sha ||
-    capture.source.treeDigest !== current.treeDigest
-  )
-    throw Error('SOURCE_CHANGED');
-  if (
-    !Number.isFinite(report.startTime) ||
-    report.startTime < Date.parse(capture.capturedAt) ||
-    !Array.isArray(report.testResults)
-  )
-    throw Error('REPORT_MISSING_OR_OLDER_THAN_CAPTURE');
-  const cwd = input.cwd ?? root;
-  const suites = new Map<string, Suite>();
-  for (const suite of report.testResults) {
-    if (
-      typeof suite.name !== 'string' ||
-      !Array.isArray(suite.assertionResults)
-    )
-      throw Error('REPORT_INVALID');
-    const path = isAbsolute(suite.name)
-      ? relative(cwd, suite.name)
-      : suite.name;
-    if (suites.has(path)) throw Error('REPORT_DUPLICATE_SUITE');
-    suites.set(path, suite);
-  }
-  const scenarios = qualityRegressionScenarios
-    .filter((s) => s.group === capture.group)
-    .map((scenario) => {
-      const results = scenario.files.map((file) => {
-        const suite = suites.get(file);
-        const tags =
-          'assertionTags' in scenario ? scenario.assertionTags : null;
-        const assertions = (suite?.assertionResults ?? [])
-          .filter((a) => !tags || tags.some((tag) => a.fullName.includes(tag)))
-          .map((a) => {
-            if (
-              !a.fullName ||
-              ![
-                'passed',
-                'failed',
-                'pending',
-                'skipped',
-                'todo',
-                'disabled',
-              ].includes(a.status)
-            )
-              throw Error('ASSERTION_INVALID');
-            const failures = a.failureMessages ?? [];
-            return {
-              name: a.fullName,
-              status:
-                a.status === 'failed'
-                  ? failures.some((m) => /^AssertionError:/m.test(m))
-                    ? 'assertion_failed'
-                    : 'execution_failed'
-                  : a.status === 'passed'
-                    ? 'passed'
-                    : 'skipped',
-              // Logs remain in the original controlled test artifact. Do not copy
-              // raw errors, received values or credentials into a display summary.
-              failureDigest: failures.length
-                ? digest(JSON.stringify(failures))
-                : null,
-            };
-          });
-        return {
-          file,
-          matched: !!suite,
-          suiteStatus: suite?.status ?? 'missing',
-          assertions,
-          executed: assertions.filter((a) => a.status !== 'skipped').length,
-          skipped: assertions.filter((a) => a.status === 'skipped').length,
-        };
-      });
-      const failure = results
-        .flatMap((r) => r.assertions)
-        .find((a) =>
-          ['assertion_failed', 'execution_failed'].includes(a.status),
-        );
-      const missing = results.some(
-        (r) => !r.matched || r.assertions.length === 0,
-      );
-      const none = results.every((r) => r.executed === 0);
-      const suiteFailed = results.some(
-        (r) => r.matched && r.suiteStatus === 'failed',
-      );
-      const status =
-        failure?.status ??
-        (suiteFailed
-          ? 'execution_failed'
-          : missing
-            ? 'unknown'
-            : none
-              ? 'skipped'
-              : results.some((r) => r.skipped || r.executed === 0)
-                ? 'partially_verified'
-                : results.some((r) => r.suiteStatus !== 'passed')
-                  ? 'execution_failed'
-                  : 'passed');
-      return {
-        ...scenario,
-        status,
-        results,
-        inputDigest: digest(scenario.input),
-        assertionDigest: digest(scenario.expected),
-        reproduction: [
-          'pnpm',
-          'exec',
-          'vitest',
-          'run',
-          '--maxWorkers=1',
-          ...scenario.files,
-        ],
-      };
-    });
-  return {
-    version: qualityScenarioRegistryVersion,
-    capturedAt: capture.capturedAt,
-    recordedAt: new Date().toISOString(),
-    source: capture.source,
-    group: capture.group,
-    versions: capture.versions,
-    registryDigest: capture.registryDigest,
-    originalReport: { path: input.reportPath, checksum: input.reportChecksum },
-    executionExitCode: input.exitCode,
-    runnerSucceeded: input.exitCode === 0 && report.success === true,
-    fullyVerified:
-      input.exitCode === 0 &&
-      report.success === true &&
-      scenarios.length > 0 &&
-      scenarios.every((s) => s.status === 'passed'),
-    passedScenarioCount: scenarios.filter((s) => s.status === 'passed').length,
-    scenarioCount: scenarios.length,
-    scenarios,
-    physicalDeviceValidation: 'not_executed',
-    realModelUsed: false,
-    employeeAndSkillVersions: 'synthetic_fixture_only',
-    scope:
-      capture.group === 'office'
-        ? 'Fixed native cloud Office VM assertions and joined PG/HTTP delivery only; not Bridge devices, arbitrary projects, real model quality or current Dev acceptance.'
-        : 'Existing fixture assertions only; not arbitrary projects, native Office software, real model quality or current Dev acceptance.',
-  };
-}
 function jsonFile(path: string) {
   if (statSync(path).size > 30_000_000) throw Error('EVIDENCE_TOO_LARGE');
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -276,7 +92,15 @@ async function main() {
     }),
   );
   if (!options.output) throw Error('OUTPUT_REQUIRED');
-  if (action === 'capture') {
+  if (action === 'bundle') {
+    if (!options['summary-files']) throw Error('SUMMARIES_REQUIRED');
+    bundleQualityEvidence({
+      directory: resolve(options.output),
+      deployedSource: currentSource(),
+      summaries: options['summary-files'].split(','),
+      registries: options['registry-files']?.split(','),
+    });
+  } else if (action === 'capture') {
     if (!['native', 'postgres', 'office'].includes(options.group ?? ''))
       throw Error('GROUP_REQUIRED');
     const worker = jsonFile(resolve(root, 'apps/worker/package.json'));
@@ -289,6 +113,7 @@ async function main() {
       group: options.group as QualityRegressionGroup,
       capturedAt: new Date().toISOString(),
       registryDigest: digest(JSON.stringify(qualityRegressionScenarios)),
+      registrySnapshot: qualityRegressionScenarios,
       source: currentSource(),
       versions: {
         node: process.version,
@@ -334,13 +159,24 @@ async function main() {
     }
     if (!options.report) throw Error('REPORT_MISSING');
     const bytes = readFileSync(options.report);
+    const recordedAt = new Date().toISOString();
     const report = collectQualityEvidence({
       capture: jsonFile(options.capture),
       current: currentSource(),
+      cwd: root,
       report: jsonFile(options.report),
       reportChecksum: digest(bytes),
       reportPath: resolve(options.report),
       exitCode: Number(options['exit-code']),
+    });
+    // Preserve the existing runner's actual exit independently of the derived
+    // display summary. This is a receipt, never another test execution.
+    save(resolve(dirname(options.output), 'execution.json'), {
+      version: 1,
+      recordedAt,
+      captureChecksum: digest(readFileSync(options.capture)),
+      reportChecksum: digest(bytes),
+      executionExitCode: Number(options['exit-code']),
     });
     save(options.output, report);
     if (
