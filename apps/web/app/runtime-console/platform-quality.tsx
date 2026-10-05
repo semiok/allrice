@@ -6,6 +6,11 @@ import {
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
+import {
+  ProjectServiceViewSchema,
+  type ProjectServiceView,
+} from '@allrice/contracts';
+import { ProjectServiceCard } from '../chatflow/project-service-card';
 const endpoint = '/api/v1/admin/technical-assistant/quality';
 const labels = {
   queued: '排队中',
@@ -24,7 +29,7 @@ const verdicts = {
 };
 type Submission = {
   requestId: string;
-  caseId: 'project.static.v1';
+  caseId: 'project.static.v1' | 'project.live.v1';
   variant: 'defect' | 'correct';
 };
 const active = (q: QualityCheck) => ['queued', 'running'].includes(q.status);
@@ -79,11 +84,14 @@ export function PlatformQuality() {
       if (mounted.current) setError('质检记录暂不可读，请稍后核对。');
     }
   }
-  async function submit(variant: Submission['variant']) {
+  async function submit(
+    variant: Submission['variant'],
+    caseId: Submission['caseId'] = 'project.static.v1',
+  ) {
     if (writing) return;
     const request = pending ?? {
       requestId: crypto.randomUUID(),
-      caseId: 'project.static.v1' as const,
+      caseId,
       variant,
     };
     setPending(request);
@@ -161,10 +169,16 @@ export function PlatformQuality() {
         >
           检查修正样例
         </AdminButton>
+        <AdminButton
+          disabled={writing || hasActive || !!pending}
+          onClick={() => void submit('correct', 'project.live.v1')}
+        >
+          检查实时预览
+        </AdminButton>
         {pending && (
           <AdminButton
             disabled={writing}
-            onClick={() => void submit(pending.variant)}
+            onClick={() => void submit(pending.variant, pending.caseId)}
           >
             核对并重试原检查
           </AdminButton>
@@ -178,7 +192,13 @@ export function PlatformQuality() {
       {checks.map((q) => (
         <div className={css.record} key={q.id}>
           <div>
-            <strong>{q.variant === 'defect' ? '错误样例' : '修正样例'}</strong>
+            <strong>
+              {q.caseId === 'project.live.v1'
+                ? '实时预览样例'
+                : q.variant === 'defect'
+                  ? '错误样例'
+                  : '修正样例'}
+            </strong>
             <p className={css.meta}>
               {new Date(q.createdAt).toLocaleString('zh-CN')} · Run{' '}
               {q.runId.slice(0, 8)}
@@ -212,11 +232,16 @@ export function PlatformQuality() {
           </div>
           <p className={css.meta}>
             版本 {detail.releaseSha.slice(0, 10)} · 员工版本{' '}
-            {detail.employeeVersionId.slice(0, 8)} · 样例 project.static.v1
+            {detail.employeeVersionId.slice(0, 8)} · 样例 {detail.caseId}
           </p>
           <p className={css.meta}>
-            范围：本次固定静态项目及页面。持续服务、其他项目和完整能力矩阵仍需各自验收。
+            {detail.caseId === 'project.live.v1'
+              ? '范围：固定云端 Vite 项目的正式预览、WebSocket 和同页热更新；当前服务状态另行核对。'
+              : '范围：本次固定静态项目及页面。持续服务、其他项目和完整能力矩阵仍需各自验收。'}
           </p>
+          {detail.caseId === 'project.live.v1' && (
+            <QualityLiveService key={detail.id} id={detail.id} />
+          )}
           {!detail.report && (
             <p className={css.meta}>
               {active(detail)
@@ -226,14 +251,22 @@ export function PlatformQuality() {
           )}
           {detail.report && (
             <>
-              <p>
-                构建{' '}
-                {detail.report.build
-                  ? `退出码 ${detail.report.build.exitCode ?? '未知'} · ${detail.report.build.location === 'local' ? '我的电脑' : '云端'}`
-                  : '尚无完整证据'}{' '}
-                · 资源回收{' '}
-                {detail.report.cleanup === 'confirmed' ? '已确认' : '待确认'}
-              </p>
+              {detail.report.live && (
+                <p>
+                  HTTP 200 · WebSocket 101 · 同页热更新通过 ·
+                  浏览器已关闭；服务按租期继续。
+                </p>
+              )}
+              {!detail.report.live && (
+                <p>
+                  构建{' '}
+                  {detail.report.build
+                    ? `退出码 ${detail.report.build.exitCode ?? '未知'} · ${detail.report.build.location === 'local' ? '我的电脑' : '云端'}`
+                    : '尚无完整证据'}{' '}
+                  · 资源回收{' '}
+                  {detail.report.cleanup === 'confirmed' ? '已确认' : '待确认'}
+                </p>
+              )}
               {detail.report.errorCode && (
                 <p className={css.meta}>原因 {detail.report.errorCode}</p>
               )}
@@ -278,5 +311,68 @@ export function PlatformQuality() {
         </article>
       )}
     </section>
+  );
+}
+
+function QualityLiveService({ id }: { id: string }) {
+  const [service, setService] = useState<ProjectServiceView | null>(null),
+    [unavailable, setUnavailable] = useState(false);
+  const mounted = useRef(false),
+    requestSequence = useRef(0);
+  const load = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    try {
+      const response = await fetch(`${endpoint}/${id}/service`, {
+        cache: 'no-store',
+      });
+      if (!response.ok) throw Error('service_unavailable');
+      const parsed = ProjectServiceViewSchema.parse(
+        (await response.json()).service,
+      );
+      if (mounted.current && sequence === requestSequence.current) {
+        setService(parsed);
+        setUnavailable(false);
+      }
+    } catch (error) {
+      if (mounted.current && sequence === requestSequence.current)
+        setUnavailable(true);
+      throw error;
+    }
+  }, [id]);
+  useEffect(() => {
+    mounted.current = true;
+    let stopped = false,
+      timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      await load().catch(() => undefined);
+      if (!stopped)
+        timer = setTimeout(() => {
+          void refresh();
+        }, 3000);
+    };
+    void refresh();
+    return () => {
+      stopped = true;
+      mounted.current = false;
+      requestSequence.current++;
+      clearTimeout(timer);
+    };
+  }, [load]);
+  return (
+    <>
+      {unavailable && (
+        <p role="status">服务尚未就绪或当前状态不可读，请刷新核对。</p>
+      )}
+      {service && (
+        <ProjectServiceCard
+          key={service.id}
+          service={unavailable ? null : service}
+          workspaceId=""
+          tenantHeaders={{}}
+          controlEndpoint={`${endpoint}/${id}/service`}
+          onChanged={() => void load().catch(() => undefined)}
+        />
+      )}
+    </>
   );
 }

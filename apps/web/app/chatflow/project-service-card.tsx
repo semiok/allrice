@@ -11,29 +11,48 @@ export function ProjectServiceCard({
   workspaceId,
   tenantHeaders,
   onChanged,
+  controlEndpoint,
 }: {
   service: ProjectServiceView | null | undefined;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   onChanged: () => void;
+  /** Server-defined private admin composition; ordinary callers keep the
+   * existing endpoint and the same service/lease/preview presentation. */
+  controlEndpoint?: string;
 }) {
   const [busy, setBusy] = useState(false),
     busyRef = useRef(false),
     [error, setError] = useState(''),
     [liveSrc, setLiveSrc] = useState<string>();
+  const identity = `${service?.id ?? ''}|${controlEndpoint ?? workspaceId}`;
+  const currentIdentity = useRef(identity),
+    mounted = useRef(false);
+  currentIdentity.current = identity;
   useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    busyRef.current = false;
+    setBusy(false);
     setLiveSrc(undefined);
     setError('');
-  }, [service?.id]);
+  }, [identity]);
   async function act(action: 'stop' | 'renew' | 'preview') {
     const project = service;
     if (!project || busyRef.current) return;
+    const isCurrent = () =>
+      mounted.current && currentIdentity.current === identity;
     busyRef.current = true;
     setBusy(true);
     setError('');
     try {
       const response = await fetch(
-        `/api/v1/runtime/project-services?workspaceId=${encodeURIComponent(workspaceId)}&serviceId=${project.id}`,
+        controlEndpoint ??
+          `/api/v1/runtime/project-services?workspaceId=${encodeURIComponent(workspaceId)}&serviceId=${project.id}`,
         {
           method: 'POST',
           headers: { ...tenantHeaders, 'content-type': 'application/json' },
@@ -51,6 +70,7 @@ export function ProjectServiceCard({
         previewUrl?: string;
       };
       ProjectServiceViewSchema.parse(data.service);
+      if (!isCurrent()) return;
       if (action === 'preview') {
         if (!data.previewUrl) throw Error('预览地址不可用。');
         setLiveSrc(data.previewUrl);
@@ -58,11 +78,14 @@ export function ProjectServiceCard({
       if (action === 'stop') setLiveSrc(undefined);
       onChanged();
     } catch (e) {
+      if (!isCurrent()) return;
       setError(e instanceof Error ? e.message : '操作未确认，请刷新状态。');
       onChanged();
     } finally {
-      busyRef.current = false;
-      setBusy(false);
+      if (isCurrent()) {
+        busyRef.current = false;
+        setBusy(false);
+      }
     }
   }
   const project = service;

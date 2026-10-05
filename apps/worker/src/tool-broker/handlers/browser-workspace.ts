@@ -27,11 +27,14 @@ import {
 import type { RiceToolHandler } from '../types.js';
 import { browserScreenshotDelivery } from '../../browser-control/delivery.js';
 import { runStaticBrowserVerification } from '../../browser-control/static-verify.js';
+import { runQualityLiveVerification } from '../../browser-control/quality-live-verify.js';
 
 export const runBrowserWorkspace: RiceToolHandler = async ({
   input,
   arguments: raw,
 }) => {
+  if (raw.command === 'verify_live')
+    return runQualityLiveVerification(input, raw);
   const args = BrowserWorkspaceToolInputSchema.parse(raw),
     ctx = browserPrincipal(input.context);
   if (!input.managedBrowserJobAttempt || !input.managedBrowserJobLeaseToken)

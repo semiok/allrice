@@ -1,5 +1,10 @@
 import { BrowserVerificationPlanSchema } from '@allrice/contracts';
 import type { CreateQualityCheck } from './platform-quality-contracts.ts';
+import {
+  qualityLiveFiles,
+  qualityLiveAssertion,
+  qualityLiveRunnerVersion,
+} from './platform-quality-live-case.ts';
 export { technicalDigest as qualityDigest } from './platform-technical-tasks.ts';
 
 export const qualityCaseId = 'project.static.v1';
@@ -32,4 +37,20 @@ export function qualityFixture(variant: CreateQualityCheck['variant']) {
       },
     ].sort((a, b) => a.path.localeCompare(b.path)),
   };
+}
+export function qualityCaseSpec(
+  caseId: CreateQualityCheck['caseId'],
+  variant: CreateQualityCheck['variant'],
+) {
+  return caseId === 'project.live.v1'
+    ? {
+        files: qualityLiveFiles,
+        assertion: qualityLiveAssertion,
+        runnerVersion: qualityLiveRunnerVersion,
+      }
+    : {
+        files: qualityFixture(variant).files,
+        assertion: qualityAssertion,
+        runnerVersion: qualityRunnerVersion,
+      };
 }

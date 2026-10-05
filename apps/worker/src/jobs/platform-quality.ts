@@ -22,12 +22,18 @@ import {
   qualityAssertion,
   qualityDigest,
   qualityLock,
+  qualityLiveFiles,
+  qualityLivePackages,
+  qualityLiveLeaseMs,
+  cloudStableId,
   type resolveEmployeeExecution,
   type QualityCheckReport,
 } from '@allrice/database';
+import { QualityLiveEvidenceSchema } from '@allrice/database/technical-contracts';
 import { executeRiceTool } from '../tool-broker.js';
 import { BrowserWorkspaceToolInputSchema } from '../browser-control/tool-input.js';
 import { HandlerError } from '../errors.js';
+import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 
 const record = z.record(z.string(), z.unknown());
@@ -86,8 +92,10 @@ export async function executePlatformQualityCheck(
     id: string,
     name: 'workspace.project' | 'browser.workspace',
     args: Record<string, unknown>,
+    qualityLiveProbe?: RiceToolExecutionInput['qualityLiveProbe'],
+    stepSignal = signal,
   ) => {
-    signal.throwIfAborted();
+    stepSignal.throwIfAborted();
     await getPlatformQualityExecution(lease);
     const callId = `quality:${check.id}:${id}`,
       argumentsDigest = qualityDigest(args);
@@ -104,6 +112,7 @@ export async function executePlatformQualityCheck(
         throw Error('QUALITY_STEP_CHANGED');
       return record.parse(JSON.parse(receipt.payload.modelContent));
     }
+    stepSignal.throwIfAborted();
     await appendJobEvent({
       ...workflowLease,
       type: 'tool.started',
@@ -115,7 +124,9 @@ export async function executePlatformQualityCheck(
         argumentsDigest,
       },
     });
+    stepSignal.throwIfAborted();
     const result = await executeRiceTool({
+      ...(qualityLiveProbe ? { qualityLiveProbe } : {}),
       context: execution.context,
       capabilities: resolved.grantedCapabilities,
       nativeSkills: resolved.nativeSkills,
@@ -124,7 +135,7 @@ export async function executePlatformQualityCheck(
       employeeId: resolved.executionSnapshot?.employee.id,
       userMessageId: check.frozen.userMessageId,
       userRequest: resolved.promptSnapshot.userRequest,
-      signal,
+      signal: stepSignal,
       managedBrowserJobAttempt: execution.job.attempt,
       managedBrowserJobLeaseToken: workflowLease.leaseToken,
       call: { id: callId, name, arguments: args },
@@ -167,6 +178,135 @@ export async function executePlatformQualityCheck(
     return { artifact: a, bytes };
   };
   try {
+    if (check.frozen.caseId === 'project.live.v1') {
+      const opened = await step(
+        'open',
+        'workspace.project',
+        ProjectWorkspaceToolInputSchema.parse({
+          action: 'open',
+          files: qualityLiveFiles,
+        }),
+      );
+      const original = ProjectVersionRefSchema.parse(opened.project);
+      report.project = original;
+      const lock = qualityLiveFiles.find(
+        (f) => f.path === 'pnpm-lock.yaml',
+      )!.text;
+      const started = await step(
+        'service-start',
+        'workspace.project',
+        ProjectWorkspaceToolInputSchema.parse({
+          action: 'service_start',
+          project: original,
+          executable: '/usr/local/bin/node',
+          args: ['node_modules/vite/bin/vite.js'],
+          path: '.',
+          service: { port: 4173, leaseMs: qualityLiveLeaseMs },
+          projectPreparation: {
+            version: 1,
+            projectId: original.projectId,
+            sourceDigest: opened.sourceDigest,
+            lockChecksum: sha(lock),
+            offline: false,
+            manager: 'pnpm',
+            managerVersion: '10.33.3',
+            lockPath: 'pnpm-lock.yaml',
+            scripts: 'disabled',
+            packages: qualityLivePackages,
+          },
+          limits: {
+            timeoutMs: 60_000,
+            outputBytes: 32768,
+            memoryMiB: 512,
+            cpuMillis: 1000,
+            pids: 64,
+          },
+        }),
+      );
+      const serviceId = UuidSchema.parse(record.parse(started.service).id);
+      const updateId = cloudStableId(`quality-live-sync:${check.id}`);
+      const verified = await step(
+        'verify-live',
+        'browser.workspace',
+        { command: 'verify_live', serviceId },
+        {
+          checkId: check.id,
+          lease,
+          syncOnce: async (probeSignal) => {
+            const before = qualityLiveFiles.find(
+              (f) => f.path === 'main.js',
+            )!.text;
+            const changed = await step(
+              'apply',
+              'workspace.project',
+              ProjectWorkspaceToolInputSchema.parse({
+                action: 'apply',
+                expectedHead: original,
+                proposal: {
+                  files: [
+                    {
+                      path: 'main.js',
+                      before,
+                      after: before.replace('source:42', 'source:43'),
+                    },
+                  ],
+                },
+              }),
+              undefined,
+              probeSignal,
+            );
+            const project = ProjectVersionRefSchema.parse(changed.project);
+            await step(
+              'service-sync',
+              'workspace.project',
+              ProjectWorkspaceToolInputSchema.parse({
+                action: 'service_sync',
+                serviceId,
+                requestId: updateId,
+                expectedProject: original,
+                project,
+              }),
+              undefined,
+              probeSignal,
+            );
+            return { updateId };
+          },
+        },
+      );
+      report.live = QualityLiveEvidenceSchema.parse(verified.evidence);
+      report.project = report.live.updatedProject;
+      for (const item of z.array(record).parse(verified.artifacts)) {
+        const v = record.parse(item.version);
+        await artifact(
+          item,
+          v.fileName === 'live-preview.png' ? 'screenshot' : 'report',
+        );
+      }
+      const delivered = await step(
+        'deliver',
+        'workspace.project',
+        ProjectWorkspaceToolInputSchema.parse({
+          action: 'deliver',
+          project: report.project,
+        }),
+      );
+      for (const item of z.array(record).parse(delivered.artifacts))
+        await artifact(
+          item,
+          item.fileName === 'project-source.zip' ? 'source' : 'report',
+        );
+      report.verdict = 'passed';
+      report.cleanup = 'pending';
+      report.completedAt = new Date().toISOString();
+      await recordPlatformQualityReport(lease, report, storage);
+      finished = true;
+      return {
+        answer:
+          '固定实时预览质检通过：HTTP、WebSocket 和同页热更新均有实际证据。预览服务按有限租期继续，当前状态另行显示。',
+        qualityCheckId: check.id,
+        modelUsed: false,
+      };
+    }
     const fixture = qualityFixture(check.frozen.variant);
     const opened = await step(
       'open',
@@ -326,6 +466,9 @@ export async function executePlatformQualityCheck(
       modelUsed: false,
     };
   } catch (error) {
+    // A partial live observation is retained in the raw step receipt, never
+    // promoted to a complete report after cancellation or lease failure.
+    delete report.live;
     report.verdict = signal.aborted
       ? 'canceled'
       : error instanceof Error &&
