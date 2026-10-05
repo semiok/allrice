@@ -571,6 +571,7 @@ export async function createDefaultManagedBrowserTask(
       and target_key in ('allrice.cloud.browser', 'cloud.default')
       and kind = 'cloud_sandbox'
       and capabilities ? 'browser.navigate'
+      and capabilities ? 'artifacts.write'
       and state in ('online', 'degraded')
     order by (target_key = 'allrice.cloud.browser') desc, id
     limit 1

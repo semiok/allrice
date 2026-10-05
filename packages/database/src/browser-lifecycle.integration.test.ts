@@ -295,7 +295,7 @@ describeDatabase(
         sql = getDatabase(),
         id = randomUUID();
       await sql`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds)
-        values(${id},${f.ids.organizationId},${f.ids.workspaceId},'allrice.cloud.browser','cloud_sandbox','Current browser','online','["browser.navigate"]'::jsonb,1,900)`;
+        values(${id},${f.ids.organizationId},${f.ids.workspaceId},'allrice.cloud.browser','cloud_sandbox','Current browser','online','["browser.navigate","artifacts.write"]'::jsonb,1,900)`;
       expect(
         (
           await createDefaultManagedBrowserTask(
@@ -307,6 +307,24 @@ describeDatabase(
           )
         ).targetId,
       ).toBe(id);
+    });
+
+    it('denies a default reader before task admission when its evidence writer is unavailable', async () => {
+      const f = await seedScenario(),
+        sql = getDatabase();
+      await sql`update allrice_execution_targets set capabilities='["browser.navigate"]'::jsonb where id=${f.ids.targetId}`;
+      await expect(
+        createDefaultManagedBrowserTask(
+          f.context,
+          'https://example.com',
+          [],
+          f.lease,
+          'no-evidence-writer',
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(
+        await sql`select id from allrice_managed_browser_tasks where run_id=${f.ids.runId}`,
+      ).toHaveLength(0);
     });
 
     it('binds idempotent tool calls to the exact active worker lease', async () => {
