@@ -70,6 +70,10 @@ import {
   isProjectSourceAuthorityError,
 } from './saved-project-authority.ts';
 import { type ProjectExecutionSelection } from './project-execution.ts';
+import {
+  resolvePlatformRepositoryExecutionProof,
+  resolvePlatformRepositoryExecutionProofTx,
+} from './platform-repair-verification.ts';
 
 type Database = ReturnType<typeof getDatabase>;
 export { cloudExecutionEnabled } from './cloud-authority.ts';
@@ -590,6 +594,25 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
 }) {
   const ctx = input.context,
     owner = ctx.policySnapshot.subjectId;
+  const repositoryProof =
+    'kind' in payload
+      ? undefined
+      : await database.begin((tx) =>
+          resolvePlatformRepositoryExecutionProofTx(
+            tx,
+            {
+              organizationId: ctx.organizationId,
+              workspaceId: ctx.workspaceId,
+              ownerId: owner,
+              runId: ctx.runId,
+              jobId: ctx.jobId,
+              workerId: ctx.worker.id,
+              leaseToken: run.lease_token,
+              operationId,
+            },
+            payload,
+          ),
+        );
   const binding = RuntimeActionBindingSchema.parse({
     task: {
       scope: {
@@ -626,7 +649,7 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
     },
     action: payload.capability,
     inputDigest: digest(payload),
-    command: cloudCommandBinding(payload),
+    command: cloudCommandBinding(payload, repositoryProof),
     baseline: content,
     dataScope: content.map((c) => ({
       content: c,
@@ -732,7 +755,13 @@ export async function loadCloudCommandInputs(
   context: ExecutionContext,
   payload: CloudCommand,
   storage: StoragePort,
+  database: Database = getDatabase(),
 ) {
+  const repositoryProof = await resolvePlatformRepositoryExecutionProof(
+    context,
+    payload,
+    database,
+  );
   const files: { path: string; contentBase64: string }[] = [];
   let total = 0;
   for (const input of payload.arguments.inputs) {
@@ -744,7 +773,7 @@ export async function loadCloudCommandInputs(
         const c = await reader.read();
         if (c.done) break;
         total += c.value.length;
-        if (total > 2_000_000) {
+        if (total > (repositoryProof?.inputLimit ?? 2_000_000)) {
           await reader.cancel();
           throw new RuntimePolicyError('cloud_input_limit');
         }

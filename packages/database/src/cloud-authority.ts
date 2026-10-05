@@ -29,6 +29,8 @@ import {
   isProjectSourceAuthorityError,
 } from './saved-project-authority.ts';
 import { assertProjectExecutionOrigin } from './project-execution.ts';
+import { resolvePlatformRepositoryExecutionProofTx } from './platform-repair-verification.ts';
+import type { RepositoryExecutionProof } from './platform-repair-contracts.ts';
 
 export const cloudExecutionEnabled = () =>
   runtimeFeatureEnabled('ALLRICE_CLOUD_RUNNER_ENABLED') &&
@@ -45,7 +47,10 @@ export function normalizeCloudPythonArguments(original: unknown) {
     limits: args.limits,
   });
 }
-export function cloudCommandBinding(payload: CloudExecutionPayload) {
+export function cloudCommandBinding(
+  payload: CloudExecutionPayload,
+  repositoryProof?: RepositoryExecutionProof,
+) {
   if ('kind' in payload)
     return {
       executableDigest: digest({
@@ -95,7 +100,15 @@ export function cloudCommandBinding(payload: CloudExecutionPayload) {
     effectiveEnvironmentDigest: digest({
       backend: payload.backend,
       credentials: 'none',
-      user: '65532',
+      user: repositoryProof ? '0' : '65532',
+      ...(repositoryProof
+        ? {
+            supervisor: repositoryProof.profileId,
+            candidateUser: '1001',
+            capabilities: ['KILL', 'SETGID', 'SETUID'],
+            tmpfsMiB: repositoryProof.tmpfsMiB,
+          }
+        : {}),
     }),
     networkPolicyDigest: digest({ network: 'none' }),
     toolchainDigest: digest({
@@ -132,8 +145,15 @@ export async function checkCloudBindingAuthority(
   )
     throw new RuntimePolicyError('resource_adapter_not_registered');
   const [stored] = await tx<
-    { binding: unknown; payload: unknown; original_arguments: unknown | null }[]
-  >`select binding,payload,original_arguments from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and owner_id=${context.actor.id} and run_id=${binding.task.runId} and grant_id=${binding.execution.grantId}`;
+    {
+      binding: unknown;
+      payload: unknown;
+      original_arguments: unknown | null;
+      job_id: string;
+      worker_id: string;
+      job_lease_token: string;
+    }[]
+  >`select binding,payload,original_arguments,job_id,worker_id,job_lease_token::text from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and owner_id=${context.actor.id} and run_id=${binding.task.runId} and grant_id=${binding.execution.grantId}`;
   if (
     !stored ||
     !runtimeContractEqual(
@@ -326,9 +346,31 @@ export async function checkCloudBindingAuthority(
   }
   // Project branch has returned; existing script/Office/Python identities stay byte-for-byte stable.
   if ('kind' in payload) throw new RuntimePolicyError('cloud_input_changed');
+  let repositoryProof: RepositoryExecutionProof | undefined;
+  try {
+    repositoryProof = await resolvePlatformRepositoryExecutionProofTx(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId,
+        ownerId: context.actor.id,
+        runId: binding.task.runId,
+        jobId: stored.job_id,
+        workerId: stored.worker_id,
+        leaseToken: stored.job_lease_token,
+        operationId: binding.attempt.operationId,
+      },
+      payload,
+    );
+  } catch {
+    throw new RuntimePolicyError('cloud_input_not_authorized');
+  }
   if (
     digest(payload) !== binding.inputDigest ||
-    !runtimeContractEqual(cloudCommandBinding(payload), binding.command) ||
+    !runtimeContractEqual(
+      cloudCommandBinding(payload, repositoryProof),
+      binding.command,
+    ) ||
     payload.imageDigest !==
       cloudRuntimeImage(profile.imageDigest, payload.arguments.language) ||
     binding.baseline.length !== payload.arguments.inputs.length ||
@@ -368,7 +410,7 @@ export async function checkCloudBindingAuthority(
       object.state !== 'ready' ||
       object.deleted_at ||
       object.checksum !== file.checksum ||
-      Number(object.size_bytes) > 2_000_000 ||
+      Number(object.size_bytes) > (repositoryProof?.inputLimit ?? 2_000_000) ||
       (object.owner_id !== context.actor.id && object.visibility === 'private')
     )
       throw new RuntimePolicyError('cloud_input_not_authorized');

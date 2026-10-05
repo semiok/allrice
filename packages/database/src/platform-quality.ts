@@ -43,6 +43,14 @@ import {
   projectExecutionReport,
 } from './project-delivery.ts';
 import type { JobRow } from './queue/row-mappers.ts';
+import {
+  admitPlatformRepairBinding,
+  hasRepairMarker,
+  isPlatformRepairJobAuthorized,
+  repairSchemaAvailable,
+  type RepairBinding,
+} from './platform-repair-authority.ts';
+import { RepairReportSchema } from './platform-repair-contracts.ts';
 export type { QualityCheckReport } from './platform-quality-contracts.ts';
 
 type Tx = postgres.TransactionSql;
@@ -181,6 +189,12 @@ export async function ensureQualityEmployee(context: RequestContext) {
         await tx`select q.id from allrice_platform_quality_checks q join allrice_jobs j on j.id=q.job_id
         where q.workspace_id=${workspaceId} and j.status in ('queued','claimed','running','waiting_approval') limit 1`;
       if (busy.length) throw new QueueError('conflict');
+      if (await repairSchemaAvailable(tx)) {
+        const repairBusy =
+          await tx`select q.id from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id
+          where q.workspace_id=${workspaceId} and j.status in ('queued','claimed','running','waiting_approval') limit 1`;
+        if (repairBusy.length) throw new QueueError('conflict');
+      }
     }
     if (!deployment || deployment.revision_id !== revision.id) {
       await materializePlatformEmployeeRevision(tx, {
@@ -250,7 +264,13 @@ export async function admitQualityEnqueue(
   context: RequestContext,
   assignmentId: string,
   binding?: QualityBinding,
+  repairBinding?: RepairBinding,
 ) {
+  if (repairBinding) {
+    if (binding) denied();
+    await admitPlatformRepairBinding(tx, context, assignmentId, repairBinding);
+    return;
+  }
   if (!(await qualitySchemaAvailable(tx))) {
     if (binding) denied();
     return;
@@ -347,6 +367,7 @@ export async function bindPlatformQualityCheck(
 export async function isPlatformQualityJobAuthorized(tx: Tx, job: JobRow) {
   if ((job.payload as { type?: unknown })?.type !== 'allrice.employee.run')
     return true;
+  if (hasRepairMarker(job)) return isPlatformRepairJobAuthorized(tx, job);
   if (!(await qualitySchemaAvailable(tx))) return !hasQualityMarker(job);
   // Detect reservation independently of the current identity/authority join.
   // Renaming, archiving or revocation must not turn a reserved assignment into
@@ -1124,6 +1145,15 @@ export async function getPlatformQualityArtifact(
 export async function platformQualityCompletionAllowed(tx: Tx, job: JobRow) {
   if ((job.payload as { type?: unknown })?.type !== 'allrice.employee.run')
     return true;
+  if (hasRepairMarker(job)) {
+    if (!(await isPlatformRepairJobAuthorized(tx, job))) return false;
+    const [q] =
+      await tx`select report,candidate from allrice_platform_repair_tasks where run_id=${job.run_id} and job_id=${job.id}`;
+    const report = RepairReportSchema.safeParse(q?.report);
+    return (
+      report.success && report.data.candidateChecksum === q?.candidate?.checksum
+    );
+  }
   if (!(await qualitySchemaAvailable(tx))) return !hasQualityMarker(job);
   const [row] = await tx`select q.report,q.frozen from allrice_employee_runs e
       join allrice_platform_quality_deployments d on d.assignment_id=e.employee_assignment_id

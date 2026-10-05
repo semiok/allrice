@@ -43,6 +43,7 @@ export function normalizeAllRiceManagedFileLinks(answer: string) {
 
 export const privateDshNativeToolNames: ReadonlySet<string> = new Set([
   'platform.technical.diagnostics',
+  'platform.repository.repair',
 ]);
 
 export function isDshNativeTool(name: string) {
