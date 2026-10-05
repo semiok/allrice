@@ -43,6 +43,11 @@ import {
 } from './providers/status.ts';
 import { assertSubscriptionQuotaNotExhausted } from '../../../apps/worker/src/subscription-quota-admission.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import {
+  isPlatformQualityJobAuthorized,
+  platformQualityCompletionAllowed,
+} from './platform-quality.ts';
+import type { JobRow } from './queue/row-mappers.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -314,6 +319,24 @@ integration('subscription incremental migration and cold SQL readers', () => {
         proof_absent: true,
       });
     }
+    await fixture.db.begin(async (tx) => {
+      const [job] = await tx<JobRow[]>`select * from allrice_jobs
+        where id=${task.workflowLease.jobId}`;
+      expect(await isPlatformQualityJobAuthorized(tx, job!)).toBe(true);
+      expect(await platformQualityCompletionAllowed(tx, job!)).toBe(true);
+      // An ordinary job cannot claim QA authority, including empty markers.
+      for (const input of [
+        { qualityRequestId: null },
+        { qualityInputDigest: '' },
+      ]) {
+        expect(
+          await isPlatformQualityJobAuthorized(tx, {
+            ...job!,
+            payload: { type: 'allrice.employee.run', input },
+          }),
+        ).toBe(false);
+      }
+    });
   });
 
   it('rolls back an interrupted expand transaction, then applies both SQL files without rewriting history', async () => {

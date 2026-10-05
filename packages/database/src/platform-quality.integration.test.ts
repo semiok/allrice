@@ -24,7 +24,11 @@ import {
   cancelPlatformQualityCheck,
   getPlatformQualityExecution,
   recordPlatformQualityReport,
+  admitQualityEnqueue,
+  isPlatformQualityJobAuthorized,
+  platformQualityCompletionAllowed,
 } from './platform-quality.ts';
+import type { JobRow } from './queue/row-mappers.ts';
 import {
   claimNextJob,
   startClaimedJob,
@@ -414,6 +418,58 @@ suite(
           { employeeBinding: binding },
         ),
       ).rejects.toThrow('authorization_denied');
+      await cancelPlatformQualityCheck(admin, q.id);
+    });
+    it('reserved assignments remain reserved when workspace identity changes; broken QA migrations fail closed', async () => {
+      const q = await submit();
+      await fixture.db.begin(async (tx) => {
+        const [job] = await tx<
+          JobRow[]
+        >`select * from allrice_jobs where id=${q.jobId}`;
+        const [d] =
+          await tx`select * from allrice_platform_quality_deployments where owner_id=${admin.actor.id}`;
+        const [workspace] =
+          await tx`select slug from allrice_workspaces where id=${d!.workspace_id}`;
+        const ordinary = {
+          ...job!,
+          payload: { type: 'allrice.employee.run', input: {} },
+        };
+        const context = {
+          ...admin,
+          organizationId: d!.organization_id,
+          workspaceId: d!.workspace_id,
+        };
+        for (const slug of [
+          'reclassified-qa',
+          `employee-tests-${randomUUID()}`,
+        ]) {
+          await tx`update allrice_workspaces set slug=${slug} where id=${d!.workspace_id}`;
+          await expect(
+            admitQualityEnqueue(tx, context, d!.assignment_id),
+          ).rejects.toThrow('authorization_denied');
+          expect(await isPlatformQualityJobAuthorized(tx, ordinary)).toBe(
+            false,
+          );
+          expect(await platformQualityCompletionAllowed(tx, ordinary)).toBe(
+            false,
+          );
+          expect(await isPlatformQualityJobAuthorized(tx, job!)).toBe(false);
+        }
+        await tx`update allrice_workspaces set slug=${workspace!.slug} where id=${d!.workspace_id}`;
+        await tx`alter table allrice_platform_quality_checks rename to qa_checks_absent_fixture`;
+        await expect(
+          isPlatformQualityJobAuthorized(tx, ordinary),
+        ).rejects.toThrow('policy_denied');
+        await tx`alter table allrice_platform_quality_deployments rename to qa_deployments_absent_fixture`;
+        await tx`create table allrice_schema_migrations (name text primary key)`;
+        await tx`insert into allrice_schema_migrations (name) values ('0141_platform_quality_checks.sql')`;
+        await expect(
+          isPlatformQualityJobAuthorized(tx, ordinary),
+        ).rejects.toThrow('policy_denied');
+        await tx`drop table allrice_schema_migrations`;
+        await tx`alter table qa_deployments_absent_fixture rename to allrice_platform_quality_deployments`;
+        await tx`alter table qa_checks_absent_fixture rename to allrice_platform_quality_checks`;
+      });
       await cancelPlatformQualityCheck(admin, q.id);
     });
     it('no report or caller-supplied “passed” result can complete a quality Run', async () => {

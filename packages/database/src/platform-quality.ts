@@ -192,6 +192,31 @@ async function ensureQualityEmployee(context: RequestContext) {
   });
 }
 
+async function qualitySchemaAvailable(tx: Tx) {
+  // Historical checkpoints have no QA reservation. Never borrow new tables
+  // from a later schema on search_path, or swallow a broken applied migration.
+  const [schema] = await tx`select
+    to_regclass(format('%I.allrice_platform_quality_deployments',current_schema())) is not null deployments,
+    to_regclass(format('%I.allrice_platform_quality_checks',current_schema())) is not null checks,
+    to_regclass(format('%I.allrice_schema_migrations',current_schema())) is not null migrations`;
+  if (schema?.deployments && schema.checks) return true;
+  if (schema?.deployments || schema?.checks)
+    throw new QueueError('policy_denied');
+  if (schema?.migrations) {
+    const applied = await tx`select 1 from allrice_schema_migrations
+      where name='0141_platform_quality_checks.sql'`;
+    if (applied.length) throw new QueueError('policy_denied');
+  }
+  return false;
+}
+function hasQualityMarker(job: JobRow) {
+  const input = (job.payload as { input?: Record<string, unknown> }).input;
+  return Boolean(
+    input &&
+    (Object.hasOwn(input, 'qualityRequestId') ||
+      Object.hasOwn(input, 'qualityInputDigest')),
+  );
+}
 /** Queue admission rejects public chat/Run requests using this reserved identity. */
 export async function admitQualityEnqueue(
   tx: Tx,
@@ -199,6 +224,10 @@ export async function admitQualityEnqueue(
   assignmentId: string,
   binding?: QualityBinding,
 ) {
+  if (!(await qualitySchemaAvailable(tx))) {
+    if (binding) denied();
+    return;
+  }
   const [d] =
     await tx`select * from allrice_platform_quality_deployments where assignment_id=${assignmentId}`;
   if (!d) {
@@ -252,6 +281,15 @@ export async function bindPlatformQualityCheck(
 export async function isPlatformQualityJobAuthorized(tx: Tx, job: JobRow) {
   if ((job.payload as { type?: unknown })?.type !== 'allrice.employee.run')
     return true;
+  if (!(await qualitySchemaAvailable(tx))) return !hasQualityMarker(job);
+  // Detect reservation independently of the current identity/authority join.
+  // Renaming, archiving or revocation must not turn a reserved assignment into
+  // an ordinary chat identity when a caller omits the marker.
+  const [reserved] =
+    await tx`select d.assignment_id from allrice_employee_runs e
+    join allrice_platform_quality_deployments d on d.assignment_id=e.employee_assignment_id
+    where e.run_id=${job.run_id}`;
+  if (!reserved) return !hasQualityMarker(job);
   const [row] =
     await tx`select q.*,d.assignment_id,d.owner_id deployment_owner,e.employee_assignment_id,e.employee_version_id,
     e.session_id employee_session,r.input run_input,a.active assignment_active,emp.status employee_status,
@@ -268,9 +306,7 @@ export async function isPlatformQualityJobAuthorized(tx: Tx, job: JobRow) {
     join allrice_workspaces w on w.id=e.workspace_id and w.organization_id=e.organization_id
     and w.slug='employee-tests-'||e.owner_id::text
     left join allrice_platform_quality_checks q on q.run_id=r.id where r.id=${job.run_id}`;
-  if (!row)
-    return !(job.payload as { input?: Record<string, unknown> }).input
-      ?.qualityRequestId;
+  if (!row) return false;
   if (
     !row.id ||
     !frozenValid(row.frozen) ||
@@ -749,11 +785,15 @@ export async function getPlatformQualityArtifact(
   );
 }
 export async function platformQualityCompletionAllowed(tx: Tx, job: JobRow) {
-  const [row] =
-    await tx`select report,frozen from allrice_platform_quality_checks where job_id=${job.id}`;
-  if (!row)
-    return !(job.payload as { input?: Record<string, unknown> }).input
-      ?.qualityRequestId;
+  if ((job.payload as { type?: unknown })?.type !== 'allrice.employee.run')
+    return true;
+  if (!(await qualitySchemaAvailable(tx))) return !hasQualityMarker(job);
+  const [row] = await tx`select q.report,q.frozen from allrice_employee_runs e
+      join allrice_platform_quality_deployments d on d.assignment_id=e.employee_assignment_id
+      left join allrice_platform_quality_checks q on q.run_id=e.run_id and q.job_id=${job.id}
+      where e.run_id=${job.run_id}`;
+  if (!row) return !hasQualityMarker(job);
+  if (!hasQualityMarker(job)) return false;
   const report = QualityCheckReportSchema.safeParse(row.report);
   return (
     report.success &&
