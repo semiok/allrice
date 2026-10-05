@@ -68,6 +68,7 @@ import { releaseConversationRuntimeTransaction } from '../conversation/conversat
 import {
   admitQualityEnqueue,
   bindPlatformQualityCheck,
+  assertExistingPlatformQualityBinding,
   isPlatformQualityJobAuthorized,
   platformQualityCompletionAllowed,
   type QualityBinding,
@@ -419,6 +420,13 @@ export async function enqueueRun(
       ) {
         throw new QueueError('conflict');
       }
+      if (options.qualityBinding)
+        await assertExistingPlatformQualityBinding(
+          transaction,
+          { ...context, workspaceId },
+          existing[0].run_id,
+          options.qualityBinding,
+        );
       return {
         runId: existing[0].run_id,
         created: false,

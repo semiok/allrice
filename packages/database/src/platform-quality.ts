@@ -21,7 +21,14 @@ import {
   CreateQualityCheckSchema,
   QualityCheckSchema,
   QualityCheckReportSchema,
+  QualityScheduleOriginSchema,
+  type QualityScheduleOrigin,
 } from './platform-quality-contracts.ts';
+import {
+  admitScheduledQualityOccurrence,
+  bindScheduledQualityOccurrence,
+  qualityOccurrenceRequestId,
+} from './platform-quality-automation.ts';
 import {
   qualityFixture,
   qualityDigest,
@@ -55,12 +62,22 @@ const QualityFrozenSchema = CreateQualityCheckSchema.extend({
   timeoutMs: z.number().int().min(1000).max(300000),
   loginSessionId: UuidSchema.optional(),
   loginAuthenticatedAt: z.string().datetime({ offset: true }).optional(),
+  scheduleOrigin: QualityScheduleOriginSchema.optional(),
 })
   .strict()
   .refine(
     (f) =>
+      !f.scheduleOrigin ||
+      (f.caseId === 'project.static.v1' &&
+        f.variant === 'correct' &&
+        f.requestId ===
+          qualityOccurrenceRequestId(f.scheduleOrigin.occurrenceId)),
+  )
+  .refine(
+    (f) =>
       f.caseId !== 'project.live.v1' ||
-      (!!f.loginSessionId &&
+      (!f.scheduleOrigin &&
+        !!f.loginSessionId &&
         !!f.loginAuthenticatedAt &&
         f.variant === 'correct'),
   );
@@ -107,12 +124,13 @@ function fingerprint(
     f.employeeRevisionId,
     f.timeoutMs,
     ...(f.caseId === 'project.live.v1' ? [f.loginSessionId] : []),
+    ...(f.scheduleOrigin ? [qualityDigest(f.scheduleOrigin)] : []),
   ]);
 }
 
 /** A real published deployment, owner-only, in the existing private workspace.
  * Existing pauses and personal exclusions are never restored by retries. */
-async function ensureQualityEmployee(context: RequestContext) {
+export async function ensureQualityEmployee(context: RequestContext) {
   return getDatabase().begin(async (tx) => {
     const owner = await requirePlatformAdmin(context, tx);
     const { context: internal } = await resolvePlatformPreviewContext(
@@ -265,6 +283,37 @@ export async function admitQualityEnqueue(
     },
     context.actor.id,
   );
+  if (b.frozen.scheduleOrigin) {
+    if (
+      b.frozen.caseId !== 'project.static.v1' ||
+      b.frozen.variant !== 'correct' ||
+      b.frozen.requestId !==
+        qualityOccurrenceRequestId(b.frozen.scheduleOrigin.occurrenceId)
+    )
+      denied();
+    await admitScheduledQualityOccurrence(tx, context, b.frozen.scheduleOrigin);
+  }
+}
+/** Duplicate queue admissions must not alias manual and scheduled requests. */
+export async function assertExistingPlatformQualityBinding(
+  tx: Tx,
+  context: RequestContext,
+  runId: string,
+  raw: QualityBinding,
+) {
+  const b = QualityBindingSchema.parse(raw);
+  const [q] =
+    await tx`select * from allrice_platform_quality_checks where run_id=${runId} and owner_id=${context.actor.id}`;
+  if (
+    !q ||
+    q.id !== b.id ||
+    q.input_digest !== b.inputDigest ||
+    !frozenValid(q.frozen) ||
+    q.frozen.fingerprint !== b.frozen.fingerprint ||
+    (q.automation_run_id ?? null) !==
+      (b.frozen.scheduleOrigin?.occurrenceId ?? null)
+  )
+    throw new QueueError('conflict');
 }
 export async function bindPlatformQualityCheck(
   tx: Tx,
@@ -282,8 +331,16 @@ export async function bindPlatformQualityCheck(
     variant: b.frozen.variant,
   });
   if (b.inputDigest !== qualityDigest(request)) denied();
-  await tx`insert into allrice_platform_quality_checks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen)
-    values(${b.id},${request.requestId},${context.organizationId},${context.workspaceId},${context.actor.id},${runId},${jobId},${sessionId},${b.inputDigest},${tx.json(JSON.parse(JSON.stringify(b.frozen)))})`;
+  await tx`insert into allrice_platform_quality_checks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen,automation_run_id)
+    values(${b.id},${request.requestId},${context.organizationId},${context.workspaceId},${context.actor.id},${runId},${jobId},${sessionId},${b.inputDigest},${tx.json(JSON.parse(JSON.stringify(b.frozen)))},${b.frozen.scheduleOrigin?.occurrenceId ?? null})`;
+  if (b.frozen.scheduleOrigin)
+    await bindScheduledQualityOccurrence(
+      tx,
+      context,
+      b.frozen.scheduleOrigin,
+      runId,
+      sessionId,
+    );
 }
 
 /** Additional restrictions only: employee/session/membership/target guards remain. */
@@ -362,6 +419,25 @@ export async function isPlatformQualityJobAuthorized(tx: Tx, job: JobRow) {
       await tx`select id from allrice_sessions where id=${row.frozen.loginSessionId} and user_id=${row.owner_id} and revoked_at is null and expires_at>clock_timestamp()`;
     if (!login) return false;
   }
+  const origin = row.frozen.scheduleOrigin as QualityScheduleOrigin | undefined;
+  if (origin) {
+    const [occurrence] =
+      await tx`select r.*,a.owner_id from allrice_automation_runs r
+      join allrice_automations a on a.id=r.automation_id where r.id=${origin.occurrenceId}`;
+    // A configuration pause/edit stops new dispatches, not an already bound Run.
+    if (
+      !occurrence ||
+      row.automation_run_id !== origin.occurrenceId ||
+      occurrence.automation_id !== origin.automationId ||
+      occurrence.owner_id !== origin.ownerId ||
+      occurrence.organization_id !== job.organization_id ||
+      occurrence.workspace_id !== job.workspace_id ||
+      occurrence.run_id !== job.run_id ||
+      occurrence.session_id !== row.session_id ||
+      qualityDigest(occurrence.quality_occurrence) !== qualityDigest(origin)
+    )
+      return false;
+  } else if (row.automation_run_id) return false;
   return isPlatformAdmin({ actor: { type: 'user', id: job.owner_id } }, tx);
 }
 
@@ -725,7 +801,7 @@ export async function recordPlatformQualityReport(
   });
 }
 
-function map(row: Record<string, unknown>) {
+export function mapPlatformQualityCheck(row: Record<string, unknown>) {
   const f = QualityFrozenSchema.parse(row.frozen);
   return QualityCheckSchema.parse({
     id: row.id,
@@ -757,7 +833,7 @@ export async function listPlatformQualityChecks(context: RequestContext) {
   const rows =
     await getDatabase()`select q.*,j.status from allrice_platform_quality_checks q join allrice_jobs j on j.id=q.job_id
     where q.owner_id=${owner} order by q.created_at desc,q.id desc limit 20`;
-  return rows.map(map);
+  return rows.map(mapPlatformQualityCheck);
 }
 export async function getPlatformQualityCheck(
   context: RequestContext,
@@ -768,7 +844,7 @@ export async function getPlatformQualityCheck(
     await getDatabase()`select q.*,j.status from allrice_platform_quality_checks q join allrice_jobs j on j.id=q.job_id
     where q.id=${UuidSchema.parse(id)} and q.owner_id=${owner}`;
   if (!row) throw new DataAccessError('not_found');
-  return map(row);
+  return mapPlatformQualityCheck(row);
 }
 /** Resolve the private service from persisted QA ownership. Neither an HTTP
  * caller nor a company context may supply a service/organization/workspace. */
@@ -798,14 +874,31 @@ export async function platformQualityServiceContext(
 export async function createPlatformQualityCheck(
   context: RequestContext,
   raw: unknown,
+  options: { scheduleOrigin?: QualityScheduleOrigin } = {},
 ) {
   const request = CreateQualityCheckSchema.parse(raw),
     owner = await requirePlatformAdmin(context),
     db = getDatabase();
+  const origin =
+    options.scheduleOrigin &&
+    QualityScheduleOriginSchema.parse(options.scheduleOrigin);
+  if (
+    origin &&
+    (request.caseId !== 'project.static.v1' ||
+      request.variant !== 'correct' ||
+      request.requestId !== qualityOccurrenceRequestId(origin.occurrenceId) ||
+      origin.ownerId !== owner)
+  )
+    denied();
   const [existing] =
-    await db`select id,input_digest from allrice_platform_quality_checks where owner_id=${owner} and request_id=${request.requestId}`;
+    await db`select * from allrice_platform_quality_checks where owner_id=${owner} and request_id=${request.requestId}`;
   if (existing) {
-    if (existing.input_digest !== qualityDigest(request))
+    if (
+      existing.input_digest !== qualityDigest(request) ||
+      (existing.automation_run_id ?? null) !== (origin?.occurrenceId ?? null) ||
+      qualityDigest(existing.frozen.scheduleOrigin ?? null) !==
+        qualityDigest(origin ?? null)
+    )
       throw new QueueError('conflict');
     return getPlatformQualityCheck(context, existing.id);
   }
@@ -908,6 +1001,7 @@ export async function createPlatformQualityCheck(
     userMessageId,
     assistantMessageId,
     timeoutMs,
+    ...(origin ? { scheduleOrigin: origin } : {}),
   };
   const frozen = QualityFrozenSchema.parse({
     ...frozenBase,
@@ -951,6 +1045,13 @@ export async function createPlatformQualityCheck(
       },
     },
   );
+  const [record] =
+    await db`select automation_run_id from allrice_platform_quality_checks where id=${qaBinding.id}`;
+  if (
+    !record ||
+    (record.automation_run_id ?? null) !== (origin?.occurrenceId ?? null)
+  )
+    throw new QueueError('conflict');
   return getPlatformQualityCheck(context, qaBinding.id);
 }
 export async function cancelPlatformQualityCheck(

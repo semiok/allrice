@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   QualityCheckReportSchema,
   type QualityCheck,
+  type QualityScheduleView,
 } from '@allrice/database/technical-contracts';
 import type {
   Route,
@@ -67,6 +68,12 @@ suite(
       const rows: QualityCheck[] = [],
         posts: string[] = [];
       const services = new Map<string, ProjectServiceView>();
+      const history = new Map<string, QualityCheck>();
+      let scheduleView: QualityScheduleView = {
+        schedule: null,
+        occurrences: [],
+      };
+      const scheduleWrites: Record<string, unknown>[] = [];
       let slowId = '',
         holdId = '',
         releaseOldService: (() => void) | undefined;
@@ -77,6 +84,38 @@ suite(
         await page.route(
           '**/api/v1/admin/technical-assistant/quality**',
           async (route: Route) => {
+            const path = new URL(route.request().url()).pathname;
+            if (path.endsWith('/quality/schedule')) {
+              if (route.request().method() === 'GET')
+                return route.fulfill({ json: scheduleView });
+              const input = route.request().postDataJSON();
+              scheduleWrites.push(input);
+              if (
+                input.expectedRevision !==
+                (scheduleView.schedule?.revision ?? 0)
+              )
+                return route.fulfill({ status: 409 });
+              if (route.request().method() === 'DELETE')
+                scheduleView = { ...scheduleView, schedule: null };
+              else
+                scheduleView = {
+                  ...scheduleView,
+                  schedule: {
+                    id: scheduleView.schedule?.id ?? randomUUID(),
+                    revision: (scheduleView.schedule?.revision ?? 0) + 1,
+                    enabled: input.enabled,
+                    time: input.time,
+                    timezone: 'Asia/Shanghai',
+                    nextRunAt: input.enabled
+                      ? new Date(Date.now() + 60000).toISOString()
+                      : null,
+                  },
+                };
+              // The first successful enable loses its HTTP acknowledgement.
+              return scheduleWrites.length === 1
+                ? route.abort('failed')
+                : route.fulfill({ json: scheduleView });
+            }
             const serviceId = new URL(route.request().url()).pathname.match(
               /\/quality\/([^/]+)\/service$/,
             )?.[1];
@@ -118,12 +157,40 @@ suite(
               });
               return route.abort('failed');
             }
+            const detailId = path.match(/\/quality\/([^/]+)$/)?.[1];
+            if (detailId) {
+              const q =
+                history.get(detailId) ?? rows.find((q) => q.id === detailId);
+              return route.fulfill({ status: q ? 200 : 404, json: q ?? {} });
+            }
             return route.fulfill({ json: rows });
           },
         );
         await page.goto(
           `http://127.0.0.1:${(server.address() as { port: number }).port}`,
         );
+        const daily = page.getByRole('region', { name: '每日固定场景质检' });
+        await expect
+          .poll(() =>
+            daily.getByRole('button', { name: '开启每日质检' }).isEnabled(),
+          )
+          .toBe(true);
+        await daily.getByLabel('每日检查时间').fill('09:10');
+        await daily.getByRole('button', { name: '开启每日质检' }).click();
+        await daily.getByText('已开启', { exact: true }).waitFor();
+        expect(scheduleWrites).toEqual([
+          { expectedRevision: 0, enabled: true, time: '09:10' },
+        ]);
+        await daily.getByRole('button', { name: '暂停每日质检' }).click();
+        await expect
+          .poll(() =>
+            daily.getByRole('button', { name: '暂停每日质检' }).isDisabled(),
+          )
+          .toBe(true);
+        expect(scheduleView.schedule!.nextRunAt).toBeNull();
+        await daily.getByRole('button', { name: '移除每日规则' }).click();
+        await daily.getByRole('button', { name: '开启每日质检' }).waitFor();
+        expect(scheduleWrites).toHaveLength(3);
         await page
           .getByRole('button', { name: '检查错误样例', exact: true })
           .click();
@@ -324,6 +391,30 @@ suite(
         expect(await liveCard.getByRole('status').textContent()).toContain(
           '已停止',
         );
+        const historic = rows.shift()!;
+        history.set(historic.id, historic);
+        scheduleView = {
+          schedule: null,
+          occurrences: [
+            {
+              id: randomUUID(),
+              scheduledFor: now,
+              status: historic.status,
+              checkId: historic.id,
+              accepted: historic.accepted,
+              verdict: historic.report?.verdict ?? null,
+              notExecutedReason: null,
+            },
+          ],
+        };
+        await daily.getByRole('button', { name: '刷新每日质检' }).click();
+        await daily.getByRole('button', { name: '查看本轮质检' }).click();
+        await detail
+          .getByText(new RegExp(`版本 ${historic.releaseSha.slice(0, 10)}`))
+          .waitFor();
+        expect(
+          await detail.getByRole('region', { name: '项目实时预览' }).count(),
+        ).toBe(0);
         expect(errors).toEqual([]);
       } finally {
         await browser.close();

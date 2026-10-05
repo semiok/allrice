@@ -11,6 +11,7 @@ import {
   type ProjectServiceView,
 } from '@allrice/contracts';
 import { ProjectServiceCard } from '../chatflow/project-service-card';
+import { PlatformQualitySchedule } from './platform-quality-schedule';
 const endpoint = '/api/v1/admin/technical-assistant/quality';
 const labels = {
   queued: '排队中',
@@ -40,6 +41,9 @@ const label = (q: QualityCheck) =>
 export function PlatformQuality() {
   const [checks, setChecks] = useState<QualityCheck[]>([]),
     [selected, setSelected] = useState<string | null>(null);
+  const [selectedCheck, setSelectedCheck] = useState<QualityCheck | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   const [pending, setPending] = useState<Submission | null>(null),
     [writing, setWriting] = useState(false),
     [error, setError] = useState('');
@@ -54,6 +58,28 @@ export function PlatformQuality() {
       .parse(await response.json());
     if (mounted.current && sequence === requestSequence.current)
       setChecks(next);
+    const id = selectedRef.current;
+    if (id && !next.some((q) => q.id === id)) {
+      const detailResponse = await fetch(`${endpoint}/${id}`, {
+        cache: 'no-store',
+      });
+      if (!detailResponse.ok) {
+        if (
+          mounted.current &&
+          sequence === requestSequence.current &&
+          selectedRef.current === id
+        )
+          setSelectedCheck(null);
+        throw Error('quality_detail_unavailable');
+      }
+      const detail = QualityCheckSchema.parse(await detailResponse.json());
+      if (
+        mounted.current &&
+        sequence === requestSequence.current &&
+        selectedRef.current === id
+      )
+        setSelectedCheck(detail);
+    }
     return next;
   }, []);
   useEffect(() => {
@@ -66,7 +92,15 @@ export function PlatformQuality() {
       requestSequence.current++;
     };
   }, [read]);
-  const hasActive = checks.some(active);
+  const hasActive =
+    checks.some(active) ||
+    !!(selectedCheck?.id === selected && active(selectedCheck));
+  useEffect(() => {
+    if (selected)
+      void read().catch(() => {
+        if (mounted.current) setError('本轮质检详情暂不可读，请刷新核对。');
+      });
+  }, [selected, read]);
   useEffect(() => {
     if (!hasActive) return;
     const timer = setInterval(() => {
@@ -132,7 +166,9 @@ export function PlatformQuality() {
       if (mounted.current) setWriting(false);
     }
   }
-  const detail = checks.find((q) => q.id === selected);
+  const detail =
+    checks.find((q) => q.id === selected) ??
+    (selectedCheck?.id === selected ? selectedCheck : null);
   async function stop() {
     if (!detail || writing) return;
     setWriting(true);
@@ -156,6 +192,10 @@ export function PlatformQuality() {
         在平台私有测试区构建小项目，点击“计算”后检查结果是否为
         2。错误样例用于证明能发现问题；修正样例使用同一断言。本次不调用模型。
       </p>
+      <PlatformQualitySchedule
+        onSelect={setSelected}
+        onChanged={() => void read().catch(() => undefined)}
+      />
       <div className={css.controls}>
         <AdminButton
           disabled={writing || hasActive || !!pending}
