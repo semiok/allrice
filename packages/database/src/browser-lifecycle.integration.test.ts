@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { closeDatabase, getDatabase } from './core/client.ts';
 import {
   createManagedBrowserTask,
+  createDefaultManagedBrowserTask,
   startManagedBrowserTask,
   completeManagedBrowserTask,
 } from './p1-runtime.ts';
@@ -251,6 +252,62 @@ describeDatabase(
       if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = originalDatabaseUrl;
     }, 30_000);
+
+    it.each(['cloud.default', 'allrice.cloud.browser'])(
+      'uses the scoped registered browser target %s without creating an alias',
+      async (targetKey) => {
+        const f = await seedScenario();
+        const sql = getDatabase();
+        await sql`update allrice_execution_targets set target_key=${targetKey} where id=${f.ids.targetId}`;
+        const task = await createDefaultManagedBrowserTask(
+          f.context,
+          'https://example.com',
+          [],
+          f.lease,
+          'registered-default',
+        );
+        expect(task.targetId).toBe(f.ids.targetId);
+        expect(
+          (
+            await createDefaultManagedBrowserTask(
+              f.context,
+              'https://example.com',
+              [],
+              f.lease,
+              'registered-default',
+            )
+          ).id,
+        ).toBe(task.id);
+        await expect(
+          createDefaultManagedBrowserTask(
+            { ...f.context, workspaceId: randomUUID() },
+            'https://example.com',
+            [],
+            f.lease,
+            'foreign-default',
+          ),
+        ).rejects.toThrow('authorization_denied');
+      },
+    );
+
+    it('prefers the current registered browser target when an older default is also present', async () => {
+      const f = await seedScenario(),
+        sql = getDatabase(),
+        id = randomUUID();
+      await sql`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities,concurrency_limit,timeout_seconds)
+        values(${id},${f.ids.organizationId},${f.ids.workspaceId},'allrice.cloud.browser','cloud_sandbox','Current browser','online','["browser.navigate"]'::jsonb,1,900)`;
+      expect(
+        (
+          await createDefaultManagedBrowserTask(
+            f.context,
+            'https://example.com',
+            [],
+            f.lease,
+            'current-default',
+          )
+        ).targetId,
+      ).toBe(id);
+    });
 
     it('binds idempotent tool calls to the exact active worker lease', async () => {
       const scenario = await seedScenario();
