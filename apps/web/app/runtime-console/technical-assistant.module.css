@@ -1,0 +1,151 @@
+.root {
+  padding: 28px;
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  font-size: var(--admin-font-body);
+  min-width: 0;
+}
+.heading,
+.record,
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.heading,
+.record {
+  justify-content: space-between;
+}
+.heading {
+  margin-bottom: 24px;
+}
+.heading h1,
+.card h2,
+.capture h2 {
+  margin: 0 0 8px;
+  font-weight: 500;
+}
+.heading h1 {
+  font-size: var(--admin-font-title);
+}
+.heading p,
+.meta {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+  margin: 8px 0;
+}
+.cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.card,
+.capture {
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-control-radius);
+  margin: 16px 0;
+}
+.card h3 {
+  margin: 0 0 12px;
+  font-weight: 500;
+}
+.card summary {
+  cursor: pointer;
+  padding: 4px 0;
+}
+.record {
+  padding: 12px 0;
+  border-top: 1px solid var(--admin-border);
+  overflow-wrap: anywhere;
+}
+details.record {
+  display: block;
+}
+.controls {
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.controls label {
+  display: grid;
+  gap: 6px;
+  color: var(--admin-muted);
+}
+.root :where(input, select) {
+  min-width: 0;
+  max-width: 100%;
+  font: inherit;
+  padding: 8px 10px;
+  background: var(--admin-canvas);
+  color: var(--admin-text);
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+}
+.controls input {
+  min-width: 280px;
+  flex: 1;
+}
+.controls select {
+  max-width: 280px;
+}
+.split {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.5fr);
+  gap: 16px;
+  align-items: start;
+}
+.issue {
+  display: grid;
+  width: 100%;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid var(--admin-border);
+  border-radius: var(--admin-control-radius);
+  margin: 10px 0;
+  background: var(--admin-canvas);
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.issue[aria-current='true'] {
+  border-color: var(--admin-accent);
+  background: var(--admin-sidebar);
+}
+.issue span {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.root dl {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 8px;
+  font-size: var(--admin-font-meta);
+}
+.root dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.root dt {
+  color: var(--admin-muted);
+}
+.error {
+  color: #b83e3e;
+}
+@media (max-width: 900px) {
+  .cards,
+  .split {
+    grid-template-columns: 1fr;
+  }
+  .root {
+    padding: 16px;
+  }
+  .heading,
+  .record {
+    flex-wrap: wrap;
+  }
+  .controls input {
+    min-width: 0;
+  }
+}

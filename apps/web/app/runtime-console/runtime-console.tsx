@@ -19,6 +19,7 @@ import { PlatformMcpSettingsPanel } from './platform-mcp-settings';
 import { OrganizationAdministration } from './organization-administration';
 import { OrganizationActivity } from './organization-activity';
 import { TenantFeedback } from './tenant-feedback';
+import { TechnicalAssistant } from './technical-assistant';
 import { RunUsageSummary } from './run-usage';
 import { RunTimingSummary } from './run-timing';
 import {
@@ -190,6 +191,7 @@ export function RuntimeConsole() {
     | 'apps'
     | 'tenants'
     | 'feedback'
+    | 'technical'
   >('tenants');
   const [data, setData] = useState<RuntimeConsoleResponse | null>(null);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState<
@@ -219,7 +221,8 @@ export function RuntimeConsole() {
       requested === 'governance' ||
       requested === 'apps' ||
       requested === 'tenants' ||
-      requested === 'feedback'
+      requested === 'feedback' ||
+      requested === 'technical'
     ) {
       setView(requested);
     }
@@ -235,7 +238,8 @@ export function RuntimeConsole() {
         | 'governance'
         | 'apps'
         | 'tenants'
-        | 'feedback',
+        | 'feedback'
+        | 'technical',
     ) => {
       if (next === view) return;
       const navigation =
@@ -256,6 +260,17 @@ export function RuntimeConsole() {
       window.history.replaceState(null, '', url);
     },
     [view, organizationNavigation, employeeNavigation],
+  );
+
+  const openTechnicalSource = useCallback(
+    (kind: 'run' | 'feedback', id: string) => {
+      selectView('technical');
+      const url = new URL(window.location.href);
+      url.searchParams.set('sourceKind', kind);
+      url.searchParams.set('sourceId', id);
+      window.history.replaceState(null, '', url);
+    },
+    [selectView],
   );
 
   const load = useCallback(
@@ -513,14 +528,20 @@ export function RuntimeConsole() {
             'apps',
             'runtimes',
             'feedback',
+            'technical',
           ].includes(view),
           onSelect: () => selectView('capabilities'),
         },
       ]}
     >
-      {['capabilities', 'governance', 'apps', 'runtimes', 'feedback'].includes(
-        view,
-      ) && (
+      {[
+        'capabilities',
+        'governance',
+        'apps',
+        'runtimes',
+        'feedback',
+        'technical',
+      ].includes(view) && (
         <nav className={styles.viewNav} aria-label="平台设置">
           <button
             aria-current={view === 'capabilities' ? 'page' : undefined}
@@ -552,13 +573,23 @@ export function RuntimeConsole() {
           >
             员工反馈
           </button>
+          <button
+            aria-current={view === 'technical' ? 'page' : undefined}
+            onClick={() => selectView('technical')}
+          >
+            技术助手
+          </button>
         </nav>
       )}
 
       {view === 'activity' ? (
         <OrganizationActivity />
       ) : view === 'feedback' ? (
-        <TenantFeedback />
+        <TenantFeedback
+          onOpenTechnicalSource={(id) => openTechnicalSource('feedback', id)}
+        />
+      ) : view === 'technical' ? (
+        <TechnicalAssistant />
       ) : view === 'tenants' ? (
         <OrganizationAdministration
           onNavigationStateChange={setOrganizationNavigation}
@@ -924,6 +955,9 @@ export function RuntimeConsole() {
                             turn={turn}
                             number={projectedTurns.length - index}
                             latest={index === 0}
+                            onOpenTechnicalSource={() =>
+                              openTechnicalSource('run', turn.run.id)
+                            }
                           />
                         ))}
                       </div>
@@ -956,6 +990,7 @@ export function RuntimeConsole() {
 function RuntimeTurn(props: {
   number: number;
   latest: boolean;
+  onOpenTechnicalSource: () => void;
   turn: RuntimeTimelineTurn & {
     items: RuntimeTimelineItem[];
     answerText: string | null;
@@ -987,6 +1022,14 @@ function RuntimeTurn(props: {
           <time>{time(props.turn.run.createdAt)}</time>
         </div>
       </summary>
+
+      <AdminButton
+        icon="wrench"
+        variant="quiet"
+        onClick={props.onOpenTechnicalSource}
+      >
+        查看技术问题
+      </AdminButton>
 
       <RunUsageSummary
         usage={props.turn.usage}

@@ -179,6 +179,12 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run packages/database/src/project-workspace.integration.test.ts packages/database/src/project-execution.integration.test.ts packages/database/src/static-browser.integration.test.ts packages/database/src/project-service.integration.test.ts packages/database/src/cloud-project-service.integration.test.ts
+      - name: Verify platform technical facts, problem evidence and authority against PostgreSQL
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        # Separate synthetic schemas; no actual provider, host control or company data.
+        run: pnpm exec vitest run packages/database/src/platform-technical.integration.test.ts
       - name: Verify Codex subscription lifecycle and incremental migration without credentials
         # MET-144 checks 0100 -> 0101 -> 0102 separately without a public-schema fallback.
         # Real isolated PG and pinned native runtime; the HTTP model endpoint

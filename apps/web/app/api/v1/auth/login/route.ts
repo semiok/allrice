@@ -3,6 +3,7 @@ import { cookies } from 'next/headers';
 import {
   ensureBootstrapPortalPrincipal,
   getLegacyPortalAccount,
+  getPlatformPortalAccount,
   initializeAccountLogin,
   isPlatformAdmin,
   login,
@@ -51,7 +52,11 @@ export async function POST(request: Request) {
         username?: unknown;
         password?: unknown;
       };
-      let account = await getLegacyPortalAccount(portal.principal);
+      const readAccount = () =>
+        portal.kind === 'platform_admin'
+          ? getPlatformPortalAccount(portal.principal)
+          : getLegacyPortalAccount(portal.principal);
+      let account = await readAccount();
       if (!account?.username) {
         if (!verifyPortalCredentials(portal, input.username, input.password))
           return authenticationRequiredProblem('Authentication failed');
@@ -63,7 +68,7 @@ export async function POST(request: Request) {
           username: portal.username,
           password: String(input.password),
         });
-        account = await getLegacyPortalAccount(portal.principal);
+        account = await readAccount();
       }
       if (!account)
         return authenticationRequiredProblem('Authentication failed');

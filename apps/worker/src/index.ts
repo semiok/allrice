@@ -218,6 +218,11 @@ function refreshDshRuntimeInventory() {
 
 const server = createServer((request, response) => {
   response.setHeader('content-type', 'application/json; charset=utf-8');
+  if (/^[a-f0-9]{40}$/.test(process.env.ALLRICE_RELEASE_SHA ?? ''))
+    response.setHeader(
+      'x-allrice-release-sha',
+      process.env.ALLRICE_RELEASE_SHA!,
+    );
 
   if (request.url === '/health/live') {
     response.statusCode = 200;

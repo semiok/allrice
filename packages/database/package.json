@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./technical-contracts": {
+      "types": "./dist/platform-technical-contracts.d.ts",
+      "default": "./dist/platform-technical-contracts.js"
     }
   },
   "files": [

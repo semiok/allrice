@@ -2,6 +2,7 @@ import { cookies } from 'next/headers';
 
 import {
   authenticateSession,
+  authenticatePlatformSession,
   DataAccessError,
   isPlatformAdmin,
 } from '@allrice/database';
@@ -44,10 +45,17 @@ export async function getRequestContext(request: Request) {
       portal,
     );
     if (!portalSession) return null;
-    const context = await authenticateSession(token, {
-      organizationId: portalSession.organizationId,
-      workspaceId: portalSession.workspaceId,
-    });
+    const context =
+      portal.kind === 'platform_admin'
+        ? await authenticatePlatformSession(token)
+        : await authenticateSession(
+            token,
+            {
+              organizationId: portalSession.organizationId,
+              workspaceId: portalSession.workspaceId,
+            },
+            'employee',
+          );
     if (
       context?.actor.type !== 'user' ||
       context.actor.id !== portalSession.subject
@@ -56,12 +64,20 @@ export async function getRequestContext(request: Request) {
     const admin = await isPlatformAdmin(context);
     return admin === (portal.kind === 'platform_admin') ? context : null;
   }
-  const context = await authenticateSession(token, {
-    organizationId:
-      request.headers.get('x-allrice-organization-id') ?? undefined,
-    workspaceId: request.headers.get('x-allrice-workspace-id') ?? undefined,
-  });
   const kind = portalAccountKind(request.headers.get('host'));
+  const context =
+    kind === 'platform_admin'
+      ? await authenticatePlatformSession(token)
+      : await authenticateSession(
+          token,
+          {
+            organizationId:
+              request.headers.get('x-allrice-organization-id') ?? undefined,
+            workspaceId:
+              request.headers.get('x-allrice-workspace-id') ?? undefined,
+          },
+          kind === 'employee' ? 'employee' : undefined,
+        );
   if (context && kind) {
     const admin = await isPlatformAdmin(context);
     if (admin !== (kind === 'platform_admin')) return null;
