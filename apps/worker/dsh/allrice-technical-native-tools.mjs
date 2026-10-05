@@ -1,4 +1,10 @@
-import { TechnicalDiagnosticInputSchema } from '@allrice/database/technical-contracts';
+import { z } from 'zod';
+
+// The plain-Node DSH runtime must start before server packages are compiled.
+// Keep this tiny wire validator in parity with the Broker's strict DTO schema.
+const TechnicalDiagnosticInputSchema = z
+  .object({ scope: z.literal('current') })
+  .strict();
 
 // Private platform kernel only. This declaration is not an employee capability.
 export const technicalNativeTools = [
