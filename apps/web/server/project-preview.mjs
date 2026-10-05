@@ -15,11 +15,24 @@ import { projectPreviewHost, projectServiceLimits } from '@allrice/contracts';
 export function createProjectPreviewGateway({
   suffix,
   mainOrigin,
+  adminOrigin,
   resolveAccess,
   transport,
   secure = true,
   onError = () => undefined,
 }) {
+  const frameOrigins = [...new Set([mainOrigin, adminOrigin].filter(Boolean))];
+  for (const value of frameOrigins) {
+    const url = new URL(value);
+    if (
+      url.origin !== value ||
+      url.hostname.includes('*') ||
+      url.username ||
+      url.password ||
+      (url.protocol !== 'https:' && (secure || url.protocol !== 'http:'))
+    )
+      throw Error('PROJECT_PREVIEW_FRAME_ORIGIN');
+  }
   // Production is HTTPS and requires the host-only Secure cookie prefix. The
   // explicit loopback fixture mode cannot use that prefix over plain HTTP.
   const cookieName = secure ? '__Host-allrice_preview' : 'allrice_preview_test';
@@ -229,7 +242,7 @@ export function createProjectPreviewGateway({
                 'cache-control': 'private, no-store',
                 'referrer-policy': 'no-referrer',
                 'x-content-type-options': 'nosniff',
-                'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${mainOrigin}; sandbox allow-scripts allow-same-origin allow-forms`,
+                'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${frameOrigins.join(' ')}; sandbox allow-scripts allow-same-origin allow-forms`,
               });
             } else if (frame.type === 'preview.data') {
               if (!res.headersSent) throw Error('PROJECT_PREVIEW_RESPONSE');
