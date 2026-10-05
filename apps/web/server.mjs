@@ -96,6 +96,10 @@ export async function startAllRiceWeb({
       mainOrigin: new URL(
         process.env.ALLRICE_PUBLIC_URL ?? 'https://allrice.bplabs.xyz',
       ).origin,
+      adminOrigin: new URL(
+        process.env.ALLRICE_ADMIN_PUBLIC_URL ??
+          'https://allrice-admin.bplabs.xyz',
+      ).origin,
       resolveAccess: resolveProjectPreviewAccess,
       transport: {
         openPreview: (input) => {

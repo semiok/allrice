@@ -1,8 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
 import { once } from 'node:events';
+import { createRequire } from 'node:module';
+import process from 'node:process';
 import { createServer, request } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
+import { setTimeout } from 'node:timers';
+import { URL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { createProjectPreviewGateway } from './project-preview.mjs';
@@ -18,7 +22,7 @@ async function until(predicate) {
     await delay(5);
   }
 }
-async function fixture() {
+async function fixture({ browserOrigins = false } = {}) {
   const id = randomUUID(),
     token = 'opaque-session-ticket';
   let allowed = true,
@@ -40,15 +44,32 @@ async function fixture() {
       expiresAt: new Date(Date.now() + 60000).toISOString(),
       hardDeadlineAt: new Date(Date.now() + 120000).toISOString(),
     };
-  const server = createServer((req, res) => void gateway.request(req, res));
+  const server = createServer((req, res) => {
+    if (
+      browserOrigins &&
+      /^(employee|admin|foreign)\.allrice\.test:/.test(req.headers.host ?? '')
+    ) {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      res.end(
+        `<iframe src="http://${host}/?_allrice_preview_ticket=${token}"></iframe>`,
+      );
+    } else void gateway.request(req, res);
+  });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const port = server.address().port,
-    suffix = `preview.localhost:${port}`,
-    host = `rice-preview-${id}.${suffix}`;
+    suffix = `${browserOrigins ? 'preview.allrice.test' : 'preview.localhost'}:${port}`,
+    host = `rice-preview-${id}.${suffix}`,
+    mainOrigin = browserOrigins
+      ? `http://employee.allrice.test:${port}`
+      : `http://127.0.0.1:${port}`,
+    adminOrigin = browserOrigins
+      ? `http://admin.allrice.test:${port}`
+      : undefined;
   const gateway = createProjectPreviewGateway({
     suffix,
-    mainOrigin: `http://127.0.0.1:${port}`,
+    mainOrigin,
+    adminOrigin,
     secure: false,
     resolveAccess: async (serviceId, key) => {
       if (!allowed || serviceId !== id || key !== token) throw Error('revoked');
@@ -57,6 +78,23 @@ async function fixture() {
     transport: {
       openPreview: async (options) => {
         opened = options;
+        if (browserOrigins)
+          setTimeout(() => {
+            void (async () => {
+              await options.onFrame({
+                type: 'preview.response',
+                status: 200,
+                headers: { 'content-type': 'text/html' },
+              });
+              await options.onFrame({
+                type: 'preview.data',
+                data: Buffer.from(
+                  '<div id="source">fixture-preview</div>',
+                ).toString('base64'),
+              });
+              await options.onFrame({ type: 'preview.end' });
+            })().catch(() => options.onClose());
+          }, 0);
         return {
           send: async (frame) => {
             frames.push(frame);
@@ -114,6 +152,8 @@ async function fixture() {
   };
   return {
     host,
+    mainOrigin,
+    adminOrigin,
     port,
     token,
     frames,
@@ -127,6 +167,87 @@ async function fixture() {
   };
 }
 describe('private preview live transfer authority', () => {
+  it('rejects noncanonical or insecure production frame origins', () => {
+    for (const adminOrigin of [
+      'https://admin.example.test/path',
+      'http://admin.example.test',
+      'https://admin.example.test; https://foreign.example.test',
+      'https://user@admin.example.test',
+      'https://*.example.test',
+    ]) {
+      expect(() =>
+        createProjectPreviewGateway({
+          suffix: 'example.test',
+          mainOrigin: 'https://employee.example.test',
+          adminOrigin,
+          resolveAccess: async () => {},
+          transport: {},
+        }),
+      ).toThrow();
+    }
+  });
+
+  it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
+    'embeds the authenticated preview in employee and admin origins while rejecting another same-site frame and revoked access',
+    async () => {
+      const f = await fixture({ browserOrigins: true });
+      const { chromium } = createRequire(
+        new URL('../../worker/package.json', import.meta.url),
+      )('playwright-core');
+      const browser = await chromium.launch({
+        headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+          ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+          : {}),
+        args: [
+          '--no-proxy-server',
+          '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
+        ],
+      });
+      try {
+        const page = await browser.newPage();
+        for (const origin of [f.mainOrigin, f.adminOrigin]) {
+          await page.goto(origin, { waitUntil: 'domcontentloaded' });
+          await page
+            .frameLocator('iframe')
+            .getByText('fixture-preview', { exact: true })
+            .waitFor();
+        }
+        const response = page.waitForResponse(
+          (r) => r.url() === `http://${f.host}/` && r.status() === 200,
+        );
+        await page.goto(`http://foreign.allrice.test:${f.port}`, {
+          waitUntil: 'domcontentloaded',
+        });
+        const csp = (await response).headers()['content-security-policy'];
+        expect(csp).toContain(
+          `frame-ancestors ${f.mainOrigin} ${f.adminOrigin};`,
+        );
+        expect(csp).not.toContain('foreign.allrice.test');
+        await expect(
+          page
+            .frameLocator('iframe')
+            .getByText('fixture-preview', { exact: true })
+            .waitFor({ timeout: 1000 }),
+        ).rejects.toThrow();
+        f.revoke();
+        const denied = page.waitForResponse(
+          (r) => new URL(r.url()).host === f.host && r.status() === 403,
+        );
+        await page.goto(f.adminOrigin, { waitUntil: 'domcontentloaded' });
+        expect((await denied).status()).toBe(403);
+        await page
+          .frameLocator('iframe')
+          .getByText('预览已停止或授权已失效，请回到 AllRice 刷新状态。', {
+            exact: true,
+          })
+          .waitFor();
+      } finally {
+        await browser.close();
+      }
+    },
+    30000,
+  );
   it('preserves the public WebSocket origin, token query and protocol on the private loopback hop', async () => {
     const f = await fixture(),
       path = '/?token=vite-hmr-test',
