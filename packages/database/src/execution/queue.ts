@@ -65,6 +65,13 @@ import { resolveWorkspaceId } from '../workspace/service.ts';
 import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 import { releaseConversationRuntimeTransaction } from '../conversation/conversation-runtime.ts';
+import {
+  admitQualityEnqueue,
+  bindPlatformQualityCheck,
+  isPlatformQualityJobAuthorized,
+  platformQualityCompletionAllowed,
+  type QualityBinding,
+} from '../platform-quality.ts';
 import { prepareChangesetAction } from '../changeset-service.ts';
 import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
 import { unboundedTaskDeadline } from '../task-runtime-policy.ts';
@@ -281,6 +288,7 @@ export async function enqueueRun(
   input: unknown,
   options: {
     technicalBinding?: TechnicalTaskBinding;
+    qualityBinding?: QualityBinding;
     folderEventId?: string;
     skillBinding?: {
       installationId: string;
@@ -345,6 +353,22 @@ export async function enqueueRun(
     )
       throw new QueueError('policy_denied');
   } else if (options.technicalBinding) throw new QueueError('policy_denied');
+  if (
+    options.qualityBinding &&
+    (submission.type !== 'allrice.employee.run' ||
+      !options.employeeBinding ||
+      !options.conversationDelivery ||
+      submission.maxAttempts !== 1 ||
+      submission.timeoutMs !== options.qualityBinding.frozen.timeoutMs ||
+      submission.availableAt ||
+      submission.idempotencyKey !==
+        `platform-quality:${context.actor.id}:${options.qualityBinding.frozen.requestId}` ||
+      (submission.input as { qualityRequestId?: unknown }).qualityRequestId !==
+        options.qualityBinding.frozen.requestId ||
+      (submission.input as { qualityInputDigest?: unknown })
+        .qualityInputDigest !== options.qualityBinding.inputDigest)
+  )
+    throw new QueueError('policy_denied');
   const taskPolicy =
     options.employeeBinding?.executionSnapshot.schemaVersion === 2
       ? options.employeeBinding.executionSnapshot.taskRuntimePolicy
@@ -387,7 +411,7 @@ export async function enqueueRun(
         existing[0].workspace_id !== workspaceId ||
         existing[0].owner_id !== ownerId ||
         existing[0].payload.type !== submission.type ||
-        (submission.type === platformTechnicalJobType
+        (submission.type === platformTechnicalJobType || options.qualityBinding
           ? technicalDigest(existing[0].payload.input) !==
             technicalDigest(submission.input)
           : JSON.stringify(existing[0].payload.input) !==
@@ -422,6 +446,12 @@ export async function enqueueRun(
       );
     }
     if (options.employeeBinding) {
+      await admitQualityEnqueue(
+        transaction,
+        { ...context, workspaceId },
+        options.employeeBinding.employeeAssignmentId,
+        options.qualityBinding,
+      );
       const { assertWorkbenchSession } = await import('../artifact-review.ts');
       await assertWorkbenchSession(
         transaction,
@@ -775,6 +805,16 @@ export async function enqueueRun(
           ${executionSnapshot.createdAt}
         )
       `;
+    }
+    if (options.qualityBinding && options.employeeBinding) {
+      await bindPlatformQualityCheck(
+        transaction,
+        { ...context, workspaceId },
+        run.id,
+        job.id,
+        options.employeeBinding.sessionId,
+        options.qualityBinding,
+      );
     }
     if (options.employeeBinding?.promptSnapshot.companyAssets) {
       const { recordCompanyRunSelections } =
@@ -1405,7 +1445,11 @@ async function stopUnauthorizedTechnicalJob(
   transaction: TransactionSql,
   job: JobRow,
 ) {
-  if (await isPlatformTechnicalJobAuthorized(transaction, job)) return false;
+  if (
+    (await isPlatformTechnicalJobAuthorized(transaction, job)) &&
+    (await isPlatformQualityJobAuthorized(transaction, job))
+  )
+    return false;
   await transitionTerminal(transaction, job, {
     jobStatus: 'failed',
     runStatus: 'failed',
@@ -1615,6 +1659,18 @@ export async function completeJob(input: {
         runStatus: 'canceled',
         eventType: 'run.canceled',
         payload: { reason: job.cancel_reason ?? 'user_requested' },
+      });
+      return;
+    }
+    if (await stopUnauthorizedTechnicalJob(transaction, job)) return;
+    if (!(await platformQualityCompletionAllowed(transaction, job))) {
+      await transitionTerminal(transaction, job, {
+        jobStatus: 'failed',
+        runStatus: 'failed',
+        eventType: 'run.failed',
+        code: 'QUALITY_EVIDENCE_REQUIRED',
+        message: 'The fixed case has no complete durable verification evidence',
+        payload: { code: 'QUALITY_EVIDENCE_REQUIRED' },
       });
       return;
     }

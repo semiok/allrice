@@ -1306,6 +1306,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         name: '员工账号',
         exact: true,
       });
+      // Keyboard actions do not wait for enabled controls as click does.
+      // Closing the assignment editor releases the navigation guard in an effect.
+      await expect.poll(() => peopleTab.isEnabled()).toBe(true);
       await peopleTab.focus();
       await peopleTab.press('ArrowRight');
       await defaults.waitFor();

@@ -13,6 +13,7 @@ import { UuidSchema } from '@allrice/contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 import { TechnicalTasks } from './technical-tasks';
+import { PlatformQuality } from './platform-quality';
 
 const endpoint = '/api/v1/admin/technical-assistant';
 const statusLabels = {
@@ -293,6 +294,7 @@ export function TechnicalAssistant() {
         </AdminButton>
       </header>
       <TechnicalTasks issueId={selected} />
+      <PlatformQuality />
       {error && (
         <p role="alert" className={css.error}>
           {error}

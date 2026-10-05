@@ -60,6 +60,7 @@ import {
 import { assembleEmployeeKernel } from '../employee-kernel.js';
 import { getChangesetRun } from '@allrice/database';
 import { executeChangesetRun } from './changeset-run.js';
+import { executePlatformQualityCheck } from './platform-quality.js';
 import { HandlerError } from '../errors.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import {
@@ -180,6 +181,11 @@ export async function executeEmployeeRun({
     ownerId: execution.job.ownerId,
     runId: execution.context.runId,
   });
+  if (typeof input.qualityRequestId === 'string')
+    return executePlatformQualityCheck(
+      { execution, isolation, signal, onHarnessEvent, workflowLease },
+      resolved,
+    );
   // A queued historical Run may predate the prepareEmployeeRunBinding guard.
   // Keep its record readable, but never reinterpret unsupported OAuth as an API key.
   const primaryModelSnapshot =

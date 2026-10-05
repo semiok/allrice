@@ -218,9 +218,11 @@ export async function publishLocalProjectArtifacts(
 
 /** A report cites exact source refs and actual terminal records, not an AI-written pass claim. */
 export async function projectExecutionReport(
-  ctx: ExecutionContext,
+  ctx: Pick<ExecutionContext, 'runId' | 'organizationId' | 'workspaceId'> & {
+    policySnapshot: { subjectId: string };
+  },
   project: ProjectVersionRef,
-  db = getDatabase(),
+  db: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
   const rows = await db<
     { id: string; snapshot: unknown; command: unknown; outcome: unknown }[]
