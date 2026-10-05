@@ -123,3 +123,5 @@ export * from './project-services.ts';
 
 export * from './platform-technical-tasks.ts';
 export * from './platform-technical-health.ts';
+export * from './platform-quality.ts';
+export * from './platform-quality-case.ts';

@@ -495,10 +495,9 @@ export async function createChatSession(
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, parsed.workspaceId);
-  const defaultAssignment = await ensureDefaultEmployee(
-    context,
-    parsed.workspaceId,
-  );
+  const defaultAssignment = parsed.employeeAssignmentId
+    ? null
+    : await ensureDefaultEmployee(context, parsed.workspaceId);
   const sql = getDatabase();
   let assignment = defaultAssignment;
   if (parsed.employeeAssignmentId) {

@@ -268,3 +268,5 @@ export const TechnicalTaskDetailSchema = z
     receipts: z.array(TechnicalTaskReceiptSchema).max(4),
   })
   .strict();
+
+export * from './platform-quality-contracts.ts';
