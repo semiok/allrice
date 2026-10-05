@@ -1,5 +1,5 @@
 /** Real isolated PostgreSQL authority/queue checks; no physical or paid-model claims. */
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,7 @@ import {
 } from './assistant-runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
+import { executionRequestConstraints } from './browser-execution-choice.ts';
 import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
 import {
   createPlatformQualityCheck,
@@ -26,6 +27,7 @@ import {
   recordPlatformQualityReport,
   admitQualityEnqueue,
   isPlatformQualityJobAuthorized,
+  isPlatformQualityServiceAuthorized,
   platformQualityCompletionAllowed,
 } from './platform-quality.ts';
 import type { JobRow } from './queue/row-mappers.ts';
@@ -41,6 +43,7 @@ import {
   qualityDigest,
   qualityFixture,
   qualityAssertion,
+  qualityCaseSpec,
 } from './platform-quality-case.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -471,6 +474,101 @@ suite(
         await tx`alter table qa_checks_absent_fixture rename to allrice_platform_quality_checks`;
       });
       await cancelPlatformQualityCheck(admin, q.id);
+    });
+    it('a reserved preview retains current platform authority after the Job ends', async () => {
+      const q = await submit();
+      const [row] =
+        await fixture.db`select * from allrice_platform_quality_checks where id=${q.id}`;
+      const service = {
+        run_id: q.runId,
+        owner_id: admin.actor.id,
+        organization_id: row!.organization_id as string,
+        workspace_id: row!.workspace_id as string,
+      };
+      await fixture.db.begin(async (tx) => {
+        // Synthetic terminal state checks authority only, not physical readiness.
+        await tx`update allrice_runs set state='succeeded' where id=${q.runId}`;
+        expect(await isPlatformQualityServiceAuthorized(tx, service)).toBe(
+          true,
+        );
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', 'nobody@example.test');
+        expect(await isPlatformQualityServiceAuthorized(tx, service)).toBe(
+          false,
+        );
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', adminEmail);
+        expect(
+          await isPlatformQualityServiceAuthorized(tx, {
+            ...service,
+            owner_id: company.owner.actor.id,
+          }),
+        ).toBe(false);
+        await tx`update allrice_employee_assignments set selection_mode='exclude' where id=${row!.frozen.assignmentId}`;
+        expect(await isPlatformQualityServiceAuthorized(tx, service)).toBe(
+          false,
+        );
+        await tx`update allrice_employee_assignments set selection_mode='include' where id=${row!.frozen.assignmentId}`;
+        const [workspace] =
+          await tx`select slug from allrice_workspaces where id=${service.workspace_id}`;
+        await tx`update allrice_workspaces set slug='renamed-quality-service' where id=${service.workspace_id}`;
+        expect(await isPlatformQualityServiceAuthorized(tx, service)).toBe(
+          false,
+        );
+        await tx`update allrice_workspaces set slug=${workspace!.slug} where id=${service.workspace_id}`;
+        await tx`update allrice_runs set state='queued' where id=${q.runId}`;
+      });
+      await cancelPlatformQualityCheck(admin, q.id);
+    });
+    it('live admission freezes its actual login session, case and dependency versions; logout ends authority', async () => {
+      const request = {
+        requestId: randomUUID(),
+        caseId: 'project.live.v1',
+        variant: 'correct',
+      };
+      await expect(
+        createPlatformQualityCheck(
+          { ...admin, sessionId: randomUUID() },
+          request,
+        ),
+      ).rejects.toThrow('authorization_denied');
+      const loginId = randomUUID();
+      await fixture.db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+        values(${loginId},${admin.actor.id},${createHash('sha256').update(loginId).digest('hex')},clock_timestamp()+interval '1 hour')`;
+      const liveAdmin = { ...admin, sessionId: loginId };
+      const q = await createPlatformQualityCheck(liveAdmin, request);
+      expect(q.caseId).toBe('project.live.v1');
+      expect(q.fixtureDigest).toBe(
+        qualityDigest(qualityCaseSpec('project.live.v1', 'correct').files),
+      );
+      expect(q.assertionDigest).toBe(
+        qualityDigest(qualityCaseSpec('project.live.v1', 'correct').assertion),
+      );
+      const lease = await start(q);
+      const execution = await getPlatformQualityExecution(lease);
+      expect(execution.frozen.loginSessionId).toBe(loginId);
+      expect(execution.frozen.loginAuthenticatedAt).toBe(admin.authenticatedAt);
+      const [message] =
+        await fixture.db`select content from allrice_messages where id=${execution.frozen.userMessageId}`;
+      expect(executionRequestConstraints(message!.content.text)).toEqual({
+        location: 'cloud',
+        localOnly: false,
+      });
+      await fixture.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${loginId}`;
+      await expect(getPlatformQualityExecution(lease)).rejects.toThrow(
+        'authorization_denied',
+      );
+      expect(
+        (
+          await heartbeatJob(
+            lease.workerId,
+            lease.jobId,
+            lease.leaseToken,
+            30000,
+          )
+        ).active,
+      ).toBe(false);
+      expect((await getPlatformQualityCheck(admin, q.id)).status).toBe(
+        'failed',
+      );
     });
     it('no report or caller-supplied “passed” result can complete a quality Run', async () => {
       const q = await submit(),

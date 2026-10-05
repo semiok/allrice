@@ -3,6 +3,7 @@ import {
   UuidSchema,
   ProjectVersionRefSchema,
   BrowserVerificationOutcomeSchema,
+  ProjectServiceTargetSchema,
 } from '@allrice/contracts';
 
 const checksum = z.string().regex(/^sha256:[a-f0-9]{64}$/);
@@ -10,11 +11,41 @@ const time = z.string().datetime({ offset: true });
 export const CreateQualityCheckSchema = z
   .object({
     requestId: UuidSchema,
-    caseId: z.literal('project.static.v1'),
+    caseId: z.enum(['project.static.v1', 'project.live.v1']),
     variant: z.enum(['defect', 'correct']),
   })
   .strict();
 export type CreateQualityCheck = z.infer<typeof CreateQualityCheckSchema>;
+export const QualityLiveEvidenceSchema = z
+  .object({
+    version: z.literal(1),
+    checkId: UuidSchema,
+    runId: UuidSchema,
+    jobId: UuidSchema,
+    jobAttempt: z.number().int().positive(),
+    toolCallId: z.string().min(1).max(255),
+    browserTaskId: UuidSchema,
+    service: ProjectServiceTargetSchema,
+    originalProject: ProjectVersionRefSchema,
+    updatedProject: ProjectVersionRefSchema,
+    updateId: UuidSchema,
+    sourceDigest: checksum,
+    httpStatus: z.literal(200),
+    websocketStatus: z.literal(101),
+    websocketProtocol: z.literal('vite-hmr'),
+    connectedFrame: z.literal(true),
+    updateFrame: z.literal(true),
+    beforeText: z.literal('source:42'),
+    afterText: z.literal('source:43'),
+    mainFrameNavigations: z.literal(0),
+    timeOriginUnchanged: z.literal(true),
+    browserVersion: z.string().min(1).max(120),
+    browserStopConfirmed: z.literal(true),
+    snapshotChecksum: checksum,
+    screenshotChecksum: checksum,
+  })
+  .strict();
+export type QualityLiveEvidence = z.infer<typeof QualityLiveEvidenceSchema>;
 export const QualityArtifactSchema = z
   .object({
     artifactId: UuidSchema,
@@ -52,6 +83,7 @@ export const QualityCheckReportSchema = z
       .nullable(),
     artifacts: z.array(QualityArtifactSchema).max(8),
     browser: BrowserVerificationOutcomeSchema.nullable(),
+    live: QualityLiveEvidenceSchema.optional(),
     errorCode: z
       .string()
       .regex(/^[A-Za-z0-9_.:-]{1,120}$/)
@@ -62,6 +94,7 @@ export const QualityCheckReportSchema = z
   .superRefine((r, ctx) => {
     if (
       ['passed', 'assertion_failed'].includes(r.verdict) &&
+      !r.live &&
       (!r.project ||
         r.build?.exitCode !== 0 ||
         !r.browser ||
@@ -77,6 +110,23 @@ export const QualityCheckReportSchema = z
         message:
           'A completed check requires actual build, published bytes, browser assertions and confirmed stop',
       });
+    if (
+      r.live &&
+      (r.verdict !== 'passed' ||
+        r.build !== null ||
+        r.browser !== null ||
+        !r.project ||
+        r.project.snapshot.id !== r.live.updatedProject.snapshot.id ||
+        !r.artifacts.some((a) => a.kind === 'source') ||
+        !r.artifacts.some((a) => a.kind === 'report') ||
+        !r.artifacts.some((a) => a.kind === 'screenshot') ||
+        r.cleanup !== 'pending')
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Live evidence must retain its finite service lease separately from the closed browser',
+      });
   });
 export const QualityCheckSchema = z
   .object({
@@ -85,7 +135,7 @@ export const QualityCheckSchema = z
     runId: UuidSchema,
     jobId: UuidSchema,
     sessionId: UuidSchema,
-    caseId: z.literal('project.static.v1'),
+    caseId: CreateQualityCheckSchema.shape.caseId,
     variant: CreateQualityCheckSchema.shape.variant,
     status: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']),
     environment: z.enum(['dev', 'prod', 'test', 'unknown']),

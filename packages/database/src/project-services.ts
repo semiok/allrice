@@ -42,6 +42,7 @@ import {
 import { readProjectSource } from './saved-project-authority.ts';
 import { checkContinuingCloudProjectAuthority } from './cloud-authority.ts';
 import { bridgeSettingsView } from './bridge-settings.ts';
+import { isPlatformQualityServiceAuthorized } from './platform-quality.ts';
 
 type DB = ReturnType<typeof getDatabase>;
 type Principal = Pick<
@@ -165,6 +166,7 @@ export async function currentProjectService(
     )
   )
     denied();
+  if (!(await isPlatformQualityServiceAuthorized(tx, row))) denied();
   const actor: Principal = {
     organizationId: row.organization_id,
     workspaceId: row.workspace_id,
@@ -373,6 +375,7 @@ async function ownedLocked(tx: TransactionSql, p: Principal, id: string) {
   >`select * from allrice_project_services where id=${id} and organization_id=${p.organizationId}
     and workspace_id=${p.workspaceId!} and owner_id=${p.actor.id}`;
   if (!ref || p.actor.type !== 'user') denied();
+  if (!(await isPlatformQualityServiceAuthorized(tx, ref))) denied();
   await tx`select root_run_id from allrice_runtime_roots where root_run_id=${ref.run_id} for update`;
   await tx`select id from allrice_runtime_operations where id=${id} for update`;
   await tx`select version from allrice_runtime_policy_controls where organization_id=${p.organizationId} and workspace_id=${p.workspaceId!} for update`;
@@ -432,6 +435,7 @@ export async function readProjectService(
       left join allrice_cloud_execution_attempts c on c.operation_id=s.id
       where s.id=${id} and s.organization_id=${p.organizationId} and s.workspace_id=${p.workspaceId!} and s.owner_id=${p.actor.id}`;
     if (!r || p.actor.type !== 'user') denied();
+    if (!(await isPlatformQualityServiceAuthorized(tx, r))) denied();
     await assertWorkbenchSession(tx, p, r.session_id, false, 'share');
     const snap = RuntimeOperationSnapshotSchema.parse(r.snapshot),
       stopped = ['succeeded', 'failed', 'canceled'].includes(snap.status);

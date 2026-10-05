@@ -7,7 +7,11 @@ import {
   QualityCheckReportSchema,
   type QualityCheck,
 } from '@allrice/database/technical-contracts';
-import type { Route } from '../../../worker/node_modules/playwright-core/index.js';
+import type {
+  Route,
+  Response,
+} from '../../../worker/node_modules/playwright-core/index.js';
+import type { ProjectServiceView } from '@allrice/contracts';
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
@@ -26,6 +30,7 @@ suite(
         platform: 'browser',
         format: 'iife',
         jsx: 'automatic',
+        loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
         define: { 'process.env.NODE_ENV': '"development"' },
       });
       const server = createServer((req, res) => {
@@ -61,6 +66,10 @@ suite(
       });
       const rows: QualityCheck[] = [],
         posts: string[] = [];
+      const services = new Map<string, ProjectServiceView>();
+      let slowId = '',
+        holdId = '',
+        releaseOldService: (() => void) | undefined;
       try {
         const page = await browser.newPage(),
           errors: string[] = [];
@@ -68,6 +77,20 @@ suite(
         await page.route(
           '**/api/v1/admin/technical-assistant/quality**',
           async (route: Route) => {
+            const serviceId = new URL(route.request().url()).pathname.match(
+              /\/quality\/([^/]+)\/service$/,
+            )?.[1];
+            if (serviceId) {
+              const service = services.get(serviceId);
+              if (slowId === serviceId)
+                await new Promise((done) => setTimeout(done, 3500));
+              if (!service) return route.fulfill({ status: 404, json: {} });
+              if (holdId === serviceId)
+                await new Promise<void>((done) => {
+                  releaseOldService = done;
+                });
+              return route.fulfill({ json: { service } });
+            }
             if (route.request().method() === 'POST') {
               const request = route.request().postDataJSON();
               posts.push(request.requestId);
@@ -241,6 +264,66 @@ suite(
         await detail
           .getByRole('heading', { name: '质检通过', exact: true })
           .waitFor();
+        // A delayed service response for a previous check must never appear
+        // beneath the new check's controls. These are UI fixtures, not QA proof.
+        const liveRows = ['A', 'B'].map(() => ({
+          ...rows[0]!,
+          id: randomUUID(),
+          requestId: randomUUID(),
+          runId: randomUUID(),
+          caseId: 'project.live.v1' as const,
+          variant: 'correct' as const,
+          status: 'succeeded' as const,
+          accepted: false,
+          report: null,
+        }));
+        for (const [index, row] of liveRows.entries()) {
+          services.set(row.id, {
+            version: 1,
+            id: randomUUID(),
+            runId: row.runId,
+            sessionId: row.sessionId,
+            backend: 'cloud',
+            state: index === 0 ? 'ready' : 'stopped',
+            project: {
+              projectId: randomUUID(),
+              snapshot: { kind: 'artifact', id: randomUUID(), checksum },
+            },
+            sourceDigest: checksum,
+            expiresAt: now,
+            hardDeadlineAt: now,
+            lastSeenAt: now,
+            stopRequested: index === 1,
+            stopped: index === 1,
+            updatePending: false,
+            canRenew: index === 0,
+          });
+        }
+        rows.push(...liveRows);
+        holdId = liveRows[0]!.id;
+        slowId = liveRows[1]!.id;
+        await page.getByRole('button', { name: '刷新质检记录' }).click();
+        await page.getByRole('button', { name: '查看质检详情' }).nth(1).click();
+        for (let i = 0; !releaseOldService && i < 50; i++)
+          await new Promise((done) => setTimeout(done, 20));
+        expect(releaseOldService).toBeTypeOf('function');
+        await page.getByRole('button', { name: '查看质检详情' }).nth(2).click();
+        const liveCard = detail.getByRole('region', { name: '项目实时预览' });
+        await liveCard
+          .getByRole('status')
+          .getByText(/已停止/)
+          .waitFor();
+        const oldResponse = page.waitForResponse((r: Response) =>
+          r.url().endsWith(`/${holdId}/service`),
+        );
+        releaseOldService!();
+        await oldResponse;
+        expect(
+          await liveCard.getByRole('button', { name: '停止预览' }).isDisabled(),
+        ).toBe(true);
+        expect(await liveCard.getByRole('status').textContent()).toContain(
+          '已停止',
+        );
         expect(errors).toEqual([]);
       } finally {
         await browser.close();

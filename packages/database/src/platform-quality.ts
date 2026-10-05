@@ -24,10 +24,8 @@ import {
 } from './platform-quality-contracts.ts';
 import {
   qualityFixture,
-  qualityAssertion,
   qualityDigest,
-  qualityCaseId,
-  qualityRunnerVersion,
+  qualityCaseSpec,
 } from './platform-quality-case.ts';
 import { technicalEnvironment } from './platform-technical.ts';
 import { QueueError } from './execution/queue.ts';
@@ -55,7 +53,17 @@ const QualityFrozenSchema = CreateQualityCheckSchema.extend({
   userMessageId: UuidSchema,
   assistantMessageId: UuidSchema,
   timeoutMs: z.number().int().min(1000).max(300000),
-}).strict();
+  loginSessionId: UuidSchema.optional(),
+  loginAuthenticatedAt: z.string().datetime({ offset: true }).optional(),
+})
+  .strict()
+  .refine(
+    (f) =>
+      f.caseId !== 'project.live.v1' ||
+      (!!f.loginSessionId &&
+        !!f.loginAuthenticatedAt &&
+        f.variant === 'correct'),
+  );
 export const QualityBindingSchema = z
   .object({
     id: UuidSchema,
@@ -76,11 +84,11 @@ function denied(): never {
 function frozenValid(raw: unknown) {
   const f = QualityFrozenSchema.safeParse(raw);
   if (!f.success) return false;
+  const spec = qualityCaseSpec(f.data.caseId, f.data.variant);
   return (
-    f.data.fixtureDigest ===
-      qualityDigest(qualityFixture(f.data.variant).files) &&
-    f.data.assertionDigest === qualityDigest(qualityAssertion) &&
-    f.data.runnerDigest === qualityDigest(qualityRunnerVersion) &&
+    f.data.fixtureDigest === qualityDigest(spec.files) &&
+    f.data.assertionDigest === qualityDigest(spec.assertion) &&
+    f.data.runnerDigest === qualityDigest(spec.runnerVersion) &&
     f.data.fingerprint === fingerprint(f.data)
   );
 }
@@ -98,6 +106,7 @@ function fingerprint(
     f.employeeVersionId,
     f.employeeRevisionId,
     f.timeoutMs,
+    ...(f.caseId === 'project.live.v1' ? [f.loginSessionId] : []),
   ]);
 }
 
@@ -348,7 +357,90 @@ export async function isPlatformQualityJobAuthorized(tx: Tx, job: JobRow) {
     qualityDigest(input) !== qualityDigest(row.run_input)
   )
     return false;
+  if (row.frozen.loginSessionId) {
+    const [login] =
+      await tx`select id from allrice_sessions where id=${row.frozen.loginSessionId} and user_id=${row.owner_id} and revoked_at is null and expires_at>clock_timestamp()`;
+    if (!login) return false;
+  }
   return isPlatformAdmin({ actor: { type: 'user', id: job.owner_id } }, tx);
+}
+
+/** The service lease may outlive a successful Job, but never the platform
+ * authority or its reserved private deployment. Do not use the active-Job
+ * guard here: that would incorrectly end every legitimate continued preview.
+ * Reservation detection is independent of the authority joins so revocation
+ * cannot turn a QA service into an ordinary employee service. */
+export async function isPlatformQualityServiceAuthorized(
+  tx: Tx,
+  service: {
+    run_id: string;
+    owner_id: string;
+    organization_id: string;
+    workspace_id: string;
+  },
+) {
+  const [run] =
+    await tx`select input from allrice_runs where id=${service.run_id}`;
+  const input = run?.input;
+  const marked =
+    input &&
+    typeof input === 'object' &&
+    ('qualityRequestId' in input || 'qualityInputDigest' in input);
+  if (!(await qualitySchemaAvailable(tx))) return !marked;
+  const [reserved] =
+    await tx`select d.assignment_id from allrice_employee_runs e
+    join allrice_platform_quality_deployments d on d.assignment_id=e.employee_assignment_id
+    where e.run_id=${service.run_id}`;
+  if (!reserved) return !marked;
+  const [q] =
+    await tx`select q.*,e.employee_version_id,e.employee_assignment_id,
+    d.employee_version_id current_version,d.owner_id deployment_owner,
+    a.active assignment_active,a.selection_mode,emp.status employee_status,
+    pa.active deployment_active,s.archived_at session_archived,
+    o.archived_at organization_archived,w.archived_at workspace_archived
+    from allrice_platform_quality_checks q
+    join allrice_employee_runs e on e.run_id=q.run_id and e.owner_id=q.owner_id
+      and e.organization_id=q.organization_id and e.workspace_id=q.workspace_id and e.session_id=q.session_id
+    join allrice_platform_quality_deployments d on d.assignment_id=e.employee_assignment_id
+      and d.organization_id=q.organization_id and d.workspace_id=q.workspace_id
+    join allrice_employee_assignments a on a.id=d.assignment_id and a.user_id=q.owner_id
+      and a.organization_id=q.organization_id and a.workspace_id=q.workspace_id
+    join allrice_employees emp on emp.id=a.employee_id and emp.id=d.employee_id
+      and emp.organization_id=q.organization_id and emp.workspace_id=q.workspace_id
+    join allrice_platform_employee_tenant_assignments pa on pa.tenant_employee_id=emp.id and pa.workspace_id=q.workspace_id
+    join allrice_chat_sessions s on s.id=q.session_id and s.owner_id=q.owner_id
+    join allrice_organizations o on o.id=q.organization_id and o.slug='allrice-platform'
+    join allrice_workspaces w on w.id=q.workspace_id and w.organization_id=q.organization_id
+      and w.slug='employee-tests-'||q.owner_id::text
+    where q.run_id=${service.run_id}`;
+  if (
+    !q ||
+    !marked ||
+    !frozenValid(q.frozen) ||
+    q.owner_id !== service.owner_id ||
+    q.deployment_owner !== service.owner_id ||
+    q.organization_id !== service.organization_id ||
+    q.workspace_id !== service.workspace_id ||
+    q.employee_assignment_id !== q.frozen.assignmentId ||
+    q.employee_version_id !== q.frozen.employeeVersionId ||
+    q.current_version !== q.frozen.employeeVersionId ||
+    !q.assignment_active ||
+    q.selection_mode === 'exclude' ||
+    q.employee_status !== 'active' ||
+    !q.deployment_active ||
+    q.session_archived ||
+    q.organization_archived ||
+    q.workspace_archived ||
+    input.qualityRequestId !== q.request_id ||
+    input.qualityInputDigest !== q.input_digest
+  )
+    return false;
+  if (q.frozen.loginSessionId) {
+    const [login] =
+      await tx`select id from allrice_sessions where id=${q.frozen.loginSessionId} and user_id=${q.owner_id} and revoked_at is null and expires_at>clock_timestamp()`;
+    if (!login) return false;
+  }
+  return isPlatformAdmin({ actor: { type: 'user', id: service.owner_id } }, tx);
 }
 
 export async function getPlatformQualityExecution(lease: QualityLease) {
@@ -383,6 +475,26 @@ export async function getPlatformQualityExecution(lease: QualityLease) {
     };
   });
 }
+/** Used inside existing publication transactions without opening a second
+ * transaction or reversing the root -> Job -> session lock order. */
+export async function assertPlatformQualityLease(tx: Tx, lease: QualityLease) {
+  const [job] = await tx<
+    JobRow[]
+  >`select * from allrice_jobs where id=${lease.jobId} for share`;
+  if (
+    !job ||
+    job.status !== 'running' ||
+    job.worker_id !== lease.workerId ||
+    job.lease_token !== lease.leaseToken ||
+    job.attempt !== lease.attempt ||
+    !job.lease_expires_at ||
+    job.lease_expires_at <= new Date() ||
+    job.timeout_at <= new Date() ||
+    job.cancel_requested_at ||
+    !(await isPlatformQualityJobAuthorized(tx, job))
+  )
+    denied();
+}
 export async function recordPlatformQualityReport(
   lease: QualityLease,
   raw: unknown,
@@ -390,6 +502,11 @@ export async function recordPlatformQualityReport(
 ) {
   const report = QualityCheckReportSchema.parse(raw);
   const check = await getPlatformQualityExecution(lease);
+  if (
+    (check.frozen.caseId === 'project.live.v1') !== !!report.live &&
+    ['passed', 'assertion_failed'].includes(report.verdict)
+  )
+    denied();
   const principal = {
     actor: { type: 'user' as const, id: check.ownerId },
     organizationId: check.organizationId,
@@ -416,7 +533,19 @@ export async function recordPlatformQualityReport(
           path: f.path,
           text: Buffer.from(f.contentBase64, 'base64').toString('utf8'),
         })),
-      ) !== check.frozen.fixtureDigest
+      ) !==
+        (report.live
+          ? qualityDigest(
+              qualityCaseSpec(
+                check.frozen.caseId,
+                check.frozen.variant,
+              ).files.map((f) =>
+                f.path === 'main.js'
+                  ? { ...f, text: f.text.replace('source:42', 'source:43') }
+                  : f,
+              ),
+            )
+          : check.frozen.fixtureDigest)
     )
       denied();
     for (const a of report.artifacts.filter((a) =>
@@ -462,7 +591,71 @@ export async function recordPlatformQualityReport(
           and v.owner_id=${check.ownerId} and o.id=${artifact.objectId} and o.checksum=${artifact.checksum} and o.size_bytes=${artifact.sizeBytes} and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())`;
       if (!found) denied();
     }
-    if (['passed', 'assertion_failed'].includes(report.verdict)) {
+    if (report.live) {
+      const live = report.live;
+      const [service] =
+        await tx`select s.*,o.snapshot from allrice_project_services s join allrice_runtime_operations o on o.id=s.id
+        where s.id=${live.service.serviceId} and s.run_id=${check.runId} and s.owner_id=${check.ownerId}
+          and s.organization_id=${check.organizationId} and s.workspace_id=${check.workspaceId}`;
+      const [update] =
+        await tx`select payload,result from allrice_project_service_controls where service_id=${live.service.serviceId} and request_id=${live.updateId}`;
+      const [receipt] =
+        await tx`select payload from allrice_run_events where run_id=${check.runId} and event_type='tool.completed'
+        and payload->>'source'='platform_quality_live' and payload->>'toolCallId'=${live.toolCallId}
+        and payload->>'jobAttempt'=${String(lease.attempt)} order by sequence desc limit 1`;
+      const [browser] =
+        await tx`select * from allrice_managed_browser_tasks where id=${live.browserTaskId}
+        and organization_id=${check.organizationId} and workspace_id=${check.workspaceId} and run_id=${check.runId}
+        and job_id=${lease.jobId} and job_attempt=${lease.attempt} and tool_call_id=${live.toolCallId} and status='succeeded'`;
+      if (
+        !service ||
+        !browser ||
+        !update?.result?.applied ||
+        !receipt ||
+        live.checkId !== check.id ||
+        live.runId !== check.runId ||
+        live.jobId !== lease.jobId ||
+        live.jobAttempt !== lease.attempt ||
+        qualityDigest(receipt.payload.evidence) !== qualityDigest(live) ||
+        service.snapshot.status !== 'running' ||
+        service.snapshot.cancelRequestId ||
+        service.stop_requested ||
+        service.source_digest !== live.sourceDigest ||
+        service.pending_update ||
+        qualityDigest(service.project_ref) !==
+          qualityDigest(live.updatedProject) ||
+        qualityDigest(update.payload.expectedProject) !==
+          qualityDigest(live.originalProject) ||
+        qualityDigest(update.payload.project) !==
+          qualityDigest(live.updatedProject) ||
+        update.result.sourceDigest !== live.sourceDigest ||
+        !(await isPlatformQualityServiceAuthorized(tx, {
+          run_id: check.runId,
+          owner_id: check.ownerId,
+          organization_id: check.organizationId,
+          workspace_id: check.workspaceId,
+        }))
+      )
+        denied();
+      for (const [kind, checksum] of [
+        ['content', live.snapshotChecksum],
+        ['screenshot', live.screenshotChecksum],
+      ] as const) {
+        const [capture] =
+          await tx`select o.id from allrice_managed_browser_evidence_artifacts a
+          join allrice_storage_objects o on o.id=a.object_id and o.state='ready' and o.deleted_at is null
+          where a.task_id=${live.browserTaskId} and a.kind=${kind} and o.checksum=${checksum}`;
+        if (
+          !capture ||
+          !report.artifacts.some(
+            (a) =>
+              a.checksum === checksum &&
+              a.kind === (kind === 'content' ? 'report' : 'screenshot'),
+          )
+        )
+          denied();
+      }
+    } else if (['passed', 'assertion_failed'].includes(report.verdict)) {
       const [operation] =
         await tx`select snapshot from allrice_runtime_operations where id=${report.build!.operationId} and run_id=${check.runId}
         and organization_id=${check.organizationId} and workspace_id=${check.workspaceId}`;
@@ -577,6 +770,31 @@ export async function getPlatformQualityCheck(
   if (!row) throw new DataAccessError('not_found');
   return map(row);
 }
+/** Resolve the private service from persisted QA ownership. Neither an HTTP
+ * caller nor a company context may supply a service/organization/workspace. */
+export async function platformQualityServiceContext(
+  context: RequestContext,
+  id: string,
+) {
+  const check = await getPlatformQualityCheck(context, id);
+  if (check.caseId !== 'project.live.v1')
+    throw new DataAccessError('not_found');
+  const services =
+    await getDatabase()`select s.id,s.organization_id,s.workspace_id from allrice_project_services s
+    join allrice_platform_quality_checks q on q.run_id=s.run_id and q.owner_id=s.owner_id
+      and q.organization_id=s.organization_id and q.workspace_id=s.workspace_id
+    where q.id=${check.id} and q.owner_id=${context.actor.id} order by s.id limit 2`;
+  if (services.length !== 1) throw new DataAccessError('not_found');
+  const service = services[0]!;
+  return {
+    serviceId: service.id as string,
+    context: {
+      ...context,
+      organizationId: service.organization_id as string,
+      workspaceId: service.workspace_id as string,
+    },
+  };
+}
 export async function createPlatformQualityCheck(
   context: RequestContext,
   raw: unknown,
@@ -590,6 +808,12 @@ export async function createPlatformQualityCheck(
     if (existing.input_digest !== qualityDigest(request))
       throw new QueueError('conflict');
     return getPlatformQualityCheck(context, existing.id);
+  }
+  if (request.caseId === 'project.live.v1') {
+    if (request.variant !== 'correct' || !context.sessionId) denied();
+    const [login] =
+      await db`select id from allrice_sessions where id=${context.sessionId} and user_id=${owner} and revoked_at is null and expires_at>clock_timestamp()`;
+    if (!login) denied();
   }
   const employee = await ensureQualityEmployee(context);
   const internalContext: RequestContext = {
@@ -624,7 +848,7 @@ export async function createPlatformQualityCheck(
     },
     { sessionId },
   );
-  const text = `固定合成场景 ${qualityCaseId}；样例以本请求的冻结记录为准。无模型调用；仅执行受控项目构建和已发布静态页面验证。`;
+  const text = `固定合成场景 ${request.caseId}；样例以本请求的冻结记录为准。无模型调用；仅执行受控项目与浏览器验证。${request.caseId === 'project.live.v1' ? ' 在云端执行。' : ''}`;
   await db.begin(async (tx) => {
     for (const [id, role, status, content] of [
       [userMessageId, 'user', 'completed', { text, citations: [] }],
@@ -663,9 +887,21 @@ export async function createPlatformQualityCheck(
     ...request,
     releaseSha: process.env.ALLRICE_RELEASE_SHA!,
     environment: technicalEnvironment(),
-    fixtureDigest: qualityDigest(qualityFixture(request.variant).files),
-    assertionDigest: qualityDigest(qualityAssertion),
-    runnerDigest: qualityDigest(qualityRunnerVersion),
+    fixtureDigest: qualityDigest(
+      qualityCaseSpec(request.caseId, request.variant).files,
+    ),
+    assertionDigest: qualityDigest(
+      qualityCaseSpec(request.caseId, request.variant).assertion,
+    ),
+    runnerDigest: qualityDigest(
+      qualityCaseSpec(request.caseId, request.variant).runnerVersion,
+    ),
+    ...(request.caseId === 'project.live.v1'
+      ? {
+          loginSessionId: context.sessionId!,
+          loginAuthenticatedAt: context.authenticatedAt,
+        }
+      : {}),
     employeeVersionId: employee.versionId,
     employeeRevisionId: employee.revisionId,
     assignmentId: employee.assignmentId,

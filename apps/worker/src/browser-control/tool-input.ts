@@ -8,6 +8,14 @@ import {
   BrowserVerificationPlanSchema,
 } from '@allrice/contracts';
 
+/** This branch is deliberately absent from the ordinary employee manifest. */
+export const PrivateQualityLiveInputSchema = z
+  .object({
+    command: z.literal('verify_live'),
+    serviceId: UuidSchema,
+  })
+  .strict();
+
 export const BrowserWorkspaceToolInputSchema = z.discriminatedUnion('command', [
   z.object({ command: z.literal('profiles') }).strict(),
   z

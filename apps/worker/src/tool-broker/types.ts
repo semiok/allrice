@@ -2,6 +2,7 @@ import type {
   createTraceableMemory,
   isManagedBrowserTaskCancelRequested,
   TechnicalTaskLease,
+  QualityLease,
 } from '@allrice/database';
 import type {
   ExecutionContext,
@@ -59,6 +60,12 @@ export interface RiceToolExecutionInput {
   /** Private Worker binding, never accepted in tool arguments. */
   technicalTaskLease?: TechnicalTaskLease;
   technicalTaskId?: string;
+  /** Private fixed-case driver hook, never parsed from model/tool JSON. */
+  qualityLiveProbe?: {
+    checkId: string;
+    lease: QualityLease;
+    syncOnce: (signal: AbortSignal) => Promise<{ updateId: string }>;
+  };
   platformTestRunId?: string;
   platformActorLabel?: string;
   signal?: AbortSignal;

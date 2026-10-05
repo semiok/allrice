@@ -715,6 +715,9 @@ export async function publishWorkbenchArtifact(
       'assistant.development' | 'workspace.project' | 'browser.workspace';
     /** Server-only finite saved-document verification result. */
     browserVerification?: { execution: RuntimeExecutionScope };
+    /** Server-only private QA browser capture. Its managed task must already
+     * have durable evidence and the caller supplies the current QA lease guard. */
+    qualityLiveCapture?: { browserTaskId: string };
     /** Internal verified project output/source delivery, never model input. */
     projectDelivery?: {
       operationId: string | null;
@@ -806,6 +809,22 @@ export async function publishWorkbenchArtifact(
       if (input.trustedOfficePdfLease)
         await assertOfficePdfLease(tx, context, input.trustedOfficePdfLease);
       await development?.admit(tx);
+      if (development?.qualityLiveCapture) {
+        if (
+          development.requiredTool !== 'browser.workspace' ||
+          input.kind !== 'document' ||
+          !['json', 'png'].includes(input.format)
+        )
+          fail('invalid_publication');
+        const [capture] =
+          await tx`select o.id from allrice_managed_browser_tasks t
+          join allrice_managed_browser_evidence_artifacts a on a.task_id=t.id
+          join allrice_storage_objects o on o.id=a.object_id and o.state='ready' and o.deleted_at is null
+          where t.id=${development.qualityLiveCapture.browserTaskId} and t.run_id=${context.runId}
+            and t.job_id=${context.jobId} and t.organization_id=${context.organizationId} and t.workspace_id=${context.workspaceId!}
+            and t.status='succeeded' and o.owner_id=${owner} and o.checksum=${checksum} and o.size_bytes=${input.bytes.byteLength}`;
+        if (!capture) fail('invalid_publication');
+      }
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
       const source = input.sourceFile
         ? await assertToolBrokerSourceFile(
@@ -961,7 +980,9 @@ export async function publishWorkbenchArtifact(
       );
       const provenance = {
         kind:
-          development?.projectDelivery || development?.browserVerification
+          development?.projectDelivery ||
+          development?.browserVerification ||
+          development?.qualityLiveCapture
             ? 'tool_result'
             : requiredTool === 'workspace.project'
               ? 'project_snapshot'

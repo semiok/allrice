@@ -1,14 +1,19 @@
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import {
   CloudExecutionProfileSchema,
   BrowserProfileSchema,
   runtimePolicyActionDecision,
+  makeObjectKey,
+  type StorageObject,
   type RequestContext,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
-import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
+import {
+  createAssistantFixtureDatabase,
+  assistantFixtureStorage,
+} from './assistant-runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -47,6 +52,11 @@ import {
   revokeBrowserControlGrant,
 } from './browser-control.ts';
 import { createCloudCommandOperation } from './cloud-execution.ts';
+import {
+  createDefaultManagedBrowserTask,
+  startManagedBrowserTask,
+  registerManagedBrowserEvidenceArtifact,
+} from './p1-runtime.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -483,6 +493,80 @@ suite(
         fdb.db,
       );
       expect(browser.profile.network).toBe('public_https');
+      // A newly registered managed target must support the shipping reader's
+      // real immutable evidence path without a manually seeded capability.
+      const lease = { attempt: job!.attempt, leaseToken: job!.lease!.token };
+      const task = await createDefaultManagedBrowserTask(
+        execution.context,
+        'https://example.org/',
+        [],
+        lease,
+        'first-managed-capture',
+      );
+      await startManagedBrowserTask({
+        context: execution.context,
+        taskId: task.id,
+        lease,
+      });
+      const bytes = new TextEncoder().encode(
+        'Bounded synthetic browser evidence',
+      );
+      const objectId = randomUUID();
+      const object: StorageObject = {
+        id: objectId,
+        organizationId: f.tenant.organizationId,
+        workspaceId: f.tenant.workspaceId,
+        ownerId: joined.user.id,
+        key: makeObjectKey({
+          organizationId: f.tenant.organizationId,
+          workspaceId: f.tenant.workspaceId,
+          ownerId: joined.user.id,
+          category: 'artifacts',
+          objectId,
+        }),
+        checksum: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+        mediaType: 'text/plain',
+        sizeBytes: bytes.length,
+        immutable: true,
+        retentionUntil: null,
+        deletedAt: null,
+      };
+      const storage = assistantFixtureStorage(fdb.db);
+      await storage.put(object, new Blob([bytes]).stream());
+      const captureInput = {
+        context: execution.context,
+        taskId: task.id,
+        lease,
+        kind: 'content' as const,
+        name: 'First capture',
+        object: {
+          id: object.id,
+          key: object.key,
+          checksum: object.checksum,
+          mediaType: object.mediaType,
+          sizeBytes: object.sizeBytes,
+        },
+      };
+      const capture =
+        await registerManagedBrowserEvidenceArtifact(captureInput);
+      expect(capture.objectId).toBe(object.id);
+      expect(await new Response(await storage.get(object)).text()).toBe(
+        new TextDecoder().decode(bytes),
+      );
+      expect(
+        (await registerManagedBrowserEvidenceArtifact(captureInput)).id,
+      ).toBe(capture.id);
+      await expect(
+        registerManagedBrowserEvidenceArtifact({
+          ...captureInput,
+          context: { ...execution.context, workspaceId: randomUUID() },
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await fdb.db`update allrice_execution_targets set capabilities='["browser.navigate"]'::jsonb where id=${task.targetId}`;
+      await expect(
+        registerManagedBrowserEvidenceArtifact(captureInput),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await report();
       const cloud = await createCloudCommandOperation(
         {
           context: execution.context,
@@ -551,6 +635,9 @@ suite(
     it('real capability reports determine readiness independently and expired evidence is unavailable', async () => {
       const f = await setup();
       await report(undefined, false, true);
+      const [unreadyTarget] =
+        await fdb.db`select capabilities from allrice_execution_targets where workspace_id=${f.tenant.workspaceId} and target_key='allrice.cloud.browser'`;
+      expect(unreadyTarget!.capabilities).not.toContain('artifacts.write');
       const joined = await f.join();
       const [compute] =
         await fdb.db`select id from allrice_cloud_execution_grants where owner_id=${joined.user.id}`;
@@ -567,6 +654,9 @@ suite(
         notReady.capabilities.find((c) => c.id === 'cloud_browser')?.state,
       ).not.toBe('ready');
       await report();
+      const [readyTarget] =
+        await fdb.db`select capabilities from allrice_execution_targets where workspace_id=${f.tenant.workspaceId} and target_key='allrice.cloud.browser'`;
+      expect(readyTarget!.capabilities).toContain('artifacts.write');
       expect(
         await fdb.db`select id from allrice_browser_control_grants where owner_id=${joined.user.id}`,
       ).toHaveLength(1);

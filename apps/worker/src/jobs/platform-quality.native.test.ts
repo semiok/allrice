@@ -1,7 +1,12 @@
 import { expect, it } from 'vitest';
 import { ProjectWorkspaceToolInputSchema } from '@allrice/contracts';
 import { qualityFixture, qualityAssertion } from '@allrice/database';
-import { BrowserWorkspaceToolInputSchema } from '../browser-control/tool-input.js';
+import {
+  BrowserWorkspaceToolInputSchema,
+  PrivateQualityLiveInputSchema,
+} from '../browser-control/tool-input.js';
+import { runQualityLiveVerification } from '../browser-control/quality-live-verify.js';
+import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import { nativeBrokerRoundtrip } from '../harness/dsh-native-broker.fixture.js';
 it('the fixed Chinese fixture reaches the pinned native project schema without backend or authority fields', async () => {
   const args = { action: 'open', files: qualityFixture('defect').files };
@@ -21,6 +26,27 @@ it('the fixed Chinese fixture reaches the pinned native project schema without b
     },
   });
 }, 45000);
+
+it('the private live probe cannot be supplied by an ordinary native call or choose its URL and mutation', async () => {
+  const args = {
+    command: 'verify_live',
+    serviceId: '00000000-0000-4000-8000-000000000000',
+  };
+  expect(BrowserWorkspaceToolInputSchema.safeParse(args).success).toBe(false);
+  expect(
+    PrivateQualityLiveInputSchema.safeParse({
+      ...args,
+      url: 'https://example.test',
+      script: 'mutate()',
+    }).success,
+  ).toBe(false);
+  await expect(
+    runQualityLiveVerification(
+      { sessionId: args.serviceId } as RiceToolExecutionInput,
+      args,
+    ),
+  ).rejects.toThrow('QUALITY_PRIVATE_PROBE_REQUIRED');
+});
 it('the unchanged native browser schema preserves the original assertion and rejects an injected URL', async () => {
   const args = {
     command: 'verify',

@@ -902,10 +902,11 @@ export function managedBrowserChromiumSandboxEnabled(
   return !disabled;
 }
 
-async function defaultManagedBrowserRunner(
-  input: PreparedManagedBrowserTask,
-): Promise<ManagedBrowserTaskResult> {
-  throwIfAborted(input.signal);
+async function openManagedBrowserPage(input: {
+  resolvePublicAddresses: (hostname: string) => Promise<HostnameAddress[]>;
+  navigationTimeoutMs: number;
+  signal?: AbortSignal;
+}) {
   const executablePath = await resolveManagedBrowserExecutable();
   if (!executablePath) {
     throw browserError(
@@ -951,17 +952,45 @@ async function defaultManagedBrowserRunner(
       await proxy.close().catch(() => undefined);
       throw error;
     });
-  const page = await context.newPage();
+  const page = await context.newPage().catch(async (error) => {
+    await context.close().catch(() => undefined);
+    await browser.close().catch(() => undefined);
+    await proxy.close().catch(() => undefined);
+    throw error;
+  });
   page.setDefaultNavigationTimeout(input.navigationTimeoutMs);
   page.setDefaultTimeout(input.navigationTimeoutMs);
 
-  const closeBrowser = () => {
-    void context
-      .close()
-      .catch(() => undefined)
-      .finally(() => browser.close().catch(() => undefined));
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      input.signal?.removeEventListener('abort', abort);
+      try {
+        await context.close();
+      } finally {
+        try {
+          await browser.close();
+        } finally {
+          await proxy.close();
+        }
+      }
+    })());
+  const abort = () => {
+    void close().catch(() => undefined);
   };
-  input.signal?.addEventListener('abort', closeBrowser, { once: true });
+  input.signal?.addEventListener('abort', abort, { once: true });
+  if (input.signal?.aborted) {
+    await close();
+    input.signal.throwIfAborted();
+  }
+  return { page, context, browser, close };
+}
+
+async function defaultManagedBrowserRunner(
+  input: PreparedManagedBrowserTask,
+): Promise<ManagedBrowserTaskResult> {
+  throwIfAborted(input.signal);
+  const { page, context, close } = await openManagedBrowserPage(input);
 
   const actions: ManagedBrowserAction[] = [];
   const record = async (
@@ -1119,10 +1148,7 @@ async function defaultManagedBrowserRunner(
       true,
     );
   } finally {
-    input.signal?.removeEventListener('abort', closeBrowser);
-    await context.close().catch(() => undefined);
-    await browser.close().catch(() => undefined);
-    await proxy.close().catch(() => undefined);
+    await close().catch(() => undefined);
   }
 }
 
@@ -1177,4 +1203,279 @@ export async function runManagedBrowserTask(
     assertRequestAllowed,
     resolvePublicAddresses,
   });
+}
+
+/** Private fixed project probe. No tool/model arguments can supply this hook.
+ * All traffic is pinned to one service-derived formal HTTPS origin. The
+ * ordinary managed reader above still rejects every WebSocket. */
+export async function runManagedBrowserLiveProbe(
+  input: ManagedBrowserTaskInput & {
+    origin: string;
+    bootstrapUrl: string;
+    assertCurrent: () => Promise<void>;
+    syncOnce: (signal: AbortSignal) => Promise<void>;
+  },
+) {
+  const origin = new URL(input.origin);
+  if (
+    origin.protocol !== 'https:' ||
+    origin.port ||
+    origin.username ||
+    origin.password ||
+    origin.pathname !== '/' ||
+    origin.search ||
+    origin.hash
+  )
+    throw Error('QUALITY_PREVIEW_ORIGIN');
+  const bootstrap = new URL(input.bootstrapUrl);
+  if (
+    bootstrap.origin !== origin.origin ||
+    bootstrap.pathname !== '/' ||
+    !/^[A-Za-z0-9_-]{43}$/.test(
+      bootstrap.searchParams.get('_allrice_preview_ticket') ?? '',
+    ) ||
+    bootstrap.searchParams.size !== 1
+  )
+    throw Error('QUALITY_PREVIEW_BOOTSTRAP');
+  const controller = new AbortController();
+  const timeout = AbortSignal.timeout(30_000);
+  const boundedSignal = AbortSignal.any([
+    ...(input.signal ? [input.signal] : []),
+    timeout,
+    controller.signal,
+  ]);
+  boundedSignal.throwIfAborted();
+  const addresses = createManagedBrowserPinnedAddressResolver(
+    resolveManagedBrowserHostnamePublic,
+  );
+  await addresses(origin.hostname);
+  const session = await openManagedBrowserPage({
+    resolvePublicAddresses: async (hostname) => {
+      if (hostname !== origin.hostname)
+        throw Error('QUALITY_PREVIEW_HOST_BLOCKED');
+      return addresses(hostname);
+    },
+    navigationTimeoutMs: 15_000,
+    signal: boundedSignal,
+  });
+  const { page, context, browser, close } = session;
+  let connected = false,
+    updated = false,
+    handshake = false,
+    navigations = 0;
+  let afterBootstrap = false,
+    wireBytes = 0,
+    blocked = false;
+  const socketIds = new Set<string>();
+  let authorityError: unknown;
+  let disposed = false,
+    monitor: ReturnType<typeof setTimeout> | undefined;
+  const poll = async () => {
+    try {
+      await input.assertCurrent();
+    } catch (error) {
+      authorityError = error;
+      controller.abort(error);
+      void close().catch(() => undefined);
+    }
+    if (!disposed && !authorityError) {
+      monitor = setTimeout(() => {
+        void poll();
+      }, 1000);
+      monitor.unref();
+    }
+  };
+  void poll();
+  const assertCurrent = async () => {
+    boundedSignal.throwIfAborted();
+    if (authorityError || blocked)
+      throw Error('QUALITY_PREVIEW_AUTHORITY_OR_NETWORK');
+    await input.assertCurrent();
+  };
+  const abort = () => {
+    void close().catch(() => undefined);
+  };
+  boundedSignal.addEventListener('abort', abort, { once: true });
+  try {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Network.enable');
+    cdp.on('Network.webSocketCreated', ({ requestId, url }) => {
+      const u = new URL(url);
+      if (u.protocol === 'wss:' && u.host === origin.host && u.pathname === '/')
+        socketIds.add(requestId);
+    });
+    cdp.on(
+      'Network.webSocketHandshakeResponseReceived',
+      ({ requestId, response }) => {
+        if (!socketIds.has(requestId)) return;
+        const protocol = Object.entries(response.headers).find(
+          ([k]) => k.toLowerCase() === 'sec-websocket-protocol',
+        )?.[1];
+        if (response.status === 101 && protocol === 'vite-hmr')
+          handshake = true;
+      },
+    );
+    cdp.on('Network.webSocketFrameReceived', ({ requestId, response }) => {
+      if (!socketIds.has(requestId) || response.payloadData.length > 16_384)
+        return;
+      try {
+        const frame = JSON.parse(response.payloadData);
+        if (frame.type === 'connected') connected = true;
+        if (frame.type === 'update' && afterBootstrap) updated = true;
+      } catch {
+        /* Not an accepted Vite observation. */
+      }
+    });
+    cdp.on('Network.dataReceived', ({ encodedDataLength }) => {
+      wireBytes += encodedDataLength;
+      if (wireBytes > 4_000_000) {
+        blocked = true;
+        controller.abort(Error('QUALITY_PREVIEW_NETWORK_BUDGET'));
+        void close().catch(() => undefined);
+      }
+    });
+    page.on('framenavigated', (frame) => {
+      if (afterBootstrap && frame === page.mainFrame()) navigations++;
+    });
+    context.on('page', (popup) => {
+      blocked = true;
+      controller.abort(Error('QUALITY_PREVIEW_POPUP_BLOCKED'));
+      void popup.close().catch(() => undefined);
+    });
+    // Valid Vite sockets remain on Chromium's native pinned-proxy path. Routing
+    // them with connectToServer would silently open a separate Node connection.
+    await context.routeWebSocket(
+      (url) =>
+        !(
+          url.protocol === 'wss:' &&
+          url.host === origin.host &&
+          url.pathname === '/'
+        ),
+      (socket) =>
+        socket.close({ code: 1008, reason: 'Private preview origin only' }),
+    );
+    await context.route('**/*', async (route) => {
+      const request = route.request(),
+        url = new URL(request.url());
+      if (
+        url.origin !== origin.origin ||
+        !['GET', 'HEAD', 'OPTIONS'].includes(request.method())
+      ) {
+        blocked = true;
+        controller.abort(Error('QUALITY_PREVIEW_ORIGIN_BLOCKED'));
+        await route.abort('blockedbyclient');
+        return;
+      }
+      await route.continue();
+    });
+    await assertCurrent();
+    const response = await page.goto(input.bootstrapUrl, {
+      waitUntil: 'domcontentloaded',
+    });
+    if (
+      response?.status() !== 200 ||
+      new URL(page.url()).origin !== origin.origin ||
+      new URL(page.url()).searchParams.has('_allrice_preview_ticket')
+    )
+      throw Error('QUALITY_PREVIEW_HTTP');
+    await page.waitForFunction(
+      () =>
+        document.querySelector('#result')?.textContent?.slice(0, 64) ===
+        'source:42',
+    );
+    const end = Date.now() + 15_000;
+    while (!handshake || !connected) {
+      await assertCurrent();
+      if (Date.now() > end) throw Error('QUALITY_PREVIEW_WS');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const timeOrigin = await page.evaluate(() => performance.timeOrigin);
+    afterBootstrap = true;
+    await assertCurrent();
+    await input.syncOnce(boundedSignal);
+    await page.waitForFunction(
+      () =>
+        document.querySelector('#result')?.textContent?.slice(0, 64) ===
+        'source:43',
+    );
+    await assertCurrent();
+    if (
+      !updated ||
+      navigations !== 0 ||
+      (await page.evaluate(() => performance.timeOrigin)) !== timeOrigin
+    )
+      throw Error('QUALITY_PREVIEW_HMR_NOT_PROVEN');
+    const capture = await captureBoundedManagedBrowserPage(page, {
+      maxCharacters: 30_000,
+      captureScreenshot: true,
+    });
+    if (!capture.screenshotBytes) throw Error('QUALITY_PREVIEW_SCREENSHOT');
+    await assertCurrent();
+    const capturedAt = new Date().toISOString();
+    const observations = {
+      httpStatus: 200,
+      websocketStatus: 101,
+      websocketProtocol: 'vite-hmr',
+      connectedFrame: true,
+      updateFrame: true,
+      beforeText: 'source:42',
+      afterText: 'source:43',
+      mainFrameNavigations: 0,
+      timeOriginUnchanged: true,
+      browserVersion: browser.version(),
+      browserStopConfirmed: true,
+    } as const;
+    const bytes = Buffer.from(
+      JSON.stringify({
+        version: 1,
+        origin: origin.origin,
+        capturedAt,
+        observations,
+        title: capture.title,
+        text: capture.text,
+        html: capture.html,
+      }),
+    );
+    if (bytes.length > maximumSnapshotBytes)
+      throw Error('QUALITY_PREVIEW_CAPTURE_TOO_LARGE');
+    const checksum = (value: Buffer) =>
+      createHash('sha256').update(value).digest('hex');
+    const result = {
+      finalUrl: origin.origin + '/',
+      title: capture.title,
+      text: capture.text,
+      capturedAt,
+      actions: [],
+      contentSnapshot: {
+        mediaType: 'application/json' as const,
+        bytes,
+        checksum: checksum(bytes),
+      },
+      screenshot: {
+        mediaType: 'image/png' as const,
+        bytes: capture.screenshotBytes,
+        checksum: checksum(capture.screenshotBytes),
+      },
+    };
+    // The returned physical-stop statement becomes true only after close succeeds.
+    await close();
+    return { result, observations };
+  } catch (error) {
+    // Playwright navigation errors can include the one-time bootstrap ticket.
+    // Return only fixed codes; the generic browser task logger sees no URL.
+    const code =
+      error instanceof Error && /^QUALITY_[A-Z_]{1,90}$/.test(error.message)
+        ? error.message
+        : 'QUALITY_PREVIEW_EXECUTION_FAILED';
+    throw new HandlerError(
+      code,
+      '固定预览检查未完成，请核对原任务及服务状态。',
+      false,
+    );
+  } finally {
+    disposed = true;
+    clearTimeout(monitor);
+    boundedSignal.removeEventListener('abort', abort);
+    await close();
+  }
 }
