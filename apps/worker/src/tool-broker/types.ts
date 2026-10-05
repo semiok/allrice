@@ -1,6 +1,7 @@
 import type {
   createTraceableMemory,
   isManagedBrowserTaskCancelRequested,
+  TechnicalTaskLease,
 } from '@allrice/database';
 import type {
   ExecutionContext,
@@ -55,6 +56,9 @@ export interface RiceToolExecutionInput {
   employeeId?: string;
   userMessageId?: string;
   userRequest?: string;
+  /** Private Worker binding, never accepted in tool arguments. */
+  technicalTaskLease?: TechnicalTaskLease;
+  technicalTaskId?: string;
   platformTestRunId?: string;
   platformActorLabel?: string;
   signal?: AbortSignal;

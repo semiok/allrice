@@ -120,3 +120,6 @@ export * from './project-execution.ts';
 export * from './static-browser.ts';
 
 export * from './project-services.ts';
+
+export * from './platform-technical-tasks.ts';
+export * from './platform-technical-health.ts';

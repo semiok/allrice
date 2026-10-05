@@ -1,4 +1,18 @@
 import { randomUUID } from 'node:crypto';
+import {
+  TechnicalTaskReceiptSchema,
+  type TechnicalDiagnostics,
+  type TechnicalIssueDetailSchema,
+} from '../platform-technical-contracts.ts';
+import type { z } from 'zod';
+import {
+  bindPlatformTechnicalTask,
+  bindPlatformTechnicalAttempt,
+  isPlatformTechnicalJobAuthorized,
+  platformTechnicalJobType,
+  technicalDigest,
+  type TechnicalTaskBinding,
+} from '../platform-technical-tasks.ts';
 
 import {
   CancelRunInputSchema,
@@ -266,6 +280,7 @@ export async function enqueueRun(
   context: RequestContext,
   input: unknown,
   options: {
+    technicalBinding?: TechnicalTaskBinding;
     folderEventId?: string;
     skillBinding?: {
       installationId: string;
@@ -309,6 +324,27 @@ export async function enqueueRun(
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
+  if (submission.type === platformTechnicalJobType) {
+    const b = options.technicalBinding;
+    if (
+      !b ||
+      submission.maxAttempts !== 1 ||
+      submission.timeoutMs !== b.frozen.timeoutMs ||
+      submission.availableAt ||
+      submission.idempotencyKey !==
+        `platform-technical:${context.actor.id}:${b.request.requestId}` ||
+      technicalDigest(submission.input) !==
+        technicalDigest({
+          requestId: b.request.requestId,
+          inputDigest: b.inputDigest,
+        }) ||
+      options.employeeBinding ||
+      options.skillBinding ||
+      options.workflowBinding ||
+      options.conversationDelivery
+    )
+      throw new QueueError('policy_denied');
+  } else if (options.technicalBinding) throw new QueueError('policy_denied');
   const taskPolicy =
     options.employeeBinding?.executionSnapshot.schemaVersion === 2
       ? options.employeeBinding.executionSnapshot.taskRuntimePolicy
@@ -351,8 +387,11 @@ export async function enqueueRun(
         existing[0].workspace_id !== workspaceId ||
         existing[0].owner_id !== ownerId ||
         existing[0].payload.type !== submission.type ||
-        JSON.stringify(existing[0].payload.input) !==
-          JSON.stringify(submission.input)
+        (submission.type === platformTechnicalJobType
+          ? technicalDigest(existing[0].payload.input) !==
+            technicalDigest(submission.input)
+          : JSON.stringify(existing[0].payload.input) !==
+            JSON.stringify(submission.input))
       ) {
         throw new QueueError('conflict');
       }
@@ -613,6 +652,23 @@ export async function enqueueRun(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.technicalBinding) {
+      await bindPlatformTechnicalTask(
+        transaction,
+        { ...context, workspaceId },
+        run.id,
+        job.id,
+        options.technicalBinding,
+      );
+      const [boundJob] = await transaction<
+        JobRow[]
+      >`select * from allrice_jobs where id=${job.id}`;
+      if (
+        !boundJob ||
+        !(await isPlatformTechnicalJobAuthorized(transaction, boundJob))
+      )
+        throw new QueueError('policy_denied');
+    }
     if (taskPolicy) {
       if (taskPolicy.timeoutMs !== submission.timeoutMs)
         throw new QueueError('conflict');
@@ -1212,6 +1268,8 @@ export async function startClaimedJob(
       });
       return { execution: null, denied: false };
     }
+    if (await stopUnauthorizedTechnicalJob(transaction, job))
+      return { execution: null, denied: true };
     const policies = await transaction<PolicyRow[]>`
       select p.*
       from allrice_policy_snapshots p
@@ -1278,6 +1336,7 @@ export async function startClaimedJob(
       });
       return { execution: null, denied: true };
     }
+    await bindPlatformTechnicalAttempt(transaction, job);
     const updated = await transaction<JobRow[]>`
       update allrice_jobs set status = 'running', updated_at = now()
       where id = ${job.id}
@@ -1341,6 +1400,23 @@ export async function startClaimedJob(
   return result.execution;
 }
 
+/** Revocation terminates this private Run through the existing canonical queue state. */
+async function stopUnauthorizedTechnicalJob(
+  transaction: TransactionSql,
+  job: JobRow,
+) {
+  if (await isPlatformTechnicalJobAuthorized(transaction, job)) return false;
+  await transitionTerminal(transaction, job, {
+    jobStatus: 'failed',
+    runStatus: 'failed',
+    eventType: 'run.failed',
+    code: 'PLATFORM_TECHNICAL_AUTH_REVOKED',
+    message: 'Platform technical execution is no longer authorized',
+    payload: { code: 'PLATFORM_TECHNICAL_AUTH_REVOKED' },
+  });
+  return true;
+}
+
 async function lockedLeasedJob(
   transaction: TransactionSql,
   workerId: string,
@@ -1397,6 +1473,8 @@ export async function heartbeatJob(
       });
       return { active: false, canceled: false };
     }
+    if (await stopUnauthorizedTechnicalJob(transaction, job))
+      return { active: false, canceled: false };
     const now = new Date();
     await transaction`
       update allrice_jobs
@@ -1434,6 +1512,91 @@ export async function appendJobEvent(input: {
   });
 }
 
+/** Native private diagnostic calls return their first durable receipt, including concurrent replays. */
+export async function appendPlatformTechnicalReceipt(input: {
+  workerId: string;
+  jobId: string;
+  leaseToken: string;
+  attempt: number;
+  taskId: string;
+  callId: string;
+  arguments: unknown;
+  diagnostics: TechnicalDiagnostics;
+  issue: z.infer<typeof TechnicalIssueDetailSchema> | null;
+}) {
+  const { TechnicalDiagnosticInputSchema } =
+    await import('../platform-technical-contracts.ts');
+  const args = TechnicalDiagnosticInputSchema.parse(input.arguments);
+  const inputDigest = technicalDigest(args);
+  return getDatabase().begin(async (tx) => {
+    const job = await lockedLeasedJob(
+      tx,
+      input.workerId,
+      input.jobId,
+      input.leaseToken,
+    );
+    if (
+      job.attempt !== input.attempt ||
+      job.cancel_requested_at ||
+      job.timeout_at <= new Date() ||
+      (job.payload as { type?: unknown })?.type !== platformTechnicalJobType ||
+      !(await isPlatformTechnicalJobAuthorized(tx, job))
+    )
+      throw new QueueError('policy_denied');
+    const [task] =
+      await tx`select id,issue_id from allrice_platform_technical_tasks where job_id=${job.id}`;
+    if (
+      !task ||
+      task.id !== input.taskId ||
+      (input.issue?.issue.id ?? null) !== task.issue_id
+    )
+      throw new QueueError('policy_denied');
+    const [existing] =
+      await tx`select payload from allrice_run_events where run_id=${job.run_id}
+      and event_type='tool.completed' and payload->>'source'='platform_technical_receipt'
+      and payload->>'jobAttempt'=${String(job.attempt)} and payload->>'callId'=${input.callId}`;
+    if (existing) {
+      const receipt = TechnicalTaskReceiptSchema.parse(
+        existing.payload.receipt,
+      );
+      if (receipt.inputDigest !== inputDigest) throw new QueueError('conflict');
+      return receipt;
+    }
+    const [count] =
+      await tx`select count(*)::int n from allrice_run_events where run_id=${job.run_id}
+      and event_type='tool.completed' and payload->>'source'='platform_technical_receipt'`;
+    if (!count || count.n >= 4) throw new QueueError('conflict');
+    const receipt = TechnicalTaskReceiptSchema.parse({
+      receiptId: randomUUID(),
+      taskId: task.id,
+      runId: job.run_id,
+      jobAttempt: job.attempt,
+      callId: input.callId,
+      inputDigest,
+      outputDigest: technicalDigest({
+        diagnostics: input.diagnostics,
+        issue: input.issue,
+      }),
+      observedAt: new Date().toISOString(),
+      diagnostics: input.diagnostics,
+      issue: input.issue,
+    });
+    await appendEvent(tx, {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      runId: job.run_id,
+      type: 'tool.completed',
+      payload: {
+        source: 'platform_technical_receipt',
+        jobAttempt: job.attempt,
+        callId: input.callId,
+        receipt,
+      },
+    });
+    return receipt;
+  });
+}
+
 export async function completeJob(input: {
   workerId: string;
   jobId: string;
@@ -1454,6 +1617,37 @@ export async function completeJob(input: {
         payload: { reason: job.cancel_reason ?? 'user_requested' },
       });
       return;
+    }
+    if (
+      (job.payload as { type?: unknown })?.type === platformTechnicalJobType
+    ) {
+      if (job.timeout_at <= new Date()) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'JOB_TIMEOUT',
+          message: 'Technical task deadline elapsed',
+          payload: { code: 'JOB_TIMEOUT' },
+        });
+        return;
+      }
+      if (await stopUnauthorizedTechnicalJob(transaction, job)) return;
+      const [receipt] =
+        await transaction`select id from allrice_run_events where run_id=${job.run_id}
+        and event_type='tool.completed' and payload->>'source'='platform_technical_receipt'
+        and payload->>'jobAttempt'=${String(job.attempt)} limit 1`;
+      if (!receipt) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'TECHNICAL_DIAGNOSTIC_RECEIPT_REQUIRED',
+          message: 'No durable diagnostic evidence was collected',
+          payload: { code: 'TECHNICAL_DIAGNOSTIC_RECEIPT_REQUIRED' },
+        });
+        return;
+      }
     }
     await transitionTerminal(transaction, job, {
       jobStatus: 'succeeded',
@@ -1486,6 +1680,20 @@ export async function failJob(input: {
         runStatus: 'canceled',
         eventType: 'run.canceled',
         payload: { reason: job.cancel_reason ?? 'user_requested' },
+      });
+      return { retrying: false };
+    }
+    if (
+      (job.payload as { type?: unknown })?.type === platformTechnicalJobType &&
+      job.timeout_at <= new Date()
+    ) {
+      await transitionTerminal(transaction, job, {
+        jobStatus: 'failed',
+        runStatus: 'failed',
+        eventType: 'run.failed',
+        code: 'JOB_TIMEOUT',
+        message: 'Technical task deadline elapsed',
+        payload: { code: 'JOB_TIMEOUT' },
       });
       return { retrying: false };
     }

@@ -13,6 +13,10 @@ import { DSH_DISTRIBUTION_CURRENT_VERSION } from './dsh-distribution.js';
 import { dshInboundToolHandler } from './dsh/tool-bridge.js';
 
 export async function nativeBrokerRoundtrip(input: {
+  cordisConfig?: string;
+  progress?: HarnessExecutionInput['progress'];
+  denyBeforeModel?: boolean;
+  expectedToolNames?: string[];
   canonicalName: string;
   wireName: string;
   args: Record<string, unknown>;
@@ -120,10 +124,10 @@ export async function nativeBrokerRoundtrip(input: {
     requestTimeoutMs: 15000,
     environment: {
       PATH: process.env.PATH ?? '/usr/bin:/bin',
-      DSH_CORDIS_CONFIG: resolve(
-        import.meta.dirname,
-        '../../dsh/allrice-restricted.cordis.yml',
-      ),
+      ...(input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
+      DSH_CORDIS_CONFIG:
+        input.cordisConfig ??
+        resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
       DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
       DSH_SESSION_ROOT: join(root, 'sessions'),
       DSH_HOME: root,
@@ -147,26 +151,29 @@ export async function nativeBrokerRoundtrip(input: {
     if (notice.method === 'session.event' && event?.type === 'llm/retry')
       nativeRetries++;
   });
-  client.setRequestHandler(
-    dshInboundToolHandler({
-      tools: [
-        {
-          name: input.canonicalName,
-          description: 'synthetic',
-          inputSchema: { type: 'object' },
-        },
-      ],
-      onToolCall: async (call) => {
-        received.push(call);
-        expect(call.name).toBe(input.canonicalName);
-        expect(call.arguments).toEqual(input.brokerArgs ?? input.args);
-        const result = input.onToolCall
-          ? await input.onToolCall(call)
-          : { modelContent: sentinel, summary: 'synthetic only' };
-        expectedModelContent = result.modelContent;
-        return result;
+  const inbound = dshInboundToolHandler({
+    tools: [
+      {
+        name: input.canonicalName,
+        description: 'synthetic',
+        inputSchema: { type: 'object' },
       },
-    } satisfies Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>),
+    ],
+    onToolCall: async (call) => {
+      received.push(call);
+      expect(call.name).toBe(input.canonicalName);
+      expect(call.arguments).toEqual(input.brokerArgs ?? input.args);
+      const result = input.onToolCall
+        ? await input.onToolCall(call)
+        : { modelContent: sentinel, summary: 'synthetic only' };
+      expectedModelContent = result.modelContent;
+      return result;
+    },
+  } satisfies Pick<HarnessExecutionInput, 'tools' | 'onToolCall'>);
+  client.setRequestHandler((method, params) =>
+    method === 'allrice/progress' && input.progress
+      ? input.progress(params)
+      : inbound(method, params),
   );
   try {
     await client.initialize({
@@ -175,7 +182,21 @@ export async function nativeBrokerRoundtrip(input: {
       model: 'native-contract',
       nativeTools: [input.canonicalName],
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+      requireTaskProgress: !!input.progress,
     });
+    if (input.denyBeforeModel) {
+      let rejected = false;
+      try {
+        await client.prompt(session, 'Never admitted to a model.');
+      } catch {
+        rejected = true;
+      }
+      if (!rejected)
+        await expect.poll(() => completed, { timeout: 15000 }).toBe(1);
+      expect(requests).toEqual([]);
+      expect(received).toEqual([]);
+      return;
+    }
     await client.prompt(session, 'Invoke the selected native tool.');
     await expect
       .poll(() => requests.length, { timeout: input.timeoutMs ?? 15000 })
@@ -189,6 +210,10 @@ export async function nativeBrokerRoundtrip(input: {
     expect(tools.some((tool) => tool.function?.name === input.wireName)).toBe(
       true,
     );
+    if (input.expectedToolNames)
+      expect(tools.map((t) => t.function?.name).toSorted()).toEqual(
+        input.expectedToolNames.toSorted(),
+      );
     input.inspectSchema?.(
       tools.find((tool) => tool.function?.name === input.wireName)!.function!
         .parameters!,

@@ -41,8 +41,12 @@ export function normalizeAllRiceManagedFileLinks(answer: string) {
   return answer.replaceAll('sandbox:/api/v1/files/', '/api/v1/files/');
 }
 
+export const privateDshNativeToolNames: ReadonlySet<string> = new Set([
+  'platform.technical.diagnostics',
+]);
+
 export function isDshNativeTool(name: string) {
-  return dshNativeToolNames.has(name);
+  return dshNativeToolNames.has(name) || privateDshNativeToolNames.has(name);
 }
 
 export function isDshSearchTool(name: string) {
@@ -167,7 +171,9 @@ export function dshInboundToolHandler(
       !id ||
       !name ||
       !args ||
-      (!dshBrokerNativeToolNames.has(name) && name !== 'web.search')
+      (!dshBrokerNativeToolNames.has(name) &&
+        !privateDshNativeToolNames.has(name) &&
+        name !== 'web.search')
     ) {
       throw new HandlerError(
         'DSH_NATIVE_TOOL_INVALID',

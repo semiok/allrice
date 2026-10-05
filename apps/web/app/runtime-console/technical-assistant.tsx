@@ -12,6 +12,7 @@ import {
 import { UuidSchema } from '@allrice/contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
+import { TechnicalTasks } from './technical-tasks';
 
 const endpoint = '/api/v1/admin/technical-assistant';
 const statusLabels = {
@@ -291,6 +292,7 @@ export function TechnicalAssistant() {
           {loading ? '采集中…' : '刷新诊断'}
         </AdminButton>
       </header>
+      <TechnicalTasks issueId={selected} />
       {error && (
         <p role="alert" className={css.error}>
           {error}
