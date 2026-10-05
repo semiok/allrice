@@ -35,6 +35,12 @@ export default defineConfig({
       '@allrice/contracts': fileURLToPath(
         new URL('./packages/contracts/src/index.ts', import.meta.url),
       ),
+      '@allrice/database/technical-contracts': fileURLToPath(
+        new URL(
+          './packages/database/src/platform-technical-contracts.ts',
+          import.meta.url,
+        ),
+      ),
       '@allrice/database': fileURLToPath(
         new URL('./packages/database/src/index.ts', import.meta.url),
       ),

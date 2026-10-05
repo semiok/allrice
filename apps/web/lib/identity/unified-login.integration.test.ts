@@ -14,8 +14,18 @@ import {
   ensureBootstrapPortalPrincipal,
   initializeAccountLogin,
   login,
+  revokeSession,
 } from '@allrice/database';
+import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
 import { POST as signIn } from '../../app/api/v1/auth/login/route';
+import {
+  GET as technicalFacts,
+  POST as captureTechnicalIssue,
+} from '../../app/api/v1/admin/technical-assistant/route';
+import {
+  GET as technicalDetail,
+  PATCH as updateTechnicalIssue,
+} from '../../app/api/v1/admin/technical-assistant/issues/[id]/route';
 import { POST as password } from '../../app/api/v1/auth/password/route';
 import { getRequestContext } from './session';
 import { resolvePortal } from '../portal/config';
@@ -37,6 +47,7 @@ integration('shared portal HTTP identity with real PostgreSQL', () => {
   beforeAll(async () => {
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    vi.spyOn(client, 'getDiagnosticsDatabase').mockReturnValue(fixture.db);
     vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
     vi.stubEnv(
       'ALLRICE_PORTAL_SESSION_SECRET',
@@ -52,7 +63,11 @@ integration('shared portal HTTP identity with real PostgreSQL', () => {
   function request(path: string, body?: unknown, host = 'allrice.bplabs.xyz') {
     return new Request(`https://${host}${path}`, {
       method: body ? 'POST' : 'GET',
-      headers: { host, 'content-type': 'application/json' },
+      headers: {
+        host,
+        origin: `https://${host}`,
+        'content-type': 'application/json',
+      },
       body: body ? JSON.stringify(body) : undefined,
     });
   }
@@ -149,12 +164,144 @@ integration('shared portal HTTP identity with real PostgreSQL', () => {
     expect(jar.has('allrice_session')).toBe(false);
     jar.set('allrice_session', employeeSession);
     jar.set('allrice_portal_session', adminPortalCookie);
-    await expect(
-      getRequestContext(request('/api/v1/auth/session', undefined, adminHost)),
-    ).rejects.toMatchObject({ code: 'tenant_context_invalid' });
+    expect(
+      await getRequestContext(
+        request('/api/v1/auth/session', undefined, adminHost),
+      ),
+    ).toBeNull();
     expect(
       await getRequestContext(request('/api/v1/auth/session')),
     ).toMatchObject({ actor: { id: a.user.id } });
+  });
+  it('authenticates an independent admin with zero memberships through login, session and technical API; revocation is immediate', async () => {
+    const host = 'allrice-admin.bplabs.xyz';
+    const portal = resolvePortal(host)!;
+    const [admin] = await fixture.db<
+      { id: string }[]
+    >`select id from allrice_users where email=${portal.principal.email}`;
+    await fixture.db`delete from allrice_memberships where user_id=${admin!.id}`;
+    const membershipCount = async () =>
+      (
+        await fixture.db`select count(*)::int n from allrice_memberships where user_id=${admin!.id}`
+      )[0]!.n;
+    const signedIn = await signIn(
+      request(
+        '/api/v1/auth/login',
+        {
+          username: portal.username,
+          password: 'admin-secret-password',
+        },
+        host,
+      ),
+    );
+    expect(signedIn.status).toBe(200);
+    expect(await membershipCount()).toBe(0);
+    const context = await getRequestContext(
+      request('/api/v1/auth/session', undefined, host),
+    );
+    expect(context).toMatchObject({
+      actor: { id: admin!.id },
+      memberships: [],
+    });
+    expect(
+      (
+        await fixture.db`select slug from allrice_organizations where id=${context!.organizationId}`
+      )[0]!.slug,
+    ).toBe('allrice-platform');
+    const facts = await technicalFacts(
+      request('/api/v1/admin/technical-assistant', undefined, host),
+    );
+    expect(facts.status).toBe(200);
+    expect((await facts.json()).diagnostics).toMatchObject({
+      schemaVersion: 1,
+    });
+    const source = await createExperienceFixture(fixture.db);
+    const capture = () =>
+      captureTechnicalIssue(
+        request(
+          '/api/v1/admin/technical-assistant',
+          { kind: 'run', id: source.run },
+          host,
+        ),
+      );
+    const first = await capture();
+    expect(first.status).toBe(200);
+    const stored = await first.json();
+    expect(stored).toMatchObject({
+      created: true,
+      detail: { issue: { occurrenceCount: 1 } },
+    });
+    const duplicate = await capture();
+    expect(await duplicate.json()).toMatchObject({
+      created: false,
+      detail: { issue: { id: stored.detail.issue.id, occurrenceCount: 1 } },
+    });
+    const issuePath = `/api/v1/admin/technical-assistant/issues/${stored.detail.issue.id}`;
+    const params = { params: Promise.resolve({ id: stored.detail.issue.id }) };
+    expect(
+      (await technicalDetail(request(issuePath, undefined, host), params))
+        .status,
+    ).toBe(200);
+    const patch = new Request(`https://${host}${issuePath}`, {
+      method: 'PATCH',
+      headers: {
+        host,
+        origin: `https://${host}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        ifVersion: stored.detail.issue.version,
+        status: 'investigating',
+        category: 'unknown',
+        severity: 'medium',
+      }),
+    });
+    const updated = await updateTechnicalIssue(patch, params);
+    expect(updated.status).toBe(200);
+    expect(await updated.json()).toMatchObject({
+      detail: {
+        issue: {
+          status: 'investigating',
+          version: stored.detail.issue.version + 1,
+        },
+      },
+    });
+    expect(await membershipCount()).toBe(0);
+    expect(await getRequestContext(request('/api/v1/auth/session'))).toBeNull();
+    const adminCookie = jar.get('allrice_session')!;
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+    expect(
+      (
+        await technicalFacts(
+          request('/api/v1/admin/technical-assistant', undefined, host),
+        )
+      ).status,
+    ).toBe(401);
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', portal.principal.email);
+    await revokeSession(adminCookie.value);
+    expect(
+      (
+        await technicalFacts(
+          request('/api/v1/admin/technical-assistant', undefined, host),
+        )
+      ).status,
+    ).toBe(401);
+    jar.clear();
+    const ordinary = await employee();
+    expect(
+      (
+        await signIn(
+          request('/api/v1/auth/login', {
+            username: ordinary.name,
+            password: 'admin@321',
+          }),
+        )
+      ).status,
+    ).toBe(200);
+    expect(
+      (await technicalFacts(request('/api/v1/admin/technical-assistant')))
+        .status,
+    ).toBe(403);
   });
   it('password changes clear browser cookies; legacy environment credentials cannot undo the change', async () => {
     const host = 'allrice-snow.bplabs.xyz';

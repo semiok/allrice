@@ -485,13 +485,6 @@ export async function login(
       !(await verifyPassword(credentials.password, user.password_hash))
     )
       throw new IdentityError('authentication_failed');
-    const [membership] = await transaction`
-      select m.id from allrice_memberships m
-      join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
-      where m.user_id=${user.id} and m.active
-      and (m.workspace_id is null or exists (select 1 from allrice_workspaces w
-        where w.id=m.workspace_id and w.archived_at is null)) limit 1`;
-    if (!membership) throw new IdentityError('authorization_denied');
     if (expectedAccountKind) {
       const admin = await isPlatformAdmin(
         { actor: { type: 'user', id: user.id } },
@@ -499,6 +492,17 @@ export async function login(
       );
       if (admin !== (expectedAccountKind === 'platform_admin'))
         throw new IdentityError('portal_account_mismatch');
+    }
+    // Platform authority is deployment-owned and independent of company membership.
+    // Only the explicit admin entry may bypass the tenant membership requirement.
+    if (expectedAccountKind !== 'platform_admin') {
+      const [membership] = await transaction`
+        select m.id from allrice_memberships m
+        join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+        where m.user_id=${user.id} and m.active
+        and (m.workspace_id is null or exists (select 1 from allrice_workspaces w
+          where w.id=m.workspace_id and w.archived_at is null)) limit 1`;
+      if (!membership) throw new IdentityError('authorization_denied');
     }
     return {
       user: {
@@ -557,6 +561,56 @@ export async function getLegacyPortalAccount(input: {
   return row ?? null;
 }
 
+/** Server-owned control-plane scope, without granting any company membership. */
+export async function getPlatformPortalAccount(input: { email: string }) {
+  const sql = getDatabase();
+  const [row] = await sql<
+    {
+      id: string;
+      username: string | null;
+      organization_id: string;
+      workspace_id: string;
+    }[]
+  >`select u.id,u.username,o.id organization_id,w.id workspace_id
+    from allrice_users u
+    cross join allrice_organizations o
+    join allrice_workspaces w on w.organization_id=o.id
+    where lower(u.email)=${EmailSchema.parse(input.email)} and u.status='active'
+      and o.slug='allrice-platform' and o.archived_at is null
+      and w.slug='control-plane' and w.archived_at is null`;
+  if (
+    !row ||
+    !(await isPlatformAdmin({ actor: { type: 'user', id: row.id } }, sql))
+  )
+    return null;
+  return row;
+}
+
+/** Admin sessions always use the hidden control plane, never a company selector. */
+export async function authenticatePlatformSession(
+  token: string,
+): Promise<RequestContext | null> {
+  const sql = getDatabase();
+  const [session] = await sql<(SessionRow & { email: string })[]>`
+    select s.id,s.user_id,s.created_at,s.expires_at,s.revoked_at,u.status,u.email
+    from allrice_sessions s join allrice_users u on u.id=s.user_id
+    where s.token_hash=${hashOpaqueToken(token)} and s.revoked_at is null
+      and s.expires_at>now() and u.status='active'`;
+  if (!session) return null;
+  const account = await getPlatformPortalAccount({ email: session.email });
+  if (!account) return null;
+  await sql`update allrice_sessions set last_seen_at=now() where id=${session.id}`;
+  return {
+    requestId: randomUUID(),
+    sessionId: session.id,
+    actor: { type: 'user', id: session.user_id },
+    organizationId: account.organization_id,
+    workspaceId: account.workspace_id,
+    memberships: [],
+    authenticatedAt: session.created_at.toISOString(),
+  };
+}
+
 export async function changePassword(context: RequestContext, input: unknown) {
   const value = ChangePasswordInputSchema.parse(input);
   if (context.actor.type !== 'user')
@@ -583,6 +637,7 @@ export async function changePassword(context: RequestContext, input: unknown) {
 export async function authenticateSession(
   token: string,
   tenant: { organizationId?: string; workspaceId?: string } = {},
+  expectedAccountKind?: 'employee',
 ): Promise<RequestContext | null> {
   const sql = getDatabase();
   const sessions = await sql<SessionRow[]>`
@@ -596,6 +651,14 @@ export async function authenticateSession(
   `;
   const session = sessions[0];
   if (!session) return null;
+  if (
+    expectedAccountKind === 'employee' &&
+    (await isPlatformAdmin(
+      { actor: { type: 'user', id: session.user_id } },
+      sql,
+    ))
+  )
+    return null;
   const memberships = await sql<MembershipRow[]>`
     select m.id, m.user_id, m.organization_id, m.workspace_id, m.role, m.active
     from allrice_memberships m

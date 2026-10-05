@@ -26,7 +26,9 @@ async function json<T>(url: string, options?: RequestInit): Promise<T> {
   return response.json();
 }
 
-export function TenantFeedback() {
+export function TenantFeedback({
+  onOpenTechnicalSource,
+}: { onOpenTechnicalSource?: (id: string) => void } = {}) {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [page, setPage] = useState(1),
     [revision, setRevision] = useState(0);
@@ -268,6 +270,15 @@ export function TenantFeedback() {
           ) : (
             <>
               <h2>{detail.employee_name} · 反馈详情</h2>
+              {onOpenTechnicalSource && (
+                <AdminButton
+                  icon="wrench"
+                  variant="quiet"
+                  onClick={() => onOpenTechnicalSource(detail.id)}
+                >
+                  查看技术问题
+                </AdminButton>
+              )}
               <p className={css.meta}>
                 {detail.organization_name} / {detail.workspace_name} ·{' '}
                 {detail.actor_name}

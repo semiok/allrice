@@ -100,6 +100,7 @@ export * from './company-deliverables.ts';
 
 export * from './execution-diagnostics.ts';
 export * from './operations-resources.ts';
+export * from './platform-technical.ts';
 export {
   getGithubMcpSettings,
   updateGithubMcpSettings,
