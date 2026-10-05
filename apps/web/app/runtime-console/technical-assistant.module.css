@@ -72,7 +72,7 @@ details.record {
   gap: 6px;
   color: var(--admin-muted);
 }
-.root :where(input, select) {
+.root :where(input, select, textarea) {
   min-width: 0;
   max-width: 100%;
   font: inherit;
@@ -148,4 +148,17 @@ details.record {
   .controls input {
     min-width: 0;
   }
+}
+
+.root textarea {
+  display: block;
+  width: 100%;
+  margin: 8px 0;
+  resize: vertical;
+}
+.root pre {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }

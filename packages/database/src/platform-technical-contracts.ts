@@ -200,3 +200,71 @@ export const TechnicalAssistantResponseSchema = z
     issues: z.array(TechnicalIssueSchema).max(100),
   })
   .strict();
+
+// Private platform task contracts; never add these tools to employee capabilities.
+export const TechnicalDiagnosticInputSchema = z
+  .object({ scope: z.literal('current') })
+  .strict();
+export const CreateTechnicalTaskSchema = z
+  .object({
+    requestId: UuidSchema,
+    issueId: UuidSchema.nullable().default(null),
+    question: z.string().trim().min(1).max(2000),
+  })
+  .strict();
+export const TechnicalTaskReceiptSchema = z
+  .object({
+    receiptId: UuidSchema,
+    taskId: UuidSchema,
+    runId: UuidSchema,
+    jobAttempt: z.number().int().positive(),
+    callId: z.string().min(1).max(240),
+    inputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    outputDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    observedAt: z.string().datetime({ offset: true }),
+    diagnostics: TechnicalDiagnosticsSchema,
+    issue: TechnicalIssueDetailSchema.nullable(),
+  })
+  .strict();
+export const TechnicalTaskSchema = z
+  .object({
+    id: UuidSchema,
+    requestId: UuidSchema,
+    ownerId: UuidSchema,
+    issueId: UuidSchema.nullable(),
+    runId: UuidSchema,
+    jobId: UuidSchema,
+    status: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']),
+    environment: TechnicalEnvironmentSchema,
+    releaseSha: z
+      .string()
+      .regex(/^[a-f0-9]{40}$/)
+      .nullable(),
+    model: z.string().min(1).max(200),
+    modelRevision: z.number().int().positive(),
+    workflowVersion: z.literal(1),
+    question: z.string().min(1).max(2000),
+    createdAt: z.string().datetime({ offset: true }),
+    completedAt: z.string().datetime({ offset: true }).nullable(),
+    answer: z.string().max(40000).nullable(),
+    errorCode: z.string().max(160).nullable(),
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative(),
+        cachedInputTokens: z.number().int().nonnegative(),
+        outputTokens: z.number().int().nonnegative(),
+      })
+      .strict()
+      .nullable(),
+    usageComplete: z.boolean(),
+    actualCostKnown: z.literal(false),
+    actualCost: z.null(),
+  })
+  .strict();
+export type TechnicalTask = z.infer<typeof TechnicalTaskSchema>;
+export const TechnicalTaskDetailSchema = z
+  .object({
+    task: TechnicalTaskSchema,
+    receipts: z.array(TechnicalTaskReceiptSchema).max(4),
+  })
+  .strict();

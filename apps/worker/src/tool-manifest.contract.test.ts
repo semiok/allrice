@@ -205,13 +205,23 @@ describe('AllRice worker tool manifest contract', () => {
         })),
       );
     }
-    const expectedPairs = allRiceToolManifest
-      .filter((tool) => tool.transport === 'dsh_broker_native')
-      .map((tool) => ({
-        canonicalName: tool.canonicalName,
-        wireName: tool.dshWireName,
-      }));
+    const expectedPairs: { canonicalName: string; wireName: string }[] =
+      allRiceToolManifest
+        .filter((tool) => tool.transport === 'dsh_broker_native')
+        .map((tool) => ({
+          canonicalName: tool.canonicalName,
+          wireName: tool.dshWireName,
+        }));
 
+    expectedPairs.push({
+      canonicalName: 'platform.technical.diagnostics',
+      wireName: 'platform_technical_diagnostics',
+    });
+    expect(
+      new Set<string>(allRiceToolManifest.map((t) => t.canonicalName)).has(
+        'platform.technical.diagnostics',
+      ),
+    ).toBe(false);
     expect(runtimePairs).toHaveLength(expectedPairs.length);
     const localProcessBlock = brokerNativeBlock.slice(
       brokerNativeBlock.indexOf("canonicalName: 'local.process.execute'"),

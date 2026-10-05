@@ -46,6 +46,7 @@ import {
 import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
+import { technicalNativeTools } from './allrice-technical-native-tools.mjs';
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import {
   projectNativeTools,
@@ -66,6 +67,7 @@ const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
+  ...technicalNativeTools,
   ...browserWorkspaceNativeTools,
   ...mcpNativeTools,
   ...localMcpNativeTools,

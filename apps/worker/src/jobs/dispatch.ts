@@ -4,11 +4,13 @@ import type {
   ClaimedJobHandlerInput,
 } from '../job-runner.js';
 import { executeEmployeeRun } from './employee-run.js';
+import { executePlatformTechnicalTask } from './platform-technical.js';
 import { executeSystemEcho } from './system-echo.js';
 import { executeWorkflowRun } from './workflow-run.js';
 
 const handlers = {
   'allrice.employee.run': executeEmployeeRun,
+  'allrice.platform.technical': executePlatformTechnicalTask,
   'allrice.system.echo': executeSystemEcho,
   'allrice.workflow.run': executeWorkflowRun,
 } satisfies Record<string, ClaimedJobHandler>;

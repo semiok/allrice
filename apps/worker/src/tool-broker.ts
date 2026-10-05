@@ -1,6 +1,7 @@
 import { CompanyAssetError, CompanyRunAssetError } from '@allrice/database';
 import { recordToolBrokerAudit } from '@allrice/database';
 
+import { executePlatformTechnicalDiagnostics } from './tool-broker/handlers/platform-technical.js';
 import { HandlerError } from './errors.js';
 import { riceToolCapability, riceToolRisk } from './tool-broker/definitions.js';
 import { objectValue } from './tool-broker/input-values.js';
@@ -54,6 +55,8 @@ function auditMetadata(
 export async function executeRiceTool(
   input: RiceToolExecutionInput,
 ): Promise<RiceToolResult> {
+  if (input.call.name === 'platform.technical.diagnostics')
+    return executePlatformTechnicalDiagnostics(input);
   const requiredCapability = riceToolCapability(input.call.name);
   if (!requiredCapability) {
     throw new HandlerError(
