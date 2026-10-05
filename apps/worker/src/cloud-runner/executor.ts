@@ -13,6 +13,7 @@ import {
   taskDeadlineOpen,
   readProjectService,
   projectServiceUserAction,
+  resolvePlatformRepositoryExecutionProof,
 } from '@allrice/database';
 import {
   CloudExecutionPayloadSchema,
@@ -175,6 +176,12 @@ export async function runCloudCommandOperation(
       return false;
     }
     try {
+      if (!('kind' in payload))
+        await resolvePlatformRepositoryExecutionProof(
+          created.context,
+          payload,
+          db,
+        );
       if (service) return !(await serviceExchange()).stopRequested;
       await ledger.heartbeat({ ...receipt, leaseMs: 15_000 });
       return true;
@@ -210,6 +217,14 @@ export async function runCloudCommandOperation(
       }
     } else {
       try {
+        const repositoryExecution =
+          'kind' in payload
+            ? undefined
+            : await resolvePlatformRepositoryExecutionProof(
+                created.context,
+                payload,
+                db,
+              );
         const files =
           'kind' in payload
             ? []
@@ -217,6 +232,7 @@ export async function runCloudCommandOperation(
                 created.context,
                 payload,
                 options.storage,
+                db,
               );
         const observer = executionResourceObserver(
           {
@@ -230,6 +246,7 @@ export async function runCloudCommandOperation(
         );
         outcome = await backend.execute(payload, files, {
           attemptId,
+          ...(repositoryExecution ? { repositoryExecution } : {}),
           deadlineAt:
             'kind' in payload
               ? created.deadlineAt

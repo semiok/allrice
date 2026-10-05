@@ -38,6 +38,10 @@ import {
 } from '../browser-control/static-runtime.js';
 import type { ExecutionDiagnosticEvent } from '@allrice/database';
 import {
+  RepositoryExecutionProofSchema,
+  type RepositoryExecutionProof,
+} from '@allrice/database/technical-contracts';
+import {
   validatePngArtifact,
   type PngArtifactValidation,
 } from '@allrice/storage';
@@ -114,6 +118,14 @@ export type CloudRunResult = {
   }[];
   elapsedMs: number;
   imageDigest?: string;
+  repositoryIsolation?: {
+    parentUid: 0;
+    candidateUid: 1001;
+    commandDigest: string;
+    capabilities: string[];
+    readOnlyRoot: true;
+    network: 'none';
+  };
   projectPreparation?: RuntimeProjectPreparationEvidence;
   errorCode?: string;
   staticVerification?: {
@@ -133,9 +145,26 @@ type CollectCommand =
   Pick<CloudCommand, 'arguments'> | CloudProjectCommand | StaticBrowserCommand;
 type Container = {
   Id: string;
-  Config: { Image?: string; Labels: Record<string, string> };
+  Config: {
+    Image?: string;
+    Labels: Record<string, string>;
+    User?: string;
+    Cmd?: string[];
+    Entrypoint?: string[];
+    Env?: string[];
+  };
   Mounts?: { Type: string; Name: string; Destination: string }[];
-  HostConfig: { Runtime: string };
+  HostConfig: {
+    Runtime: string;
+    CapAdd?: string[];
+    CapDrop?: string[];
+    SecurityOpt?: string[];
+    NetworkMode?: string;
+    ReadonlyRootfs?: boolean;
+    Privileged?: boolean;
+    Binds?: string[] | null;
+    Tmpfs?: Record<string, string>;
+  };
   State: {
     Running: boolean;
     ExitCode: number;
@@ -223,7 +252,8 @@ import fs from 'node:fs'; import cp from 'node:child_process';
 // Drain the pipe before exiting: Office artifacts can exceed one pipe buffer.
 const finish=code=>process.stdout.write('',()=>process.exit(code));
 const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>32_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{resolve(JSON.parse(text.slice(0,end)))}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),65000).unref()});
-fs.mkdirSync('/tmp/work/input',{recursive:true}); fs.mkdirSync('/tmp/work/output');
+fs.mkdirSync('/tmp/work/input',{recursive:true,mode:0o700}); fs.mkdirSync('/tmp/work/output',{mode:0o700});
+if(input.repositoryIsolation){if(process.getuid()!==0)throw Error('REPOSITORY_PARENT_IDENTITY');fs.chmodSync('/tmp/work',0o700);}
 for(const file of input.files){ const p='/tmp/work/input/'+file.path; fs.mkdirSync(p.slice(0,p.lastIndexOf('/')),{recursive:true}); fs.writeFileSync(p,Buffer.from(file.contentBase64,'base64'),{mode:0o400}); }
 const python=!input.office&&input.language==='python';
 if(python){fs.cpSync('/opt/python/mplconfig','/tmp/work/.mplconfig',{recursive:true});fs.chmodSync('/tmp/work/.mplconfig',0o700);for(const name of fs.readdirSync('/tmp/work/.mplconfig'))fs.chmodSync('/tmp/work/.mplconfig/'+name,0o600);}
@@ -558,6 +588,51 @@ export class CloudRunnerBackend {
       );
     return (await this.inspect(attemptId))?.State.Running === false;
   }
+  private async repositoryIsolation(
+    c: Container,
+  ): Promise<NonNullable<CloudRunResult['repositoryIsolation']>> {
+    const image = await this.json<{ Config: { Env?: string[] } }>(
+      'GET',
+      `/images/${cloudToolchainImageV1}/json`,
+    );
+    const capabilities = (c.HostConfig.CapAdd ?? [])
+        .map((v) => v.replace(/^CAP_/, ''))
+        .sort(),
+      commandDigest = c.Config.Labels['xyz.bplabs.allrice.repository.command'];
+    if (
+      c.Config.User !== '0:0' ||
+      c.Config.Image !== cloudToolchainImageV1 ||
+      JSON.stringify(capabilities) !==
+        JSON.stringify(['KILL', 'SETGID', 'SETUID']) ||
+      c.HostConfig.Runtime !== 'runsc' ||
+      c.HostConfig.NetworkMode !== 'none' ||
+      !c.HostConfig.ReadonlyRootfs ||
+      c.HostConfig.Privileged ||
+      JSON.stringify(c.HostConfig.CapDrop) !== JSON.stringify(['ALL']) ||
+      !c.HostConfig.SecurityOpt?.includes('no-new-privileges') ||
+      (c.HostConfig.Binds?.length ?? 0) > 0 ||
+      (c.Mounts?.length ?? 0) > 0 ||
+      JSON.stringify(c.Config.Entrypoint) !==
+        JSON.stringify(['/usr/local/bin/node']) ||
+      JSON.stringify(c.Config.Cmd) !==
+        JSON.stringify(['--input-type=module', '--eval', cloudSupervisor]) ||
+      JSON.stringify([...(c.Config.Env ?? [])].sort()) !==
+        JSON.stringify([...(image.Config.Env ?? [])].sort()) ||
+      !/^sha256:[a-f0-9]{64}$/.test(commandDigest ?? '') ||
+      !c.HostConfig.Tmpfs?.['/tmp']?.includes('noexec') ||
+      !c.HostConfig.Tmpfs?.['/tmp']?.includes('nosuid') ||
+      !c.HostConfig.Tmpfs?.['/tmp']?.includes('size=64m')
+    )
+      throw new CloudRunnerError('REPOSITORY_ISOLATION_CHANGED');
+    return {
+      parentUid: 0,
+      candidateUid: 1001,
+      commandDigest: commandDigest!,
+      capabilities,
+      readOnlyRoot: true,
+      network: 'none',
+    };
+  }
   async collect(
     attemptId: string,
     command: CollectCommand,
@@ -567,6 +642,10 @@ export class CloudRunnerBackend {
     const c = await this.inspect(attemptId);
     if (!c || c.State.Running)
       throw new CloudRunnerError('CLOUD_RESULT_UNKNOWN');
+    const repositoryIsolation =
+      c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'repository'
+        ? await this.repositoryIsolation(c)
+        : undefined;
     const raw = await this.call(
       'GET',
       `/containers/${c.Id}/logs?stdout=1&stderr=1&follow=0`,
@@ -729,6 +808,8 @@ export class CloudRunnerBackend {
       stopped: true,
       reason,
       output: redact(Buffer.concat(output).toString()),
+      imageDigest: c.Config.Image,
+      ...(repositoryIsolation ? { repositoryIsolation } : {}),
       artifacts: reason === 'completed' ? artifacts : [],
       elapsedMs: Math.max(0, Date.now() - startedAt),
     };
@@ -746,9 +827,34 @@ export class CloudRunnerBackend {
       projectService?: CloudProjectServiceHooks;
       isTurn?: () => Promise<boolean>;
       observe?: (event: ExecutionDiagnosticEvent) => Promise<void>;
+      /** Main executor resolves this from the private persisted operation.
+       * It is never accepted by ordinary cloud tool/model arguments. */
+      repositoryExecution?: RepositoryExecutionProof;
     },
   ): Promise<CloudRunResult> {
     const command = CloudExecutionPayloadSchema.parse(commandInput);
+    if (options.repositoryExecution) {
+      const proof = RepositoryExecutionProofSchema.parse(
+        options.repositoryExecution,
+      );
+      if (
+        'kind' in command ||
+        command.arguments.language ||
+        proof.commandDigest !==
+          'sha256:' +
+            createHash('sha256')
+              .update(JSON.stringify(command))
+              .digest('hex') ||
+        command.arguments.limits.memoryMiB !== 512 ||
+        command.arguments.limits.timeoutMs !== 60_000 ||
+        command.arguments.limits.outputBytes !== 16_384 ||
+        command.arguments.limits.artifactBytes !== 16_384 ||
+        command.arguments.limits.cpuMillis !== 1000 ||
+        command.arguments.inputs.length !== 1 ||
+        command.arguments.inputs[0]?.path !== 'repository.json.gz'
+      )
+        throw new CloudRunnerError('REPOSITORY_EXECUTION_CHANGED');
+    }
     if ('kind' in command)
       return this.executeWithSlot(
         command.arguments.limits,
@@ -1235,7 +1341,10 @@ export class CloudRunnerBackend {
     if (
       files.length !== command.arguments.inputs.length ||
       new Set(files.map((f) => f.path)).size !== files.length ||
-      size > (office ? 20_000_000 : 2_000_000)
+      size >
+        (office
+          ? 20_000_000
+          : (options.repositoryExecution?.inputLimit ?? 2_000_000))
     )
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
     const deadline = Math.min(
@@ -1255,6 +1364,7 @@ export class CloudRunnerBackend {
         files,
         office,
         language: args.language,
+        ...(options.repositoryExecution ? { repositoryIsolation: true } : {}),
         script: command.arguments.script,
         outputs: command.arguments.outputs,
         artifactBytes: limits.artifactBytes,
@@ -1269,7 +1379,7 @@ export class CloudRunnerBackend {
           Image: imageDigest,
           Entrypoint: ['/usr/local/bin/node'],
           Cmd: ['--input-type=module', '--eval', cloudSupervisor],
-          User: '65532:65532',
+          User: options.repositoryExecution ? '0:0' : '65532:65532',
           WorkingDir: '/tmp',
           OpenStdin: true,
           StdinOnce: false,
@@ -1277,6 +1387,13 @@ export class CloudRunnerBackend {
           Env: [],
           Labels: {
             [attemptLabel]: attemptId,
+            ...(options.repositoryExecution
+              ? {
+                  'xyz.bplabs.allrice.cloud.kind': 'repository',
+                  'xyz.bplabs.allrice.repository.command':
+                    options.repositoryExecution.commandDigest,
+                }
+              : {}),
             'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
             'xyz.bplabs.allrice.cloud.deadline': String(deadline),
           },
@@ -1285,6 +1402,9 @@ export class CloudRunnerBackend {
             NetworkMode: 'none',
             ReadonlyRootfs: true,
             CapDrop: ['ALL'],
+            ...(options.repositoryExecution
+              ? { CapAdd: ['SETUID', 'SETGID', 'KILL'] }
+              : {}),
             SecurityOpt: ['no-new-privileges'],
             PidsLimit: limits.pids,
             Memory: limits.memoryMiB * 1024 * 1024,
@@ -1292,7 +1412,7 @@ export class CloudRunnerBackend {
             CpuPeriod: 100_000,
             CpuQuota: limits.cpuMillis * 100,
             Tmpfs: {
-              '/tmp': `rw,nosuid,nodev,noexec,size=${office ? 96 : 32}m,mode=1777`,
+              '/tmp': `rw,nosuid,nodev,noexec,size=${office ? 96 : (options.repositoryExecution?.tmpfsMiB ?? 32)}m,mode=1777`,
             },
             ShmSize: 8 * 1024 * 1024,
             LogConfig: {

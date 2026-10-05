@@ -14,6 +14,7 @@ import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 import { TechnicalTasks } from './technical-tasks';
 import { PlatformQuality } from './platform-quality';
+import { PlatformRepositoryRepair } from './platform-repository-repair';
 
 const endpoint = '/api/v1/admin/technical-assistant';
 const statusLabels = {
@@ -295,6 +296,7 @@ export function TechnicalAssistant() {
       </header>
       <TechnicalTasks issueId={selected} />
       <PlatformQuality />
+      <PlatformRepositoryRepair />
       {error && (
         <p role="alert" className={css.error}>
           {error}

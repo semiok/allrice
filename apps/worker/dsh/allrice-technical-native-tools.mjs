@@ -5,9 +5,94 @@ import { z } from 'zod';
 const TechnicalDiagnosticInputSchema = z
   .object({ scope: z.literal('current') })
   .strict();
+const checksum = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+export const repairNativeInputSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('read') }).strict(),
+  z
+    .object({
+      action: z.literal('apply'),
+      expectedCandidate: checksum,
+      proposal: z
+        .object({
+          files: z
+            .array(
+              z
+                .object({
+                  path: z
+                    .string()
+                    .max(1024)
+                    .refine(
+                      (p) =>
+                        p.length > 0 &&
+                        !p.startsWith('/') &&
+                        !/[\\:]/u.test(p) &&
+                        Array.from(p).every(
+                          (c) =>
+                            c.charCodeAt(0) >= 32 && c.charCodeAt(0) !== 127,
+                        ) &&
+                        p
+                          .split('/')
+                          .every(
+                            (part) =>
+                              part !== '' && part !== '.' && part !== '..',
+                          ),
+                    ),
+                  before: z.string().max(200000).nullable(),
+                  after: z.string().max(200000).nullable(),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(32),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({ action: z.literal('verify'), candidateChecksum: checksum })
+    .strict(),
+]);
 
 // Private platform kernel only. This declaration is not an employee capability.
 export const technicalNativeTools = [
+  {
+    canonicalName: 'platform.repository.repair',
+    wireName: 'platform_repository_repair',
+    isConcurrencySafe: false,
+    presentation: 'tool',
+    timeoutMs: 180000,
+    description:
+      'Read the current registered private AllRice candidate, apply exact complete before/after text with expectedCandidate, or verify an exact candidateChecksum using the immutable assertions. This tool is restricted to this platform repair Run. Only the designated product file can change, at most three candidates. No command, path, repository URL, assertion change, dependency installation, main write or deployment can be requested. Repeated verification reads the same operation and never reruns uncertain work.',
+    parameters: {
+      action: {
+        type: 'string',
+        enum: ['read', 'apply', 'verify'],
+        required: true,
+      },
+      expectedCandidate: { type: 'string' },
+      candidateChecksum: { type: 'string' },
+      proposal: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          files: {
+            type: 'array',
+            required: true,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                path: { type: 'string', required: true },
+                before: { type: 'string', required: true },
+                after: { type: 'string', required: true },
+              },
+            },
+          },
+        },
+      },
+    },
+    validateArguments: (args) => repairNativeInputSchema.parse(args),
+  },
   {
     canonicalName: 'platform.technical.diagnostics',
     wireName: 'platform_technical_diagnostics',

@@ -3,6 +3,7 @@ export { readQualityEvidenceBundle } from './platform-quality-evidence-bundle.ts
 export * from './project-workspace.ts';
 export * from './project-delivery.ts';
 export * from './core/client.ts';
+export { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 export * from './codex-token-policy.ts';
 export * from './identity.ts';
 export * from './user-preferences.ts';
@@ -128,3 +129,8 @@ export * from './platform-quality.ts';
 export * from './platform-quality-automation.ts';
 export * from './platform-quality-case.ts';
 export * from './platform-quality-live-case.ts';
+export * from './platform-repair.ts';
+export * from './platform-repair-authority.ts';
+export * from './platform-repair-verification.ts';
+export * from './platform-repository-source.ts';
+export * from './platform-repair-profile.ts';

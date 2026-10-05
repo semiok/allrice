@@ -74,6 +74,12 @@ import {
   type QualityBinding,
 } from '../platform-quality.ts';
 import { prepareChangesetAction } from '../changeset-service.ts';
+import {
+  RepairBindingSchema,
+  bindPlatformRepairTask,
+  assertExistingRepairBinding,
+  type RepairBinding,
+} from '../platform-repair-authority.ts';
 import { cancelAssistantRootTransaction } from '../assistant-runtime.ts';
 import { unboundedTaskDeadline } from '../task-runtime-policy.ts';
 import {
@@ -290,6 +296,7 @@ export async function enqueueRun(
   options: {
     technicalBinding?: TechnicalTaskBinding;
     qualityBinding?: QualityBinding;
+    repairBinding?: RepairBinding;
     folderEventId?: string;
     skillBinding?: {
       installationId: string;
@@ -333,6 +340,32 @@ export async function enqueueRun(
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
+  if (options.repairBinding) {
+    const b = RepairBindingSchema.parse(options.repairBinding);
+    const i = submission.input as Record<string, unknown>;
+    if (
+      options.qualityBinding ||
+      options.technicalBinding ||
+      options.skillBinding ||
+      options.workflowBinding ||
+      options.reviewContinuation ||
+      options.changesetAction ||
+      options.folderEventId ||
+      submission.type !== 'allrice.employee.run' ||
+      !options.employeeBinding ||
+      !options.conversationDelivery ||
+      submission.maxAttempts !== 1 ||
+      submission.availableAt ||
+      submission.timeoutMs !== b.frozen.timeoutMs ||
+      submission.idempotencyKey !==
+        `platform-repair:${context.actor.id}:${b.frozen.requestId}` ||
+      i.repairRequestId !== b.frozen.requestId ||
+      i.repairInputDigest !== b.inputDigest ||
+      Object.hasOwn(i, 'qualityRequestId') ||
+      Object.hasOwn(i, 'qualityInputDigest')
+    )
+      throw new QueueError('policy_denied');
+  }
   if (submission.type === platformTechnicalJobType) {
     const b = options.technicalBinding;
     if (
@@ -412,7 +445,9 @@ export async function enqueueRun(
         existing[0].workspace_id !== workspaceId ||
         existing[0].owner_id !== ownerId ||
         existing[0].payload.type !== submission.type ||
-        (submission.type === platformTechnicalJobType || options.qualityBinding
+        (submission.type === platformTechnicalJobType ||
+        options.qualityBinding ||
+        options.repairBinding
           ? technicalDigest(existing[0].payload.input) !==
             technicalDigest(submission.input)
           : JSON.stringify(existing[0].payload.input) !==
@@ -426,6 +461,13 @@ export async function enqueueRun(
           { ...context, workspaceId },
           existing[0].run_id,
           options.qualityBinding,
+        );
+      if (options.repairBinding)
+        await assertExistingRepairBinding(
+          transaction,
+          { ...context, workspaceId },
+          existing[0].run_id,
+          options.repairBinding,
         );
       return {
         runId: existing[0].run_id,
@@ -459,6 +501,7 @@ export async function enqueueRun(
         { ...context, workspaceId },
         options.employeeBinding.employeeAssignmentId,
         options.qualityBinding,
+        options.repairBinding,
       );
       const { assertWorkbenchSession } = await import('../artifact-review.ts');
       await assertWorkbenchSession(
@@ -824,6 +867,15 @@ export async function enqueueRun(
         options.qualityBinding,
       );
     }
+    if (options.repairBinding && options.employeeBinding)
+      await bindPlatformRepairTask(
+        transaction,
+        { ...context, workspaceId },
+        run.id,
+        job.id,
+        options.employeeBinding.sessionId,
+        options.repairBinding,
+      );
     if (options.employeeBinding?.promptSnapshot.companyAssets) {
       const { recordCompanyRunSelections } =
         await import('../company-run-assets.ts');

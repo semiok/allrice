@@ -48,6 +48,8 @@ import {
   NativeWaitAuthorityError,
   prepareCompanyRunMaterials,
   markCompanyRunLoaded,
+  getPlatformRepairExecution,
+  platformRepairInstructions,
 } from '@allrice/database';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
@@ -61,6 +63,10 @@ import { assembleEmployeeKernel } from '../employee-kernel.js';
 import { getChangesetRun } from '@allrice/database';
 import { executeChangesetRun } from './changeset-run.js';
 import { executePlatformQualityCheck } from './platform-quality.js';
+import {
+  createPlatformRepairController,
+  platformRepairToolDefinition,
+} from './platform-repair.js';
 import { HandlerError } from '../errors.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import {
@@ -186,6 +192,13 @@ export async function executeEmployeeRun({
       { execution, isolation, signal, onHarnessEvent, workflowLease },
       resolved,
     );
+  const repairTask =
+    typeof input.repairRequestId === 'string'
+      ? await getPlatformRepairExecution({
+          ...workflowLease,
+          attempt: execution.job.attempt,
+        })
+      : null;
   // A queued historical Run may predate the prepareEmployeeRunBinding guard.
   // Keep its record readable, but never reinterpret unsupported OAuth as an API key.
   const primaryModelSnapshot =
@@ -243,6 +256,9 @@ export async function executeEmployeeRun({
     .update(
       JSON.stringify({
         employeeVersionId: input.employeeVersionId,
+        ...(repairTask
+          ? { repairFingerprint: repairTask.frozen.fingerprint }
+          : {}),
         provider: resolved.providerSnapshot,
         systemPrompt: resolved.promptSnapshot.systemPrompt,
         ...(resolved.promptSnapshot.companyAssets
@@ -286,9 +302,10 @@ export async function executeEmployeeRun({
       userId: execution.job.ownerId,
     }),
   );
-  const assistantConfiguration = workAutomation.settings.assistants
-    ? input.assistantConfiguration
-    : undefined;
+  const assistantConfiguration =
+    !repairTask && workAutomation.settings.assistants
+      ? input.assistantConfiguration
+      : undefined;
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
     employeeVersionId: input.employeeVersionId,
@@ -299,7 +316,23 @@ export async function executeEmployeeRun({
     companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };
-  const kernel = assembleEmployeeKernel({ ...kernelInput, checkpoint });
+  const assembledKernel = assembleEmployeeKernel({
+    ...kernelInput,
+    checkpoint,
+  });
+  const kernel = repairTask
+    ? EmployeeKernelRequestSchema.parse({
+        ...assembledKernel,
+        systemInstructions:
+          assembledKernel.systemInstructions +
+          '\n\n' +
+          platformRepairInstructions,
+        bootstrapConversation: '',
+        authorizedMemoryContext: '',
+        skillVersionIds: [],
+        imageAttachments: [],
+      })
+    : assembledKernel;
   const harnessImages = await loadHarnessImages(kernel.imageAttachments);
   const ownership = {
     organizationId: execution.context.organizationId,
@@ -462,14 +495,18 @@ export async function executeEmployeeRun({
               : undefined,
           )
         : undefined;
-    const authorizedTools = riceToolDefinitionsForCapabilities(
-      resolved.grantedCapabilities,
-      allowedToolNames,
-      executionSnapshot.schemaVersion === 2 ? executionSnapshot.mcpTools : [],
-      executionSnapshot.schemaVersion === 2
-        ? executionSnapshot.localMcp
-        : undefined,
-    );
+    const authorizedTools = repairTask
+      ? [platformRepairToolDefinition]
+      : riceToolDefinitionsForCapabilities(
+          resolved.grantedCapabilities,
+          allowedToolNames,
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.mcpTools
+            : [],
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.localMcp
+            : undefined,
+        );
     const routePlan = decideCapabilityRoute({
       request: {
         schemaVersion: 1,
@@ -482,7 +519,17 @@ export async function executeEmployeeRun({
         attempt: execution.job.attempt,
         prompt: kernel.userRequest,
       },
-      executionSnapshot,
+      executionSnapshot:
+        repairTask && executionSnapshot.schemaVersion === 2
+          ? {
+              ...executionSnapshot,
+              capabilitySnapshot: {
+                ...executionSnapshot.capabilitySnapshot,
+                knowledge: [],
+                workflows: [],
+              },
+            }
+          : executionSnapshot,
       tools: authorizedTools.flatMap((tool) => {
         const requiredCapability = riceToolCapability(tool.name);
         return requiredCapability &&
@@ -845,19 +892,23 @@ export async function executeEmployeeRun({
         : routeDecision.selectedKind === 'workflow'
           ? workflowToolNames
           : [];
-    const tools = riceToolDefinitionsForTurn(
-      resolved.grantedCapabilities,
-      allowedToolNames,
-      selectedToolNames,
-      executionSnapshot.schemaVersion === 2 ? executionSnapshot.mcpTools : [],
-      executionSnapshot.schemaVersion === 2
-        ? executionSnapshot.localMcp
-        : undefined,
-    ).filter(
-      (tool) =>
-        !tool.name.startsWith('assistant.') ||
-        objectInput(assistantConfiguration).allowAssistants === true,
-    );
+    const tools = repairTask
+      ? [platformRepairToolDefinition]
+      : riceToolDefinitionsForTurn(
+          resolved.grantedCapabilities,
+          allowedToolNames,
+          selectedToolNames,
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.mcpTools
+            : [],
+          executionSnapshot.schemaVersion === 2
+            ? executionSnapshot.localMcp
+            : undefined,
+        ).filter(
+          (tool) =>
+            !tool.name.startsWith('assistant.') ||
+            objectInput(assistantConfiguration).allowAssistants === true,
+        );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
       return capability ? [capability] : [];
@@ -947,6 +998,7 @@ export async function executeEmployeeRun({
     let questionWait: HarnessExecutionInput['questionWait'];
     if (
       taskProgress &&
+      !repairTask &&
       !assistants &&
       !selectedWorkflow &&
       adapter.kind === 'dsh'
@@ -1040,6 +1092,15 @@ export async function executeEmployeeRun({
       routeUsageComplete = false;
       routeCacheUsageKnown = false;
     }
+    const repairController = repairTask
+      ? await createPlatformRepairController({
+          execution,
+          isolation,
+          signal,
+          onHarnessEvent,
+          workflowLease,
+        })
+      : null;
     routeExecutionStarted = true;
     const delivery = documentDeliveryGuard();
     if (
@@ -1296,7 +1357,7 @@ export async function executeEmployeeRun({
               questionWait,
               assistants,
               kernel: routedKernel,
-              nativeSkills: resolved.nativeSkills,
+              nativeSkills: repairTask ? [] : resolved.nativeSkills,
               storageObjects: selectedStorageObjects,
               images: harnessImages,
               workDirectory: isolation.workDirectory,
@@ -1335,36 +1396,39 @@ export async function executeEmployeeRun({
                 tools.length > 0
                   ? (call) =>
                       delivery.execute(call, () =>
-                        executeRiceTool({
-                          nativeSkills: resolved.nativeSkills,
-                          localMcp:
-                            executionSnapshot.schemaVersion === 2
-                              ? executionSnapshot.localMcp
-                              : undefined,
-                          frozenMcpTools:
-                            executionSnapshot.schemaVersion === 2
-                              ? executionSnapshot.mcpTools
-                              : [],
-                          context: execution.context,
-                          managedBrowserJobAttempt: execution.job.attempt,
-                          managedBrowserJobLeaseToken: workflowLease.leaseToken,
-                          capabilities: resolved.grantedCapabilities,
-                          storageRoot:
-                            process.env.ALLRICE_STORAGE_ROOT ??
-                            '.local/storage',
-                          skillVersionIds: resolved.nativeSkills.map(
-                            (skill) => skill.id,
-                          ),
-                          sessionId:
-                            typeof input.sessionId === 'string'
-                              ? input.sessionId
-                              : undefined,
-                          employeeId: executionSnapshot.employee.id,
-                          userMessageId,
-                          userRequest: kernel.userRequest,
-                          signal,
-                          call,
-                        }),
+                        repairController
+                          ? repairController.onToolCall(call)
+                          : executeRiceTool({
+                              nativeSkills: resolved.nativeSkills,
+                              localMcp:
+                                executionSnapshot.schemaVersion === 2
+                                  ? executionSnapshot.localMcp
+                                  : undefined,
+                              frozenMcpTools:
+                                executionSnapshot.schemaVersion === 2
+                                  ? executionSnapshot.mcpTools
+                                  : [],
+                              context: execution.context,
+                              managedBrowserJobAttempt: execution.job.attempt,
+                              managedBrowserJobLeaseToken:
+                                workflowLease.leaseToken,
+                              capabilities: resolved.grantedCapabilities,
+                              storageRoot:
+                                process.env.ALLRICE_STORAGE_ROOT ??
+                                '.local/storage',
+                              skillVersionIds: resolved.nativeSkills.map(
+                                (skill) => skill.id,
+                              ),
+                              sessionId:
+                                typeof input.sessionId === 'string'
+                                  ? input.sessionId
+                                  : undefined,
+                              employeeId: executionSnapshot.employee.id,
+                              userMessageId,
+                              userRequest: kernel.userRequest,
+                              signal,
+                              call,
+                            }),
                       )
                   : undefined,
               threadId: runtime.threadId,
@@ -1520,6 +1584,10 @@ export async function executeEmployeeRun({
     });
     assertAssistantTaskComplete(result, modelBudgetScope.verifiedSubscription);
     delivery.assertComplete();
+    if (repairController) {
+      const proof = await repairController.finish();
+      result.answer = `已生成待审查的仓库修订候选。修前 ${proof.before.report.assertions.filter((a) => !a.passed).length} 项断言失败，修后同一组 ${proof.after.report.assertions.length} 项断言全部通过。候选源码与验证报告可在技术助手中下载。完整仓库构建与发布尚未执行。`;
+    }
     await completeRouteDecision({
       organizationId: execution.context.organizationId,
       workspaceId: execution.context.workspaceId!,
