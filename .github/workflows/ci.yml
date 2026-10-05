@@ -78,7 +78,24 @@ jobs:
       # Cross-app tests must not become production Web dependency edges.
       - run: pnpm exec tsc -p tests/integration/tsconfig.json
       # Native child processes and fsync journals need bounded contention.
-      - run: pnpm test --maxWorkers=2
+      - name: Capture versioned deterministic regression source
+        id: native-capture
+        run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts capture --group=native --output=.local/quality/native/capture.json
+      - name: Run existing tests and retain their original evidence
+        id: native-tests
+        run: pnpm test --maxWorkers=2 --reporter=default --reporter=json --outputFile=.local/quality/native/vitest-native.json
+      - name: Collect deterministic scenario evidence without rerunning tests
+        if: always() && steps.native-capture.outcome == 'success'
+        env:
+          TEST_EXIT: ${{ steps.native-tests.outcome == 'success' && '0' || '1' }}
+        run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts collect --capture=.local/quality/native/capture.json --report=.local/quality/native/vitest-native.json --exit-code=$TEST_EXIT --output=.local/quality/native/summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deterministic-quality-evidence
+          path: .local/quality/native/
+          include-hidden-files: true
+          retention-days: 14
       - run: pnpm build
 
   developer-bootstrap:
@@ -96,6 +113,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm doctor:ci
       - run: pnpm db:setup
+      - name: Capture versioned PostgreSQL regression source
+        id: postgres-capture
+        run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts capture --group=postgres --output=.local/quality/postgres/capture.json
       - name: Verify platform content synchronization against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -120,7 +140,7 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/session-archive.integration.test.ts packages/database/src/task-clock.integration.test.ts packages/database/src/execution-diagnostics.integration.test.ts packages/database/src/operations-resources.integration.test.ts packages/database/src/task-progress.integration.test.ts packages/database/src/task-native-wait.integration.test.ts apps/worker/test/p25/task-wait-worker.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-task.json packages/database/src/session-archive.integration.test.ts packages/database/src/task-clock.integration.test.ts packages/database/src/execution-diagnostics.integration.test.ts packages/database/src/operations-resources.integration.test.ts packages/database/src/task-progress.integration.test.ts packages/database/src/task-native-wait.integration.test.ts apps/worker/test/p25/task-wait-worker.integration.test.ts
       - name: Verify governed Bridge policy and real HTTP journal integration
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -137,7 +157,7 @@ jobs:
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # These suites use their own synthetic MCP server and random PG schemas.
         # This Linux CI job does not provision the dedicated macOS/runsc test VM.
-        run: pnpm exec vitest run packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts packages/database/src/cloud-python.integration.test.ts packages/database/src/workspace-access.integration.test.ts tests/integration/mcp-revocation.integration.test.ts
+        run: pnpm exec vitest run --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-mcp.json packages/database/src/mcp-connections.integration.test.ts packages/database/src/mcp-http.integration.test.ts packages/database/src/mcp-execution.integration.test.ts packages/database/src/cloud-execution.integration.test.ts packages/database/src/cloud-python.integration.test.ts packages/database/src/workspace-access.integration.test.ts tests/integration/mcp-revocation.integration.test.ts
       - name: Verify platform model inheritance and image receipts
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -152,7 +172,7 @@ jobs:
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/company-assets.integration.test.ts packages/database/src/company-run-assets.integration.test.ts packages/database/src/company-deliverables.integration.test.ts packages/database/src/local-pdf-execution.integration.test.ts packages/database/src/office-pdf-execution.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-company.json packages/database/src/company-assets.integration.test.ts packages/database/src/company-run-assets.integration.test.ts packages/database/src/company-deliverables.integration.test.ts packages/database/src/local-pdf-execution.integration.test.ts packages/database/src/office-pdf-execution.integration.test.ts
       - name: Verify P19 frozen script authority and acceptance SQL against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
@@ -180,11 +200,24 @@ jobs:
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run packages/database/src/project-workspace.integration.test.ts packages/database/src/project-execution.integration.test.ts packages/database/src/static-browser.integration.test.ts packages/database/src/project-service.integration.test.ts packages/database/src/cloud-project-service.integration.test.ts
       - name: Verify platform technical facts, problem evidence and authority against PostgreSQL
+        id: postgres-quality
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Separate synthetic schemas; no actual provider, host control or company data.
-        run: pnpm exec vitest run packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts
+      - name: Collect PostgreSQL scenario evidence without rerunning tests
+        if: always() && steps.postgres-capture.outcome == 'success'
+        env:
+          TEST_EXIT: ${{ steps.postgres-quality.outcome == 'success' && '0' || '1' }}
+        run: pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts collect --capture=.local/quality/postgres/capture.json --reports-dir=.local/quality/postgres --exit-code=$TEST_EXIT --output=.local/quality/postgres/summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: postgres-quality-evidence
+          path: .local/quality/postgres/
+          include-hidden-files: true
+          retention-days: 14
       - name: Verify Codex subscription lifecycle and incremental migration without credentials
         # MET-144 checks 0100 -> 0101 -> 0102 separately without a public-schema fallback.
         # Real isolated PG and pinned native runtime; the HTTP model endpoint
