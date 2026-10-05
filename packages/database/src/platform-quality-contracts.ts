@@ -58,17 +58,18 @@ export const QualityArtifactSchema = z
     storedBytesVerified: z.literal(true),
   })
   .strict();
+export const QualityVerdictSchema = z.enum([
+  'passed',
+  'assertion_failed',
+  'blocked',
+  'execution_failed',
+  'canceled',
+  'unknown',
+]);
 export const QualityCheckReportSchema = z
   .object({
     version: z.literal(1),
-    verdict: z.enum([
-      'passed',
-      'assertion_failed',
-      'blocked',
-      'execution_failed',
-      'canceled',
-      'unknown',
-    ]),
+    verdict: QualityVerdictSchema,
     completedAt: time,
     project: ProjectVersionRefSchema.nullable(),
     build: z
@@ -160,3 +161,77 @@ export const QualityCheckSchema = z
   );
 export type QualityCheck = z.infer<typeof QualityCheckSchema>;
 export type QualityCheckReport = z.infer<typeof QualityCheckReportSchema>;
+
+// This is a persisted delegation, never proof of a browser login. Scheduled
+// live cases are intentionally absent from this private server contract.
+export const QualityScheduleOriginSchema = z
+  .object({
+    version: z.literal(1),
+    automationId: UuidSchema,
+    occurrenceId: UuidSchema,
+    revision: z.number().int().positive(),
+    ownerId: UuidSchema,
+    organizationId: UuidSchema,
+    workspaceId: UuidSchema,
+    caseId: z.literal('project.static.v1'),
+    variant: z.literal('correct'),
+    scheduledFor: time,
+    dispatchDeadlineAt: time,
+    configurationDigest: checksum,
+  })
+  .strict();
+export type QualityScheduleOrigin = z.infer<typeof QualityScheduleOriginSchema>;
+export const UpdateQualityScheduleSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    enabled: z.boolean(),
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+  })
+  .strict();
+export const QualityScheduleViewSchema = z
+  .object({
+    schedule: z
+      .object({
+        id: UuidSchema,
+        revision: z.number().int().positive(),
+        enabled: z.boolean(),
+        time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+        timezone: z.literal('Asia/Shanghai'),
+        nextRunAt: time.nullable(),
+      })
+      .strict()
+      .nullable(),
+    occurrences: z
+      .array(
+        z
+          .object({
+            id: UuidSchema,
+            scheduledFor: time,
+            status: z.enum([
+              'queued',
+              'running',
+              'succeeded',
+              'failed',
+              'canceled',
+            ]),
+            checkId: UuidSchema.nullable(),
+            accepted: z.boolean(),
+            verdict: QualityVerdictSchema.nullable(),
+            notExecutedReason: z
+              .string()
+              .regex(/^[A-Z0-9_]{1,100}$/)
+              .nullable(),
+          })
+          .strict()
+          .refine(
+            (o) =>
+              !o.accepted ||
+              (o.status === 'succeeded' &&
+                o.verdict === 'passed' &&
+                !!o.checkId),
+          ),
+      )
+      .max(20),
+  })
+  .strict();
+export type QualityScheduleView = z.infer<typeof QualityScheduleViewSchema>;

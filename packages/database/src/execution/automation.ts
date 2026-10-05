@@ -48,6 +48,7 @@ interface AutomationRow {
   last_run_status: AutomationRunStatus | null;
   created_at: Date;
   updated_at: Date;
+  quality_binding: unknown | null;
 }
 
 interface AutomationRunRow {
@@ -69,6 +70,7 @@ interface AutomationRunRow {
 interface AutomationClaim {
   automation: Automation;
   automationRun: AutomationRun;
+  qualityOccurrenceId?: string;
 }
 
 function userId(context: RequestContext) {
@@ -172,7 +174,7 @@ function zonedTimeToUtc(
   return new Date(guess.getTime() - timeZoneOffset(guess, timeZone));
 }
 
-function nextScheduleAt(scheduleInput: unknown, after = new Date()) {
+export function nextScheduleAt(scheduleInput: unknown, after = new Date()) {
   const schedule = AutomationScheduleSchema.parse(scheduleInput);
   if (schedule.frequency === 'once') return new Date(schedule.runAt!);
   const time = schedule.time!.split(':').map(Number);
@@ -263,6 +265,7 @@ async function getAutomationRow(
     where a.organization_id = ${context.organizationId}
       and a.workspace_id = ${UuidSchema.parse(workspaceId)}
       and a.id = ${UuidSchema.parse(automationId)} and a.deleted_at is null
+      and a.quality_binding is null
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
@@ -557,6 +560,7 @@ export async function listAutomations(
     where a.organization_id = ${context.organizationId}
       and a.workspace_id = ${workspaceId}
       and a.owner_id = ${userId(context)} and a.deleted_at is null
+      and a.quality_binding is null
       and (${triggerType ?? null}::text is null or a.trigger_type=${triggerType ?? null})
     order by a.updated_at desc, a.created_at desc, a.id desc
   `;
@@ -892,6 +896,12 @@ function mapRunRow(row: AutomationRunRow) {
 }
 
 async function enqueueClaim(claim: AutomationClaim) {
+  if (claim.qualityOccurrenceId) {
+    const { dispatchPlatformQualityOccurrence } =
+      await import('../platform-quality-automation.ts');
+    await dispatchPlatformQualityOccurrence(claim.qualityOccurrenceId);
+    return claim.automationRun;
+  }
   const automation = claim.automation;
   const context = await internalContext({
     organizationId: automation.organizationId,
@@ -975,6 +985,9 @@ async function makeClaim(
 
 export async function claimDueAutomations(limit = 10) {
   const sql = getDatabase();
+  const { recoverPlatformQualityOccurrences, claimPlatformQualityOccurrence } =
+    await import('../platform-quality-automation.ts');
+  const recovered = await recoverPlatformQualityOccurrences(limit);
   const due = await sql<AutomationRow[]>`
     select a.*, latest.status as last_run_status,
       latest.session_id as last_session_id
@@ -998,13 +1011,26 @@ export async function claimDueAutomations(limit = 10) {
           select r.status, r.session_id from allrice_automation_runs r
           where r.automation_id = a.id order by r.created_at desc limit 1
         ) latest on true
-        where a.id = ${candidate.id} and a.status = 'enabled'
+        where a.id = ${candidate.id} and a.status = 'enabled' and a.deleted_at is null and a.trigger_type='schedule'
         for update of a
       `;
       const row = locked[0];
       if (!row || !row.next_run_at || row.next_run_at > new Date()) return null;
       const scheduledFor = row.next_run_at;
       const schedule = AutomationScheduleSchema.parse(row.schedule);
+      if (row.quality_binding) {
+        const id = await claimPlatformQualityOccurrence(
+          transaction,
+          row,
+          nextScheduleAt(schedule, new Date()),
+        );
+        if (!id) return null;
+        const [run] = await transaction<
+          AutomationRunRow[]
+        >`select * from allrice_automation_runs where id=${id}`;
+        if (!run) throw new Error('quality occurrence missing');
+        return { ...(await makeClaim(row, run)), qualityOccurrenceId: id };
+      }
       const isOneTime = schedule.frequency === 'once';
       const nextRunAt = isOneTime
         ? null
@@ -1014,7 +1040,7 @@ export async function claimDueAutomations(limit = 10) {
           organization_id, workspace_id, automation_id, scheduled_for
         ) values (
           ${row.organization_id}, ${row.workspace_id}, ${row.id}, ${scheduledFor}
-        ) on conflict (automation_id, scheduled_for) do nothing
+        ) on conflict (automation_id, scheduled_for) where folder_event_id is null do nothing
         returning *
       `;
       if (!runs[0]) {
@@ -1042,10 +1068,12 @@ export async function claimDueAutomations(limit = 10) {
     try {
       await enqueueClaim(claim);
     } catch (error) {
-      await markClaimFailed(claim, error);
+      // The private dispatcher reconciles unknown writes and leaves transient
+      // failures durable. A generic failure must never overwrite its bound Run.
+      if (!claim.qualityOccurrenceId) await markClaimFailed(claim, error);
     }
   }
-  return claims.length;
+  return recovered + claims.length;
 }
 
 export async function runAutomationNow(

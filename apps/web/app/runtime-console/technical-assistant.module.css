@@ -89,6 +89,10 @@ details.record {
 .controls select {
   max-width: 280px;
 }
+.controls input[type='time'] {
+  min-width: 0;
+  flex: none;
+}
 .split {
   display: grid;
   grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.5fr);
