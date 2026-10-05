@@ -37,12 +37,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @allrice/worker exec playwright-core install --with-deps chromium
-      # Full React UI over isolated loopback fixtures. No DB, model quota, real
-      # tenant, Bridge or elevated capability is used or enabled by this job.
+      # This first UI step uses isolated loopback responses, without database,
+      # model quota, real tenants, Bridge or elevated employee capabilities.
       - name: Verify tenant workspace and composer ownership in Chromium
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/server/project-preview.test.mjs
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/server/project-preview.test.mjs
       - name: Verify tenant management UI, HTTP authorization and PostgreSQL persistence
         # Synthetic principals in disposable schemas, never real tenant permissions.
         env:
@@ -56,6 +56,14 @@ jobs:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 packages/database/src/organization-administration.integration.test.ts packages/database/src/organization-employee-assignments.integration.test.ts packages/database/src/organization-publication.integration.test.ts packages/database/src/organization-activity.integration.test.ts packages/database/src/organization-migration.integration.test.ts apps/web/app/runtime-console/organization-administration.browser.test.ts
+      - name: Verify formal partial-delivery and preview facts in Chromium
+        # Same real queue/Worker/Broker/PG/HTTP as the API matrix; only these two
+        # UI cases are repeated. Deterministic adapters use no paid model/device.
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_RUN_BROWSER_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        run: pnpm exec vitest run --maxWorkers=1 tests/integration/platform-quality-delivery.integration.test.ts -t 'one available file|pending and failed'
 
   validate:
     runs-on: ubuntu-latest
@@ -185,7 +193,7 @@ jobs:
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Native Chrome/VM and final macOS package gates have separate physical
         # evidence; this step must not advertise those skipped gates as passed.
-        run: pnpm exec vitest run packages/database/src/local-mcp.integration.test.ts packages/database/src/experience.integration.test.ts packages/database/src/message-feedback.integration.test.ts packages/database/src/browser-control.integration.test.ts packages/database/src/local-browser.integration.test.ts packages/database/src/browser-execution-choice.integration.test.ts packages/database/src/local-files.integration.test.ts packages/database/src/folder-triggers.integration.test.ts packages/database/src/local-preview.integration.test.ts packages/database/src/storage-quota.integration.test.ts packages/database/src/browser-operation-locks.integration.test.ts
+        run: pnpm exec vitest run --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-local.json packages/database/src/local-mcp.integration.test.ts packages/database/src/experience.integration.test.ts packages/database/src/message-feedback.integration.test.ts packages/database/src/browser-control.integration.test.ts packages/database/src/local-browser.integration.test.ts packages/database/src/browser-execution-choice.integration.test.ts packages/database/src/local-files.integration.test.ts packages/database/src/folder-triggers.integration.test.ts packages/database/src/local-preview.integration.test.ts packages/database/src/storage-quota.integration.test.ts packages/database/src/browser-operation-locks.integration.test.ts
       - name: Verify B6 assistant authority, output grants and native dispatch against PostgreSQL
         # B6 model endpoints are synthetic loopback services. This step does not
         # use provider keys, tenants, native macOS devices or release credentials.
@@ -205,7 +213,7 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Separate synthetic schemas; no actual provider, host control or company data.
-        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts tests/integration/platform-quality-delivery.integration.test.ts
       - name: Collect PostgreSQL scenario evidence without rerunning tests
         if: always() && steps.postgres-capture.outcome == 'success'
         env:

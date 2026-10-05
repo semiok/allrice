@@ -137,6 +137,58 @@ export const qualityRegressionScenarios = [
     boundary:
       '真实 PG 的固定发布包及合成执行回执；物理构建/浏览器另由 Dev 检查证明。',
   },
+  {
+    id: 'delivery.facts.v1',
+    title: '同一交付事实跨页面一致',
+    group: 'postgres',
+    input:
+      '隔离普通账号的发布前失败、部分文件、修正、纯问答、必要检查不可用和预览失败。',
+    expected:
+      '真实 Worker/Broker、终态、聊天、成果、公司、下一步及下载读取同一版本；失败不能被乐观回复覆盖。',
+    files: ['tests/integration/platform-quality-delivery.integration.test.ts'],
+    assertionTags: ['delivery.facts.v1:'],
+    boundary:
+      '真实 PG、Worker/Broker 与 HTTP；模型和原生生成/检查为明确的替身，不证明物理退出码、真实模型或 Bridge 实机。浏览器仅验证部分交付和预览两项。',
+  },
+  {
+    id: 'delivery.local-saved.v1',
+    title: '本地已保存与平台成果分开',
+    group: 'postgres',
+    input: '本机临时授权目录的真实文件操作及 Bridge 命令保存回执。',
+    expected:
+      '保存路径、大小及校验和匹配实际字节；不虚构平台成果，命令完成不等于父任务完成。',
+    files: ['packages/database/src/local-files.integration.test.ts'],
+    assertionTags: ['delivery.local-saved.v1:'],
+    boundary:
+      '真实文件引擎、PG 和命令回执；不证明打包 Bridge、M5 或完整员工任务。',
+  },
+  {
+    id: 'delivery.publication-cancel.v1',
+    title: '取消与发布事务窗口',
+    group: 'postgres',
+    input: '取消先提交及实际存储上传过程中取消等待发布锁两种窗口。',
+    expected:
+      '取消优先时不上传；发布优先时保留已提交版本；晚到的成功不能覆盖取消，各页面事实一致。',
+    files: [
+      'packages/database/src/artifact-publication-concurrency.integration.test.ts',
+    ],
+    assertionTags: ['delivery.publication-cancel.v1:'],
+    boundary: '真实 PG 锁、事务和文件存储；不代表原生进程已物理停止。',
+  },
+  {
+    id: 'delivery.publication-recovery.v1',
+    title: '发布提交结果未知时先回读',
+    group: 'postgres',
+    input:
+      '事务真实提交后注入连接错误；同一调用恢复、冲突字节及取消后恢复原版本。',
+    expected:
+      '保留已提交字节；相同调用复用原版本、不重复上传；冲突拒绝，取消事实不被覆盖。',
+    files: [
+      'packages/database/src/artifact-publication-concurrency.integration.test.ts',
+    ],
+    assertionTags: ['delivery.publication-recovery.v1:'],
+    boundary: '真实提交和确定性回包错误注入；不证明任意网络故障下的进程恢复。',
+  },
 ] as const;
 
 export type QualityRegressionGroup =

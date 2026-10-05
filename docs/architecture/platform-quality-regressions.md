@@ -37,7 +37,7 @@ The original JSON remains separate; the summary carries its checksum, test
 names, executed/skipped counts, declared inputs/assertions and reproduction
 arguments. Raw error values are hashed rather than copied into the summary.
 
-The existing developer-bootstrap CI steps write four original PostgreSQL JSON
+The existing developer-bootstrap CI steps write five original PostgreSQL JSON
 reports. `collect --reports-dir=...` combines their `vitest-*.json` files without
 executing the tests again. The new two-turn fixture and the existing publication
 concurrency suite join the current platform-quality step. CI uploads both
@@ -87,11 +87,52 @@ assertions, a failed suite or a crashed runner never provides passing coverage.
 - These regression artifacts are not `project.static.v1`/`project.live.v1`
   reports. They are not generated Runs or company deliverables and do not mark
   a live Dev deployment accepted.
-- PR2c2 still owes the eight-case matrix over the same persisted delivery facts
-  across Worker, chat, dashboard/deliverables and next-step suggestions, including
-  the publication cancellation/reconnection window and actual frontend read.
-  The version-aware evidence page also remains in that slice. PR2 and MET167
-  remain open until those requirements and the remaining PRs are delivered.
+- PR2c2 extends the persisted-fact matrix across real Worker/Broker, chat,
+  company deliverables/dashboard and next-step suggestions. Six joined cases
+  cover publication failure, partial delivery, same-file repair, pure Q&A,
+  required quality unavailable and preview unavailable. The existing local-file
+  check proves actual saved bytes and a command receipt, not parent Run success.
+  Separate PG transaction windows cover cancellation-before-publication,
+  publication-before-cancellation and a lost commit response recovered without
+  duplicate uploads. The real Chromium layer reads partial delivery and preview
+  through these fixtures' formal HTTP handlers. These adapters do not call a
+  paid model, physically kill a worker or run a packaged Bridge.
 - MET164/166 local-device matrices, formula/rendering checks and performance
   evidence remain separately tracked. A fixed text/XLSX or Vite check does not
   prove all formats, local execution, formulas, layouts or projects.
+
+## Administrator evidence page
+
+The quality page reads an operator-published archive. It does not accept an
+upload, run tests, execute a shell, grant capabilities or create a company Run.
+Every HTTP read rechecks current platform-admin authority before archive IO.
+The configured absolute `ALLRICE_QUALITY_EVIDENCE_DIR` defaults to the Web
+working directory's `.local/quality-evidence`; a missing archive is unknown.
+
+```sh
+pnpm exec tsx scripts/acceptance/platform/quality-scenarios.ts bundle \
+  --summary-files=/absolute/native/summary.json,/absolute/postgres/summary.json \
+  --registry-files=/absolute/legacy-registry.json \
+  --output=/absolute/release/.local/quality-evidence
+```
+
+New captures retain the registry snapshot. Older captures require their exact
+original registry. Keep each capture, summary, raw report and, for combined
+reports, all originals together. New collections also retain `execution.json`,
+binding the existing runner's actual exit code to the capture and raw report.
+It is independent of the derived summary, so editing that summary cannot turn
+a nonzero exit into a pass. Historical reports without this receipt retain
+their assertion results but cannot independently confirm process success.
+The CLI checks their checksums, original
+concatenation and recomputed scenario verdicts, then switches the archive index
+last. The reader verifies the same chain with limits of 12 records, 64 files,
+32 MB per file and 64 MB total. Public responses expose only bounded scenario
+and version fields, never local paths, raw test names or failure contents.
+
+The current release SHA and original tested SHA both remain visible. Equal
+source-material digests can confirm identical material from a CI merge commit;
+they never rewrite that commit's SHA. Different material is historical, an
+unmatched release is unconfirmed, and a dirty tested tree stays explicit.
+Passing historical or incomplete reports do not establish current Dev
+acceptance. Dev page verification and physical capability/performance matrices
+retain their separate delivery evidence.

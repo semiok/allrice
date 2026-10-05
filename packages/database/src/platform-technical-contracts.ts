@@ -270,3 +270,4 @@ export const TechnicalTaskDetailSchema = z
   .strict();
 
 export * from './platform-quality-contracts.ts';
+export * from './platform-quality-evidence-contracts.ts';

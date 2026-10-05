@@ -688,7 +688,7 @@ suite(
       },
       30000,
     );
-    it('ordinary-member ZIP pack → private HTTP attachment → local save → list/extract verifies actual bytes and ledger receipts', async () => {
+    it('delivery.local-saved.v1: ordinary-member ZIP pack → private HTTP attachment → local save → list/extract verifies actual bytes and ledger receipts', async () => {
       const f = await fixture(true),
         path = '实际 中文.bin',
         bytes = Buffer.from([0, 255, 14, 0, 34]);
@@ -802,6 +802,30 @@ suite(
         output: savedOutput,
         summary: 'Saved verified ZIP',
       });
+      const savedCommand = await readLocalFileCommand(
+        f.context,
+        f.workspace,
+        command.id,
+      );
+      expect(savedCommand).toMatchObject({
+        status: 'succeeded',
+        output: {
+          status: 'saved',
+          localSaved: true,
+          platformUploaded: false,
+          path: '保存.zip',
+          file: { checksum: checksum(zip), sizeBytes: zip.length },
+        },
+      });
+      // A local command ACK is not the terminal result of the parent task,
+      // nor an invented cloud business artifact. Both facts remain separate.
+      expect(
+        (await database.db`select state from allrice_runs where id=${f.run}`)[0]
+          ?.state,
+      ).toBe('running');
+      expect(
+        await database.db`select version_id from allrice_workbench_artifacts where run_id=${f.run}`,
+      ).toHaveLength(0);
       const zipInput = {
         path: '保存.zip',
         expected: await inspectLocalFile(f.folder, '保存.zip'),
