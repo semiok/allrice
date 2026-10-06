@@ -52,6 +52,24 @@ import { acquireConversationRuntime } from '../../../../packages/database/src/co
 import { assertAssistantAuthority } from '../../../../packages/database/src/assistant-authority.ts';
 import { productionAssistantController } from '../../src/harness/dsh/assistant-controller.js';
 
+import { runtimeLedgerInputDigest } from '../../../../packages/database/src/runtime-ledger/ledger.ts';
+import { lockRepositoryReviewContent } from '../../../../packages/database/src/platform-repository-review-facts.ts';
+import { repositoryReviewCompletionAllowed } from '../../../../packages/database/src/platform-repository-review-authority.ts';
+import type { JobRow } from '../../../../packages/database/src/queue/row-mappers.ts';
+import { repositoryMergeRequestGate } from '../../../../packages/database/src/platform-repository-merge-authority.ts';
+import { readCompletedRepositoryReview } from '../../../../packages/database/src/platform-repository-completed-review.ts';
+import {
+  createPlatformRepositoryMerge,
+  getPlatformRepositoryMerge,
+  getPlatformRepositoryMergePanel,
+  startRepositoryMergeEffect,
+  findPlatformRepositoryMerge,
+} from '../../../../packages/database/src/platform-repository-merges.ts';
+import { mergeRepositoryCandidate } from '../../src/repository-repair/merger.js';
+import { FixedRepositoryGithub } from '../../src/repository-repair/github.js';
+import { failJob } from '../../../../packages/database/src/execution/queue.ts';
+import { repositoryRequiredChecks } from '../../../../packages/database/src/platform-repository-publication-contracts.ts';
+import { platformRepository } from '../../../../packages/database/src/platform-repository-credential-contracts.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -223,8 +241,11 @@ suite(
         });
       return { admin, internal, data, create, panel };
     }
-    async function start(s: Awaited<ReturnType<typeof setup>>) {
-      const review = await s.create(),
+    async function start(
+      s: Awaited<ReturnType<typeof setup>>,
+      existing?: Awaited<ReturnType<typeof createPlatformRepositoryReview>>,
+    ) {
+      const review = existing ?? (await s.create()),
         workerId = randomUUID(),
         job = await claimNextJob(workerId, 300000);
       expect(job!.id).toBe(review.jobId);
@@ -396,6 +417,753 @@ suite(
       });
       return { seed, child, review };
     }
+
+    async function completedReview() {
+      return completeReview(await start(await setup()));
+    }
+    async function completeReview(s: Awaited<ReturnType<typeof start>>) {
+      const o = await opinion(s);
+      await s.development({
+        action: 'deliver',
+        candidate: o.seed.candidate,
+        reviewId: o.review.id,
+      });
+      expect((await s.finish()).status).toBe('completed');
+      await recordRepositoryReviewRemote(
+        s.lease,
+        'postflight',
+        s.data.publication.ci,
+        s.data.publication.ci_evidence,
+      );
+      await completeJob({
+        ...s.lease,
+        result: { syntheticProtocolOnly: true },
+      });
+      await f.db`update allrice_jobs set timeout_at=created_at+interval '1 millisecond' where id=${s.lease.jobId}`;
+      await f.db`update allrice_runtime_roots set deadline_at=clock_timestamp()-interval '1 millisecond' where root_run_id=${s.review.runId}`;
+      return { ...s, o };
+    }
+    async function rerunReview(s: Awaited<ReturnType<typeof completedReview>>) {
+      const p = s.data.publication;
+      const evidence = structuredClone(p.ci_evidence);
+      for (const e of evidence) {
+        e.receipt.runAttempt = 2;
+        e.artifactId += 10;
+      }
+      const ci = {
+        ...p.ci,
+        runAttempt: 2,
+        receipts: evidence.map((e) => ({
+          name: e.receipt.job,
+          artifactId: e.artifactId,
+          archiveDigest: e.archiveDigest,
+          receiptDigest: technicalDigest(e.receipt),
+        })),
+      };
+      await f.db`update allrice_platform_repository_publications set ci=${f.db.json(ci)},ci_evidence=${f.db.json(evidence)} where id=${p.id}`;
+      const run = await enqueueRun(s.internal, {
+        type: 'allrice.system.echo',
+        workspaceId: s.internal.workspaceId,
+        idempotencyKey: randomUUID(),
+        input: {},
+      });
+      const [job] =
+        await f.db`update allrice_jobs set status='succeeded' where run_id=${run.run.id} returning id`;
+      await f.db`update allrice_runs set state='succeeded' where id=${run.run.id}`;
+      const request = {
+        action: 'inspect',
+        requestId: randomUUID(),
+        publicationId: p.id,
+        credentialRevision: 1,
+      };
+      const receipt = {
+        ...s.data.inspection.receipt,
+        factsDigest: repositoryFactsDigest({ ...p, ci, ci_evidence: evidence }),
+      };
+      await f.db`insert into allrice_platform_repository_actions(id,publication_id,owner_id,request_id,request,input_digest,login_session_id,login_authenticated_at,credential_revision,mode,timeout_ms,run_id,job_id,receipt)
+        values(${randomUUID()},${p.id},${s.admin.actor.id},${request.requestId},${f.db.json(request)},${technicalDigest(request)},${s.admin.sessionId!},${s.admin.authenticatedAt!},1,'inspect',30000,${run.run.id},${job!.id},${f.db.json(receipt)})`;
+      const panel = await getPlatformRepositoryReviewPanel(s.admin, p.id, 1);
+      const review = await createPlatformRepositoryReview(s.admin, {
+        requestId: randomUUID(),
+        publicationId: p.id,
+        expectedSubjectDigest: panel.subjectDigest,
+        credentialRevision: 1,
+      });
+      return start(
+        {
+          ...s,
+          data: { ...s.data, publication: { ...p, ci, ci_evidence: evidence } },
+        },
+        review,
+      );
+    }
+    async function claimMerge(runId: string) {
+      const [expected] =
+        await f.db`select id from allrice_jobs where run_id=${runId}`;
+      const workerId = randomUUID(),
+        job = await claimNextJob(workerId, 300000);
+      expect(job?.id).toBe(expected!.id);
+      const lease = {
+        workerId,
+        jobId: job!.id,
+        leaseToken: job!.lease!.token,
+        attempt: job!.attempt,
+      };
+      await startClaimedJob(workerId, job!.id, lease.leaseToken);
+      return lease;
+    }
+    const mergeRequest = (s: Awaited<ReturnType<typeof completedReview>>) => ({
+      action: 'merge' as const,
+      requestId: randomUUID(),
+      publicationId: s.data.publication.id,
+      reviewSubjectId: s.review.id,
+      expectedSubjectDigest: s.o.seed.material.subjectDigest,
+      credentialRevision: 1,
+    });
+    function remoteMerge(
+      s: Awaited<ReturnType<typeof completedReview>>,
+      opts: { lost?: boolean; moveBase?: boolean; unprotected?: boolean } = {},
+    ) {
+      const m = s.o.seed.material,
+        M = '9'.repeat(40);
+      let merged = false,
+        draft = true,
+        unavailable = false,
+        mergeWrites = 0,
+        readyWrites = 0;
+      const transport = vi.fn<typeof fetch>(async (url, options) => {
+        const path = new URL(String(url)).pathname;
+        if (path === '/graphql') {
+          expect(options?.method).toBe('POST');
+          expect(JSON.parse(String(options?.body)).variables.id).toBe(
+            'PR_synthetic',
+          );
+          readyWrites++;
+          draft = false;
+          return new Response(JSON.stringify({ data: {} }));
+        }
+        if (path.endsWith('/pulls/' + m.remote.number + '/merge')) {
+          expect(options?.method).toBe('PUT');
+          expect(JSON.parse(String(options?.body))).toEqual({
+            sha: m.metadata.commit,
+            merge_method: 'merge',
+          });
+          mergeWrites++;
+          if (opts.moveBase) return new Response('{}', { status: 409 });
+          merged = true;
+          if (opts.lost) {
+            unavailable = true;
+            throw Error('lost response after commit');
+          }
+          return new Response(JSON.stringify({ merged: true, sha: M }));
+        }
+        if (unavailable) return new Response('{}', { status: 503 });
+        const raw = path.endsWith('/branches/main/protection')
+          ? opts.unprotected
+            ? null
+            : {
+                required_status_checks: {
+                  strict: true,
+                  checks: repositoryRequiredChecks.map((context) => ({
+                    context,
+                    app_id: 15368,
+                  })),
+                },
+                enforce_admins: { enabled: true },
+                allow_force_pushes: { enabled: false },
+                allow_deletions: { enabled: false },
+              }
+          : path.endsWith('/pulls/' + m.remote.number)
+            ? {
+                number: m.remote.number,
+                html_url: m.remote.url,
+                node_id: 'PR_synthetic',
+                merged,
+                draft,
+                state: merged ? 'closed' : 'open',
+                merge_commit_sha: merged ? M : null,
+                head: {
+                  ref: m.remote.branch,
+                  sha: m.metadata.commit,
+                  repo: { id: platformRepository.id },
+                },
+                base: {
+                  ref: 'main',
+                  sha: m.source.baseSha,
+                  repo: { id: platformRepository.id },
+                },
+              }
+            : path.endsWith('/git/ref/heads/main')
+              ? {
+                  ref: 'refs/heads/main',
+                  object: { sha: merged ? M : m.source.baseSha },
+                }
+              : path.endsWith('/git/ref/heads/' + m.remote.branch)
+                ? {
+                    ref: 'refs/heads/' + m.remote.branch,
+                    object: { sha: m.metadata.commit },
+                  }
+                : path.endsWith('/git/commits/' + M)
+                  ? {
+                      sha: M,
+                      tree: { sha: m.metadata.tree },
+                      parents: [
+                        { sha: m.source.baseSha },
+                        { sha: m.metadata.commit },
+                      ],
+                    }
+                  : {
+                      id: platformRepository.id,
+                      full_name: platformRepository.fullName,
+                    };
+        return new Response(JSON.stringify(raw), {
+          status: raw === null ? 404 : 200,
+        });
+      });
+      const client = (
+        lease: Parameters<typeof repositoryMergeRequestGate>[0],
+        readOnly = false,
+      ) =>
+        new FixedRepositoryGithub(
+          () => repositoryMergeRequestGate(lease),
+          new AbortController().signal,
+          transport,
+          readOnly,
+        );
+      return {
+        client,
+        transport,
+        inspectCi: async () => ({
+          observation: s.data.publication.ci,
+          evidence: s.data.publication.ci_evidence,
+        }),
+        recover: () => {
+          unavailable = false;
+        },
+        counts: () => ({ mergeWrites, readyWrites }),
+      };
+    }
+    it('consumes a completed expired review, binds one concurrent request and confirms exact main merge without claiming Dev', async () => {
+      const s = await completedReview();
+      const proof = await f.db.begin((tx) =>
+        readCompletedRepositoryReview(tx, s.internal, s.review.id),
+      );
+      expect(proof.reviewerRunId).toBe(s.o.child.instance.runId);
+      const request = mergeRequest(s),
+        results = await Promise.all([
+          createPlatformRepositoryMerge(s.admin, request),
+          createPlatformRepositoryMerge(s.admin, request),
+        ]);
+      expect(results[0]!.id).toBe(results[1]!.id);
+      expect(results[0]!.actions).toHaveLength(1);
+      const lease = await claimMerge(results[0]!.actions[0]!.runId),
+        remote = remoteMerge(s);
+      const result = await mergeRepositoryCandidate(
+        lease,
+        new AbortController().signal,
+        { github: remote.client(lease), inspectCi: remote.inspectCi },
+      );
+      expect(result.devDeployed).toBe(false);
+      expect(remote.counts()).toEqual({ mergeWrites: 1, readyWrites: 1 });
+      await completeJob({ ...lease, result });
+      const saved = await getPlatformRepositoryMerge(s.admin, results[0]!.id);
+      expect(saved.receipt?.headSha).toBe(s.data.publication.metadata.commit);
+      expect(saved.actions[0]!.status).toBe('succeeded');
+      const other = await setup();
+      await expect(
+        getPlatformRepositoryMerge(other.admin, saved.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(
+        (
+          await getPlatformRepositoryMergePanel(
+            s.admin,
+            s.data.publication.id,
+            1,
+          )
+        ).reason,
+      ).toBe('merged');
+    }, 30000);
+    it('persists one unknown merge intent and reconciles the same actual result under fresh authorization with no second write', async () => {
+      const s = await completedReview(),
+        request = mergeRequest(s),
+        operation = await createPlatformRepositoryMerge(s.admin, request);
+      const lease = await claimMerge(operation.actions[0]!.runId),
+        remote = remoteMerge(s, { lost: true });
+      await expect(
+        mergeRepositoryCandidate(lease, new AbortController().signal, {
+          github: remote.client(lease),
+          inspectCi: remote.inspectCi,
+        }),
+      ).rejects.toThrow();
+      await failJob({
+        ...lease,
+        code: 'REPOSITORY_MERGE_RESULT_UNKNOWN',
+        message: 'Synthetic lost ACK',
+        retryable: false,
+      });
+      expect(
+        (await getPlatformRepositoryMerge(s.admin, operation.id)).mergeStarted,
+      ).toBe(true);
+      await expect(
+        createPlatformRepositoryMerge(s.admin, {
+          ...request,
+          requestId: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: 'conflict' });
+      const replay = await createPlatformRepositoryMerge(s.admin, request);
+      expect(replay.actions).toHaveLength(1);
+      remote.recover();
+      const readback = await createPlatformRepositoryMerge(s.admin, {
+        action: 'reconcile',
+        requestId: randomUUID(),
+        mergeId: operation.id,
+        credentialRevision: 1,
+      });
+      const readLease = await claimMerge(readback.actions[0]!.runId),
+        result = await mergeRepositoryCandidate(
+          readLease,
+          new AbortController().signal,
+          {
+            github: remote.client(readLease, true),
+            inspectCi: remote.inspectCi,
+          },
+        );
+      await completeJob({ ...readLease, result });
+      expect(remote.counts()).toEqual({ mergeWrites: 1, readyWrites: 1 });
+      expect(
+        (await getPlatformRepositoryMerge(s.admin, operation.id)).receipt
+          ?.mergeSha,
+      ).toBe('9'.repeat(40));
+    }, 30000);
+    it('rejects missing protection and remote atomic base drift; neither result is accepted as a merge', async () => {
+      for (const opts of [{ unprotected: true }, { moveBase: true }]) {
+        const s = await completedReview(),
+          operation = await createPlatformRepositoryMerge(
+            s.admin,
+            mergeRequest(s),
+          ),
+          lease = await claimMerge(operation.actions[0]!.runId),
+          remote = remoteMerge(s, opts);
+        await expect(
+          mergeRepositoryCandidate(lease, new AbortController().signal, {
+            github: remote.client(lease),
+            inspectCi: remote.inspectCi,
+          }),
+        ).rejects.toThrow();
+        await failJob({
+          ...lease,
+          code: 'REPOSITORY_MERGE_RESULT_UNKNOWN',
+          message: 'Synthetic protection failure',
+          retryable: false,
+        });
+        expect(
+          (await getPlatformRepositoryMerge(s.admin, operation.id)).receipt,
+        ).toBeNull();
+        expect(remote.counts().mergeWrites).toBe(opts.unprotected ? 0 : 1);
+      }
+    }, 30000);
+    it('rejects completed evidence after reviewer cancellation or deleted evidence, and rejects raw merge job admission', async () => {
+      const s = await completedReview();
+      await expect(
+        enqueueRun(s.internal, {
+          type: 'allrice.platform.repository.merge',
+          workspaceId: s.internal.workspaceId,
+          input: {},
+          idempotencyKey: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: 'policy_denied' });
+      await f.db`update allrice_assistant_instances set cancel_request_id=${randomUUID()},cancel_requested_at=clock_timestamp() where run_id=${s.o.child.instance.runId}`;
+      await expect(
+        createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      const second = await completedReview();
+      await f.db`delete from allrice_assistant_artifacts where run_id=${second.o.child.instance.runId}`;
+      await expect(
+        createPlatformRepositoryMerge(second.admin, mergeRequest(second)),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }, 30000);
+
+    it('retains finished review facts across old login/PAT expiry and original/effective report usage differences while requiring new current credentials', async () => {
+      const s = await completedReview();
+      const [report] =
+        await f.db`select * from allrice_assistant_results where run_id=${s.o.child.instance.runId}`;
+      await f.db`update allrice_assistant_results set payload_digest=${runtimeLedgerInputDigest({ ...report!.payload, usageComplete: !report!.payload.usageComplete })} where delivery_id=${report!.delivery_id}`;
+      await f.db`update allrice_sessions set expires_at=created_at+interval '1 millisecond' where id=${s.admin.sessionId!}`;
+      const login = await createSession(s.admin.actor.id),
+        fresh = (await authenticatePlatformSession(login.token))!;
+      await updatePlatformRepositoryCredential(fresh, {
+        action: 'replace',
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        token: 'github_pat_' + 'RotatedSyntheticOnly'.repeat(7),
+      });
+      const proof = await f.db.begin((tx) =>
+        readCompletedRepositoryReview(tx, s.internal, s.review.id),
+      );
+      expect(proof.reportInputDigest).not.toBe(proof.reportPayloadDigest);
+      const [oldJob] = await f.db<
+        JobRow[]
+      >`select * from allrice_jobs where id=${s.lease.jobId}`;
+      expect(
+        await f.db.begin((tx) =>
+          repositoryReviewCompletionAllowed(tx, oldJob!),
+        ),
+      ).toBe(false);
+      await expect(
+        createPlatformRepositoryMerge(fresh, mergeRequest(s)),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      const operation = await createPlatformRepositoryMerge(fresh, {
+        ...mergeRequest(s),
+        credentialRevision: 2,
+      });
+      const lease = await claimMerge(operation.actions[0]!.runId);
+      expect(
+        (await repositoryMergeRequestGate(lease)).remainingMs,
+      ).toBeGreaterThan(0);
+      await failJob({
+        ...lease,
+        code: 'FIXTURE_COMPLETE',
+        message: 'No external effect in this test',
+        retryable: false,
+      });
+    }, 30000);
+    it('requires actual report adoption and blocks explicit historical root cancellation even when completion status is retained', async () => {
+      for (const fault of ['adoption', 'root-cancel', 'revoke'] as const) {
+        const s = await completedReview();
+        if (fault === 'adoption')
+          await f.db`update allrice_assistant_results set parent_message_id=null where run_id=${s.o.child.instance.runId}`;
+        else if (fault === 'root-cancel')
+          await f.db`update allrice_runtime_roots set cancel_request_id=${randomUUID()},cancel_requested_at=clock_timestamp(),cancel_reason='user_request' where root_run_id=${s.review.runId}`;
+        else
+          await f.db`update allrice_assistant_roots set revoked_at=clock_timestamp() where root_run_id=${s.review.runId}`;
+        await expect(
+          createPlatformRepositoryMerge(s.admin, mergeRequest(s)),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(
+          (await getPlatformRepositoryReview(s.admin, s.review.id)).status,
+        ).toBe('succeeded');
+      }
+    }, 30000);
+    it('rejects a new merge lease that expires while waiting for current credential authority', async () => {
+      const s = await completedReview(),
+        operation = await createPlatformRepositoryMerge(
+          s.admin,
+          mergeRequest(s),
+        ),
+        lease = await claimMerge(operation.actions[0]!.runId);
+      let locked!: () => void, release!: () => void;
+      const acquired = new Promise<void>((r) => {
+          locked = r;
+        }),
+        released = new Promise<void>((r) => {
+          release = r;
+        });
+      const hold = f.db.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtext(${`platform-repository-credential:${s.admin.actor.id}:${platformRepository.id}`}))`;
+        locked();
+        await released;
+      });
+      await acquired;
+      await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()+interval '100 milliseconds' where id=${lease.jobId}`;
+      const gate = repositoryMergeRequestGate(lease).then(
+        () => ({ allowed: true }),
+        (e) => ({ allowed: false, error: e }),
+      );
+      try {
+        await new Promise((r) => setTimeout(r, 200));
+        release();
+        await hold;
+        const outcome = await gate;
+        expect(outcome.allowed).toBe(false);
+        expect(outcome).toHaveProperty('error.code', 'lease_lost');
+      } finally {
+        release();
+        await hold;
+        await gate;
+      }
+    }, 30000);
+    it('rejects an HTTP merge when its current login naturally expires during a publication lock wait', async () => {
+      const s = await completedReview(),
+        operation = await createPlatformRepositoryMerge(
+          s.admin,
+          mergeRequest(s),
+        ),
+        lease = await claimMerge(operation.actions[0]!.runId),
+        remote = remoteMerge(s);
+      await f.db`update allrice_sessions set expires_at=clock_timestamp()+interval '2 seconds' where id=${s.admin.sessionId!}`;
+      let locked!: () => void, release!: () => void;
+      const acquired = new Promise<void>((r) => {
+          locked = r;
+        }),
+        released = new Promise<void>((r) => {
+          release = r;
+        });
+      const hold = f.db.begin(async (tx) => {
+        await tx`select id from allrice_platform_repository_publications where id=${s.data.publication.id} for update`;
+        locked();
+        await released;
+      });
+      await acquired;
+      const request = remote
+        .client(lease)
+        .mergeExactPull(
+          s.o.seed.material.remote.number,
+          s.o.seed.material.metadata.commit,
+        )
+        .then(
+          () => ({ allowed: true }),
+          (error) => ({ allowed: false, error }),
+        );
+      try {
+        await vi.waitFor(
+          async () => {
+            const [waiting] =
+              await f.db`select count(*)::int as n from pg_stat_activity where wait_event_type='Lock' and query like '%allrice_platform_repository_publications%'`;
+            expect(waiting!.n).toBeGreaterThan(0);
+          },
+          { timeout: 5000, interval: 25 },
+        );
+        await vi.waitFor(
+          async () => {
+            const [login] =
+              await f.db`select expires_at<=clock_timestamp() as expired from allrice_sessions where id=${s.admin.sessionId!}`;
+            expect(login!.expired).toBe(true);
+          },
+          { timeout: 5000, interval: 25 },
+        );
+        release();
+        await hold;
+        expect((await request).allowed).toBe(false);
+        expect(remote.counts().mergeWrites).toBe(0);
+        expect(remote.transport).not.toHaveBeenCalled();
+      } finally {
+        release();
+        await hold;
+        await request;
+        await failJob({
+          ...lease,
+          code: 'FIXTURE_COMPLETE',
+          message: 'No HTTP write after expired login',
+          retryable: false,
+        });
+      }
+    }, 30000);
+
+    it('allows a new completed CI review after pre-START failure, preserves old request evidence and rejects proof replacement after any START', async () => {
+      for (const effect of [null, 'ready', 'merge'] as const) {
+        const s = await completedReview(),
+          request = mergeRequest(s),
+          old = await createPlatformRepositoryMerge(s.admin, request),
+          lease = await claimMerge(old.actions[0]!.runId);
+        if (effect) {
+          const m = s.o.seed.material;
+          await startRepositoryMergeEffect(lease, effect, {
+            policy: {
+              version: 1,
+              kind: 'strict_protected_main',
+              digest: technicalDigest({ strict: true }),
+            },
+            ci: m.ci,
+            pull: {
+              number: m.remote.number,
+              url: m.remote.url,
+              headSha: m.metadata.commit,
+              baseSha: m.source.baseSha,
+              draft: effect === 'ready',
+              state: 'open',
+              nodeId: 'PR_synthetic',
+              merged: false,
+              mergeSha: null,
+            },
+          });
+        }
+        await failJob({
+          ...lease,
+          code: 'FIXTURE_PRECHECK',
+          message: 'Stop without replaying any external write',
+          retryable: false,
+        });
+        const next = await completeReview(await rerunReview(s));
+        expect(next.o.seed.material.subjectDigest).not.toBe(
+          s.o.seed.material.subjectDigest,
+        );
+        expect(
+          (await findPlatformRepositoryMerge(s.admin, request.requestId))!
+            .reviewSubjectId,
+        ).toBe(s.review.id);
+        const panel = await getPlatformRepositoryMergePanel(
+          s.admin,
+          s.data.publication.id,
+          1,
+        );
+        if (effect) {
+          expect(panel.canStart).toBe(false);
+          await expect(
+            createPlatformRepositoryMerge(s.admin, mergeRequest(next)),
+          ).rejects.toMatchObject({ code: 'conflict' });
+        } else {
+          expect(panel.canStart).toBe(true);
+          const current = await createPlatformRepositoryMerge(
+            s.admin,
+            mergeRequest(next),
+          );
+          expect(current.id).not.toBe(old.id);
+          expect(current.reviewSubjectId).toBe(next.review.id);
+          expect(
+            (await createPlatformRepositoryMerge(s.admin, request)).id,
+          ).toBe(old.id);
+          expect(
+            (await getPlatformRepositoryMerge(s.admin, old.id)).reviewSubjectId,
+          ).toBe(s.review.id);
+          const currentLease = await claimMerge(current.actions[0]!.runId),
+            remote = remoteMerge(next);
+          const result = await mergeRepositoryCandidate(
+            currentLease,
+            new AbortController().signal,
+            {
+              github: remote.client(currentLease),
+              inspectCi: remote.inspectCi,
+            },
+          );
+          await completeJob({ ...currentLease, result });
+          expect(remote.counts().mergeWrites).toBe(1);
+        }
+      }
+    }, 60000);
+
+    it('fences current private scope revocation across a publication lock wait and rejects the next request after revocation commits', async () => {
+      const s = await completedReview(),
+        operation = await createPlatformRepositoryMerge(
+          s.admin,
+          mergeRequest(s),
+        ),
+        lease = await claimMerge(operation.actions[0]!.runId);
+      let locked!: () => void, release!: () => void;
+      const acquired = new Promise<void>((r) => {
+          locked = r;
+        }),
+        released = new Promise<void>((r) => {
+          release = r;
+        });
+      const hold = f.db.begin(async (tx) => {
+        await tx`select id from allrice_platform_repository_publications where id=${s.data.publication.id} for update`;
+        locked();
+        await released;
+      });
+      await acquired;
+      let gateDone = false,
+        revoked = false;
+      const gate = repositoryMergeRequestGate(lease).finally(() => {
+        gateDone = true;
+      });
+      try {
+        await vi.waitFor(
+          async () => {
+            const [waiting] =
+              await f.db`select count(*)::int as n from pg_stat_activity where wait_event_type='Lock' and query like '%allrice_platform_repository_publications%'`;
+            expect(waiting!.n).toBeGreaterThan(0);
+          },
+          { timeout: 5000, interval: 25 },
+        );
+        const revoke =
+          f.db`update allrice_memberships set active=false where user_id=${s.admin.actor.id} and organization_id=${s.internal.organizationId}`.then(
+            () => {
+              revoked = true;
+            },
+          );
+        await new Promise((r) => setTimeout(r, 80));
+        expect(gateDone).toBe(false);
+        expect(revoked).toBe(false);
+        release();
+        await hold;
+        expect((await gate).remainingMs).toBeGreaterThan(0);
+        await revoke;
+        await expect(repositoryMergeRequestGate(lease)).rejects.toThrow();
+      } finally {
+        release();
+        await hold;
+        await gate.catch(() => undefined);
+      }
+    }, 30000);
+
+    it('serializes actual same-content revise registration with historical proof consumption and preserves the rejection after its Job fails', async () => {
+      const s = await completedReview(),
+        next = await rerunReview(s);
+      expect(
+        (
+          await f.db.begin((tx) =>
+            readCompletedRepositoryReview(tx, s.internal, s.review.id),
+          )
+        ).material.candidateContentDigest,
+      ).toBe(s.o.seed.material.candidateContentDigest);
+      let locked!: () => void, release!: () => void;
+      const acquired = new Promise<void>((r) => {
+          locked = r;
+        }),
+        released = new Promise<void>((r) => {
+          release = r;
+        });
+      const hold = f.db.begin(async (tx) => {
+        await lockRepositoryReviewContent(
+          tx,
+          s.admin.actor.id,
+          s.o.seed.material.candidateContentDigest,
+        );
+        locked();
+        await released;
+      });
+      await acquired;
+      let writerDone = false,
+        readerDone = false;
+      const writer = opinion(next, 'revise').finally(() => {
+        writerDone = true;
+      });
+      // Wait for the real registered callback to queue on the shared mutex.
+      await vi.waitFor(
+        async () => {
+          const [wait] =
+            await f.db`select count(*)::int as n from pg_stat_activity where wait_event='advisory' and query like '%pg_advisory_xact_lock(hashtextextended%'`;
+          expect(wait!.n).toBeGreaterThan(0);
+        },
+        { timeout: 5000, interval: 25 },
+      );
+      const reader = f.db
+        .begin((tx) =>
+          readCompletedRepositoryReview(tx, s.internal, s.review.id),
+        )
+        .then(
+          () => ({ allowed: true }),
+          (e) => ({ allowed: false, error: e }),
+        )
+        .finally(() => {
+          readerDone = true;
+        });
+      try {
+        await new Promise((r) => setTimeout(r, 80));
+        expect(writerDone).toBe(false);
+        expect(readerDone).toBe(false);
+        release();
+        await hold;
+        await writer;
+        expect((await reader).allowed).toBe(false);
+        await failJob({
+          ...next.lease,
+          code: 'FIXTURE_REVISE',
+          message: 'Keep actual rejection even when final Job fails',
+          retryable: false,
+        });
+        await expect(
+          f.db.begin((tx) =>
+            readCompletedRepositoryReview(tx, s.internal, s.review.id),
+          ),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      } finally {
+        release();
+        await hold;
+        await writer;
+        await reader;
+      }
+    }, 30000);
 
     it('completes native inspect → fresh child → saved opinion → adopted report → delivery → canonical job and private download', async () => {
       const s = await start(await setup()),

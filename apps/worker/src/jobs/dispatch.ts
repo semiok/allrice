@@ -6,6 +6,7 @@ import type {
 import { executeEmployeeRun } from './employee-run.js';
 import { executePlatformTechnicalTask } from './platform-technical.js';
 import { executePlatformRepositoryAction } from './platform-repository.js';
+import { executePlatformRepositoryMerge } from './platform-repository-merge.js';
 import { executeSystemEcho } from './system-echo.js';
 import { executeWorkflowRun } from './workflow-run.js';
 
@@ -13,6 +14,7 @@ const handlers = {
   'allrice.employee.run': executeEmployeeRun,
   'allrice.platform.technical': executePlatformTechnicalTask,
   'allrice.platform.repository': executePlatformRepositoryAction,
+  'allrice.platform.repository.merge': executePlatformRepositoryMerge,
   'allrice.system.echo': executeSystemEcho,
   'allrice.workflow.run': executeWorkflowRun,
 } satisfies Record<string, ClaimedJobHandler>;

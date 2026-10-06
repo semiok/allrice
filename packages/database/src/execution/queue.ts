@@ -1,3 +1,14 @@
+import {
+  RepositoryMergeBindingSchema,
+  repositoryMergeJobType,
+  type RepositoryMergeBinding,
+} from '../platform-repository-merge-contracts.ts';
+import {
+  bindRepositoryMerge,
+  assertExistingRepositoryMerge,
+  isRepositoryMergeJobAuthorized,
+  repositoryMergeCompletionAllowed,
+} from '../platform-repository-merge-authority.ts';
 import { randomUUID } from 'node:crypto';
 import {
   RepositoryActionBindingSchema,
@@ -315,6 +326,7 @@ export async function enqueueRun(
   context: RequestContext,
   input: unknown,
   options: {
+    repositoryMergeBinding?: RepositoryMergeBinding;
     repositoryBinding?: RepositoryActionBinding;
     repositoryReviewBinding?: RepositoryReviewBinding;
     technicalBinding?: TechnicalTaskBinding;
@@ -396,6 +408,27 @@ export async function enqueueRun(
       payload: { input: submission.input } as JobRow['payload'],
     })
   )
+    throw new QueueError('policy_denied');
+  if (submission.type === repositoryMergeJobType) {
+    const b = RepositoryMergeBindingSchema.safeParse(
+      options.repositoryMergeBinding,
+    );
+    if (
+      !b.success ||
+      submission.maxAttempts !== 1 ||
+      submission.availableAt ||
+      submission.timeoutMs !== b.data.timeoutMs ||
+      submission.idempotencyKey !==
+        `platform-repository-merge:${context.actor.id}:${b.data.request.requestId}` ||
+      technicalDigest(submission.input) !==
+        technicalDigest({
+          requestId: b.data.request.requestId,
+          inputDigest: b.data.inputDigest,
+        }) ||
+      Object.keys(options).some((k) => k !== 'repositoryMergeBinding')
+    )
+      throw new QueueError('policy_denied');
+  } else if (options.repositoryMergeBinding)
     throw new QueueError('policy_denied');
   if (submission.type === repositoryPublicationJobType) {
     const b = RepositoryActionBindingSchema.safeParse(
@@ -524,6 +557,7 @@ export async function enqueueRun(
         existing[0].payload.type !== submission.type ||
         (submission.type === platformTechnicalJobType ||
         submission.type === repositoryPublicationJobType ||
+        submission.type === repositoryMergeJobType ||
         options.qualityBinding ||
         options.repairBinding ||
         options.repositoryReviewBinding
@@ -547,6 +581,13 @@ export async function enqueueRun(
           { ...context, workspaceId },
           existing[0].run_id,
           options.repairBinding,
+        );
+      if (options.repositoryMergeBinding)
+        await assertExistingRepositoryMerge(
+          transaction,
+          { ...context, workspaceId },
+          existing[0].run_id,
+          options.repositoryMergeBinding,
         );
       if (options.repositoryBinding)
         await assertExistingRepositoryAction(
@@ -827,6 +868,20 @@ export async function enqueueRun(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.repositoryMergeBinding) {
+      await bindRepositoryMerge(
+        transaction,
+        { ...context, workspaceId },
+        run.id,
+        job.id,
+        options.repositoryMergeBinding,
+      );
+      const [bound] = await transaction<
+        JobRow[]
+      >`select * from allrice_jobs where id=${job.id}`;
+      if (!bound || !(await isRepositoryMergeJobAuthorized(transaction, bound)))
+        throw new QueueError('policy_denied');
+    }
     if (options.repositoryBinding) {
       await bindRepositoryAction(
         transaction,
@@ -1626,6 +1681,7 @@ async function stopUnauthorizedTechnicalJob(
     (await isPlatformTechnicalJobAuthorized(transaction, job)) &&
     (await isPlatformQualityJobAuthorized(transaction, job)) &&
     (await isRepositoryActionAuthorized(transaction, job)) &&
+    (await isRepositoryMergeJobAuthorized(transaction, job)) &&
     (await isRepositoryReviewJobAuthorized(transaction, job))
   )
     return false;
@@ -1856,6 +1912,17 @@ export async function completeJob(input: {
       });
       return;
     }
+    if (!(await repositoryMergeCompletionAllowed(transaction, job))) {
+      await transitionTerminal(transaction, job, {
+        jobStatus: 'failed',
+        runStatus: 'failed',
+        eventType: 'run.failed',
+        code: 'REPOSITORY_MERGE_RECEIPT_REQUIRED',
+        message: 'Repository merge has no complete exact remote receipt',
+        payload: { code: 'REPOSITORY_MERGE_RECEIPT_REQUIRED' },
+      });
+      return;
+    }
     if (!(await platformQualityCompletionAllowed(transaction, job))) {
       await transitionTerminal(transaction, job, {
         jobStatus: 'failed',
@@ -1945,9 +2012,11 @@ export async function failJob(input: {
       return { retrying: false };
     }
     if (
-      [platformTechnicalJobType, repositoryPublicationJobType].includes(
-        String((job.payload as { type?: unknown })?.type),
-      ) &&
+      [
+        platformTechnicalJobType,
+        repositoryPublicationJobType,
+        repositoryMergeJobType,
+      ].includes(String((job.payload as { type?: unknown })?.type)) &&
       job.timeout_at <= new Date()
     ) {
       await transitionTerminal(transaction, job, {

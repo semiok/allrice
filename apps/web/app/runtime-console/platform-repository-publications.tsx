@@ -9,6 +9,7 @@ import {
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 import { PlatformRepositoryReviews } from './platform-repository-reviews';
+import { PlatformRepositoryMerges } from './platform-repository-merges';
 const endpoint = '/api/v1/admin/technical-assistant/repository-publications';
 type Request =
   | {
@@ -428,6 +429,13 @@ export function PlatformRepositoryPublications({
           </p>
           <PlatformRepositoryReviews
             key={current.id}
+            publicationId={current.id}
+            credentialRevision={
+              credential?.state === 'configured' ? credential.revision : null
+            }
+          />
+          <PlatformRepositoryMerges
+            key={'merge:' + current.id}
             publicationId={current.id}
             credentialRevision={
               credential?.state === 'configured' ? credential.revision : null

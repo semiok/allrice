@@ -58,21 +58,7 @@ export async function readRepositoryReviewMaterial(
     await tx`select * from allrice_platform_repository_publications where id=${publicationId} and owner_id=${context.actor.id}
     and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} for share`;
   if (!p) throw new DataAccessError('not_found');
-  const rows = [];
-  let taskId: string | null = p.source_task_id;
-  const seen = new Set<string>();
-  while (taskId) {
-    if (seen.has(taskId) || seen.size >= 16) deny();
-    seen.add(taskId);
-    const [r] =
-      await tx`select q.*,j.status from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id and j.run_id=q.run_id and j.owner_id=q.owner_id
-      where q.id=${taskId} and q.owner_id=${context.actor.id} and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!} for share of q,j`;
-    if (!r) deny();
-    rows.push(
-      r as Parameters<typeof freezeRepositoryReviewMaterial>[1][number],
-    );
-    taskId = RepairFrozenSchema.parse(r.frozen).reuseSeed?.sourceTaskId ?? null;
-  }
+  const rows = await readRepositoryReviewRepairs(tx, context, p.source_task_id);
   const [inspection] =
     await tx`select a.mode,a.receipt,j.status from allrice_platform_repository_actions a join allrice_jobs j on j.id=a.job_id and j.run_id=a.run_id and j.owner_id=a.owner_id
     where a.publication_id=${p.id} and a.owner_id=${context.actor.id} and a.mode='inspect' order by a.created_at desc,a.id desc limit 1`;
@@ -311,4 +297,28 @@ export async function repositoryReviewCompletionAllowed(
         !!s.delivery_artifact_id &&
         s.ready_artifacts === 3)
   );
+}
+
+export async function readRepositoryReviewRepairs(
+  tx: Tx,
+  context: RequestContext,
+  sourceTaskId: string,
+) {
+  const rows: Parameters<typeof freezeRepositoryReviewMaterial>[1] = [];
+  let taskId: string | null = sourceTaskId;
+  const seen = new Set<string>();
+  while (taskId) {
+    if (seen.has(taskId) || seen.size >= 16) deny();
+    seen.add(taskId);
+    const [r]: Parameters<typeof freezeRepositoryReviewMaterial>[1] = await tx<
+      Parameters<typeof freezeRepositoryReviewMaterial>[1]
+    >`select q.*,j.status from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id and j.run_id=q.run_id and j.owner_id=q.owner_id
+      where q.id=${taskId} and q.owner_id=${context.actor.id} and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!} for share of q,j`;
+    if (!r) deny();
+    rows.push(
+      r as Parameters<typeof freezeRepositoryReviewMaterial>[1][number],
+    );
+    taskId = RepairFrozenSchema.parse(r.frozen).reuseSeed?.sourceTaskId ?? null;
+  }
+  return rows;
 }

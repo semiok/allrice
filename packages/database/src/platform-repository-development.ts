@@ -11,6 +11,11 @@ import type { RuntimeLedgerTransaction } from './runtime-ledger/types.ts';
 import type { DevelopmentCaller } from './development-cooperation.ts';
 import { publishWorkbenchArtifact } from './artifact-review.ts';
 import { repositoryDigest } from './platform-repository-source.ts';
+import {
+  lockRepositoryReviewContent,
+  repositoryReviewOpinion,
+  repositoryReviewDelivery,
+} from './platform-repository-review-facts.ts';
 import { technicalDigest } from './platform-technical-tasks.ts';
 import {
   RepositoryReviewCommandSchema,
@@ -260,16 +265,14 @@ export async function executeRepositoryDevelopment(
         fail('evidence_mismatch');
       if (r && (r.id !== input.requestId || r.request_digest !== requestDigest))
         fail('review_conflict');
-      return {
-        id: input.requestId,
-        candidate: args.candidate,
-        subjectDigest: material.subjectDigest,
-        evidenceDigest: material.evidenceDigest,
-        reviewerRunId: s.reviewer_run_id as string,
-        verdict: args.verdict,
-        summary: args.summary,
-        applied: false,
-      };
+      return repositoryReviewOpinion(
+        input.requestId,
+        args.candidate,
+        material,
+        s.reviewer_run_id as string,
+        args.verdict,
+        args.summary,
+      );
     }
     rootOnly();
     if (!r || r.id !== args.reviewId || r.verdict !== 'accept')
@@ -278,18 +281,13 @@ export async function executeRepositoryDevelopment(
       await tx`select r.id from allrice_platform_repository_reviews r join allrice_platform_repository_review_subjects s on s.id=r.subject_id
       where s.owner_id=${material.ownerId} and s.content_digest=${material.candidateContentDigest} and r.verdict='revise' limit 1`;
     if (rejected) fail('revision_required');
-    return {
-      candidate: args.candidate,
-      subjectDigest: material.subjectDigest,
-      evidenceDigest: material.evidenceDigest,
-      reviewId: r.id as string,
-      reviewerRunId: s.reviewer_run_id as string,
-      verdict: 'accept' as const,
-      summary: r.summary as string,
-      applied: false,
-      notice:
-        'Model review is an attributed opinion. Merge and Dev acceptance are separate gates.',
-    };
+    return repositoryReviewDelivery(
+      args.candidate,
+      material,
+      r.id as string,
+      s.reviewer_run_id as string,
+      r.summary as string,
+    );
   };
   const result = await o.database.begin(verify);
   const artifact = await publishWorkbenchArtifact(
@@ -316,11 +314,23 @@ export async function executeRepositoryDevelopment(
       },
       registered: async (tx, artifactId) => {
         await verify(tx);
+        await lockRepositoryReviewContent(
+          tx,
+          material.ownerId,
+          material.candidateContentDigest,
+        );
+        // The actual registration transaction, not only the initial preview,
+        // participates in the same-content verdict/merge boundary.
         if (args.action === 'review') {
           await tx`insert into allrice_platform_repository_reviews(id,subject_id,reviewer_run_id,request_digest,verdict,summary,evidence_digest,artifact_id)
           values(${input.requestId},${subject.id},${result.reviewerRunId},${requestDigest},${args.verdict},${args.summary},${material.evidenceDigest},${artifactId}) on conflict(id) do nothing`;
-        } else
+        } else {
+          const [rejected] =
+            await tx`select r.id from allrice_platform_repository_reviews r join allrice_platform_repository_review_subjects s on s.id=r.subject_id
+            where s.owner_id=${material.ownerId} and s.content_digest=${material.candidateContentDigest} and r.verdict='revise' limit 1`;
+          if (rejected) fail('revision_required');
           await tx`update allrice_platform_repository_review_subjects set delivery_artifact_id=${artifactId} where id=${subject.id}`;
+        }
       },
     },
   );
