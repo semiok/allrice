@@ -28,6 +28,8 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - name: Capture actual checked-out repository identity
+        run: node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/source.json
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.3
@@ -42,7 +44,7 @@ jobs:
       - name: Verify tenant workspace and composer ownership in Chromium
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
-        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/server/project-preview.test.mjs
+        run: pnpm exec vitest run --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/app/runtime-console/platform-repository-publications.browser.test.ts apps/web/server/project-preview.test.mjs
       - name: Verify private repository credential write reconciliation
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
@@ -68,12 +70,23 @@ jobs:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run --maxWorkers=1 tests/integration/platform-quality-delivery.integration.test.ts -t 'one available file|pending and failed'
+      - name: Record complete original CI gate
+        run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-ci-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/repository-ci/receipt.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Capture actual checked-out repository identity
+        run: node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/source.json
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.3
@@ -108,13 +121,26 @@ jobs:
           path: .local/quality/native/
           include-hidden-files: true
           retention-days: 14
-      - run: pnpm build
+      - name: Build all workspace production packages
+        id: workspace-build
+        run: pnpm build
+      - name: Record complete original CI gate
+        run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-ci-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/repository-ci/receipt.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   developer-bootstrap:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Capture actual checked-out repository identity
+        run: node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/source.json
       - uses: pnpm/action-setup@v4
         with:
           version: 10.33.3
@@ -217,7 +243,7 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         # Separate synthetic schemas; no actual provider, host control or company data.
-        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/platform-repair.integration.test.ts packages/database/src/platform-repository-credentials.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts tests/integration/platform-quality-delivery.integration.test.ts
+        run: pnpm exec vitest run --maxWorkers=1 --reporter=default --reporter=json --outputFile=.local/quality/postgres/vitest-quality.json packages/database/src/platform-technical.integration.test.ts packages/database/src/platform-technical-tasks.integration.test.ts packages/database/src/platform-quality.integration.test.ts packages/database/src/platform-repair.integration.test.ts packages/database/src/platform-repository-credentials.integration.test.ts packages/database/src/platform-repository-publication.integration.test.ts packages/database/src/browser-lifecycle.integration.test.ts packages/database/src/artifact-publication-concurrency.integration.test.ts tests/integration/platform-quality-conversation.integration.test.ts tests/integration/platform-quality-delivery.integration.test.ts
       - name: Collect PostgreSQL scenario evidence without rerunning tests
         if: always() && steps.postgres-capture.outcome == 'success'
         env:
@@ -250,10 +276,33 @@ jobs:
       - name: Stop development database
         if: always()
         run: pnpm db:dev:down
+      - name: Record complete original CI gate
+        run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-ci-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/repository-ci/receipt.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
 
   compose-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - uses: actions/checkout@v4
+      - name: Capture actual checked-out repository identity
+        run: node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/source.json
       - run: bash scripts/compose-smoke.sh
+      - name: Record complete original CI gate
+        run: node scripts/acceptance/platform/repository-ci.mjs finish --capture=.local/repository-ci/source.json --output=.local/repository-ci/receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-ci-${{ github.job }}-${{ github.run_attempt }}
+          path: .local/repository-ci/receipt.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

@@ -8,6 +8,7 @@ import {
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
+import { PlatformRepositoryPublications } from './platform-repository-publications';
 const endpoint = '/api/v1/admin/technical-assistant/repair';
 const labels = {
   queued: '排队中',
@@ -416,6 +417,15 @@ export function PlatformRepositoryRepair() {
           )}
         </article>
       )}
+      <PlatformRepositoryPublications
+        repair={current}
+        currentBaseline={
+          !!current &&
+          !!catalog?.baselines.some(
+            (b) => b.id === current.baseline.id && !!b.compiledDependencies,
+          )
+        }
+      />
     </section>
   );
 }

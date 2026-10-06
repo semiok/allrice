@@ -1,5 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import {
+  RepositoryActionBindingSchema,
+  bindRepositoryAction,
+  assertExistingRepositoryAction,
+  isRepositoryActionAuthorized,
+  repositoryActionCompletionAllowed,
+  type RepositoryActionBinding,
+} from '../platform-repository-publication-authority.ts';
+import { repositoryPublicationJobType } from '../platform-repository-publication-contracts.ts';
+import {
   TechnicalTaskReceiptSchema,
   type TechnicalDiagnostics,
   type TechnicalIssueDetailSchema,
@@ -294,6 +303,7 @@ export async function enqueueRun(
   context: RequestContext,
   input: unknown,
   options: {
+    repositoryBinding?: RepositoryActionBinding;
     technicalBinding?: TechnicalTaskBinding;
     qualityBinding?: QualityBinding;
     repairBinding?: RepairBinding;
@@ -340,6 +350,26 @@ export async function enqueueRun(
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
+  if (submission.type === repositoryPublicationJobType) {
+    const b = RepositoryActionBindingSchema.safeParse(
+      options.repositoryBinding,
+    );
+    if (
+      !b.success ||
+      submission.maxAttempts !== 1 ||
+      submission.availableAt ||
+      submission.timeoutMs !== b.data.timeoutMs ||
+      submission.idempotencyKey !==
+        `platform-repository:${context.actor.id}:${b.data.request.requestId}` ||
+      technicalDigest(submission.input) !==
+        technicalDigest({
+          requestId: b.data.request.requestId,
+          inputDigest: b.data.inputDigest,
+        }) ||
+      Object.keys(options).some((key) => key !== 'repositoryBinding')
+    )
+      throw new QueueError('policy_denied');
+  } else if (options.repositoryBinding) throw new QueueError('policy_denied');
   if (options.repairBinding) {
     const b = RepairBindingSchema.parse(options.repairBinding);
     const i = submission.input as Record<string, unknown>;
@@ -446,6 +476,7 @@ export async function enqueueRun(
         existing[0].owner_id !== ownerId ||
         existing[0].payload.type !== submission.type ||
         (submission.type === platformTechnicalJobType ||
+        submission.type === repositoryPublicationJobType ||
         options.qualityBinding ||
         options.repairBinding
           ? technicalDigest(existing[0].payload.input) !==
@@ -468,6 +499,13 @@ export async function enqueueRun(
           { ...context, workspaceId },
           existing[0].run_id,
           options.repairBinding,
+        );
+      if (options.repositoryBinding)
+        await assertExistingRepositoryAction(
+          transaction,
+          { ...context, workspaceId },
+          existing[0].run_id,
+          options.repositoryBinding,
         );
       return {
         runId: existing[0].run_id,
@@ -733,6 +771,20 @@ export async function enqueueRun(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (options.repositoryBinding) {
+      await bindRepositoryAction(
+        transaction,
+        { ...context, workspaceId },
+        run.id,
+        job.id,
+        options.repositoryBinding,
+      );
+      const [bound] = await transaction<
+        JobRow[]
+      >`select * from allrice_jobs where id=${job.id}`;
+      if (!bound || !(await isRepositoryActionAuthorized(transaction, bound)))
+        throw new QueueError('policy_denied');
+    }
     if (options.technicalBinding) {
       await bindPlatformTechnicalTask(
         transaction,
@@ -1507,7 +1559,8 @@ async function stopUnauthorizedTechnicalJob(
 ) {
   if (
     (await isPlatformTechnicalJobAuthorized(transaction, job)) &&
-    (await isPlatformQualityJobAuthorized(transaction, job))
+    (await isPlatformQualityJobAuthorized(transaction, job)) &&
+    (await isRepositoryActionAuthorized(transaction, job))
   )
     return false;
   await transitionTerminal(transaction, job, {
@@ -1723,6 +1776,20 @@ export async function completeJob(input: {
       return;
     }
     if (await stopUnauthorizedTechnicalJob(transaction, job)) return;
+    if (!(await repositoryActionCompletionAllowed(transaction, job))) {
+      const timedOut = job.timeout_at <= new Date();
+      await transitionTerminal(transaction, job, {
+        jobStatus: 'failed',
+        runStatus: 'failed',
+        eventType: 'run.failed',
+        code: timedOut ? 'JOB_TIMEOUT' : 'REPOSITORY_RECEIPT_REQUIRED',
+        message: 'Repository action has no complete durable receipt',
+        payload: {
+          code: timedOut ? 'JOB_TIMEOUT' : 'REPOSITORY_RECEIPT_REQUIRED',
+        },
+      });
+      return;
+    }
     if (!(await platformQualityCompletionAllowed(transaction, job))) {
       await transitionTerminal(transaction, job, {
         jobStatus: 'failed',
@@ -1800,7 +1867,9 @@ export async function failJob(input: {
       return { retrying: false };
     }
     if (
-      (job.payload as { type?: unknown })?.type === platformTechnicalJobType &&
+      [platformTechnicalJobType, repositoryPublicationJobType].includes(
+        String((job.payload as { type?: unknown })?.type),
+      ) &&
       job.timeout_at <= new Date()
     ) {
       await transitionTerminal(transaction, job, {
