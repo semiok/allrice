@@ -22,6 +22,7 @@ import {
   syncAutomationRuns,
   recordWorkerCapabilities,
   removeWorkerCapabilities,
+  readServiceBuildIdentity,
 } from '@allrice/database';
 
 import {
@@ -86,6 +87,7 @@ const codexAuthorizationBroker = new CodexAuthorizationBroker(
   workerId,
   executionRoot,
 );
+const serviceBuildIdentity = await readServiceBuildIdentity('worker');
 
 const stopPressureLog = startExecutionPressureLog(
   executionRoot,
@@ -233,13 +235,14 @@ const server = createServer((request, response) => {
   if (request.url === '/health/ready') {
     response.statusCode = databaseReady ? 200 : 503;
     response.end(
-      JSON.stringify(
-        makeHealthResponse(
+      JSON.stringify({
+        ...makeHealthResponse(
           'worker',
           databaseReady ? 'ready' : 'not_ready',
           lastDatabaseError,
         ),
-      ),
+        ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
+      }),
     );
     return;
   }

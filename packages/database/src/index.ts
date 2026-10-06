@@ -149,3 +149,4 @@ export {
 
 export * from './platform-repository-merges.ts';
 export { repositoryMergeRequestGate } from './platform-repository-merge-authority.ts';
+export { readServiceBuildIdentity } from './service-build-identity.ts';

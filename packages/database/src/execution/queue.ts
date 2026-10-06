@@ -10,6 +10,7 @@ import {
   repositoryMergeCompletionAllowed,
 } from '../platform-repository-merge-authority.ts';
 import { randomUUID } from 'node:crypto';
+import { isDevReleaseControlType } from '../dev-release-control.ts';
 import {
   RepositoryActionBindingSchema,
   bindRepositoryAction,
@@ -375,6 +376,10 @@ export async function enqueueRun(
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
+  // A browser, model or ordinary privileged caller cannot turn a generic Run
+  // into host authority. The future supervisor uses a separately bound lane.
+  if (isDevReleaseControlType(submission.type))
+    throw new QueueError('policy_denied');
   if (options.repositoryReviewBinding) {
     const b = RepositoryReviewBindingSchema.parse(
       options.repositoryReviewBinding,
@@ -1200,6 +1205,7 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     const rows = await transaction<JobRow[]>`
       select candidate.* from allrice_jobs candidate
       where candidate.status = 'queued'
+        and coalesce(candidate.payload->>'type','') not like 'allrice.platform.dev.%'
         and (candidate.available_at <= ${now} or exists (
           -- A startup failure/cancellation can finish before any runtime was
           -- acquired. Release its FIFO successor through the existing queue,
@@ -1511,6 +1517,11 @@ export async function startClaimedJob(
     `;
     const job = jobs[0];
     if (
+      job &&
+      isDevReleaseControlType((job.payload as { type?: unknown })?.type)
+    )
+      throw new QueueError('policy_denied');
+    if (
       !job ||
       job.status !== 'claimed' ||
       job.worker_id !== workerId ||
@@ -1707,6 +1718,8 @@ async function lockedLeasedJob(
     select * from allrice_jobs where id = ${jobId} for update
   `;
   const job = rows[0];
+  if (job && isDevReleaseControlType((job.payload as { type?: unknown })?.type))
+    throw new QueueError('policy_denied');
   if (
     !job ||
     job.status !== 'running' ||
