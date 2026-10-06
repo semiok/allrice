@@ -28,8 +28,11 @@ import {
   acknowledgeDevMaintenance,
   readDevMaintenance,
   devProducerCatalog,
+  compactCompletedDevProducerPermits,
   type DevMaintenanceOwner,
 } from './dev-maintenance.ts';
+import { DevProducerLifecycle } from './dev-producer-lifecycle.ts';
+import type { ServiceBuildIdentity } from './service-build-identity.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -50,6 +53,8 @@ suite('Durable maintenance fence, without installed host authority', () => {
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     company = await createExperienceFixture(fixture.db);
+    await fixture.db`create table allrice_dev_lifecycle_witness(n integer not null)`;
+    await fixture.db`insert into allrice_dev_lifecycle_witness values(0)`;
     vi.stubEnv('ALLRICE_DEV_MAINTENANCE_ENABLED', '1');
   }, 120000);
   afterAll(async () => {
@@ -69,6 +74,7 @@ suite('Durable maintenance fence, without installed host authority', () => {
       })
     ).run;
   beforeEach(async () => {
+    await fixture.db`update allrice_dev_lifecycle_witness set n=0`;
     await fixture.db`update allrice_dev_maintenance set state='open',owner_job_id=null,owner_attempt=null,owner_boot_id=null,expected_instances='{}'`;
     await fixture.db`update allrice_dev_producer_permits set finished_at=clock_timestamp() where finished_at is null`;
     await fixture.db`update allrice_jobs set status='canceled' where status in ('queued','claimed','running','retry_wait','waiting_approval')`;
@@ -88,6 +94,100 @@ suite('Durable maintenance fence, without installed host authority', () => {
       installedIdentityDigest: 'sha256:' + 'c'.repeat(64),
     };
     await fixture.db`insert into allrice_dev_control_owners(job_id,supervisor_boot_id,installed_identity_digest) values(${owner.jobId},${owner.supervisorBootId},${owner.installedIdentityDigest})`;
+  });
+  const lifecycle = () =>
+    new DevProducerLifecycle(true, 'worker', {
+      version: 1,
+      environment: 'dev',
+      service: 'worker',
+      mode: 'production',
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+      manifestDigest: instances.worker.manifestDigest,
+      artifactDigest: 'sha256:' + 'd'.repeat(64),
+      runtimeGraphDigest: 'sha256:' + 'e'.repeat(64),
+      webBuildId: 'fixture',
+      bootId: instances.worker.bootId,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      nodeVersion: process.version,
+      protocols: {
+        identity: 1,
+        ordinaryConsumer: 1,
+        releaseAdmission: 'disabled',
+      },
+    } satisfies ServiceBuildIdentity);
+  it('retains a real database permit through a detached child and its later business write', async () => {
+    const tracked = lifecycle();
+    let release!: () => void, child!: Promise<void>;
+    const held = new Promise<void>((r) => {
+      release = r;
+    });
+    await tracked.run('ordinary_consumer', async (scope) => {
+      child = scope.child(async () => {
+        await held;
+        await fixture.db`update allrice_dev_lifecycle_witness set n=n+1`;
+      });
+    });
+    expect(tracked.snapshot()?.retainedChildren).toBe(1);
+    expect(await requestDevMaintenance(owner, instances)).toMatchObject({
+      requested: false,
+      busy: { permits: 1 },
+    });
+    expect(
+      (await fixture.db`select n from allrice_dev_lifecycle_witness`)[0]!.n,
+    ).toBe(0);
+    release();
+    await child;
+    expect(
+      (await fixture.db`select n from allrice_dev_lifecycle_witness`)[0]!.n,
+    ).toBe(1);
+    expect((await requestDevMaintenance(owner, instances)).requested).toBe(
+      true,
+    );
+  });
+  it('a requested barrier refuses the real scope before its business write', async () => {
+    expect((await requestDevMaintenance(owner, instances)).requested).toBe(
+      true,
+    );
+    await expect(
+      lifecycle().run('automation', async () => {
+        await fixture.db`update allrice_dev_lifecycle_witness set n=n+1`;
+      }),
+    ).rejects.toMatchObject({ code: 'dev_maintenance_requested' });
+    expect(
+      (await fixture.db`select n from allrice_dev_lifecycle_witness`)[0]!.n,
+    ).toBe(0);
+  });
+  it('compacts only old completed internal metadata and preserves old unfinished or recent scopes', async () => {
+    const start = () =>
+      startDevProducer({
+        instanceBootId: instances.worker.bootId,
+        role: 'worker',
+        producer: 'provider_probe',
+      });
+    const old = await start(),
+      recent = await start(),
+      unfinished = await start();
+    await finishDevProducer(old);
+    await finishDevProducer(recent);
+    await fixture.db`update allrice_dev_producer_permits set started_at=clock_timestamp()-interval '3 hours',finished_at=clock_timestamp()-interval '2 hours' where id=${old.id}`;
+    await fixture.db`update allrice_dev_producer_permits set started_at=clock_timestamp()-interval '2 days' where id=${unfinished.id}`;
+    await compactCompletedDevProducerPermits();
+    expect(
+      (
+        await fixture.db`select id from allrice_dev_producer_permits where id=${old.id}`
+      ).length,
+    ).toBe(0);
+    expect(
+      (
+        await fixture.db`select id from allrice_dev_producer_permits where id in (${recent.id},${unfinished.id})`
+      ).length,
+    ).toBe(2);
+    expect(await requestDevMaintenance(owner, instances)).toMatchObject({
+      requested: false,
+      busy: { permits: 1 },
+    });
   });
   it('does not grant authority from the namespace, wrong instance, canceled or expired lease', async () => {
     await expect(

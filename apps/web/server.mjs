@@ -10,6 +10,7 @@ import {
   closeDatabase,
   createBridgeConnectionAuthority,
   resolveProjectPreviewAccess,
+  installDevProducerLifecycle,
 } from '@allrice/database';
 import next from 'next';
 
@@ -18,6 +19,7 @@ import {
   createBridgeSocketGateway,
 } from './server/bridge-socket.mjs';
 import { createProjectPreviewGateway } from './server/project-preview.mjs';
+import { createDevRequestHandler } from './server/dev-maintenance.mjs';
 
 /** Next registers its own upgrade listener after the first HTTP request. Route
  * only the dedicated Bridge path before normal EventEmitter dispatch; every
@@ -58,6 +60,7 @@ export async function startAllRiceWeb({
   if (!Number.isInteger(port) || port < 1 || port > 65535)
     throw new Error('INVALID_WEB_PORT');
   const server = new AllRiceHttpServer();
+  const lifecycle = await installDevProducerLifecycle('web');
   const cloudPreview = process.env.ALLRICE_CLOUD_PREVIEW_SOCKET
     ? createCloudProjectPreviewTransport(
         process.env.ALLRICE_CLOUD_PREVIEW_SOCKET,
@@ -71,7 +74,7 @@ export async function startAllRiceWeb({
     httpServer: server,
   });
   await app.prepare();
-  const handle = app.getRequestHandler();
+  const handle = createDevRequestHandler(lifecycle, app.getRequestHandler());
   server.on('request', (req, res) => {
     void handle(req, res).catch(() => {
       if (!res.headersSent) res.writeHead(500);

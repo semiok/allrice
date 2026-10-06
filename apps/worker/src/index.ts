@@ -24,6 +24,9 @@ import {
   removeWorkerCapabilities,
   readServiceBuildIdentity,
   readDevMaintenance,
+  installDevProducerLifecycle,
+  readDevProducerLifecycle,
+  type DevProducerContext,
 } from '@allrice/database';
 
 import {
@@ -41,6 +44,7 @@ import {
 } from './cloud-runner/executor.js';
 import { readWorkerCapabilities } from './harness/runtime-capabilities.js';
 import { refreshManagedCloudEnvironments } from './managed-cloud-environments.js';
+import { workerProducerRunner } from './dev-producer.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -89,6 +93,7 @@ const codexAuthorizationBroker = new CodexAuthorizationBroker(
   executionRoot,
 );
 const serviceBuildIdentity = await readServiceBuildIdentity('worker');
+const producerLifecycle = await installDevProducerLifecycle('worker');
 
 const stopPressureLog = startExecutionPressureLog(
   executionRoot,
@@ -98,6 +103,7 @@ const stopPressureLog = startExecutionPressureLog(
 let databaseReady = false;
 let lastDatabaseError: string | undefined;
 let stopping = false;
+const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
 let tickRunning = false;
 let automationTickRunning = false;
 let platformEmployeeTestTickRunning = false;
@@ -116,7 +122,9 @@ function managedCloudTick() {
     !runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED')
   )
     return;
-  managedCloudTask = refreshManagedCloudEnvironments(workerId)
+  managedCloudTask = runProducer('managed_cloud', () =>
+    refreshManagedCloudEnvironments(workerId),
+  )
     .catch(() => console.error('[MET-159] managed cloud preparation failed'))
     .finally(() => {
       managedCloudTask = null;
@@ -125,7 +133,9 @@ function managedCloudTick() {
 let mcpRecoveryTask: Promise<void> | null = null;
 function mcpRecoveryTick() {
   if (mcpRecoveryTask || stopping || !databaseReady) return;
-  mcpRecoveryTask = recoverMcpRuntimeOperations()
+  mcpRecoveryTask = runProducer('mcp_recovery', () =>
+    recoverMcpRuntimeOperations(),
+  )
     .then(() => undefined)
     .catch(() => {
       console.error('[P16] MCP recovery failed');
@@ -136,7 +146,9 @@ function mcpRecoveryTick() {
 }
 function cloudRecoveryTick() {
   if (cloudRecoveryTask || stopping || !databaseReady) return;
-  cloudRecoveryTask = recoverCloudCommandOperations()
+  cloudRecoveryTask = runProducer('cloud_recovery', () =>
+    recoverCloudCommandOperations(),
+  )
     .then(() => undefined)
     .catch(() => {
       console.error('[P15] cloud recovery failed');
@@ -153,10 +165,12 @@ function mcpDiscoveryTick() {
     !runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED')
   )
     return;
-  mcpDiscoveryTask = executeNextMcpDiscovery({
-    workerId,
-    signal: mcpDiscoveryAborter.signal,
-  })
+  mcpDiscoveryTask = runProducer('mcp_discovery', () =>
+    executeNextMcpDiscovery({
+      workerId,
+      signal: mcpDiscoveryAborter.signal,
+    }),
+  )
     .then(() => undefined)
     .catch(() => {
       console.error('[P16] MCP discovery failed');
@@ -179,23 +193,37 @@ async function refreshReadiness() {
   }
 }
 
-let codexProbeRunning = false;
-async function refreshCodexProviderStatus() {
-  if (codexProbeRunning) return;
-  codexProbeRunning = true;
-  try {
+let codexProbeTask: Promise<void> | null = null;
+function refreshCodexProviderStatus() {
+  if (codexProbeTask || stopping) return codexProbeTask;
+  codexProbeTask = runProducer('provider_probe', async () => {
     await mkdir(executionRoot, { recursive: true, mode: 0o700 });
     for (const slot of [1, 2] as const) {
       const codex = await probeDshCodexProvider(executionRoot, slot);
       await recordCodexProviderStatus(codex, slot);
     }
-  } catch (error) {
-    console.error('[M5] Codex provider probe failed', {
-      message: error instanceof Error ? error.message : 'codex_probe_failed',
+  })
+    .catch((error) => {
+      console.error('[M5] Codex provider probe failed', {
+        message: error instanceof Error ? error.message : 'codex_probe_failed',
+      });
+    })
+    .finally(() => {
+      codexProbeTask = null;
     });
-  } finally {
-    codexProbeRunning = false;
-  }
+  return codexProbeTask;
+}
+
+let codexAuthorizationTask: Promise<void> | null = null;
+function codexAuthorizationTick() {
+  if (codexAuthorizationTask || stopping || !databaseReady) return;
+  codexAuthorizationTask = runProducer('provider_authorization', async () => {
+    await codexAuthorizationBroker.tick();
+  })
+    .catch(() => console.error('[MET-167] authorization lifecycle failed'))
+    .finally(() => {
+      codexAuthorizationTask = null;
+    });
 }
 
 let dshInventoryTask: Promise<void> | null = null;
@@ -260,6 +288,9 @@ const server = createServer(async (request, response) => {
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
         ...(maintenance ? { maintenance } : {}),
+        ...(maintenance
+          ? { producerLifecycle: readDevProducerLifecycle('worker') }
+          : {}),
       }),
     );
     return;
@@ -296,22 +327,30 @@ async function tick() {
   if (tickRunning || stopping || !databaseReady) return;
   tickRunning = true;
   try {
-    await maintainQueue();
-    while (!stopping && activeExecutions.size < concurrency) {
-      if ((process.availableMemory?.() ?? Infinity) < 256 * 1024 ** 2) break;
-      const job = await claimNextJob(workerId, leaseMs);
-      const leaseToken = job?.lease?.token;
-      if (!job || !leaseToken) break;
-      const execution = runClaimed(job.id, leaseToken)
-        .catch((error: unknown) => {
-          console.error('[M5] Worker execution failed', {
-            jobId: job.id,
-            message: error instanceof Error ? error.message : 'unknown error',
-          });
-        })
-        .finally(() => activeExecutions.delete(execution));
-      activeExecutions.add(execution);
-    }
+    await runProducer(
+      'ordinary_consumer',
+      async (scope: DevProducerContext) => {
+        await maintainQueue();
+        while (!stopping && activeExecutions.size < concurrency) {
+          if ((process.availableMemory?.() ?? Infinity) < 256 * 1024 ** 2)
+            break;
+          const job = await claimNextJob(workerId, leaseMs);
+          const leaseToken = job?.lease?.token;
+          if (!job || !leaseToken) break;
+          const execution = scope
+            .child(async () => runClaimed(job.id, leaseToken))
+            .catch((error: unknown) => {
+              console.error('[M5] Worker execution failed', {
+                jobId: job.id,
+                message:
+                  error instanceof Error ? error.message : 'unknown error',
+              });
+            })
+            .finally(() => activeExecutions.delete(execution));
+          activeExecutions.add(execution);
+        }
+      },
+    );
   } catch (error) {
     databaseReady = false;
     lastDatabaseError =
@@ -325,12 +364,14 @@ async function automationTick() {
   if (automationTickRunning || stopping || !databaseReady) return;
   automationTickRunning = true;
   try {
-    await syncAutomationRuns();
-    await processFolderTriggerEvents(Math.max(1, concurrency));
-    const claimed = await claimDueAutomations(Math.max(1, concurrency));
-    if (claimed > 0) {
-      console.info('[M6] queued automation runs', { count: claimed });
-    }
+    await runProducer('automation', async () => {
+      await syncAutomationRuns();
+      await processFolderTriggerEvents(Math.max(1, concurrency));
+      const claimed = await claimDueAutomations(Math.max(1, concurrency));
+      if (claimed > 0) {
+        console.info('[M6] queued automation runs', { count: claimed });
+      }
+    });
   } catch (error) {
     console.error('[M6] automation scheduler failed', {
       message: error instanceof Error ? error.message : 'unknown error',
@@ -343,13 +384,16 @@ async function automationTick() {
 async function platformEmployeeTestTick() {
   if (platformEmployeeTestTickRunning || stopping || !databaseReady) return;
   platformEmployeeTestTickRunning = true;
-  platformEmployeeTestAborter = new AbortController();
+  const aborter = new AbortController();
+  platformEmployeeTestAborter = aborter;
   try {
-    await executeNextPlatformEmployeeTest({
-      workerId,
-      executionRoot,
-      signal: platformEmployeeTestAborter.signal,
-    });
+    await runProducer('employee_test', () =>
+      executeNextPlatformEmployeeTest({
+        workerId,
+        executionRoot,
+        signal: aborter.signal,
+      }),
+    );
   } catch (error) {
     console.error('[MET-93] platform employee test failed', {
       message: error instanceof Error ? error.message : 'unknown error',
@@ -361,7 +405,9 @@ async function platformEmployeeTestTick() {
 }
 
 await refreshReadiness();
-await recoverCodexAuthorizationFlows();
+await runProducer('provider_authorization', () =>
+  recoverCodexAuthorizationFlows(),
+);
 await refreshCodexProviderStatus();
 const readinessTimer = setInterval(
   () => void refreshReadiness(),
@@ -389,13 +435,13 @@ const platformEmployeeTestTimer = setInterval(
   pollIntervalMs,
 );
 const codexAuthorizationTimer = setInterval(
-  () => codexAuthorizationBroker.tick(),
+  codexAuthorizationTick,
   pollIntervalMs,
 );
 void tick();
 void automationTick();
 void platformEmployeeTestTick();
-codexAuthorizationBroker.tick();
+codexAuthorizationTick();
 void refreshDshRuntimeInventory();
 managedCloudTick();
 
@@ -440,6 +486,9 @@ async function shutdown(signal: string) {
   if (managedCloudTask) await managedCloudTask;
   if (mcpRecoveryTask) await mcpRecoveryTask;
   await codexAuthorizationBroker.close();
+  await codexAuthorizationTask;
+  await codexProbeTask;
+  await producerLifecycle.waitForCurrentRoots();
   await closeHarnessAdapters();
   await dshInventoryTask;
   await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);

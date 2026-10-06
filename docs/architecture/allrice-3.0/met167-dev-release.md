@@ -47,3 +47,45 @@ Other productive paths are not represented as gated. Full PR5b1 requires
 actual instance/dispatch coverage, installed supervisor, shared manual
 control, and physical no-migration switch/recovery. Health 200 or zero Jobs
 are never authority to stop a service.
+
+## PR5b1c root lifecycle slice (C1), partial coverage
+
+Trusted production startup installs one lifecycle registry per actual
+Web/Worker boot and sealed manifest. The custom Web server and Next health
+bundle read the same `Symbol.for` registry. Dynamic Next requests first commit
+a stable producer permit, then execute the handler; both its returned promise
+and the response lifetime are awaited. Client close or response finish alone
+does not complete a still-running handler. Only exact GET/HEAD live/ready
+health paths bypass this request gate.
+
+Worker startup authorization recovery/probes, queue ticks, automation/folder
+preparation, employee tests, MCP discovery/recovery, cloud recovery/managed
+preparation and authorization broker promises use the same root wrapper.
+Claimed executions retain a child reference before detaching from a tick;
+the root permit cannot finish when the tick returns first. Broker tick now
+returns its real active promise. A known maintenance refusal skips new work
+without declaring the database offline. Role/identity unknown fails startup
+closed when the Dev opt-in is enabled; unmanaged environments use the original
+callbacks without extra database writes.
+
+Shutdown is checked again inside the admitted Worker thunk: an authorization
+or other producer queued before SIGTERM cannot start after its owner begins
+closing. Worker shutdown waits for current roots, pending admission and retained
+children before closing the database. This wait does not clear uncertainty or
+claim that native clients, sockets or detached resources have stopped.
+
+Pending admission is counted before its database await. Lost start/finish
+receipts and rejected business lifetimes preserve unknown outcomes, without
+repeating the business thunk or expiring unfinished permits. Completed
+internal metadata older than one hour is compacted in bounded batches after
+256 successful root completions, using migration 0149's completed-row index.
+Unfinished/unknown permits and all business/audit ledgers remain untouched.
+
+The health observer reports actual root/child counts and uncertainty;
+`scopeCoverage=partial`. All 24 catalog families remain unknown: WebSocket
+frames, preview/relay and service lifetime, driver/native close proof, durable
+external work and complete observer classification are not inferred from a
+root promise. No ACK coverage is relaxed, no quiesced/host START transition is
+added, and release admission remains disabled. C2/C3/C4 explicit resource
+wiring precedes the independently installed supervisor and shared manual
+release path; this slice cannot authorize an automatic or fallback stop.
