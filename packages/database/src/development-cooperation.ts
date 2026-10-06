@@ -22,6 +22,7 @@ import {
   parseChangesetBytes,
 } from './artifact-review.ts';
 import { executeDevelopmentWorkflow } from './development-workflow.ts';
+import { executeRepositoryDevelopment } from './platform-repository-development.ts';
 
 type Tx = RuntimeLedgerTransaction;
 export interface DevelopmentCaller {
@@ -171,6 +172,13 @@ export function createDevelopmentCooperation(options: {
       storage: StoragePort,
       transaction?: Tx,
     ): Promise<unknown> {
+      const repository = await executeRepositoryDevelopment(
+        input,
+        storage,
+        options,
+        transaction,
+      );
+      if (repository.handled) return repository.result;
       const result = await executeDevelopmentWorkflow(
         input,
         storage,

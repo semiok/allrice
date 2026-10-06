@@ -46,7 +46,11 @@ export interface RepositoryActionLease {
   attempt: number;
 }
 
-async function credential(tx: Tx, context: RequestContext, revision: number) {
+export async function assertRepositoryCredentialAuthority(
+  tx: Tx,
+  context: RequestContext,
+  revision: number,
+) {
   const [user] =
     await tx`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
   if (!user) throw new DataAccessError('authorization_denied');
@@ -62,6 +66,7 @@ async function credential(tx: Tx, context: RequestContext, revision: number) {
   await tx`select pg_advisory_xact_lock(hashtext(${`platform-repository-credential:${context.actor.id}:${platformRepository.id}`}))`;
   return readPlatformRepositoryCredential(context, revision, tx);
 }
+const credential = assertRepositoryCredentialAuthority;
 export async function readAcceptedRepositorySource(
   tx: Tx,
   context: RequestContext,

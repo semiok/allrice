@@ -198,3 +198,19 @@ export const RepositoryPublicationSchema = z
   })
   .strict();
 export type RepositoryPublication = z.infer<typeof RepositoryPublicationSchema>;
+
+export const RepositoryPublicationMetadataSchema = z
+  .object({
+    tree: RepositoryGitShaSchema,
+    commit: RepositoryGitShaSchema,
+    workflowBlob: RepositoryGitShaSchema,
+    author: z
+      .object({
+        login: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/),
+        userId: z.number().int().positive(),
+        timestamp: z.string(),
+        message: z.string().max(200),
+      })
+      .strict(),
+  })
+  .strict();

@@ -9,6 +9,18 @@ import {
 } from '../platform-repository-publication-authority.ts';
 import { repositoryPublicationJobType } from '../platform-repository-publication-contracts.ts';
 import {
+  RepositoryReviewBindingSchema,
+  repositoryReviewConfiguration,
+  type RepositoryReviewBinding,
+} from '../platform-repository-review-contracts.ts';
+import {
+  bindRepositoryReview,
+  assertExistingRepositoryReviewBinding,
+  hasRepositoryReviewMarker,
+  isRepositoryReviewJobAuthorized,
+  repositoryReviewCompletionAllowed,
+} from '../platform-repository-review-authority.ts';
+import {
   TechnicalTaskReceiptSchema,
   type TechnicalDiagnostics,
   type TechnicalIssueDetailSchema,
@@ -304,6 +316,7 @@ export async function enqueueRun(
   input: unknown,
   options: {
     repositoryBinding?: RepositoryActionBinding;
+    repositoryReviewBinding?: RepositoryReviewBinding;
     technicalBinding?: TechnicalTaskBinding;
     qualityBinding?: QualityBinding;
     repairBinding?: RepairBinding;
@@ -350,6 +363,40 @@ export async function enqueueRun(
   } = {},
 ) {
   const submission = CreateRunInputSchema.parse(input);
+  if (options.repositoryReviewBinding) {
+    const b = RepositoryReviewBindingSchema.parse(
+      options.repositoryReviewBinding,
+    );
+    const i = submission.input as Record<string, unknown>;
+    if (
+      Object.keys(options).some(
+        (k) =>
+          ![
+            'repositoryReviewBinding',
+            'employeeBinding',
+            'conversationDelivery',
+          ].includes(k),
+      ) ||
+      submission.type !== 'allrice.employee.run' ||
+      !options.employeeBinding ||
+      !options.conversationDelivery ||
+      submission.maxAttempts !== 1 ||
+      submission.availableAt ||
+      submission.timeoutMs !== b.frozen.timeoutMs ||
+      submission.idempotencyKey !==
+        `platform-repository-review:${context.actor.id}:${b.frozen.requestId}` ||
+      i.repositoryReviewRequestId !== b.frozen.requestId ||
+      i.repositoryReviewInputDigest !== b.inputDigest ||
+      technicalDigest(i.assistantConfiguration) !==
+        technicalDigest(repositoryReviewConfiguration)
+    )
+      throw new QueueError('policy_denied');
+  } else if (
+    hasRepositoryReviewMarker({
+      payload: { input: submission.input } as JobRow['payload'],
+    })
+  )
+    throw new QueueError('policy_denied');
   if (submission.type === repositoryPublicationJobType) {
     const b = RepositoryActionBindingSchema.safeParse(
       options.repositoryBinding,
@@ -478,7 +525,8 @@ export async function enqueueRun(
         (submission.type === platformTechnicalJobType ||
         submission.type === repositoryPublicationJobType ||
         options.qualityBinding ||
-        options.repairBinding
+        options.repairBinding ||
+        options.repositoryReviewBinding
           ? technicalDigest(existing[0].payload.input) !==
             technicalDigest(submission.input)
           : JSON.stringify(existing[0].payload.input) !==
@@ -506,6 +554,13 @@ export async function enqueueRun(
           { ...context, workspaceId },
           existing[0].run_id,
           options.repositoryBinding,
+        );
+      if (options.repositoryReviewBinding)
+        await assertExistingRepositoryReviewBinding(
+          transaction,
+          { ...context, workspaceId },
+          existing[0].run_id,
+          options.repositoryReviewBinding,
         );
       return {
         runId: existing[0].run_id,
@@ -540,6 +595,7 @@ export async function enqueueRun(
         options.employeeBinding.employeeAssignmentId,
         options.qualityBinding,
         options.repairBinding,
+        options.repositoryReviewBinding,
       );
       const { assertWorkbenchSession } = await import('../artifact-review.ts');
       await assertWorkbenchSession(
@@ -927,6 +983,15 @@ export async function enqueueRun(
         job.id,
         options.employeeBinding.sessionId,
         options.repairBinding,
+      );
+    if (options.repositoryReviewBinding && options.employeeBinding)
+      await bindRepositoryReview(
+        transaction,
+        { ...context, workspaceId },
+        run.id,
+        job.id,
+        options.employeeBinding.sessionId,
+        options.repositoryReviewBinding,
       );
     if (options.employeeBinding?.promptSnapshot.companyAssets) {
       const { recordCompanyRunSelections } =
@@ -1560,7 +1625,8 @@ async function stopUnauthorizedTechnicalJob(
   if (
     (await isPlatformTechnicalJobAuthorized(transaction, job)) &&
     (await isPlatformQualityJobAuthorized(transaction, job)) &&
-    (await isRepositoryActionAuthorized(transaction, job))
+    (await isRepositoryActionAuthorized(transaction, job)) &&
+    (await isRepositoryReviewJobAuthorized(transaction, job))
   )
     return false;
   await transitionTerminal(transaction, job, {
@@ -1798,6 +1864,18 @@ export async function completeJob(input: {
         code: 'QUALITY_EVIDENCE_REQUIRED',
         message: 'The fixed case has no complete durable verification evidence',
         payload: { code: 'QUALITY_EVIDENCE_REQUIRED' },
+      });
+      return;
+    }
+    if (!(await repositoryReviewCompletionAllowed(transaction, job))) {
+      await transitionTerminal(transaction, job, {
+        jobStatus: 'failed',
+        runStatus: 'failed',
+        eventType: 'run.failed',
+        code: 'REPOSITORY_REVIEW_REQUIRED',
+        message:
+          'Repository review has no complete attributed evidence and delivery',
+        payload: { code: 'REPOSITORY_REVIEW_REQUIRED' },
       });
       return;
     }

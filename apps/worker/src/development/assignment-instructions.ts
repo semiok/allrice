@@ -7,6 +7,20 @@ type Assignment = {
   paths?: string[];
 };
 
+/** Only a certified platform repository review may use this server-selected
+ * protocol. Its review artifact is registered to the actual child; the local
+ * command workflow's output-only compatibility instructions do not apply. */
+export function repositoryReviewAssignmentMessage(assignment: Assignment) {
+  if (assignment.role !== 'review')
+    throw Error('repository_review_role_required');
+  return `\nPlanned repository review assignment: ${JSON.stringify(assignment)}
+Use assistant.development's native envelope {command: JSON.stringify(action)} for each action.
+The tool response's development field contains that action's result; read its actual references.
+First inspect exactly ${JSON.stringify({ action: 'inspect', candidate: assignment.expectedHead })}. Read the saved patch, original CI receipts and author provenance. Do not execute, edit, publish, merge or deploy.
+Record your attributed opinion with {action:"review",candidate:YOUR_ASSIGNED_CANDIDATE,evidence:THE_EXACT_INSPECT_EVIDENCE,verdict:"accept"|"revise",summary:"your review"}. Use the returned immutable artifact reference; a review UUID or prose is not a registered artifact.
+For your final assistant.report, include evidence=[{id:reviewResult.artifact.artifactId,digest:reviewResult.artifact.digest}] and summary. Do not report with empty evidence or substitute an output-only summary. If the opinion could not be saved, report incomplete and preserve the actual error.`;
+}
+
 /** Role instructions are immutable resources of this Run, not the live catalog.
  * The Bridge owns identities and receipts; this module only describes work. */
 export function developmentAssignmentMessage(

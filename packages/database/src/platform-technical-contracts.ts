@@ -4,6 +4,7 @@ export * from './platform-repair-contracts.ts';
 export * from './platform-repository-credential-contracts.ts';
 export * from './platform-repository-publication-contracts.ts';
 export * from './platform-repository-ci-contracts.ts';
+export * from './platform-repository-review-contracts.ts';
 
 // Admin-only browser contracts stay outside the Bridge import graph.
 const OperationsInventorySchema = z.object({

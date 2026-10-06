@@ -32,7 +32,7 @@ export const emptyRepositoryCi = () => ({
   materialDigest: null,
   checks: [],
 });
-async function internalContext(
+export async function platformRepositoryContext(
   context: RequestContext,
   provision = false,
 ): Promise<RequestContext> {
@@ -61,6 +61,7 @@ async function internalContext(
     ],
   };
 }
+const internalContext = platformRepositoryContext;
 export async function getPlatformRepositoryPublication(
   context: RequestContext,
   id: string,

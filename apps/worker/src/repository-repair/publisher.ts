@@ -29,7 +29,10 @@ export const repositoryPublicationStore = {
 type Store = typeof repositoryPublicationStore;
 export type RepositoryCiInspector = (
   github: FixedRepositoryGithub,
-  action: Awaited<ReturnType<Store['read']>>,
+  action: Pick<
+    Awaited<ReturnType<Store['read']>>,
+    'id' | 'source' | 'metadata' | 'remote'
+  >,
   signal: AbortSignal,
 ) => Promise<{ observation: unknown; evidence: unknown[] }>;
 const conflict = () => new RepositoryRemoteError('REPOSITORY_REMOTE_CONFLICT');

@@ -8,6 +8,7 @@ import {
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
+import { PlatformRepositoryReviews } from './platform-repository-reviews';
 const endpoint = '/api/v1/admin/technical-assistant/repository-publications';
 type Request =
   | {
@@ -425,6 +426,13 @@ export function PlatformRepositoryPublications({
           <p className={css.meta}>
             CI 通过后仍需独立审查；合并 main 和部署 Dev 是后续操作。
           </p>
+          <PlatformRepositoryReviews
+            key={current.id}
+            publicationId={current.id}
+            credentialRevision={
+              credential?.state === 'configured' ? credential.revision : null
+            }
+          />
         </article>
       )}
     </section>

@@ -50,7 +50,10 @@ import {
   markCompanyRunLoaded,
   getPlatformRepairExecution,
   platformRepairInstructions,
+  getPlatformRepositoryReviewExecution,
+  platformRepositoryReviewInstructions,
 } from '@allrice/database';
+import { repositoryReviewTools } from '@allrice/database/technical-contracts';
 
 import { AgentLoopGuard, AgentLoopGuardError } from '../agent-loop-guard.js';
 import { finalizeEmployeeConversationContext } from '../conversation/checkpoint-maintenance.js';
@@ -69,6 +72,7 @@ import {
   executePlatformRepairReverification,
 } from './platform-repair.js';
 import { HandlerError } from '../errors.js';
+import { verifyRepositoryReviewRemote } from './platform-repository-review.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import {
   classifyProviderFailure,
@@ -200,6 +204,18 @@ export async function executeEmployeeRun({
           attempt: execution.job.attempt,
         })
       : null;
+  const repositoryReviewTask =
+    typeof input.repositoryReviewRequestId === 'string'
+      ? await getPlatformRepositoryReviewExecution({
+          ...workflowLease,
+          attempt: execution.job.attempt,
+        })
+      : null;
+  if (repositoryReviewTask)
+    await verifyRepositoryReviewRemote(
+      { execution, isolation, signal, onHarnessEvent, workflowLease },
+      'preflight',
+    );
   if (repairTask?.frozen.reuseSeed)
     return executePlatformRepairReverification({
       execution,
@@ -268,6 +284,12 @@ export async function executeEmployeeRun({
         ...(repairTask
           ? { repairFingerprint: repairTask.frozen.fingerprint }
           : {}),
+        ...(repositoryReviewTask
+          ? {
+              repositoryReviewFingerprint:
+                repositoryReviewTask.frozen.fingerprint,
+            }
+          : {}),
         provider: resolved.providerSnapshot,
         systemPrompt: resolved.promptSnapshot.systemPrompt,
         ...(resolved.promptSnapshot.companyAssets
@@ -312,7 +334,7 @@ export async function executeEmployeeRun({
     }),
   );
   const assistantConfiguration =
-    !repairTask && workAutomation.settings.assistants
+    !repairTask && (repositoryReviewTask || workAutomation.settings.assistants)
       ? input.assistantConfiguration
       : undefined;
   const kernelInput = {
@@ -329,19 +351,22 @@ export async function executeEmployeeRun({
     ...kernelInput,
     checkpoint,
   });
-  const kernel = repairTask
-    ? EmployeeKernelRequestSchema.parse({
-        ...assembledKernel,
-        systemInstructions:
-          assembledKernel.systemInstructions +
-          '\n\n' +
-          platformRepairInstructions,
-        bootstrapConversation: '',
-        authorizedMemoryContext: '',
-        skillVersionIds: [],
-        imageAttachments: [],
-      })
-    : assembledKernel;
+  const kernel =
+    repairTask || repositoryReviewTask
+      ? EmployeeKernelRequestSchema.parse({
+          ...assembledKernel,
+          systemInstructions:
+            assembledKernel.systemInstructions +
+            '\n\n' +
+            (repositoryReviewTask
+              ? platformRepositoryReviewInstructions
+              : platformRepairInstructions),
+          bootstrapConversation: '',
+          authorizedMemoryContext: '',
+          skillVersionIds: [],
+          imageAttachments: [],
+        })
+      : assembledKernel;
   const harnessImages = await loadHarnessImages(kernel.imageAttachments);
   const ownership = {
     organizationId: execution.context.organizationId,
@@ -515,6 +540,12 @@ export async function executeEmployeeRun({
           executionSnapshot.schemaVersion === 2
             ? executionSnapshot.localMcp
             : undefined,
+        ).filter(
+          (tool) =>
+            !repositoryReviewTask ||
+            repositoryReviewTools.includes(
+              tool.name as (typeof repositoryReviewTools)[number],
+            ),
         );
     const routePlan = decideCapabilityRoute({
       request: {
@@ -529,7 +560,8 @@ export async function executeEmployeeRun({
         prompt: kernel.userRequest,
       },
       executionSnapshot:
-        repairTask && executionSnapshot.schemaVersion === 2
+        (repairTask || repositoryReviewTask) &&
+        executionSnapshot.schemaVersion === 2
           ? {
               ...executionSnapshot,
               capabilitySnapshot: {
@@ -901,23 +933,25 @@ export async function executeEmployeeRun({
         : routeDecision.selectedKind === 'workflow'
           ? workflowToolNames
           : [];
-    const tools = repairTask
-      ? [platformRepairToolDefinition]
-      : riceToolDefinitionsForTurn(
-          resolved.grantedCapabilities,
-          allowedToolNames,
-          selectedToolNames,
-          executionSnapshot.schemaVersion === 2
-            ? executionSnapshot.mcpTools
-            : [],
-          executionSnapshot.schemaVersion === 2
-            ? executionSnapshot.localMcp
-            : undefined,
-        ).filter(
-          (tool) =>
-            !tool.name.startsWith('assistant.') ||
-            objectInput(assistantConfiguration).allowAssistants === true,
-        );
+    const tools = repositoryReviewTask
+      ? authorizedTools
+      : repairTask
+        ? [platformRepairToolDefinition]
+        : riceToolDefinitionsForTurn(
+            resolved.grantedCapabilities,
+            allowedToolNames,
+            selectedToolNames,
+            executionSnapshot.schemaVersion === 2
+              ? executionSnapshot.mcpTools
+              : [],
+            executionSnapshot.schemaVersion === 2
+              ? executionSnapshot.localMcp
+              : undefined,
+          ).filter(
+            (tool) =>
+              !tool.name.startsWith('assistant.') ||
+              objectInput(assistantConfiguration).allowAssistants === true,
+          );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);
       return capability ? [capability] : [];
@@ -961,7 +995,8 @@ export async function executeEmployeeRun({
         ? executionSnapshot.modelSnapshot?.runLimits
         : undefined;
     const assistants = productionAssistantController({
-      nativeSkills: resolved.nativeSkills,
+      nativeSkills: repositoryReviewTask ? [] : resolved.nativeSkills,
+      repositoryReview: !!repositoryReviewTask,
       configuration: assistantConfiguration,
       context: execution.context,
       worker: workflowLease,
@@ -1366,7 +1401,8 @@ export async function executeEmployeeRun({
               questionWait,
               assistants,
               kernel: routedKernel,
-              nativeSkills: repairTask ? [] : resolved.nativeSkills,
+              nativeSkills:
+                repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
               storageObjects: selectedStorageObjects,
               images: harnessImages,
               workDirectory: isolation.workDirectory,
@@ -1596,6 +1632,12 @@ export async function executeEmployeeRun({
     if (repairController) {
       const proof = await repairController.finish();
       result.answer = `已生成待审查的仓库修订候选。修前 ${proof.before.report.assertions.filter((a) => !a.passed).length} 项断言失败，修后同一组 ${proof.after.report.assertions.length} 项断言全部通过。候选源码与验证报告可在技术助手中下载。完整仓库构建与发布尚未执行。`;
+    }
+    if (repositoryReviewTask) {
+      await verifyRepositoryReviewRemote(
+        { execution, isolation, signal, onHarnessEvent, workflowLease },
+        'postflight',
+      );
     }
     await completeRouteDecision({
       organizationId: execution.context.organizationId,
