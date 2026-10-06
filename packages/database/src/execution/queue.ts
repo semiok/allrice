@@ -1,3 +1,4 @@
+import { acquireDevAdmission, devAdmissionOpen } from '../dev-maintenance.ts';
 import {
   RepositoryMergeBindingSchema,
   repositoryMergeJobType,
@@ -538,6 +539,7 @@ export async function enqueueRun(
         );
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
+    await acquireDevAdmission(transaction);
     await transaction`
       select pg_advisory_xact_lock(
         hashtextextended(${`${context.organizationId}:${submission.idempotencyKey}`}, 0)
@@ -1198,15 +1200,18 @@ export async function requestRunCancellationTransaction(
 export async function claimNextJob(workerIdInput: string, leaseMs: number) {
   const workerId = UuidSchema.parse(workerIdInput);
   const leaseToken = randomUUID();
-  const now = new Date();
-  const expiresAt = leaseDeadline(leaseMs, now);
   const sql = getDatabase();
   const row = await sql.begin(async (transaction) => {
+    if (!(await devAdmissionOpen(transaction))) return null;
+    const [scanClock] = await transaction<
+      { now: Date }[]
+    >`select clock_timestamp() as now`;
+    const scanNow = scanClock!.now;
     const rows = await transaction<JobRow[]>`
       select candidate.* from allrice_jobs candidate
       where candidate.status = 'queued'
         and coalesce(candidate.payload->>'type','') not like 'allrice.platform.dev.%'
-        and (candidate.available_at <= ${now} or exists (
+        and (candidate.available_at <= ${scanNow} or exists (
           -- A startup failure/cancellation can finish before any runtime was
           -- acquired. Release its FIFO successor through the existing queue,
           -- instead of depending solely on native turn-completion callbacks.
@@ -1225,7 +1230,7 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
                     and (earlier.created_at,earlier.run_id)<(f.created_at,f.run_id)))
             )
         ))
-        and candidate.timeout_at > ${now}
+        and candidate.timeout_at > ${scanNow}
         and candidate.cancel_requested_at is null
         and not exists (select 1 from allrice_conversation_followups f where f.run_id=candidate.run_id and f.mode='steer_only')
       order by (
@@ -1242,6 +1247,12 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     if (!job) return null;
     await transaction`update allrice_conversation_followups
       set state='released',released_at=now() where run_id=${job.run_id} and mode='follow_up' and state='queued'`;
+    const [claimClock] = await transaction<
+      { now: Date }[]
+    >`select clock_timestamp() as now`;
+    const now = claimClock!.now;
+    if (job.timeout_at <= now) throw new QueueError('lease_lost');
+    const expiresAt = leaseDeadline(leaseMs, now);
     const claimed = await transaction<JobRow[]>`
       update allrice_jobs
       set status = 'claimed', attempt = attempt + 1,
@@ -1508,13 +1519,17 @@ export async function startClaimedJob(
   const workerId = UuidSchema.parse(workerIdInput);
   const jobId = UuidSchema.parse(jobIdInput);
   const leaseToken = UuidSchema.parse(leaseTokenInput);
-  const now = new Date();
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
+    if (!(await devAdmissionOpen(transaction))) return null;
     await refreshTaskClockForJob(transaction, jobId);
     const jobs = await transaction<JobRow[]>`
       select * from allrice_jobs where id = ${jobId} for update
     `;
+    const [startClock] = await transaction<
+      { now: Date }[]
+    >`select clock_timestamp() as now`;
+    const now = startClock!.now;
     const job = jobs[0];
     if (
       job &&
@@ -1679,6 +1694,7 @@ export async function startClaimedJob(
       denied: false,
     };
   });
+  if (!result) return null;
   if (result.denied) throw new QueueError('policy_denied');
   return result.execution;
 }

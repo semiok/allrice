@@ -1,3 +1,4 @@
+import { acquireDevAdmission, devAdmissionOpen } from '../dev-maintenance.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import {
   PlatformPreviewContextError,
@@ -497,9 +498,10 @@ export async function queuePlatformEmployeeTestRun(
   const sql = getDatabase();
   let preview;
   try {
-    preview = await sql.begin((tx) =>
-      resolvePlatformPreviewContext(tx, parsed, actorLabel, true),
-    );
+    preview = await sql.begin(async (tx) => {
+      await acquireDevAdmission(tx);
+      return resolvePlatformPreviewContext(tx, parsed, actorLabel, true);
+    });
   } catch (error) {
     if (!(error instanceof PlatformPreviewContextError)) throw error;
     return {
@@ -523,6 +525,7 @@ export async function queuePlatformEmployeeTestRun(
     return { queued: false as const, ...compilation, testRun: null };
   }
   const rows = await sql.begin(async (transaction) => {
+    await acquireDevAdmission(transaction);
     const revisions = await transaction<RevisionRow[]>`
       select id, employee_id, revision, status, definition, runtime_profile,
         checksum, created_at, published_at
@@ -761,6 +764,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
   const workerId = UuidSchema.parse(workerIdInput);
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    if (!(await devAdmissionOpen(transaction))) return null;
     const staleTests = await transaction<{ id: string }[]>`
       select id from allrice_platform_employee_test_runs
       where status = 'running'

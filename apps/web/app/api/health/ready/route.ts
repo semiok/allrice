@@ -1,5 +1,9 @@
 import { makeHealthResponse } from '@allrice/contracts';
-import { pingDatabase, readServiceBuildIdentity } from '@allrice/database';
+import {
+  pingDatabase,
+  readServiceBuildIdentity,
+  readDevMaintenance,
+} from '@allrice/database';
 import { releaseHeaders } from '../../../../lib/release-headers';
 
 export const dynamic = 'force-dynamic';
@@ -9,10 +13,12 @@ export async function GET() {
   try {
     await pingDatabase();
     const identity = await readServiceBuildIdentity('web');
+    const maintenance = await readDevMaintenance();
     return Response.json(
       {
         ...makeHealthResponse('web', 'ready'),
         ...(identity ? { identity } : {}),
+        ...(maintenance ? { maintenance } : {}),
       },
       {
         headers: { ...releaseHeaders(), 'Cache-Control': 'no-store' },
