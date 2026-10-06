@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import type * as Yaml from 'yaml';
+import type * as Yaml from '../../../packages/project-runtime/node_modules/yaml';
 import { createHash } from 'node:crypto';
 import { gzipSync } from 'node:zlib';
 import { join } from 'node:path';

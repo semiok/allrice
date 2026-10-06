@@ -29,8 +29,16 @@ export function officeError(message: string): never {
 
 // JSZip normalizes names and overwrites duplicate entries. Check the original
 // central directory before loading so an edit cannot silently change the package.
-function checkZip(bytes: Buffer) {
-  if (bytes.length > 20 * 1024 * 1024) officeError('Office 文件超过 20 MB');
+export function checkZip(
+  bytes: Buffer,
+  limits = {
+    maxBytes: 20 * 1024 * 1024,
+    maxEntries: 4096,
+    maxMemberBytes: 32 * 1024 * 1024,
+    maxExpandedBytes: 64 * 1024 * 1024,
+  },
+) {
+  if (bytes.length > limits.maxBytes) officeError('Office 文件超过 20 MB');
   let end = -1;
   for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
     if (
@@ -48,7 +56,7 @@ function checkZip(bytes: Buffer) {
   const size = bytes.readUInt32LE(end + 12);
   if (
     !count ||
-    count > 4096 ||
+    count > limits.maxEntries ||
     bytes.readUInt32LE(end + 4) !== 0 ||
     bytes.readUInt16LE(end + 8) !== count ||
     offset + size !== end
@@ -72,7 +80,7 @@ function checkZip(bytes: Buffer) {
       next > end ||
       flags & 1 ||
       ![0, 8].includes(method) ||
-      length > 32 * 1024 * 1024
+      length > limits.maxMemberBytes
     )
       officeError('不支持加密、ZIP64 或过大 Office 成员');
     const name = bytes
@@ -89,7 +97,8 @@ function checkZip(bytes: Buffer) {
       officeError('Office ZIP 包含重复或无效路径');
     names.add(name);
     expanded += length;
-    if (expanded > 64 * 1024 * 1024) officeError('Office 解压内容超过 64 MB');
+    if (expanded > limits.maxExpandedBytes)
+      officeError('Office 解压内容超过 64 MB');
     offset = next;
   }
   if (offset !== end) officeError('Office ZIP 目录长度不符');

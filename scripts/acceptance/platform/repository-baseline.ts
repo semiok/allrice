@@ -1,3 +1,4 @@
+import { readRepositoryGitMaterial } from './repository-git-material.mjs';
 import { execFileSync } from 'node:child_process';
 import {
   mkdirSync,
@@ -59,58 +60,8 @@ if (
   git('ls-remote', 'origin', 'refs/heads/main').split(/\s/)[0] !== sha
 )
   throw Error('REPOSITORY_BASE_NOT_LATEST_MAIN');
-const rows = execFileSync('git', ['ls-tree', '-lr', '-z', sha], {
-  cwd: root,
-  maxBuffer: 2_000_000,
-})
-  .toString('utf8')
-  .split('\0')
-  .filter(Boolean)
-  .map((line) => {
-    const [metadata, path] = line.split('\t'),
-      [mode, kind, oid, size] = metadata!.split(/\s+/);
-    if (
-      !path ||
-      kind !== 'blob' ||
-      !['100644', '100755'].includes(mode!) ||
-      !/^[a-f0-9]{40}$/.test(oid!) ||
-      !/^\d+$/.test(size!)
-    )
-      throw Error('REPOSITORY_GIT_ENTRY_UNSUPPORTED');
-    return { path, mode, oid, size: Number(size) };
-  });
-if (
-  rows.length > repositorySourceLimits.files ||
-  rows.some((r) => r.size > repositorySourceLimits.fileBytes) ||
-  rows.reduce((n, r) => n + r.size, 0) > repositorySourceLimits.totalBytes
-)
-  throw Error('REPOSITORY_SOURCE_LIMIT');
-const blobs = execFileSync('git', ['cat-file', '--batch'], {
-  cwd: root,
-  input: rows.map((r) => r.oid).join('\n') + '\n',
-  maxBuffer: repositorySourceLimits.totalBytes + 2_000_000,
-});
-let offset = 0;
-const files = rows.map((row) => {
-  const end = blobs.indexOf(10, offset);
-  if (end < offset) throw Error('REPOSITORY_GIT_READ_FAILED');
-  const header = blobs.subarray(offset, end).toString('ascii');
-  if (header !== `${row.oid} blob ${row.size}`)
-    throw Error('REPOSITORY_GIT_READ_FAILED');
-  const bytes = blobs.subarray(end + 1, end + 1 + row.size);
-  offset = end + 2 + row.size;
-  if (bytes.length !== row.size || blobs[offset - 1] !== 10)
-    throw Error('REPOSITORY_GIT_READ_FAILED');
-  return {
-    path: row.path,
-    mode: row.mode,
-    sizeBytes: row.size,
-    checksum: repositoryDigest(bytes),
-    contentBase64: bytes.toString('base64'),
-  };
-});
-if (offset !== blobs.length) throw Error('REPOSITORY_GIT_READ_FAILED');
-const archive = validateRepositoryArchive({ version: 1, files });
+const archive = validateRepositoryArchive(readRepositoryGitMaterial(root, sha));
+const files = archive.files;
 const expanded = Buffer.from(JSON.stringify(archive));
 if (expanded.length > repositorySourceLimits.jsonBytes)
   throw Error('REPOSITORY_SOURCE_LIMIT');

@@ -134,6 +134,13 @@ export * from './platform-repair-authority.ts';
 export * from './platform-repair-verification.ts';
 export * from './platform-repository-source.ts';
 export * from './platform-repair-profile.ts';
+export * from './platform-repository-publications.ts';
+export * from './platform-repository-publication-ledger.ts';
+export {
+  repositoryRequestGate,
+  type RepositoryActionLease,
+} from './platform-repository-publication-authority.ts';
+export * from './platform-repository-git.ts';
 export {
   getPlatformRepositoryCredential,
   updatePlatformRepositoryCredential,
