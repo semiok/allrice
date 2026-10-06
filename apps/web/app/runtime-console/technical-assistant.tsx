@@ -15,6 +15,7 @@ import css from './technical-assistant.module.css';
 import { TechnicalTasks } from './technical-tasks';
 import { PlatformQuality } from './platform-quality';
 import { PlatformRepositoryRepair } from './platform-repository-repair';
+import { PlatformRepositoryCredentialPanel } from './platform-repository-credential';
 
 const endpoint = '/api/v1/admin/technical-assistant';
 const statusLabels = {
@@ -296,6 +297,7 @@ export function TechnicalAssistant() {
       </header>
       <TechnicalTasks issueId={selected} />
       <PlatformQuality />
+      <PlatformRepositoryCredentialPanel />
       <PlatformRepositoryRepair />
       {error && (
         <p role="alert" className={css.error}>

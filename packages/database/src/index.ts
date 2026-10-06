@@ -134,3 +134,7 @@ export * from './platform-repair-authority.ts';
 export * from './platform-repair-verification.ts';
 export * from './platform-repository-source.ts';
 export * from './platform-repair-profile.ts';
+export {
+  getPlatformRepositoryCredential,
+  updatePlatformRepositoryCredential,
+} from './platform-repository-credentials.ts';
