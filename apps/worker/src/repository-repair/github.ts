@@ -48,12 +48,15 @@ export class FixedRepositoryGithub {
     private readonly gate: RepositoryGithubGate,
     private readonly signal: AbortSignal,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly readOnly = false,
   ) {}
   private async request(
     path: string,
     method: 'GET' | 'POST' = 'GET',
     payload?: unknown,
   ) {
+    if (this.readOnly && method !== 'GET')
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
     this.signal.throwIfAborted();
     const { token, remainingMs } = await this.gate();
     if (!token.startsWith('github_pat_') || remainingMs < 1)

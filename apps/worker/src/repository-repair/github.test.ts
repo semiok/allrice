@@ -5,6 +5,21 @@ const token = 'github_pat_' + 'SyntheticFixtureOnly'.repeat(5);
 const ok = (body: unknown) =>
   new Response(JSON.stringify(body), { status: 200 });
 describe('fixed private GitHub transport boundaries', () => {
+  it('denies writes before dispatch for the repository review client', async () => {
+    const gate = vi.fn(async () => ({ token, remainingMs: 30000 })),
+      transport = vi.fn<typeof fetch>();
+    const client = new FixedRepositoryGithub(
+      gate,
+      new AbortController().signal,
+      transport,
+      true,
+    );
+    await expect(
+      client.createBlob(Buffer.from('synthetic').toString('base64')),
+    ).rejects.toThrow();
+    expect(gate).not.toHaveBeenCalled();
+    expect(transport).not.toHaveBeenCalled();
+  });
   it('downloads the artifact through a bounded storage ticket without forwarding credentials', async () => {
     const gate = vi.fn(async () => ({ token, remainingMs: 30000 }));
     const transport = vi

@@ -12,27 +12,15 @@ import {
 import {
   RepositoryGitShaSchema,
   RepositoryPublicationRemoteSchema,
+  RepositoryPublicationMetadataSchema,
+  RepositoryPublicationSourceSchema,
   RepositoryPublicationCiSchema,
   RepositoryPublicationSteps,
   RepositoryPublicationStepSchema,
   type RepositoryPublicationStep,
 } from './platform-repository-publication-contracts.ts';
 
-export const RepositoryPublicationMetadataSchema = z
-  .object({
-    tree: RepositoryGitShaSchema,
-    commit: RepositoryGitShaSchema,
-    workflowBlob: RepositoryGitShaSchema,
-    author: z
-      .object({
-        login: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/),
-        userId: z.number().int().positive(),
-        timestamp: z.string(),
-        message: z.string().max(200),
-      })
-      .strict(),
-  })
-  .strict();
+export { RepositoryPublicationMetadataSchema } from './platform-repository-publication-contracts.ts';
 export const RepositoryStoredStepSchema = z
   .object({
     state: z.enum(['started', 'confirmed']),
@@ -183,11 +171,16 @@ export async function confirmRepositoryPublicationStep(
     await tx`update allrice_platform_repository_publications set steps=${tx.json(steps)},remote=${remote ? tx.json(remote) : null},revision=revision+1,updated_at=clock_timestamp() where id=${d.row.publication_id}`;
   });
 }
-export async function recordRepositoryCiObservation(
-  lease: RepositoryActionLease,
+/** Same original receipt checker used when observing CI and freezing review.
+ * It performs no IO and does not accept a model-rated substitute for a gate. */
+export function validateRepositoryCiEvidence(
   raw: unknown,
-  rawEvidence: unknown = [],
+  rawEvidence: unknown,
+  rawSource: unknown,
+  rawMetadata: unknown,
+  rawRemote: unknown,
 ) {
+  const source = RepositoryPublicationSourceSchema.parse(rawSource);
   const ci = RepositoryPublicationCiSchema.parse(raw);
   const evidence = z
     .array(
@@ -206,52 +199,66 @@ export async function recordRepositoryCiObservation(
     new Set(evidence.map((e) => e.receipt.job)).size !== evidence.length
   )
     throw new QueueError('conflict');
+  const metadata = rawMetadata
+      ? RepositoryPublicationMetadataSchema.parse(rawMetadata)
+      : null,
+    remote = rawRemote
+      ? RepositoryPublicationRemoteSchema.parse(rawRemote)
+      : null;
+  if (
+    ci.headSha !== (metadata?.commit ?? null) ||
+    !ci.observedAt ||
+    (remote && remote.headSha !== ci.headSha) ||
+    (ci.state === 'passed' &&
+      (!remote ||
+        !metadata ||
+        ci.checkoutTree !== metadata.tree ||
+        ci.materialDigest !== source.candidateMaterialDigest))
+  )
+    throw new QueueError('conflict');
+  if (ci.state === 'passed') {
+    if (evidence.length !== 4) throw new QueueError('conflict');
+    for (const e of evidence) {
+      const r = e.receipt,
+        publicReceipt = ci.receipts.find((p) => p.name === r.job);
+      if (
+        !publicReceipt ||
+        publicReceipt.artifactId !== e.artifactId ||
+        publicReceipt.archiveDigest !== e.archiveDigest ||
+        publicReceipt.receiptDigest !== technicalDigest(r) ||
+        r.workflowRunId !== ci.workflowRunId ||
+        r.runAttempt !== ci.runAttempt ||
+        r.headSha !== metadata!.commit ||
+        r.baseSha !== source.baseSha ||
+        r.pullRequest !== remote!.number ||
+        r.event !== 'pull_request' ||
+        r.workflowBlob !== metadata!.workflowBlob ||
+        r.checkoutSha !== ci.checkoutSha ||
+        r.checkoutTree !== metadata!.tree ||
+        r.materialDigest !== source.candidateMaterialDigest ||
+        r.rootLockChecksum !== source.rootLockChecksum ||
+        r.dependencyConfigurationDigest !== source.dependencyConfigurationDigest
+      )
+        throw new QueueError('conflict');
+    }
+  } else if (evidence.length || ci.receipts.length)
+    throw new QueueError('conflict');
+  return { ci, evidence };
+}
+
+export async function recordRepositoryCiObservation(
+  lease: RepositoryActionLease,
+  raw: unknown,
+  rawEvidence: unknown = [],
+) {
   return withRepositoryAction(lease, async (tx, d, job) => {
-    const metadata = d.row.metadata
-        ? RepositoryPublicationMetadataSchema.parse(d.row.metadata)
-        : null,
-      remote = d.row.remote
-        ? RepositoryPublicationRemoteSchema.parse(d.row.remote)
-        : null;
-    if (
-      ci.headSha !== (metadata?.commit ?? null) ||
-      !ci.observedAt ||
-      (remote && remote.headSha !== ci.headSha) ||
-      (ci.state === 'passed' &&
-        (!remote ||
-          !metadata ||
-          ci.checkoutTree !== metadata.tree ||
-          ci.materialDigest !== d.source.candidateMaterialDigest))
-    )
-      throw new QueueError('conflict');
-    if (ci.state === 'passed') {
-      if (evidence.length !== 4) throw new QueueError('conflict');
-      for (const e of evidence) {
-        const r = e.receipt,
-          publicReceipt = ci.receipts.find((p) => p.name === r.job);
-        if (
-          !publicReceipt ||
-          publicReceipt.artifactId !== e.artifactId ||
-          publicReceipt.archiveDigest !== e.archiveDigest ||
-          publicReceipt.receiptDigest !== technicalDigest(r) ||
-          r.workflowRunId !== ci.workflowRunId ||
-          r.runAttempt !== ci.runAttempt ||
-          r.headSha !== metadata!.commit ||
-          r.baseSha !== d.source.baseSha ||
-          r.pullRequest !== remote!.number ||
-          r.event !== 'pull_request' ||
-          r.workflowBlob !== metadata!.workflowBlob ||
-          r.checkoutSha !== ci.checkoutSha ||
-          r.checkoutTree !== metadata!.tree ||
-          r.materialDigest !== d.source.candidateMaterialDigest ||
-          r.rootLockChecksum !== d.source.rootLockChecksum ||
-          r.dependencyConfigurationDigest !==
-            d.source.dependencyConfigurationDigest
-        )
-          throw new QueueError('conflict');
-      }
-    } else if (evidence.length || ci.receipts.length)
-      throw new QueueError('conflict');
+    const { ci, evidence } = validateRepositoryCiEvidence(
+      raw,
+      rawEvidence,
+      d.source,
+      d.row.metadata,
+      d.row.remote,
+    );
     await tx`update allrice_platform_repository_publications set ci=${tx.json(ci)},ci_evidence=${evidence.length ? tx.json(evidence) : null},revision=revision+1,updated_at=clock_timestamp() where id=${d.row.publication_id}`;
     const observation = {
       inputDigest: d.row.input_digest,

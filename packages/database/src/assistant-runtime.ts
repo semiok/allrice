@@ -765,6 +765,12 @@ export function createAssistantRuntime(
             where d.root_run_id=h.root_run_id and d.candidate_id=h.head_artifact_id and d.digest=h.head_digest
               and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
               and not exists(select 1 from allrice_development_reviews reject where reject.root_run_id=h.root_run_id and reject.artifact_id=h.head_artifact_id and reject.verdict='revise'))`;
+        const { repositoryDevelopmentIncomplete } =
+          await import('./platform-repository-development.ts');
+        const repositoryIncomplete = await repositoryDevelopmentIncomplete(
+          tx,
+          root.root_run_id,
+        );
         const status =
           unsettled.blocking ||
           pending ||
@@ -773,6 +779,7 @@ export function createAssistantRuntime(
           children.some((child) => !terminal.has(child.status))
             ? 'unknown'
             : developmentIncomplete ||
+                repositoryIncomplete ||
                 children.some((child) => child.status !== 'completed')
               ? 'partial'
               : 'completed';

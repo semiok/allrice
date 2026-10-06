@@ -8,12 +8,16 @@ import {
   type RuntimeTaskRef,
   type DshNativeSkillSnapshot,
 } from '@allrice/contracts';
+import { RepositoryReviewCommandSchema } from '@allrice/database/technical-contracts';
 import type { AssistantRuntime, AssistantWorkerLease } from '@allrice/database';
 import { runtimePolicyDigest } from '@allrice/database';
 import type { HarnessToolCall, HarnessToolResult } from '../adapter.js';
 import { HandlerError, isConfirmedToolFailure } from '../../errors.js';
 import { riceToolRisk } from '../../tool-broker/definitions.js';
-import { developmentAssignmentMessage } from '../../development/assignment-instructions.js';
+import {
+  developmentAssignmentMessage,
+  repositoryReviewAssignmentMessage,
+} from '../../development/assignment-instructions.js';
 
 /** UUID derived from native call identity, stable across transport duplicates. */
 function stableId(value: string) {
@@ -25,6 +29,8 @@ const tools = z.array(z.string().min(1).max(120)).max(64);
 const natural = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 export interface AssistantWorkerBridgeOptions {
   nativeSkills?: readonly DshNativeSkillSnapshot[];
+  /** Worker-certified repository review, never a native/browser argument. */
+  repositoryReview?: boolean;
   runtime: AssistantRuntime;
   task: RuntimeTaskRef;
   context: RequestContext;
@@ -384,7 +390,10 @@ export function createAssistantWorkerBridge(
             // Do not echo untrusted input (or a parser's source snippet).
           }
         }
-        const command = DevelopmentCommandSchema.safeParse(decoded);
+        const localCommand = DevelopmentCommandSchema.safeParse(decoded);
+        const command = localCommand.success
+          ? localCommand
+          : RepositoryReviewCommandSchema.safeParse(decoded);
         if (!command.success)
           return {
             error: 'assistant_development_invalid',
@@ -497,11 +506,13 @@ export function createAssistantWorkerBridge(
         const taskText =
           text.parse(args.text) +
           (assignment
-            ? developmentAssignmentMessage(
-                assignment,
-                callUuid,
-                options.nativeSkills ?? [],
-              )
+            ? options.repositoryReview
+              ? repositoryReviewAssignmentMessage(assignment)
+              : developmentAssignmentMessage(
+                  assignment,
+                  callUuid,
+                  options.nativeSkills ?? [],
+                )
             : '');
         let development: unknown;
         const { instance: child } = await runtime.provision({

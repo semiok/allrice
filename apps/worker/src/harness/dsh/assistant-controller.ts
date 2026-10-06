@@ -65,6 +65,8 @@ function assertPriceProvider(
  * supplies authority, tool sets, native IDs, budget amounts or a worker lease. */
 export function productionAssistantController(input: {
   nativeSkills?: readonly DshNativeSkillSnapshot[];
+  /** Selected only after the Worker validates a persisted repository review. */
+  repositoryReview?: boolean;
   configuration: unknown;
   context: ExecutionContext;
   worker: Omit<AssistantWorkerLease, 'generation'>;
@@ -341,6 +343,7 @@ export function productionAssistantController(input: {
       );
       const bridge = createAssistantWorkerBridge({
         nativeSkills: input.nativeSkills,
+        repositoryReview: input.repositoryReview,
         runtime,
         task,
         worker,

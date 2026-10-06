@@ -130,6 +130,7 @@ export * from './platform-quality-automation.ts';
 export * from './platform-quality-case.ts';
 export * from './platform-quality-live-case.ts';
 export * from './platform-repair.ts';
+export * from './platform-repository-reviews.ts';
 export * from './platform-repair-authority.ts';
 export * from './platform-repair-verification.ts';
 export * from './platform-repository-source.ts';
