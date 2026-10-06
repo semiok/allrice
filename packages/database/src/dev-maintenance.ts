@@ -181,12 +181,14 @@ export async function requestDevMaintenance(
   });
 }
 export async function startDevProducer(input: {
+  id?: string;
   instanceBootId: string;
   role: 'web' | 'worker';
   producer: (typeof devProducerCatalog)[number];
 }) {
   const value = z
     .object({
+      id: z.uuid().optional(),
       instanceBootId: z.uuid(),
       role: z.enum(['web', 'worker']),
       producer: z.enum(devProducerCatalog),
@@ -194,13 +196,16 @@ export async function startDevProducer(input: {
     .strict()
     .parse(input);
   requireEnabled();
-  const id = randomUUID();
-  await getDatabase().begin(async (tx) => {
+  // The process allocates this identity before the write. A lost commit receipt
+  // must remain observable under the same id, without replaying business work.
+  const id = value.id ?? randomUUID();
+  const epoch = await getDatabase().begin(async (tx) => {
     const epoch = await acquireDevAdmission(tx);
     await tx`insert into allrice_dev_producer_permits(id,epoch,instance_boot_id,role,producer)
       values(${id},${epoch},${value.instanceBootId},${value.role},${value.producer})`;
+    return epoch;
   });
-  return { id, instanceBootId: value.instanceBootId };
+  return { id, instanceBootId: value.instanceBootId, epoch };
 }
 export async function finishDevProducer(permit: {
   id: string;
@@ -212,6 +217,17 @@ export async function finishDevProducer(permit: {
     await getDatabase()`update allrice_dev_producer_permits set finished_at=coalesce(finished_at,clock_timestamp())
     where id=${id} and instance_boot_id=${boot} returning id`;
   if (!rows.length) throw new DevMaintenanceError('dev_barrier_stale');
+}
+/** Bounded observer maintenance of completed internal scope metadata only.
+ * Never expire unknown/unfinished work or any business/audit ledger. */
+export async function compactCompletedDevProducerPermits() {
+  requireEnabled();
+  await getDatabase()`with completed as (
+    select id from allrice_dev_producer_permits
+    where finished_at < clock_timestamp()-interval '1 hour'
+    order by finished_at limit 512 for update skip locked
+  ) delete from allrice_dev_producer_permits p using completed c
+    where p.id=c.id and p.finished_at is not null`;
 }
 export async function acknowledgeDevMaintenance(
   input: DevMaintenanceOwner,

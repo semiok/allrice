@@ -290,7 +290,7 @@ export class CodexAuthorizationBroker {
   ) {}
 
   tick() {
-    if (this.active) return;
+    if (this.active) return this.active;
     this.abortController = new AbortController();
     this.active = claimCodexAuthorizationFlow(this.workerId)
       .then((flow) =>
@@ -313,6 +313,7 @@ export class CodexAuthorizationBroker {
         this.active = null;
         this.abortController = null;
       });
+    return this.active;
   }
 
   async close() {

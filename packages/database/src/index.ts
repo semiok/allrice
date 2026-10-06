@@ -152,3 +152,8 @@ export { repositoryMergeRequestGate } from './platform-repository-merge-authorit
 export { readServiceBuildIdentity } from './service-build-identity.ts';
 
 export { readDevMaintenance, DevMaintenanceError } from './dev-maintenance.ts';
+export {
+  installDevProducerLifecycle,
+  readDevProducerLifecycle,
+  type DevProducerContext,
+} from './dev-producer-lifecycle.ts';

@@ -3,6 +3,7 @@ import {
   pingDatabase,
   readServiceBuildIdentity,
   readDevMaintenance,
+  readDevProducerLifecycle,
 } from '@allrice/database';
 import { releaseHeaders } from '../../../../lib/release-headers';
 
@@ -19,6 +20,9 @@ export async function GET() {
         ...makeHealthResponse('web', 'ready'),
         ...(identity ? { identity } : {}),
         ...(maintenance ? { maintenance } : {}),
+        ...(maintenance
+          ? { producerLifecycle: readDevProducerLifecycle('web') }
+          : {}),
       },
       {
         headers: { ...releaseHeaders(), 'Cache-Control': 'no-store' },
