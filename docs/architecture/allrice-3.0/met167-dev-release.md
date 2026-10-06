@@ -123,3 +123,30 @@ classification remain C3/C4 work. All 24 catalog families remain unknown,
 scope coverage remains partial and release admission remains disabled.
 No installed supervisor, quiesced transition, host START or automatic/manual
 fallback release authority is added by C2.
+
+## PR5b1c Worker private preview IPC slice (C3a)
+
+Worker shutdown synchronously fences private preview admission before waiting
+for commands or service shutdown. Repeated signals reuse one shutdown result.
+The transport retains disconnected owners until already-started authorization,
+reauthorization, frame queues and actual IPC send callbacks settle. Stop checks
+after each awaited authorization stage prevent late results from starting input
+reads, container checks, relay dispatch or status publication. Callback errors
+cannot skip cleanup; cleanup failures remain failures on repeated close.
+
+Raw Unix HTTP connections, incomplete upgrades, WebSocket close events and the
+listener are also joined. Node automatically unlinks its bound Unix path on
+close. A private owned binding with a hard link exposes the same socket inode;
+close leaves the public stale socket name so no stat/unlink race can remove a
+replacement. Legacy startup probe and inode checks handle stale names under serialized
+publication. They are not an atomic multi-process ownership fence; concurrent
+startup/publication stays unknown for shared supervisor ownership work. Neither
+ECONNREFUSED nor an inode check grants release/START authority.
+Startup failure closes the private owned listener and binding directory. No preview protocol, shared runtime or Bridge input changes.
+
+This completes the IPC ownership boundary only. Shared relay `receive/close`
+still return void and hide Docker request, fetch, upgrade and helper lifetimes.
+Guard process/stdio, remote lease and container exit, service recovery and other
+native resources remain C3b/C3c work. IPC drain is not proof of those resources
+stopping. All 24 producer families remain unknown/partial; producer ACK,
+supervisor, host START and release admission remain disabled.
