@@ -1,5 +1,5 @@
 import { makeHealthResponse } from '@allrice/contracts';
-import { pingDatabase } from '@allrice/database';
+import { pingDatabase, readServiceBuildIdentity } from '@allrice/database';
 import { releaseHeaders } from '../../../../lib/release-headers';
 
 export const dynamic = 'force-dynamic';
@@ -8,9 +8,16 @@ export const runtime = 'nodejs';
 export async function GET() {
   try {
     await pingDatabase();
-    return Response.json(makeHealthResponse('web', 'ready'), {
-      headers: { ...releaseHeaders(), 'Cache-Control': 'no-store' },
-    });
+    const identity = await readServiceBuildIdentity('web');
+    return Response.json(
+      {
+        ...makeHealthResponse('web', 'ready'),
+        ...(identity ? { identity } : {}),
+      },
+      {
+        headers: { ...releaseHeaders(), 'Cache-Control': 'no-store' },
+      },
+    );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : 'Unknown readiness error';
