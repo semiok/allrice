@@ -211,7 +211,11 @@ describe('Worker preview IPC owned lifetime over actual Unix sockets', () => {
     raw.on('error', () => undefined);
     await once(raw, 'connect');
     raw.write('GET /internal/project-preview HTTP/1.1\r\n');
-    const end = once(raw, 'close');
+    // Closing an incomplete HTTP request may reset its peer on Linux.
+    // Observe the actual close independently of the expected socket error.
+    const end = new Promise<void>((resolve) =>
+      raw.once('close', () => resolve()),
+    );
     const closing = t.close();
     expect(t.close()).toBe(closing);
     await closing;
