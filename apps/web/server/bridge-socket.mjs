@@ -19,6 +19,7 @@ import {
   ProjectPreviewServerFrameSchema,
 } from '@allrice/contracts';
 import { WebSocketServer, WebSocket } from 'ws';
+import { createPendingWork } from './pending-work.mjs';
 
 /** Fixed loopback adapter. Caller controls only a strict RPC action, never a URL or headers. */
 export function createBridgeLoopbackDispatch(port) {
@@ -112,11 +113,26 @@ export async function createBridgeSocketGateway({
     handleProtocols: (protocols) =>
       protocols.has(bridgeSocketProtocol) ? bridgeSocketProtocol : false,
   });
-  const clients = new Set();
-  const previews = new Map();
+
+  const clients = new Set(),
+    ownedClients = new Set(),
+    previews = new Map(),
+    ownedPreviews = new Set(),
+    admissions = new Set(),
+    work = createPendingWork();
   let stopping = false,
+    closing,
+    cleanupFailed = false,
     authenticating = 0,
     pendingBytes = 0;
+  const observeCleanup = (done, remove) => {
+    void done.then(remove, () => {
+      cleanupFailed = true;
+      remove();
+    });
+  };
+  // Signal without returning the drain: queue/error callbacks must not await
+  // the completion that includes themselves.
   const terminate = (
     client,
     code = 4009,
@@ -124,82 +140,117 @@ export async function createBridgeSocketGateway({
   ) => {
     if (client.closing) return;
     client.closing = true;
+    clients.delete(client);
+    const entries = [...client.previews];
+    for (const entry of entries) entry.requestClose();
     client.ws.close(code, reason);
     const timer = setTimeout(() => client.ws.terminate(), 1000);
     timer.unref();
     client.ws.once('close', () => clearTimeout(timer));
+    client.done = (async () => {
+      await client.socketClosed;
+      await client.work.drain();
+      const results = await Promise.allSettled(
+        entries.map((entry) => entry.done),
+      );
+      // Includes current()/renew promises that lost their decision timeout.
+      // Never release early and then let a late renewal resurrect the lease.
+      await authority.release(client.connection);
+      if (results.some((result) => result.status === 'rejected'))
+        throw Error('BRIDGE_PREVIEW_CLEANUP_UNCONFIRMED');
+    })();
+    observeCleanup(client.done, () => ownedClients.delete(client));
   };
-  const send = (client, frame) => {
-    if (client.closing || client.ws.readyState !== WebSocket.OPEN) return false;
-    const data = JSON.stringify(frame);
+  const sendAsync = (client, frame) => {
+    if (stopping || client.closing || client.ws.readyState !== WebSocket.OPEN)
+      return Promise.resolve(false);
+    const data = JSON.stringify(frame),
+      length = Buffer.byteLength(data);
     if (
-      Buffer.byteLength(data) > bridgeSocketMaximumFrameBytes ||
-      client.ws.bufferedAmount + Buffer.byteLength(data) >
-        bridgeSocketMaximumBufferedBytes ||
+      length > bridgeSocketMaximumFrameBytes ||
+      client.ws.bufferedAmount + length > bridgeSocketMaximumBufferedBytes ||
       [...clients].reduce((bytes, item) => bytes + item.ws.bufferedAmount, 0) +
-        Buffer.byteLength(data) >
+        length >
         16 * 1024 * 1024
     ) {
       terminate(client, 4013, 'OUTPUT_BACKPRESSURE');
-      return false;
+      return Promise.resolve(false);
     }
-    client.ws.send(data, (error) => {
-      if (error) terminate(client);
+    return client.work.run(async () => {
+      if (stopping || client.closing || client.ws.readyState !== WebSocket.OPEN)
+        return false;
+      return new Promise((resolve) =>
+        client.ws.send(data, (error) => {
+          if (error) terminate(client);
+          resolve(!error);
+        }),
+      );
     });
-    return true;
+  };
+  const send = (client, frame) => {
+    void sendAsync(client, frame);
   };
   const current = async (client, renew = false) => {
     if (stopping || !enabled() || client.closing) return false;
     let timeout;
     try {
-      return await Promise.race([
+      const pending = client.work.run(() =>
         authority.current(client.connection, renew),
+      );
+      const ok = await Promise.race([
+        pending,
         new Promise((resolve) => {
           timeout = setTimeout(() => resolve(false), 2500);
         }),
       ]);
+      return ok && !stopping && enabled() && !client.closing;
     } catch {
       return false;
     } finally {
       clearTimeout(timeout);
     }
   };
-  // NOTIFY accelerates changes, but every RPC and heartbeat rechecks PostgreSQL.
   const unsubscribe = await authority.subscribe((deviceId, kind) => {
-    for (const client of clients)
-      if (client.connection.deviceId === deviceId) {
-        if (kind === 'work') {
-          if (!client.wakeupPending) {
-            client.wakeupPending = true;
-            void current(client)
-              .then((ok) => {
-                if (ok) send(client, { version: 1, type: 'wakeup' });
-                else terminate(client);
-              })
-              .finally(() => {
-                client.wakeupPending = false;
-              });
-          }
-        } else {
-          void current(client).then((ok) => {
-            if (!ok) terminate(client);
+    if (stopping) return;
+    for (const client of clients) {
+      if (client.connection.deviceId !== deviceId || client.closing) continue;
+      if (kind === 'work') {
+        if (client.wakeupPending) continue;
+        client.wakeupPending = true;
+        void client.work
+          .run(async () => {
+            if (await current(client))
+              send(client, { version: 1, type: 'wakeup' });
+            else terminate(client);
+          })
+          .finally(() => {
+            client.wakeupPending = false;
           });
-        }
+      } else {
+        void client.work.run(async () => {
+          if (!(await current(client))) terminate(client);
+        });
       }
+    }
   });
   const timer = setInterval(() => {
+    if (stopping) return;
     for (const client of clients) {
-      if (client.checking) continue;
+      if (client.checking || client.closing) continue;
       client.checking = true;
-      void (async () => {
-        if (!client.alive || !(await current(client, true))) {
+      void client.work
+        .run(async () => {
+          if (!client.alive || !(await current(client, true))) {
+            terminate(client);
+            return;
+          }
+          if (stopping || client.closing) return;
+          client.alive = false;
+          client.ws.ping();
+        })
+        .catch(() => {
           terminate(client);
-          return;
-        }
-        client.alive = false;
-        client.ws.ping();
-      })()
-        .catch(() => terminate(client))
+        })
         .finally(() => {
           client.checking = false;
         });
@@ -207,9 +258,55 @@ export async function createBridgeSocketGateway({
   }, heartbeatMs);
   timer.unref();
 
+  function previewOwner(client, id, onFrame, onClose) {
+    const entry = {
+      client,
+      id,
+      onFrame,
+      work: createPendingWork(),
+      queue: Promise.resolve(),
+      bytes: 0,
+      closed: false,
+      terminal: false,
+      done: null,
+    };
+    ownedPreviews.add(entry);
+    client.previews.add(entry);
+    previews.set(id, entry);
+    entry.requestClose = () => {
+      if (entry.closed) return;
+      entry.closed = true;
+      previews.delete(id);
+      if (!entry.terminal && !client.closing)
+        entry.work.track(
+          sendAsync(client, {
+            version: 1,
+            type: 'preview.end',
+            id,
+            error: true,
+          }),
+        );
+      entry.done = (async () => {
+        await entry.work.drain();
+        await onClose?.();
+      })();
+      observeCleanup(entry.done, () => {
+        ownedPreviews.delete(entry);
+        client.previews.delete(entry);
+      });
+    };
+    entry.close = () => {
+      entry.requestClose();
+      return entry.done;
+    };
+    return entry;
+  }
+
   return {
-    async openPreview({ target, request, id, onFrame, onClose }) {
-      if (stopping || !enabled()) throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+    openPreview(input) {
+      if (stopping || !enabled())
+        return Promise.reject(Error('PROJECT_PREVIEW_UNAVAILABLE'));
+      const { target, request, id, onFrame, onClose } = input;
       const client = [...clients].find(
         (c) =>
           c.connection.deviceId === target.deviceId &&
@@ -219,78 +316,79 @@ export async function createBridgeSocketGateway({
       );
       if (
         !client ||
-        !(await current(client)) ||
-        previews.size >= 64 ||
-        [...previews.values()].filter((p) => p.client === client).length >= 8 ||
+        ownedPreviews.size >= 64 ||
+        client.previews.size >= 8 ||
         previews.has(id)
       )
-        throw Error('PROJECT_PREVIEW_UNAVAILABLE');
-      const entry = {
-        client,
-        onFrame,
-        onClose,
-        queue: Promise.resolve(),
-        bytes: 0,
-      };
-      previews.set(id, entry);
-      const close = () => {
-        if (previews.get(id) !== entry) return;
-        previews.delete(id);
-        send(client, { version: 1, type: 'preview.end', id, error: true });
-        onClose();
-      };
-      if (
-        !send(
-          client,
-          ProjectPreviewServerFrameSchema.parse({
-            version: 1,
-            type: 'preview.open',
-            id,
-            target,
-            request,
-          }),
-        )
-      ) {
-        close();
-        throw Error('PROJECT_PREVIEW_UNAVAILABLE');
-      }
-      return {
-        send: async (frame) => {
-          if (previews.get(id) !== entry || client.closing) return false;
-          if (!(await current(client))) {
-            terminate(client);
-            return false;
+        return Promise.reject(Error('PROJECT_PREVIEW_UNAVAILABLE'));
+      // Reserve before current(), so parallel openers cannot evade capacity.
+      const entry = previewOwner(client, id, onFrame, onClose);
+      return work.run(() =>
+        entry.work.run(async () => {
+          try {
+            if (!(await current(client)) || stopping || entry.closed)
+              throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+            if (
+              !(await sendAsync(
+                client,
+                ProjectPreviewServerFrameSchema.parse({
+                  version: 1,
+                  type: 'preview.open',
+                  id,
+                  target,
+                  request,
+                }),
+              ))
+            )
+              throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+            if (stopping || client.closing || entry.closed)
+              throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+            return {
+              send: (frame) => {
+                if (entry.closed || client.closing || stopping)
+                  return Promise.resolve(false);
+                return entry.work.run(async () => {
+                  if (!(await current(client))) {
+                    terminate(client);
+                    return false;
+                  }
+                  if (entry.closed || client.closing || stopping) return false;
+                  return sendAsync(
+                    client,
+                    ProjectPreviewServerFrameSchema.parse({
+                      ...frame,
+                      version: 1,
+                      id,
+                    }),
+                  );
+                });
+              },
+              close: entry.close,
+            };
+          } catch (error) {
+            entry.requestClose();
+            throw error;
           }
-          if (previews.get(id) !== entry || client.closing) return false;
-          const text = JSON.stringify(
-            ProjectPreviewServerFrameSchema.parse({ ...frame, version: 1, id }),
-          );
-          if (
-            client.ws.bufferedAmount + Buffer.byteLength(text) >
-            bridgeSocketMaximumBufferedBytes
-          )
-            return false;
-          return new Promise((resolve) =>
-            client.ws.send(text, (error) => resolve(!error)),
-          );
-        },
-        close,
-      };
+        }),
+      );
     },
     matches(request) {
       return request.url?.split('?')[0] === bridgeSocketPath;
     },
-    async upgrade(request, socket, head) {
+    upgrade(request, socket, head) {
       const reject = (status) => {
         if (!socket.destroyed)
           socket.end(
-            `HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+            'HTTP/1.1 ' +
+              status +
+              '\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+            () => socket.destroy(),
           );
       };
       socket.on('error', () => undefined);
       if (stopping || !enabled()) {
         reject('404 Not Found');
-        return;
+        return Promise.resolve();
       }
       if (
         request.url !== bridgeSocketPath ||
@@ -304,226 +402,260 @@ export async function createBridgeSocketGateway({
         request.headers['sec-websocket-protocol'] !== bridgeSocketProtocol
       ) {
         reject('400 Bad Request');
-        return;
+        return Promise.resolve();
       }
-      const auth = request.headers.authorization;
-      const token =
-        typeof auth === 'string' && /^Bearer [^\s]{1,256}$/.test(auth)
-          ? auth.slice(7)
-          : null;
+      const auth = request.headers.authorization,
+        token =
+          typeof auth === 'string' && /^Bearer [^\s]{1,256}$/.test(auth)
+            ? auth.slice(7)
+            : null;
       if (!token) {
         reject('401 Unauthorized');
-        return;
+        return Promise.resolve();
       }
       if (
-        clients.size + authenticating >= maximumConnections ||
+        ownedClients.size + authenticating >= maximumConnections ||
         authenticating >= 32
       ) {
         reject('503 Service Unavailable');
-        return;
+        return Promise.resolve();
       }
       authenticating++;
-      let connection;
-      const timeout = setTimeout(
-        () => socket.destroy(),
-        authenticationTimeoutMs,
+      const admission = { stop: () => socket.destroy() };
+      admissions.add(admission);
+      const socketClosed = new Promise((resolve) =>
+        socket.once('close', resolve),
       );
-      try {
-        connection = await authority.register(token);
-        if (
-          socket.destroyed ||
-          stopping ||
-          !enabled() ||
-          !(await authority.current(connection))
-        ) {
-          await authority.release(connection);
-          reject('503 Service Unavailable');
-          return;
-        }
-        wss.handleUpgrade(request, socket, head, (ws) => {
-          const client = {
-            ws,
-            connection,
-            alive: true,
-            checking: false,
-            closing: false,
-            pending: 0,
-            pendingBytes: 0,
-            requestIds: new Set(),
-            queue: Promise.resolve(),
-            wakeupPending: false,
-          };
-          clients.add(client);
-          ws.on('error', () => terminate(client));
-          ws.on('pong', () => {
-            client.alive = true;
-          });
-          ws.on('close', () => {
-            clients.delete(client);
-            for (const [id, p] of previews)
-              if (p.client === client) {
-                previews.delete(id);
-                p.onClose();
-              }
-            void authority.release(connection).catch(() => undefined);
-          });
-          ws.on('message', (data, isBinary) => {
-            if (client.closing) return;
-            if (!isBinary && data.length <= bridgeSocketMaximumFrameBytes) {
-              let parsed;
-              try {
-                parsed = JSON.parse(data.toString('utf8'));
-              } catch {
-                /* strict RPC path rejects below */
+      const timeout = setTimeout(admission.stop, authenticationTimeoutMs);
+      let connection,
+        handedOff = false;
+      return work.run(async () => {
+        try {
+          connection = await authority.register(token);
+          if (socket.destroyed || stopping || !enabled())
+            throw Error('BRIDGE_STOPPING');
+          const ok = await authority.current(connection);
+          if (!ok || socket.destroyed || stopping || !enabled())
+            throw Error('BRIDGE_STOPPING');
+          wss.handleUpgrade(request, socket, head, (ws) => {
+            if (stopping || socket.destroyed || !enabled()) {
+              ws.terminate();
+              return;
+            }
+            handedOff = true;
+            const client = {
+              ws,
+              connection,
+              socketClosed,
+              work: createPendingWork(),
+              previews: new Set(),
+              alive: true,
+              checking: false,
+              closing: false,
+              done: null,
+              pending: 0,
+              pendingBytes: 0,
+              requestIds: new Set(),
+              queue: Promise.resolve(),
+              wakeupPending: false,
+            };
+            clients.add(client);
+            ownedClients.add(client);
+            ws.on('error', () => terminate(client));
+            ws.on('pong', () => {
+              client.alive = true;
+            });
+            ws.once('close', () => terminate(client));
+            ws.on('message', (data, isBinary) => {
+              if (stopping || client.closing) return;
+              if (!isBinary && data.length <= bridgeSocketMaximumFrameBytes) {
+                let parsed;
+                try {
+                  parsed = JSON.parse(data.toString('utf8'));
+                } catch {
+                  /* strict RPC path below */
+                }
+                if (
+                  typeof parsed?.type === 'string' &&
+                  parsed.type.startsWith('preview.')
+                ) {
+                  let frame;
+                  try {
+                    frame = ProjectPreviewClientFrameSchema.parse(parsed);
+                  } catch {
+                    terminate(client, 4000, 'INVALID_PREVIEW_FRAME');
+                    return;
+                  }
+                  const entry = previews.get(frame.id);
+                  if (!entry) return;
+                  if (entry.client !== client) {
+                    terminate(client, 4000, 'PREVIEW_IDENTITY');
+                    return;
+                  }
+                  entry.bytes += data.length;
+                  if (entry.bytes > bridgeSocketMaximumBufferedBytes) {
+                    terminate(client, 4013, 'PREVIEW_BACKPRESSURE');
+                    return;
+                  }
+                  entry.queue = entry.work.track(
+                    entry.queue
+                      .then(async () => {
+                        if (stopping || entry.closed || client.closing) return;
+                        if (!(await current(client))) {
+                          terminate(client);
+                          return;
+                        }
+                        if (stopping || entry.closed || client.closing) return;
+                        // A normal terminal notification must not become an abort
+                        // when the public endpoint finishes inside onFrame.
+                        if (frame.type === 'preview.end' && !frame.error)
+                          entry.terminal = true;
+                        await entry.onFrame(frame);
+                        if (frame.type === 'preview.end') entry.requestClose();
+                      })
+                      .catch(() => {
+                        entry.requestClose();
+                      })
+                      .finally(() => {
+                        entry.bytes -= data.length;
+                      }),
+                  );
+                  return;
+                }
               }
               if (
-                typeof parsed?.type === 'string' &&
-                parsed.type.startsWith('preview.')
+                isBinary ||
+                client.pending >= 8 ||
+                client.pendingBytes + data.length >
+                  bridgeSocketMaximumBufferedBytes ||
+                pendingBytes + data.length > 8 * 1024 * 1024
               ) {
-                let f;
-                try {
-                  f = ProjectPreviewClientFrameSchema.parse(parsed);
-                } catch {
-                  terminate(client, 4000, 'INVALID_PREVIEW_FRAME');
-                  return;
-                }
-                const p = previews.get(f.id);
-                if (!p) return;
-                if (p.client !== client) {
-                  terminate(client, 4000, 'PREVIEW_IDENTITY');
-                  return;
-                }
-                p.bytes += data.length;
-                if (p.bytes > bridgeSocketMaximumBufferedBytes) {
-                  terminate(client, 4013, 'PREVIEW_BACKPRESSURE');
-                  return;
-                }
-                p.queue = p.queue
+                terminate(client, 4013, 'INPUT_BACKPRESSURE');
+                return;
+              }
+              let frame;
+              try {
+                frame = BridgeSocketRequestSchema.parse(
+                  JSON.parse(data.toString('utf8')),
+                );
+              } catch {
+                terminate(client, 4000, 'INVALID_FRAME');
+                return;
+              }
+              if (client.requestIds.has(frame.id)) {
+                terminate(client, 4000, 'DUPLICATE_PENDING_REQUEST');
+                return;
+              }
+              client.pending++;
+              client.pendingBytes += data.length;
+              pendingBytes += data.length;
+              client.requestIds.add(frame.id);
+              client.queue = client.work.track(
+                client.queue
                   .then(async () => {
-                    if (previews.get(f.id) !== p) return;
                     if (!(await current(client))) {
                       terminate(client);
                       return;
                     }
-                    await p.onFrame(f);
-                    if (f.type === 'preview.end') {
-                      previews.delete(f.id);
-                      p.onClose();
+                    if (stopping || client.closing) return;
+                    let result;
+                    try {
+                      result = await dispatch(
+                        token,
+                        frame,
+                        request.headers.host,
+                      );
+                    } catch {
+                      terminate(client, 4011, 'OPERATION_RESPONSE_UNAVAILABLE');
+                      return;
                     }
-                  })
-                  .catch(() => {
-                    previews.delete(f.id);
-                    p.onClose();
+                    if (!(await current(client))) {
+                      terminate(client);
+                      return;
+                    }
+                    if (stopping || client.closing) return;
                     send(client, {
                       version: 1,
-                      type: 'preview.end',
-                      id: f.id,
-                      error: true,
+                      type: 'response',
+                      id: frame.id,
+                      ...result,
                     });
                   })
+                  .catch(() => {
+                    terminate(client);
+                  })
                   .finally(() => {
-                    p.bytes -= data.length;
-                  });
-                return;
+                    client.pending--;
+                    client.pendingBytes -= data.length;
+                    pendingBytes -= data.length;
+                    client.requestIds.delete(frame.id);
+                  }),
+              );
+            });
+            send(client, {
+              version: 1,
+              type: 'welcome',
+              connectionId: connection.connectionId,
+              deviceId: connection.deviceId,
+              epoch: connection.epoch,
+              heartbeatMs,
+              maximumFrameBytes: bridgeSocketMaximumFrameBytes,
+            });
+          });
+        } catch (error) {
+          reject(
+            error?.code === 'device_unauthorized'
+              ? '401 Unauthorized'
+              : '503 Service Unavailable',
+          );
+        } finally {
+          clearTimeout(timeout);
+          try {
+            if (!handedOff) {
+              socket.destroy();
+              // Retain capacity through raw close and the once-only release.
+              await socketClosed;
+              if (connection) {
+                await authority.release(connection);
               }
             }
-            if (
-              isBinary ||
-              client.pending >= 8 ||
-              client.pendingBytes + data.length >
-                bridgeSocketMaximumBufferedBytes ||
-              pendingBytes + data.length > 8 * 1024 * 1024
-            ) {
-              terminate(client, 4013, 'INPUT_BACKPRESSURE');
-              return;
-            }
-            let frame;
-            try {
-              frame = BridgeSocketRequestSchema.parse(
-                JSON.parse(data.toString('utf8')),
-              );
-            } catch {
-              terminate(client, 4000, 'INVALID_FRAME');
-              return;
-            }
-            if (client.requestIds.has(frame.id)) {
-              terminate(client, 4000, 'DUPLICATE_PENDING_REQUEST');
-              return;
-            }
-            client.pending++;
-            client.pendingBytes += data.length;
-            pendingBytes += data.length;
-            client.requestIds.add(frame.id);
-            client.queue = client.queue
-              .then(async () => {
-                if (!(await current(client))) {
-                  terminate(client);
-                  return;
-                }
-                // Do not replay failed/ambiguous dispatches or starts. The client owns retry semantics.
-                let result;
-                try {
-                  result = await dispatch(token, frame, request.headers.host);
-                } catch {
-                  terminate(client, 4011, 'OPERATION_RESPONSE_UNAVAILABLE');
-                  return;
-                }
-                if (!(await current(client))) {
-                  terminate(client);
-                  return;
-                }
-                send(client, {
-                  version: 1,
-                  type: 'response',
-                  id: frame.id,
-                  ...result,
-                });
-              })
-              .catch(() => terminate(client))
-              .finally(() => {
-                client.pending--;
-                client.pendingBytes -= data.length;
-                pendingBytes -= data.length;
-                client.requestIds.delete(frame.id);
-              });
-          });
-          send(client, {
-            version: 1,
-            type: 'welcome',
-            connectionId: connection.connectionId,
-            deviceId: connection.deviceId,
-            epoch: connection.epoch,
-            heartbeatMs,
-            maximumFrameBytes: bridgeSocketMaximumFrameBytes,
-          });
-        });
-      } catch (error) {
-        if (connection)
-          await authority.release(connection).catch(() => undefined);
-        reject(
-          error?.code === 'device_unauthorized'
-            ? '401 Unauthorized'
-            : '503 Service Unavailable',
-        );
-      } finally {
-        clearTimeout(timeout);
-        authenticating--;
-      }
+          } catch {
+            cleanupFailed = true;
+            // The raw upgrade was already rejected. close() retains this
+            // unknown cleanup result instead of reporting success.
+          } finally {
+            // An unknown cleanup remains latched even after its bounded
+            // in-memory admission record retires.
+            authenticating--;
+            admissions.delete(admission);
+          }
+        }
+      });
     },
-    async close() {
+    close() {
+      if (closing) return closing;
       stopping = true;
-      for (const p of previews.values()) p.onClose();
-      previews.clear();
       clearInterval(timer);
-      await unsubscribe();
-      await Promise.all(
-        [...clients].map(async (client) => {
-          client.closing = true;
-          client.ws.terminate();
-          await authority.release(client.connection).catch(() => undefined);
-        }),
-      );
-      await new Promise((resolve) => wss.close(resolve));
+      for (const admission of admissions) admission.stop();
+      const entries = [...ownedPreviews],
+        owners = [...ownedClients];
+      for (const entry of entries) entry.requestClose();
+      for (const client of owners) terminate(client);
+      closing = (async () => {
+        const results = await Promise.allSettled([
+          Promise.resolve().then(unsubscribe),
+          work.drain(),
+          ...entries.map((entry) => entry.done),
+          ...owners.map((client) => client.done),
+        ]);
+        await new Promise((resolve) => wss.close(resolve));
+        if (
+          cleanupFailed ||
+          results.some((result) => result.status === 'rejected')
+        )
+          throw Error('BRIDGE_SOCKET_CLEANUP_UNCONFIRMED');
+      })();
+      return closing;
     },
   };
 }

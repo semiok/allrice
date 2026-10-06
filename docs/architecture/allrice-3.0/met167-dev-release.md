@@ -89,3 +89,37 @@ root promise. No ACK coverage is relaxed, no quiesced/host START transition is
 added, and release admission remains disabled. C2/C3/C4 explicit resource
 wiring precedes the independently installed supervisor and shared manual
 release path; this slice cannot authorize an automatic or fallback stop.
+
+## PR5b1c Web-local closure slice (C2)
+
+Cloud Unix preview channels, public HTTP/bootstrap/upgrade owners, Bridge
+admissions/connections and virtual preview channels reserve ownership before
+their first asynchronous authorization/open boundary. Closing is a synchronous
+stop signal plus one cached completion promise. Routing removal does not retire
+lifetime ownership. Accepted queues, send callbacks, pending authorization and
+late openers are joined; current/renew queries that lose a decision timeout
+remain owned until they actually settle. A final connection release follows
+that work exactly once. Required cleanup rejection stays a failed close result,
+while bounded admission records can retire without clearing that uncertainty.
+
+An endpoint/callback signals stop without awaiting the drain containing itself.
+Channel close is initiated before draining blocked forwarding, including on a
+normal browser disconnect. Late returned channels are closed and joined.
+Normal terminal preview delivery is preserved; closing one virtual channel
+does not close its shared Bridge connection or become a remote cancellation
+receipt. Backpressure and private target/session/origin checks remain in force.
+
+The Web close coordinator latches every gateway before waiting for any of them.
+Already-started Bridge loopback HTTP can finish while HTTP/Next/database remain
+available. It then closes the HTTP listener, waits for C1 roots including late
+handlers, and closes Next/database only after successful gateway cleanup.
+Repeated closes return the same result; one failure does not abandon other
+gateway drains.
+
+These are local completion proofs only. Unix socket close is not Worker or
+container termination, and a Bridge send callback is not a peer ACK. Native
+drivers, Worker relays, full productive frame admission and external work
+classification remain C3/C4 work. All 24 catalog families remain unknown,
+scope coverage remains partial and release admission remains disabled.
+No installed supervisor, quiesced transition, host START or automatic/manual
+fallback release authority is added by C2.

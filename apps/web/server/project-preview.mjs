@@ -9,6 +9,7 @@ import {
 import { URL } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { projectPreviewHost, projectServiceLimits } from '@allrice/contracts';
+import { createPendingWork } from './pending-work.mjs';
 
 /** Same HTTP/WS surface for either executor. The resolver checks the live user
  * session, service authority and exact private target before every transfer. */
@@ -44,6 +45,9 @@ export function createProjectPreviewGateway({
     maxPayload: projectServiceLimits.maximumSocketBytes,
   });
   const active = new Set();
+  let stopping = false,
+    closing,
+    cleanupFailed = false;
   const matches = (req) =>
     String(req.headers.host ?? '')
       .split(':')[0]
@@ -118,37 +122,108 @@ export function createProjectPreviewGateway({
     }
     return out;
   }
-  function track(id, token, target) {
-    const state = { closed: false, close: () => undefined, checking: false };
+  // Reserve before authorization/open. Routing membership is not a lifetime:
+  // a disconnected owner remains here until its started work and channel join.
+  function reserve(endpointClosed, stopEndpoint) {
+    const work = createPendingWork(),
+      timers = new Set();
+    const state = { closed: false, channel: null, done: null, work };
+    let channelCompletion;
+    const closeChannel = () => {
+      if (!state.channel || channelCompletion) return;
+      try {
+        channelCompletion = Promise.resolve(state.channel.close());
+      } catch (error) {
+        channelCompletion = Promise.reject(error);
+      }
+      // Observe immediately; the owner joins this same result after its work.
+      void channelCompletion.catch(() => undefined);
+    };
     active.add(state);
-    const timer = setInterval(() => {
-      if (state.checking || state.closed) return;
-      state.checking = true;
-      void authorize(id, token)
-        .then((fresh) => {
-          if (
-            fresh.operationId !== target.operationId ||
-            fresh.attemptId !== target.attemptId ||
-            fresh.containerId !== target.containerId ||
-            fresh.backend !== target.backend
-          )
-            throw Error('PROJECT_PREVIEW_TARGET_CHANGED');
-        })
-        .catch(() => state.close())
-        .finally(() => (state.checking = false));
-    }, 2000);
-    timer.unref();
-    state.release = () => {
+    state.requestClose = () => {
+      if (state.closed) return;
       state.closed = true;
-      clearInterval(timer);
-      active.delete(state);
+      for (const timer of timers) {
+        clearInterval(timer);
+        clearTimeout(timer);
+      }
+      timers.clear();
+      stopEndpoint();
+      // Termination can release a backpressured send. Signal now rather than
+      // waiting for the work that needs that termination to complete.
+      closeChannel();
+      state.done = (async () => {
+        await endpointClosed;
+        await work.drain();
+        // A late opener assigned its channel before leaving the tracked body.
+        closeChannel();
+        await channelCompletion;
+      })();
+      void state.done.then(
+        () => active.delete(state),
+        () => {
+          cleanupFailed = true;
+          active.delete(state);
+        },
+      );
+    };
+    state.guard = () => {
+      if (state.closed || stopping) throw Error('PROJECT_PREVIEW_CLOSED');
+    };
+    state.watch = (id, token, target) => {
+      if (state.closed || stopping) return;
+      let checking = false;
+      const timer = setInterval(() => {
+        if (checking || state.closed || stopping) return;
+        checking = true;
+        void work
+          .run(() => authorizeTarget(id, token, target))
+          .catch(() => {
+            state.requestClose();
+          })
+          .finally(() => {
+            checking = false;
+          });
+      }, 2000);
+      timer.unref();
+      timers.add(timer);
+    };
+    state.timeout = (body, ms) => {
+      if (state.closed || stopping) return;
+      const timer = setTimeout(body, ms);
+      timer.unref();
+      timers.add(timer);
     };
     return state;
   }
+  function waitForDrain(res) {
+    return new Promise((resolve, reject) => {
+      const finish = (error) => {
+        clearTimeout(timer);
+        res.removeListener('drain', drained);
+        res.removeListener('close', closed);
+        res.removeListener('error', failed);
+        if (error) reject(error);
+        else resolve();
+      };
+      const drained = () => finish(),
+        closed = () => finish(Error('PROJECT_PREVIEW_CLOSED')),
+        failed = (error) => finish(error),
+        timer = setTimeout(
+          () => finish(Error('PROJECT_PREVIEW_BACKPRESSURE')),
+          2500,
+        );
+      res.once('drain', drained);
+      res.once('close', closed);
+      res.once('error', failed);
+      if (res.destroyed) closed();
+    });
+  }
   return {
     matches,
-    async request(req, res) {
+    request(req, res) {
       const failure = (status) => {
+        if (res.destroyed || res.writableEnded) return;
         if (!res.headersSent)
           res.writeHead(status, {
             'cache-control': 'private, no-store',
@@ -157,291 +232,319 @@ export function createProjectPreviewGateway({
           });
         res.end('预览已停止或授权已失效，请回到 AllRice 刷新状态。');
       };
-      let channel, state;
-      try {
-        if (active.size >= 64) {
-          failure(503);
-          return;
-        }
-        const { id, url, token } = identity(req),
-          bootstrap = url.searchParams.get('_allrice_preview_ticket');
-        if (bootstrap) {
-          if (
-            req.method !== 'GET' ||
-            url.searchParams.size !== 1 ||
-            url.pathname !== '/'
-          )
-            throw Error('PROJECT_PREVIEW_BOOTSTRAP');
-          const target = await authorize(id, bootstrap);
-          res.writeHead(303, {
-            'cache-control': 'private, no-store',
-            'referrer-policy': 'no-referrer',
-            'set-cookie': `${cookieName}=${bootstrap}; Path=/; HttpOnly; SameSite=Strict; ${secure ? 'Secure; ' : ''}Max-Age=${Math.max(1, Math.min(1800, Math.floor((Date.parse(target.hardDeadlineAt) - Date.now()) / 1000)))}`,
-            location: '/',
-          });
-          res.end();
-          return;
-        }
-        const target = await authorize(id, token),
-          forward = headers(req, id);
-        if (
-          req.method !== 'GET' &&
-          req.method !== 'HEAD' &&
-          req.headers.origin !== originFor(id)
-        )
-          throw Error('PROJECT_PREVIEW_ORIGIN');
-        state = track(id, token, target);
-        const close = () => {
-          channel?.close();
-          state?.release();
-          if (!res.writableEnded) res.destroy();
-        };
-        state.close = close;
-        let ended = false,
-          received = 0;
-        channel = await transport.openPreview({
-          id: randomUUID(),
-          target,
-          request: {
-            method: req.method,
-            path: url.pathname + url.search,
-            // The public Host was authenticated above. This private hop reaches
-            // only the bound container's loopback port, including dev servers
-            // that do not support Vite's additional-host environment setting.
-            host: `127.0.0.1:${target.port}`,
-            headers: forward,
-            websocket: false,
-          },
-          onFrame: async (frame) => {
-            if (state.closed) return;
-            await authorizeTarget(id, token, target);
-            if (state.closed) return;
-            if (frame.type === 'preview.response') {
-              if (res.headersSent || frame.status < 200)
-                throw Error('PROJECT_PREVIEW_RESPONSE');
-              const safe = {};
-              for (const name of [
-                'content-type',
-                'etag',
-                'last-modified',
-                'vary',
-              ])
-                if (frame.headers[name]) safe[name] = frame.headers[name];
-              if (frame.headers.location) {
-                const location = new URL(frame.headers.location, originFor(id));
-                if (
-                  location.origin !== originFor(id) ||
-                  location.username ||
-                  location.password
-                )
-                  throw Error('PROJECT_PREVIEW_REDIRECT');
-                safe.location = location.pathname + location.search;
-              }
-              res.writeHead(frame.status, {
-                ...safe,
-                'cache-control': 'private, no-store',
-                'referrer-policy': 'no-referrer',
-                'x-content-type-options': 'nosniff',
-                'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${frameOrigins.join(' ')}; sandbox allow-scripts allow-same-origin allow-forms`,
-              });
-            } else if (frame.type === 'preview.data') {
-              if (!res.headersSent) throw Error('PROJECT_PREVIEW_RESPONSE');
-              const bytes = Buffer.from(frame.data, 'base64');
-              received += bytes.length;
-              if (received > projectServiceLimits.maximumHttpBytes)
-                throw Error('PROJECT_PREVIEW_LIMIT');
-              if (!res.write(bytes))
-                await new Promise((resolve, reject) => {
-                  const timer = setTimeout(
-                    () => reject(new Error('PROJECT_PREVIEW_BACKPRESSURE')),
-                    2500,
-                  );
-                  res.once('drain', () => {
-                    clearTimeout(timer);
-                    resolve();
-                  });
-                  res.once('close', () => {
-                    clearTimeout(timer);
-                    reject(new Error('PROJECT_PREVIEW_CLOSED'));
-                  });
-                });
-            } else {
-              if (frame.error) throw Error('PROJECT_PREVIEW_UNCONFIRMED');
-              ended = true;
-              res.end();
-              state.release();
-            }
-          },
-          onClose: () => {
-            if (!ended) close();
-          },
-        });
-        if (state.closed) {
-          channel.close();
-          return;
-        }
-        req.once('aborted', close);
-        res.once('close', close);
-        let size = 0;
-        for await (const raw of req) {
-          const bytes = Buffer.from(raw);
-          size += bytes.length;
-          if (size > projectServiceLimits.maximumHttpBytes)
-            throw Error('PROJECT_PREVIEW_LIMIT');
-          for (let at = 0; at < bytes.length; at += 250_000) {
-            await authorizeTarget(id, token, target);
-            if (state.closed) throw Error('PROJECT_PREVIEW_CLOSED');
-            if (
-              !(await channel.send({
-                type: 'preview.data',
-                data: bytes.subarray(at, at + 250_000).toString('base64'),
-              }))
-            )
-              throw Error('PROJECT_PREVIEW_UNAVAILABLE');
-          }
-        }
-        await authorizeTarget(id, token, target);
-        if (state.closed) throw Error('PROJECT_PREVIEW_CLOSED');
-        if (!(await channel.send({ type: 'preview.end' })))
-          throw Error('PROJECT_PREVIEW_UNAVAILABLE');
-        // A finite request timeout; a successful HTTP response releases it.
-        const timeout = setTimeout(close, 15000);
-        timeout.unref();
-        res.once('close', () => clearTimeout(timeout));
-      } catch (error) {
-        onError(error);
-        channel?.close();
-        state?.release();
-        failure(403);
+      if (stopping || active.size >= 64) {
+        failure(503);
+        return Promise.resolve();
       }
+      const endpointClosed = new Promise((resolve) => {
+        res.once('finish', resolve);
+        res.once('close', resolve);
+      });
+      const state = reserve(endpointClosed, () => {
+        if (!res.writableEnded) res.destroy();
+        if (!req.complete) req.destroy();
+      });
+      req.once('aborted', state.requestClose);
+      res.once('finish', state.requestClose);
+      res.once('close', state.requestClose);
+      res.on('error', state.requestClose);
+      return state.work.run(async () => {
+        try {
+          state.guard();
+          const { id, url, token } = identity(req),
+            bootstrap = url.searchParams.get('_allrice_preview_ticket');
+          if (bootstrap) {
+            if (
+              req.method !== 'GET' ||
+              url.searchParams.size !== 1 ||
+              url.pathname !== '/'
+            )
+              throw Error('PROJECT_PREVIEW_BOOTSTRAP');
+            const target = await authorize(id, bootstrap);
+            state.guard();
+            res.writeHead(303, {
+              'cache-control': 'private, no-store',
+              'referrer-policy': 'no-referrer',
+              'set-cookie': `${cookieName}=${bootstrap}; Path=/; HttpOnly; SameSite=Strict; ${secure ? 'Secure; ' : ''}Max-Age=${Math.max(1, Math.min(1800, Math.floor((Date.parse(target.hardDeadlineAt) - Date.now()) / 1000)))}`,
+              location: '/',
+            });
+            res.end();
+            return;
+          }
+          const target = await authorize(id, token),
+            forward = headers(req, id);
+          state.guard();
+          if (
+            req.method !== 'GET' &&
+            req.method !== 'HEAD' &&
+            req.headers.origin !== originFor(id)
+          )
+            throw Error('PROJECT_PREVIEW_ORIGIN');
+          state.watch(id, token, target);
+          let ended = false,
+            received = 0;
+          state.channel = await transport.openPreview({
+            id: randomUUID(),
+            target,
+            request: {
+              method: req.method,
+              path: url.pathname + url.search,
+              // The public Host was authenticated above. This private hop reaches
+              // only the bound container's loopback port, including dev servers
+              // that do not support Vite's additional-host environment setting.
+              host: `127.0.0.1:${target.port}`,
+              headers: forward,
+              websocket: false,
+            },
+            onFrame: (frame) =>
+              state.work.run(async () => {
+                if (state.closed) return;
+                await authorizeTarget(id, token, target);
+                if (state.closed) return;
+                if (frame.type === 'preview.response') {
+                  if (res.headersSent || frame.status < 200)
+                    throw Error('PROJECT_PREVIEW_RESPONSE');
+                  const safe = {};
+                  for (const name of [
+                    'content-type',
+                    'etag',
+                    'last-modified',
+                    'vary',
+                  ])
+                    if (frame.headers[name]) safe[name] = frame.headers[name];
+                  if (frame.headers.location) {
+                    const location = new URL(
+                      frame.headers.location,
+                      originFor(id),
+                    );
+                    if (
+                      location.origin !== originFor(id) ||
+                      location.username ||
+                      location.password
+                    )
+                      throw Error('PROJECT_PREVIEW_REDIRECT');
+                    safe.location = location.pathname + location.search;
+                  }
+                  res.writeHead(frame.status, {
+                    ...safe,
+                    'cache-control': 'private, no-store',
+                    'referrer-policy': 'no-referrer',
+                    'x-content-type-options': 'nosniff',
+                    'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${frameOrigins.join(' ')}; sandbox allow-scripts allow-same-origin allow-forms`,
+                  });
+                } else if (frame.type === 'preview.data') {
+                  if (!res.headersSent) throw Error('PROJECT_PREVIEW_RESPONSE');
+                  const bytes = Buffer.from(frame.data, 'base64');
+                  received += bytes.length;
+                  if (received > projectServiceLimits.maximumHttpBytes)
+                    throw Error('PROJECT_PREVIEW_LIMIT');
+                  if (!res.write(bytes)) await waitForDrain(res);
+                } else {
+                  if (frame.error) throw Error('PROJECT_PREVIEW_UNCONFIRMED');
+                  ended = true;
+                  res.end();
+                }
+              }),
+            onClose: () => {
+              if (!ended) state.requestClose();
+            },
+          });
+          state.guard();
+          let size = 0;
+          for await (const raw of req) {
+            const bytes = Buffer.from(raw);
+            size += bytes.length;
+            if (size > projectServiceLimits.maximumHttpBytes)
+              throw Error('PROJECT_PREVIEW_LIMIT');
+            for (let at = 0; at < bytes.length; at += 250_000) {
+              await authorizeTarget(id, token, target);
+              if (state.closed) throw Error('PROJECT_PREVIEW_CLOSED');
+              if (
+                !(await state.channel.send({
+                  type: 'preview.data',
+                  data: bytes.subarray(at, at + 250_000).toString('base64'),
+                }))
+              )
+                throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+              state.guard();
+            }
+          }
+          await authorizeTarget(id, token, target);
+          if (state.closed) throw Error('PROJECT_PREVIEW_CLOSED');
+          if (!(await state.channel.send({ type: 'preview.end' })))
+            throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+          // A finite request timeout; a successful HTTP response releases it.
+          state.timeout(state.requestClose, 15000);
+        } catch (error) {
+          onError(error);
+          failure(403);
+          state.requestClose();
+        }
+      });
     },
-    async upgrade(req, socket, head) {
-      let channel, state, ws;
+    upgrade(req, socket, head) {
+      let ws;
       const reject = () => {
         if (!socket.destroyed)
           socket.end(
             'HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+            () => socket.destroy(),
           );
       };
       socket.on('error', () => undefined);
-      try {
-        const { id, url, token } = identity(req);
-        if (
-          active.size >= 64 ||
-          req.method !== 'GET' ||
-          url.searchParams.has('_allrice_preview_ticket') ||
-          req.headers.origin !== originFor(id) ||
-          req.headers.upgrade?.toLowerCase() !== 'websocket'
-        )
-          throw Error('PROJECT_PREVIEW_UPGRADE');
-        const protocolHeader = req.headers['sec-websocket-protocol'];
-        if (
-          protocolHeader !== undefined &&
-          (typeof protocolHeader !== 'string' ||
-            !/^[a-zA-Z0-9!#$%&'*+.^_`|~-]{1,128}$/.test(protocolHeader))
-        )
-          throw Error('PROJECT_PREVIEW_PROTOCOL');
-        const target = await authorize(id, token);
-        state = track(id, token, target);
-        const close = () => {
-          channel?.close();
-          ws?.terminate();
-          socket.destroy();
-          state.release();
-        };
-        state.close = close;
-        channel = await transport.openPreview({
-          id: randomUUID(),
-          target,
-          request: {
-            method: 'GET',
-            path: url.pathname + url.search,
-            host: `127.0.0.1:${target.port}`,
-            headers: headers(req, id),
-            websocket: true,
-            ...(protocolHeader ? { protocol: protocolHeader } : {}),
-          },
-          onFrame: async (frame) => {
-            if (state.closed) return;
-            await authorizeTarget(id, token, target);
-            if (state.closed) return;
-            if (frame.type === 'preview.response') {
-              if (
-                frame.status !== 101 ||
-                ws ||
-                (frame.headers['sec-websocket-protocol'] !== protocolHeader &&
-                  !(
-                    frame.headers['sec-websocket-protocol'] === undefined &&
-                    protocolHeader === undefined
-                  ))
-              )
-                throw Error('PROJECT_PREVIEW_UPGRADE');
-              wss.handleUpgrade(req, socket, head, (client) => {
-                ws = client;
-                let pending = 0,
-                  queue = Promise.resolve();
-                client.on('error', close);
-                client.once('close', close);
-                client.on('message', (bytes, binary) => {
-                  pending += bytes.length;
-                  if (pending > 1_000_000) {
-                    close();
-                    return;
-                  }
-                  queue = queue
-                    .then(async () => {
-                      await authorizeTarget(id, token, target);
-                      if (state.closed) throw Error('PROJECT_PREVIEW_CLOSED');
-                      if (
-                        !(await channel.send({
-                          type: 'preview.data',
-                          data: Buffer.from(bytes).toString('base64'),
-                          binary,
-                        }))
-                      )
-                        throw Error('PROJECT_PREVIEW_UNAVAILABLE');
-                    })
-                    .catch(close)
-                    .finally(() => (pending -= bytes.length));
-                });
-              });
-            } else if (frame.type === 'preview.data') {
-              if (
-                !ws ||
-                ws.readyState !== WebSocket.OPEN ||
-                ws.bufferedAmount > 1_000_000
-              )
-                throw Error('PROJECT_PREVIEW_BACKPRESSURE');
-              await new Promise((resolve, reject) =>
-                ws.send(
-                  Buffer.from(frame.data, 'base64'),
-                  { binary: frame.binary === true },
-                  (error) => (error ? reject(error) : resolve()),
-                ),
-              );
-            } else close();
-          },
-          onClose: close,
-        });
-        if (state.closed) {
-          channel.close();
-          return;
-        }
-        const timeout = setTimeout(() => {
-          if (!ws) close();
-        }, 5000);
-        timeout.unref();
-        socket.once('close', () => clearTimeout(timeout));
-      } catch (error) {
-        onError(error);
-        channel?.close();
-        state?.release();
+      if (stopping || active.size >= 64) {
         reject();
+        return Promise.resolve();
       }
+      const endpointClosed = new Promise((resolve) =>
+        socket.once('close', resolve),
+      );
+      const state = reserve(endpointClosed, () => {
+        ws?.terminate();
+        socket.destroy();
+      });
+      socket.once('close', state.requestClose);
+      let ready;
+      const channelReady = new Promise((resolve) => {
+        ready = resolve;
+      });
+      return state.work.run(async () => {
+        try {
+          state.guard();
+          const { id, url, token } = identity(req);
+          if (
+            req.method !== 'GET' ||
+            url.searchParams.has('_allrice_preview_ticket') ||
+            req.headers.origin !== originFor(id) ||
+            req.headers.upgrade?.toLowerCase() !== 'websocket'
+          )
+            throw Error('PROJECT_PREVIEW_UPGRADE');
+          const protocolHeader = req.headers['sec-websocket-protocol'];
+          if (
+            protocolHeader !== undefined &&
+            (typeof protocolHeader !== 'string' ||
+              !/^[a-zA-Z0-9!#$%&'*+.^_`|~-]{1,128}$/.test(protocolHeader))
+          )
+            throw Error('PROJECT_PREVIEW_PROTOCOL');
+          const target = await authorize(id, token);
+          state.guard();
+          state.watch(id, token, target);
+          state.channel = await transport.openPreview({
+            id: randomUUID(),
+            target,
+            request: {
+              method: 'GET',
+              path: url.pathname + url.search,
+              host: `127.0.0.1:${target.port}`,
+              headers: headers(req, id),
+              websocket: true,
+              ...(protocolHeader ? { protocol: protocolHeader } : {}),
+            },
+            onFrame: (frame) =>
+              state.work.run(async () => {
+                if (state.closed) return;
+                await authorizeTarget(id, token, target);
+                if (state.closed) return;
+                if (frame.type === 'preview.response') {
+                  if (
+                    frame.status !== 101 ||
+                    ws ||
+                    (frame.headers['sec-websocket-protocol'] !==
+                      protocolHeader &&
+                      !(
+                        frame.headers['sec-websocket-protocol'] === undefined &&
+                        protocolHeader === undefined
+                      ))
+                  )
+                    throw Error('PROJECT_PREVIEW_UPGRADE');
+                  wss.handleUpgrade(req, socket, head, (client) => {
+                    ws = client;
+                    let pending = 0,
+                      queue = Promise.resolve();
+                    client.on('error', state.requestClose);
+                    client.once('close', state.requestClose);
+                    client.on('message', (bytes, binary) => {
+                      if (state.closed || stopping) return;
+                      pending += bytes.length;
+                      if (pending > 1_000_000) {
+                        state.requestClose();
+                        return;
+                      }
+                      queue = state.work.track(
+                        queue
+                          .then(async () => {
+                            state.guard();
+                            await channelReady;
+                            state.guard();
+                            await authorizeTarget(id, token, target);
+                            if (state.closed)
+                              throw Error('PROJECT_PREVIEW_CLOSED');
+                            if (
+                              !(await state.channel.send({
+                                type: 'preview.data',
+                                data: Buffer.from(bytes).toString('base64'),
+                                binary,
+                              }))
+                            )
+                              throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+                            state.guard();
+                          })
+                          .catch(() => {
+                            state.requestClose();
+                          })
+                          .finally(() => (pending -= bytes.length)),
+                      );
+                    });
+                  });
+                } else if (frame.type === 'preview.data') {
+                  if (
+                    !ws ||
+                    ws.readyState !== WebSocket.OPEN ||
+                    ws.bufferedAmount > 1_000_000
+                  )
+                    throw Error('PROJECT_PREVIEW_BACKPRESSURE');
+                  await new Promise((resolve, reject) =>
+                    ws.send(
+                      Buffer.from(frame.data, 'base64'),
+                      { binary: frame.binary === true },
+                      (error) => (error ? reject(error) : resolve()),
+                    ),
+                  );
+                } else state.requestClose();
+              }),
+            onClose: state.requestClose,
+          });
+          ready();
+          state.guard();
+          state.timeout(() => {
+            if (!ws) state.requestClose();
+          }, 5000);
+        } catch (error) {
+          onError(error);
+          reject();
+          state.requestClose();
+        } finally {
+          ready();
+        }
+      });
     },
-    async close() {
-      for (const state of active) state.close();
-      await new Promise((resolve) => wss.close(resolve));
+    close() {
+      if (closing) return closing;
+      stopping = true;
+      const owners = [...active];
+      for (const state of owners) state.requestClose();
+      closing = (async () => {
+        const results = await Promise.allSettled(
+          owners.map((state) => state.done),
+        );
+        await new Promise((resolve) => wss.close(resolve));
+        if (
+          cleanupFailed ||
+          results.some((result) => result.status === 'rejected')
+        )
+          throw Error('PROJECT_PREVIEW_CLEANUP_UNCONFIRMED');
+      })();
+      return closing;
     },
   };
 }
