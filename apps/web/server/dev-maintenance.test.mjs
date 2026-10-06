@@ -40,6 +40,7 @@ async function start(handle) {
   servers.push(server);
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   return {
+    server,
     lifecycle,
     url: 'http://127.0.0.1:' + server.address().port,
     closeAdmission() {
@@ -103,6 +104,40 @@ describe('Actual HTTP request lifetime under a maintenance gate', () => {
     await done.promise;
     for (let n = 0; n < 50 && s.counts().finished === 0; n++)
       await new Promise((r) => setImmediate(r));
+    expect(s.counts().finished).toBe(1);
+  });
+  it('network close may finish first; waiting for roots preserves the database for a disconnected writer', async () => {
+    const entered = deferred(),
+      held = deferred(),
+      networkClosed = deferred();
+    let databaseClosed = false,
+      writes = 0;
+    const s = await start(async (_, res) => {
+      entered.resolve();
+      await held.promise;
+      if (databaseClosed) throw Error('database closed before writer');
+      writes++;
+      res.end('late');
+    });
+    const request = httpRequest(s.url + '/work');
+    request.on('error', () => {});
+    request.end();
+    await entered.promise;
+    request.destroy();
+    const close = (async () => {
+      s.server.closeAllConnections();
+      await new Promise((resolve) => s.server.close(resolve));
+      networkClosed.resolve();
+      await s.lifecycle.waitForCurrentRoots();
+      databaseClosed = true;
+    })();
+    await networkClosed.promise;
+    expect(databaseClosed).toBe(false);
+    expect(s.counts().finished).toBe(0);
+    held.resolve();
+    await close;
+    expect(databaseClosed).toBe(true);
+    expect(writes).toBe(1);
     expect(s.counts().finished).toBe(1);
   });
   it('only exact read-only health methods bypass admission, not arbitrary GET or health POST', async () => {

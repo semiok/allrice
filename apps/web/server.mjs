@@ -128,6 +128,7 @@ export async function startAllRiceWeb({
       await server.bridgeGateway?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
+      await lifecycle.waitForCurrentRoots();
       await app.close();
       await closeDatabase();
     },
