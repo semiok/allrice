@@ -1,6 +1,7 @@
 import { CodexSubscriptionError } from '@allrice/database';
 import {
   DataAccessError,
+  DevMaintenanceError,
   IdentityError,
   QueueError,
   WorkflowRuntimeError,
@@ -32,6 +33,12 @@ const publicationConflicts: Readonly<Record<string, string>> = {
 };
 
 export function executionErrorResponse(error: unknown) {
+  if (error instanceof DevMaintenanceError)
+    return apiProblem({
+      status: 503,
+      code: 'DEPENDENCY_UNAVAILABLE',
+      message: '系统正在维护，请稍后重试。',
+    });
   if (error instanceof CodexSubscriptionError)
     return apiProblem({
       status: 409,

@@ -23,6 +23,7 @@ import {
   recordWorkerCapabilities,
   removeWorkerCapabilities,
   readServiceBuildIdentity,
+  readDevMaintenance,
 } from '@allrice/database';
 
 import {
@@ -218,7 +219,7 @@ function refreshDshRuntimeInventory() {
     });
 }
 
-const server = createServer((request, response) => {
+const server = createServer(async (request, response) => {
   response.setHeader('content-type', 'application/json; charset=utf-8');
   if (/^[a-f0-9]{40}$/.test(process.env.ALLRICE_RELEASE_SHA ?? ''))
     response.setHeader(
@@ -233,6 +234,22 @@ const server = createServer((request, response) => {
   }
 
   if (request.url === '/health/ready') {
+    let maintenance;
+    try {
+      maintenance = await readDevMaintenance();
+    } catch {
+      response.writeHead(503);
+      response.end(
+        JSON.stringify(
+          makeHealthResponse(
+            'worker',
+            'not_ready',
+            'dev_maintenance_unavailable',
+          ),
+        ),
+      );
+      return;
+    }
     response.statusCode = databaseReady ? 200 : 503;
     response.end(
       JSON.stringify({
@@ -242,6 +259,7 @@ const server = createServer((request, response) => {
           lastDatabaseError,
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
+        ...(maintenance ? { maintenance } : {}),
       }),
     );
     return;
