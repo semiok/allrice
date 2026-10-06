@@ -52,7 +52,7 @@ export class FixedRepositoryGithub {
   ) {}
   private async request(
     path: string,
-    method: 'GET' | 'POST' = 'GET',
+    method: 'GET' | 'POST' | 'PUT' = 'GET',
     payload?: unknown,
   ) {
     if (this.readOnly && method !== 'GET')
@@ -63,7 +63,12 @@ export class FixedRepositoryGithub {
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_UNAVAILABLE');
     // Every caller below constructs a fixed endpoint; queries never change the origin.
     if (
-      !(path === '/user' || path.startsWith(prefix + '/') || path === prefix) ||
+      !(
+        path === '/user' ||
+        path === '/graphql' ||
+        path.startsWith(prefix + '/') ||
+        path === prefix
+      ) ||
       /[\r\n\0]/.test(path)
     )
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
@@ -266,6 +271,62 @@ export class FixedRepositoryGithub {
     if (!Array.isArray(raw) || raw.length >= 100)
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
     return raw.map((p) => this.pull(p, branch));
+  }
+  async mergePull(number: number, branch: string) {
+    this.branchName(branch);
+    const row = object(
+        await this.request(prefix + '/pulls/' + positive(number)),
+      ),
+      pull = this.pull(row, branch);
+    if (
+      pull.number !== number ||
+      typeof row.node_id !== 'string' ||
+      row.node_id.length > 200 ||
+      typeof row.merged !== 'boolean' ||
+      (row.merged && row.state !== 'closed')
+    )
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
+    return {
+      ...pull,
+      nodeId: row.node_id,
+      merged: row.merged,
+      mergeSha: row.merged ? sha(row.merge_commit_sha) : null,
+    };
+  }
+  async mainProtection() {
+    return this.request(prefix + '/branches/main/protection');
+  }
+  async readyPull(number: number, branch: string, nodeId: string) {
+    const pull = await this.mergePull(number, branch);
+    if (pull.nodeId !== nodeId || pull.state !== 'open' || pull.merged)
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_CONFLICT');
+    await this.request('/graphql', 'POST', {
+      query:
+        'mutation AllRiceReady($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{id isDraft}}}',
+      variables: { id: nodeId },
+    });
+  }
+  async mergeExactPull(number: number, headSha: string) {
+    // A single server-side head condition. The caller also requires current
+    // strict/admin-enforced base protection; it never invokes an admin bypass.
+    await this.request(
+      prefix + '/pulls/' + positive(number) + '/merge',
+      'PUT',
+      { sha: sha(headSha), merge_method: 'merge' },
+    );
+  }
+  async mainContains(mergeSha: string, mainSha: string) {
+    if (mergeSha === mainSha) return true;
+    const row = object(
+      await this.request(
+        prefix + '/compare/' + sha(mergeSha) + '...' + sha(mainSha),
+      ),
+    );
+    return (
+      row.status === 'ahead' &&
+      object(row.base_commit).sha === mergeSha &&
+      object(row.merge_base_commit).sha === mergeSha
+    );
   }
   async createBlob(contentBase64: string) {
     await this.request(prefix + '/git/blobs', 'POST', {

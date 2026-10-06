@@ -158,7 +158,8 @@ export function PlatformRepositoryCredentialPanel() {
       )}
       <p className={css.meta}>
         在 GitHub 创建细粒度令牌，仅选择 semiok/allrice。需要 Contents 与 Pull
-        requests 的读写权限，以及 Actions 与 Checks 的只读权限。
+        requests 的读写权限，以及 Actions、Checks 与
+        Administration（分支保护）的只读权限。
       </p>
       <a
         href="https://github.com/settings/personal-access-tokens/new"

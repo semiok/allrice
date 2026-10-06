@@ -125,6 +125,17 @@ export type RepositoryReviewBinding = z.infer<
   typeof RepositoryReviewBindingSchema
 >;
 
+export const RepositoryReviewRemoteReceiptSchema = z
+  .object({
+    version: z.literal(1),
+    stage: z.enum(['preflight', 'postflight']),
+    subjectDigest: ChecksumSchema,
+    evidenceDigest: ChecksumSchema,
+    jobAttempt: z.number().int().positive(),
+    checkedAt: z.string().datetime({ offset: true }),
+  })
+  .strict();
+
 export const RepositoryReviewReadinessSchema = z
   .object({
     state: z.enum([

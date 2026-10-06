@@ -276,3 +276,5 @@ export const TechnicalTaskDetailSchema = z
 
 export * from './platform-quality-contracts.ts';
 export * from './platform-quality-evidence-contracts.ts';
+
+export * from './platform-repository-merge-contracts.ts';

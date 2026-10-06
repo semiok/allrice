@@ -98,6 +98,67 @@ export function freezeRepositoryReviewMaterial(
     ci.state !== 'passed'
   )
     throw Error('repository_review_current_ci_required');
+  const authorRunIds = repositoryReviewAuthorRunIds(repairs, source);
+  const report = RepairReportSchema.parse(first.report);
+  const evidenceDigest = technicalDigest({
+    sourceReportDigest: source.reportDigest,
+    evidence: [...evidence].sort((a, b) =>
+      a.receipt.job.localeCompare(b.receipt.job, 'en'),
+    ),
+  });
+  // Observed time, action/revision counters and request/reviewer identity are
+  // audit fields. A refresh of unchanged evidence must not erase a review.
+  const stableCi = { ...ci, observedAt: null };
+  stableCi.checks = [...stableCi.checks].sort((a, b) =>
+    a.name.localeCompare(b.name, 'en'),
+  );
+  stableCi.receipts = [...stableCi.receipts].sort((a, b) =>
+    a.name.localeCompare(b.name, 'en'),
+  );
+  const candidateContentDigest = technicalDigest({
+    repositoryId: remote.repositoryId,
+    baseTree: source.baseTree,
+    baselineSourceDigest: source.baselineSourceDigest,
+    candidateMaterialDigest: source.candidateMaterialDigest,
+    path: source.path,
+    mode: source.mode,
+    beforeChecksum: source.beforeChecksum,
+    afterChecksum: source.afterChecksum,
+  });
+  const subjectDigest = technicalDigest({
+    version: 1,
+    source,
+    metadata,
+    remote,
+    ci: stableCi,
+    evidenceDigest,
+    authorRunIds,
+  });
+  return RepositoryReviewMaterialSchema.parse({
+    version: 1,
+    publicationId: publication.id,
+    ownerId: publication.owner_id,
+    organizationId: publication.organization_id,
+    workspaceId: publication.workspace_id,
+    source,
+    metadata,
+    remote,
+    ci,
+    report,
+    beforeText: frozen.baselineText,
+    authorRunIds,
+    subjectDigest,
+    evidenceDigest,
+    candidateContentDigest,
+  });
+}
+
+/** Validate persisted source authors independently of current remote CI. A
+ * completed review is retained after the pull request closes. */
+export function repositoryReviewAuthorRunIds(
+  repairs: Parameters<typeof freezeRepositoryReviewMaterial>[1],
+  source: ReturnType<typeof freezeRepositoryPublicationSource>,
+) {
   // Reverification may adopt an earlier accepted patch. Trace every canonical
   // source author, not merely the newest revalidation Run or a role label.
   for (let i = 0; i < repairs.length; i++) {
@@ -159,56 +220,5 @@ export function freezeRepositoryReviewMaterial(
   const authorRunIds = [...new Set(repairs.map((r) => r.run_id))].sort();
   if (authorRunIds.length !== repairs.length)
     throw Error('repository_review_author_chain_invalid');
-  const report = RepairReportSchema.parse(first.report);
-  const evidenceDigest = technicalDigest({
-    sourceReportDigest: source.reportDigest,
-    evidence: [...evidence].sort((a, b) =>
-      a.receipt.job.localeCompare(b.receipt.job, 'en'),
-    ),
-  });
-  // Observed time, action/revision counters and request/reviewer identity are
-  // audit fields. A refresh of unchanged evidence must not erase a review.
-  const stableCi = { ...ci, observedAt: null };
-  stableCi.checks = [...stableCi.checks].sort((a, b) =>
-    a.name.localeCompare(b.name, 'en'),
-  );
-  stableCi.receipts = [...stableCi.receipts].sort((a, b) =>
-    a.name.localeCompare(b.name, 'en'),
-  );
-  const candidateContentDigest = technicalDigest({
-    repositoryId: remote.repositoryId,
-    baseTree: source.baseTree,
-    baselineSourceDigest: source.baselineSourceDigest,
-    candidateMaterialDigest: source.candidateMaterialDigest,
-    path: source.path,
-    mode: source.mode,
-    beforeChecksum: source.beforeChecksum,
-    afterChecksum: source.afterChecksum,
-  });
-  const subjectDigest = technicalDigest({
-    version: 1,
-    source,
-    metadata,
-    remote,
-    ci: stableCi,
-    evidenceDigest,
-    authorRunIds,
-  });
-  return RepositoryReviewMaterialSchema.parse({
-    version: 1,
-    publicationId: publication.id,
-    ownerId: publication.owner_id,
-    organizationId: publication.organization_id,
-    workspaceId: publication.workspace_id,
-    source,
-    metadata,
-    remote,
-    ci,
-    report,
-    beforeText: frozen.baselineText,
-    authorRunIds,
-    subjectDigest,
-    evidenceDigest,
-    candidateContentDigest,
-  });
+  return authorRunIds;
 }
