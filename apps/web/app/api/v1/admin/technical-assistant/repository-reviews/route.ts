@@ -13,6 +13,10 @@ import { requirePlatformAdminContext } from '../../../../../../lib/identity/plat
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 import { readAdminJson } from '../../../../../../lib/tenant-administration/http';
 import { executionErrorResponse } from '../../../../../../lib/execution/responses';
+import {
+  platformAutonomyPaused,
+  deferredPlatformActionResponse,
+} from '../../../../../../lib/execution/platform-autonomy';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -55,6 +59,7 @@ export async function POST(request: Request) {
     )
       return new Response(null, { status: 403, headers });
     const context = await requirePlatformAdminContext(request);
+    if (platformAutonomyPaused()) return deferredPlatformActionResponse();
     return Response.json(
       RepositoryReviewViewSchema.parse(
         await createPlatformRepositoryReview(

@@ -10,6 +10,10 @@ import {
 import { requirePlatformAdminContext } from '../../../../../../lib/identity/platform-admin';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 import { executionErrorResponse } from '../../../../../../lib/execution/responses';
+import {
+  platformAutonomyPaused,
+  deferredPlatformActionResponse,
+} from '../../../../../../lib/execution/platform-autonomy';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -40,8 +44,9 @@ export async function POST(request: Request) {
       request.headers.get('content-type')?.split(';')[0] !== 'application/json'
     )
       return new Response(null, { status: 403, headers });
-    const context = await requirePlatformAdminContext(request),
-      reader = request.body?.getReader();
+    const context = await requirePlatformAdminContext(request);
+    if (platformAutonomyPaused()) return deferredPlatformActionResponse();
+    const reader = request.body?.getReader();
     if (!reader) return new Response(null, { status: 400, headers });
     const chunks: Uint8Array[] = [];
     let bytes = 0;

@@ -289,7 +289,9 @@ export function TechnicalAssistant() {
       <header className={css.heading}>
         <div>
           <h1>技术助手</h1>
-          <p>查看实际诊断，记录和归并待排查问题。</p>
+          <p>
+            查看诊断、巡检与问题报告。自主修复、独立审查和发布已延期；历史结果仍可查看。
+          </p>
         </div>
         <AdminButton icon="refresh" disabled={busy} onClick={() => void load()}>
           {loading ? '采集中…' : '刷新诊断'}
@@ -298,7 +300,7 @@ export function TechnicalAssistant() {
       <TechnicalTasks issueId={selected} />
       <PlatformQuality />
       <PlatformRepositoryCredentialPanel />
-      <PlatformRepositoryRepair />
+      <PlatformRepositoryRepair readOnly />
       {error && (
         <p role="alert" className={css.error}>
           {error}

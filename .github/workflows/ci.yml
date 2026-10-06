@@ -49,6 +49,10 @@ jobs:
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
         run: pnpm exec vitest run --maxWorkers=1 apps/web/app/runtime-console/platform-repository-credential.browser.test.ts
+      - name: Verify diagnosis-only historical results without repository writes
+        env:
+          ALLRICE_RUN_BROWSER_INTEGRATION: 1
+        run: pnpm exec vitest run --maxWorkers=1 apps/web/app/runtime-console/platform-report-only.browser.test.ts
       - name: Verify tenant management UI, HTTP authorization and PostgreSQL persistence
         # Synthetic principals in disposable schemas, never real tenant permissions.
         env:

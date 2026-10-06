@@ -42,9 +42,11 @@ const ciLabels = {
 export function PlatformRepositoryPublications({
   repair,
   currentBaseline,
+  readOnly = false,
 }: {
   repair: RepairTask | null;
   currentBaseline: boolean;
+  readOnly?: boolean;
 }) {
   const [rows, setRows] = useState<RepositoryPublication[]>([]),
     [selected, setSelected] = useState<string | null>(null),
@@ -163,6 +165,7 @@ export function PlatformRepositoryPublications({
     setPending(null);
   }
   async function submit(action: 'publish' | 'inspect') {
+    if (readOnly) return;
     if (
       busy ||
       pending ||
@@ -249,6 +252,7 @@ export function PlatformRepositoryPublications({
     }
   }
   async function stop() {
+    if (readOnly) return;
     if (!current || !active || busy) return;
     sequence.current++;
     setBusy(true);
@@ -288,6 +292,7 @@ export function PlatformRepositoryPublications({
         </AdminButton>
         <AdminButton
           disabled={
+            readOnly ||
             busy ||
             !!pending ||
             !!active ||
@@ -389,6 +394,7 @@ export function PlatformRepositoryPublications({
           <div className={css.controls}>
             <AdminButton
               disabled={
+                readOnly ||
                 busy ||
                 !!pending ||
                 !!active ||
@@ -399,7 +405,10 @@ export function PlatformRepositoryPublications({
               核对远端与 CI
             </AdminButton>
             {active && (
-              <AdminButton disabled={busy} onClick={() => void stop()}>
+              <AdminButton
+                disabled={readOnly || busy}
+                onClick={() => void stop()}
+              >
                 停止当前操作
               </AdminButton>
             )}
@@ -428,6 +437,7 @@ export function PlatformRepositoryPublications({
             CI 通过后仍需独立审查；合并 main 和部署 Dev 是后续操作。
           </p>
           <PlatformRepositoryReviews
+            readOnly={readOnly}
             key={current.id}
             publicationId={current.id}
             credentialRevision={
@@ -435,6 +445,7 @@ export function PlatformRepositoryPublications({
             }
           />
           <PlatformRepositoryMerges
+            readOnly={readOnly}
             key={'merge:' + current.id}
             publicationId={current.id}
             credentialRevision={

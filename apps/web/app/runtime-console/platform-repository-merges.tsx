@@ -32,9 +32,11 @@ type Panel = ReturnType<typeof RepositoryMergePanelSchema.parse>;
 export function PlatformRepositoryMerges({
   publicationId,
   credentialRevision,
+  readOnly = false,
 }: {
   publicationId: string;
   credentialRevision: number | null;
+  readOnly?: boolean;
 }) {
   const [panel, setPanel] = useState<Panel | null>(null),
     [pending, setPending] = useState<RequestData | null>(null),
@@ -111,6 +113,7 @@ export function PlatformRepositoryMerges({
     return () => clearInterval(timer);
   }, [active?.id, read]);
   const send = async (request: RequestData) => {
+    if (readOnly) return;
     if (mutating.current) return;
     setAbsent(false);
     mutating.current = true;
@@ -215,7 +218,7 @@ export function PlatformRepositoryMerges({
     }
   };
   const stop = async () => {
-    if (!operation || !active || mutating.current) return;
+    if (readOnly || !operation || !active || mutating.current) return;
     mutating.current = true;
     setBusy(true);
     try {
@@ -246,7 +249,11 @@ export function PlatformRepositoryMerges({
       <div className={css.controls}>
         <AdminButton
           disabled={
-            busy || !!pending || !panel?.canStart || !credentialRevision
+            readOnly ||
+            busy ||
+            !!pending ||
+            !panel?.canStart ||
+            !credentialRevision
           }
           onClick={() => void submit('merge')}
         >
@@ -266,20 +273,23 @@ export function PlatformRepositoryMerges({
           </AdminButton>
         )}
         {pending && absent && (
-          <AdminButton disabled={busy} onClick={() => void retryPending()}>
+          <AdminButton
+            disabled={readOnly || busy}
+            onClick={() => void retryPending()}
+          >
             重试原合并请求
           </AdminButton>
         )}
         {operation && !active && (
           <AdminButton
-            disabled={busy || !!pending || !credentialRevision}
+            disabled={readOnly || busy || !!pending || !credentialRevision}
             onClick={() => void submit('reconcile')}
           >
             核对原合并结果
           </AdminButton>
         )}
         {active && (
-          <AdminButton disabled={busy} onClick={() => void stop()}>
+          <AdminButton disabled={readOnly || busy} onClick={() => void stop()}>
             停止合并操作
           </AdminButton>
         )}
