@@ -455,7 +455,7 @@ suite('cloud project first complete native chain', () => {
           await database`select o.id,o.snapshot->>'status' as status,a.outcome->>'reason' as reason,a.outcome->>'errorCode' as error_code,a.outcome->>'exitCode' as exit_code,left(a.outcome->>'output',500) as output_start,right(a.outcome->>'output',1500) as output_end,a.cleanup_confirmed_at from allrice_runtime_operations o left join allrice_cloud_execution_attempts a on a.operation_id=o.id where o.run_id=${f.context.runId}`;
       await browser?.close();
       await server?.previewGateway?.close();
-      transport?.close();
+      await transport?.close();
       await ipc?.close();
       if (server) await new Promise((resolve) => server.close(resolve));
       proof.finishedAt = new Date().toISOString();

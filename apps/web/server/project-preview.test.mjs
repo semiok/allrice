@@ -164,6 +164,7 @@ async function fixture({ browserOrigins = false } = {}) {
     },
     opened: () => opened,
     closed: () => closed,
+    close: () => gateway.close(),
   };
 }
 describe('private preview live transfer authority', () => {
@@ -343,6 +344,7 @@ describe('private preview live transfer authority', () => {
     ).rejects.toThrow('revoked');
     f.opened().onClose();
     await response.catch(() => undefined);
+    await f.close();
     expect(f.closed()).toBe(true);
   });
 });

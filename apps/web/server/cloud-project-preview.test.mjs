@@ -103,7 +103,7 @@ it('uses only the private Unix socket and normalizes gateway frames without losi
       'CLOUD_PREVIEW_LOST',
     );
   } finally {
-    transport.close();
+    await transport.close();
     for (const socket of wss.clients) socket.terminate();
     await new Promise((resolve) => wss.close(resolve));
     await new Promise((resolve) => server.close(resolve));
@@ -202,7 +202,7 @@ it('carries the immediate WebSocket connected frame through private IPC and the 
   } finally {
     client?.terminate();
     await gateway?.close();
-    transport.close();
+    await transport.close();
     for (const socket of privateWs.clients) socket.terminate();
     await new Promise((resolve) => privateWs.close(resolve));
     await new Promise((resolve) => privateServer.close(resolve));

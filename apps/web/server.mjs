@@ -20,6 +20,7 @@ import {
 } from './server/bridge-socket.mjs';
 import { createProjectPreviewGateway } from './server/project-preview.mjs';
 import { createDevRequestHandler } from './server/dev-maintenance.mjs';
+import { createWebRuntimeClose } from './server/close-runtime.mjs';
 
 /** Next registers its own upgrade listener after the first HTTP request. Route
  * only the dedicated Bridge path before normal EventEmitter dispatch; every
@@ -122,16 +123,13 @@ export async function startAllRiceWeb({
   });
   return {
     server,
-    async close() {
-      await server.previewGateway?.close();
-      cloudPreview?.close();
-      await server.bridgeGateway?.close();
-      server.closeAllConnections();
-      await new Promise((resolve) => server.close(resolve));
-      await lifecycle.waitForCurrentRoots();
-      await app.close();
-      await closeDatabase();
-    },
+    close: createWebRuntimeClose({
+      server,
+      cloudPreview,
+      lifecycle,
+      app,
+      closeDatabase,
+    }),
   };
 }
 
