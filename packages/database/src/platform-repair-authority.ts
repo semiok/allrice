@@ -8,9 +8,15 @@ import { technicalDigest } from './platform-technical-tasks.ts';
 import {
   CreateRepairTaskSchema,
   RepositoryBaselineSchema,
+  RepairReportSchema,
+  RepositoryCandidateSchema,
 } from './platform-repair-contracts.ts';
-import { repairHarnessChecksum } from './platform-repair-profile.ts';
-import { repositoryCandidate } from './platform-repository-source.ts';
+import { repairHarnessChecksumFor } from './platform-repair-profile.ts';
+import {
+  repositoryCandidate,
+  repositoryDigest,
+} from './platform-repository-source.ts';
+import { repairTemplateSlot } from './platform-repair-template.ts';
 import { getDatabase } from './core/client.ts';
 import type { JobRow } from './queue/row-mappers.ts';
 import { QueueError } from './execution/queue.ts';
@@ -31,6 +37,17 @@ export const RepairFrozenSchema = CreateRepairTaskSchema.extend({
   loginAuthenticatedAt: z.string().datetime({ offset: true }),
   timeoutMs: z.number().int().min(1000).max(1800000),
   fingerprint: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  reuseSeed: z
+    .object({
+      sourceTaskId: UuidSchema,
+      sourceCandidateChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      sourceReportDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      beforeChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      afterChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+      afterBase64: z.string().min(1).max(66668),
+    })
+    .strict()
+    .optional(),
 }).strict();
 export const RepairBindingSchema = z
   .object({
@@ -50,10 +67,47 @@ export function repairFrozenValid(raw: unknown) {
   const parsed = RepairFrozenSchema.safeParse(raw);
   if (!parsed.success) return false;
   const { fingerprint, ...fields } = parsed.data;
+  if (fields.reuseAcceptedTaskId) {
+    const seed = fields.reuseSeed;
+    if (
+      fields.verificationMode !== 'compiled_packages' ||
+      !seed ||
+      seed.sourceTaskId !== fields.reuseAcceptedTaskId ||
+      seed.beforeChecksum !== repositoryDigest(fields.baselineText)
+    )
+      return false;
+    const bytes = Buffer.from(seed.afterBase64, 'base64');
+    if (
+      bytes.toString('base64') !== seed.afterBase64 ||
+      repositoryDigest(bytes) !== seed.afterChecksum ||
+      bytes.length > 50000
+    )
+      return false;
+    try {
+      repairTemplateSlot(
+        fields.baselineText,
+        new TextDecoder('utf8', { fatal: true }).decode(bytes),
+      );
+    } catch {
+      return false;
+    }
+  } else if (fields.reuseSeed) return false;
+  if (
+    fields.verificationMode === 'compiled_packages' &&
+    (!fields.baseline.compiledDependencies ||
+      fields.baseline.compiledDependencies.rootLockChecksum !==
+        fields.baseline.rootLockChecksum ||
+      fields.baseline.compiledDependencies.dependencyConfigurationDigest !==
+        fields.baseline.dependencyConfigurationDigest)
+  )
+    return false;
   return (
     fingerprint === technicalDigest(fields) &&
     fields.baselineId === fields.baseline.id &&
-    fields.harnessChecksum === repairHarnessChecksum &&
+    fields.harnessChecksum ===
+      repairHarnessChecksumFor(
+        fields.verificationMode === 'compiled_packages',
+      ) &&
     fields.releaseSha === fields.baseline.sourceSha
   );
 }
@@ -70,6 +124,7 @@ export interface RepairTaskRow {
   frozen: unknown;
   candidate: unknown;
   input_object_id: string | null;
+  dependency_object_id: string | null;
   report: unknown | null;
   created_at: Date;
 }
@@ -137,10 +192,38 @@ export async function admitPlatformRepairBinding(
         CreateRepairTaskSchema.parse({
           requestId: b.frozen.requestId,
           baselineId: b.frozen.baselineId,
+          ...(b.frozen.verificationMode
+            ? { verificationMode: b.frozen.verificationMode }
+            : {}),
+          ...(b.frozen.reuseAcceptedTaskId
+            ? { reuseAcceptedTaskId: b.frozen.reuseAcceptedTaskId }
+            : {}),
         }),
       )
   )
     throw new DataAccessError('authorization_denied');
+  if (b.frozen.reuseSeed) {
+    const seed = b.frozen.reuseSeed;
+    const [source] =
+      await tx`select q.*,j.status from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id
+      where q.id=${seed.sourceTaskId} and q.owner_id=${owner} and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!} for share of q,j`;
+    if (!source || source.status !== 'succeeded' || !source.report)
+      throw new DataAccessError('authorization_denied');
+    const candidate = RepositoryCandidateSchema.parse(source.candidate),
+      report = RepairReportSchema.parse(source.report),
+      old = RepairFrozenSchema.parse(source.frozen);
+    if (
+      candidate.checksum !== seed.sourceCandidateChecksum ||
+      report.candidateChecksum !== candidate.checksum ||
+      technicalDigest(report) !== seed.sourceReportDigest ||
+      candidate.files[0]?.beforeChecksum !== seed.beforeChecksum ||
+      candidate.files[0]?.afterBase64 !== seed.afterBase64 ||
+      old.baseline.rootLockChecksum !== b.frozen.baseline.rootLockChecksum ||
+      old.baseline.dependencyConfigurationDigest !==
+        b.frozen.baseline.dependencyConfigurationDigest
+    )
+      throw new DataAccessError('authorization_denied');
+  }
 }
 export async function bindPlatformRepairTask(
   tx: Tx,

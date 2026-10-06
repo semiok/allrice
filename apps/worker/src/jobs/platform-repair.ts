@@ -20,6 +20,9 @@ import {
   platformRepairToolName,
   technicalDigest,
   lockWorkspaceStorageQuota,
+  repositoryCandidate,
+  acquireConversationRuntime,
+  releaseConversationRuntime,
 } from '@allrice/database';
 import {
   RepairToolInputSchema,
@@ -56,6 +59,13 @@ export async function createPlatformRepairController(
     execution.context,
     storage,
   );
+  if (initial.task.frozen.verificationMode === 'compiled_packages')
+    await preparePlatformRepairInput(
+      lease,
+      execution.context,
+      storage,
+      'dependencies',
+    );
   const observations = new Map<
     string,
     Promise<Awaited<ReturnType<typeof recordPlatformRepairVerification>>>
@@ -145,7 +155,10 @@ export async function createPlatformRepairController(
     before.report.exitCode !== 1
   )
     throw new HandlerError(
-      'REPAIR_BASELINE_NOT_FAILING',
+      before.report.version === 2 &&
+        before.report.failureKind === 'harness_error'
+        ? 'REPAIR_COMPILED_BUILD_FAILED'
+        : 'REPAIR_BASELINE_NOT_FAILING',
       '该基线未复现固定缺陷，没有启动模型修复。',
       false,
     );
@@ -321,5 +334,84 @@ export async function createPlatformRepairController(
     await recordPlatformRepairReport(lease, report, storage);
     return report;
   }
-  return { onToolCall, finish, before };
+  async function importAcceptedCandidate() {
+    const task = await getPlatformRepairExecution(lease),
+      seed = task.frozen.reuseSeed;
+    if (!seed || task.frozen.verificationMode !== 'compiled_packages')
+      throw new HandlerError(
+        'REPAIR_REUSE_UNAVAILABLE',
+        '本任务没有冻结可复验的原候选。',
+        false,
+      );
+    signal.throwIfAborted();
+    return applyPlatformRepairCandidate(lease, 'repair-reuse:' + task.id, {
+      action: 'apply',
+      expectedCandidate: repositoryCandidate(0, []).checksum,
+      proposal: {
+        files: [
+          {
+            path: 'packages/project-runtime/src/command-output.ts',
+            before: task.frozen.baselineText,
+            after: Buffer.from(seed.afterBase64, 'base64').toString('utf8'),
+          },
+        ],
+      },
+    });
+  }
+  return { onToolCall, finish, before, importAcceptedCandidate };
+}
+
+/** Like the existing deterministic quality check, this reuses the Employee Job
+ * and trusted tool controller. No DSH/model call or fabricated model receipt. */
+export async function executePlatformRepairReverification(
+  input: ClaimedJobHandlerInput,
+) {
+  const { execution, workflowLease, signal } = input,
+    lease = { ...workflowLease, attempt: execution.job.attempt },
+    task = await getPlatformRepairExecution(lease),
+    ownership = {
+      organizationId: task.organization_id,
+      workspaceId: task.workspace_id,
+      sessionId: task.session_id,
+      runId: task.run_id,
+      workerId: workflowLease.workerId,
+    };
+  if (
+    !task.frozen.reuseSeed ||
+    task.frozen.verificationMode !== 'compiled_packages'
+  )
+    throw new HandlerError(
+      'REPAIR_REUSE_UNAVAILABLE',
+      '没有已冻结的候选，未运行模型。',
+      false,
+    );
+  await acquireConversationRuntime({
+    ...ownership,
+    ownerId: task.owner_id,
+    configChecksum: task.frozen.fingerprint,
+    compactThresholdTokens: 40000,
+  });
+  let finished = false;
+  try {
+    const controller = await createPlatformRepairController(input);
+    await controller.importAcceptedCandidate();
+    const report = await controller.finish();
+    signal.throwIfAborted();
+    await getPlatformRepairExecution(lease);
+    finished = true;
+    return {
+      answer: `原候选已在新基线复验：依赖离线安装、两个包编译完成，编译产物通过同一组 ${report.after.report.assertions.length} 项断言。没有重新调用模型；完整仓库构建与发布尚未执行。`,
+      repairTaskId: task.id,
+      modelUsed: false,
+    };
+  } finally {
+    // The canonical Job completion releases a successful runtime. Releasing
+    // here would open the session before the Job/report commit has completed.
+    if (!finished || signal.aborted)
+      await releaseConversationRuntime({
+        ...ownership,
+        outcome: signal.aborted ? 'interrupted' : 'error',
+        errorCode: 'REPAIR_COMPILED_VERIFICATION_INCOMPLETE',
+      });
+  }
 }

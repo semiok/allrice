@@ -172,6 +172,7 @@ export async function createAssistantFixtureDatabase(
     });
     return {
       db,
+      storageRoot,
       async close() {
         const proof = await dispose();
         if (

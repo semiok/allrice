@@ -22,6 +22,7 @@ import {
   repositoryDigest,
   loadRepositoryBaseline,
 } from '../../../packages/database/src/platform-repository-source.ts';
+import { prepareRepositoryCompiledDependencies } from './repository-compiled-dependencies.ts';
 
 // Operator CLI, not a model or HTTP tool. It cannot change refs or the worktree.
 const option = (name: string) =>
@@ -115,7 +116,24 @@ if (expanded.length > repositorySourceLimits.jsonBytes)
   throw Error('REPOSITORY_SOURCE_LIMIT');
 const bytes = gzipSync(expanded, { level: 9 }),
   sourceDigest = repositoryMaterialDigest(archive.files);
-const hash = repositoryDigest(sha + ':' + sourceDigest).slice(7);
+const compiledNodeVersion = option('compiled-node-version');
+const dependencies = compiledNodeVersion
+  ? await prepareRepositoryCompiledDependencies(archive, {
+      cacheDirectory:
+        option('dependency-cache') ??
+        join(root, '.local/repository-dependency-cache'),
+      nodeVersion: compiledNodeVersion,
+      timeoutMs: Number(option('compiled-timeout-ms') ?? 300000),
+    })
+  : null;
+const hash = repositoryDigest(
+  sha +
+    ':' +
+    sourceDigest +
+    (dependencies
+      ? ':' + repositoryDigest(JSON.stringify(dependencies.descriptor))
+      : ''),
+).slice(7);
 const id = `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`;
 const active = JSON.parse(
   readFileSync('/Users/a123/allrice-dev/.local/active-release.json', 'utf8'),
@@ -140,6 +158,7 @@ const baseline = RepositoryBaselineSchema.parse({
   profileId: repairProfileId,
   dependencyMode: 'runtime_builtins_only',
   monorepoDependenciesInstalled: false,
+  ...(dependencies ? { compiledDependencies: dependencies.descriptor } : {}),
 });
 const catalog = resolve(output);
 mkdirSync(catalog, { recursive: true, mode: 0o700 });
@@ -165,6 +184,12 @@ if (existsSync(join(catalog, id))) {
       JSON.stringify(baseline, null, 2) + '\n',
       { mode: 0o400, flag: 'wx' },
     );
+    if (dependencies)
+      writeFileSync(
+        join(temporary, 'dependencies.json.gz'),
+        dependencies.bytes,
+        { mode: 0o400, flag: 'wx' },
+      );
     // Publishing the directory is the only visibility switch, after every byte.
     renameSync(temporary, join(catalog, id));
     console.log(JSON.stringify(baseline));

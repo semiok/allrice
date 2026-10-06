@@ -21,6 +21,7 @@ import {
   type RepositoryBaseline,
   type RepositoryCandidate,
 } from './platform-repair-contracts.ts';
+import { readCompiledDependencies } from './platform-repair-dependencies.ts';
 
 export const repositoryDigest = (value: string | Buffer) =>
   'sha256:' + createHash('sha256').update(value).digest('hex');
@@ -192,7 +193,7 @@ export function repositoryCandidate(
 }
 
 /** Bounded no-follow reads from an operator-owned immutable catalog. */
-function bounded(path: string, maximum: number) {
+export function boundedRepositoryCatalogRead(path: string, maximum: number) {
   const fd = openSync(
     path,
     constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
@@ -241,14 +242,34 @@ export function loadRepositoryBaseline(
     folder = join(root, id);
   if (realpathSync(folder) !== folder) throw Error('REPOSITORY_CATALOG_UNSAFE');
   const baseline = RepositoryBaselineSchema.parse(
-    JSON.parse(bounded(join(folder, 'baseline.json'), 20_000).toString('utf8')),
+    JSON.parse(
+      boundedRepositoryCatalogRead(
+        join(folder, 'baseline.json'),
+        20_000,
+      ).toString('utf8'),
+    ),
   );
   if (baseline.id !== id) throw Error('REPOSITORY_BASELINE_CHANGED');
-  const bytes = bounded(
+  const bytes = boundedRepositoryCatalogRead(
     join(folder, 'source.json.gz'),
     repositorySourceLimits.archiveBytes,
   );
-  return { baseline, bytes, archive: readRepositoryArchive(bytes, baseline) };
+  const dependencies = baseline.compiledDependencies
+    ? readCompiledDependencies(
+        boundedRepositoryCatalogRead(
+          join(folder, 'dependencies.json.gz'),
+          12_000_000,
+        ),
+        baseline.compiledDependencies,
+        baseline,
+      )
+    : null;
+  return {
+    baseline,
+    bytes,
+    archive: readRepositoryArchive(bytes, baseline),
+    dependencies,
+  };
 }
 export function repositoryCatalog(directory: string | undefined) {
   if (!directory)

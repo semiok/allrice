@@ -5,6 +5,14 @@ import {
   isRuntimeRelativePath,
   TextChangesetProposalSchema,
 } from '@allrice/contracts';
+import {
+  CompiledDependencyDescriptorSchema,
+  CompiledRepositoryEvidenceSchema,
+  CompiledVerificationTimeoutSchema,
+  compiledRepairLimits,
+  compiledRepairProfileId,
+} from './platform-repair-compiled-contracts.ts';
+export * from './platform-repair-compiled-contracts.ts';
 
 // Private platform source/profile contract. Ordinary project and Bridge limits
 // remain unchanged; only this registered repository source uses these budgets.
@@ -61,6 +69,7 @@ export const RepositoryBaselineSchema = z
     profileId: z.literal(repairProfileId),
     dependencyMode: z.literal('runtime_builtins_only'),
     monorepoDependenciesInstalled: z.literal(false),
+    compiledDependencies: CompiledDependencyDescriptorSchema.optional(),
   })
   .strict();
 export type RepositoryBaseline = z.infer<typeof RepositoryBaselineSchema>;
@@ -86,9 +95,8 @@ export const RepositoryCandidateSchema = z
   })
   .strict();
 export type RepositoryCandidate = z.infer<typeof RepositoryCandidateSchema>;
-export const RepositoryVerificationSchema = z
+const RepositoryVerificationFields = z
   .object({
-    version: z.literal(1),
     baselineId: UuidSchema,
     sourceSha: z.string().regex(/^[a-f0-9]{40}$/),
     baselineSourceDigest: ChecksumSchema,
@@ -98,9 +106,7 @@ export const RepositoryVerificationSchema = z
     actualMaterialDigest: ChecksumSchema,
     rootLockChecksum: ChecksumSchema,
     dependencyConfigurationDigest: ChecksumSchema,
-    profileId: z.literal(repairProfileId),
     harnessChecksum: ChecksumSchema,
-    dependencyMode: z.literal('runtime_builtins_only'),
     monorepoDependenciesInstalled: z.literal(false),
     nodeVersion: z.string().regex(/^v\d+\.\d+\.\d+$/),
     sourceFileCount: z.number().int().min(1).max(repositorySourceLimits.files),
@@ -126,21 +132,48 @@ export const RepositoryVerificationSchema = z
     exitCode: z.union([z.literal(0), z.literal(1), z.literal(3)]),
   })
   .strict();
+export const RepositoryVerificationSchema = z.discriminatedUnion('version', [
+  RepositoryVerificationFields.extend({
+    version: z.literal(1),
+    profileId: z.literal(repairProfileId),
+    dependencyMode: z.literal('runtime_builtins_only'),
+  }).strict(),
+  RepositoryVerificationFields.extend({
+    version: z.literal(2),
+    profileId: z.literal(compiledRepairProfileId),
+    dependencyMode: z.literal('pnpm_frozen_two_packages'),
+    compiled: CompiledRepositoryEvidenceSchema,
+  }).strict(),
+]);
 export type RepositoryVerification = z.infer<
   typeof RepositoryVerificationSchema
 >;
 /** Worker-only sidecar from the persisted private operation, never model args. */
-export const RepositoryExecutionProofSchema = z
+const RepositoryExecutionProofFields = z
   .object({
-    version: z.literal(1),
-    profileId: z.literal(repairProfileId),
     commandDigest: ChecksumSchema,
     baselineId: UuidSchema,
     candidateChecksum: ChecksumSchema,
-    inputLimit: z.literal(repositorySourceLimits.archiveBytes),
-    tmpfsMiB: z.literal(64),
   })
   .strict();
+export const RepositoryExecutionProofSchema = z.discriminatedUnion('version', [
+  RepositoryExecutionProofFields.extend({
+    version: z.literal(1),
+    profileId: z.literal(repairProfileId),
+    inputLimit: z.literal(repositorySourceLimits.archiveBytes),
+    tmpfsMiB: z.literal(64),
+  }).strict(),
+  RepositoryExecutionProofFields.extend({
+    version: z.literal(2),
+    profileId: z.literal(compiledRepairProfileId),
+    inputLimit: z.literal(compiledRepairLimits.inputBytes),
+    tmpfsMiB: z.literal(compiledRepairLimits.tmpfsMiB),
+    dependencyChecksum: ChecksumSchema,
+    planDigest: ChecksumSchema,
+    timeoutMs: CompiledVerificationTimeoutSchema,
+    memoryMiB: z.literal(768),
+  }).strict(),
+]);
 export type RepositoryExecutionProof = z.infer<
   typeof RepositoryExecutionProofSchema
 >;
@@ -149,6 +182,8 @@ export const CreateRepairTaskSchema = z
   .object({
     requestId: UuidSchema,
     baselineId: UuidSchema,
+    verificationMode: z.literal('compiled_packages').optional(),
+    reuseAcceptedTaskId: UuidSchema.optional(),
   })
   .strict();
 export const RepairToolInputSchema = z.discriminatedUnion('action', [
@@ -206,6 +241,25 @@ export const RepairReportSchema = z
       r.after.revision > 0 &&
       r.after.report.exitCode === 0 &&
       r.after.report.candidateChecksum === r.candidateChecksum &&
+      r.before.report.version === r.after.report.version &&
+      (r.before.report.version !== 2 ||
+        (r.after.report.version === 2 &&
+          r.before.report.compiled.planDigest ===
+            r.after.report.compiled.planDigest &&
+          r.before.report.compiled.dependencyBundleChecksum ===
+            r.after.report.compiled.dependencyBundleChecksum &&
+          r.before.report.compiled.timeoutMs ===
+            r.after.report.compiled.timeoutMs &&
+          [
+            ...r.before.report.compiled.steps,
+            ...r.after.report.compiled.steps,
+          ].every(
+            (s) =>
+              s.status === 'passed' &&
+              s.exitCode === 0 &&
+              !s.signal &&
+              !s.outputTruncated,
+          ))) &&
       r.artifacts.some((a) => a.kind === 'candidate') &&
       r.artifacts.some((a) => a.kind === 'report'),
     'Repair completion requires actual before/after verification for the candidate',
@@ -222,6 +276,8 @@ export const RepairTaskSchema = z
     releaseSha: z.string().regex(/^[a-f0-9]{40}$/),
     employeeVersionId: UuidSchema,
     employeeRevisionId: UuidSchema,
+    verificationMode: z.literal('compiled_packages').optional(),
+    reuseAcceptedTaskId: UuidSchema.optional(),
     candidate: RepositoryCandidateSchema,
     source: z
       .object({

@@ -66,6 +66,7 @@ import { executePlatformQualityCheck } from './platform-quality.js';
 import {
   createPlatformRepairController,
   platformRepairToolDefinition,
+  executePlatformRepairReverification,
 } from './platform-repair.js';
 import { HandlerError } from '../errors.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
@@ -199,6 +200,14 @@ export async function executeEmployeeRun({
           attempt: execution.job.attempt,
         })
       : null;
+  if (repairTask?.frozen.reuseSeed)
+    return executePlatformRepairReverification({
+      execution,
+      isolation,
+      signal,
+      onHarnessEvent,
+      workflowLease,
+    });
   // A queued historical Run may predate the prepareEmployeeRunBinding guard.
   // Keep its record readable, but never reinterpret unsupported OAuth as an API key.
   const primaryModelSnapshot =

@@ -10,7 +10,7 @@ import {
   CloudExecutionProfileSchema,
   cloudToolchainImageV1,
 } from '@allrice/contracts';
-import { CloudRunnerBackend } from './backend.js';
+import { CloudRunnerBackend, cloudSupervisor } from './backend.js';
 
 const command = (script: string, extra: Record<string, unknown> = {}) =>
   CloudCommandSchema.parse({
@@ -22,6 +22,67 @@ const command = (script: string, extra: Record<string, unknown> = {}) =>
     network: 'none',
   });
 describe('P15 cloud contract fail-closed', () => {
+  it('recovers a stopped v1 repository container with the original frozen supervisor bytes', async () => {
+    // Golden from the deployed v1 release, not a hash recalculated by the test.
+    expect(createHash('sha256').update(cloudSupervisor).digest('hex')).toBe(
+      '924caa50ef05394efbc389abfe5bc2d567be534e424ce146c7b4fdd2c270d3e9',
+    );
+    const attempt = randomUUID(),
+      digest = 'sha256:' + 'a'.repeat(64);
+    const container = {
+      Id: 'a'.repeat(64),
+      Config: {
+        Labels: {
+          'xyz.bplabs.allrice.cloud.kind': 'repository',
+          'xyz.bplabs.allrice.repository.command': digest,
+        },
+        Image: cloudToolchainImageV1,
+        User: '0:0',
+        Env: [],
+        Entrypoint: ['/usr/local/bin/node'],
+        Cmd: ['--input-type=module', '--eval', cloudSupervisor],
+      },
+      HostConfig: {
+        Runtime: 'runsc',
+        NetworkMode: 'none',
+        ReadonlyRootfs: true,
+        Privileged: false,
+        CapDrop: ['ALL'],
+        CapAdd: ['SETUID', 'SETGID', 'KILL'],
+        SecurityOpt: ['no-new-privileges'],
+        Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=64m,mode=1777' },
+      },
+      State: {
+        Running: false,
+        ExitCode: 0,
+        OOMKilled: false,
+        Status: 'exited',
+      },
+    };
+    class HistoricalContainer extends CloudRunnerBackend {
+      override async inspect() {
+        return container;
+      }
+      override async json<T>() {
+        return { Config: { Env: [] } } as T;
+      }
+      override async call() {
+        return Buffer.alloc(0);
+      }
+    }
+    const result = await new HistoricalContainer().collect(
+      attempt,
+      command('historical typed command'),
+      Date.now(),
+    );
+    expect(result.reason).toBe('completed');
+    expect(result.repositoryIsolation).toMatchObject({
+      parentUid: 0,
+      candidateUid: 1001,
+      commandDigest: digest,
+    });
+    expect(result.repositoryIsolation?.compilerUid).toBeUndefined();
+  });
   it('recognizes watchdog deadline stops from Docker time without guessing or overriding cancellation/unknown', async () => {
     const deadline = Date.now() + 5000;
     const container = {

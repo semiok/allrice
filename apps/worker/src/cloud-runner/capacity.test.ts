@@ -98,6 +98,84 @@ class Daemon extends CloudRunnerBackend {
 }
 const args = CloudCommandInputSchema.parse({ script: 'synthetic' });
 describe('shared physical sandbox capacity', () => {
+  it('a heavier compiler reserves two units before starting and leaves no partial reservations', async () => {
+    const backend = new Daemon();
+    let entered!: () => void, unblock!: () => void;
+    const ready = new Promise<void>((r) => {
+      entered = r;
+    });
+    const gate = new Promise<void>((r) => {
+      unblock = r;
+    });
+    const execute = Reflect.get(backend, 'executeWithSlot').bind(backend);
+    const heavy = execute(
+      { memoryMiB: 768 },
+      'synthetic-image',
+      {
+        attemptId: randomUUID(),
+        deadlineAt: new Date(Date.now() + 5000).toISOString(),
+        maintainLease: async () => true,
+      },
+      async (options: { maintainLease: () => Promise<boolean> }) => {
+        expect(backend.slots.size).toBe(2);
+        expect(await options.maintainLease()).toBe(true);
+        entered();
+        await gate;
+        return { reason: 'completed', elapsedMs: 1 };
+      },
+    );
+    await ready;
+    const ordinary = backend.executeOffice(args, [], {
+      attemptId: randomUUID(),
+      deadlineAt: new Date(Date.now() + 5000).toISOString(),
+      maintainLease: async () => true,
+    });
+    await delay(20);
+    expect(backend.completed).toBe(0);
+    unblock();
+    await Promise.all([heavy, ordinary]);
+    expect(backend.completed).toBe(1);
+    expect(backend.slots.size).toBe(0);
+  });
+  it('does not hold one reservation while waiting for the second, or remove another owner on cancel', async () => {
+    const backend = new Daemon(),
+      foreign = randomUUID(),
+      abort = new AbortController();
+    backend.slots.set('allrice-cloud-slot-1', {
+      Id: 'f'.repeat(64),
+      State: { Running: false },
+      Config: {
+        Labels: {
+          'xyz.bplabs.allrice.cloud.slot-owner': foreign,
+          'xyz.bplabs.allrice.cloud.slot-deadline': String(Date.now() + 60000),
+        },
+      },
+    });
+    const execute = Reflect.get(backend, 'executeWithSlot').bind(backend);
+    const task = execute(
+      { memoryMiB: 768 },
+      'synthetic-image',
+      {
+        attemptId: randomUUID(),
+        deadlineAt: new Date(Date.now() + 5000).toISOString(),
+        signal: abort.signal,
+        maintainLease: async () => true,
+      },
+      async () => {
+        throw Error('must not start with one unit');
+      },
+    );
+    const rejected = expect(task).rejects.toThrow('CLOUD_EXECUTION_REVOKED');
+    await delay(100);
+    expect(backend.slots.size).toBe(1);
+    abort.abort();
+    await rejected;
+    expect(
+      [...backend.slots.values()].map(
+        (s) => s.Config.Labels['xyz.bplabs.allrice.cloud.slot-owner'],
+      ),
+    ).toEqual([foreign]);
+  });
   it('twenty simultaneous requests drain through two atomic Docker reservations', async () => {
     const backend = new Daemon();
     const results = await Promise.all(

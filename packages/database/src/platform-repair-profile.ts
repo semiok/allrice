@@ -6,6 +6,9 @@ import {
   repairProfileId,
   repairProductPath,
   repositorySourceLimits,
+  compiledRepairProfileId,
+  CompiledDependencyDescriptorSchema,
+  type CompiledDependencyDescriptor,
   type RepositoryBaseline,
   type RepositoryCandidate,
 } from './platform-repair-contracts.ts';
@@ -16,6 +19,11 @@ import {
   repairSlotPattern,
   repairReplacementPattern,
 } from './platform-repair-template.ts';
+import {
+  compiledRepairChildHarness,
+  compiledRepositoryHarness,
+  compiledHarnessChecksum,
+} from './platform-repair-compiled-profile.ts';
 
 // This immutable harness is outside the model's editable file set. A separate
 // child loads the proposed module; assertions and material checks stay in the
@@ -158,15 +166,19 @@ export function repositoryVerificationCommand(input: {
   baseline: RepositoryBaseline;
   candidate: RepositoryCandidate;
   object: { id: string; checksum: string };
+  compiled?: {
+    descriptor: CompiledDependencyDescriptor;
+    object: { id: string; checksum: string };
+  };
 }) {
   const baseline = RepositoryBaselineSchema.parse(input.baseline),
     candidate = RepositoryCandidateSchema.parse(input.candidate);
   const config = {
     baseline,
     candidate,
-    profileId: repairProfileId,
+    profileId: input.compiled ? compiledRepairProfileId : repairProfileId,
     productPath: repairProductPath,
-    childHarness,
+    childHarness: input.compiled ? compiledRepairChildHarness : childHarness,
     slot: {
       start: repairSlotStart,
       close: repairSlotClose,
@@ -174,17 +186,39 @@ export function repositoryVerificationCommand(input: {
       replacement: repairReplacementPattern,
     },
     cases: repairAssertionCases,
-    harnessChecksum: repairHarnessChecksum,
+    harnessChecksum: repairHarnessChecksumFor(!!input.compiled),
     limits: repositorySourceLimits,
+    // PostgreSQL jsonb reorders keys. Schema parsing produces the same ordered
+    // descriptor for preparation, lease checks and recovery command digests.
+    ...(input.compiled
+      ? {
+          compiled: CompiledDependencyDescriptorSchema.parse(
+            input.compiled.descriptor,
+          ),
+        }
+      : {}),
   };
   return CloudCommandInputSchema.parse({
-    script: 'const config=' + JSON.stringify(config) + ';\n' + harness,
+    script:
+      'const config=' +
+      JSON.stringify(config) +
+      ';\n' +
+      (input.compiled ? compiledRepositoryHarness(harness) : harness),
     inputs: [
       {
         path: 'repository.json.gz',
         objectId: input.object.id,
         checksum: input.object.checksum,
       },
+      ...(input.compiled
+        ? [
+            {
+              path: 'dependencies.json.gz',
+              objectId: input.compiled.object.id,
+              checksum: input.compiled.object.checksum,
+            },
+          ]
+        : []),
     ],
     outputs: [
       {
@@ -208,6 +242,7 @@ export function readRepositoryVerification(
   baseline: RepositoryBaseline,
   candidate: RepositoryCandidate,
   expectedMaterial: { digest: string; sourceBytes: number },
+  compiled?: CompiledDependencyDescriptor,
 ) {
   const lines = output
     .split('\n')
@@ -228,7 +263,8 @@ export function readRepositoryVerification(
     proof.actualMaterialDigest !== proof.candidateMaterialDigest ||
     proof.actualMaterialDigest !== expectedMaterial.digest ||
     proof.sourceBytes !== expectedMaterial.sourceBytes ||
-    proof.harnessChecksum !== repairHarnessChecksum ||
+    proof.harnessChecksum !== repairHarnessChecksumFor(!!compiled) ||
+    proof.version !== (compiled ? 2 : 1) ||
     proof.sourceFileCount !== baseline.fileCount ||
     proof.assertions.some((a, i) => a.id !== repairAssertionCases[i]!.id) ||
     (proof.exitCode === 0) !==
@@ -239,5 +275,38 @@ export function readRepositoryVerification(
     (proof.exitCode === 3) !== (proof.failureKind === 'harness_error')
   )
     throw Error('REPOSITORY_VERIFICATION_CHANGED');
+  if (
+    compiled &&
+    proof.version === 2 &&
+    (proof.nodeVersion !== compiled.nodeVersion ||
+      proof.compiled.timeoutMs !== compiled.timeoutMs ||
+      proof.compiled.memoryMiB !== compiled.memoryMiB ||
+      proof.compiled.compilerHeapMiB !== compiled.compilerHeapMiB ||
+      proof.compiled.dependencyBundleChecksum !== compiled.bundleChecksum ||
+      proof.compiled.dependencyMaterialDigest !== compiled.materialDigest ||
+      proof.compiled.planDigest !== compiled.planDigest ||
+      (proof.exitCode !== 3 &&
+        proof.compiled.steps.some(
+          (s) =>
+            s.status !== 'passed' ||
+            s.exitCode !== 0 ||
+            s.signal !== null ||
+            s.outputTruncated,
+        )) ||
+      proof.compiled.steps.some(
+        (s, i) =>
+          s.id !==
+          ['dependencies', 'build_contracts', 'build_project_runtime'][i],
+      ) ||
+      proof.compiled.packages.some(
+        (p, i) =>
+          p.name !== ['@allrice/contracts', '@allrice/project-runtime'][i] ||
+          (proof.exitCode !== 3 && p.fileCount === 0),
+      ))
+  )
+    throw Error('REPOSITORY_COMPILED_VERIFICATION_CHANGED');
   return proof;
+}
+export function repairHarnessChecksumFor(compiled: boolean) {
+  return compiled ? compiledHarnessChecksum(harness) : repairHarnessChecksum;
 }
