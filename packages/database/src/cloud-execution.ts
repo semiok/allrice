@@ -715,7 +715,9 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
         b.metric === 'tool_calls'
           ? 1
           : b.metric === 'wall_time'
-            ? payload.arguments.limits.timeoutMs
+            ? repositoryProof?.version === 2
+              ? repositoryProof.timeoutMs
+              : payload.arguments.limits.timeoutMs
             : b.metric === 'output_bytes'
               ? ('kind' in payload
                   ? payload.arguments.outputs?.length

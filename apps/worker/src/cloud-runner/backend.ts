@@ -1,5 +1,6 @@
 import { request } from 'node:http';
 import { openCloudProjectServiceGuard } from './project-service-guard.js';
+import { sendCloudInput } from './input-transfer.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,9 @@ import {
 import type { ExecutionDiagnosticEvent } from '@allrice/database';
 import {
   RepositoryExecutionProofSchema,
+  compiledRepairLimits,
+  compiledRepairProfileId,
+  CompiledVerificationTimeoutSchema,
   type RepositoryExecutionProof,
 } from '@allrice/database/technical-contracts';
 import {
@@ -125,6 +129,12 @@ export type CloudRunResult = {
     capabilities: string[];
     readOnlyRoot: true;
     network: 'none';
+    compilerUid?: 1002;
+    tmpfsMiB?: 128;
+    inputLimit?: 23000000;
+    dependencyChecksum?: string;
+    timeoutMs?: number;
+    memoryMiB?: number;
   };
   projectPreparation?: RuntimeProjectPreparationEvidence;
   errorCode?: string;
@@ -164,6 +174,9 @@ type Container = {
     Privileged?: boolean;
     Binds?: string[] | null;
     Tmpfs?: Record<string, string>;
+    Memory?: number;
+    MemorySwap?: number;
+    PidsLimit?: number;
   };
   State: {
     Running: boolean;
@@ -177,6 +190,7 @@ const attemptLabel = 'xyz.bplabs.allrice.cloud.attempt';
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
 const slotOwnerLabel = 'xyz.bplabs.allrice.cloud.slot-owner';
 const slotDeadlineLabel = 'xyz.bplabs.allrice.cloud.slot-deadline';
+const slotFenceLabel = 'xyz.bplabs.allrice.cloud.slot-fence';
 let watchdogAttestation: Promise<{ stdout: string }> | undefined;
 let attestationExpires = 0;
 
@@ -260,6 +274,53 @@ if(python){fs.cpSync('/opt/python/mplconfig','/tmp/work/.mplconfig',{recursive:t
 const main=input.office||python?'/tmp/work/main.py':'/tmp/work/main.mjs';
 fs.writeFileSync(main,input.script,{mode:0o400});
 const child=cp.spawn(input.office?'/opt/office/bin/python':python?'/opt/python/bin/python':'/usr/local/bin/node',[main],{cwd:'/tmp/work',env:{PATH:(python?'/opt/python/bin:':'')+'/opt/office/bin:/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',HOME:'/tmp/work',TMPDIR:'/tmp',PYTHONDONTWRITEBYTECODE:'1',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1',...(python?{MPLBACKEND:'Agg',MPLCONFIGDIR:'/tmp/work/.mplconfig',XDG_CACHE_HOME:'/tmp/work/.cache'}:{})},stdio:['ignore','pipe','pipe']});
+let bytes=0,overflow=false;
+for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{ bytes+=chunk.length; if(bytes>input.outputBytes){overflow=true; child.kill('SIGKILL');}else console.log(JSON.stringify({type:'output',data:chunk.toString('base64')})); });
+const timer=setTimeout(()=>{child.kill('SIGKILL');process.exit(124)},Math.max(1,input.deadline-Date.now()));
+child.on('error',()=>process.exit(125));
+child.on('close',(code,signal)=>{try{
+  if(code!==0)console.log(JSON.stringify({type:'output',data:Buffer.from('Script exited: code='+code+' signal='+(signal??'none')+'\n').toString('base64')}));
+  let total=0;
+  if(!overflow&&code===0)for(const file of input.outputs){
+    const p='/tmp/work/output/'+file.path, s=fs.lstatSync(p);
+    if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>input.artifactBytes)throw Error('artifact');
+    if(!fs.realpathSync(p).startsWith('/tmp/work/output/'))throw Error('path');
+    if(input.office){
+      const check=cp.spawnSync('/opt/office/bin/python',['/opt/dsh-office/scripts/check_office.py',p],{timeout:Math.max(1,input.deadline-Date.now()),maxBuffer:input.outputBytes,env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8',PYTHONDONTWRITEBYTECODE:'1'}});
+      const report=Buffer.concat([check.stdout??Buffer.alloc(0),check.stderr??Buffer.alloc(0)]);
+      console.log(JSON.stringify({type:'output',data:report.subarray(0,input.outputBytes-bytes).toString('base64')}));
+      bytes+=report.length;
+      if(check.status!==0||bytes>input.outputBytes)throw Error('office_check: exitCode='+check.status+' signal='+(check.signal??'none')+' error='+(check.error?.code??'none'));
+    }
+    const b=fs.readFileSync(p);total+=b.length;if(total>input.artifactBytes)throw Error('limit');
+    let png;
+    if(file.format==='png'){
+      if(!python)throw Error('png_runtime');
+      const check=cp.spawnSync('/opt/python/bin/python',['-I','/opt/allrice-python/check_png.py'],{input:b,timeout:Math.max(1,input.deadline-Date.now()),maxBuffer:1024,env:{PATH:'/usr/bin:/bin',LANG:'C.UTF-8',PYTHONDONTWRITEBYTECODE:'1'}});
+      if(check.status!==0)throw Error('png_check');
+      png=JSON.parse(check.stdout.toString('utf8'));
+    }
+    console.log(JSON.stringify({type:'artifact',path:file.path,data:b.toString('base64'),...(png?{png}:{})}));
+  }
+  clearTimeout(timer);finish(overflow?122:(code??125));
+}catch(error){clearTimeout(timer);console.log(JSON.stringify({type:'output',data:Buffer.from('Sandbox output validation failed: '+String(error.message).slice(0,1000)+'\n').toString('base64')}));finish(123)}});
+`;
+
+// Private compiled profile only; never changes frozen v1/ordinary Cmd bytes.
+export const repositoryCompiledSupervisor = String.raw`
+import fs from 'node:fs'; import cp from 'node:child_process';
+// Drain the pipe before exiting: Office artifacts can exceed one pipe buffer.
+const finish=code=>process.stdout.write('',()=>process.exit(code));
+const input=await new Promise((resolve,reject)=>{let text='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{text+=chunk;if(text.length>32_000_000)process.exit(126);const end=text.indexOf('\n');if(end>=0){process.stdin.pause();try{const value=JSON.parse(text.slice(0,end));text='';process.stdin.removeAllListeners('data');resolve(value)}catch(e){reject(e)}}});setTimeout(()=>process.exit(124),1805000).unref()});
+fs.mkdirSync('/tmp/work/input',{recursive:true,mode:0o700}); fs.mkdirSync('/tmp/work/output',{mode:0o700});
+if(input.repositoryIsolation){if(process.getuid()!==0)throw Error('REPOSITORY_PARENT_IDENTITY');fs.chmodSync('/tmp/work',0o700);}
+for(const file of input.files){ const p='/tmp/work/input/'+file.path; fs.mkdirSync(p.slice(0,p.lastIndexOf('/')),{recursive:true}); fs.writeFileSync(p,Buffer.from(file.contentBase64,'base64'),{mode:0o400}); }
+const python=!input.office&&input.language==='python';
+if(python){fs.cpSync('/opt/python/mplconfig','/tmp/work/.mplconfig',{recursive:true});fs.chmodSync('/tmp/work/.mplconfig',0o700);for(const name of fs.readdirSync('/tmp/work/.mplconfig'))fs.chmodSync('/tmp/work/.mplconfig/'+name,0o600);}
+const main=input.office||python?'/tmp/work/main.py':'/tmp/work/main.mjs';
+fs.writeFileSync(main,input.script,{mode:0o400});
+if(input.repositoryGc){delete input.files;delete input.script;if(typeof global.gc!=='function')throw Error('REPOSITORY_GC_REQUIRED');global.gc();}
+const child=cp.spawn(input.office?'/opt/office/bin/python':python?'/opt/python/bin/python':'/usr/local/bin/node',[...(input.repositoryGc?['--expose-gc']:[]),main],{cwd:'/tmp/work',env:{PATH:(python?'/opt/python/bin:':'')+'/opt/office/bin:/usr/local/bin:/usr/bin:/bin',LANG:'C.UTF-8',HOME:'/tmp/work',TMPDIR:'/tmp',PYTHONDONTWRITEBYTECODE:'1',OPENBLAS_NUM_THREADS:'1',OMP_NUM_THREADS:'1',...(python?{MPLBACKEND:'Agg',MPLCONFIGDIR:'/tmp/work/.mplconfig',XDG_CACHE_HOME:'/tmp/work/.cache'}:{})},stdio:['ignore','pipe','pipe']});
 let bytes=0,overflow=false;
 for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{ bytes+=chunk.length; if(bytes>input.outputBytes){overflow=true; child.kill('SIGKILL');}else console.log(JSON.stringify({type:'output',data:chunk.toString('base64')})); });
 const timer=setTimeout(()=>{child.kill('SIGKILL');process.exit(124)},Math.max(1,input.deadline-Date.now()));
@@ -570,6 +631,11 @@ export class CloudRunnerBackend {
       return;
     }
     if (c.State.Running) throw new CloudRunnerError('CLOUD_NOT_STOPPED');
+    if (
+      c.Config.Labels[slotFenceLabel] &&
+      !(await this.withdrawFencedReservation(c, attemptId))
+    )
+      throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
     await this.call('DELETE', `/containers/${c.Id}?v=true`);
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_CLEANUP_UNCONFIRMED');
@@ -599,6 +665,9 @@ export class CloudRunnerBackend {
         .map((v) => v.replace(/^CAP_/, ''))
         .sort(),
       commandDigest = c.Config.Labels['xyz.bplabs.allrice.repository.command'];
+    const compiled =
+      c.Config.Labels['xyz.bplabs.allrice.repository.profile'] ===
+      compiledRepairProfileId;
     if (
       c.Config.User !== '0:0' ||
       c.Config.Image !== cloudToolchainImageV1 ||
@@ -615,13 +684,33 @@ export class CloudRunnerBackend {
       JSON.stringify(c.Config.Entrypoint) !==
         JSON.stringify(['/usr/local/bin/node']) ||
       JSON.stringify(c.Config.Cmd) !==
-        JSON.stringify(['--input-type=module', '--eval', cloudSupervisor]) ||
+        JSON.stringify([
+          ...(compiled ? ['--expose-gc'] : []),
+          '--input-type=module',
+          '--eval',
+          compiled ? repositoryCompiledSupervisor : cloudSupervisor,
+        ]) ||
       JSON.stringify([...(c.Config.Env ?? [])].sort()) !==
         JSON.stringify([...(image.Config.Env ?? [])].sort()) ||
       !/^sha256:[a-f0-9]{64}$/.test(commandDigest ?? '') ||
       !c.HostConfig.Tmpfs?.['/tmp']?.includes('noexec') ||
       !c.HostConfig.Tmpfs?.['/tmp']?.includes('nosuid') ||
-      !c.HostConfig.Tmpfs?.['/tmp']?.includes('size=64m')
+      !c.HostConfig.Tmpfs?.['/tmp']?.includes(
+        compiled ? 'size=128m' : 'size=64m',
+      ) ||
+      (compiled &&
+        (c.HostConfig.Memory !== compiledRepairLimits.memoryMiB * 1024 ** 2 ||
+          c.HostConfig.MemorySwap !==
+            compiledRepairLimits.memoryMiB * 1024 ** 2 ||
+          c.HostConfig.PidsLimit !== 64 ||
+          c.Config.Labels['xyz.bplabs.allrice.repository.input-limit'] !==
+            String(compiledRepairLimits.inputBytes) ||
+          !/^sha256:[a-f0-9]{64}$/.test(
+            c.Config.Labels['xyz.bplabs.allrice.repository.dependency'] ?? '',
+          ) ||
+          !CompiledVerificationTimeoutSchema.safeParse(
+            Number(c.Config.Labels['xyz.bplabs.allrice.repository.timeout']),
+          ).success))
     )
       throw new CloudRunnerError('REPOSITORY_ISOLATION_CHANGED');
     return {
@@ -631,6 +720,19 @@ export class CloudRunnerBackend {
       capabilities,
       readOnlyRoot: true,
       network: 'none',
+      ...(compiled
+        ? {
+            compilerUid: 1002 as const,
+            tmpfsMiB: 128 as const,
+            inputLimit: 23000000 as const,
+            timeoutMs: Number(
+              c.Config.Labels['xyz.bplabs.allrice.repository.timeout'],
+            ),
+            memoryMiB: compiledRepairLimits.memoryMiB,
+            dependencyChecksum:
+              c.Config.Labels['xyz.bplabs.allrice.repository.dependency'],
+          }
+        : {}),
     };
   }
   async collect(
@@ -640,7 +742,12 @@ export class CloudRunnerBackend {
     reason: CloudRunResult['reason'] = 'completed',
   ): Promise<CloudRunResult> {
     const c = await this.inspect(attemptId);
-    if (!c || c.State.Running)
+    if (
+      !c ||
+      c.State.Running ||
+      c.State.Status === 'created' ||
+      c.Config.Labels[slotFenceLabel]
+    )
       throw new CloudRunnerError('CLOUD_RESULT_UNKNOWN');
     const repositoryIsolation =
       c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'repository'
@@ -850,8 +957,11 @@ export class CloudRunnerBackend {
         command.arguments.limits.outputBytes !== 16_384 ||
         command.arguments.limits.artifactBytes !== 16_384 ||
         command.arguments.limits.cpuMillis !== 1000 ||
-        command.arguments.inputs.length !== 1 ||
-        command.arguments.inputs[0]?.path !== 'repository.json.gz'
+        command.arguments.inputs.length !== (proof.version === 2 ? 2 : 1) ||
+        command.arguments.inputs[0]?.path !== 'repository.json.gz' ||
+        (proof.version === 2 &&
+          (command.arguments.inputs[1]?.path !== 'dependencies.json.gz' ||
+            command.arguments.inputs[1]?.checksum !== proof.dependencyChecksum))
       )
         throw new CloudRunnerError('REPOSITORY_EXECUTION_CHANGED');
     }
@@ -983,7 +1093,12 @@ export class CloudRunnerBackend {
     imageDigest: string,
   ): Promise<CloudRunResult> {
     return this.executeWithSlot(
-      args.limits,
+      {
+        memoryMiB:
+          options.repositoryExecution?.version === 2
+            ? options.repositoryExecution.memoryMiB
+            : args.limits.memoryMiB,
+      },
       imageDigest,
       options,
       (validOptions) =>
@@ -1065,6 +1180,54 @@ export class CloudRunnerBackend {
   /** Docker names are atomic across Worker processes and databases sharing this
    * dedicated VM. Stopped containers reserve the watchdog's detected slots;
    * they never execute code. Expired reservations need physical stop evidence. */
+  private async deleteStoppedContainer(id: string): Promise<boolean> {
+    try {
+      // Never force deletion: Docker's start/delete serialization is the fence.
+      await this.call('DELETE', `/containers/${id}?v=true`);
+      return true;
+    } catch (error) {
+      if (error instanceof CloudRunnerError) {
+        if (error.message === 'CLOUD_DAEMON_404') return true;
+        if (error.message === 'CLOUD_DAEMON_409') return false;
+      }
+      throw error;
+    }
+  }
+
+  private async withdrawFencedReservation(
+    fence: Container,
+    owner: string,
+  ): Promise<boolean> {
+    const id = fence.Config.Labels[slotFenceLabel];
+    if (
+      !/^[a-f0-9]{64}$/.test(id ?? '') ||
+      fence.State.Running ||
+      fence.State.Status !== 'created'
+    )
+      throw new CloudRunnerError('CLOUD_SLOT_FENCE_CHANGED');
+    let reservation: Container;
+    try {
+      reservation = await this.json<Container>('GET', `/containers/${id}/json`);
+    } catch (error) {
+      if (
+        error instanceof CloudRunnerError &&
+        error.message === 'CLOUD_DAEMON_404'
+      )
+        return true;
+      throw error;
+    }
+    if (
+      reservation.Id !== id ||
+      reservation.Config.Labels[slotOwnerLabel] !== owner ||
+      reservation.State.Running
+    )
+      throw new CloudRunnerError('CLOUD_SLOT_FENCE_CHANGED');
+    // Bind to the original immutable ID, never a newly assigned slot name.
+    // Every reclaimer (including attempt cleanup) must withdraw this ID before
+    // removing the name fence. An uncertain delete keeps the fence intact.
+    return this.deleteStoppedContainer(id);
+  }
+
   private async acquireSlot(
     options: Parameters<CloudRunnerBackend['execute']>[2],
     imageDigest: string,
@@ -1073,12 +1236,16 @@ export class CloudRunnerBackend {
     if (!uuid.test(options.attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
     const deadline = Date.parse(options.deadlineAt);
+    // A VM slot reserves 512MiB plus 128MiB runtime overhead. Heavier finite
+    // work occupies multiple existing reservations, rather than overcommitting
+    // the VM or building a separate compiler queue.
+    const units = Math.ceil(minimumMemoryBytes / (640 * 1024 ** 2));
     let lastReason = '';
     while (Number.isFinite(deadline) && Date.now() < deadline) {
       if (options.signal?.aborted || !(await options.maintainLease()))
         throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
       const capacity = await this.capacity();
-      if (capacity.slots === 0)
+      if (capacity.slots < units)
         throw new CloudRunnerError('CLOUD_NODE_RESOURCES_INSUFFICIENT');
       const reason =
         capacity.availableBytes < minimumMemoryBytes
@@ -1099,117 +1266,11 @@ export class CloudRunnerBackend {
         await delay(500);
         continue;
       }
-      for (let slot = 0; slot < capacity.slots; slot++) {
-        const name = `allrice-cloud-slot-${slot}`;
-        try {
-          const c = await this.json<{ Id: string }>(
-            'POST',
-            `/containers/create?name=${name}`,
-            {
-              Image: imageDigest,
-              Entrypoint: ['/usr/local/bin/node'],
-              Cmd: ['--version'],
-              NetworkDisabled: true,
-              Labels: {
-                [slotOwnerLabel]: options.attemptId,
-                [slotDeadlineLabel]: String(
-                  Math.min(deadline, Date.now() + 90_000),
-                ),
-              },
-              HostConfig: {
-                NetworkMode: 'none',
-                ReadonlyRootfs: true,
-                AutoRemove: false,
-              },
-            },
-          );
-          if (!/^[a-f0-9]{64}$/.test(c.Id))
-            throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
-          return {
-            release: async () => {
-              await this.call('DELETE', `/containers/${c.Id}?v=true`).catch(
-                (error) => {
-                  if (
-                    !(error instanceof CloudRunnerError) ||
-                    error.message !== 'CLOUD_DAEMON_404'
-                  )
-                    throw error;
-                },
-              );
-            },
-            valid: async () => {
-              try {
-                return (
-                  (
-                    await this.json<{ Id: string }>(
-                      'GET',
-                      `/containers/${name}/json`,
-                    )
-                  ).Id === c.Id
-                );
-              } catch (error) {
-                if (
-                  error instanceof CloudRunnerError &&
-                  error.message === 'CLOUD_DAEMON_404'
-                )
-                  return false;
-                throw error;
-              }
-            },
-          };
-        } catch (error) {
-          if (
-            !(error instanceof CloudRunnerError) ||
-            error.message !== 'CLOUD_DAEMON_409'
-          )
-            throw error;
-        }
-        let existing: Container;
-        try {
-          existing = await this.json<Container>(
-            'GET',
-            `/containers/${name}/json`,
-          );
-        } catch (error) {
-          if (
-            error instanceof CloudRunnerError &&
-            error.message === 'CLOUD_DAEMON_404'
-          )
-            continue;
-          throw error;
-        }
-        const owner = existing.Config.Labels[slotOwnerLabel];
-        const expires = Number(existing.Config.Labels[slotDeadlineLabel]);
-        if (
-          owner &&
-          uuid.test(owner) &&
-          Number.isFinite(expires) &&
-          expires <= Date.now() &&
-          !existing.State.Running
-        ) {
-          const abandoned = await this.inspect(owner);
-          if (abandoned?.State.Running) continue;
-          if (abandoned?.State.Status === 'created') {
-            // Delete a never-started attempt before reclaiming its slot. Docker
-            // serializes delete/start: a delayed old Worker must get 404, not
-            // start after our final ownership check. Never delete exited
-            // attempts here: their logs may still be needed for recovery.
-            try {
-              await this.call('DELETE', `/containers/${abandoned.Id}?v=true`);
-            } catch (error) {
-              if (
-                error instanceof CloudRunnerError &&
-                error.message === 'CLOUD_DAEMON_409'
-              )
-                continue;
-              if (
-                !(error instanceof CloudRunnerError) ||
-                error.message !== 'CLOUD_DAEMON_404'
-              )
-                throw error;
-            }
-          }
-          await this.call('DELETE', `/containers/${existing.Id}?v=true`).catch(
+      const held: { Id: string; name: string }[] = [];
+      let admitted = false;
+      const release = async () => {
+        for (const c of held)
+          await this.call('DELETE', `/containers/${c.Id}?v=true`).catch(
             (error) => {
               if (
                 !(error instanceof CloudRunnerError) ||
@@ -1218,7 +1279,162 @@ export class CloudRunnerBackend {
                 throw error;
             },
           );
+      };
+      try {
+        for (let slot = 0; slot < capacity.slots; slot++) {
+          const name = `allrice-cloud-slot-${slot}`;
+          try {
+            const c = await this.json<{ Id: string }>(
+              'POST',
+              `/containers/create?name=${name}`,
+              {
+                Image: imageDigest,
+                Entrypoint: ['/usr/local/bin/node'],
+                Cmd: ['--version'],
+                NetworkDisabled: true,
+                Labels: {
+                  [slotOwnerLabel]: options.attemptId,
+                  [slotDeadlineLabel]: String(
+                    Math.min(deadline, Date.now() + 90_000),
+                  ),
+                },
+                HostConfig: {
+                  NetworkMode: 'none',
+                  ReadonlyRootfs: true,
+                  AutoRemove: false,
+                },
+              },
+            );
+            if (!/^[a-f0-9]{64}$/.test(c.Id))
+              throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
+            held.push({ Id: c.Id, name });
+            if (held.length < units) continue;
+            admitted = true;
+            return {
+              release,
+              valid: async () => {
+                try {
+                  for (const reservation of held)
+                    if (
+                      (
+                        await this.json<{ Id: string }>(
+                          'GET',
+                          `/containers/${reservation.name}/json`,
+                        )
+                      ).Id !== reservation.Id
+                    )
+                      return false;
+                  return true;
+                } catch (error) {
+                  if (
+                    error instanceof CloudRunnerError &&
+                    error.message === 'CLOUD_DAEMON_404'
+                  )
+                    return false;
+                  throw error;
+                }
+              },
+            };
+          } catch (error) {
+            if (
+              !(error instanceof CloudRunnerError) ||
+              error.message !== 'CLOUD_DAEMON_409'
+            )
+              throw error;
+          }
+          let existing: Container;
+          try {
+            existing = await this.json<Container>(
+              'GET',
+              `/containers/${name}/json`,
+            );
+          } catch (error) {
+            if (
+              error instanceof CloudRunnerError &&
+              error.message === 'CLOUD_DAEMON_404'
+            )
+              continue;
+            throw error;
+          }
+          const owner = existing.Config.Labels[slotOwnerLabel];
+          const expires = Number(existing.Config.Labels[slotDeadlineLabel]);
+          if (
+            owner &&
+            uuid.test(owner) &&
+            Number.isFinite(expires) &&
+            expires <= Date.now() &&
+            !existing.State.Running
+          ) {
+            let abandoned = await this.inspect(owner);
+            if (abandoned?.State.Running) continue;
+            if (!abandoned) {
+              // A 404 snapshot is not a fence: the old Worker may create and
+              // perform its final slot checks before we withdraw this slot.
+              // Reserve its exact Docker name until this immutable slot ID is
+              // removed. This placeholder is never started or treated as a Run.
+              try {
+                const fence = await this.json<{ Id: string }>(
+                  'POST',
+                  `/containers/create?name=allrice-cloud-${owner}`,
+                  {
+                    Image: imageDigest,
+                    Entrypoint: ['/usr/local/bin/node'],
+                    Cmd: ['--version'],
+                    NetworkDisabled: true,
+                    Labels: {
+                      [attemptLabel]: owner,
+                      [slotFenceLabel]: existing.Id,
+                    },
+                    HostConfig: {
+                      Runtime: 'runsc',
+                      NetworkMode: 'none',
+                      ReadonlyRootfs: true,
+                      CapDrop: ['ALL'],
+                      AutoRemove: false,
+                    },
+                  },
+                );
+                if (!/^[a-f0-9]{64}$/.test(fence.Id))
+                  throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
+                abandoned = {
+                  Id: fence.Id,
+                  Config: { Labels: { [slotFenceLabel]: existing.Id } },
+                  HostConfig: { Runtime: 'runsc' },
+                  State: {
+                    Running: false,
+                    Status: 'created',
+                    ExitCode: 0,
+                    OOMKilled: false,
+                  },
+                };
+              } catch (error) {
+                if (
+                  error instanceof CloudRunnerError &&
+                  error.message === 'CLOUD_DAEMON_409'
+                )
+                  continue; // A late create won. Reinspect before any withdrawal.
+                throw error;
+              }
+            }
+            const fenced = !!abandoned.Config.Labels[slotFenceLabel];
+            if (fenced) {
+              if (!(await this.withdrawFencedReservation(abandoned, owner)))
+                continue;
+            } else if (abandoned.State.Status === 'created') {
+              // Delete a never-started attempt before reclaiming its slot. Docker
+              // serializes delete/start: a delayed old Worker must get 404, not
+              // start after our final ownership check. Never delete exited
+              // attempts here: their logs may still be needed for recovery.
+              if (!(await this.deleteStoppedContainer(abandoned.Id))) continue;
+            }
+            if (!(await this.deleteStoppedContainer(existing.Id))) continue;
+            if (fenced) await this.deleteStoppedContainer(abandoned.Id);
+          }
         }
+      } finally {
+        // Never hold a partial group while waiting for another caller. All are
+        // stopped placeholders and no execution is started before admission.
+        if (!admitted) await release();
       }
       await delay(500);
     }
@@ -1324,6 +1540,17 @@ export class CloudRunnerBackend {
     if (!uuid.test(attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
     await this.preflight(imageDigest);
+    if (options.repositoryExecution?.version === 2) {
+      const { stdout } = await attestWatchdog();
+      const guard = JSON.parse(stdout).repositoryCompiled;
+      if (
+        guard?.profileId !== compiledRepairProfileId ||
+        guard?.timeoutStepMs !== compiledRepairLimits.defaultTimeoutMs ||
+        guard?.maximumTimeoutMs !== compiledRepairLimits.maximumTimeoutMs ||
+        guard?.memoryMiB !== compiledRepairLimits.memoryMiB
+      )
+        throw new CloudRunnerError('REPOSITORY_COMPILED_WATCHDOG_REQUIRED');
+    }
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
     let size = 0;
@@ -1349,7 +1576,10 @@ export class CloudRunnerBackend {
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
     const deadline = Math.min(
       Date.parse(options.deadlineAt),
-      Date.now() + command.arguments.limits.timeoutMs,
+      Date.now() +
+        (options.repositoryExecution?.version === 2
+          ? options.repositoryExecution.timeoutMs
+          : command.arguments.limits.timeoutMs),
     );
     if (
       !Number.isFinite(deadline) ||
@@ -1364,7 +1594,14 @@ export class CloudRunnerBackend {
         files,
         office,
         language: args.language,
-        ...(options.repositoryExecution ? { repositoryIsolation: true } : {}),
+        ...(options.repositoryExecution
+          ? {
+              repositoryIsolation: true,
+              ...(options.repositoryExecution.version === 2
+                ? { repositoryGc: true }
+                : {}),
+            }
+          : {}),
         script: command.arguments.script,
         outputs: command.arguments.outputs,
         artifactBytes: limits.artifactBytes,
@@ -1378,7 +1615,16 @@ export class CloudRunnerBackend {
         config: {
           Image: imageDigest,
           Entrypoint: ['/usr/local/bin/node'],
-          Cmd: ['--input-type=module', '--eval', cloudSupervisor],
+          Cmd: [
+            ...(options.repositoryExecution?.version === 2
+              ? ['--expose-gc']
+              : []),
+            '--input-type=module',
+            '--eval',
+            options.repositoryExecution?.version === 2
+              ? repositoryCompiledSupervisor
+              : cloudSupervisor,
+          ],
           User: options.repositoryExecution ? '0:0' : '65532:65532',
           WorkingDir: '/tmp',
           OpenStdin: true,
@@ -1392,6 +1638,20 @@ export class CloudRunnerBackend {
                   'xyz.bplabs.allrice.cloud.kind': 'repository',
                   'xyz.bplabs.allrice.repository.command':
                     options.repositoryExecution.commandDigest,
+                  ...(options.repositoryExecution.version === 2
+                    ? {
+                        'xyz.bplabs.allrice.repository.profile':
+                          compiledRepairProfileId,
+                        'xyz.bplabs.allrice.repository.timeout': String(
+                          options.repositoryExecution.timeoutMs,
+                        ),
+                        'xyz.bplabs.allrice.repository.input-limit': String(
+                          options.repositoryExecution.inputLimit,
+                        ),
+                        'xyz.bplabs.allrice.repository.dependency':
+                          options.repositoryExecution.dependencyChecksum,
+                      }
+                    : {}),
                 }
               : {}),
             'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
@@ -1407,8 +1667,18 @@ export class CloudRunnerBackend {
               : {}),
             SecurityOpt: ['no-new-privileges'],
             PidsLimit: limits.pids,
-            Memory: limits.memoryMiB * 1024 * 1024,
-            MemorySwap: limits.memoryMiB * 1024 * 1024,
+            Memory:
+              (options.repositoryExecution?.version === 2
+                ? options.repositoryExecution.memoryMiB
+                : limits.memoryMiB) *
+              1024 *
+              1024,
+            MemorySwap:
+              (options.repositoryExecution?.version === 2
+                ? options.repositoryExecution.memoryMiB
+                : limits.memoryMiB) *
+              1024 *
+              1024,
             CpuPeriod: 100_000,
             CpuQuota: limits.cpuMillis * 100,
             Tmpfs: {
@@ -1791,18 +2061,29 @@ export class CloudRunnerBackend {
         );
       }
       await plan.afterStart?.(c.Id);
-      if (stdin)
-        await new Promise<void>((resolve, reject) =>
-          stdin.write(plan.encoded!, (error) =>
-            error ? reject(error) : resolve(),
-          ),
-        );
+      let reason: CloudRunResult['reason'] = 'completed';
+      if (stdin) {
+        const sent = await sendCloudInput(stdin, plan.encoded!, {
+          deadline,
+          signal: executionOptions.signal,
+          maintainLease: options.maintainLease,
+          running: async () =>
+            (await this.inspect(attemptId))?.State.Running === true,
+        });
+        if (sent !== 'sent') {
+          // The receiver can finish after consuming all bytes but before the
+          // attach callback arrives. Collect this exact physical attempt;
+          // exit/output validation decides success, without resending input.
+          reason = sent === 'stopped' ? 'completed' : sent;
+          if (sent !== 'stopped') await serviceCall(this.stop(attemptId), 5000);
+          return this.collect(attemptId, plan.command, startedAt, reason);
+        }
+      }
       await options.observe?.({
         stage: 'executing',
         containerId: c.Id,
         startupMs: Date.now() - startedAt,
       });
-      let reason: CloudRunResult['reason'] = 'completed';
       while ((await this.inspect(attemptId))?.State.Running) {
         if (options.signal?.aborted) {
           reason = 'canceled';

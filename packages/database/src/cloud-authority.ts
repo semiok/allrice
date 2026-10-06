@@ -115,7 +115,15 @@ export function cloudCommandBinding(
       backend: payload.backend,
       imageDigest: payload.imageDigest,
     }),
-    budgetDigest: digest(payload.arguments.limits),
+    budgetDigest: digest(
+      repositoryProof?.version === 2
+        ? {
+            ...payload.arguments.limits,
+            timeoutMs: repositoryProof.timeoutMs,
+            memoryMiB: repositoryProof.memoryMiB,
+          }
+        : payload.arguments.limits,
+    ),
   };
 }
 

@@ -45,7 +45,7 @@ import {
   applyRepositoryCandidate,
   repositoryDigest,
 } from './platform-repository-source.ts';
-import { repairHarnessChecksum } from './platform-repair-profile.ts';
+import { repairHarnessChecksumFor } from './platform-repair-profile.ts';
 import { repairTemplateSlot } from './platform-repair-template.ts';
 
 export const platformRepairToolName = 'platform.repository.repair';
@@ -88,6 +88,10 @@ function mapped(row: Record<string, unknown>, observations: unknown[]) {
     releaseSha: f.releaseSha,
     employeeVersionId: f.employeeVersionId,
     employeeRevisionId: f.employeeRevisionId,
+    ...(f.verificationMode ? { verificationMode: f.verificationMode } : {}),
+    ...(f.reuseAcceptedTaskId
+      ? { reuseAcceptedTaskId: f.reuseAcceptedTaskId }
+      : {}),
     candidate: row.candidate,
     source: {
       path: repairProductPath,
@@ -163,6 +167,46 @@ export async function createPlatformRepairTask(
   const baseline = registered.baseline;
   if (baseline.sourceSha !== process.env.ALLRICE_RELEASE_SHA)
     throw new QueueError('conflict');
+  if (
+    (request.verificationMode === 'compiled_packages' &&
+      !registered.dependencies) ||
+    (request.reuseAcceptedTaskId &&
+      request.verificationMode !== 'compiled_packages')
+  )
+    throw new DataAccessError('grant_invalid');
+  let reuseSeed;
+  if (request.reuseAcceptedTaskId) {
+    const previous = await getPlatformRepairTask(
+        context,
+        request.reuseAcceptedTaskId,
+      ),
+      patch = previous.candidate.files[0];
+    if (
+      !previous.accepted ||
+      !previous.report ||
+      !patch ||
+      previous.baseline.rootLockChecksum !== baseline.rootLockChecksum ||
+      previous.baseline.dependencyConfigurationDigest !==
+        baseline.dependencyConfigurationDigest ||
+      patch.beforeChecksum !==
+        registered.archive.files.find((f) => f.path === repairProductPath)
+          ?.checksum
+    )
+      throw new DataAccessError('grant_invalid');
+    const after = Buffer.from(patch.afterBase64, 'base64');
+    repairTemplateSlot(
+      previous.source.before,
+      new TextDecoder('utf8', { fatal: true }).decode(after),
+    );
+    reuseSeed = {
+      sourceTaskId: previous.id,
+      sourceCandidateChecksum: previous.candidate.checksum,
+      sourceReportDigest: technicalDigest(previous.report),
+      beforeChecksum: patch.beforeChecksum,
+      afterChecksum: repositoryDigest(after),
+      afterBase64: patch.afterBase64,
+    };
+  }
   const employee = await ensureQualityEmployee(context),
     internalContext: RequestContext = {
       ...context,
@@ -243,7 +287,10 @@ export async function createPlatformRepairTask(
         .contentBase64,
       'base64',
     ).toString('utf8'),
-    harnessChecksum: repairHarnessChecksum,
+    harnessChecksum: repairHarnessChecksumFor(
+      request.verificationMode === 'compiled_packages',
+    ),
+    ...(reuseSeed ? { reuseSeed } : {}),
     releaseSha: process.env.ALLRICE_RELEASE_SHA!,
     assignmentId: employee.assignmentId,
     employeeVersionId: employee.versionId,
@@ -469,10 +516,26 @@ export async function preparePlatformRepairInput(
   lease: RepairLease,
   context: ExecutionContext,
   storage: StoragePort,
+  role: 'source' | 'dependencies' = 'source',
 ) {
   const source = await readPlatformRepairSource(lease),
     db = getDatabase(),
     owner = context.policySnapshot.subjectId;
+  const dependencyInput = role === 'dependencies';
+  const content = dependencyInput
+      ? source.source.dependencies?.bytes
+      : source.source.bytes,
+    checksum = dependencyInput
+      ? source.source.dependencies?.descriptor.bundleChecksum
+      : source.source.baseline.archiveChecksum;
+  if (
+    !content ||
+    !checksum ||
+    (dependencyInput &&
+      source.task.frozen.verificationMode !== 'compiled_packages')
+  )
+    throw new DataAccessError('grant_invalid');
+  const column = dependencyInput ? 'dependency_object_id' : 'input_object_id';
   if (
     source.task.run_id !== context.runId ||
     source.task.job_id !== context.jobId ||
@@ -481,7 +544,9 @@ export async function preparePlatformRepairInput(
     source.task.workspace_id !== context.workspaceId
   )
     throw new DataAccessError('authorization_denied');
-  const objectId = cloudStableId('repair-input:' + source.task.id);
+  const objectId = cloudStableId(
+    'repair-input:' + source.task.id + (dependencyInput ? ':dependencies' : ''),
+  );
   const principal = await db.begin(async (tx) => {
     const { context: internal } = await resolvePlatformPreviewContext(
       tx,
@@ -519,9 +584,8 @@ export async function preparePlatformRepairInput(
     );
     await assertPlatformRepairLease(tx, lease);
     const [q] =
-      await tx`select input_object_id from allrice_platform_repair_tasks where id=${source.task.id} for update`;
-    if (q?.input_object_id && q.input_object_id !== objectId)
-      throw new QueueError('conflict');
+      await tx`select ${tx(column)} from allrice_platform_repair_tasks where id=${source.task.id} for update`;
+    if (q?.[column] && q[column] !== objectId) throw new QueueError('conflict');
     const [present] =
       await tx`select * from allrice_storage_objects where id=${objectId}`;
     if (
@@ -557,8 +621,8 @@ export async function preparePlatformRepairInput(
             workspaceId: context.workspaceId,
             category: 'exports',
             mediaType: 'application/gzip',
-            sizeBytes: source.source.bytes.length,
-            checksum: source.source.baseline.archiveChecksum,
+            sizeBytes: content.length,
+            checksum,
             visibility: 'private',
             retentionUntil: null,
             immutable: true,
@@ -566,24 +630,23 @@ export async function preparePlatformRepairInput(
           tx,
         );
     if (
-      stored.object.checksum !== source.source.baseline.archiveChecksum ||
-      stored.object.sizeBytes !== source.source.bytes.length ||
+      stored.object.checksum !== checksum ||
+      stored.object.sizeBytes !== content.length ||
       !stored.object.immutable ||
       stored.object.deletedAt
     )
       throw new QueueError('conflict');
-    await tx`update allrice_platform_repair_tasks set input_object_id=${objectId} where id=${source.task.id}`;
+    await tx`update allrice_platform_repair_tasks set ${tx(column)}=${objectId} where id=${source.task.id}`;
     return stored;
   });
   if (file.state !== 'ready') {
     if (!(await storage.exists(file.object)))
       await storage.put(
         file.object,
-        new Blob([Uint8Array.from(source.source.bytes)]).stream(),
+        new Blob([Uint8Array.from(content)]).stream(),
       );
     const bytes = await readArtifactBytes(storage, file.object, 12000000);
-    if (repositoryDigest(bytes) !== source.source.baseline.archiveChecksum)
-      throw new QueueError('conflict');
+    if (repositoryDigest(bytes) !== checksum) throw new QueueError('conflict');
     file = await db.begin(async (tx) => {
       await assertPlatformRepairLease(tx, lease);
       const [current] =

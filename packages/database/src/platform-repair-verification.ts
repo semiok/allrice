@@ -20,6 +20,8 @@ import {
   RepairVerificationObservationSchema,
   RepositoryCandidateSchema,
   repositorySourceLimits,
+  compiledRepairLimits,
+  compiledRepairProfileId,
 } from './platform-repair-contracts.ts';
 import { repairProfileId } from './platform-repair-contracts.ts';
 import { readPlatformRepairSource } from './platform-repair.ts';
@@ -47,7 +49,9 @@ export async function preparePlatformRepairVerification(
     source.task.run_id !== context.runId ||
     source.task.job_id !== context.jobId ||
     source.candidate.checksum !== candidateChecksum ||
-    !source.task.input_object_id
+    !source.task.input_object_id ||
+    (source.task.frozen.verificationMode === 'compiled_packages' &&
+      !source.task.dependency_object_id)
   )
     throw new QueueError('conflict');
   const args = repositoryVerificationCommand({
@@ -57,6 +61,19 @@ export async function preparePlatformRepairVerification(
       id: source.task.input_object_id,
       checksum: source.source.baseline.archiveChecksum,
     },
+    ...(source.task.frozen.verificationMode === 'compiled_packages'
+      ? {
+          compiled: {
+            descriptor: source.task.frozen.baseline.compiledDependencies!,
+            object: {
+              id: source.task.dependency_object_id!,
+              checksum:
+                source.task.frozen.baseline.compiledDependencies!
+                  .bundleChecksum,
+            },
+          },
+        }
+      : {}),
   });
   const command = CloudCommandSchema.parse({
     capability: 'cloud.process.execute',
@@ -71,13 +88,35 @@ export async function preparePlatformRepairVerification(
       'cloud-command:' + context.runId + ':' + callId,
     );
   const proof = RepositoryExecutionProofSchema.parse({
-    version: 1,
-    profileId: repairProfileId,
+    version:
+      source.task.frozen.verificationMode === 'compiled_packages' ? 2 : 1,
+    profileId:
+      source.task.frozen.verificationMode === 'compiled_packages'
+        ? compiledRepairProfileId
+        : repairProfileId,
     commandDigest: repositoryDigest(JSON.stringify(command)),
     baselineId: source.source.baseline.id,
     candidateChecksum,
-    inputLimit: repositorySourceLimits.archiveBytes,
-    tmpfsMiB: 64,
+    inputLimit:
+      source.task.frozen.verificationMode === 'compiled_packages'
+        ? compiledRepairLimits.inputBytes
+        : repositorySourceLimits.archiveBytes,
+    tmpfsMiB:
+      source.task.frozen.verificationMode === 'compiled_packages'
+        ? compiledRepairLimits.tmpfsMiB
+        : 64,
+    ...(source.task.frozen.verificationMode === 'compiled_packages'
+      ? {
+          dependencyChecksum:
+            source.task.frozen.baseline.compiledDependencies!.bundleChecksum,
+          planDigest:
+            source.task.frozen.baseline.compiledDependencies!.planDigest,
+          timeoutMs:
+            source.task.frozen.baseline.compiledDependencies!.timeoutMs,
+          memoryMiB:
+            source.task.frozen.baseline.compiledDependencies!.memoryMiB,
+        }
+      : {}),
   });
   return getDatabase().begin(async (tx) => {
     await assertPlatformRepairLease(tx, lease);
@@ -151,7 +190,7 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     attempt: job.attempt,
   });
   const [v] =
-    await tx`select v.*,q.frozen,c.candidate,q.candidate head_candidate,q.input_object_id
+    await tx`select v.*,q.frozen,c.candidate,q.candidate head_candidate,q.input_object_id,q.dependency_object_id
     from allrice_platform_repair_tasks q join allrice_platform_repair_verifications v on v.task_id=q.id
     join allrice_platform_repair_candidates c on c.task_id=q.id and c.revision=v.revision
     where q.run_id=${scope.runId} and q.job_id=${scope.jobId} and q.organization_id=${scope.organizationId}
@@ -170,6 +209,17 @@ export async function resolvePlatformRepositoryExecutionProofTx(
         id: v.input_object_id,
         checksum: v.frozen.baseline.archiveChecksum,
       },
+      ...(v.frozen.verificationMode === 'compiled_packages'
+        ? {
+            compiled: {
+              descriptor: v.frozen.baseline.compiledDependencies,
+              object: {
+                id: v.dependency_object_id,
+                checksum: v.frozen.baseline.compiledDependencies.bundleChecksum,
+              },
+            },
+          }
+        : {}),
     }),
     backend: cloudBackendV1,
     imageDigest: cloudToolchainImageV1,
@@ -184,6 +234,16 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     proof.commandDigest !== repositoryDigest(JSON.stringify(payload)) ||
     proof.baselineId !== v.frozen.baselineId ||
     proof.candidateChecksum !== candidate.checksum ||
+    proof.version !==
+      (v.frozen.verificationMode === 'compiled_packages' ? 2 : 1) ||
+    (proof.version === 2 &&
+      (proof.dependencyChecksum !==
+        v.frozen.baseline.compiledDependencies?.bundleChecksum ||
+        proof.planDigest !==
+          v.frozen.baseline.compiledDependencies?.planDigest ||
+        proof.timeoutMs !== v.frozen.baseline.compiledDependencies?.timeoutMs ||
+        proof.memoryMiB !==
+          v.frozen.baseline.compiledDependencies?.memoryMiB)) ||
     scope.operationId !==
       cloudStableId(
         'cloud-command:' + scope.runId + ':repair-verify:' + candidate.revision,
@@ -265,12 +325,25 @@ export async function recordPlatformRepairVerification(
         digest: repositoryMaterialDigest(files),
         sourceBytes: files.reduce((n, f) => n + f.sizeBytes, 0),
       },
+      source.task.frozen.verificationMode === 'compiled_packages'
+        ? source.task.frozen.baseline.compiledDependencies
+        : undefined,
     );
     if (
       report.exitCode !== v.outcome.exitCode ||
       !['failed', 'succeeded'].includes(v.runtime_status) ||
       (report.exitCode === 0) !== (v.runtime_status === 'succeeded') ||
-      report.failureKind === 'harness_error'
+      (report.failureKind === 'harness_error' && report.version === 1) ||
+      (report.version === 2 &&
+        (v.outcome.repositoryIsolation?.compilerUid !== 1002 ||
+          v.outcome.repositoryIsolation?.tmpfsMiB !== 128 ||
+          v.outcome.repositoryIsolation?.inputLimit !== 23000000 ||
+          v.outcome.repositoryIsolation?.timeoutMs !==
+            report.compiled.timeoutMs ||
+          v.outcome.repositoryIsolation?.memoryMiB !==
+            report.compiled.memoryMiB ||
+          v.outcome.repositoryIsolation?.dependencyChecksum !==
+            report.compiled.dependencyBundleChecksum))
     )
       throw new DataAccessError('grant_invalid');
     const observation = RepairVerificationObservationSchema.parse({

@@ -8,6 +8,7 @@ import datetime
 import hashlib
 import http.client
 import json
+import math
 import os
 import re
 import select
@@ -24,6 +25,10 @@ DEADLINE = "xyz.bplabs.allrice.cloud.deadline"
 SERVICE_LEASES = "/run/allrice-cloud-project-leases"
 SERVICE = "xyz.bplabs.allrice.cloud.service"
 SERVICE_ID = "xyz.bplabs.allrice.cloud.service-id"
+COMPILED_PROFILE = 'allrice.output-redaction.compiled.v1'
+COMPILED_TIMEOUT_STEP = 300_000
+COMPILED_TIMEOUT_MAX = 1_800_000
+NODE_IMAGE = 'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5'
 STATE = "/run/allrice-cloud-watchdog.json"
 CAPACITY = "/run/allrice-cloud-capacity.json"
 EXPECTED = "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a"
@@ -191,10 +196,59 @@ def service_lease_channel(attempt, hard_text):
     return 0
 
 
+def command_deadline_valid(container, created, deadline):
+    """Only the fixed private compiler profile has the operator-frozen budget.
+
+    These root-owned Docker facts bound execution after Worker loss. Admission
+    and the source/command proofs remain the Worker's responsibility; a label
+    alone neither authorizes candidate code nor grants a longer ordinary task.
+    """
+    config, host = container['Config'], container['HostConfig']
+    labels = config['Labels']
+    profile = labels.get('xyz.bplabs.allrice.repository.profile')
+    if profile is None:
+        return deadline <= created + 65_000
+    value = labels.get('xyz.bplabs.allrice.repository.timeout', '')
+    if profile != COMPILED_PROFILE or not re.fullmatch(r'[1-9][0-9]*', value):
+        return False
+    timeout = int(value)
+    return (
+        COMPILED_TIMEOUT_STEP <= timeout <= COMPILED_TIMEOUT_MAX
+        and timeout % COMPILED_TIMEOUT_STEP == 0
+        # Docker's inventory creation timestamp is rounded to whole seconds.
+        and deadline <= created + timeout + 1000
+        and labels.get('xyz.bplabs.allrice.cloud.kind') == 'repository'
+        and labels.get('xyz.bplabs.allrice.repository.input-limit') == '23000000'
+        and re.fullmatch(r'sha256:[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.repository.command', ''))
+        and re.fullmatch(r'sha256:[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.repository.dependency', ''))
+        and config.get('Image') == NODE_IMAGE and config.get('User') == '0:0'
+        and host.get('ReadonlyRootfs') is True and not host.get('Privileged')
+        and host.get('CapDrop') == ['ALL']
+        and sorted(cap.removeprefix('CAP_') for cap in host.get('CapAdd', [])) == ['KILL', 'SETGID', 'SETUID']
+        and 'no-new-privileges' in host.get('SecurityOpt', [])
+        and not host.get('Binds') and not container.get('Mounts')
+        and host.get('Memory') == 768 * 1024 ** 2
+        and host.get('MemorySwap') == 768 * 1024 ** 2
+        and host.get('PidsLimit') == 64
+        and host.get('Tmpfs') == {'/tmp': 'rw,nosuid,nodev,noexec,size=128m,mode=1777'}
+    )
+
+
+def compiled_budget():
+    return {'profileId': COMPILED_PROFILE, 'timeoutStepMs': COMPILED_TIMEOUT_STEP, 'maximumTimeoutMs': COMPILED_TIMEOUT_MAX, 'memoryMiB': 768}
+
+
+def live_compiled_budget(heartbeat):
+    # This must come from the actual running tick, not merely the script now
+    # on disk: an old service may still be applying its 65-second ceiling.
+    return compiled_budget() if heartbeat.get('repositoryCompiled') == compiled_budget() else None
+
+
 def tick(capacity):
     filters = urllib.parse.quote(json.dumps({"label": [LABEL + "=cloud-gvisor-v1"]}))
     containers = call("GET", "/containers/json?all=1&filters=" + filters)
     running = 0
+    reserved_units = 0
     for item in sorted(containers, key=lambda c: c["Created"]):
         identifier = item["Id"]
         if not re.fullmatch(r"[a-f0-9]{64}", identifier):
@@ -203,11 +257,12 @@ def tick(capacity):
         if not c or not c["State"]["Running"]:
             continue
         running += 1
+        reserved_units += math.ceil((c['HostConfig'].get('Memory', 0) + 128 * 1024 ** 2) / (640 * 1024 ** 2))
         labels = c["Config"]["Labels"]
         try:
             deadline = int(labels.get(DEADLINE, "0"))
-            # Docker-created timestamp prevents a future label from bypassing
-            # the physical 65-second ceiling, including runtime startup.
+            # Docker creation binds the ordinary or frozen private ceiling,
+            # including runtime startup; it cannot be renewed by a label.
             created = int(item["Created"]) * 1000
             valid = (
                 re.fullmatch(r"[a-f0-9-]{36}", labels.get(ATTEMPT, ""))
@@ -215,8 +270,8 @@ def tick(capacity):
                 and c["HostConfig"]["NetworkMode"] == "none"
                 and deadline > int(time.time() * 1000)
                 and (service_lease_valid(labels, created, deadline, int(time.time()*1000))
-                     if SERVICE in labels else deadline <= created + 65_000)
-                and running <= capacity['slots']
+                     if SERVICE in labels else command_deadline_valid(c, created, deadline))
+                and reserved_units <= capacity['slots']
             )
         except (TypeError, ValueError):
             valid = False
@@ -225,7 +280,7 @@ def tick(capacity):
             print(json.dumps({"event": "cloud_watchdog_stop", "container": identifier}), flush=True)
     temporary = STATE + ".new"
     with open(temporary, "w", encoding="utf8") as output:
-        json.dump({"at": time.time(), "running": running,
+        json.dump({"at": time.time(), "running": running, 'repositoryCompiled': compiled_budget(),
                    "availableBytes": memory_available()}, output)
     os.replace(temporary, STATE)
 
@@ -259,6 +314,7 @@ def attest():
         and 0 <= time.time() - heartbeat["at"] < 4
     )
     print(json.dumps({"ready": ready, "runtimeChecksum": checksum, "watchdog": "met166-service-v1", "projectServices": True,
+                      "repositoryCompiled": live_compiled_budget(heartbeat),
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))
     return 0 if ready else 1

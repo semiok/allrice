@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   RepositoryCatalogSchema,
   RepairTaskSchema,
+  type CreateRepairTaskSchema,
   type RepairTask,
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
@@ -16,7 +17,7 @@ const labels = {
   canceled: '已停止',
 };
 type Catalog = ReturnType<typeof RepositoryCatalogSchema.parse>;
-type Submission = { requestId: string; baselineId: string };
+type Submission = ReturnType<typeof CreateRepairTaskSchema.parse>;
 export function PlatformRepositoryRepair() {
   const [catalog, setCatalog] = useState<Catalog | null>(null),
     [tasks, setTasks] = useState<RepairTask[]>([]),
@@ -94,6 +95,7 @@ export function PlatformRepositoryRepair() {
     hasActive =
       tasks.some((q) => ['queued', 'running'].includes(q.status)) ||
       !!(current && ['queued', 'running'].includes(current.status));
+  const selectedBaseline = catalog?.baselines.find((b) => b.id === baselineId);
   useEffect(() => {
     if (!hasActive) return;
     const timer = setInterval(
@@ -115,14 +117,23 @@ export function PlatformRepositoryRepair() {
     if (
       q &&
       (q.requestId !== request.requestId ||
-        q.baseline.id !== request.baselineId)
+        q.baseline.id !== request.baselineId ||
+        q.verificationMode !== request.verificationMode ||
+        q.reuseAcceptedTaskId !== request.reuseAcceptedTaskId)
     )
       throw Error('repair_request_changed');
     return q;
   }
-  async function submit() {
+  async function submit(reuseAcceptedTaskId?: string) {
     if (writing || (!pending && !baselineId)) return;
-    const request = pending ?? { requestId: crypto.randomUUID(), baselineId };
+    const request = pending ?? {
+      requestId: crypto.randomUUID(),
+      baselineId,
+      ...(selectedBaseline?.compiledDependencies
+        ? { verificationMode: 'compiled_packages' as const }
+        : {}),
+      ...(reuseAcceptedTaskId ? { reuseAcceptedTaskId } : {}),
+    };
     setPending(request);
     setWriting(true);
     setError('');
@@ -142,7 +153,9 @@ export function PlatformRepositoryRepair() {
         q = RepairTaskSchema.parse(await r.json());
         if (
           q.requestId !== request.requestId ||
-          q.baseline.id !== request.baselineId
+          q.baseline.id !== request.baselineId ||
+          q.verificationMode !== request.verificationMode ||
+          q.reuseAcceptedTaskId !== request.reuseAcceptedTaskId
         )
           throw Error('repair_request_changed');
       }
@@ -207,7 +220,7 @@ export function PlatformRepositoryRepair() {
       <h3>仓库修复候选</h3>
       <p className={css.meta}>
         从登记的完整 AllRice
-        源码生成受限候选，并复查同一组原始断言。当前支持命令输出遮盖模块；完整依赖安装、全仓构建与发布另行验证。
+        源码生成受限候选，并复查同一组原始断言。支持命令输出遮盖模块；已登记编译环境时，同时验证两个包的编译产物。全仓构建与发布另行验证。
       </p>
       <div className={css.controls}>
         <label>
@@ -286,12 +299,37 @@ export function PlatformRepositoryRepair() {
             {current.baseline.fileCount} 个文件
           </p>
           <p className={css.meta}>
-            保留原锁文件与配置；本轮使用 Node 原生模块验证，没有安装全仓依赖。
+            {current.verificationMode === 'compiled_packages'
+              ? '保留原锁文件与配置，只安装两个包所需的冻结依赖；验证实际编译产物，不代表全仓构建通过。'
+              : '保留原锁文件与配置；本轮使用 Node 原生模块验证，没有安装全仓依赖。'}
           </p>
+          {current.reuseAcceptedTaskId && (
+            <p className={css.meta}>
+              复用原候选 {current.reuseAcceptedTaskId.slice(0, 8)}
+              ，在新任务中重新构建与验证，没有重新调用模型。
+            </p>
+          )}
           {current.errorCode && (
             <p role="status">任务未完成：{current.errorCode}</p>
           )}
           <div className={css.controls}>
+            {current.accepted && (
+              <AdminButton
+                disabled={
+                  writing ||
+                  !!pending ||
+                  hasActive ||
+                  !selectedBaseline?.compiledDependencies ||
+                  selectedBaseline.rootLockChecksum !==
+                    current.baseline.rootLockChecksum ||
+                  selectedBaseline.dependencyConfigurationDigest !==
+                    current.baseline.dependencyConfigurationDigest
+                }
+                onClick={() => void submit(current.id)}
+              >
+                复验编译候选
+              </AdminButton>
+            )}
             {['queued', 'running'].includes(current.status) && (
               <AdminButton disabled={writing} onClick={() => void stop()}>
                 停止修复
@@ -318,6 +356,43 @@ export function PlatformRepositoryRepair() {
               <p className={css.meta}>
                 操作 {v.operationId} · {v.report.actualMaterialDigest}
               </p>
+              {v.report.version === 2 && (
+                <div>
+                  <p className={css.meta}>
+                    实际 Node {v.report.nodeVersion} · pnpm{' '}
+                    {v.report.compiled.managerVersion} · TypeScript{' '}
+                    {v.report.compiled.compilerVersion} · 离线安装 · 验证上限{' '}
+                    {v.report.compiled.timeoutMs / 60_000} 分钟
+                    {' · '}内存上限 {v.report.compiled.memoryMiB} MiB
+                  </p>
+                  {v.report.compiled.steps.map((s) => (
+                    <p key={s.id}>
+                      {s.status === 'passed'
+                        ? '✓'
+                        : s.status === 'failed'
+                          ? '×'
+                          : '—'}{' '}
+                      {s.id === 'dependencies'
+                        ? '冻结依赖安装'
+                        : s.id === 'build_contracts'
+                          ? 'contracts 包构建'
+                          : 'project-runtime 包构建'}{' '}
+                      ·{' '}
+                      {s.status === 'not_run'
+                        ? '未执行'
+                        : `退出 ${s.exitCode ?? '未知'} · ${s.elapsedMs} ms`}
+                    </p>
+                  ))}
+                  {v.report.compiled.packages.map((p) => (
+                    <p key={p.name}>
+                      {p.name} · {p.fileCount} 个编译文件 · {p.digest}
+                    </p>
+                  ))}
+                  <p className={css.meta}>
+                    回归目标：正式包导出 · {v.report.compiled.productionEntry}
+                  </p>
+                </div>
+              )}
               {v.report.assertions.map((a) => (
                 <p key={a.id}>
                   {a.passed ? '✓' : '×'} {a.id}
@@ -334,8 +409,9 @@ export function PlatformRepositoryRepair() {
           </details>
           {current.accepted && (
             <p>
-              固定断言已通过，候选待审查。完整构建、main 合并和 Dev
-              发布尚未执行。
+              {current.verificationMode === 'compiled_packages'
+                ? '两个包编译与固定断言已通过，候选待审查。完整仓库构建、main 合并和 Dev 发布尚未执行。'
+                : '固定断言已通过，候选待审查。完整构建、main 合并和 Dev 发布尚未执行。'}
             </p>
           )}
         </article>
