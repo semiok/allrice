@@ -459,43 +459,58 @@ server.listen(port, '0.0.0.0', () => {
   });
 });
 
-async function shutdown(signal: string) {
-  console.info(`[M5] received ${signal}; stopping worker`);
+let shutdownTask: Promise<void> | undefined;
+function shutdown(signal: string) {
+  if (shutdownTask) return shutdownTask;
   stopping = true;
-  stopPressureLog();
-  clearInterval(readinessTimer);
-  clearInterval(codexProviderStatusTimer);
-  clearInterval(dshRuntimeInventoryTimer);
-  clearInterval(queueTimer);
-  clearInterval(mcpDiscoveryTimer);
-  clearInterval(cloudRecoveryTimer);
-  clearInterval(managedCloudTimer);
-  clearInterval(mcpRecoveryTimer);
-  mcpDiscoveryAborter.abort();
-  clearInterval(automationTimer);
-  clearInterval(platformEmployeeTestTimer);
-  clearInterval(codexAuthorizationTimer);
-  for (const abort of activeAborters) abort();
-  platformEmployeeTestAborter?.abort();
-  server.close();
-  await Promise.allSettled(activeExecutions);
-  await stopCloudProjectServices();
-  await cloudPreviewTransport?.close();
-  if (mcpDiscoveryTask) await mcpDiscoveryTask;
-  if (cloudRecoveryTask) await cloudRecoveryTask;
-  if (managedCloudTask) await managedCloudTask;
-  if (mcpRecoveryTask) await mcpRecoveryTask;
-  await codexAuthorizationBroker.close();
-  await codexAuthorizationTask;
-  await codexProbeTask;
-  await producerLifecycle.waitForCurrentRoots();
-  await closeHarnessAdapters();
-  await dshInventoryTask;
-  await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);
-  await removeWorkerCapabilities(workerId).catch(() => undefined);
-  await closeDatabase();
-  process.exit(0);
+  // Fence preview admission before waiting for commands or service shutdown.
+  const previewClosing = cloudPreviewTransport?.close();
+  void previewClosing?.catch(() => undefined);
+  shutdownTask = (async () => {
+    console.info(`[M5] received ${signal}; stopping worker`);
+    stopping = true;
+    stopPressureLog();
+    clearInterval(readinessTimer);
+    clearInterval(codexProviderStatusTimer);
+    clearInterval(dshRuntimeInventoryTimer);
+    clearInterval(queueTimer);
+    clearInterval(mcpDiscoveryTimer);
+    clearInterval(cloudRecoveryTimer);
+    clearInterval(managedCloudTimer);
+    clearInterval(mcpRecoveryTimer);
+    mcpDiscoveryAborter.abort();
+    clearInterval(automationTimer);
+    clearInterval(platformEmployeeTestTimer);
+    clearInterval(codexAuthorizationTimer);
+    for (const abort of activeAborters) abort();
+    platformEmployeeTestAborter?.abort();
+    server.close();
+    await Promise.allSettled(activeExecutions);
+    await stopCloudProjectServices();
+    await previewClosing;
+    if (mcpDiscoveryTask) await mcpDiscoveryTask;
+    if (cloudRecoveryTask) await cloudRecoveryTask;
+    if (managedCloudTask) await managedCloudTask;
+    if (mcpRecoveryTask) await mcpRecoveryTask;
+    await codexAuthorizationBroker.close();
+    await codexAuthorizationTask;
+    await codexProbeTask;
+    await producerLifecycle.waitForCurrentRoots();
+    await closeHarnessAdapters();
+    await dshInventoryTask;
+    await markWorkerDshRuntimesOffline(workerId).catch(() => undefined);
+    await removeWorkerCapabilities(workerId).catch(() => undefined);
+    await closeDatabase();
+    process.exit(0);
+  })();
+  return shutdownTask;
 }
 
-process.on('SIGINT', () => void shutdown('SIGINT'));
-process.on('SIGTERM', () => void shutdown('SIGTERM'));
+const stopWorker = (signal: string) => {
+  void shutdown(signal).catch(() => {
+    console.error('[M5] shutdown incomplete; resource closure unconfirmed');
+    process.exitCode = 1;
+  });
+};
+process.on('SIGINT', () => stopWorker('SIGINT'));
+process.on('SIGTERM', () => stopWorker('SIGTERM'));
