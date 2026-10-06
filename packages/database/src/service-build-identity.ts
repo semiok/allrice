@@ -57,6 +57,17 @@ const manifestBodySchema = z
       .strict(),
     files: z.array(fileSchema).min(4).max(10000),
     workspaceEdges: z.array(workspaceEdgeSchema).max(1000),
+    nextExternalAliases: z
+      .array(
+        z
+          .object({
+            path: relativePath,
+            target: relativePath,
+            packageChecksum: checksum,
+          })
+          .strict(),
+      )
+      .max(1000),
   })
   .strict();
 export const ServiceBuildManifestSchema = manifestBodySchema
@@ -215,6 +226,52 @@ async function bytesAt(root: string, path: string) {
     throw Error('DEV_BUILD_IDENTITY_INVALID');
   return readFile(target);
 }
+async function nextExternalAliases(
+  root: string,
+): Promise<ServiceBuildManifest['nextExternalAliases']> {
+  const aliases: ServiceBuildManifest['nextExternalAliases'] = [];
+  const visit = async (path: string) => {
+    const stat = await lstat(join(root, path));
+    if (stat.isSymbolicLink()) {
+      const target = await realpath(join(root, path));
+      // Turbopack emits hashed external-vendor aliases here. They must resolve
+      // inside this release's frozen pnpm installation, never workspace roots
+      // or another release. Their complete link set is part of the seal.
+      if (!target.startsWith(join(root, 'node_modules/.pnpm') + sep))
+        throw Error('DEV_BUILD_RUNTIME_GRAPH_INVALID');
+      const packageBytes = await bytesAt(
+        root,
+        relative(root, target) + '/package.json',
+      );
+      const packageName = JSON.parse(packageBytes.toString()).name;
+      if (
+        typeof packageName !== 'string' ||
+        packageName.startsWith('@allrice/')
+      )
+        throw Error('DEV_BUILD_RUNTIME_GRAPH_INVALID');
+      aliases.push({
+        path,
+        target: relative(root, target),
+        packageChecksum: digest(packageBytes),
+      });
+    } else if (stat.isDirectory()) {
+      for (const entry of (await readdir(join(root, path))).sort())
+        await visit(path + '/' + entry);
+    } else throw Error('DEV_BUILD_RUNTIME_GRAPH_INVALID');
+  };
+  const path = 'apps/web/.next/node_modules';
+  try {
+    await lstat(join(root, path));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+  // A symlink replacing the whole overlay could change lookup precedence.
+  if (!(await lstat(join(root, path))).isDirectory())
+    throw Error('DEV_BUILD_RUNTIME_GRAPH_INVALID');
+  await visit(path);
+  return aliases;
+}
 async function walk(
   root: string,
   path: string,
@@ -249,13 +306,12 @@ export async function prepareServiceBuildManifest(input: {
   sha.parse(input.sourceTree);
   const root = await realpath(input.root),
     files: ServiceBuildManifest['files'] = [];
+  const aliases = await nextExternalAliases(root);
   await walk(root, 'apps/web/.next/server', 'web', files);
   await walk(root, 'apps/web/.next/static', 'web', files);
   await walk(root, 'apps/web/server.mjs', 'web', files);
   await walk(root, 'apps/web/server', 'web', files);
   for (const entry of await readdir(join(root, 'apps/web/.next'))) {
-    if (entry === 'node_modules')
-      throw Error('DEV_BUILD_RUNTIME_GRAPH_INVALID');
     if ((await lstat(join(root, 'apps/web/.next', entry))).isFile())
       await walk(root, 'apps/web/.next/' + entry, 'web', files);
   }
@@ -301,6 +357,7 @@ export async function prepareServiceBuildManifest(input: {
     },
     files,
     workspaceEdges: graph.edges,
+    nextExternalAliases: aliases,
   });
   return ServiceBuildManifestSchema.parse({
     ...body,
@@ -379,6 +436,7 @@ export async function verifyServiceBuildIdentity(input: {
         JSON.stringify({
           files: manifest.files.filter((file) => file.scope === 'graph'),
           workspaceEdges: manifest.workspaceEdges,
+          nextExternalAliases: manifest.nextExternalAliases,
         }),
       ),
       webBuildId: manifest.webBuildId,

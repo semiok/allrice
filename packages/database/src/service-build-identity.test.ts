@@ -217,3 +217,32 @@ it('rejects new nearer runtime resolver layers even when all sealed bytes and ro
     await expect(f.verify('web')).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
   }
 });
+it('accepts sealed native Next vendor aliases within this release and rejects their cross-release replacement', async () => {
+  const f = await fixture(),
+    other = await fixture();
+  const vendor = 'node_modules/.pnpm/example@1/node_modules/example';
+  for (const root of [f.root, other.root]) {
+    await mkdir(join(root, vendor), { recursive: true });
+    await writeFile(
+      join(root, vendor, 'package.json'),
+      '{"name":"example","version":"1"}',
+    );
+  }
+  const alias = join(f.root, 'apps/web/.next/node_modules/example-hashed');
+  await mkdir(dirname(alias), { recursive: true });
+  await symlink(join(f.root, vendor), alias);
+  const manifest = await prepareServiceBuildManifest({
+    root: f.root,
+    sourceSha: 'a'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  });
+  await writeFile(
+    join(f.root, '.local/dev-build-identity.json'),
+    JSON.stringify(manifest),
+  );
+  expect((await f.verify('web'))?.manifestDigest).toBe(manifest.manifestDigest);
+  expect(manifest.nextExternalAliases).toHaveLength(1);
+  await rm(alias);
+  await symlink(join(other.root, vendor), alias);
+  await expect(f.verify('web')).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
+});
