@@ -238,6 +238,13 @@ type Entry = {
   stream?: ContainerLoopback;
   ready: boolean;
   closed: boolean;
+  sequence: number;
+  pending?: {
+    sequence: number;
+    timer: ReturnType<typeof setTimeout>;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  };
 };
 /** The existing Bridge channel transports HTTP and WS for the existing process
  * manager. Uncertain writes are closed, never moved to HTTP fallback or replayed. */
@@ -266,14 +273,66 @@ export class ContainerProjectPreviewRelay {
         end: () => undefined,
         ready: false,
         closed: false,
+        sequence: 0,
       };
       e.end = () => {
         if (e.closed) return;
         e.closed = true;
+        if (e.pending) {
+          clearTimeout(e.pending.timer);
+          e.pending.reject(Error('PROJECT_PREVIEW_CLOSED'));
+          e.pending = undefined;
+        }
         this.entries.delete(frame.id);
         e.socket?.terminate();
         e.stream?.destroy();
       };
+      if (e.request.flowControl === 'consumed-ack-v1') {
+        e.send = async (outgoing) => {
+          if (outgoing.type !== 'preview.data') return send(outgoing);
+          if (e.closed || e.pending || !this.alive(e.target))
+            throw Error('PROJECT_PREVIEW_UNAVAILABLE');
+          const sequence = ++e.sequence;
+          // Register before send; ws.send only confirms local enqueue, not that
+          // Web has authorized and consumed bytes. One waiter per channel.
+          let resolveAck!: () => void, rejectAck!: (error: Error) => void;
+          const ack = new Promise<void>((resolve, reject) => {
+            resolveAck = resolve;
+            rejectAck = reject;
+          });
+          const remaining = Math.min(
+            6500,
+            Date.parse(e.target.hardDeadlineAt) - Date.now(),
+          );
+          const pending = {
+            sequence,
+            resolve: resolveAck,
+            reject: rejectAck,
+            timer: setTimeout(
+              () => rejectAck(Error('PROJECT_PREVIEW_ACK_TIMEOUT')),
+              Math.max(0, remaining),
+            ),
+          };
+          e.pending = pending;
+          try {
+            await Promise.all([
+              Promise.resolve()
+                .then(() => send({ ...outgoing, sequence }))
+                .then((ok) => {
+                  if (!ok) throw Error('PROJECT_PREVIEW_BACKPRESSURE');
+                }),
+              ack,
+            ]);
+            return true;
+          } finally {
+            if (e.pending === pending) {
+              clearTimeout(pending.timer);
+              pending.reject(Error('PROJECT_PREVIEW_CLOSED'));
+              e.pending = undefined;
+            }
+          }
+        };
+      }
       this.entries.set(frame.id, e);
       e.queue = this.open(frame.id, e).catch((error) => {
         this.adapter.onError?.(error);
@@ -289,6 +348,29 @@ export class ContainerProjectPreviewRelay {
     }
     const e = this.entries.get(frame.id);
     if (!e) return;
+    // This must run outside e.queue: HTTP/WS send waits for this ACK inside
+    // that queue. Closing an id drops late ACKs without replay or resurrection.
+    if (frame.type === 'preview.ack') {
+      if (
+        !e.pending ||
+        frame.sequence !== e.pending.sequence ||
+        !this.alive(e.target)
+      ) {
+        void send({
+          version: 1,
+          type: 'preview.end',
+          id: frame.id,
+          error: true,
+        });
+        e.end();
+        return;
+      }
+      const pending = e.pending;
+      e.pending = undefined;
+      clearTimeout(pending.timer);
+      pending.resolve();
+      return;
+    }
     if (frame.type === 'preview.end' && frame.error) {
       e.end();
       return;
@@ -396,9 +478,21 @@ export class ContainerProjectPreviewRelay {
         .finally(() => (pending -= bytes.length));
     });
     ws.on('error', () => e.end());
-    ws.once('close', () => {
-      void e.send({ version: 1, type: 'preview.end', id });
-      e.end();
+    ws.once('close', (code) => {
+      if (code !== 1000 && code !== 1001 && code !== 1005) {
+        void e.send({ version: 1, type: 'preview.end', id, error: true });
+        e.end();
+        return;
+      }
+      // Normal peer close follows messages already accepted above. Waiting for
+      // their bounded consumption must not let end overtake those messages.
+      void queue
+        .then(async () => {
+          if (e.closed) return;
+          await e.send({ version: 1, type: 'preview.end', id });
+          e.end();
+        })
+        .catch(() => e.end());
     });
     await new Promise<void>((resolve, reject) => {
       ws.once('open', resolve);

@@ -628,6 +628,7 @@ it('closing one virtual preview joins its callback and notification while a seco
       version: 1,
       type: 'preview.data',
       id: oneId,
+      sequence: 1,
       data: 'eA==',
     }),
   );
