@@ -260,7 +260,11 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 默认开放，无额外开关：日常任务不显示空助手壳；回答首字出现后隐藏思考/执行微状态。验收覆盖 9 次行情查询合成一行、键盘展开、真实员工名称、手机布局、服务端等待计时及失败恢复。回退可整体撤销此展示适配，不改变原始事件、任务时钟或执行授权；上游提供同等聚合接口后替换本地分组逻辑。
 
-## 已登记的 10 项适配
+## 已登记的 15 项适配责任与 5 个物理补丁
+
+`patch-ledger.json` 的 `patches` 记录 15 项责任，`physicalPatches` 精确记录五个 DSH 包、版本、文件路径及责任 ID。一项私有会话迁移责任覆盖格式迁移和 JSONL 持久化两个物理补丁；Next 等非 DSH 补丁不混入此清单。
+
+`pnpm dsh:verify` 交叉核对 workspace、lock、实际文件 SHA256 与责任映射；缺项、重复/冲突、未知或悬空归属及包/版本/路径/摘要漂移均失败，分别输出 `physicalPatchCount` 和 `ledgerEntryCount`。回放场景列表仅表示已配置，不代表本命令执行过这些测试；真实回放继续由已有 CI/验收入口执行。
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
@@ -344,11 +348,11 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 验收：`dsh-legacy-replay.test.ts` 的源字节不变、等待迁移、重复答案/重启续接、未知格式/事件、损坏事实与并发写入拒绝。带私有事实的 seeded/child 日志明确拒绝，不能默认为根会话。
 - 退役条件：上游提供同时覆盖迁移校验器、运行时和独立 worker bundle 的版本化下游事件注册机制；届时先通过同一旧日志测试，再删除两个物理包补丁与运行时词表扩展。候选写入 v3 后禁止旧二进制继续旧历史。
 
-## 机器 ledger 之外的源码补丁
+## 管理员网关源码补丁（已纳入机器 ledger）
 
 稳定 ID：`allrice-admin-authenticated-origin-pnpm-v1`；归属 MET-100；**保留，升级时重新验证**。
 
-[pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 `patchedDependencies` 还登记了 [client-connection 补丁](../../patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch)：已认证 HTML 的 `allrice-dsh-admin` 标记让管理员 UI 使用受控网关。这是一个实际第三方包源码补丁，与 ledger 中的协议适配分开核查，不能漏审。
+[pnpm-workspace.yaml](../../pnpm-workspace.yaml) 的 `patchedDependencies` 还登记了 [client-connection 补丁](../../patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch)：已认证 HTML 的 `allrice-dsh-admin` 标记让管理员 UI 使用受控网关。这是一个实际第三方包源码补丁，已用同一稳定 ID 纳入 ledger 的责任条目及 physicalPatches 映射，与协议适配分别计数。
 
 rc.3 [connection 实现][connection]补丁已按新 transport/ownsHost 实现重新移植；保留服务端原生认证，并用真实原生 WebUI 启动、登录、API、Host 和跨域拒绝测试验证。退役需证明新的正式远程连接入口在既有管理员认证、Host 检查和回环服务限制下工作，并通过未登录/非管理员拒绝测试。HTML 标记本身不是权限凭证。回退需要旧锁文件、旧补丁、网关和 UI 同时兼容。详见 [管理员架构](dsh-admin-console.md)。
 
