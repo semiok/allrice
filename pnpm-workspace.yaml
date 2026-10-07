@@ -70,3 +70,4 @@ patchedDependencies:
   '@deepseek-ai/dsh-mcp-client@0.1.5-rc.3': patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch
   '@deepseek-ai/dsh-session-format-v0-to-v1@0.1.5-rc.3': patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch
   '@deepseek-ai/dsh-session-persistence-jsonl@0.1.5-rc.3': patches/@deepseek-ai__dsh-session-persistence-jsonl@0.1.5-rc.3.patch
+  'next@16.2.1': patches/next@16.2.1.patch
