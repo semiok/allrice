@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DataAccessError } from '@allrice/database';
 import type * as Database from '@allrice/database';
+import type * as AutonomyPolicy from '../../../../../../lib/execution/platform-autonomy';
 import { repairFixture } from '../../../../../../test/platform-repair-fixture';
 // Legacy operation contracts remain covered; production pause is tested separately.
 vi.mock(
   '../../../../../../lib/execution/platform-autonomy',
   async (original) => ({
-    ...(await original<
-      typeof import('../../../../../../lib/execution/platform-autonomy')
-    >()),
+    ...(await original<typeof AutonomyPolicy>()),
     platformAutonomyPaused: () => false,
   }),
 );
