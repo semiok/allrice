@@ -219,13 +219,10 @@ export function projectTaskNextSteps(facts: NextStepsFacts): TaskNextSteps {
                     t === 'workspace.document.read'),
               )
             : false;
-    if (
-      state === 'failed' &&
-      preparation &&
-      supportsPreparation &&
-      suggestions.length < 3
-    )
-      suggestions.push({
+    if (state === 'failed' && preparation && supportsPreparation) {
+      // Keep a useful delivered result, then expose the confirmed missing condition.
+      // Preparation must not disappear when result actions already fill the limit.
+      suggestions.splice(Math.min(1, suggestions.length), 0, {
         source: 'context-rule',
         task: {
           id: `prepare-${preparation}`,
@@ -242,6 +239,8 @@ export function projectTaskNextSteps(facts: NextStepsFacts): TaskNextSteps {
         },
         references: [],
       });
+      suggestions.splice(3);
+    }
   }
   const notice =
     state === 'unknown'
