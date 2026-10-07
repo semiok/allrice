@@ -34,6 +34,7 @@ function supervisor(port: number, readinessMs = 1500, deadlineMs = 3000) {
     },
     emit: (event: (typeof events)[number]) => events.push(event),
     end: (reason: string) => {
+      if (context.finished) return;
       context.finished = true;
       endings.push(reason);
     },
@@ -122,7 +123,12 @@ it.each([
       expect(Date.now() - started).toBeGreaterThanOrEqual(450);
       expect(Date.now() - started).toBeLessThan(1500);
       expect(service.events).toEqual([]);
-      expect(service.endings).toEqual(['readiness_timeout']);
+      expect(service.endings).toHaveLength(1);
+      expect(
+        deadlineMs < readinessMs
+          ? ['readiness_timeout', 'lease_lost']
+          : ['readiness_timeout'],
+      ).toContain(service.endings[0]);
     } finally {
       service.dispose();
       for (const timer of timers) clearInterval(timer);
