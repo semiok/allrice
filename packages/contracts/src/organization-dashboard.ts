@@ -75,6 +75,22 @@ export interface OrganizationDashboard {
     currency: null;
     costBasis: 'ledger-records-without-billing-currency';
   };
+  investmentEvidence: {
+    terminalRuns: number;
+    runsWithClock: number;
+    recordedActiveMs: number | null;
+    recordedWaitingMs: number | null;
+    templateSelectedRuns: number;
+    templateLoadedRuns: number;
+    templateReadRuns: number;
+    templateDeliveredRuns: number;
+    estimation: {
+      status: 'unknown';
+      missing: (
+        'human_baseline' | 'business_adoption' | 'human_input' | 'cost_currency'
+      )[];
+    };
+  };
   filters: {
     employees: { id: string; name: string }[];
     jobTitles: string[];
