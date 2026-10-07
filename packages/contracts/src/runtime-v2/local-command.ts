@@ -22,6 +22,7 @@ import { isRuntimeRelativePath } from './policy.ts';
 import { RuntimeChangesetSchema } from './changeset-execution.ts';
 import { RuntimeLocalMcpPayloadSchema } from './local-mcp.ts';
 import { RuntimeLocalServiceConfigSchema } from './local-service.ts';
+import { projectServiceReadinessLimit } from '../project-service.ts';
 import { RuntimeLocalPythonPayloadSchema } from './local-python.ts';
 import { RuntimeLocalPdfPayloadSchema } from './local-pdf.ts';
 import {
@@ -143,6 +144,15 @@ export const RuntimeLocalCommandSchema = z
   .strict()
   .superRefine((value, context) => {
     const a = value.arguments;
+    if (
+      a.background?.projectService &&
+      a.background.projectService.readinessTimeoutMs >
+        projectServiceReadinessLimit(a.projectPreparation)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'project_readiness_profile_limit',
+      });
     if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
       context.addIssue({
         code: 'custom',
@@ -280,6 +290,15 @@ export const RuntimeLocalCommandToolInputSchema =
       }),
     })
     .superRefine((c, ctx) => {
+      if (
+        c.background?.projectService &&
+        c.background.projectService.readinessTimeoutMs >
+          projectServiceReadinessLimit(c.projectPreparation)
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'project_readiness_profile_limit',
+        });
       if (!projectExecutionLimitsAllowed(c.projectPreparation, c.limits))
         ctx.addIssue({
           code: 'custom',

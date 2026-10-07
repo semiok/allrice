@@ -17,7 +17,17 @@ export const projectServiceLimits = Object.freeze({
   // Framework development bundles are larger than production assets.
   maximumHttpBytes: 16_000_000,
   maximumSocketBytes: 500_000,
+  maximumReadinessMs: 300_000,
 });
+export function projectServiceReadinessLimit(preparation?: {
+  manager: string;
+  resourceProfile?: string;
+}) {
+  return preparation?.manager === 'pnpm' &&
+    preparation.resourceProfile === 'web-development'
+    ? projectServiceLimits.maximumReadinessMs
+    : 30_000;
+}
 export const ProjectServiceConfigSchema = z
   .object({
     port: z.number().int().min(1024).max(65535),
@@ -26,7 +36,12 @@ export const ProjectServiceConfigSchema = z
       .max(256)
       .regex(/^\/[A-Za-z0-9_./?=&%-]*$/)
       .default('/'),
-    readinessTimeoutMs: z.number().int().min(500).max(30_000).default(30_000),
+    readinessTimeoutMs: z
+      .number()
+      .int()
+      .min(500)
+      .max(projectServiceLimits.maximumReadinessMs)
+      .default(30_000),
     leaseMs: z
       .number()
       .int()

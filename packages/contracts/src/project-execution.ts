@@ -29,6 +29,7 @@ import {
 import {
   ProjectServiceConfigSchema,
   ProjectServiceControlInputSchema,
+  projectServiceReadinessLimit,
 } from './project-service.ts';
 
 const path = z.string().min(1).max(240).refine(isRuntimeRelativePath);
@@ -96,6 +97,14 @@ export const ProjectServiceStartInputSchema = ProjectExecuteObjectSchema.omit({
     if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
       c.addIssue({ code: 'custom', message: 'project_resource_profile_limit' });
     if (
+      a.service.readinessTimeoutMs >
+      projectServiceReadinessLimit(a.projectPreparation)
+    )
+      c.addIssue({
+        code: 'custom',
+        message: 'project_readiness_profile_limit',
+      });
+    if (
       a.project.projectId !== a.projectPreparation.projectId ||
       a.projectPreparation.manager !== 'pnpm' ||
       a.executable === '/workspace/.venv/bin/python'
@@ -157,6 +166,15 @@ export const CloudProjectCommandSchema = z
         message: 'project_resource_profile_limit',
       });
     const background = a.background;
+    if (
+      background?.projectService &&
+      background.projectService.readinessTimeoutMs >
+        projectServiceReadinessLimit(a.projectPreparation)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'project_readiness_profile_limit',
+      });
     if (
       background &&
       (!background.projectService ||
