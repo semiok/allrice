@@ -450,14 +450,15 @@ suite(
         f.storage,
         database.db,
       );
+      const capturedAt = new Date();
       const observation = BrowserObservationSchema.parse({
         version: 1,
         id: observationId,
         profileId: workspace.profileId,
         fence: workspace.fence,
         revision: 1,
-        capturedAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        capturedAt: capturedAt.toISOString(),
+        expiresAt: new Date(capturedAt.getTime() + 60000).toISOString(),
         url: staticBrowserDocumentUrl(f.document.target),
         title: 'Known bug verified',
         text: '0',
