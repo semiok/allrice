@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
-import { ProjectServiceConfigSchema } from '../project-service.ts';
+import {
+  ProjectServiceConfigSchema,
+  projectServiceLimits,
+} from '../project-service.ts';
 
 /** P09-c: finite, Run-owned service. Readiness is inside the private container,
  * never a promise that a browser on another machine can reach this port. */
@@ -18,7 +21,11 @@ export const RuntimeLocalServiceConfigSchema = z
           .max(256)
           .regex(/^\/[A-Za-z0-9_./?=&%-]*$/)
           .default('/'),
-        timeoutMs: z.number().int().min(500).max(30_000),
+        timeoutMs: z
+          .number()
+          .int()
+          .min(500)
+          .max(projectServiceLimits.maximumReadinessMs),
       })
       .strict(),
     stdin: z
@@ -32,7 +39,10 @@ export const RuntimeLocalServiceConfigSchema = z
   })
   .strict()
   .superRefine((a, c) => {
-    if (!a.projectService && a.durationMs > 300_000)
+    if (
+      !a.projectService &&
+      (a.durationMs > 300_000 || a.readiness.timeoutMs > 30_000)
+    )
       c.addIssue({
         code: 'custom',
         message: 'ordinary_background_service_limit',
@@ -41,6 +51,8 @@ export const RuntimeLocalServiceConfigSchema = z
       a.projectService &&
       (a.readiness.kind !== 'http' ||
         a.readiness.port !== a.projectService.port ||
+        a.readiness.path !== a.projectService.path ||
+        a.readiness.timeoutMs !== a.projectService.readinessTimeoutMs ||
         a.stdin.mode !== 'none')
     )
       c.addIssue({

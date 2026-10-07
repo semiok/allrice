@@ -13,7 +13,13 @@ export function cloudServiceAdmissionTimeout(
     'kind' in payload &&
     payload.arguments.projectPreparation?.manager === 'pnpm' &&
     payload.arguments.projectPreparation?.resourceProfile === 'web-development'
-      ? Math.min(payload.arguments.limits.timeoutMs, 600_000) + 60_000
+      ? Math.min(
+          660_000,
+          Math.min(payload.arguments.limits.timeoutMs, 600_000) +
+            (payload.arguments.background?.projectService?.readinessTimeoutMs ??
+              30_000) +
+            30_000,
+        )
       : 120_000;
   return Math.max(1, Math.min(Math.max(120_000, preparation), remaining));
 }

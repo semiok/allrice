@@ -46,6 +46,24 @@ describe('cloud service readiness includes frozen web preparation', () => {
       ),
     ).toBe(180_000);
   });
+  it('accounts for explicit web readiness inside the existing total startup cap', () => {
+    const p = payload('web-development');
+    if (!('kind' in p)) throw Error('project fixture required');
+    p.arguments.limits.timeoutMs = 60_000;
+    p.arguments.background = {
+      projectService: { readinessTimeoutMs: 300_000 },
+    } as NonNullable<typeof p.arguments.background>;
+    expect(cloudServiceAdmissionTimeout(p, deadline(1_200_000), now)).toBe(
+      390_000,
+    );
+    p.arguments.limits.timeoutMs = 600_000;
+    expect(cloudServiceAdmissionTimeout(p, deadline(1_200_000), now)).toBe(
+      660_000,
+    );
+    expect(cloudServiceAdmissionTimeout(p, deadline(180_000), now)).toBe(
+      180_000,
+    );
+  });
   it.each([deadline(-1), 'invalid'])(
     'expires immediately for unavailable deadline %s',
     (value) => {
