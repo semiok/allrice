@@ -15,7 +15,7 @@ const deferred = () => {
   });
   return { promise, resolve };
 };
-async function start(handle) {
+async function start(handle, admission) {
   let closed = false,
     starts = 0,
     finished = 0;
@@ -29,6 +29,7 @@ async function start(handle) {
   const lifecycle = new DevProducerLifecycle(true, 'web', identity, {
     async start(input) {
       starts++;
+      await admission?.();
       if (closed) throw new DevMaintenanceError('dev_maintenance_requested');
       return { id: input.id, instanceBootId: identity.bootId, epoch: 0 };
     },
@@ -56,6 +57,53 @@ afterEach(async () => {
   }
 });
 describe('Actual HTTP request lifetime under a maintenance gate', () => {
+  it('does not dispatch after a disconnect during durable admission', async () => {
+    const admitted = deferred(),
+      held = deferred(),
+      disconnected = deferred();
+    let handled = 0;
+    const s = await start(
+      async (_, res) => {
+        handled++;
+        res.end('must not run');
+      },
+      async () => {
+        admitted.resolve();
+        await held.promise;
+      },
+    );
+    s.server.once('connection', (socket) =>
+      socket.once('close', disconnected.resolve),
+    );
+    const request = httpRequest(s.url + '/work');
+    request.on('error', () => {});
+    request.end();
+    await admitted.promise;
+    request.destroy();
+    await disconnected.promise;
+    held.resolve();
+    for (let n = 0; n < 50 && s.counts().finished === 0; n++)
+      await new Promise((r) => setImmediate(r));
+    expect(handled).toBe(0);
+    expect(s.counts()).toEqual({ starts: 1, finished: 1 });
+    expect(s.lifecycle.snapshot().activeRoots).toBe(0);
+  });
+
+  it('reconciles a response that closed before the wrapper attached listeners', async () => {
+    const s = await start(async (_, res) => res.end('unused'));
+    let handled = 0;
+    const { EventEmitter } = await import('node:events');
+    const response = new EventEmitter();
+    response.destroyed = true;
+    response.emit('close');
+    await createDevRequestHandler(s.lifecycle, async () => {
+      handled++;
+    })({ method: 'GET', url: '/work' }, response);
+    expect(handled).toBe(0);
+    expect(s.counts()).toEqual({ starts: 1, finished: 1 });
+    expect(response.listenerCount('close')).toBe(0);
+  });
+
   it('response finish does not finish a still-writing handler, and productive GET is refused before dispatch', async () => {
     const held = deferred(),
       done = deferred();

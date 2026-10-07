@@ -1,0 +1,246 @@
+diff --git a/dist/server/serve-static.js b/dist/server/serve-static.js
+--- a/dist/server/serve-static.js
++++ b/dist/server/serve-static.js
+@@ -48,16 +48,74 @@
+ });
+ function serveStatic(req, res, path, opts) {
+     return new Promise((resolve, reject)=>{
+-        (0, _send.default)(req, path, opts).on('directory', ()=>{
+-            // We don't allow directories to be read.
++        // A canceled static transfer owns only its filesystem stream. Wait for
++        // that stream to really close; response.close alone is not completion.
++        if (res.destroyed || res.writableFinished) {
++            resolve();
++            return;
++        }
++        let responseEnded = false;
++        let sourceReady = false;
++        let source = null;
++        let sourceClosed = false;
++        let failed = false;
++        let failure;
++        let settled = false;
++        const settle = ()=>{
++            if (settled || !sourceReady || source && !sourceClosed || !failed && !responseEnded) return;
++            settled = true;
++            res.removeListener('finish', onResponseEnd);
++            res.removeListener('close', onResponseEnd);
++            res.removeListener('error', onResponseError);
++            if (source) source.removeListener('close', onSourceClose);
++            if (failed) reject(failure);
++            else resolve();
++        };
++        const onResponseEnd = ()=>{
++            responseEnded = true;
++            if (source && !sourceClosed) source.destroy();
++            settle();
++        };
++        const onSourceClose = ()=>{
++            sourceClosed = true;
++            settle();
++        };
++        const onFailure = (error)=>{
++            failed = true;
++            failure = error;
++            sourceReady = true;
++            if (source && !sourceClosed) source.destroy();
++            settle();
++        };
++        const onResponseError = (error)=>{
++            failed = true;
++            failure = error;
++            onResponseEnd();
++        };
++        res.once('finish', onResponseEnd);
++        res.once('close', onResponseEnd);
++        res.once('error', onResponseError);
++        (0, _send.default)(req, path, opts).on('file', ()=>{
++            // send creates the source, or handles HEAD/304/range errors, after
++            // this callback. Reconcile only after that synchronous dispatch.
++            queueMicrotask(()=>{
++                sourceReady = true;
++                settle();
++            });
++        }).on('stream', (stream)=>{
++            source = stream;
++            source.once('close', onSourceClose);
++            if (responseEnded) source.destroy();
++        }).on('directory', ()=>{
+             const err = Object.defineProperty(new Error('No directory access'), "__NEXT_ERROR_CODE", {
+                 value: "E340",
+                 enumerable: false,
+                 configurable: true
+             });
+             err.code = 'ENOENT';
+-            reject(err);
+-        }).on('error', reject).pipe(res).on('finish', resolve);
++            onFailure(err);
++        }).on('error', onFailure).pipe(res);
++        if (res.destroyed || res.writableFinished) onResponseEnd();
+     });
+ }
+ const getContentType = 'getType' in _send.default.mime ? (extWithoutDot)=>_send.default.mime.getType(extWithoutDot) : (extWithoutDot)=>_send.default.mime.lookup(extWithoutDot);
+diff --git a/dist/esm/server/serve-static.js b/dist/esm/server/serve-static.js
+--- a/dist/esm/server/serve-static.js
++++ b/dist/esm/server/serve-static.js
+@@ -17,16 +17,74 @@
+ });
+ export function serveStatic(req, res, path, opts) {
+     return new Promise((resolve, reject)=>{
+-        send(req, path, opts).on('directory', ()=>{
+-            // We don't allow directories to be read.
++        // A canceled static transfer owns only its filesystem stream. Wait for
++        // that stream to really close; response.close alone is not completion.
++        if (res.destroyed || res.writableFinished) {
++            resolve();
++            return;
++        }
++        let responseEnded = false;
++        let sourceReady = false;
++        let source = null;
++        let sourceClosed = false;
++        let failed = false;
++        let failure;
++        let settled = false;
++        const settle = ()=>{
++            if (settled || !sourceReady || source && !sourceClosed || !failed && !responseEnded) return;
++            settled = true;
++            res.removeListener('finish', onResponseEnd);
++            res.removeListener('close', onResponseEnd);
++            res.removeListener('error', onResponseError);
++            if (source) source.removeListener('close', onSourceClose);
++            if (failed) reject(failure);
++            else resolve();
++        };
++        const onResponseEnd = ()=>{
++            responseEnded = true;
++            if (source && !sourceClosed) source.destroy();
++            settle();
++        };
++        const onSourceClose = ()=>{
++            sourceClosed = true;
++            settle();
++        };
++        const onFailure = (error)=>{
++            failed = true;
++            failure = error;
++            sourceReady = true;
++            if (source && !sourceClosed) source.destroy();
++            settle();
++        };
++        const onResponseError = (error)=>{
++            failed = true;
++            failure = error;
++            onResponseEnd();
++        };
++        res.once('finish', onResponseEnd);
++        res.once('close', onResponseEnd);
++        res.once('error', onResponseError);
++        send(req, path, opts).on('file', ()=>{
++            // send creates the source, or handles HEAD/304/range errors, after
++            // this callback. Reconcile only after that synchronous dispatch.
++            queueMicrotask(()=>{
++                sourceReady = true;
++                settle();
++            });
++        }).on('stream', (stream)=>{
++            source = stream;
++            source.once('close', onSourceClose);
++            if (responseEnded) source.destroy();
++        }).on('directory', ()=>{
+             const err = Object.defineProperty(new Error('No directory access'), "__NEXT_ERROR_CODE", {
+                 value: "E340",
+                 enumerable: false,
+                 configurable: true
+             });
+             err.code = 'ENOENT';
+-            reject(err);
+-        }).on('error', reject).pipe(res).on('finish', resolve);
++            onFailure(err);
++        }).on('error', onFailure).pipe(res);
++        if (res.destroyed || res.writableFinished) onResponseEnd();
+     });
+ }
+ export const getContentType = 'getType' in send.mime ? (extWithoutDot)=>send.mime.getType(extWithoutDot) : (extWithoutDot)=>send.mime.lookup(extWithoutDot);
+diff --git a/dist/server/pipe-readable.js b/dist/server/pipe-readable.js
+--- a/dist/server/pipe-readable.js
++++ b/dist/server/pipe-readable.js
+@@ -42,6 +42,7 @@
+     res.once('close', ()=>{
+         res.off('drain', onDrain);
+         drained.resolve();
++        finished.resolve();
+     });
+     // Create a promise that will resolve once the response has finished. See
+     // https://nodejs.org/api/http.html#event-finish_1
+@@ -52,6 +53,7 @@
+     // Create a writable stream that will write to the response.
+     return new WritableStream({
+         write: async (chunk)=>{
++            if (res.destroyed) return;
+             // You'd think we'd want to use `start` instead of placing this in `write`
+             // but this ensures that we don't actually flush the headers until we've
+             // started writing chunks.
+@@ -82,10 +84,12 @@
+                 // wait until it's streamed before continuing.
+                 if (!ok) {
+                     await drained.promise;
++                    if (res.destroyed) return;
+                     // Reset the drained promise so that we can wait for the next drain event.
+                     drained = new _detachedpromise.DetachedPromise();
+                 }
+             } catch (err) {
++                if (isAbortError(err)) throw err;
+                 res.end();
+                 throw Object.defineProperty(new Error('failed to write chunk to response', {
+                     cause: err
+@@ -106,7 +110,7 @@
+             if (waitUntilForEnd) {
+                 await waitUntilForEnd;
+             }
+-            if (res.writableFinished) return;
++            if (res.destroyed || res.writableFinished) return;
+             res.end();
+             return finished.promise;
+         }
+diff --git a/dist/esm/server/pipe-readable.js b/dist/esm/server/pipe-readable.js
+--- a/dist/esm/server/pipe-readable.js
++++ b/dist/esm/server/pipe-readable.js
+@@ -20,6 +20,7 @@
+     res.once('close', ()=>{
+         res.off('drain', onDrain);
+         drained.resolve();
++        finished.resolve();
+     });
+     // Create a promise that will resolve once the response has finished. See
+     // https://nodejs.org/api/http.html#event-finish_1
+@@ -30,6 +31,7 @@
+     // Create a writable stream that will write to the response.
+     return new WritableStream({
+         write: async (chunk)=>{
++            if (res.destroyed) return;
+             // You'd think we'd want to use `start` instead of placing this in `write`
+             // but this ensures that we don't actually flush the headers until we've
+             // started writing chunks.
+@@ -60,10 +62,12 @@
+                 // wait until it's streamed before continuing.
+                 if (!ok) {
+                     await drained.promise;
++                    if (res.destroyed) return;
+                     // Reset the drained promise so that we can wait for the next drain event.
+                     drained = new DetachedPromise();
+                 }
+             } catch (err) {
++                if (isAbortError(err)) throw err;
+                 res.end();
+                 throw Object.defineProperty(new Error('failed to write chunk to response', {
+                     cause: err
+@@ -84,7 +88,7 @@
+             if (waitUntilForEnd) {
+                 await waitUntilForEnd;
+             }
+-            if (res.writableFinished) return;
++            if (res.destroyed || res.writableFinished) return;
+             res.end();
+             return finished.promise;
+         }

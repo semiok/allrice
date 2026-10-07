@@ -16,16 +16,26 @@ export function createDevRequestHandler(lifecycle, handle) {
     response.once('finish', done);
     response.once('close', done);
     response.once('error', done);
+    const terminal = () => response.destroyed || response.writableFinished;
+    // Reconcile a terminal event that happened before listeners were attached.
+    if (terminal()) done();
     let entered = false;
     try {
       await lifecycle.run('canonical_admission', async () => {
         entered = true;
+        // Admission can await the database while the browser disconnects. No
+        // business handler has started yet, so do not dispatch on a dead socket.
+        if (terminal()) {
+          done();
+          return;
+        }
         await Promise.all([
           Promise.resolve().then(() => handle(request, response)),
           ended,
         ]);
       });
     } catch {
+      if (terminal()) return;
       if (!response.headersSent)
         response.writeHead(entered ? 500 : 503, {
           'content-type': 'application/json; charset=utf-8',

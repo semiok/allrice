@@ -41,6 +41,9 @@ patchedDependencies:
   '@deepseek-ai/dsh-session-persistence-jsonl@0.1.5-rc.3':
     hash: 5a6bfaefec8b3fb3659385250d5f41e063a831b5b6a8be2f9679208585fa5099
     path: patches/@deepseek-ai__dsh-session-persistence-jsonl@0.1.5-rc.3.patch
+  next@16.2.1:
+    hash: 5c271ca6e6c099a69a31bf99c1e046ed5523623a0102fff23f6ed2b45122ce49
+    path: patches/next@16.2.1.patch
 
 importers:
 
@@ -271,7 +274,7 @@ importers:
         version: 2.0.1
       next:
         specifier: 16.2.1
-        version: 16.2.1(@opentelemetry/api@1.9.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+        version: 16.2.1(patch_hash=5c271ca6e6c099a69a31bf99c1e046ed5523623a0102fff23f6ed2b45122ce49)(@opentelemetry/api@1.9.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
       react:
         specifier: 19.2.0
         version: 19.2.0
@@ -12056,7 +12059,7 @@ snapshots:
     dependencies:
       content-type: 2.1.0
 
-  next@16.2.1(@opentelemetry/api@1.9.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
+  next@16.2.1(patch_hash=5c271ca6e6c099a69a31bf99c1e046ed5523623a0102fff23f6ed2b45122ce49)(@opentelemetry/api@1.9.1)(react-dom@19.2.0(react@19.2.0))(react@19.2.0):
     dependencies:
       '@next/env': 16.2.1
       '@swc/helpers': 0.5.15
