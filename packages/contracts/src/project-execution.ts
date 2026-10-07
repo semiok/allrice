@@ -8,6 +8,7 @@ import {
   RuntimeProjectPreparationSchema,
   RuntimeProjectPreparationEvidenceSchema,
   projectPreparationResultMatches,
+  projectExecutionLimitsAllowed,
 } from './runtime-v2/project-preparation.ts';
 import { RuntimeLocalServiceConfigSchema } from './runtime-v2/local-service.ts';
 import { ExecutionLocationSchema } from './execution-choice.ts';
@@ -54,11 +55,11 @@ const ProjectExecuteObjectSchema = z
     outputs: ProjectOutputSpecsSchema.optional(),
     limits: z
       .object({
-        timeoutMs: z.number().int().min(500).max(60_000),
+        timeoutMs: z.number().int().min(500).max(600_000),
         outputBytes: z.number().int().min(1024).max(65_536),
-        memoryMiB: z.number().int().min(128).max(512),
+        memoryMiB: z.number().int().min(128).max(1536),
         cpuMillis: z.number().int().min(100).max(1000),
-        pids: z.literal(64),
+        pids: z.number().int().min(64).max(128),
       })
       .strict(),
     location: ExecutionLocationSchema.optional(),
@@ -66,6 +67,11 @@ const ProjectExecuteObjectSchema = z
   .strict();
 export const ProjectExecuteInputSchema = ProjectExecuteObjectSchema.superRefine(
   (a, ctx) => {
+    if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
+      ctx.addIssue({
+        code: 'custom',
+        message: 'project_resource_profile_limit',
+      });
     if (
       a.project.projectId !== a.projectPreparation.projectId ||
       (a.executable === '/workspace/.venv/bin/python') !==
@@ -87,6 +93,8 @@ export const ProjectServiceStartInputSchema = ProjectExecuteObjectSchema.omit({
     service: ProjectServiceConfigSchema,
   })
   .superRefine((a, c) => {
+    if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
+      c.addIssue({ code: 'custom', message: 'project_resource_profile_limit' });
     if (
       a.project.projectId !== a.projectPreparation.projectId ||
       a.projectPreparation.manager !== 'pnpm' ||
@@ -143,6 +151,11 @@ export const CloudProjectCommandSchema = z
   .superRefine((c, ctx) => {
     const a = c.arguments,
       s = a.projectSource;
+    if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
+      ctx.addIssue({
+        code: 'custom',
+        message: 'project_resource_profile_limit',
+      });
     const background = a.background;
     if (
       background &&

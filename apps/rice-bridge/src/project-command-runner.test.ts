@@ -79,7 +79,7 @@ async function fixture() {
         };
       if (method === 'POST' && path === '/volumes/create') {
         const b = body as Record<string, unknown>,
-          volume = { ...b, Options: null };
+          volume = { ...b, Options: b.DriverOpts ?? null };
         volumes.set(b.Name as string, volume);
         return volume;
       }
@@ -253,4 +253,33 @@ it('removes the owned work volume if container creation fails, and preserves the
   ).rejects.toThrow('daemon rejected create');
   expect([...f.volumes.keys()]).toHaveLength(1);
   expect([...f.volumes.keys()][0]).toContain('allrice-project-cache-');
+});
+
+it('starts the web tmpfs staging gate before upload and releases it only after the final marker', async () => {
+  const f = await fixture();
+  Object.assign(f.source.command.arguments.projectPreparation!, {
+    resourceProfile: 'web-development',
+  });
+  const result = await f.runner.execute(f.root, f.source.command, f.options);
+  expect(result.exitCode).toBe(0);
+  const started =
+    f.json.mock.invocationCallOrder[
+      f.json.mock.calls.findIndex(
+        (c) => c[0] === 'POST' && c[1].endsWith('/start'),
+      )
+    ]!;
+  const uploads = vi.mocked(f.api.putArchive);
+  expect(uploads.mock.invocationCallOrder.every((n) => n > started)).toBe(true);
+  expect(f.staged.at(-1)!.includes(Buffer.from('.allrice/staging-ready'))).toBe(
+    true,
+  );
+  expect(
+    [...f.volumes.values()].find((v) =>
+      (v.Name as string).startsWith('allrice-project-work-'),
+    )!.Options,
+  ).toEqual({
+    type: 'tmpfs',
+    device: 'tmpfs',
+    o: 'size=1024m,nosuid,nodev,mode=0755',
+  });
 });

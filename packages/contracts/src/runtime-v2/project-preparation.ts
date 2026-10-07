@@ -64,6 +64,7 @@ export const RuntimeProjectPreparationSchema = z.discriminatedUnion('manager', [
       offline: z.boolean(),
       manager: z.literal('pnpm'),
       managerVersion: z.literal('10.33.3'),
+      resourceProfile: z.enum(['standard', 'web-development']).optional(),
       lockPath: path.refine((s) => s.endsWith('pnpm-lock.yaml')),
       scripts: z.enum(['disabled', 'allow_in_isolated_copy']),
       packages: z.array(RuntimeNpmPackageSchema).max(128),
@@ -87,6 +88,49 @@ export const RuntimeProjectPreparationSchema = z.discriminatedUnion('manager', [
 export type RuntimeProjectPreparation = z.infer<
   typeof RuntimeProjectPreparationSchema
 >;
+
+/** Explicit bounded project profiles; the existing small-task limits stay intact. */
+export function projectPreparationLimits(spec: RuntimeProjectPreparation) {
+  return spec.manager === 'pnpm' && spec.resourceProfile === 'web-development'
+    ? {
+        archiveBytes: 64_000_000,
+        totalArchiveBytes: 128_000_000,
+        hostArchiveBytes: 256_000_000,
+        cacheBytes: 512_000_000,
+        cacheFiles: 50_000,
+        cachePoolBytes: 1_024_000_000,
+        workMiB: 1024,
+        memoryMiB: 1536,
+        pids: 128,
+        timeoutMs: 600_000,
+      }
+    : {
+        archiveBytes: 23_000_000,
+        totalArchiveBytes: 64_000_000,
+        hostArchiveBytes: 128_000_000,
+        cacheBytes: 128_000_000,
+        cacheFiles: 20_000,
+        cachePoolBytes: 512_000_000,
+        workMiB: 128,
+        memoryMiB: 512,
+        pids: 64,
+        timeoutMs: 60_000,
+      };
+}
+
+export function projectExecutionLimitsAllowed(
+  spec: RuntimeProjectPreparation | undefined,
+  limits: { memoryMiB: number; timeoutMs: number; pids?: number },
+) {
+  const maximum = spec
+    ? projectPreparationLimits(spec)
+    : { memoryMiB: 512, timeoutMs: 60_000, pids: 64 };
+  return (
+    limits.memoryMiB <= maximum.memoryMiB &&
+    limits.timeoutMs <= maximum.timeoutMs &&
+    (limits.pids ?? 64) <= maximum.pids
+  );
+}
 
 export const RuntimeProjectScopeSchema = z
   .object({
@@ -115,6 +159,9 @@ export function projectRuntimeCacheIdentity(input: {
     manager: spec.manager,
     managerVersion: spec.managerVersion,
     lockChecksum: spec.lockChecksum,
+    ...(spec.manager === 'pnpm' && spec.resourceProfile === 'web-development'
+      ? { resourceProfile: spec.resourceProfile }
+      : {}),
   };
 }
 
@@ -132,7 +179,7 @@ export const RuntimeProjectPreparationEvidenceSchema = z
     packageCount: z.number().int().min(0).max(128),
     archiveHits: z.number().int().min(0).max(128),
     downloadedArchives: z.number().int().min(0).max(128),
-    downloadedBytes: z.number().int().min(0).max(64_000_000),
+    downloadedBytes: z.number().int().min(0).max(128_000_000),
     installation: z.enum(['succeeded', 'failed', 'interrupted']),
     cacheVolume: z.string().regex(/^allrice-project-cache-[a-f0-9]{64}$/),
     sourceDirectoryModified: z.literal(false),
@@ -170,6 +217,7 @@ export function projectPreparationResultMatches(input: {
     proof.managerVersion === spec.managerVersion &&
     proof.runtimeImage === input.imageDigest &&
     proof.packageCount === spec.packages.length &&
+    proof.downloadedBytes <= projectPreparationLimits(spec).totalArchiveBytes &&
     (source
       ? !!proof.savedSource &&
         runtimeContractEqual(proof.savedSource.project, source.project) &&

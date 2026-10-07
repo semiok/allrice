@@ -168,6 +168,46 @@ async function fixture({ browserOrigins = false } = {}) {
   };
 }
 describe('private preview live transfer authority', () => {
+  it('streams a framework development bundle beyond four megabytes and rejects the finite response ceiling', async () => {
+    for (const size of [5_000_000, 16_000_001]) {
+      const f = await fixture(),
+        request = f.send('GET');
+      request.req.end();
+      const outcome = request.response.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await until(() => f.opened());
+      const opened = f.opened();
+      await opened.onFrame({
+        type: 'preview.response',
+        status: 200,
+        headers: { 'content-type': 'application/javascript' },
+      });
+      try {
+        for (let at = 0; at < size && !f.closed(); at += 250_000)
+          await opened.onFrame({
+            type: 'preview.data',
+            data: Buffer.alloc(Math.min(250_000, size - at), 97).toString(
+              'base64',
+            ),
+          });
+        await opened.onFrame({ type: 'preview.end' });
+      } catch (error) {
+        expect(size).toBeGreaterThan(16_000_000);
+        expect(error.message).toBe('PROJECT_PREVIEW_LIMIT');
+        opened.onClose();
+      }
+      const result = await outcome;
+      if (size <= 16_000_000) {
+        expect(result.value.status).toBe(200);
+        expect(Buffer.byteLength(result.value.body)).toBe(size);
+      } else {
+        expect(result.error).toBeDefined();
+        expect(f.closed()).toBe(true);
+      }
+    }
+  });
   it('rejects noncanonical or insecure production frame origins', () => {
     for (const adminOrigin of [
       'https://admin.example.test/path',

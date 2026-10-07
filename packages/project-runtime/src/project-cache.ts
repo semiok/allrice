@@ -43,7 +43,14 @@ export async function reserveProjectArchive(
   root: string,
   destination: string,
   size: number,
+  maximumBytes: number = projectCacheLimits.archiveBytes,
 ) {
+  if (
+    !Number.isSafeInteger(maximumBytes) ||
+    maximumBytes < 1 ||
+    maximumBytes > 256_000_000
+  )
+    throw new LocalCommandError('PROJECT_CACHE_LIMIT');
   const entries: { path: string; bytes: number; at: number }[] = [];
   for (const scope of await readdir(root)) {
     const directory = join(root, scope),
@@ -81,10 +88,7 @@ export async function reserveProjectArchive(
   for (const e of entries.sort(
     (a, b) => a.at - b.at || a.path.localeCompare(b.path),
   )) {
-    if (
-      bytes <= projectCacheLimits.archiveBytes &&
-      count <= projectCacheLimits.archiveFiles
-    )
+    if (bytes <= maximumBytes && count <= projectCacheLimits.archiveFiles)
       break;
     if (
       e.path === destination ||
@@ -105,10 +109,7 @@ export async function reserveProjectArchive(
     bytes -= e.bytes;
     count--;
   }
-  if (
-    bytes > projectCacheLimits.archiveBytes ||
-    count > projectCacheLimits.archiveFiles
-  )
+  if (bytes > maximumBytes || count > projectCacheLimits.archiveFiles)
     throw new LocalCommandError('PROJECT_CACHE_LIMIT');
 }
 type Volume = {
@@ -122,7 +123,18 @@ type Volume = {
 
 /** The daemon's measured usage and container references are authoritative.
  * Every referenced/unknown volume is protected; Docker also rejects in-use deletion. */
-export async function reserveProjectVolume(api: ProjectEngine, name: string) {
+export async function reserveProjectVolume(
+  api: ProjectEngine,
+  name: string,
+  profile: 'standard' | 'web-development' = 'standard',
+) {
+  const requestedBytes =
+    profile === 'web-development'
+      ? 512_000_000
+      : projectCacheLimits.perVolumeBytes;
+  // One symmetric daemon pool, with the original standard sub-budget. A live
+  // web reservation must not prevent a later ordinary project from running.
+  const poolBytes = 1_024_000_000;
   const measured = await api.json<{ Volumes?: Volume[] }>('GET', '/system/df');
   const entries = (measured.Volumes ?? []).filter(
     (v) =>
@@ -136,37 +148,54 @@ export async function reserveProjectVolume(api: ProjectEngine, name: string) {
         v.Driver !== 'local' ||
         Object.keys(v.Options ?? {}).length ||
         !v.UsageData ||
+        !Number.isSafeInteger(v.UsageData.Size) ||
+        !Number.isSafeInteger(v.UsageData.RefCount) ||
         v.UsageData.Size < 0 ||
-        v.UsageData.RefCount < 0,
+        v.UsageData.RefCount < 0 ||
+        ![undefined, 'standard', 'web-development'].includes(
+          v.Labels?.['xyz.bplabs.allrice.project.profile'],
+        ) ||
+        (v.Name === name &&
+          (v.Labels?.['xyz.bplabs.allrice.project.profile'] ?? 'standard') !==
+            profile),
     )
   )
     throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
   let count = entries.length + (entries.some((v) => v.Name === name) ? 0 : 1);
+  const volumeLimit = (v: Volume) =>
+    v.Name === name
+      ? requestedBytes
+      : v.Labels?.['xyz.bplabs.allrice.project.profile'] === 'web-development'
+        ? 512_000_000
+        : projectCacheLimits.perVolumeBytes;
   const charge = (v: Volume) =>
     v.Name === name || v.UsageData!.RefCount > 0
-      ? Math.max(projectCacheLimits.perVolumeBytes, v.UsageData!.Size)
+      ? Math.max(volumeLimit(v), v.UsageData!.Size)
       : v.UsageData!.Size;
   let bytes = entries.reduce(
     (n, v) => n + charge(v),
-    entries.some((v) => v.Name === name)
-      ? 0
-      : projectCacheLimits.perVolumeBytes,
+    entries.some((v) => v.Name === name) ? 0 : requestedBytes,
+  );
+  const standard = (v: Volume) =>
+    volumeLimit(v) === projectCacheLimits.perVolumeBytes;
+  let standardBytes = entries.reduce(
+    (n, v) => n + (standard(v) ? charge(v) : 0),
+    !entries.some((v) => v.Name === name) && profile === 'standard'
+      ? requestedBytes
+      : 0,
   );
   for (const v of entries.sort(
     (a, b) =>
       Date.parse(a.CreatedAt ?? '') - Date.parse(b.CreatedAt ?? '') ||
       a.Name.localeCompare(b.Name),
   )) {
-    if (
-      v.Name === name &&
-      v.UsageData!.Size <= projectCacheLimits.perVolumeBytes
-    )
-      continue;
+    if (v.Name === name && v.UsageData!.Size <= volumeLimit(v)) continue;
     if (
       v.Name !== name &&
-      bytes <= projectCacheLimits.volumeBytes &&
+      bytes <= poolBytes &&
+      (standardBytes <= projectCacheLimits.volumeBytes || !standard(v)) &&
       count <= projectCacheLimits.volumeFiles &&
-      v.UsageData!.Size <= projectCacheLimits.perVolumeBytes
+      v.UsageData!.Size <= volumeLimit(v)
     )
       continue;
     if (v.UsageData!.RefCount > 0) continue;
@@ -176,17 +205,24 @@ export async function reserveProjectVolume(api: ProjectEngine, name: string) {
       live.Driver !== 'local' ||
       Object.keys(live.Options ?? {}).length ||
       live.Labels?.['xyz.bplabs.allrice.project.cache'] !==
-        v.Labels?.['xyz.bplabs.allrice.project.cache']
+        v.Labels?.['xyz.bplabs.allrice.project.cache'] ||
+      live.Labels?.['xyz.bplabs.allrice.project.profile'] !==
+        v.Labels?.['xyz.bplabs.allrice.project.profile']
     )
       throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
     await api.json('DELETE', `/volumes/${v.Name}`);
     if (v.Name !== name) {
       bytes -= charge(v);
+      if (standard(v)) standardBytes -= charge(v);
       count--;
-    } else bytes += projectCacheLimits.perVolumeBytes - charge(v);
+    } else {
+      bytes += requestedBytes - charge(v);
+      if (standard(v)) standardBytes += requestedBytes - charge(v);
+    }
   }
   if (
-    bytes > projectCacheLimits.volumeBytes ||
+    bytes > poolBytes ||
+    standardBytes > projectCacheLimits.volumeBytes ||
     count > projectCacheLimits.volumeFiles
   )
     throw new LocalCommandError('PROJECT_CACHE_LIMIT');

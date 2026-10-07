@@ -32,6 +32,9 @@ import {
   RuntimeProjectPreparationSchema,
   RuntimeProjectPreparationEvidenceSchema,
   projectPreparationResultMatches,
+  projectExecutionLimitsAllowed,
+  projectPreparationLimits,
+  type RuntimeProjectPreparation,
 } from './project-preparation.ts';
 import {
   RuntimeProjectDiagnosticsRequestSchema,
@@ -39,6 +42,22 @@ import {
 } from './project-diagnostics.ts';
 
 const path = z.string().max(1024).refine(isRuntimeRelativePath);
+const projectLimitPath = (value: {
+  projectPreparation?: RuntimeProjectPreparation;
+  limits: { pids: number; memoryMiB: number; timeoutMs: number };
+}) => {
+  const maximum = value.projectPreparation
+    ? projectPreparationLimits(value.projectPreparation)
+    : { pids: 64, memoryMiB: 512, timeoutMs: 60_000 };
+  return [
+    'limits',
+    value.limits.pids > maximum.pids
+      ? 'pids'
+      : value.limits.memoryMiB > maximum.memoryMiB
+        ? 'memoryMiB'
+        : 'timeoutMs',
+  ];
+};
 
 // Immutable multi-platform OCI index (not a per-architecture config digest).
 // Docker's containerd image store reports this index as image.Id on both hosts.
@@ -111,11 +130,11 @@ export const RuntimeLocalCommandSchema = z
         network: z.literal('none'),
         limits: z
           .object({
-            timeoutMs: z.number().int().min(500).max(60_000),
+            timeoutMs: z.number().int().min(500).max(600_000),
             outputBytes: z.number().int().min(1024).max(65_536),
-            memoryMiB: z.number().int().min(128).max(512),
+            memoryMiB: z.number().int().min(128).max(1536),
             cpuMillis: z.number().int().min(100).max(1000),
-            pids: z.number().int().min(16).max(64),
+            pids: z.number().int().min(16).max(128),
           })
           .strict(),
       })
@@ -124,6 +143,12 @@ export const RuntimeLocalCommandSchema = z
   .strict()
   .superRefine((value, context) => {
     const a = value.arguments;
+    if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
+      context.addIssue({
+        code: 'custom',
+        message: 'project_resource_profile_limit',
+        path: ['arguments', ...projectLimitPath(a)],
+      });
     if (
       a.background?.projectService &&
       (!a.projectSource ||
@@ -251,10 +276,16 @@ export const RuntimeLocalCommandToolInputSchema =
       // hang child startup before any output. Reject undersized NEW requests
       // before approval; retain the wire schema for historic 16-task receipts.
       limits: RuntimeLocalCommandSchema.shape.arguments.shape.limits.extend({
-        pids: z.number().int().min(32).max(64),
+        pids: z.number().int().min(32).max(128),
       }),
     })
     .superRefine((c, ctx) => {
+      if (!projectExecutionLimitsAllowed(c.projectPreparation, c.limits))
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Execution limits exceed the project preparation profile',
+          path: projectLimitPath(c),
+        });
       if (!!c.files === !!c.project)
         ctx.addIssue({
           code: 'custom',

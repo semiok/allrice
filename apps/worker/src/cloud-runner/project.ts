@@ -28,11 +28,18 @@ const evidenceLabel = 'xyz.bplabs.allrice.project.evidence';
 const ownerLabel = 'xyz.bplabs.allrice.project.fence-owner';
 const deadlineLabel = 'xyz.bplabs.allrice.project.fence-deadline';
 const fenceName = 'allrice-project-cache-fence';
-const workOptions = {
+const profileLabel = 'xyz.bplabs.allrice.project.profile';
+function projectProfile(command: CloudProjectCommand) {
+  const spec = command.arguments.projectPreparation;
+  return spec.manager === 'pnpm'
+    ? (spec.resourceProfile ?? 'standard')
+    : 'standard';
+}
+const workOptions = (profile: 'standard' | 'web-development' = 'standard') => ({
   type: 'tmpfs',
   device: 'tmpfs',
-  o: 'size=128m,nosuid,nodev,mode=0755',
-};
+  o: `size=${profile === 'web-development' ? 1024 : 128}m,nosuid,nodev,mode=0755`,
+});
 type Volume = {
   Name: string;
   Driver: string;
@@ -170,16 +177,15 @@ async function inspectVolume(
   name: string,
   labels: Record<string, string>,
   work = false,
+  profile: 'standard' | 'web-development' = 'standard',
 ) {
+  const options = work ? workOptions(profile) : {};
   const v = await api.json<Volume>('GET', `/volumes/${name}`);
   if (
     v.Name !== name ||
     v.Driver !== 'local' ||
-    Object.keys(v.Options ?? {}).length !==
-      Object.keys(work ? workOptions : {}).length ||
-    Object.entries(work ? workOptions : {}).some(
-      ([k, val]) => v.Options?.[k] !== val,
-    ) ||
+    Object.keys(v.Options ?? {}).length !== Object.keys(options).length ||
+    Object.entries(options).some(([k, val]) => v.Options?.[k] !== val) ||
     Object.entries(labels).some(([k, val]) => v.Labels?.[k] !== val)
   )
     throw Error('PROJECT_CACHE_UNSAFE');
@@ -191,6 +197,12 @@ export async function assertCloudProjectContainer(
   c: CloudProjectContainer,
   command?: CloudProjectCommand,
 ) {
+  const profile = c.Config.Labels[profileLabel] ?? 'standard';
+  if (
+    !['standard', 'web-development'].includes(profile) ||
+    (command && projectProfile(command) !== profile)
+  )
+    throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
   if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] !== 'project')
     throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
   const attempt = c.Config.Labels['xyz.bplabs.allrice.cloud.attempt'],
@@ -234,9 +246,11 @@ export async function assertCloudProjectContainer(
       [payloadLabel]: c.Config.Labels[payloadLabel]!,
     },
     true,
+    profile as 'standard' | 'web-development',
   );
   await inspectVolume(api, `allrice-project-cache-${cache!.slice(7)}`, {
     [cacheLabel]: cache!,
+    ...(profile === 'web-development' ? { [profileLabel]: profile } : {}),
   });
 }
 
@@ -259,6 +273,7 @@ export async function prepareCloudProject(
     scope = RuntimeProjectScopeSchema.parse(input.scope);
   const bundle = readSavedProjectSource(command.arguments),
     spec = validateProjectPreparation(command, bundle.files);
+  const profile = projectProfile(command);
   const cacheKey =
     'sha256:' +
     createHash('sha256')
@@ -312,11 +327,12 @@ export async function prepareCloudProject(
       command,
       files: bundle.files,
       scope,
+      architecture: 'amd64',
       signal,
       maintainLease,
     });
     await check();
-    await reserveProjectVolume(api, cacheVolume);
+    await reserveProjectVolume(api, cacheVolume, profile);
     const evidence = {
       version: 1,
       projectId: spec.projectId,
@@ -350,16 +366,25 @@ export async function prepareCloudProject(
       [payloadLabel]: payloadDigest(command),
       [cacheLabel]: cacheKey,
       [evidenceLabel]: JSON.stringify(evidence),
+      ...(profile === 'web-development' ? { [profileLabel]: profile } : {}),
     };
     for (const [name, volumeLabels, options] of [
-      [cacheVolume, { [cacheLabel]: cacheKey }, {}],
+      [
+        cacheVolume,
+        {
+          [cacheLabel]: cacheKey,
+          ...(profile === 'web-development' ? { [profileLabel]: profile } : {}),
+        },
+        {},
+      ],
       [
         workVolume,
         {
           'xyz.bplabs.allrice.cloud.attempt': input.attemptId,
           [payloadLabel]: payloadDigest(command),
+          ...(profile === 'web-development' ? { [profileLabel]: profile } : {}),
         },
-        workOptions,
+        workOptions(profile),
       ],
     ] as const) {
       if (name === workVolume) {
@@ -376,7 +401,13 @@ export async function prepareCloudProject(
         DriverOpts: options,
         Labels: volumeLabels,
       });
-      await inspectVolume(api, name, volumeLabels, name === workVolume);
+      await inspectVolume(
+        api,
+        name,
+        volumeLabels,
+        name === workVolume,
+        profile,
+      );
       if (name === workVolume) workCreated = true;
     }
     const archives = projectStagingArchives({
@@ -476,6 +507,7 @@ export async function prepareCloudProject(
           [payloadLabel]: payloadDigest(command),
         },
         true,
+        profile,
       )
         .then(() => api.json('DELETE', `/volumes/${workVolume}`))
         .catch(() => undefined);
@@ -569,10 +601,14 @@ export async function cleanupCloudProject(
     throw e;
   });
   if (v) {
+    const profile = v.Labels?.[profileLabel] ?? 'standard';
     if (
+      !['standard', 'web-development'].includes(profile) ||
       v.Labels?.['xyz.bplabs.allrice.cloud.attempt'] !== attempt ||
       !v.Labels?.[payloadLabel] ||
-      (c && v.Labels[payloadLabel] !== c.Config.Labels[payloadLabel])
+      (c &&
+        (v.Labels[payloadLabel] !== c.Config.Labels[payloadLabel] ||
+          profile !== (c.Config.Labels[profileLabel] ?? 'standard')))
     )
       throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
     await inspectVolume(
@@ -583,6 +619,7 @@ export async function cleanupCloudProject(
         [payloadLabel]: v.Labels[payloadLabel]!,
       },
       true,
+      profile as 'standard' | 'web-development',
     );
     await api.json('DELETE', `/volumes/${name}`);
   }

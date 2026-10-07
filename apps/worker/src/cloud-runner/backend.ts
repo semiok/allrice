@@ -466,6 +466,7 @@ export class CloudRunnerBackend {
   async preflight(
     imageDigest = cloudToolchainImageV1,
     requireProjectService = false,
+    requireProjectWeb = false,
   ) {
     if (
       ![
@@ -526,6 +527,14 @@ export class CloudRunnerBackend {
     // tenant SIGSTOPs its in-container parent. No host credentials are copied in.
     const { stdout } = await attestWatchdog();
     const attestation = JSON.parse(stdout);
+    if (
+      requireProjectWeb &&
+      (attestation.projectWebDevelopment?.profileId !== 'web-development' ||
+        attestation.projectWebDevelopment?.maximumTimeoutMs !== 600_000 ||
+        attestation.projectWebDevelopment?.maximumMemoryMiB !== 1536 ||
+        attestation.projectWebDevelopment?.maximumPids !== 128)
+    )
+      throw new CloudRunnerError('CLOUD_PROJECT_WEB_PROFILE_UNAVAILABLE');
     if (
       attestation.ready !== true ||
       (requireProjectService &&
@@ -1454,7 +1463,13 @@ export class CloudRunnerBackend {
           );
     if (!!command.arguments.background !== !!options.projectService)
       throw new CloudProjectPreparationError('CLOUD_SERVICE_IDENTITY');
-    await this.preflight(command.imageDigest, !!options.projectService);
+    await this.preflight(
+      command.imageDigest,
+      !!options.projectService,
+      command.arguments.projectPreparation.manager === 'pnpm' &&
+        command.arguments.projectPreparation.resourceProfile ===
+          'web-development',
+    );
     if (await this.inspect(options.attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
     if (!options.projectScope)

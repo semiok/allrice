@@ -3,6 +3,71 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 describe('VM physical command deadlines', () => {
+  it('admits only the fixed web profile and proves the live guard supports its ten-minute budget', () => {
+    const source = fileURLToPath(new URL('./watchdog.py', import.meta.url));
+    const result = JSON.parse(
+      execFileSync(
+        'python3',
+        [
+          '-B',
+          '-c',
+          String.raw`
+import importlib.util,json,sys,copy
+s=importlib.util.spec_from_file_location('guard',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+attempt='00000000-0000-4000-8000-000000000001';cache='sha256:'+'a'*64
+c={'Config':{'Image':m.NODE_IMAGE,'User':'0:0','Labels':{
+ m.ATTEMPT:attempt,'xyz.bplabs.allrice.cloud.kind':'project','xyz.bplabs.allrice.project.profile':'web-development',
+ 'xyz.bplabs.allrice.project.cache':cache,'xyz.bplabs.allrice.project.payload':'b'*64}},
+ 'HostConfig':{'Runtime':'runsc','NetworkMode':'none','ReadonlyRootfs':True,'Privileged':False,
+ 'CapDrop':['ALL'],'CapAdd':['CHOWN','FOWNER','DAC_OVERRIDE','SETUID','SETGID','KILL'],'SecurityOpt':['no-new-privileges'],
+ 'Memory':1536*1024**2,'MemorySwap':1536*1024**2,'PidsLimit':64,
+ 'Tmpfs':{'/tmp':'rw,nosuid,nodev,noexec,size=32m,mode=1777'}},
+ 'Mounts':[{'Type':'volume','Name':'allrice-project-work-'+attempt,'Destination':'/tmp/work'},
+           {'Type':'volume','Name':'allrice-project-cache-'+cache[7:],'Destination':'/cache'}]}
+values=[bool(m.command_deadline_valid(c,1000000,1601000)),bool(m.command_deadline_valid(c,1000000,1601001))]
+for path,key,value in [('Config','Image','other'),('HostConfig','Memory',1537*1024**2),('HostConfig','PidsLimit',129),('HostConfig','Privileged',True),('HostConfig','Binds',['/host:/tmp']),('Labels','xyz.bplabs.allrice.cloud.kind','script'),('Labels','xyz.bplabs.allrice.project.profile','standard')]:
+ x=copy.deepcopy(c);target=x['Config']['Labels'] if path=='Labels' else x[path];target[key]=value
+ values.append(bool(m.command_deadline_valid(x,1000000,1300000)))
+x=copy.deepcopy(c);x['Mounts'][0]['Type']='bind';values.append(bool(m.command_deadline_valid(x,1000000,1300000)))
+# A valid service lease must never bypass the physical web container envelope.
+m.time.time=lambda:1000;m.memory_available=lambda:3*1024**3
+m.service_lease_valid=lambda *args:True
+killed=[]
+for memory in [1536,1537]:
+ x=copy.deepcopy(c);x['State']={'Running':True};x['HostConfig']['Memory']=memory*1024**2;x['HostConfig']['MemorySwap']=memory*1024**2
+ x['Config']['Labels'].update({m.SERVICE:'project-v1',m.SERVICE_ID:attempt,m.DEADLINE:'1600000'})
+ identifier='c'*64
+ def call(method,path):
+  if method=='POST':killed.append(memory);return None
+  if path.startswith('/containers/json?'):return [{'Id':identifier,'Created':999}]
+  return x
+ m.call=call
+ import tempfile,contextlib,io
+ with tempfile.TemporaryDirectory() as tmp:
+  m.STATE=tmp+'/heartbeat.json'
+  with contextlib.redirect_stdout(io.StringIO()):m.tick({'slots':4})
+
+budgets=[m.live_project_web_budget(h) for h in [{},{'projectWebDevelopment':m.project_web_budget()},{'projectWebDevelopment':{**m.project_web_budget(),'maximumTimeoutMs':900000}}]]
+print(json.dumps({'values':values,'budgets':budgets,'serviceKills':killed}))
+`,
+          source,
+        ],
+        { encoding: 'utf8' },
+      ),
+    );
+    expect(result.values).toEqual([true, ...Array(9).fill(false)]);
+    expect(result.serviceKills).toEqual([1537]);
+    expect(result.budgets).toEqual([
+      null,
+      {
+        profileId: 'web-development',
+        maximumTimeoutMs: 600000,
+        maximumMemoryMiB: 1536,
+        maximumPids: 128,
+      },
+      null,
+    ]);
+  });
   it('counts compiler memory as two units without reporting units as physical containers', () => {
     const source = fileURLToPath(new URL('./watchdog.py', import.meta.url));
     const result = JSON.parse(

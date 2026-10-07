@@ -22,11 +22,11 @@ it.each(['pnpm', 'uv'] as const)(
         },
       ],
       limits: {
-        timeoutMs: 60000,
+        timeoutMs: manager === 'pnpm' ? 300000 : 60000,
         outputBytes: 16384,
-        memoryMiB: 512,
+        memoryMiB: manager === 'pnpm' ? 1536 : 512,
         cpuMillis: 1000,
-        pids: 64,
+        pids: manager === 'pnpm' ? 128 : 64,
       },
       projectPreparation: {
         version: 1,
@@ -36,6 +36,7 @@ it.each(['pnpm', 'uv'] as const)(
         offline: false,
         manager,
         managerVersion: manager === 'pnpm' ? '10.33.3' : '0.8.22',
+        ...(manager === 'pnpm' ? { resourceProfile: 'web-development' } : {}),
         lockPath: manager === 'pnpm' ? 'pnpm-lock.yaml' : 'requirements.lock',
         scripts: 'disabled',
         packages:
@@ -88,6 +89,9 @@ it.each(['pnpm', 'uv'] as const)(
           ]),
         );
         const fields = preparation.properties as Record<string, unknown>;
+        expect(fields.resourceProfile).toMatchObject({
+          enum: ['standard', 'web-development'],
+        });
         expect(fields).not.toHaveProperty('ownerId');
         expect(fields).not.toHaveProperty('organizationId');
         expect(fields).not.toHaveProperty('runtimeImage');

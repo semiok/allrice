@@ -14,7 +14,8 @@ export const projectServiceLimits = Object.freeze({
   maximumLifetimeMs: 3_600_000,
   heartbeatMs: 5000,
   maximumUpdates: 8,
-  maximumHttpBytes: 4_000_000,
+  // Framework development bundles are larger than production assets.
+  maximumHttpBytes: 16_000_000,
   maximumSocketBytes: 500_000,
 });
 export const ProjectServiceConfigSchema = z

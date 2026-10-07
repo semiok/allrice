@@ -16,15 +16,22 @@ import { nodeProjectSupervisor } from './project-supervisor.ts';
 
 type Read = typeof readdir;
 /** Execute the exact embedded PID-1 cache validation, with real installer I/O. */
-function checker(root: string, read: Read = readdir, stat = lstat) {
+function checker(
+  root: string,
+  read: Read = readdir,
+  stat = lstat,
+  profile = 'standard',
+) {
   const start = nodeProjectSupervisor.indexOf('async function checkCache()');
   const end = nodeProjectSupervisor.indexOf('\nconst cacheTimer=', start);
   const source = nodeProjectSupervisor
     .slice(start, end)
     .replaceAll("'/cache'", JSON.stringify(root));
   return runInNewContext(
-    `(async (readdir,lstat)=>{${source};return checkCache();})`,
-  )(read, stat) as Promise<void>;
+    `(async (readdir,lstat,a)=>{${source};return checkCache();})`,
+  )(read, stat, {
+    command: { projectPreparation: { resourceProfile: profile } },
+  }) as Promise<void>;
 }
 async function fixture(test: (root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-cache-monitor-'));
@@ -80,6 +87,23 @@ it('loss of the cache mount fails closed', async () => {
     await expect(checker(root)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
+it('the explicit web profile admits a native framework store but keeps a finite ceiling', async () => {
+  await fixture(async (root) => {
+    const file = await open(join(root, 'native-framework'), 'w');
+    try {
+      await file.truncate(128_000_001);
+      await expect(
+        checker(root, readdir, lstat, 'web-development'),
+      ).resolves.toBeUndefined();
+      await file.truncate(512_000_001);
+      await expect(
+        checker(root, readdir, lstat, 'web-development'),
+      ).rejects.toThrow('cache limit');
+    } finally {
+      await file.close();
+    }
+  });
+});
 it('cache mount loss after listing cannot be mistaken for disappearing temporary files', async () => {
   await fixture(async (root) => {
     await writeFile(join(root, 'file'), 'package');
@@ -104,4 +128,48 @@ it('permission and other cache I/O errors still fail closed', async () => {
       code: 'EACCES',
     });
   });
+});
+
+it('checks metadata in bounded batches while preserving byte-limit enforcement', async () => {
+  await fixture(async (root) => {
+    for (let i = 0; i < 20; i++)
+      await writeFile(join(root, String(i)), 'package');
+    let active = 0,
+      maximum = 0;
+    const stat = (async (path) => {
+      active++;
+      maximum = Math.max(maximum, active);
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return await lstat(path);
+      } finally {
+        active--;
+      }
+    }) as typeof lstat;
+    await checker(root, readdir, stat);
+    expect(maximum).toBeGreaterThan(1);
+    expect(maximum).toBeLessThanOrEqual(8);
+  });
+});
+
+it('coalesces background walks and takes a fresh boundary scan after the in-flight walk', async () => {
+  const start = nodeProjectSupervisor.indexOf('function boundedCacheCheck()'),
+    end = nodeProjectSupervisor.indexOf('const cacheTimer=', start);
+  let active = 0,
+    maximum = 0,
+    scans = 0;
+  const methods = runInNewContext(
+    `(checkCache)=>{let cacheChecking=null;${nodeProjectSupervisor.slice(start, end)}return {background:boundedCacheCheck,final:finalCacheCheck};}`,
+  )(async () => {
+    active++;
+    scans++;
+    maximum = Math.max(maximum, active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    active--;
+  }) as { background: () => Promise<void>; final: () => Promise<void> };
+  const first = methods.background();
+  expect(methods.background()).toBe(first);
+  await methods.final();
+  expect(scans).toBe(2);
+  expect(maximum).toBe(1);
 });

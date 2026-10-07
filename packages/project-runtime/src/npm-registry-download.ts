@@ -61,7 +61,7 @@ export async function downloadPublicPackage(
     url.hash ||
     !Number.isSafeInteger(maximumBytes) ||
     maximumBytes < 1 ||
-    maximumBytes > 32_000_000
+    maximumBytes > 64_000_000
   )
     throw new LocalCommandError('DEPENDENCY_SOURCE_DENIED');
   signal.throwIfAborted();

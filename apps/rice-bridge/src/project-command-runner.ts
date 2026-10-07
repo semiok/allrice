@@ -32,6 +32,11 @@ import {
   validateProjectPreparation,
   type ProjectPreparation,
 } from './project-preparation.js';
+const projectProfileLabel = 'xyz.bplabs.allrice.project.profile';
+const projectWorkOptions = (profile: string): Record<string, string> =>
+  profile === 'web-development'
+    ? { type: 'tmpfs', device: 'tmpfs', o: 'size=1024m,nosuid,nodev,mode=0755' }
+    : {};
 import {
   nodeProjectSupervisor,
   pythonProjectSupervisor,
@@ -332,6 +337,16 @@ export class ProjectCommandRunner {
     )
       throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
     const cacheKey = c.Config.Labels[cacheLabel];
+    const profile = c.Config.Labels[projectProfileLabel] ?? 'standard';
+    const spec = command?.arguments.projectPreparation;
+    if (
+      !['standard', 'web-development'].includes(profile) ||
+      (command &&
+        (spec?.manager === 'pnpm'
+          ? (spec.resourceProfile ?? 'standard')
+          : 'standard') !== profile)
+    )
+      throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
     if (
       !/^sha256:[a-f0-9]{64}$/.test(cacheKey ?? '') ||
       !c.Mounts.some(
@@ -342,22 +357,40 @@ export class ProjectCommandRunner {
       )
     )
       throw new LocalCommandError('CONTAINER_IDENTITY_CHANGED');
-    await this.inspectVolume(`allrice-project-work-${attempt}`, {
-      [attemptLabel]: attempt,
-      [payloadLabel]: c.Config.Labels[payloadLabel]!,
-      [cacheLabel]: cacheKey!,
-    });
+    await this.inspectVolume(
+      `allrice-project-work-${attempt}`,
+      {
+        [attemptLabel]: attempt,
+        [payloadLabel]: c.Config.Labels[payloadLabel]!,
+        [cacheLabel]: cacheKey!,
+        ...(profile === 'web-development'
+          ? { [projectProfileLabel]: profile }
+          : {}),
+      },
+      projectWorkOptions(profile),
+    );
     await this.inspectVolume(`allrice-project-cache-${cacheKey!.slice(7)}`, {
       [cacheLabel]: cacheKey!,
+      ...(profile === 'web-development'
+        ? { [projectProfileLabel]: profile }
+        : {}),
     });
     return c;
   }
-  private async inspectVolume(name: string, labels: Record<string, string>) {
+  private async inspectVolume(
+    name: string,
+    labels: Record<string, string>,
+    options: Record<string, string> = {},
+  ) {
     const volume = await this.input.api.json<Volume>('GET', `/volumes/${name}`);
     if (
       volume.Name !== name ||
       volume.Driver !== 'local' ||
-      Object.keys(volume.Options ?? {}).length ||
+      Object.keys(volume.Options ?? {}).length !==
+        Object.keys(options).length ||
+      Object.entries(options).some(
+        ([key, value]) => volume.Options?.[key] !== value,
+      ) ||
       Object.entries(labels).some(
         ([key, value]) => volume.Labels?.[key] !== value,
       )
@@ -422,6 +455,16 @@ export class ProjectCommandRunner {
         ? readSavedProjectInputs(command)
         : await readLocalCommandInputs(root!, command),
       spec = validateProjectPreparation(command, bundle.files);
+    const profile =
+      spec.manager === 'pnpm'
+        ? (spec.resourceProfile ?? 'standard')
+        : 'standard';
+    const cacheLabels = (cacheKey: string) => ({
+      [cacheLabel]: cacheKey,
+      ...(profile === 'web-development'
+        ? { 'xyz.bplabs.allrice.project.profile': profile }
+        : {}),
+    });
     const revoked = new AbortController(),
       signal = AbortSignal.any([
         revoked.signal,
@@ -462,6 +505,7 @@ export class ProjectCommandRunner {
         command,
         files: bundle.files,
         scope: scope.data,
+        architecture: this.input.architecture,
         signal,
         maintainLease: options.maintainLease,
       });
@@ -499,15 +543,20 @@ export class ProjectCommandRunner {
         [payloadLabel]: digest(command),
         [cacheLabel]: cacheKey,
         'xyz.bplabs.allrice.project.evidence': JSON.stringify(evidence),
+        ...(profile === 'web-development'
+          ? { [projectProfileLabel]: profile }
+          : {}),
       };
       const c = await mutateProjectCache(
         this.input.api.socketPath,
         async () => {
-          await reserveProjectVolume(this.input.api, cacheVolume);
+          await reserveProjectVolume(this.input.api, cacheVolume, profile);
           for (const [name, volumeLabels] of [
-            [cacheVolume, { [cacheLabel]: cacheKey }],
+            [cacheVolume, cacheLabels(cacheKey)],
             [workVolume, labels],
           ] as const) {
+            const options =
+              name === workVolume ? projectWorkOptions(profile) : {};
             const v = await this.input.api.json<Volume>(
               'POST',
               '/volumes/create',
@@ -515,17 +564,22 @@ export class ProjectCommandRunner {
                 Name: name,
                 Driver: 'local',
                 Labels: volumeLabels,
+                ...(Object.keys(options).length ? { DriverOpts: options } : {}),
               },
             );
             if (
               v.Name !== name ||
               v.Driver !== 'local' ||
-              Object.keys(v.Options ?? {}).length
+              Object.keys(v.Options ?? {}).length !==
+                Object.keys(options).length ||
+              Object.entries(options).some(
+                ([key, value]) => v.Options?.[key] !== value,
+              )
             )
               throw new LocalCommandError('PROJECT_CACHE_UNSAFE');
             // Docker may omit labels from the create response for an existing
             // volume. Inspect the actual saved volume instead of relabeling it.
-            await this.inspectVolume(name, volumeLabels);
+            await this.inspectVolume(name, volumeLabels, options);
             if (name === workVolume) workVolumeCreated = name;
           }
           return this.input.api.json<{ Id: string }>(
@@ -539,7 +593,14 @@ export class ProjectCommandRunner {
                   : ['/opt/python/bin/python'],
               Cmd:
                 spec.manager === 'pnpm'
-                  ? ['--input-type=module', '--eval', nodeProjectSupervisor]
+                  ? [
+                      '--input-type=module',
+                      '--eval',
+                      nodeProjectSupervisor,
+                      ...(profile === 'web-development'
+                        ? [String(deadlineUnixMs)]
+                        : []),
+                    ]
                   : ['-I', '-c', pythonProjectSupervisor],
               User: '0:0',
               WorkingDir: '/tmp/work',
@@ -645,6 +706,14 @@ export class ProjectCommandRunner {
       };
       signal.addEventListener('abort', abort, { once: true });
       try {
+        // tmpfs data survives only while the work volume is mounted. Start the
+        // trusted staging gate before uploading, exactly as the cloud backend.
+        if (profile === 'web-development') {
+          await check();
+          startRequested = true;
+          start = this.input.api.json('POST', `/containers/${id}/start`);
+          await start;
+        }
         for (const bytes of projectStagingArchives({
           command,
           files: bundle.files,
@@ -655,9 +724,24 @@ export class ProjectCommandRunner {
         }))
           await this.input.api.putArchive(id, '/tmp/work', bytes, signal);
         await check();
-        startRequested = true;
-        start = this.input.api.json('POST', `/containers/${id}/start`);
-        await start;
+        if (profile === 'web-development')
+          await this.input.api.putArchive(
+            id,
+            '/tmp/work',
+            createLocalPythonArchive([
+              {
+                path: '.allrice/staging-ready',
+                bytes: Buffer.from('ready'),
+                mode: 0o444,
+              },
+            ]),
+            signal,
+          );
+        else {
+          startRequested = true;
+          start = this.input.api.json('POST', `/containers/${id}/start`);
+          await start;
+        }
         if (signal.aborted) await stop(abortReason());
         const observed = options.service
           ? await this.readService(id, command, options.service, signal, stop)
@@ -728,10 +812,14 @@ export class ProjectCommandRunner {
             () => undefined,
           );
         } else if (workVolumeCreated) {
-          await this.inspectVolume(workVolumeCreated, {
-            [attemptLabel]: options.attemptId,
-            [payloadLabel]: digest(command),
-          })
+          await this.inspectVolume(
+            workVolumeCreated,
+            {
+              [attemptLabel]: options.attemptId,
+              [payloadLabel]: digest(command),
+            },
+            projectWorkOptions(profile),
+          )
             .then(() =>
               this.input.api.json('DELETE', `/volumes/${workVolumeCreated}`),
             )
