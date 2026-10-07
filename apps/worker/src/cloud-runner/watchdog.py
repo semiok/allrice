@@ -196,6 +196,34 @@ def service_lease_channel(attempt, hard_text):
     return 0
 
 
+def project_web_container_valid(container):
+    config, host = container['Config'], container['HostConfig']
+    labels = config['Labels']
+    cache = labels.get('xyz.bplabs.allrice.project.cache', '')
+    attempt = labels.get(ATTEMPT, '')
+    mounts = container.get('Mounts', [])
+    return (
+        labels.get('xyz.bplabs.allrice.project.profile') == 'web-development'
+        and labels.get('xyz.bplabs.allrice.cloud.kind') == 'project'
+        and re.fullmatch(r'sha256:[a-f0-9]{64}', cache)
+        and re.fullmatch(r'[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.project.payload', ''))
+        and re.fullmatch(r'[a-f0-9-]{36}', attempt)
+        and config.get('Image') == NODE_IMAGE and config.get('User') == '0:0'
+        and host.get('Runtime') == 'runsc' and host.get('NetworkMode') == 'none'
+        and host.get('ReadonlyRootfs') is True and not host.get('Privileged')
+        and host.get('CapDrop') == ['ALL']
+        and sorted(cap.removeprefix('CAP_') for cap in host.get('CapAdd', [])) == ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'KILL', 'SETGID', 'SETUID']
+        and 'no-new-privileges' in host.get('SecurityOpt', [])
+        and not host.get('Binds') and len(mounts) == 2
+        and {m.get('Destination'): m.get('Name') for m in mounts if m.get('Type') == 'volume'} == {
+            '/tmp/work': 'allrice-project-work-' + attempt,
+            '/cache': 'allrice-project-cache-' + cache[7:]}
+        and 128 * 1024 ** 2 <= host.get('Memory', 0) <= 1536 * 1024 ** 2
+        and host.get('MemorySwap') == host.get('Memory') and 64 <= host.get('PidsLimit', 0) <= 128
+        and host.get('Tmpfs') == {'/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777'}
+    )
+
+
 def command_deadline_valid(container, created, deadline):
     """Only the fixed private compiler profile has the operator-frozen budget.
 
@@ -205,6 +233,8 @@ def command_deadline_valid(container, created, deadline):
     """
     config, host = container['Config'], container['HostConfig']
     labels = config['Labels']
+    if labels.get('xyz.bplabs.allrice.project.profile') is not None:
+        return deadline <= created + 601_000 and project_web_container_valid(container)
     profile = labels.get('xyz.bplabs.allrice.repository.profile')
     if profile is None:
         return deadline <= created + 65_000
@@ -238,6 +268,14 @@ def compiled_budget():
     return {'profileId': COMPILED_PROFILE, 'timeoutStepMs': COMPILED_TIMEOUT_STEP, 'maximumTimeoutMs': COMPILED_TIMEOUT_MAX, 'memoryMiB': 768}
 
 
+def project_web_budget():
+    return {'profileId': 'web-development', 'maximumTimeoutMs': 600000, 'maximumMemoryMiB': 1536, 'maximumPids': 128}
+
+
+def live_project_web_budget(heartbeat):
+    return project_web_budget() if heartbeat.get('projectWebDevelopment') == project_web_budget() else None
+
+
 def live_compiled_budget(heartbeat):
     # This must come from the actual running tick, not merely the script now
     # on disk: an old service may still be applying its 65-second ceiling.
@@ -269,6 +307,7 @@ def tick(capacity):
                 and c["HostConfig"]["Runtime"] == "runsc"
                 and c["HostConfig"]["NetworkMode"] == "none"
                 and deadline > int(time.time() * 1000)
+                and (labels.get('xyz.bplabs.allrice.project.profile') is None or project_web_container_valid(c))
                 and (service_lease_valid(labels, created, deadline, int(time.time()*1000))
                      if SERVICE in labels else command_deadline_valid(c, created, deadline))
                 and reserved_units <= capacity['slots']
@@ -281,6 +320,7 @@ def tick(capacity):
     temporary = STATE + ".new"
     with open(temporary, "w", encoding="utf8") as output:
         json.dump({"at": time.time(), "running": running, 'repositoryCompiled': compiled_budget(),
+                   'projectWebDevelopment': project_web_budget(),
                    "availableBytes": memory_available()}, output)
     os.replace(temporary, STATE)
 
@@ -315,6 +355,7 @@ def attest():
     )
     print(json.dumps({"ready": ready, "runtimeChecksum": checksum, "watchdog": "met166-service-v1", "projectServices": True,
                       "repositoryCompiled": live_compiled_budget(heartbeat),
+                      "projectWebDevelopment": live_project_web_budget(heartbeat),
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))
     return 0 if ready else 1

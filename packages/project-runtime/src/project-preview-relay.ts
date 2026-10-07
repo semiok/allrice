@@ -30,9 +30,13 @@ export type ProjectPreviewRelayAdapter = {
 
 /** A duplex to one fixed container loopback port. Docker stdout is decoded
  * before becoming a socket; no host port, DNS resolution or arbitrary exec. */
-class ContainerLoopback extends Duplex {
+/** Internal transport, exported here for deterministic stream boundary checks. */
+export class ContainerLoopback extends Duplex {
   private pending = Buffer.alloc(0);
   private incoming = 0;
+  private socketEnded = false;
+  private readEnded = false;
+  private idleTimeout?: ReturnType<typeof setTimeout>;
   private timer: ReturnType<typeof setInterval>;
   private constructor(
     private socket: Duplex,
@@ -43,6 +47,7 @@ class ContainerLoopback extends Duplex {
       if (!alive()) this.destroy(new Error('PROJECT_PREVIEW_REVOKED'));
     }, 1000);
     socket.on('data', (bytes: Buffer) => {
+      this.idleTimeout?.refresh();
       this.pending = Buffer.concat([this.pending, bytes]);
       if (this.pending.length > 1_000_000) {
         this.destroy(new Error('PROJECT_PREVIEW_BACKPRESSURE'));
@@ -50,8 +55,15 @@ class ContainerLoopback extends Duplex {
       }
       this.drainFrames();
     });
-    socket.once('end', () => this.push(null));
-    socket.once('close', () => this.destroy());
+    socket.once('end', () => {
+      this.socketEnded = true;
+      clearTimeout(this.idleTimeout);
+      this.drainFrames();
+    });
+    socket.once('close', () => {
+      if (!this.socketEnded)
+        this.destroy(new Error('PROJECT_PREVIEW_INCOMPLETE_STREAM'));
+    });
     socket.on('error', (e) => this.destroy(e));
   }
   private drainFrames() {
@@ -65,11 +77,11 @@ class ContainerLoopback extends Duplex {
         this.destroy(new Error('PROJECT_PREVIEW_INVALID_STREAM'));
         return;
       }
-      if (this.pending.length < 8 + size) return;
+      if (this.pending.length < 8 + size) break;
       const bytes = Buffer.from(this.pending.subarray(8, 8 + size));
       this.pending = this.pending.subarray(8 + size);
       this.incoming += bytes.length;
-      if (this.incoming > 16_000_000) {
+      if (this.incoming > projectServiceLimits.maximumHttpBytes + 64_000) {
         this.destroy(new Error('PROJECT_PREVIEW_LIMIT'));
         return;
       }
@@ -77,6 +89,14 @@ class ContainerLoopback extends Duplex {
         this.socket.pause();
         return;
       }
+    }
+    if (this.socketEnded && !this.readEnded) {
+      if (this.pending.length) {
+        this.destroy(new Error('PROJECT_PREVIEW_INCOMPLETE_STREAM'));
+        return;
+      }
+      this.readEnded = true;
+      this.push(null);
     }
   }
   override _read() {
@@ -92,13 +112,21 @@ class ContainerLoopback extends Duplex {
       done(new Error('PROJECT_PREVIEW_REVOKED'));
       return;
     }
+    this.idleTimeout?.refresh();
     this.socket.write(bytes, done);
   }
   override _final(done: () => void) {
-    this.socket.end(done);
+    if (
+      this.socket.writableEnded ||
+      this.socket.writableFinished ||
+      this.socket.destroyed
+    )
+      done();
+    else this.socket.end(done);
   }
   override _destroy(error: Error | null, done: (e?: Error | null) => void) {
     clearInterval(this.timer);
+    clearTimeout(this.idleTimeout);
     this.socket.destroy();
     done(error);
   }
@@ -110,10 +138,13 @@ class ContainerLoopback extends Duplex {
   }
   setTimeout(ms: number, callback?: () => void) {
     if (callback) this.once('timeout', callback);
-    if (ms > 0)
-      setTimeout(() => {
+    clearTimeout(this.idleTimeout);
+    if (ms > 0) {
+      this.idleTimeout = setTimeout(() => {
         if (!this.destroyed) this.emit('timeout');
-      }, ms).unref();
+      }, ms);
+      this.idleTimeout.unref();
+    }
     return this;
   }
   static async connect(
@@ -138,6 +169,9 @@ class ContainerLoopback extends Duplex {
         WorkingDir: '/tmp',
         Cmd: [
           '/usr/local/bin/node',
+          // This byte relay has no compute work. Avoid four V8 worker threads
+          // per browser request exhausting the existing 64-process sandbox.
+          '--v8-pool-size=1',
           '--eval',
           code,
           String(target.port),

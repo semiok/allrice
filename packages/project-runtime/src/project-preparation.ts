@@ -8,6 +8,7 @@ import {
   RuntimeProjectPreparationSchema,
   RuntimeProjectScopeSchema,
   projectRuntimeCacheIdentity,
+  projectPreparationLimits,
   runtimeNpmPackageUrl,
   type RuntimeProjectPreparation,
   type RuntimeProjectScope,
@@ -22,9 +23,61 @@ import { downloadPublicPackage } from './npm-registry-download.js';
 import { downloadManagedRuntimeAsset } from './runtime-asset-download.js';
 import { projectToolReleases } from './project-tool-releases.js';
 
-// One archive is staged as one bounded Docker archive entry. Keep this below
-// the 24 MB transport ceiling, including tar headers and the final padding.
+// Standard preparation retains its original ceiling. Large web dependencies
+// use verified chunks; Docker's per-request 24 MB ceiling is never raised.
 export const projectDependencyArchiveLimit = 23_000_000;
+
+/** Match pnpm's target platform without altering the saved lock. Only foreign
+ * optional snapshots may be skipped; incompatible mandatory packages fail. */
+export function projectDependencyIndexes(
+  command: ProjectRuntimeCommand,
+  files: ProjectSourceFile[],
+  architecture?: 'amd64' | 'arm64',
+) {
+  const spec = validateProjectPreparation(command, files);
+  if (spec.manager !== 'pnpm' || !architecture)
+    return spec.packages.map((_, i) => i);
+  const lock = parseDocument(
+    Buffer.from(
+      files.find((f) => f.path === spec.lockPath)!.content,
+      'base64',
+    ).toString('utf8'),
+  ).toJS({ maxAliasCount: 0 });
+  const matches = (value: unknown, target: string) => {
+    if (value === undefined) return true;
+    if (
+      !Array.isArray(value) ||
+      !value.length ||
+      value.some((v) => typeof v !== 'string' || !/^!?[a-z0-9_]+$/.test(v))
+    )
+      throw new LocalCommandError('PROJECT_LOCK_UNSUPPORTED');
+    return (
+      !value.includes('!' + target) &&
+      (value.includes('any') ||
+        value.every((v: string) => v.startsWith('!')) ||
+        value.includes(target))
+    );
+  };
+  return spec.packages.flatMap((pkg, i) => {
+    const key = `${pkg.name}@${pkg.version}`,
+      entry = lock.packages[key];
+    if (
+      matches(entry.os, 'linux') &&
+      matches(entry.cpu, architecture === 'amd64' ? 'x64' : 'arm64') &&
+      matches(entry.libc, 'glibc')
+    )
+      return [i];
+    const snapshots = Object.entries(lock.snapshots ?? {}).filter(
+      ([name]) => name === key || name.startsWith(key + '('),
+    );
+    if (
+      !snapshots.length ||
+      snapshots.some(([, v]) => !object(v) || v.optional !== true)
+    )
+      throw new LocalCommandError('PROJECT_LOCK_UNSUPPORTED');
+    return [];
+  });
+}
 
 export type ProjectSourceFile = { path: string; content: string };
 const hash = (s: string | Buffer) =>
@@ -354,8 +407,15 @@ export class ProjectPreparation {
     signal: AbortSignal;
     maintainLease?: () => Promise<boolean>;
     onProgress?: (text: string) => void;
+    architecture?: 'amd64' | 'arm64';
   }) {
     const spec = validateProjectPreparation(input.command, input.files);
+    const limits = projectPreparationLimits(spec);
+    const indexes = projectDependencyIndexes(
+      input.command,
+      input.files,
+      input.architecture,
+    );
     const scope = RuntimeProjectScopeSchema.parse(input.scope);
     const directory = join(
       this.root,
@@ -366,12 +426,14 @@ export class ProjectPreparation {
     await privateDirectory(join(this.root, 'archives'));
     await privateDirectory(directory);
     const releaseArchives = retainProjectArchives(
-      spec.packages.map((pkg) =>
-        join(
-          directory,
-          hash('integrity' in pkg ? pkg.integrity : pkg.sha256).slice(7),
+      indexes
+        .map((i) => spec.packages[i]!)
+        .map((pkg) =>
+          join(
+            directory,
+            hash('integrity' in pkg ? pkg.integrity : pkg.sha256).slice(7),
+          ),
         ),
-      ),
     );
     const files: { path: string; bytes: Buffer }[] = [];
     let hits = 0,
@@ -401,7 +463,8 @@ export class ProjectPreparation {
     }, 1000);
     try {
       await check();
-      for (const [i, pkg] of spec.packages.entries()) {
+      for (const i of indexes) {
+        const pkg = spec.packages[i]!;
         signal.throwIfAborted();
         const npm = 'integrity' in pkg;
         const identity = npm ? pkg.integrity : pkg.sha256;
@@ -414,7 +477,7 @@ export class ProjectPreparation {
         let bytes: Buffer | null = await cached(
           path,
           checksum,
-          projectDependencyArchiveLimit,
+          limits.archiveBytes,
         );
         if (bytes) hits++;
         else {
@@ -434,7 +497,7 @@ export class ProjectPreparation {
               bytes = await downloadPublicPackage(
                 new URL(npm ? runtimeNpmPackageUrl(pkg) : pkg.url),
                 signal,
-                projectDependencyArchiveLimit,
+                limits.archiveBytes,
               );
             } catch (e) {
               if (signal.aborted)
@@ -445,7 +508,7 @@ export class ProjectPreparation {
             downloads++;
             downloadedBytes += bytes.length;
           }
-          if (bytes.length > projectDependencyArchiveLimit)
+          if (bytes.length > limits.archiveBytes)
             throw new LocalCommandError('PROJECT_DEPENDENCY_LIMIT');
           if (!checksum(bytes))
             throw new LocalCommandError('PROJECT_DEPENDENCY_INTEGRITY');
@@ -455,6 +518,7 @@ export class ProjectPreparation {
               join(this.root, 'archives'),
               path,
               bytes!.length,
+              limits.hostArchiveBytes,
             );
             const temporary = path + '.' + randomUUID() + '.part';
             try {
@@ -467,7 +531,7 @@ export class ProjectPreparation {
           });
         }
         total += bytes.length;
-        if (total > 64_000_000)
+        if (total > limits.totalArchiveBytes)
           throw new LocalCommandError('PROJECT_DEPENDENCY_LIMIT');
         files.push({
           path: `.allrice/archives/${npm ? i + '.tgz' : pkg.fileName}`,

@@ -97,6 +97,9 @@ export const runProjectWorkspace: RiceToolHandler = async ({
                 ? cloudPythonImageV1
                 : cloudToolchainImageV1,
               command.action === 'service_start',
+              command.projectPreparation.manager === 'pnpm' &&
+                command.projectPreparation.resourceProfile ===
+                  'web-development',
             )
             .then(() => true)
             .catch(() => false);

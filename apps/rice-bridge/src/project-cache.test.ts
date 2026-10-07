@@ -96,3 +96,39 @@ it('replaces an oversized idle requested cache with one bounded reservation', as
   await reserveProjectVolume(f.api, f.volumes[0]!.Name);
   expect(f.removed).toEqual([f.volumes[0]!.Name]);
 });
+it('reserves the entire web cache without evicting active standard tasks, rejecting an exhausted pool', async () => {
+  const f = volumeFixture(4, 0),
+    name = `allrice-project-cache-${'f'.repeat(64)}`;
+  await reserveProjectVolume(f.api, name, 'web-development');
+  expect(f.removed).toEqual([]);
+  f.volumes[0]!.UsageData.Size = 129_000_000;
+  await expect(
+    reserveProjectVolume(f.api, name, 'web-development'),
+  ).rejects.toThrow('PROJECT_CACHE_LIMIT');
+  expect(f.removed).toEqual([]);
+});
+it('does not replace a referenced web profile with a standard reservation', async () => {
+  const f = volumeFixture(1, 0);
+  Object.assign(f.volumes[0]!.Labels, {
+    'xyz.bplabs.allrice.project.profile': 'web-development',
+  });
+  await expect(reserveProjectVolume(f.api, f.volumes[0]!.Name)).rejects.toThrow(
+    'PROJECT_CACHE_UNSAFE',
+  );
+  expect(f.removed).toEqual([]);
+});
+it('allows ordinary work after an active web reservation while retaining the ordinary sub-budget', async () => {
+  const f = volumeFixture(4, 0);
+  Object.assign(f.volumes[0]!.Labels, {
+    'xyz.bplabs.allrice.project.profile': 'web-development',
+  });
+  f.volumes[0]!.UsageData.Size = 300_000_000;
+  const name = `allrice-project-cache-${'f'.repeat(64)}`;
+  await reserveProjectVolume(f.api, name);
+  expect(f.removed).toEqual([]);
+  f.volumes[1]!.UsageData.Size = 129_000_000;
+  await expect(reserveProjectVolume(f.api, name)).rejects.toThrow(
+    'PROJECT_CACHE_LIMIT',
+  );
+  expect(f.removed).toEqual([]);
+});
