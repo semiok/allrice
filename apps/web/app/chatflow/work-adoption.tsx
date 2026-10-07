@@ -23,7 +23,9 @@ export function WorkAdoption(props: {
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen(true)}>登记采用与投入</Button>
+      <Button className={styles.button} onClick={() => setOpen(true)}>
+        登记采用与投入
+      </Button>
       {open && (
         <DshDialog
           ariaLabel="登记成果采用"
@@ -89,7 +91,11 @@ function AdoptionEditor(props: Parameters<typeof WorkAdoption>[0]) {
         </select>
       </Field>
       {list.data?.nextCursor && (
-        <Button disabled={list.loading} onClick={() => void list.load(true)}>
+        <Button
+          className={styles.button}
+          disabled={list.loading}
+          onClick={() => void list.load(true)}
+        >
           加载更多业务及基准
         </Button>
       )}
@@ -290,7 +296,7 @@ function WorkForm({
           placeholder="说明采用场景和计时依据"
         />
       </Field>
-      <Button type="submit" disabled={busy}>
+      <Button className={styles.button} type="submit" disabled={busy}>
         {busy ? '正在保存…' : '保存登记'}
       </Button>
       {message && <p role="status">{message}</p>}

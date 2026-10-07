@@ -110,3 +110,22 @@
     max-height: calc(100dvh - 24px);
   }
 }
+
+/* Scoped to the investment controls; retain the surrounding light/dark text. */
+.button {
+  padding: 8px 12px;
+  border: 1px solid var(--dsw-alias-border-l2, #868e98);
+  border-radius: 8px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}

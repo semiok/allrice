@@ -70,16 +70,21 @@ export function CompanyInvestment({
         仅使用明确采用的成果、人工基准与实际人工投入。未知项保留，负收益照实展示；不同币种分别计算。
       </p>
       <div className={forms.actions}>
-        <Button onClick={() => setEditor({ kind: 'baseline' })}>
+        <Button
+          className={forms.button}
+          onClick={() => setEditor({ kind: 'baseline' })}
+        >
           新建人工基准
         </Button>
         <Button
+          className={forms.button}
           disabled={!custom}
           onClick={() => setEditor({ kind: 'expense' })}
         >
           登记订阅费用
         </Button>
         <Button
+          className={forms.button}
           disabled={!custom}
           onClick={() =>
             setEditor({
@@ -93,6 +98,7 @@ export function CompanyInvestment({
           确认本期投入
         </Button>
         <Button
+          className={forms.button}
           disabled={summary.loading}
           onClick={() => {
             void summary.load();
@@ -216,6 +222,7 @@ export function CompanyInvestment({
               <p>{r.content.source}</p>
               {r.content.kind !== 'work' && (
                 <Button
+                  className={forms.button}
                   onClick={() =>
                     setEditor({
                       kind: r.content.kind as
@@ -232,6 +239,7 @@ export function CompanyInvestment({
           ))}
           {list.data?.nextCursor && (
             <Button
+              className={forms.button}
               disabled={list.loading}
               onClick={() => void list.load(true)}
             >
@@ -550,6 +558,7 @@ function InvestmentEditor({
                   />
                 </Field>
                 <Button
+                  className={forms.button}
                   onClick={() =>
                     setAllocations((rows) =>
                       rows.filter((_, index) => index !== i),
@@ -561,6 +570,7 @@ function InvestmentEditor({
               </div>
             ))}
             <Button
+              className={forms.button}
               onClick={() =>
                 setAllocations((rows) => [
                   ...rows,
@@ -572,6 +582,7 @@ function InvestmentEditor({
             </Button>
             {companies.data?.nextCursor && (
               <Button
+                className={forms.button}
                 disabled={companies.loading}
                 onClick={() => void companies.load(true)}
               >
@@ -657,7 +668,7 @@ function InvestmentEditor({
           onChange={(e) => setValues((v) => ({ ...v, source: e.target.value }))}
         />
       </Field>
-      <Button type="submit" disabled={busy}>
+      <Button className={forms.button} type="submit" disabled={busy}>
         {busy ? '正在保存…' : '保存新修订'}
       </Button>
       {error && <p role="alert">{error}</p>}

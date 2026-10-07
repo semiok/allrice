@@ -175,7 +175,7 @@ export function InvestmentHistory({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Button onClick={() => setOpen((v) => !v)}>
+      <Button className={styles.button} onClick={() => setOpen((v) => !v)}>
         {open ? '收起' : '查看'}修订记录 · v{entry.number}
       </Button>
       {open && (
@@ -276,7 +276,11 @@ function HistoryRows({
           </div>
         ))}
       {list.data?.nextCursor && (
-        <Button disabled={list.loading} onClick={() => void list.load(true)}>
+        <Button
+          className={styles.button}
+          disabled={list.loading}
+          onClick={() => void list.load(true)}
+        >
           更多修订
         </Button>
       )}
