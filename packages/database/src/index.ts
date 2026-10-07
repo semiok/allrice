@@ -114,6 +114,7 @@ export * from './local-pdf-execution.ts';
 export * from './local-file-deliverables.ts';
 export * from './office-pdf-execution.ts';
 export * from './company-assets.ts';
+export * from './investment.ts';
 export * from './company-run-assets.ts';
 export * from './task-next-steps.ts';
 

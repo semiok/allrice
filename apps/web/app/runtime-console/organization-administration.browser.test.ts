@@ -1,3 +1,5 @@
+import { investmentHttp } from '../../lib/organization-administration/investment-http';
+import { listInvestmentEntries, saveInvestmentEntry } from '@allrice/database';
 import { GET as runtimeInventoryHttp } from '../api/v1/admin/runtime-console/route';
 import { GET as runtimeEventsHttp } from '../api/v1/admin/runtime-console/[sessionId]/events/route';
 import { createHash, randomUUID } from 'node:crypto';
@@ -126,28 +128,35 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                     ? 'people'
                     : undefined;
           const response =
-            parts[4] === 'runtime-console'
-              ? parts[6] === 'events'
-                ? await runtimeEventsHttp(request, {
-                    params: Promise.resolve({ sessionId: parts[5]! }),
-                  })
-                : await runtimeInventoryHttp(request)
-              : parts[4] === 'activity'
-                ? await organizationActivityHttp(request)
-                : parts[4] === 'tenants' && parts[6] === 'validation'
-                  ? await tenantValidationHttp(request, parts[5]!)
-                  : parts[6] === 'deliverables'
-                    ? await companyDeliverablesHttp(request, parts[5]!)
-                    : parts[6] === 'assets'
-                      ? await companyAssetsHttp(request, parts[5]!)
-                      : parts[6] === 'ai-employees'
-                        ? await organizationAssignmentsHttp(request, parts[5]!)
-                        : await organizationAdministrationHttp(
-                            request,
-                            parts[5],
-                            parts[7],
-                            action,
-                          );
+            parts[3] === 'investment'
+              ? await investmentHttp(request)
+              : parts[6] === 'investment'
+                ? await investmentHttp(request, parts[5]!)
+                : parts[4] === 'runtime-console'
+                  ? parts[6] === 'events'
+                    ? await runtimeEventsHttp(request, {
+                        params: Promise.resolve({ sessionId: parts[5]! }),
+                      })
+                    : await runtimeInventoryHttp(request)
+                  : parts[4] === 'activity'
+                    ? await organizationActivityHttp(request)
+                    : parts[4] === 'tenants' && parts[6] === 'validation'
+                      ? await tenantValidationHttp(request, parts[5]!)
+                      : parts[6] === 'deliverables'
+                        ? await companyDeliverablesHttp(request, parts[5]!)
+                        : parts[6] === 'assets'
+                          ? await companyAssetsHttp(request, parts[5]!)
+                          : parts[6] === 'ai-employees'
+                            ? await organizationAssignmentsHttp(
+                                request,
+                                parts[5]!,
+                              )
+                            : await organizationAdministrationHttp(
+                                request,
+                                parts[5],
+                                parts[7],
+                                action,
+                              );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -1358,4 +1367,314 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await context.close();
     }
   }, 60000);
+  it.each([1440, 390])(
+    'records ordinary employee adoption and replays cost/baseline evidence in the actual UI (%i)',
+    async (width) => {
+      const a = await tenantValidationFixture(fixture.db),
+        org = a.context.organizationId;
+      const admin = await authenticateSession(adminToken);
+      expect(admin).not.toBeNull();
+      const context = await browser.newContext({
+        viewport: { width, height: 1000 },
+      });
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage(),
+        errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.setDefaultTimeout(10000);
+      await page.goto(origin + '/?view=activity&organizationId=' + org);
+      expect(errors).toEqual([]);
+      expect(
+        await page
+          .getByRole('button', { name: '登记订阅费用', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      await page
+        .getByRole('combobox', { name: '时间范围', exact: true })
+        .selectOption('custom');
+      await page.getByLabel('开始', { exact: true }).fill('2026-10-01T00:00');
+      await page.getByLabel('结束', { exact: true }).fill('2026-11-01T00:00');
+      await page
+        .getByRole('button', { name: '应用时间范围', exact: true })
+        .click();
+      const panel = page.getByRole('region', {
+        name: '人工确认的投入与收益估算',
+        exact: true,
+      });
+      await panel
+        .getByRole('button', { name: '新建人工基准', exact: true })
+        .click();
+      let dialog = page.getByRole('dialog', { name: '收益估算依据登记' });
+      for (const [label, value] of [
+        ['名称', '报告基准'],
+        ['基准标识', 'monthly-report'],
+        ['职能场景', '运营'],
+        ['计量单位', '份'],
+        ['每单位人工处理时间（分钟）', '120'],
+        ['人工费率（每小时；留空未知）', '120'],
+        ['依据与来源说明', '人工计时固定验收'],
+      ])
+        await dialog.getByLabel(label!, { exact: true }).fill(value!);
+      await dialog
+        .getByRole('button', { name: '保存新修订', exact: true })
+        .click();
+      await dialog.waitFor({ state: 'detached' });
+      const ownerToken = (await createSession(a.context.actor.id)).token;
+      const member = await browser.newContext({
+        viewport: { width, height: 1000 },
+      });
+      await member.addCookies([
+        { name: 'fixture_session', value: ownerToken, url: origin },
+      ]);
+      const mp = await member.newPage();
+      mp.on('pageerror', (e) => errors.push(e.message));
+      await mp.goto(
+        origin +
+          '/?view=adoption&' +
+          new URLSearchParams({
+            workspaceId: a.context.workspaceId!,
+            versionId: a.artifact.artifactId,
+            runId: a.task.runId,
+          }),
+      );
+      await mp
+        .getByRole('button', { name: '登记采用与投入', exact: true })
+        .click();
+      const adoption = mp.getByRole('dialog', { name: '登记成果采用' });
+      await adoption
+        .getByLabel('业务标识', { exact: true })
+        .fill('business-report');
+      await adoption
+        .getByLabel('实际人工投入（分钟；留空为未知，0 表示确认无人工投入）', {
+          exact: true,
+        })
+        .fill('30');
+      const baselineOption = await adoption
+        .getByLabel('人工处理基准（固定版本）', { exact: true })
+        .locator('option')
+        .filter({ hasText: '报告基准' })
+        .getAttribute('value');
+      expect(baselineOption).toBeTruthy();
+      await adoption
+        .getByLabel('人工处理基准（固定版本）', { exact: true })
+        .selectOption(baselineOption!);
+      await adoption
+        .getByLabel('业务采用', { exact: true })
+        .selectOption('yes');
+      await adoption
+        .getByLabel('采用与人工投入依据', { exact: true })
+        .fill('实际采用，准备复核返工共计 30 分钟');
+      await adoption
+        .getByRole('button', { name: '保存登记', exact: true })
+        .click();
+      await adoption
+        .getByRole('button', { name: '查看修订记录 · v1', exact: true })
+        .waitFor();
+      await panel
+        .getByRole('button', { name: '刷新估算与登记', exact: true })
+        .click();
+      await panel.getByText('90 分钟', { exact: true }).waitFor();
+      await panel
+        .getByRole('button', { name: '确认本期投入', exact: true })
+        .click();
+      dialog = page.getByRole('dialog', { name: '收益估算依据登记' });
+      await dialog.getByLabel('名称', { exact: true }).fill('本期费用');
+      await dialog
+        .getByLabel('模型费用（留空未知；0 为有依据的零费用）', { exact: true })
+        .fill('30');
+      await dialog
+        .getByLabel('其他投入（留空未知）', { exact: true })
+        .fill('20');
+      await dialog
+        .getByLabel('订阅投入是否已经核实（没有订阅时也需确认）', {
+          exact: true,
+        })
+        .selectOption('yes');
+      await dialog
+        .getByLabel('投入覆盖范围', { exact: true })
+        .selectOption('complete');
+      await dialog
+        .getByLabel('本期每人标准工时（小时，可选）', { exact: true })
+        .fill('160');
+      await dialog
+        .getByLabel('依据与来源说明', { exact: true })
+        .fill('合成费用已核实，无订阅');
+      await dialog
+        .getByRole('button', { name: '保存新修订', exact: true })
+        .click();
+      await dialog.waitFor({ state: 'detached' });
+      await panel.getByText(/ROI 260%/).waitFor();
+      await panel
+        .getByRole('button', { name: '确认本期投入', exact: true })
+        .click();
+      dialog = page.getByRole('dialog', { name: '收益估算依据登记' });
+      expect(
+        await dialog
+          .getByLabel('模型费用（留空未知；0 为有依据的零费用）', {
+            exact: true,
+          })
+          .inputValue(),
+      ).toBe('30');
+      expect(
+        await dialog
+          .getByLabel('其他投入（留空未知）', { exact: true })
+          .inputValue(),
+      ).toBe('20');
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      const exported = await context.request.get(
+        origin +
+          (await panel
+            .getByRole('link', { name: '导出估算与完整证据' })
+            .getAttribute('href'))!,
+      );
+      expect(exported.status()).toBe(200);
+      const report = await exported.json();
+      expect(report).toMatchObject({
+        savedMinutes: 90,
+        candidateWorks: 1,
+        includedWorks: 1,
+      });
+      expect(report.groups[0]).toMatchObject({
+        valueMinor: 18000,
+        costMinor: 5000,
+        roi: 2.6,
+      });
+      await panel
+        .getByText('管理基准、费用及查看业务登记', { exact: true })
+        .click();
+      const baselineRow = panel
+        .locator('div')
+        .filter({
+          has: page
+            .locator('strong')
+            .filter({ hasText: '报告基准 · 人工基准 · v1' }),
+        })
+        .last();
+      await baselineRow
+        .getByRole('button', { name: '编辑并保存新修订', exact: true })
+        .click();
+      dialog = page.getByRole('dialog', { name: '收益估算依据登记' });
+      await dialog
+        .getByLabel('每单位人工处理时间（分钟）', { exact: true })
+        .fill('240');
+      await dialog
+        .getByRole('button', { name: '保存新修订', exact: true })
+        .click();
+      await dialog.waitFor({ state: 'detached' });
+      await panel.getByText('90 分钟', { exact: true }).waitFor();
+      const revised = await context.request.get(
+        origin +
+          (await panel
+            .getByRole('link', { name: '导出估算与完整证据' })
+            .getAttribute('href'))!,
+      );
+      expect((await revised.json()).samples[0].baseline.number).toBe(1);
+      expect(
+        (
+          await listInvestmentEntries(
+            admin!,
+            org,
+            { administration: true, kind: 'baseline', history: true },
+            fixture.db,
+          )
+        ).entries,
+      ).toHaveLength(2);
+
+      await panel
+        .getByRole('button', { name: '登记订阅费用', exact: true })
+        .click();
+      dialog = page.getByRole('dialog', { name: '收益估算依据登记' });
+      for (const [label, value] of [
+        ['名称', '订阅费用验收'],
+        ['费用凭据标识（同一张账单只登记一次）', 'receipt-fixed-' + width],
+        ['总费用（所选币种）', '600'],
+        ['分摊金额', '360'],
+        ['依据与来源说明', '同周期订阅账单 600，当前公司分摊 360'],
+      ])
+        await dialog.getByLabel(label!, { exact: true }).fill(value!);
+      await dialog
+        .getByRole('button', { name: '保存新修订', exact: true })
+        .click();
+      await dialog.waitFor({ state: 'detached' });
+      const costRow = panel
+        .locator('div')
+        .filter({
+          has: page
+            .locator('strong')
+            .filter({ hasText: '本期费用 · 本期投入 · v1' }),
+        })
+        .last();
+      await costRow
+        .getByRole('button', { name: '编辑并保存新修订', exact: true })
+        .click();
+      dialog = page.getByRole('dialog', { name: '收益估算依据登记' });
+      await dialog.getByLabel(/订阅费用验收 · v1/).check();
+      await dialog
+        .getByRole('button', { name: '保存新修订', exact: true })
+        .click();
+      await dialog.waitFor({ state: 'detached' });
+      const withSubscription = await context.request.get(
+        origin +
+          (await panel
+            .getByRole('link', { name: '导出估算与完整证据' })
+            .getAttribute('href'))!,
+      );
+      expect((await withSubscription.json()).groups[0]).toMatchObject({
+        valueMinor: 18000,
+        subscriptionMinor: 36000,
+        costMinor: 41000,
+        roi: 18000 / 41000 - 1,
+      });
+      const unauthorized = await member.request.get(
+        origin + '/api/v1/admin/organizations/' + org + '/investment?report=1',
+      );
+      expect(unauthorized.status()).toBe(403);
+      if (width === 1440) {
+        for (let i = 0; i < 51; i++)
+          await saveInvestmentEntry(
+            admin!,
+            org,
+            {
+              entryId: randomUUID(),
+              expectedRevision: 0,
+              content: {
+                kind: 'baseline',
+                key: 'page-' + i,
+                title: '分页基准 ' + i,
+                taskType: '运营',
+                unit: '份',
+                minutesPerUnit: 1,
+                hourlyRateMinor: null,
+                currency: null,
+                source: '分页边界验收',
+              },
+            },
+            true,
+            fixture.db,
+          );
+        await adoption
+          .getByRole('button', { name: '关闭', exact: true })
+          .click();
+        await mp
+          .getByRole('button', { name: '登记采用与投入', exact: true })
+          .click();
+        await adoption
+          .getByLabel('业务标识', { exact: true })
+          .fill('unsaved-pagination-draft');
+        await adoption
+          .getByRole('button', { name: '加载更多业务及基准', exact: true })
+          .click();
+        expect(
+          await adoption.getByLabel('业务标识', { exact: true }).inputValue(),
+        ).toBe('unsaved-pagination-draft');
+      }
+
+      expect(errors).toEqual([]);
+      await member.close();
+      await context.close();
+    },
+    60000,
+  );
 });

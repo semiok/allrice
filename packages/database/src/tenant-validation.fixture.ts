@@ -33,6 +33,7 @@ export async function tenantValidationFixture(db: ReturnType<typeof postgres>) {
     ...a,
     target: { organizationId: org, workspaceId: workspace, subjectId: owner },
     artifact,
+    createArtifact: a.artifact,
     operation,
     targetId,
     versionId: assignment!.employee_version_id,
