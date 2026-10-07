@@ -29,6 +29,7 @@ import {
   CloudProjectPreparationError,
   type CloudRunResult,
 } from './backend.js';
+import { cloudServiceAdmissionTimeout } from './service-admission.js';
 
 type Created = Awaited<
   | ReturnType<typeof createCloudCommandOperation>
@@ -505,7 +506,7 @@ export async function startCloudProjectService(
         abort.abort();
       }
     },
-    Math.max(1, Math.min(120_000, Date.parse(created.deadlineAt) - Date.now())),
+    cloudServiceAdmissionTimeout(created.payload, created.deadlineAt),
   );
   const task = (async () => {
     const connection = await db.reserve();
