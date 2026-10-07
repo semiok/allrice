@@ -38,7 +38,20 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Use official HTTPS Ubuntu sources for browser dependencies
+        run: |
+          # The runner's Azure HTTP mirror can stall apt before any test runs.
+          # Keep suites, package signatures and keyrings; change these sources only.
+          for apt_file in /etc/apt/apt-mirrors.txt /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+            if [ -f "$apt_file" ]; then
+              sudo sed -i \
+                -e 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                -e 's|http://archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' \
+                -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' "$apt_file"
+            fi
+          done
       - run: pnpm --filter @allrice/worker exec playwright-core install --with-deps chromium
+        timeout-minutes: 5
       # This first UI step uses isolated loopback responses, without database,
       # model quota, real tenants, Bridge or elevated employee capabilities.
       - name: Verify tenant workspace and composer ownership in Chromium

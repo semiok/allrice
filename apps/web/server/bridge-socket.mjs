@@ -266,6 +266,8 @@ export async function createBridgeSocketGateway({
       work: createPendingWork(),
       queue: Promise.resolve(),
       bytes: 0,
+      sequence: 1,
+      consuming: false,
       closed: false,
       terminal: false,
       done: null,
@@ -336,7 +338,7 @@ export async function createBridgeSocketGateway({
                   type: 'preview.open',
                   id,
                   target,
-                  request,
+                  request: { ...request, flowControl: 'consumed-ack-v1' },
                 }),
               ))
             )
@@ -492,6 +494,14 @@ export async function createBridgeSocketGateway({
                     terminate(client, 4000, 'PREVIEW_IDENTITY');
                     return;
                   }
+                  if (frame.type === 'preview.data') {
+                    if (frame.sequence !== entry.sequence || entry.consuming) {
+                      terminate(client, 4000, 'PREVIEW_SEQUENCE');
+                      return;
+                    }
+                    entry.sequence++;
+                    entry.consuming = true;
+                  }
                   entry.bytes += data.length;
                   if (entry.bytes > bridgeSocketMaximumBufferedBytes) {
                     terminate(client, 4013, 'PREVIEW_BACKPRESSURE');
@@ -511,6 +521,24 @@ export async function createBridgeSocketGateway({
                         if (frame.type === 'preview.end' && !frame.error)
                           entry.terminal = true;
                         await entry.onFrame(frame);
+                        if (
+                          frame.type === 'preview.data' &&
+                          !entry.closed &&
+                          !client.closing
+                        ) {
+                          // Clear before sending: a fast peer can return the next
+                          // frame before the send callback finishes.
+                          entry.consuming = false;
+                          if (
+                            !(await sendAsync(client, {
+                              version: 1,
+                              type: 'preview.ack',
+                              id: frame.id,
+                              sequence: frame.sequence,
+                            }))
+                          )
+                            entry.requestClose();
+                        }
                         if (frame.type === 'preview.end') entry.requestClose();
                       })
                       .catch(() => {

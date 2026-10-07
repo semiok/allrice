@@ -13,6 +13,12 @@ export const ProjectPreviewDataSchema = z
         /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/,
       ),
     binary: z.boolean().optional(),
+    sequence: z
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .optional(),
   })
   .strict();
 export const ProjectPreviewEndSchema = z
@@ -20,6 +26,14 @@ export const ProjectPreviewEndSchema = z
     ...envelope,
     type: z.literal('preview.end'),
     error: z.boolean().optional(),
+  })
+  .strict();
+/** Confirms gateway consumption after authorization and downstream write/drain. */
+export const ProjectPreviewAckSchema = z
+  .object({
+    ...envelope,
+    type: z.literal('preview.ack'),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   })
   .strict();
 export const ProjectPreviewRequestSchema = z
@@ -55,6 +69,8 @@ export const ProjectPreviewRequestSchema = z
           ),
         websocket: z.boolean(),
         protocol: z.string().max(128).optional(),
+        // Only the remote Bridge transport requires consumption confirmation.
+        flowControl: z.literal('consumed-ack-v1').optional(),
       })
       .strict(),
   })
@@ -77,6 +93,7 @@ export const ProjectPreviewServerFrameSchema = z.discriminatedUnion('type', [
   ProjectPreviewRequestSchema,
   ProjectPreviewDataSchema,
   ProjectPreviewEndSchema,
+  ProjectPreviewAckSchema,
 ]);
 export const ProjectPreviewClientFrameSchema = z.discriminatedUnion('type', [
   ProjectPreviewResponseSchema,

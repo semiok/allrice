@@ -5,6 +5,7 @@ import {
   ProjectPreviewRequestSchema,
   ProjectPreviewDataSchema,
   ProjectPreviewEndSchema,
+  ProjectPreviewAckSchema,
 } from '../project-preview.ts';
 
 export const bridgeSocketPath = '/api/v1/bridge/socket';
@@ -72,6 +73,7 @@ export const BridgeSocketMessageSchema = z.discriminatedUnion('type', [
   ProjectPreviewRequestSchema,
   ProjectPreviewDataSchema,
   ProjectPreviewEndSchema,
+  ProjectPreviewAckSchema,
 ]);
 
 export function bridgeSocketOperationPath(input: BridgeSocketRequest) {
