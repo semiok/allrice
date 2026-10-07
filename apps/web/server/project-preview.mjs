@@ -193,6 +193,7 @@ export function createProjectPreviewGateway({
       const timer = setTimeout(body, ms);
       timer.unref();
       timers.add(timer);
+      return timer;
     };
     return state;
   }
@@ -281,6 +282,16 @@ export function createProjectPreviewGateway({
           )
             throw Error('PROJECT_PREVIEW_ORIGIN');
           state.watch(id, token, target);
+          // A progressing development bundle can outlive the first 15 seconds.
+          // Keep both an idle bound and an absolute, non-renewable request bound.
+          const idle = state.timeout(state.requestClose, 15000);
+          state.timeout(
+            state.requestClose,
+            Math.max(
+              1,
+              Math.min(300000, Date.parse(target.hardDeadlineAt) - Date.now()),
+            ),
+          );
           let ended = false,
             received = 0;
           state.channel = await transport.openPreview({
@@ -332,6 +343,7 @@ export function createProjectPreviewGateway({
                     'x-content-type-options': 'nosniff',
                     'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${frameOrigins.join(' ')}; sandbox allow-scripts allow-same-origin allow-forms`,
                   });
+                  idle.refresh();
                 } else if (frame.type === 'preview.data') {
                   if (!res.headersSent) throw Error('PROJECT_PREVIEW_RESPONSE');
                   const bytes = Buffer.from(frame.data, 'base64');
@@ -339,6 +351,7 @@ export function createProjectPreviewGateway({
                   if (received > projectServiceLimits.maximumHttpBytes)
                     throw Error('PROJECT_PREVIEW_LIMIT');
                   if (!res.write(bytes)) await waitForDrain(res);
+                  if (bytes.length) idle.refresh();
                 } else {
                   if (frame.error) throw Error('PROJECT_PREVIEW_UNCONFIRMED');
                   ended = true;
@@ -373,8 +386,6 @@ export function createProjectPreviewGateway({
           if (state.closed) throw Error('PROJECT_PREVIEW_CLOSED');
           if (!(await state.channel.send({ type: 'preview.end' })))
             throw Error('PROJECT_PREVIEW_UNAVAILABLE');
-          // A finite request timeout; a successful HTTP response releases it.
-          state.timeout(state.requestClose, 15000);
         } catch (error) {
           onError(error);
           failure(403);

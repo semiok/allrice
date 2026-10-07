@@ -7,13 +7,20 @@ import { createServer, request } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { createProjectPreviewGateway } from './project-preview.mjs';
 
 const cleanups = [];
+// Gateway timer bindings use the controlled clock; HTTP I/O stays real.
+vi.mock('node:timers', async (load) => ({
+  ...(await load()),
+  setTimeout: (...args) => globalThis.setTimeout(...args),
+  clearTimeout: (...args) => globalThis.clearTimeout(...args),
+}));
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  vi.useRealTimers();
 });
 async function until(predicate) {
   const deadline = Date.now() + 3000;
@@ -168,6 +175,53 @@ async function fixture({ browserOrigins = false } = {}) {
   };
 }
 describe('private preview live transfer authority', () => {
+  it.each(['progress', 'idle', 'absolute', 'hard-deadline'])(
+    'bounds slow HTTP transfers by progress and immutable deadlines: %s',
+    async (scenario) => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const f = await fixture();
+      f.target.hardDeadlineAt = new Date(
+        Date.now() + (scenario === 'hard-deadline' ? 25000 : 600000),
+      ).toISOString();
+      const request = f.send('GET');
+      request.req.end();
+      const outcome = request.response.then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await until(() => f.frames.some((frame) => frame.type === 'preview.end'));
+      const opened = f.opened();
+      await opened.onFrame({
+        type: 'preview.response',
+        status: 200,
+        headers: { 'content-type': 'application/javascript' },
+      });
+      const part = {
+        type: 'preview.data',
+        data: Buffer.alloc(100000, 97).toString('base64'),
+      };
+      await opened.onFrame(part);
+      if (scenario === 'idle') {
+        await vi.advanceTimersByTimeAsync(15000);
+      } else {
+        const steps = scenario === 'absolute' ? 30 : 3;
+        for (let i = 0; i < steps && !f.closed(); i++) {
+          await vi.advanceTimersByTimeAsync(10000);
+          if (!f.closed()) await opened.onFrame(part);
+        }
+      }
+      if (scenario === 'progress') {
+        expect(f.closed()).toBe(false);
+        await opened.onFrame({ type: 'preview.end' });
+        expect((await outcome).value.body.length).toBe(400000);
+      } else {
+        await until(() => f.closed());
+        expect((await outcome).error).toBeDefined();
+      }
+      await f.close();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
   it('streams a framework development bundle beyond four megabytes and rejects the finite response ceiling', async () => {
     for (const size of [5_000_000, 16_000_001]) {
       const f = await fixture(),
