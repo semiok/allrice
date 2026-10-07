@@ -1,5 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { parse } from 'yaml';
+import { verifyDshPhysicalPatches } from './verify-dsh-physical-patches.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 
@@ -22,6 +24,8 @@ const [
   compatibility,
   adminCompatibilityAdapter,
   reuseDecisions,
+  workspace,
+  lock,
 ] = await Promise.all([
   json('apps/worker/dsh/upstream.json'),
   json('apps/worker/dsh/distribution.json'),
@@ -45,6 +49,8 @@ const [
     resolve(root, 'docs/architecture/dsh-reuse-and-replacement.md'),
     'utf8',
   ),
+  readFile(resolve(root, 'pnpm-workspace.yaml'), 'utf8').then(parse),
+  readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8').then(parse),
 ]);
 
 const installedChannel = distribution.installedChannel ?? 'current';
@@ -84,6 +90,13 @@ assert(
   ledger.schemaVersion === 1 && Array.isArray(ledger.patches),
   'invalid patch ledger',
 );
+const patchInventory = await verifyDshPhysicalPatches({
+  root,
+  ledger,
+  workspace,
+  lock,
+  upstreamVersion: installed.version,
+});
 for (const patch of ledger.patches) {
   assert(
     reuseDecisions.includes(`\`${patch.id}\``),
@@ -251,11 +264,12 @@ console.log(
     installedChannel,
     generation: installed.generation,
     version: installed.version,
-    patches: ledger.patches.length,
+    ...patchInventory,
     candidate: distribution.candidate?.generation ?? null,
     rollback: distribution.rollback?.generation ?? null,
     wireProtocol: compatibility.wireProtocol,
     sessionFormat: compatibility.sessionFormat,
     goldenReplayScenarios: requiredReplayScenarios,
+    goldenReplayExecution: 'not-run-by-this-command',
   }),
 );

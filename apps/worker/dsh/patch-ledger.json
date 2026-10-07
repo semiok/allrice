@@ -111,6 +111,46 @@
       "kind": "compatibility-fix",
       "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
       "reason": "Classify the exact pi-ai abnormal WebSocket close 1006 as TRANSPORT so existing bounded native request retries can continue from saved tool results. Other unknown errors, auth and policy failures remain nonretryable. No whole-turn replay or new retry loop."
+    },
+    {
+      "id": "allrice-admin-authenticated-origin-pnpm-v1",
+      "issue": "MET-100",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "upstream-source-patch",
+      "path": "patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch",
+      "reason": "The existing native client recognizes the authenticated administrator gateway HTML marker while preserving native server authentication, Host/Origin checks and loopback restrictions. The marker itself is not an authorization credential. Retirement and rollback conditions remain in the governed administrator architecture."
+    }
+  ],
+  "physicalPatches": [
+    {
+      "package": "@deepseek-ai/dsh-llm-pi-ai",
+      "version": "0.1.5-rc.3",
+      "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
+      "responsibilityId": "dsh-pi-ai-websocket-close-1006-v1"
+    },
+    {
+      "package": "@deepseek-ai/dsh-client-connection",
+      "version": "0.1.5-rc.3",
+      "path": "patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch",
+      "responsibilityId": "allrice-admin-authenticated-origin-pnpm-v1"
+    },
+    {
+      "package": "@deepseek-ai/dsh-mcp-client",
+      "version": "0.1.5-rc.3",
+      "path": "patches/@deepseek-ai__dsh-mcp-client@0.1.5-rc.3.patch",
+      "responsibilityId": "allrice-managed-native-mcp-v1"
+    },
+    {
+      "package": "@deepseek-ai/dsh-session-format-v0-to-v1",
+      "version": "0.1.5-rc.3",
+      "path": "patches/@deepseek-ai__dsh-session-format-v0-to-v1@0.1.5-rc.3.patch",
+      "responsibilityId": "allrice-private-session-migration-v1"
+    },
+    {
+      "package": "@deepseek-ai/dsh-session-persistence-jsonl",
+      "version": "0.1.5-rc.3",
+      "path": "patches/@deepseek-ai__dsh-session-persistence-jsonl@0.1.5-rc.3.patch",
+      "responsibilityId": "allrice-private-session-migration-v1"
     }
   ]
 }
