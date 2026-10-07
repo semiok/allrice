@@ -8,6 +8,7 @@ import type {
 import { useActivityPages } from './organization-activity-data';
 import { CompanyWorkList } from './company-work-list';
 import { CompanyDeliverableLibrary } from './company-deliverables';
+import { CompanyInvestment } from './company-investment';
 import { CompanyAssetsPanel } from './company-assets-panel';
 import styles from './admin-data.module.css';
 import css from './company-dashboard.module.css';
@@ -356,10 +357,10 @@ export function CompanyDashboard({
                 className={css.investment}
                 aria-label="投入与收益（估算）"
               >
-                <h4>投入与收益（估算）</h4>
-                <p>节省工时与收益：尚无估算依据</p>
+                <h4>已记录的执行与范本事实</h4>
                 <p className={css.caption}>
-                  需要人工处理基准、明确采用的成果及实际人工投入。费用币种与完整投入尚未确认。
+                  这些记录用于核对 AI
+                  工作；收益估算使用下方人工确认的基准、采用和投入。
                 </p>
                 <div className={css.facts}>
                   <section>
@@ -392,6 +393,13 @@ export function CompanyDashboard({
                 </div>
               </section>
             )}
+            <CompanyInvestment
+              key={organizationId + '|' + scopeQuery}
+              organizationId={organizationId}
+              period={data.period}
+              filters={filters.toString()}
+              custom={periodQuery.startsWith('range=custom')}
+            />
             <div className={css.metrics}>
               {metrics.map((m) => (
                 <Button
