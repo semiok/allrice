@@ -58,7 +58,19 @@ async function projectServiceStarted(child){
  const until=Math.min(a.deadlineUnixMs,Date.now()+service.readinessTimeoutMs);
  // SPA dev servers use Accept to decide whether '/' falls back to index.html.
  // Match a standard browser/fetch request while still requiring actual 2xx.
- const probe=()=>new Promise(resolve=>{const req=httpGet({host:'127.0.0.1',port:service.port,path:service.path,headers:{accept:'*/*'},agent:false},res=>{const ok=res.statusCode>=200&&res.statusCode<300;res.destroy();resolve(ok);});req.setTimeout(300,()=>{req.destroy();resolve(false);});req.once('error',()=>resolve(false));});
- while(!finished&&!serviceReady){if(await probe()){if(finished)return;serviceReady=true;serviceEvent({type:'ready',port:service.port,visibility:'container_only'});return;}if(Date.now()>=until){end('readiness_timeout',125);return;}await new Promise(r=>setTimeout(r,100));}
+ // First-request compilation can take longer than a socket idle timeout. Bound
+ // each request by the remaining absolute readiness budget, including responses
+ // that keep sending bytes; retry only after an actual connection/HTTP failure.
+ const probe=()=>new Promise(resolve=>{
+  let settled=false,timer;
+  const settle=ok=>{if(settled)return;settled=true;clearTimeout(timer);req.destroy();resolve(ok);};
+  const req=httpGet({host:'127.0.0.1',port:service.port,path:service.path,headers:{accept:'*/*'},agent:false},res=>{const ok=res.statusCode>=200&&res.statusCode<300;res.destroy();settle(ok);});
+  timer=setTimeout(()=>settle(false),Math.max(1,until-Date.now()));req.once('error',()=>settle(false));
+ });
+ while(!finished&&!serviceReady){
+  if(Date.now()>=until){end('readiness_timeout',125);return;}
+  if(await probe()){if(finished)return;if(Date.now()>=until){end('readiness_timeout',125);return;}serviceReady=true;serviceEvent({type:'ready',port:service.port,visibility:'container_only'});return;}
+  if(Date.now()>=until){end('readiness_timeout',125);return;}await new Promise(r=>setTimeout(r,Math.min(100,until-Date.now())));
+ }
 }
 `;
