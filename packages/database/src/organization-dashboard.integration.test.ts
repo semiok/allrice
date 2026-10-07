@@ -70,7 +70,9 @@ suite(
       state: string,
       createdAt: Date,
       completedAt: Date | null,
+      fixture = a,
     ) {
+      const a = fixture;
       const id = randomUUID(),
         question = randomUUID(),
         answer = randomUUID();
@@ -276,6 +278,78 @@ suite(
         incompleteReceipts: 2,
         currency: null,
       });
+    });
+    it('counts terminal root clock and template evidence once and keeps missing human/cost inputs unknown', async () => {
+      const g = await tenantValidationFixture(f.db);
+      await f.db`update allrice_runs set state='succeeded',completed_at=${now} where id=${g.task.runId}`;
+      await run('failed', now, now, g);
+      const queued = await run('queued', now, null, g);
+      await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy,phase,active_ms,waiting_ms)
+        values(${g.task.runId},${g.target.organizationId},${g.target.workspaceId},'{}','terminal',60000,0),
+        (${queued},${g.target.organizationId},${g.target.workspaceId},'{}','active',999999,999999)`;
+      const [artifact] = await f.db<
+        { version_id: string }[]
+      >`select version_id from allrice_workbench_artifacts where run_id=${g.task.runId} and version_id is not null limit 1`;
+      expect(artifact).toBeDefined();
+      for (let i = 0; i < 2; i++) {
+        const asset = randomUUID(),
+          revision = randomUUID();
+        await f.db`insert into allrice_company_assets(id,organization_id,owner_id,kind) values(${asset},${g.target.organizationId},${g.target.subjectId},'template')`;
+        await f.db`insert into allrice_company_asset_revisions(id,organization_id,asset_id,number,content,digest,base_asset_revision,created_by)
+          values(${revision},${g.target.organizationId},${asset},1,'{}',${`sha256:${'a'.repeat(64)}`},0,${g.target.subjectId})`;
+        await f.db`insert into allrice_company_run_assets(organization_id,workspace_id,owner_id,run_id,asset_id,revision_id,digest,kind,selected_at,loaded_at,read_at)
+          values(${g.target.organizationId},${g.target.workspaceId},${g.target.subjectId},${g.task.runId},${asset},${revision},${`sha256:${'a'.repeat(64)}`},'template',${now},${now},${now})`;
+        await f.db`insert into allrice_company_asset_derivations(run_id,asset_id,deliverable_version_id)
+          values(${g.task.runId},${asset},${artifact!.version_id})`;
+      }
+      const overview = await readOrganizationDashboard(
+        admin,
+        g.target.organizationId,
+        range,
+      );
+      expect(overview.investmentEvidence).toEqual({
+        terminalRuns: 2,
+        runsWithClock: 1,
+        recordedActiveMs: 60000,
+        recordedWaitingMs: 0,
+        templateSelectedRuns: 1,
+        templateLoadedRuns: 1,
+        templateReadRuns: 1,
+        templateDeliveredRuns: 1,
+        estimation: {
+          status: 'unknown',
+          missing: [
+            'human_baseline',
+            'business_adoption',
+            'human_input',
+            'cost_currency',
+          ],
+        },
+      });
+      const empty = await readOrganizationDashboard(
+        admin,
+        b.target.organizationId,
+        range,
+      );
+      expect(empty.investmentEvidence).toMatchObject({
+        terminalRuns: 0,
+        runsWithClock: 0,
+        recordedActiveMs: null,
+        recordedWaitingMs: null,
+      });
+      await f.db`update allrice_workspaces set archived_at=clock_timestamp() where id=${g.target.workspaceId}`;
+      expect(
+        (await readOrganizationDashboard(admin, g.target.organizationId, range))
+          .investmentEvidence.templateDeliveredRuns,
+      ).toBe(0);
+      expect(
+        (
+          await readOrganizationDashboard(admin, g.target.organizationId, {
+            ...range,
+            userId: g.target.subjectId,
+          })
+        ).investmentEvidence.terminalRuns,
+      ).toBe(2);
     });
     it('keeps empty companies honest and enforces current administrator authority, company targets and cursor scope', async () => {
       const empty = await createManagedOrganization(admin, {

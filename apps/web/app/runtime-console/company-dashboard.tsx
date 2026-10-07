@@ -16,6 +16,10 @@ const dateInput = (date: Date) =>
   new Date(date.getTime() - date.getTimezoneOffset() * 60000)
     .toISOString()
     .slice(0, 16);
+const duration = (ms: number | null) =>
+  ms === null
+    ? '尚无记录'
+    : `${(ms / 60000).toLocaleString(undefined, { maximumFractionDigits: 1 })} 分钟`;
 export function CompanyDashboard({
   organizationId,
   selectedUserId,
@@ -347,6 +351,47 @@ export function CompanyDashboard({
                 </span>
               )}
             </div>
+            {data.investmentEvidence && (
+              <section
+                className={css.investment}
+                aria-label="投入与收益（估算）"
+              >
+                <h4>投入与收益（估算）</h4>
+                <p>节省工时与收益：尚无估算依据</p>
+                <p className={css.caption}>
+                  需要人工处理基准、明确采用的成果及实际人工投入。费用币种与完整投入尚未确认。
+                </p>
+                <div className={css.facts}>
+                  <section>
+                    <h4>已记录 AI 耗时</h4>
+                    <p>
+                      工作 {duration(data.investmentEvidence.recordedActiveMs)}{' '}
+                      · 等待{' '}
+                      {duration(data.investmentEvidence.recordedWaitingMs)}
+                    </p>
+                    <small>
+                      本期 {data.investmentEvidence.terminalRuns} 项终态工作中，
+                      {data.investmentEvidence.runsWithClock} 项有耗时记录。
+                      这是 AI
+                      耗时，不等于人工投入或节省工时；未记录部分不计为零。
+                    </small>
+                  </section>
+                  <section>
+                    <h4>公司范本使用事实</h4>
+                    <p>
+                      选用 {data.investmentEvidence.templateSelectedRuns} 项工作
+                      · 已装载 {data.investmentEvidence.templateLoadedRuns} 项 ·
+                      有读取回执 {data.investmentEvidence.templateReadRuns} 项
+                    </p>
+                    <small>
+                      {data.investmentEvidence.templateDeliveredRuns}{' '}
+                      项工作已有可用的来源成果。
+                      同一主任务只计一次；读取或生成不代表业务已采用，也不直接折算收益。
+                    </small>
+                  </section>
+                </div>
+              </section>
+            )}
             <div className={css.metrics}>
               {metrics.map((m) => (
                 <Button

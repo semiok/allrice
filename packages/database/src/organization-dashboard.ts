@@ -165,6 +165,33 @@ export async function readOrganizationDashboard(
         and exists(select 1 from allrice_route_decisions rd join allrice_model_usage_ledger l on l.route_decision_id=rd.id
           where rd.run_id=f.id and rd.organization_id=${organizationId})) as covered_runs
     from receipts`;
+  // Count a formal root once. Run clocks measure AI execution/waiting, never
+  // human input or savings. Missing clocks remain missing rather than zero.
+  const [investment] = await db<Record<string, number | string | null>[]>`
+    with scoped_runs as (
+      select r.id,c.run_id as clock_id,c.active_ms,c.waiting_ms ${source}
+        and r.state in ('succeeded','failed','canceled') and ${completedInPeriod}
+    ) select count(*)::int as terminal_runs,
+      count(clock_id)::int as clock_runs,
+      sum(active_ms) as active_ms,sum(waiting_ms) as waiting_ms,
+      count(*) filter(where exists(select 1 from allrice_company_run_assets ca
+        where ca.run_id=f.id and ca.organization_id=${organizationId} and ca.kind='template' and ca.selected_at is not null))::int as selected_runs,
+      count(*) filter(where exists(select 1 from allrice_company_run_assets ca
+        where ca.run_id=f.id and ca.organization_id=${organizationId} and ca.kind='template' and ca.loaded_at is not null))::int as loaded_runs,
+      count(*) filter(where exists(select 1 from allrice_company_run_assets ca
+        where ca.run_id=f.id and ca.organization_id=${organizationId} and ca.kind='template' and ca.read_at is not null))::int as read_runs,
+      count(*) filter(where exists(select 1 from allrice_company_asset_derivations der
+        join allrice_company_run_assets ca on ca.run_id=der.run_id and ca.asset_id=der.asset_id and ca.kind='template'
+        join allrice_deliverable_versions dv on dv.id=der.deliverable_version_id and dv.organization_id=ca.organization_id
+          and dv.workspace_id=ca.workspace_id and dv.owner_id=ca.owner_id and dv.platform_test_run_id is null
+        join allrice_workspaces w on w.id=dv.workspace_id and w.organization_id=dv.organization_id and w.archived_at is null
+        join allrice_storage_objects o on o.id=dv.object_id and o.organization_id=dv.organization_id and o.workspace_id=dv.workspace_id
+          and o.owner_id=dv.owner_id and o.state='ready' and o.deleted_at is null
+          and (o.retention_until is null or o.retention_until>clock_timestamp())
+        left join allrice_workbench_artifacts a on a.version_id=dv.id and a.organization_id=dv.organization_id
+          and a.workspace_id=dv.workspace_id and a.owner_id=dv.owner_id
+        where der.run_id=f.id and ca.organization_id=${organizationId} and ${businessDeliverablePredicate(db)}))::int as delivered_runs
+    from scoped_runs f`;
   const optionSource = organizationWorkSource(db, organizationId, {
     userId: filter.userId,
     jobTitle: filter.jobTitle,
@@ -251,6 +278,25 @@ export async function readOrganizationDashboard(
       recordedCostCents: nullable(usage?.recorded_cost),
       currency: null,
       costBasis: 'ledger-records-without-billing-currency',
+    },
+    investmentEvidence: {
+      terminalRuns: number(investment?.terminal_runs),
+      runsWithClock: number(investment?.clock_runs),
+      recordedActiveMs: nullable(investment?.active_ms),
+      recordedWaitingMs: nullable(investment?.waiting_ms),
+      templateSelectedRuns: number(investment?.selected_runs),
+      templateLoadedRuns: number(investment?.loaded_runs),
+      templateReadRuns: number(investment?.read_runs),
+      templateDeliveredRuns: number(investment?.delivered_runs),
+      estimation: {
+        status: 'unknown',
+        missing: [
+          'human_baseline',
+          'business_adoption',
+          'human_input',
+          'cost_currency',
+        ],
+      },
     },
     filters: {
       employees: [...employees],
