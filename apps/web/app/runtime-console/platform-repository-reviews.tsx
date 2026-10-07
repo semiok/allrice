@@ -30,9 +30,11 @@ const reasons = {
 export function PlatformRepositoryReviews({
   publicationId,
   credentialRevision,
+  readOnly = false,
 }: {
   publicationId: string;
   credentialRevision: number | null;
+  readOnly?: boolean;
 }) {
   const [panel, setPanel] = useState<ReturnType<
       typeof RepositoryReviewPanelSchema.parse
@@ -128,6 +130,7 @@ export function PlatformRepositoryReviews({
   };
   const start = async () => {
     if (
+      readOnly ||
       mutating.current ||
       pending ||
       !panel?.canStart ||
@@ -177,7 +180,7 @@ export function PlatformRepositoryReviews({
     }
   };
   const stop = async () => {
-    if (!active || mutating.current) return;
+    if (readOnly || !active || mutating.current) return;
     mutating.current = true;
     setBusy(true);
     try {
@@ -205,7 +208,11 @@ export function PlatformRepositoryReviews({
       <div className={css.controls}>
         <AdminButton
           disabled={
-            busy || !!pending || !panel?.canStart || !credentialRevision
+            readOnly ||
+            busy ||
+            !!pending ||
+            !panel?.canStart ||
+            !credentialRevision
           }
           onClick={() => void start()}
         >
@@ -225,7 +232,7 @@ export function PlatformRepositoryReviews({
           </AdminButton>
         )}
         {active && (
-          <AdminButton disabled={busy} onClick={() => void stop()}>
+          <AdminButton disabled={readOnly || busy} onClick={() => void stop()}>
             停止审查
           </AdminButton>
         )}

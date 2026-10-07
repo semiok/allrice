@@ -10,6 +10,10 @@ import {
 import { requirePlatformAdminContext } from '../../../../../../lib/identity/platform-admin';
 import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 import { executionErrorResponse } from '../../../../../../lib/execution/responses';
+import {
+  platformAutonomyPaused,
+  deferredPlatformActionResponse,
+} from '../../../../../../lib/execution/platform-autonomy';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -37,8 +41,9 @@ export async function POST(request: Request) {
   try {
     if (!sameOriginBrowserWrite(request))
       return new Response(null, { status: 403, headers });
-    const context = await requirePlatformAdminContext(request),
-      text = await request.text();
+    const context = await requirePlatformAdminContext(request);
+    if (platformAutonomyPaused()) return deferredPlatformActionResponse();
+    const text = await request.text();
     if (text.length > 1000) return new Response(null, { status: 413, headers });
     return Response.json(
       RepairTaskSchema.parse(

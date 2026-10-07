@@ -19,7 +19,9 @@ const labels = {
 };
 type Catalog = ReturnType<typeof RepositoryCatalogSchema.parse>;
 type Submission = ReturnType<typeof CreateRepairTaskSchema.parse>;
-export function PlatformRepositoryRepair() {
+export function PlatformRepositoryRepair({
+  readOnly = false,
+}: { readOnly?: boolean } = {}) {
   const [catalog, setCatalog] = useState<Catalog | null>(null),
     [tasks, setTasks] = useState<RepairTask[]>([]),
     [baselineId, setBaselineId] = useState('');
@@ -126,7 +128,7 @@ export function PlatformRepositoryRepair() {
     return q;
   }
   async function submit(reuseAcceptedTaskId?: string) {
-    if (writing || (!pending && !baselineId)) return;
+    if (readOnly || writing || (!pending && !baselineId)) return;
     const request = pending ?? {
       requestId: crypto.randomUUID(),
       baselineId,
@@ -184,6 +186,7 @@ export function PlatformRepositoryRepair() {
     }
   }
   async function stop() {
+    if (readOnly) return;
     if (!current || writing) return;
     setWriting(true);
     try {
@@ -219,6 +222,9 @@ export function PlatformRepositoryRepair() {
   return (
     <section className={css.card} aria-label="仓库修复候选">
       <h3>仓库修复候选</h3>
+      {readOnly && (
+        <p role="status">自主修复与发布延期，当前仅查看历史记录。</p>
+      )}
       <p className={css.meta}>
         从登记的完整 AllRice
         源码生成受限候选，并复查同一组原始断言。支持命令输出遮盖模块；已登记编译环境时，同时验证两个包的编译产物。全仓构建与发布另行验证。
@@ -229,7 +235,7 @@ export function PlatformRepositoryRepair() {
           <select
             value={baselineId}
             onChange={(e) => setBaselineId(e.target.value)}
-            disabled={writing || !!pending}
+            disabled={readOnly || writing || !!pending}
             aria-label="源码基线"
           >
             <option value="">选择登记基线</option>
@@ -241,7 +247,9 @@ export function PlatformRepositoryRepair() {
           </select>
         </label>
         <AdminButton
-          disabled={writing || hasActive || (!pending && !baselineId)}
+          disabled={
+            readOnly || writing || hasActive || (!pending && !baselineId)
+          }
           onClick={() => void submit()}
         >
           {pending ? '核对并继续原请求' : '生成修复候选'}
@@ -317,6 +325,7 @@ export function PlatformRepositoryRepair() {
             {current.accepted && (
               <AdminButton
                 disabled={
+                  readOnly ||
                   writing ||
                   !!pending ||
                   hasActive ||
@@ -332,7 +341,10 @@ export function PlatformRepositoryRepair() {
               </AdminButton>
             )}
             {['queued', 'running'].includes(current.status) && (
-              <AdminButton disabled={writing} onClick={() => void stop()}>
+              <AdminButton
+                disabled={readOnly || writing}
+                onClick={() => void stop()}
+              >
                 停止修复
               </AdminButton>
             )}
@@ -418,6 +430,7 @@ export function PlatformRepositoryRepair() {
         </article>
       )}
       <PlatformRepositoryPublications
+        readOnly={readOnly}
         repair={current}
         currentBaseline={
           !!current &&
