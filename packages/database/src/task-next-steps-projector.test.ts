@@ -25,12 +25,13 @@ const scope = {
   employeeVersionId: randomUUID(),
 };
 const run = { id: randomUUID(), state: 'succeeded', errorCode: null };
-function manifest(office = false): EmployeeManifest {
+function manifest(office = false, extraTools: string[] = []): EmployeeManifest {
   const toolNames = [
     'workspace.document.read',
     'workspace.export.create',
     'workspace.skill.read',
     'python.execute',
+    ...extraTools,
   ];
   return employeeManifest({
     key: 'synthetic',
@@ -245,6 +246,96 @@ describe('next steps from formal current-turn facts', () => {
     expect(projectTaskNextSteps(f).suggestions[0]?.task.preparation).toEqual([
       'files',
     ]);
+  });
+  it.each([
+    ['TOOL_FILE_NOT_FOUND', 'files', []],
+    ['MCP_AUTH_REQUIRED', 'connections', ['local.mcp.call']],
+    ['PYTHON_LOCAL_UNAVAILABLE', 'bridge', []],
+  ] as const)(
+    'keeps %s preparation when delivered-result actions fill all three slots',
+    (errorCode, preparation, extraTools) => {
+      const f = facts();
+      f.manifest = manifest(true, [...extraTools]);
+      if (preparation === 'connections') {
+        if (f.manifest.schemaVersion !== 2) throw Error('v2 fixture required');
+        f.manifest.securityPolicy.deniedCapabilities =
+          f.manifest.securityPolicy.deniedCapabilities.filter(
+            (capability) => capability !== 'secret:use',
+          );
+        if (!f.manifest.capabilities.includes('secret:use'))
+          f.manifest.capabilities.push('secret:use');
+      }
+      const original = projectTaskNextSteps(f);
+      f.run = { ...run, state: 'failed', errorCode };
+      const result = projectTaskNextSteps(f);
+      expect(result.suggestions).toHaveLength(3);
+      expect(result.suggestions[0]).toEqual(original.suggestions[0]);
+      expect(result.suggestions[1]).toMatchObject({
+        task: { id: `prepare-${preparation}`, preparation: [preparation] },
+        references: [],
+      });
+      expect(result.suggestions[2]).toEqual(original.suggestions[1]);
+      expect(result.readableArtifactCount).toBe(1);
+      expect(result.notice).toContain('未全部完成');
+      expect(result.scope.contextRevision).not.toBe(
+        original.scope.contextRevision,
+      );
+      expect(projectTaskNextSteps(f)).toEqual(result);
+    },
+  );
+  it.each([0, 1, 2])(
+    'places preparation consistently beside %s result actions',
+    (count) => {
+      const f = facts();
+      f.manifest = manifest(false);
+      if (count === 0) f.artifacts = [];
+      if (count === 1 && f.manifest.schemaVersion === 2)
+        f.manifest.capabilityBindings.toolNames = ['workspace.document.read'];
+      expect(projectTaskNextSteps(f).suggestions).toHaveLength(count);
+      f.run = { ...run, state: 'failed', errorCode: 'TOOL_FILE_NOT_FOUND' };
+      const result = projectTaskNextSteps(f);
+      expect(result.suggestions).toHaveLength(count + 1);
+      expect(result.suggestions[Math.min(1, count)]?.task.id).toBe(
+        'prepare-files',
+      );
+    },
+  );
+  it('preserves authorization and terminal-state gates when preparation has priority', () => {
+    const f = facts();
+    f.run = { ...run, state: 'failed', errorCode: 'PYTHON_LOCAL_UNAVAILABLE' };
+    f.bridgePreparationAllowed = false;
+    expect(projectTaskNextSteps(f).suggestions).toHaveLength(3);
+    expect(
+      projectTaskNextSteps(f).suggestions.some(
+        (s) => s.task.id === 'prepare-bridge',
+      ),
+    ).toBe(false);
+    f.run.errorCode = 'MCP_AUTH_REQUIRED';
+    expect(
+      projectTaskNextSteps(f).suggestions.some(
+        (s) => s.task.id === 'prepare-connections',
+      ),
+    ).toBe(false);
+    f.run.errorCode = 'TOOL_FILE_NOT_FOUND';
+    for (const state of ['succeeded', 'canceled', 'running']) {
+      f.run.state = state;
+      expect(
+        projectTaskNextSteps(f).suggestions.some(
+          (s) => s.task.id === 'prepare-files',
+        ),
+      ).toBe(false);
+    }
+    f.run.state = 'failed';
+    f.unknown = true;
+    expect(projectTaskNextSteps(f).suggestions).toEqual([]);
+    f.unknown = false;
+    if (f.manifest.schemaVersion !== 2) throw Error('v2 fixture required');
+    f.manifest.securityPolicy.deniedCapabilities.push('storage:read');
+    expect(
+      projectTaskNextSteps(f).suggestions.some(
+        (s) => s.task.id === 'prepare-files',
+      ),
+    ).toBe(false);
   });
   it('deduplicates action kinds and changes context identity for each required scope and source revision', () => {
     const f = facts(),
