@@ -194,6 +194,54 @@ it('projects Office formats only from the actual frozen native Skill and granted
   ).toBe(false);
 });
 
+it('projects development and iteration tasks only from a frozen project Skill and actual tools', () => {
+  const tools = ['workspace.project', 'workspace.skill.read'];
+  const projectDefinition = {
+    ...definition,
+    capabilities: { ...definition.capabilities, toolNames: tools },
+  };
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: projectDefinition,
+    skills: [
+      { ...skills[0]!, name: 'project-development', required_tool_refs: tools },
+    ],
+  });
+  const manifest = employeeManifest({
+    key: 'project-helper',
+    name: '普通项目伙伴',
+    description: 'Synthetic frozen project employee',
+    runtimePackage,
+    toolNames: tools,
+  });
+  if (manifest.schemaVersion !== 2) throw Error('current employee required');
+  const before = JSON.stringify(manifest);
+  const tasks = projectEmployeeTaskSuggestions(manifest);
+  expect(tasks.slice(0, 2).map((task) => task.id)).toEqual([
+    'develop-project',
+    'iterate-project',
+  ]);
+  expect(tasks.length).toBeLessThanOrEqual(8);
+  // Cloud-capable projects must remain discoverable without a local Bridge.
+  expect(
+    tasks.slice(0, 2).some((task) => task.preparation?.includes('bridge')),
+  ).toBe(false);
+  expect(JSON.stringify(manifest)).toBe(before);
+  const withoutSkill = structuredClone(manifest);
+  withoutSkill.runtimePackage!.skills = [];
+  expect(
+    projectEmployeeTaskSuggestions(withoutSkill).map((task) => task.id),
+  ).not.toContain('develop-project');
+  const withoutTool = structuredClone(manifest);
+  withoutTool.capabilityBindings.toolNames = ['workspace.skill.read'];
+  expect(
+    projectEmployeeTaskSuggestions(withoutTool).map((task) => task.id),
+  ).not.toContain('develop-project');
+  const explicit = structuredClone(manifest);
+  explicit.taskSuggestions = [];
+  expect(projectEmployeeTaskSuggestions(explicit)).toEqual([]);
+});
+
 function validFrozenExecutionSnapshot() {
   const content = '# Web Research\n\n先搜索，再交叉核验并附来源。';
   const validSkills = [

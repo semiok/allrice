@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { DevelopmentCommandSchema } from '@allrice/contracts';
+import {
+  DevelopmentCommandSchema,
+  ProjectWorkspaceToolInputSchema,
+} from '@allrice/contracts';
 
 import {
   loadPlatformContentCatalog,
@@ -8,6 +11,32 @@ import {
 } from './catalog.js';
 
 describe('platform content catalog', () => {
+  it('validates the shipped project delivery example with the production project contract', async () => {
+    const catalog = await loadPlatformContentCatalog();
+    const skill = catalog.skills.find((s) => s.name === 'project-development')!;
+    const resource = skill.bundle!.resources.find(
+      (r) => r.path === 'references/delivery.md',
+    )!;
+    const markdown = Buffer.from(resource.contentBase64, 'base64').toString(
+      'utf8',
+    );
+    const example = markdown.match(/```json\n([\s\S]*?)\n```/)![1]!;
+    const resolved = example
+      .replaceAll('$PROJECT_ID', '00000000-0000-4000-8000-000000000001')
+      .replaceAll('$SNAPSHOT_ID', '00000000-0000-4000-8000-000000000002')
+      .replaceAll(
+        '$BASELINE_SNAPSHOT_ID',
+        '00000000-0000-4000-8000-000000000003',
+      )
+      .replaceAll('$SNAPSHOT_CHECKSUM', `sha256:${'a'.repeat(64)}`)
+      .replaceAll('$BASELINE_SNAPSHOT_CHECKSUM', `sha256:${'b'.repeat(64)}`);
+    const command = ProjectWorkspaceToolInputSchema.parse(JSON.parse(resolved));
+    expect(command.action).toBe('deliver');
+    expect(skill.requiredToolRefs).toEqual([
+      'workspace.project',
+      'workspace.skill.read',
+    ]);
+  });
   it('validates the shipped development review example against the actual tool contract', async () => {
     const catalog = await loadPlatformContentCatalog();
     const skill = catalog.skills.find(
@@ -34,7 +63,7 @@ describe('platform content catalog', () => {
   it('loads every current production Skill from its canonical source file', async () => {
     const catalog = await loadPlatformContentCatalog();
 
-    expect(catalog.skills).toHaveLength(13);
+    expect(catalog.skills).toHaveLength(14);
     expect(catalog.skills.map((skill) => skill.name)).toEqual([
       'business-reconciliation',
       'web-research',
@@ -49,6 +78,7 @@ describe('platform content catalog', () => {
       'browser-research',
       'office',
       'development-cooperation',
+      'project-development',
     ]);
     expect(catalog.skills.every((skill) => skill.content.endsWith('\n'))).toBe(
       true,
@@ -67,7 +97,7 @@ describe('platform content catalog', () => {
       'structured-deliverable',
     ]);
     expect(legacy.every((skill) => !skill.enabled)).toBe(true);
-    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(11);
+    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(12);
     expect(office.requiredToolRefs).toEqual(
       expect.arrayContaining(legacy.flatMap((skill) => skill.requiredToolRefs)),
     );

@@ -260,6 +260,24 @@
       "userInvocable": true,
       "requiredToolRefs": ["assistant.development", "workspace.skill.read"],
       "enabled": true
+    },
+    {
+      "id": "cd2f1428-dba3-57ea-bb4d-d7296c678d1b",
+      "name": "project-development",
+      "contentFile": "skills/project-development/SKILL.md",
+      "bundleFile": "skills/project-development/bundle.json",
+      "version": "1.0.0",
+      "checksum": "sha256:ca6c78a7e01587f70a8d353575c44aa685d2942b49f6326b8387ecab22f3d0cf",
+      "source": "allrice",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=ca6c78a7e01587f70a8d353575c44aa685d2942b49f6326b8387ecab22f3d0cf",
+      "license": "Apache-2.0",
+      "reviewStatus": "reviewed",
+      "reviewedByLabel": "MET-172 governed project workflow review",
+      "createdByLabel": "MET-172",
+      "modelInvocable": true,
+      "userInvocable": true,
+      "requiredToolRefs": ["workspace.project", "workspace.skill.read"],
+      "enabled": true
     }
   ]
 }
