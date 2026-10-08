@@ -78,6 +78,7 @@ import {
   prepareBridgeBrowser,
   bridgePreviewState,
   prepareLocalSandbox,
+  prepareAndReportLocalCommand,
 } from './runtime-preparation.js';
 
 const execFileAsync = promisify(execFile);
@@ -1332,32 +1333,47 @@ async function startSession(
             return;
           }
           try {
-            if (managedSandbox && !process.env.ALLRICE_LOCAL_DOCKER_SOCKET) {
-              await prepareLocalSandbox(managedSandbox, commandAbort.signal);
-              await managedSandbox.prepareNodeImage(commandAbort.signal);
-            }
-            let profile;
-            try {
-              profile = await runner.preflight(commandAbort.signal);
-            } catch (error) {
-              if (Date.now() - lastSandboxResume < 60_000) throw error;
-              lastSandboxResume = Date.now();
-              environment.sandbox = 'preparing';
-              publish();
-              profile = await prepareLocalSandbox(runner, commandAbort.signal);
-            }
-            commandAbort.signal.throwIfAborted();
-            await bridgeRequest({
-              server: config.server,
-              path: '/api/v1/bridge/device/runtime-profile',
-              method: 'POST',
-              token,
-              body: { contractVersion: 1, ...profile, available: true },
-              maximumResponseBytes: 4096,
-              timeoutMs: 5000,
-              signal: commandAbort.signal,
-            });
-            runnerAvailable = true;
+            const { profile, reportFailed } =
+              await prepareAndReportLocalCommand({
+                signal: commandAbort.signal,
+                prepare: async () => {
+                  if (
+                    managedSandbox &&
+                    !process.env.ALLRICE_LOCAL_DOCKER_SOCKET
+                  ) {
+                    await prepareLocalSandbox(
+                      managedSandbox,
+                      commandAbort.signal,
+                    );
+                    await managedSandbox.prepareNodeImage(commandAbort.signal);
+                  }
+                  try {
+                    return await runner.preflight(commandAbort.signal);
+                  } catch (error) {
+                    if (Date.now() - lastSandboxResume < 60_000) throw error;
+                    lastSandboxResume = Date.now();
+                    environment.sandbox = 'preparing';
+                    publish();
+                    return prepareLocalSandbox(runner, commandAbort.signal);
+                  }
+                },
+                report: (verified) =>
+                  bridgeRequest({
+                    server: config.server,
+                    path: '/api/v1/bridge/device/runtime-profile',
+                    method: 'POST',
+                    token,
+                    body: { contractVersion: 1, ...verified, available: true },
+                    maximumResponseBytes: 4096,
+                    timeoutMs: 5000,
+                    signal: commandAbort.signal,
+                  }),
+              });
+            if (reportFailed)
+              console.warn('LOCAL_COMMAND_PROFILE_REPORT_UNAVAILABLE');
+            // A verified local runtime may stay physically ready after a
+            // transient report failure, but new commands require the ACK.
+            runnerAvailable = !reportFailed;
             runnerProfile = profile;
             delete readinessErrors.sandbox;
             environment.sandbox = 'ready';

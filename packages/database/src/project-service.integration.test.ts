@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { projectServiceFixture } from './project-service.fixture.ts';
@@ -8,6 +8,15 @@ import {
   projectServicePreviewTarget,
   projectServiceWorkerControl,
 } from './project-services.ts';
+import { heartbeatBridgeDevice } from './bridge.ts';
+import type * as Client from './core/client.ts';
+
+let fixtureDatabase: ReturnType<typeof Client.getDatabase>;
+vi.mock('./core/client.ts', async (original) => ({
+  ...(await original<typeof Client>()),
+  getDatabase: () => fixtureDatabase,
+}));
+
 import { cancelRuntimeAgentOperationsTransaction } from './runtime-ledger/ledger.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -26,6 +35,7 @@ suite('MET166 finite project service — real PostgreSQL', () => {
     ])
       vi.stubEnv(`ALLRICE_${key}_ENABLED`, '1');
     database = await createAssistantFixtureDatabase();
+    fixtureDatabase = database.db;
   }, 120000);
   afterAll(async () => {
     await database?.close();
@@ -234,4 +244,121 @@ suite('MET166 finite project service — real PostgreSQL', () => {
     ).rejects.toThrow();
     expect((await f.exchange()).stopRequested).toBe(true);
   });
+  async function deviceHeartbeat(
+    f: Awaited<ReturnType<typeof projectServiceFixture>>,
+    sandbox: 'ready' | 'unavailable' = 'ready',
+    paused = false,
+  ) {
+    const token = 'synthetic-service-heartbeat-' + randomUUID();
+    await f.db`update allrice_bridge_devices set token_hash=${createHash('sha256').update(token).digest('hex')} where id=${f.device.id}`;
+    return heartbeatBridgeDevice(token, {
+      protocolVersion: 2,
+      capabilities: f.device.capabilities,
+      environment: {
+        version: 1,
+        clientVersion: '0.6.0-dev.41',
+        browser: 'unavailable',
+        sandbox,
+        preview: 'unavailable',
+        paused,
+      },
+    });
+  }
+  async function stopAudit(
+    f: Awaited<ReturnType<typeof projectServiceFixture>>,
+  ) {
+    return f.db`select reason,metadata from allrice_audit_events where organization_id=${f.task.scope.organizationId} and workspace_id=${f.workspace} and resource_id=${f.id} and action='runtime.project_service.stop_requested'`;
+  }
+  it('a ready heartbeat preserves fresh profile authority after Run success without extending its service lease', async () => {
+    const f = await projectServiceFixture(database.db);
+    await f.db`update allrice_runs set state='succeeded' where id=${f.context.runId}`;
+    await f.db`update allrice_jobs set status='succeeded' where id=${f.context.jobId}`;
+    const [before] =
+      await f.db`select s.expires_at,p.reported_at from allrice_project_services s join allrice_bridge_runtime_profiles p on p.device_id=s.device_id where s.id=${f.id}`;
+    await deviceHeartbeat(f);
+    expect((await f.exchange()).stopRequested).toBe(false);
+    const [after] =
+      await f.db`select s.expires_at,p.reported_at from allrice_project_services s join allrice_bridge_runtime_profiles p on p.device_id=s.device_id where s.id=${f.id}`;
+    expect(after!.expires_at).toEqual(before!.expires_at);
+    expect(after!.reported_at).toEqual(before!.reported_at);
+    expect(await stopAudit(f)).toHaveLength(0);
+  });
+  it('ready heartbeat cannot freshen a stale profile or resurrect a stopped service', async () => {
+    const f = await projectServiceFixture(database.db);
+    await f.db`update allrice_bridge_runtime_profiles set reported_at=clock_timestamp()-interval '91 seconds' where device_id=${f.device.id}`;
+    const [before] =
+      await f.db`select reported_at from allrice_bridge_runtime_profiles where device_id=${f.device.id}`;
+    await deviceHeartbeat(f);
+    expect((await f.exchange()).stopRequested).toBe(true);
+    const [after] =
+      await f.db`select reported_at from allrice_bridge_runtime_profiles where device_id=${f.device.id}`;
+    expect(after!.reported_at).toEqual(before!.reported_at);
+    expect(await stopAudit(f)).toMatchObject([
+      { reason: 'local_authority_missing_or_stale' },
+    ]);
+    await f.db`update allrice_bridge_runtime_profiles set reported_at=clock_timestamp() where device_id=${f.device.id}`;
+    expect((await f.exchange()).stopRequested).toBe(true);
+    expect(await stopAudit(f)).toHaveLength(1);
+  });
+  it('persists one bounded reason on the first delivery-only stop, without fabricating physical cleanup', async () => {
+    const f = await projectServiceFixture(database.db);
+    await deviceHeartbeat(f, 'unavailable');
+    const delivered = await f.ledger.exchangeLocalService({
+      ...f.identity,
+      events: [],
+      deliveryOnly: true,
+    });
+    expect(delivered.stopRequested).toBe(true);
+    expect(delivered.snapshot.cancelRequestId).toBeNull();
+    const audit = await stopAudit(f);
+    expect(audit).toEqual([
+      {
+        reason: 'local_profile_unavailable',
+        metadata: {
+          version: 1,
+          backend: 'local',
+          stage: 'service_heartbeat',
+          runId: f.context.runId,
+        },
+      },
+    ]);
+    const next = await f.exchange();
+    expect(next.snapshot.cancelRequestId).not.toBeNull();
+    expect(await stopAudit(f)).toEqual(audit);
+    expect(
+      (await readProjectService(f.requestContext, f.id, f.db)).stopped,
+    ).toBe(false);
+  });
+  it.each(['pause', 'grant', 'settings', 'membership'] as const)(
+    'keeps %s revocation effective and reports a bounded stop intent',
+    async (kind) => {
+      const f = await projectServiceFixture(database.db);
+      if (kind === 'pause') await deviceHeartbeat(f, 'ready', true);
+      if (kind === 'grant')
+        await f.db`update allrice_bridge_managed_runtime_grants set revoked_at=clock_timestamp() where device_id=${f.device.id}`;
+      if (kind === 'settings')
+        await f.db`update allrice_execution_targets set metadata=jsonb_set(metadata,'{bridgeSettings}',${f.db.json({ revision: 1, settings: { localCommand: false, localBrowser: true, development: false } })}) where target_key=${'bridge.' + f.device.id}`;
+      if (kind === 'membership')
+        await f.db`update allrice_memberships set active=false where id=${f.membership}`;
+      expect((await f.exchange()).stopRequested).toBe(true);
+      const audit = await stopAudit(f);
+      expect(audit).toHaveLength(1);
+      expect(audit[0]!.reason).toBe(
+        kind === 'settings'
+          ? 'bridge_settings_disabled'
+          : kind === 'membership'
+            ? 'owner_or_membership_unavailable'
+            : 'local_authority_missing_or_stale',
+      );
+      if (kind === 'membership') {
+        await expect(
+          readProjectService(f.requestContext, f.id, f.db),
+        ).rejects.toThrow();
+      } else {
+        expect(
+          (await readProjectService(f.requestContext, f.id, f.db)).stopped,
+        ).toBe(false);
+      }
+    },
+  );
 });

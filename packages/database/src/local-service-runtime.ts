@@ -12,7 +12,10 @@ import {
   type RequestContext,
   type ExecutionContext,
 } from '@allrice/contracts';
-import { initializeProjectServiceLease } from './project-services.ts';
+import {
+  initializeProjectServiceLease,
+  type ProjectServiceStopReason,
+} from './project-services.ts';
 import { getDatabase } from './core/client.ts';
 import {
   RuntimeLedgerError,
@@ -52,6 +55,7 @@ export async function exchangeLocalServiceLocked(
     rootDeadlineAt: Date;
     events: RuntimeLocalServiceEvent[];
     allowed: boolean;
+    stopReason?: ProjectServiceStopReason;
     deliveryOnly: boolean;
     now: Date;
   },
@@ -102,6 +106,19 @@ export async function exchangeLocalServiceLocked(
   const stopRequested =
     !input.allowed || service.stop_requested || service.hard_deadline_at <= now;
   if (stopRequested) {
+    if (!service.stop_requested && config.projectService) {
+      const binding = snapshot.binding;
+      const reason =
+        service.hard_deadline_at <= now
+          ? 'hard_deadline_reached'
+          : (input.stopReason ?? 'authority_check_failed');
+      // This is a committed stop intent, not proof of physical cleanup. Record
+      // once, including delivery-only exchanges, without command/error secrets.
+      await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+        values(${binding.task.scope.organizationId},${binding.task.scope.workspaceId},${binding.requestedBy.id},
+          'runtime.project_service.stop_requested','runtime_operation',${operationId},'recorded',${reason},
+          ${json(tx, { version: 1, backend: 'local', stage: 'service_heartbeat', runId: binding.task.runId })})`;
+    }
     await tx`update allrice_local_services set stop_requested=true,state='stopping' where operation_id=${operationId}`;
     service.stop_requested = true;
   }

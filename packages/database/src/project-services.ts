@@ -70,8 +70,53 @@ type Row = {
 };
 const json = (tx: TransactionSql, value: unknown) =>
   tx.json(JSON.parse(JSON.stringify(value)));
-function denied(): never {
-  throw new RuntimePolicyError('project_service_unavailable');
+export type ProjectServiceStopReason =
+  | 'authority_check_failed'
+  | 'service_not_current'
+  | 'policy_expired'
+  | 'run_not_continuing'
+  | 'platform_quality_unavailable'
+  | 'owner_or_membership_unavailable'
+  | 'policy_identity_unavailable'
+  | 'operation_not_continuing'
+  | 'worker_lease_changed'
+  | 'project_capability_unavailable'
+  | 'policy_disabled'
+  | 'approval_unavailable'
+  | 'local_authority_missing_or_stale'
+  | 'local_profile_invalid'
+  | 'local_profile_unavailable'
+  | 'local_runtime_changed'
+  | 'bridge_settings_disabled'
+  | 'service_configuration_changed'
+  | 'cloud_authority_unavailable'
+  | 'hard_deadline_reached';
+
+// Internal metadata only: keep public error types/codes and strict wire events.
+const stopReasons = new WeakMap<object, ProjectServiceStopReason>();
+export function projectServiceStopReason(
+  error: unknown,
+): ProjectServiceStopReason {
+  return typeof error === 'object' && error !== null
+    ? (stopReasons.get(error) ?? 'authority_check_failed')
+    : 'authority_check_failed';
+}
+function denied(reason?: ProjectServiceStopReason): never {
+  const error = new RuntimePolicyError('project_service_unavailable');
+  if (reason) stopReasons.set(error, reason);
+  throw error;
+}
+async function diagnoseAuthority<T>(
+  reason: ProjectServiceStopReason,
+  check: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await check();
+  } catch (error) {
+    if (typeof error === 'object' && error !== null)
+      stopReasons.set(error, reason);
+    throw error;
+  }
 }
 
 /** Called under the existing root -> operation lock, before any physical start.
@@ -157,16 +202,15 @@ export async function currentProjectService(
     join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=s.organization_id and p.subject_id=s.owner_id
     where s.id=${id} and not s.stop_requested and s.expires_at>clock_timestamp() and s.hard_deadline_at>clock_timestamp()
       and (${!requireHeartbeat} or s.heartbeat_at between clock_timestamp()-interval '5 seconds' and clock_timestamp())`;
-  if (
-    !row ||
-    row.policy_expires <= row.clock ||
-    !(
-      row.run_state === 'succeeded' ||
-      (row.run_state === 'running' && row.active_job)
-    )
-  )
-    denied();
-  if (!(await isPlatformQualityServiceAuthorized(tx, row))) denied();
+  if (!row) denied('service_not_current');
+  if (row.policy_expires <= row.clock) denied('policy_expired');
+  if (!(
+    row.run_state === 'succeeded' ||
+    (row.run_state === 'running' && row.active_job)
+  ))
+    denied('run_not_continuing');
+  if (!(await isPlatformQualityServiceAuthorized(tx, row)))
+    denied('platform_quality_unavailable');
   const actor: Principal = {
     organizationId: row.organization_id,
     workspaceId: row.workspace_id,
@@ -179,11 +223,15 @@ export async function currentProjectService(
       principal.organizationId !== row.organization_id ||
       principal.workspaceId !== row.workspace_id)
   )
-    denied();
-  await assertWorkbenchSession(tx, actor, row.session_id, false, 'share');
+    denied('owner_or_membership_unavailable');
+  await diagnoseAuthority('owner_or_membership_unavailable', () =>
+    assertWorkbenchSession(tx, actor, row.session_id, false, 'share'),
+  );
   const snapshot = RuntimeOperationSnapshotSchema.parse(row.snapshot),
     binding = snapshot.binding;
-  await assertRuntimePolicyIdentity(tx, { ...actor, requestId: id });
+  await diagnoseAuthority('policy_identity_unavailable', () =>
+    assertRuntimePolicyIdentity(tx, { ...actor, requestId: id }),
+  );
   if (
     snapshot.status !== 'running' ||
     snapshot.cancelRequestId ||
@@ -193,7 +241,7 @@ export async function currentProjectService(
     binding.task.runId !== row.run_id ||
     binding.attempt.operationId !== id
   )
-    denied();
+    denied('operation_not_continuing');
   const command =
       row.backend === 'cloud'
         ? CloudProjectCommandSchema.parse(row.cloud_payload)
@@ -212,13 +260,13 @@ export async function currentProjectService(
       createHash('sha256').update(job.lease_token).digest('hex') !==
         origin.leaseTokenDigest
     )
-      denied();
+      denied('worker_lease_changed');
   }
   const frozen = EmployeeExecutionSnapshotSchema.parse(row.execution_snapshot);
   if (
     !frozen.capabilitySnapshot.bindings.toolNames.includes('workspace.project')
   )
-    denied();
+    denied('project_capability_unavailable');
   const [policy] = await tx<
     { version: number; controls: unknown }[]
   >`select version,controls from allrice_runtime_policy_controls
@@ -229,14 +277,14 @@ export async function currentProjectService(
     controls.data.version !== policy?.version ||
     controls.data.mode !== 'execute'
   )
-    denied();
+    denied('policy_disabled');
   const decision = evaluateRuntimePolicy(
     controls.data,
     binding,
     undefined,
     (await operationWorkAutomation(tx, id))?.settings,
   );
-  if (decision.effect === 'deny') denied();
+  if (decision.effect === 'deny') denied('policy_disabled');
   const approvals = await tx<
     {
       runtime_request: unknown;
@@ -252,7 +300,7 @@ export async function currentProjectService(
     where organization_id=${row.organization_id} and workspace_id=${row.workspace_id}
       and resource_type='runtime_operation' and resource_id=${id}`;
   if (approvals.length > 1 || (decision.effect === 'ask' && !approvals.length))
-    denied();
+    denied('approval_unavailable');
   for (const a of approvals) {
     const r = RuntimeActionApprovalRequestSchema.safeParse(a.runtime_request);
     if (
@@ -280,7 +328,7 @@ export async function currentProjectService(
         },
       )
     )
-      denied();
+      denied('approval_unavailable');
   }
   if (row.backend === 'local') {
     const [local] = await tx<
@@ -297,24 +345,28 @@ export async function currentProjectService(
         and d.revoked_at is null and d.last_seen_at between clock_timestamp()-interval '90 seconds' and clock_timestamp()
         and g.revoked_at is null and g.runtime_generation=${binding.execution.grantVersion} and ('sha256:'||g.root_fingerprint)=${binding.execution.scopeDigest}
         and t.kind='rice_bridge' and t.state='online' and p.reported_at between clock_timestamp()-interval '90 seconds' and clock_timestamp()`;
-    const profile = RuntimeLocalCommandProfileSchema.safeParse(local?.profile);
+    if (!local) denied('local_authority_missing_or_stale');
+    const profile = RuntimeLocalCommandProfileSchema.safeParse(local.profile);
+    if (!profile.success) denied('local_profile_invalid');
+    if (!profile.data.available) denied('local_profile_unavailable');
     if (
-      !local ||
-      !profile.success ||
-      !profile.data.available ||
       !isLocalCommandProfileForPlatform(local.platform, profile.data) ||
       !profile.data.features?.includes('project_services') ||
       !profile.data.projectPreparation?.available ||
-      profile.data.imageDigest !== command.arguments.imageDigest ||
-      !bridgeSettingsView(local.metadata).settings.localCommand ||
-      !bridgeSettingsView(local.metadata).settings.development ||
+      profile.data.imageDigest !== command.arguments.imageDigest
+    )
+      denied('local_runtime_changed');
+    const settings = bridgeSettingsView(local.metadata).settings;
+    if (!settings.localCommand || !settings.development)
+      denied('bridge_settings_disabled');
+    if (
       !command.arguments.background?.projectService ||
       !runtimeContractEqual(
         command.arguments.background.projectService,
         row.configuration,
       )
     )
-      denied();
+      denied('service_configuration_changed');
   } else {
     if (
       !command.arguments.background?.projectService ||
