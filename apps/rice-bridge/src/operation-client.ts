@@ -42,6 +42,7 @@ import { LocalCommandError } from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import type { LocalPythonRunner } from './local-python-runner.js';
 import { localPythonHttpTransport } from './local-python-client.js';
+import { LocalPythonInputDownloadError } from './local-python-download-error.js';
 import type { LocalPdfRunner } from './local-pdf-runner.js';
 import { localPdfHttpTransport } from './local-pdf-client.js';
 import { LocalMcpRunner, validateLocalMcpTools } from './local-mcp-runner.js';
@@ -955,6 +956,13 @@ export class RuntimeBridgeOperationClient {
           status: 'failed',
           effects: 'none',
           summary: '本地 Python 在执行前校验失败，未执行或换端',
+          ...(error instanceof LocalPythonInputDownloadError
+            ? {
+                summary: error.receiptSummary(
+                  dispatch.payload.arguments.purpose,
+                ),
+              }
+            : {}),
           errorCode: error.code,
         });
       else

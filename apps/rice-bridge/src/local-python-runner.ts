@@ -15,6 +15,10 @@ import {
 import { LocalDockerApi } from './local-docker-api.js';
 import { LocalCommandError } from './local-command-inputs.js';
 import {
+  inputDownloadAbortReason,
+  LocalPythonInputDownloadError,
+} from './local-python-download-error.js';
+import {
   createLocalPythonArchive,
   readLocalPythonArchive,
 } from './local-python-archive.js';
@@ -301,7 +305,14 @@ export class LocalPythonRunner {
         throw new LocalCommandError('EXECUTION_REVOKED');
       return files;
     } catch (error) {
-      if (bounded.aborted) throw new LocalCommandError('EXECUTION_REVOKED');
+      if (bounded.aborted) {
+        if (error instanceof LocalPythonInputDownloadError)
+          throw new LocalPythonInputDownloadError('EXECUTION_REVOKED', {
+            ...error.diagnostic,
+            reason: inputDownloadAbortReason(bounded.reason),
+          });
+        throw new LocalCommandError('EXECUTION_REVOKED');
+      }
       if (error instanceof LocalCommandError) throw error;
       throw new LocalCommandError('INPUT_DOWNLOAD_UNAVAILABLE');
     } finally {

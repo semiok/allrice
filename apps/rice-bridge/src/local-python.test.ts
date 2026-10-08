@@ -16,6 +16,7 @@ import {
 import { LocalPythonRunner } from './local-python-runner.js';
 import { LocalDockerApi } from './local-docker-api.js';
 import type { LocalPythonTransport } from './local-python-client.js';
+import { LocalPythonInputDownloadError } from './local-python-download-error.js';
 import {
   assertManagedSandboxConfiguration,
   downloadManagedRuntimeAsset,
@@ -805,6 +806,96 @@ describe('managed Python Engine byte adapter and physical-stop evidence', () => 
           r.path.includes('/containers/create?') && r.body?.HostConfig.Mounts,
       ),
     ).toBe(false);
+  });
+  it('preserves a typed download failure before creating an execution volume or tenant container', async () => {
+    const e = await engine();
+    const input = {
+      path: 'fixed.csv',
+      objectId: randomUUID(),
+      checksum: hash(Buffer.from('input')),
+      sizeBytes: 5,
+      mediaType: 'text/csv',
+    };
+    e.p.arguments.inputs = [input];
+    const error = new LocalPythonInputDownloadError(
+      'INPUT_DOWNLOAD_UNAVAILABLE',
+      {
+        objectId: input.objectId,
+        stage: 'body',
+        reason: 'UND_ERR_SOCKET',
+        httpStatus: 200,
+        expectedBytes: 5,
+        receivedBytes: 2,
+        elapsedMs: 500,
+      },
+    );
+    await expect(
+      e.runner.execute(e.p, {
+        attemptId: randomUUID(),
+        maintainLease: async () => true,
+        transport: {
+          download: async () => {
+            throw error;
+          },
+          upload: async () => {
+            throw Error('unexpected upload');
+          },
+        },
+      }),
+    ).rejects.toBe(error);
+    expect(e.requests.some((r) => r.path.endsWith('/volumes/create'))).toBe(
+      false,
+    );
+    expect(
+      e.requests.some(
+        (r) =>
+          r.path.includes('/containers/create?') && r.body?.HostConfig.Mounts,
+      ),
+    ).toBe(false);
+  });
+  it('preserves an overall timeout cause when input cancellation is propagated through the runner', async () => {
+    const e = await engine(),
+      controller = new AbortController();
+    const input = {
+      path: 'fixed.csv',
+      objectId: randomUUID(),
+      checksum: hash(Buffer.from('input')),
+      sizeBytes: 5,
+      mediaType: 'text/csv',
+    };
+    e.p.arguments.inputs = [input];
+    await expect(
+      e.runner.execute(e.p, {
+        attemptId: randomUUID(),
+        signal: controller.signal,
+        maintainLease: async () => true,
+        transport: {
+          download: async () => {
+            controller.abort(
+              new DOMException('budget elapsed', 'TimeoutError'),
+            );
+            throw new LocalPythonInputDownloadError('EXECUTION_REVOKED', {
+              objectId: input.objectId,
+              stage: 'body',
+              reason: 'timeout',
+              httpStatus: 200,
+              expectedBytes: 5,
+              receivedBytes: 2,
+              elapsedMs: 500,
+            });
+          },
+          upload: async () => {
+            throw Error('unexpected upload');
+          },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'EXECUTION_REVOKED',
+      diagnostic: { reason: 'timeout' },
+    });
+    expect(e.requests.some((r) => r.path.endsWith('/volumes/create'))).toBe(
+      false,
+    );
   });
   it('collects a successful checkpoint when legal control-character stdout expands beyond 200 KB in JSON', async () => {
     const stdout = '\0'.repeat(65_536),

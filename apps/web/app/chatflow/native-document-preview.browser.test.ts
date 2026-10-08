@@ -7,6 +7,7 @@ import type {
   Browser,
   Page,
 } from '../../../worker/node_modules/playwright-core/index.js';
+import { nativeExcelAssetResponse } from '../../lib/chatflow/native-document-asset';
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
@@ -38,6 +39,7 @@ function pdf() {
 }
 suite('DSH native document previews', () => {
   let browser: Browser, server: Server, origin: string;
+  const excelTransfers: { encoding: string | null; bytes: number }[] = [];
   const require = createRequire(import.meta.url);
   beforeAll(async () => {
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
@@ -68,6 +70,34 @@ suite('DSH native document previews', () => {
     );
     server = createServer((request, response) => {
       const path = new URL(request.url!, 'http://localhost').pathname;
+      if (path === '/api/dsh-ui/excel') {
+        void nativeExcelAssetResponse(
+          new Request('http://fixture' + request.url, {
+            headers: {
+              'accept-encoding': String(
+                request.headers['accept-encoding'] ?? '',
+              ),
+            },
+          }),
+        )
+          .then(async (result) => {
+            response.writeHead(
+              result.status,
+              Object.fromEntries(result.headers),
+            );
+            const bytes = Buffer.from(await result.arrayBuffer());
+            excelTransfers.push({
+              encoding: result.headers.get('content-encoding'),
+              bytes: bytes.length,
+            });
+            response.end(bytes);
+          })
+          .catch(() => {
+            response.statusCode = 500;
+            response.end();
+          });
+        return;
+      }
       response.setHeader(
         'content-type',
         path.endsWith('.css')
@@ -216,6 +246,8 @@ suite('DSH native document previews', () => {
         .waitFor({ timeout: 30_000 });
       await page.getByText('汇总', { exact: true }).click();
       expect(await page.locator('[data-excel-preview]').count()).toBe(1);
+      expect(excelTransfers.at(-1)?.encoding).toBe('br');
+      expect(excelTransfers.at(-1)?.bytes).toBeLessThan(2_000_000);
       expect(errors).toEqual([]);
     } finally {
       await page.close();
