@@ -4,7 +4,7 @@
 
 把需求转成可检查的行为：谁使用、输入是什么、成功输出是什么、错误如何展示。优先交付用户真正需要的最小功能。不要未经要求加入账号、远端发布、收费依赖或外部数据服务。
 
-新项目用 `workspace_project` 的 `open` 保存源码与锁文件。已有项目从当前会话和工具回执取得完整 `project` 引用，再使用 `list`、`read` 或 `search` 检查；这些读取不会修改项目。记录用户给定的原断言和第一次执行结果。引用包含 projectId、snapshot.kind、snapshot.id 和 snapshot.checksum，不能用源码摘要替换快照引用。
+新项目用 `workspace_project` 的 `open` 保存源码与锁文件。项目在每个 Run 中需要打开一次：新一轮继续已有项目时，先从当前会话和工具回执取得上一版完整 `project` 引用，使用 `open` 的 `source` 传入该引用的 `snapshot`，恢复同一个 projectId；不要通过 `files` 重建另一个项目。以恢复返回的完整版本调用 `list`、`read` 或 `search` 检查，以上一版确切引用保留交付基线。这些读取不会修改项目。记录用户给定的原断言和第一次执行结果。引用包含 projectId、snapshot.kind、snapshot.id 和 snapshot.checksum，不能用源码摘要替换快照引用。
 
 ## 修改与执行
 
