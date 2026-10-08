@@ -11,6 +11,7 @@ import { createAssistantLocalCommandFixture } from './local-command-assistant.fi
 import {
   createLocalCommandOperation,
   listLocalCommandOperations,
+  waitLocalCommandOperation,
 } from './local-command-service.ts';
 import { localCommandCandidateEvidence } from './local-command-candidate.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
@@ -382,6 +383,12 @@ suite('MET-144 candidate authority / exact version / durable receipt', () => {
       expect(result.snapshot.status).toBe(
         scenario === 'canceled' ? 'canceled' : 'failed',
       );
+      const settled = await waitLocalCommandOperation(created, undefined, f.db);
+      expect(settled).toMatchObject({
+        status: result.snapshot.status,
+        effects: 'none',
+        evidence: output ? { output } : { errorCode: 'INPUT_VERSION_CHANGED' },
+      });
     },
   );
   it('accepts only same-version success receipts and does not relabel after publication', async () => {

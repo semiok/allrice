@@ -957,6 +957,7 @@ export async function waitLocalCommandOperation(
       return {
         operationId,
         status: snapshot.status,
+        effects: snapshot.result?.effects,
         evidence: receipt?.evidence ?? null,
       };
     }

@@ -21,6 +21,7 @@ import { runCloudCommandOperation } from '../cloud-runner/executor.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
 import { waitForLocalAdmission } from '../tool-broker/handlers/local-admission.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
+import { assertLocalPythonPreflight } from './preflight.js';
 
 const mediaTypes = {
   png: 'image/png',
@@ -174,6 +175,7 @@ export async function executeManagedCharts(
     };
   }
   const settled = await waitLocalPythonOperation(created, input.signal);
+  assertLocalPythonPreflight(input, settled, 'PYTHON');
   const evidence = settled.evidence as { output?: unknown } | null,
     parsed = RuntimeLocalPythonResultSchema.safeParse(evidence?.output);
   if (

@@ -40,6 +40,8 @@ vi.mock('../tool-broker/handlers/cloud-frozen-script.js', () => ({
 }));
 import { cloudStableId, runtimePolicyDigest } from '@allrice/database';
 import { isConfirmedToolFailure } from '../errors.js';
+import { executeManagedOffice } from '../office/managed-python.js';
+import { NativeOfficeExportSchema } from '@allrice/contracts';
 import {
   executePythonCommand,
   executeCloudCommand,
@@ -494,6 +496,88 @@ describe('canonical Python original-call execution adapter', () => {
     expect(ports.publish).not.toHaveBeenCalled();
     expect(ports.cloud).not.toHaveBeenCalled();
   });
+  it.each(['python', 'office'])(
+    'reports a committed input download failure as not executed for %s, without replay or publication',
+    async (purpose) => {
+      const request = input(argumentsForPng());
+      if (purpose === 'office') request.call.name = 'workspace.export.create';
+      ports.wait.mockResolvedValue({
+        operationId: 'original-operation',
+        status: 'failed',
+        effects: 'none',
+        evidence: { errorCode: 'INPUT_DOWNLOAD_UNAVAILABLE' },
+      });
+      const failure = await (
+        purpose === 'python'
+          ? run(request)
+          : executeManagedOffice(
+              request,
+              'xlsx',
+              NativeOfficeExportSchema.parse({
+                script: "print('original Office script')",
+                inputs: [],
+              }),
+            )
+      ).catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: `${purpose.toUpperCase()}_PREFLIGHT_FAILED`,
+        retryable: false,
+      });
+      expect((failure as Error).message).toContain('已确认未执行');
+      expect(
+        isConfirmedToolFailure(failure, {
+          runId: request.context.runId,
+          callId: request.call.id,
+          toolName: request.call.name,
+        }),
+      ).toBe(true);
+      expect(
+        isConfirmedToolFailure(failure, {
+          runId: request.context.runId,
+          callId: 'another-call',
+          toolName: request.call.name,
+        }),
+      ).toBe(false);
+      expect(ports.create).toHaveBeenCalledTimes(1);
+      expect(ports.publish).not.toHaveBeenCalled();
+      expect(ports.cloud).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    { status: 'unknown', effects: 'none' },
+    { status: 'failed', effects: undefined },
+    { status: 'failed', effects: 'partial' },
+    { status: 'failed', effects: 'applied' },
+    { status: 'succeeded', effects: 'none' },
+    { status: 'failed', effects: 'none', errorCode: 'UNRECOGNIZED_FAILURE' },
+    { status: 'failed', effects: 'none', output: {} },
+  ])(
+    'does not settle an unproven or contradictory preflight failure (%j)',
+    async ({ status, effects, errorCode, output }) => {
+      const request = input(argumentsForPng());
+      ports.wait.mockResolvedValue({
+        operationId: 'original-operation',
+        status,
+        effects,
+        evidence: {
+          errorCode: errorCode ?? 'INPUT_DOWNLOAD_UNAVAILABLE',
+          ...(output === undefined ? {} : { output }),
+        },
+      });
+      const failure = await run(request).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ code: 'PYTHON_LOCAL_RESULT_UNKNOWN' });
+      expect(
+        isConfirmedToolFailure(failure, {
+          runId: request.context.runId,
+          callId: request.call.id,
+          toolName: request.call.name,
+        }),
+      ).toBe(false);
+      expect(ports.create).toHaveBeenCalledTimes(1);
+      expect(ports.publish).not.toHaveBeenCalled();
+      expect(ports.cloud).not.toHaveBeenCalled();
+    },
+  );
   it('rejects mismatched metadata from the publisher instead of replacing objectId with a version', async () => {
     ports.publish.mockResolvedValue([
       {
