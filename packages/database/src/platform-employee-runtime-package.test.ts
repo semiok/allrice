@@ -195,7 +195,8 @@ it('projects Office formats only from the actual frozen native Skill and granted
 });
 
 it('projects development and iteration tasks only from a frozen project Skill and actual tools', () => {
-  const tools = ['workspace.project', 'workspace.skill.read'];
+  const skillTools = ['workspace.project', 'workspace.skill.read'];
+  const tools = [...skillTools, 'local.process.execute'];
   const projectDefinition = {
     ...definition,
     capabilities: { ...definition.capabilities, toolNames: tools },
@@ -204,7 +205,11 @@ it('projects development and iteration tasks only from a frozen project Skill an
     revision: 7,
     definition: projectDefinition,
     skills: [
-      { ...skills[0]!, name: 'project-development', required_tool_refs: tools },
+      {
+        ...skills[0]!,
+        name: 'project-development',
+        required_tool_refs: skillTools,
+      },
     ],
   });
   const manifest = employeeManifest({
@@ -237,6 +242,21 @@ it('projects development and iteration tasks only from a frozen project Skill an
   expect(
     projectEmployeeTaskSuggestions(withoutTool).map((task) => task.id),
   ).not.toContain('develop-project');
+  const noExecution = structuredClone(manifest);
+  noExecution.capabilityBindings.toolNames = skillTools;
+  expect(
+    projectEmployeeTaskSuggestions(noExecution).map((task) => task.id),
+  ).not.toContain('develop-project');
+  const cloudOnly = structuredClone(manifest);
+  cloudOnly.capabilityBindings.toolNames = [
+    ...skillTools,
+    'cloud.process.execute',
+  ];
+  expect(
+    projectEmployeeTaskSuggestions(cloudOnly)
+      .slice(0, 2)
+      .map((task) => task.id),
+  ).toEqual(['develop-project', 'iterate-project']);
   const explicit = structuredClone(manifest);
   explicit.taskSuggestions = [];
   expect(projectEmployeeTaskSuggestions(explicit)).toEqual([]);
