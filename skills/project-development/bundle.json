@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "contentChecksum": "sha256:ca6c78a7e01587f70a8d353575c44aa685d2942b49f6326b8387ecab22f3d0cf",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=ca6c78a7e01587f70a8d353575c44aa685d2942b49f6326b8387ecab22f3d0cf",
+  "license": "Apache-2.0",
+  "reviewedBy": "MET-172 governed project workflow review",
+  "resources": [
+    {
+      "path": "references/delivery.md",
+      "mediaType": "text/markdown",
+      "byteLength": 1956,
+      "checksum": "sha256:28f26648e4cb6398b89795af6020ee7ee0a8be827206fcddd2d53c941af06684"
+    },
+    {
+      "path": "references/workflow.md",
+      "mediaType": "text/markdown",
+      "byteLength": 3485,
+      "checksum": "sha256:4bcf3a28aa9dafbd6977fc575879f2c0615e9c1031f8ce98ac2cfd006aa74809"
+    }
+  ],
+  "dependencies": [
+    {
+      "kind": "tool",
+      "name": "workspace.project"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.skill.read"
+    }
+  ],
+  "checksum": "sha256:84a2f4edf85607a7d1789b4b60a3c7d6065b67011b6123041af586df6482d990"
+}

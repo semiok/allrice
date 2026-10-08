@@ -134,6 +134,41 @@ function legacyDefaults(
   manifest: Extract<EmployeeManifest, { schemaVersion: 2 }>,
 ): TaskSuggestion[] {
   const base = baseDefaults();
+  const project = manifest.runtimePackage?.skills.find(
+    (skill) =>
+      skill.name === 'project-development' &&
+      ['workspace.project', 'workspace.skill.read'].every((tool) =>
+        skill.requiredToolRefs.includes(tool),
+      ),
+  );
+  const projectTasks: TaskSuggestion[] = project
+    ? [
+        {
+          id: 'develop-project',
+          title: '开发实用小工具',
+          description: '程序员：从需求到测试、预览与可下载源码。',
+          template:
+            '为我开发一个{{用途}}。先明确输入、输出和验收标准，完成最小可用功能并实际测试；交付可下载源码、构建成果、运行说明和私有预览。已有资料请先读取，未完成项如实说明。',
+          slots: [{ name: '用途', label: '小工具用途', required: true }],
+          requires: {
+            toolNames: ['workspace.project', 'workspace.skill.read'],
+            nativeSkillIds: [project.id],
+          },
+        },
+        {
+          id: 'iterate-project',
+          title: '继续修改已交付项目',
+          description: '程序员：保留原版本和测试，交付验证后的新版本。',
+          template:
+            '继续本会话中已交付的项目，实现{{改动}}。先确认原项目与版本，保留原验收断言，验证原功能和新增行为；交付新版本源码、测试结果、构建成果和对应预览，并保留上一版交付。',
+          slots: [{ name: '改动', label: '本次改动', required: true }],
+          requires: {
+            toolNames: ['workspace.project', 'workspace.skill.read'],
+            nativeSkillIds: [project.id],
+          },
+        },
+      ]
+    : [];
   const office = manifest.runtimePackage?.skills.find(
     (skill) =>
       skill.name === 'office' &&
@@ -143,7 +178,7 @@ function legacyDefaults(
         'workspace.export.create',
       ].every((tool) => skill.requiredToolRefs.includes(tool)),
   );
-  if (!office) return base;
+  if (!office) return [...projectTasks, ...base].slice(0, 8);
   // Format support comes from the actual frozen Office Skill plus its Broker tool.
   const requires = {
     nativeSkillIds: [office.id],
@@ -154,7 +189,8 @@ function legacyDefaults(
     ],
     readiness: ['report' as const],
   };
-  return [
+  const officeTasks: TaskSuggestion[] = [
+    ...projectTasks,
     {
       id: 'office-word-report',
       title: '制作 Word 报告',
@@ -219,6 +255,7 @@ function legacyDefaults(
       ['review-project', 'make-plan', 'research-plan'].includes(suggestion.id),
     ),
   ];
+  return officeTasks.slice(0, 8);
 }
 
 /** Read-time display projection only. It never changes a frozen definition/checksum. */
