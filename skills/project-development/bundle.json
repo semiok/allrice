@@ -15,8 +15,8 @@
     {
       "path": "references/workflow.md",
       "mediaType": "text/markdown",
-      "byteLength": 3166,
-      "checksum": "sha256:c1dbb167f504113d3ddc9e8a03750a67535ba8823673403473c055eb311cdc41"
+      "byteLength": 3204,
+      "checksum": "sha256:471410f626ff4969f3cff91f925a7a7a200640a0f268e3115d95c46bf0bbdb80"
     }
   ],
   "dependencies": [
@@ -29,5 +29,5 @@
       "name": "workspace.skill.read"
     }
   ],
-  "checksum": "sha256:2d0dd507c70d0d6fd4dae19770966a7ec72e61c6ae572af6919e0174f433ae76"
+  "checksum": "sha256:5a9a58d3ff34b3ae3b8ad8024b46667e7c7e315628c63e1ed432ecd47218cb31"
 }
