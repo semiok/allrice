@@ -7,6 +7,11 @@ import {
   type RuntimeLocalPythonArtifactMetadata,
 } from '@allrice/contracts';
 import { LocalCommandError } from './local-command-inputs.js';
+import {
+  inputDownloadNetworkReason,
+  inputDownloadAbortReason,
+  LocalPythonInputDownloadError,
+} from './local-python-download-error.js';
 
 export interface LocalPythonTransport {
   download(
@@ -40,43 +45,92 @@ export function localPythonHttpTransport(input: {
     AbortSignal.any([signal, AbortSignal.timeout(35_000)]);
   return {
     async download(file, signal) {
-      const response = await fetch(
-        new URL(
-          `${base}?action=download&objectId=${file.objectId}`,
-          input.server,
-        ),
-        { redirect: 'error', headers, signal: bounded(signal) },
-      );
-      if (
-        !response.ok ||
-        !response.body ||
-        response.headers.get('x-allrice-checksum') !== file.checksum ||
-        Number(response.headers.get('content-length')) !== file.sizeBytes
-      )
-        throw new LocalCommandError('INPUT_VERSION_CHANGED');
-      const reader = response.body.getReader(),
-        chunks: Uint8Array[] = [];
+      const started = performance.now();
+      const deadline = bounded(signal);
+      let stage: 'response' | 'body' | 'validation' = 'response';
+      let httpStatus: number | null = null;
       let size = 0;
+      const failure = (
+        code: ConstructorParameters<typeof LocalPythonInputDownloadError>[0],
+        reason: string,
+      ) =>
+        new LocalPythonInputDownloadError(code, {
+          objectId: file.objectId,
+          stage,
+          reason,
+          httpStatus,
+          expectedBytes: file.sizeBytes,
+          receivedBytes: size,
+          elapsedMs: Math.max(0, Math.round(performance.now() - started)),
+        });
       try {
-        for (;;) {
-          const next = await reader.read();
-          if (next.done) break;
-          size += next.value.byteLength;
-          if (size > file.sizeBytes) throw new LocalCommandError('INPUT_LIMIT');
-          chunks.push(next.value);
+        const response = await fetch(
+          new URL(
+            `${base}?action=download&objectId=${file.objectId}`,
+            input.server,
+          ),
+          { redirect: 'error', headers, signal: deadline },
+        );
+        httpStatus = response.status;
+        if (!response.ok || !response.body) {
+          await response.body?.cancel().catch(() => undefined);
+          throw failure(
+            'INPUT_VERSION_CHANGED',
+            !response.ok ? 'http_rejected' : 'body_missing',
+          );
         }
-      } finally {
-        await reader.cancel().catch(() => undefined);
-        reader.releaseLock();
+        if (
+          response.headers.get('x-allrice-checksum') !== file.checksum ||
+          Number(response.headers.get('content-length')) !== file.sizeBytes
+        ) {
+          await response.body.cancel().catch(() => undefined);
+          stage = 'validation';
+          throw failure(
+            'INPUT_VERSION_CHANGED',
+            response.headers.get('x-allrice-checksum') !== file.checksum
+              ? 'checksum_header'
+              : 'content_length',
+          );
+        }
+        stage = 'body';
+        const reader = response.body.getReader(),
+          chunks: Uint8Array[] = [];
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            size += next.value.byteLength;
+            if (size > file.sizeBytes)
+              throw failure('INPUT_LIMIT', 'body_limit');
+            chunks.push(next.value);
+          }
+        } finally {
+          await reader.cancel().catch(() => undefined);
+          reader.releaseLock();
+        }
+        const bytes = Buffer.concat(chunks);
+        stage = 'validation';
+        if (
+          size !== file.sizeBytes ||
+          `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
+            file.checksum
+        )
+          throw failure(
+            'INPUT_VERSION_CHANGED',
+            size !== file.sizeBytes ? 'body_size' : 'body_checksum',
+          );
+        return bytes;
+      } catch (error) {
+        if (error instanceof LocalPythonInputDownloadError) throw error;
+        throw failure(
+          signal.aborted ? 'EXECUTION_REVOKED' : 'INPUT_DOWNLOAD_UNAVAILABLE',
+          signal.aborted
+            ? inputDownloadAbortReason(signal.reason)
+            : deadline.aborted
+              ? 'timeout'
+              : inputDownloadNetworkReason(error),
+        );
       }
-      const bytes = Buffer.concat(chunks);
-      if (
-        size !== file.sizeBytes ||
-        `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
-          file.checksum
-      )
-        throw new LocalCommandError('INPUT_VERSION_CHANGED');
-      return bytes;
     },
     async upload(output, metadata, bytes, signal) {
       const parsed = RuntimeLocalPythonArtifactMetadataSchema.parse(metadata);

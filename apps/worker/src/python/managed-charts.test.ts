@@ -505,7 +505,11 @@ describe('canonical Python original-call execution adapter', () => {
         operationId: 'original-operation',
         status: 'failed',
         effects: 'none',
-        evidence: { errorCode: 'INPUT_DOWNLOAD_UNAVAILABLE' },
+        evidence: {
+          errorCode: 'INPUT_DOWNLOAD_UNAVAILABLE',
+          summary:
+            '本地 Python 输入下载失败；阶段 body；原因 UND_ERR_SOCKET；HTTP 200；字节 4/16；已确认未执行。',
+        },
       });
       const failure = await (
         purpose === 'python'

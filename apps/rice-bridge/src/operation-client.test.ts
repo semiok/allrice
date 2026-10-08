@@ -14,6 +14,8 @@ import {
   RuntimeBridgeDispatchSchema,
   RuntimeLocalPdfPayloadSchema,
   RuntimeLocalPdfResultSchema,
+  RuntimeLocalPythonPayloadSchema,
+  managedPythonPayloadForPlatform,
   pdfReadReleaseForPlatform,
   type RuntimeBridgeReceipt,
   type RuntimeOperationSnapshot,
@@ -29,6 +31,8 @@ import { executeLocalCommand } from './executor.js';
 import { RuntimeBridgeOperationClient } from './operation-client.js';
 import { bridgeRequest, type BridgeRequestInput } from './client.js';
 import type { LocalPdfRunner } from './local-pdf-runner.js';
+import type { LocalPythonRunner } from './local-python-runner.js';
+import { LocalPythonInputDownloadError } from './local-python-download-error.js';
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -63,6 +67,7 @@ async function createFixture(
     wrongAck?: boolean;
     cancelStart?: boolean;
     pdf?: boolean;
+    python?: boolean;
   } = {},
 ) {
   const temporary = await realpath(
@@ -102,25 +107,85 @@ async function createFixture(
   const pdfFingerprint = createHash('sha256')
     .update(`allrice-readonly-pdf-v1:${fixtureId(11)}`)
     .digest('hex');
-  const dispatch = options.pdf
+  const pythonRelease = managedPythonPayloadForPlatform('macos-arm64')!;
+  const pythonFingerprint = createHash('sha256')
+    .update(`allrice-managed-python-v1:${fixtureId(11)}`)
+    .digest('hex');
+  const pythonPayload = RuntimeLocalPythonPayloadSchema.parse({
+    capability: 'local.python.execute',
+    arguments: {
+      path: '.',
+      purpose: 'office',
+      origin: {
+        toolName: 'workspace.export.create',
+        callId: 'fixed-download-call',
+        argumentsDigest: `sha256:${'1'.repeat(64)}`,
+      },
+      script: "print('not executed')",
+      inputs: [],
+      outputs: [
+        {
+          path: 'result.docx',
+          fileName: 'result.docx',
+          format: 'docx',
+          mediaType:
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          objectId: fixtureId(43),
+        },
+      ],
+      profileVersion: 1,
+      imageId: pythonRelease.imageId,
+      architecture: pythonRelease.architecture,
+      isolation: 'local-vm-container-v1',
+      network: 'none',
+      limits: {
+        timeoutMs: 1000,
+        inputBytes: 20_000_000,
+        artifactBytes: 8_000_000,
+        outputBytes: 8192,
+        memoryMiB: 512,
+        cpuMillis: 1000,
+        pids: 64,
+      },
+    },
+  });
+  const dispatch = options.python
     ? RuntimeBridgeDispatchSchema.parse({
         ...original,
-        payload: pdfPayload,
-        grantRootFingerprint: pdfFingerprint,
+        payload: pythonPayload,
+        grantRootFingerprint: pythonFingerprint,
         snapshot: {
           ...original.snapshot,
           binding: {
             ...original.snapshot.binding,
-            action: 'local.pdf.read',
-            inputDigest: bridgeDigest(pdfPayload),
+            action: 'local.python.execute',
+            inputDigest: bridgeDigest(pythonPayload),
             execution: {
               ...original.snapshot.binding.execution,
-              scopeDigest: `sha256:${pdfFingerprint}`,
+              scopeDigest: `sha256:${pythonFingerprint}`,
             },
           },
         },
       })
-    : original;
+    : options.pdf
+      ? RuntimeBridgeDispatchSchema.parse({
+          ...original,
+          payload: pdfPayload,
+          grantRootFingerprint: pdfFingerprint,
+          snapshot: {
+            ...original.snapshot,
+            binding: {
+              ...original.snapshot.binding,
+              action: 'local.pdf.read',
+              inputDigest: bridgeDigest(pdfPayload),
+              execution: {
+                ...original.snapshot.binding.execution,
+                scopeDigest: `sha256:${pdfFingerprint}`,
+              },
+            },
+          },
+        })
+      : original;
   let snapshot = dispatch.snapshot;
   let dispatched = false;
   let started = false;
@@ -184,7 +249,9 @@ async function createFixture(
         protocolVersion: 2 as const,
         capabilities: options.pdf
           ? ['local.pdf.read' as const]
-          : ['local.fs.write' as const],
+          : options.python
+            ? ['local.python.execute' as const]
+            : ['local.fs.write' as const],
         status: 'online' as const,
         lastSeenAt: new Date().toISOString(),
         createdAt: new Date().toISOString(),
@@ -206,6 +273,18 @@ async function createFixture(
               id: fixtureId(12),
               deviceId: fixtureId(11),
               rootFingerprint: pdfFingerprint,
+              runtimeGeneration: 1,
+              profileVersion: 1 as const,
+              revokedAt: null,
+            },
+          }
+        : {}),
+      ...(options.python
+        ? {
+            managedRuntimeGrant: {
+              id: fixtureId(12),
+              deviceId: fixtureId(11),
+              rootFingerprint: dispatch.grantRootFingerprint,
               runtimeGeneration: 1,
               profileVersion: 1 as const,
               revokedAt: null,
@@ -299,6 +378,48 @@ async function createFixture(
 }
 
 describe('HTTP device journal adapter', () => {
+  it('persists safe input diagnostics through the real HTTP receipt without output or retrying execution', async () => {
+    const f = await createFixture({ python: true });
+    const error = new LocalPythonInputDownloadError(
+      'INPUT_DOWNLOAD_UNAVAILABLE',
+      {
+        objectId: fixtureId(42),
+        stage: 'body',
+        reason: 'UND_ERR_SOCKET',
+        httpStatus: 200,
+        expectedBytes: 1024,
+        receivedBytes: 512,
+        elapsedMs: 2400,
+      },
+    );
+    const execute = vi.fn(async () => {
+      throw error;
+    });
+    const cleanup = vi.fn();
+    const client = new RuntimeBridgeOperationClient({
+      config: f.config,
+      token: 'fixture-device-token',
+      journal: f.journal,
+      pythonRunner: { execute, cleanup } as unknown as LocalPythonRunner,
+    });
+    await expect(client.pollOnce()).resolves.toBe(true);
+    const receipt = f.accepted.find(
+      (r) => r.signal.type === 'operation.outcome',
+    )!;
+    expect(receipt.signal).toMatchObject({
+      type: 'operation.outcome',
+      result: { status: 'failed', effects: 'none' },
+    });
+    expect(receipt.evidence?.errorCode).toBe('INPUT_DOWNLOAD_UNAVAILABLE');
+    expect(receipt.evidence?.summary).toContain(
+      '阶段 body；原因 UND_ERR_SOCKET；HTTP 200；字节 512/1024',
+    );
+    expect(receipt.evidence?.output).toBeUndefined();
+    await expect(client.pollOnce()).resolves.toBe(false);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(await f.journal.pending()).toEqual([]);
+  });
   it.each([false, true])(
     'delivers PDF process_unknown as uncertain without replay or terminal recovery (lost ACK: %s)',
     async (loseResult) => {
