@@ -2,6 +2,7 @@ import { createRoot } from 'react-dom/client';
 import { StrictMode, useState } from 'react';
 import { DocumentToolbar } from '../app/chatflow/document-reader';
 import { NativeDocumentPreview } from '../app/chatflow/native-document-preview';
+import { NativeHtmlPreview } from '../app/chatflow/native-html-preview';
 import { parseArtifactPreview } from '../lib/chatflow/workbench-model';
 import workbench from '../app/chatflow/workbench.module.css';
 import '../app/dsh-upstream/design-platform.css';
@@ -14,6 +15,7 @@ function Page() {
       source?: boolean;
       interactive?: boolean;
       pageUrl?: string;
+      liveSrc?: string;
     }[]
   >([]);
   Object.assign(window, { setPreviewItems: setItems });
@@ -43,13 +45,17 @@ function Page() {
                 preview.kind === 'pdf' ? preview.missingFonts : undefined
               }
             />
-            <NativeDocumentPreview
-              preview={preview}
-              fileName={item.name}
-              source={item.source}
-              interactive={item.interactive}
-              pageUrl={item.pageUrl}
-            />
+            {item.liveSrc ? (
+              <NativeHtmlPreview liveSrc={item.liveSrc} />
+            ) : (
+              <NativeDocumentPreview
+                preview={preview}
+                fileName={item.name}
+                source={item.source}
+                interactive={item.interactive}
+                pageUrl={item.pageUrl}
+              />
+            )}
           </section>
         );
       })}
