@@ -20,6 +20,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import { waitForLocalAdmission } from '../tool-broker/handlers/local-admission.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
+import { assertLocalPythonPreflight } from '../python/preflight.js';
 import { readOfficeBytes } from './export.js';
 import { OfficePackage, officeMediaTypes } from './package.js';
 
@@ -162,6 +163,7 @@ export async function executeManagedOffice(
       localOnly: selected!.localOnly,
     };
   const settled = await waitLocalPythonOperation(created, input.signal);
+  assertLocalPythonPreflight(input, settled, 'OFFICE');
   const evidence = settled.evidence as {
     output?: unknown;
     summary?: string;
