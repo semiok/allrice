@@ -1,3 +1,12 @@
+import type { ResourcePrincipal } from './resource-principal.ts';
+import { MaintenanceRepositoryBindingSchema } from './platform-maintenance-publication-contracts.ts';
+import { bindMaintenanceRepositoryAction } from './platform-maintenance-publication-binding.ts';
+import {
+  assertMaintenanceGrant,
+  assertMaintenanceReconciliation,
+} from './platform-maintenance-authority.ts';
+import { readMaintenanceGithubBot } from './platform-maintenance-github.ts';
+import { MaintenancePublicationProvenanceSchema } from './platform-maintenance-provenance.ts';
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { z } from 'zod';
@@ -21,10 +30,11 @@ import {
   RepositoryPublicationRequestSchema,
   RepositoryPublicationSourceSchema,
   repositoryPublicationJobType,
+  repositoryPublicationStepsFor,
 } from './platform-repository-publication-contracts.ts';
 
 type Tx = postgres.TransactionSql;
-export const RepositoryActionBindingSchema = z
+const LegacyRepositoryActionBindingSchema = z
   .object({
     id: UuidSchema,
     publicationId: UuidSchema,
@@ -36,6 +46,10 @@ export const RepositoryActionBindingSchema = z
     timeoutMs: z.union([z.literal(30_000), z.literal(120_000)]),
   })
   .strict();
+export const RepositoryActionBindingSchema = z.union([
+  LegacyRepositoryActionBindingSchema,
+  MaintenanceRepositoryBindingSchema,
+]);
 export type RepositoryActionBinding = z.infer<
   typeof RepositoryActionBindingSchema
 >;
@@ -69,7 +83,7 @@ export async function assertRepositoryCredentialAuthority(
 const credential = assertRepositoryCredentialAuthority;
 export async function readAcceptedRepositorySource(
   tx: Tx,
-  context: RequestContext,
+  context: ResourcePrincipal,
   taskId: string,
   expectedRelease: string,
 ) {
@@ -77,7 +91,8 @@ export async function readAcceptedRepositorySource(
     await tx`select q.*,j.status from allrice_platform_repair_tasks q
     join allrice_jobs j on j.id=q.job_id and j.run_id=q.run_id and j.owner_id=q.owner_id
     where q.id=${UuidSchema.parse(taskId)} and q.owner_id=${context.actor.id}
-      and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!} for share of q,j`;
+      and q.organization_id=${context.organizationId} and q.workspace_id=${context.workspaceId!}
+      and j.status='succeeded' for share of q,j`;
   if (!row) throw new DataAccessError('not_found');
   try {
     return freezeRepositoryPublicationSource(
@@ -92,17 +107,20 @@ export async function readAcceptedRepositorySource(
 /** Called within enqueue's transaction, before either Run or action is visible. */
 export async function bindRepositoryAction(
   tx: Tx,
-  context: RequestContext,
+  context: ResourcePrincipal,
   runId: string,
   jobId: string,
   raw: RepositoryActionBinding,
 ) {
   const b = RepositoryActionBindingSchema.parse(raw);
+  if ('version' in b)
+    return bindMaintenanceRepositoryAction(tx, context, runId, jobId, b);
+  if (b.source.version !== 1) throw new DataAccessError('authorization_denied');
   const owner = await requirePlatformAdmin(context, tx);
   if (
     b.inputDigest !== technicalDigest(b.request) ||
-    b.loginSessionId !== context.sessionId ||
-    b.loginAuthenticatedAt !== context.authenticatedAt ||
+    b.loginSessionId !== (context as RequestContext).sessionId ||
+    b.loginAuthenticatedAt !== (context as RequestContext).authenticatedAt ||
     b.timeoutMs !== (b.request.action === 'publish' ? 120_000 : 30_000)
   )
     throw new DataAccessError('authorization_denied');
@@ -117,7 +135,7 @@ export async function bindRepositoryAction(
   );
   if (internal.organization_id !== context.organizationId)
     throw new DataAccessError('authorization_denied');
-  await credential(tx, context, b.request.credentialRevision);
+  await credential(tx, context as RequestContext, b.request.credentialRevision);
   const source = await readAcceptedRepositorySource(
     tx,
     context,
@@ -160,7 +178,7 @@ export async function bindRepositoryAction(
 }
 export async function assertExistingRepositoryAction(
   tx: Tx,
-  context: RequestContext,
+  context: ResourcePrincipal,
   runId: string,
   b: RepositoryActionBinding,
 ) {
@@ -174,9 +192,13 @@ export async function assertExistingRepositoryAction(
     throw new QueueError('conflict');
 }
 
-async function authorisedAction(tx: Tx, job: JobRow) {
+async function authorisedAction(
+  tx: Tx,
+  job: JobRow,
+  intent: 'write' | 'reconcile' = 'write',
+) {
   const [row] =
-    await tx`select a.*,p.organization_id,p.workspace_id,p.source,p.source_digest,p.revision,p.metadata,p.steps,p.remote,p.ci,p.created_at publication_created_at,
+    await tx`select a.*,p.organization_id,p.workspace_id,p.source,p.source_digest,p.revision,p.metadata,p.steps,p.remote,p.ci,p.provenance,p.created_at publication_created_at,
       r.input run_input,r.owner_id run_owner,ps.subject_id policy_owner
     from allrice_platform_repository_actions a
     join allrice_platform_repository_publications p on p.id=a.publication_id and p.owner_id=a.owner_id
@@ -212,6 +234,52 @@ async function authorisedAction(tx: Tx, job: JobRow) {
     row.timeout_ms !== (request.action === 'publish' ? 120_000 : 30_000)
   )
     throw new DataAccessError('authorization_denied');
+  // Inspection is an HTTP-read-only lane even when a grant is otherwise live.
+  if (request.action === 'inspect' && intent !== 'reconcile')
+    throw new DataAccessError('authorization_denied');
+  if (row.authority_version === 2) {
+    const readOnly = intent === 'reconcile';
+    const g = readOnly
+      ? await assertMaintenanceReconciliation(
+          tx,
+          row.maintenance_grant_id,
+          job.owner_id,
+        )
+      : await assertMaintenanceGrant(
+          tx,
+          row.maintenance_grant_id,
+          job.owner_id,
+        );
+    const provenance = MaintenancePublicationProvenanceSchema.parse(
+      row.provenance,
+    );
+    const [attempt] =
+      await tx`select * from allrice_platform_maintenance_attempts where id=${provenance.attemptId} and primary_grant_id=${row.maintenance_grant_id}`;
+    if (
+      source.version !== 2 ||
+      source.maintenance.grantId !== g.row.id ||
+      source.maintenance.grantDigest !== g.row.frozen_digest ||
+      provenance.grantId !== g.row.id ||
+      provenance.grantDigest !== g.row.frozen_digest ||
+      provenance.targetSha !== source.baseSha ||
+      !attempt ||
+      attempt.publication_id !== row.publication_id ||
+      attempt.repair_task_id !== source.repairTaskId ||
+      source.maintenance.attemptId !== attempt.id ||
+      !g.frozen.githubBot ||
+      technicalDigest(provenance.githubBot) !==
+        technicalDigest(g.frozen.githubBot) ||
+      request.credentialRevision !== provenance.githubBot.revision
+    )
+      throw new DataAccessError('authorization_denied');
+    const bot = await readMaintenanceGithubBot(
+      tx,
+      provenance.githubBot,
+      readOnly ? 'reconcile' : 'write',
+    );
+    return { row, source, request, token: bot.token };
+  }
+  if (source.version !== 1) throw new DataAccessError('authorization_denied');
   const context: RequestContext = {
     actor: { type: 'user', id: job.owner_id },
     requestId: row.request_id,
@@ -248,7 +316,13 @@ export async function isRepositoryActionAuthorized(tx: Tx, job: JobRow) {
   )
     return true;
   try {
-    await authorisedAction(tx, job);
+    const [action] =
+      await tx`select mode from allrice_platform_repository_actions where job_id=${job.id} and owner_id=${job.owner_id}`;
+    await authorisedAction(
+      tx,
+      job,
+      action?.mode === 'inspect' ? 'reconcile' : 'write',
+    );
     return true;
   } catch {
     return false;
@@ -288,9 +362,10 @@ export async function repositoryActionCompletionAllowed(tx: Tx, job: JobRow) {
         action.observation.inputDigest === action.input_digest &&
         action.observation.jobAttempt === job.attempt &&
         action.observation.factsDigest === r.data.factsDigest
-      : ['blob', 'tree', 'commit', 'branch', 'pull'].every(
-          (s) => action.steps[s]?.state === 'confirmed',
-        ) && !!action.remote)
+      : repositoryPublicationStepsFor(
+          RepositoryPublicationSourceSchema.parse(action.source),
+        ).every((s) => action.steps[s]?.state === 'confirmed') &&
+        !!action.remote)
   );
 }
 
@@ -302,6 +377,7 @@ export async function withRepositoryAction<T>(
     data: Awaited<ReturnType<typeof authorisedAction>>,
     job: JobRow,
   ) => Promise<T>,
+  intent: 'write' | 'reconcile' = 'write',
 ) {
   for (const value of [lease.workerId, lease.jobId, lease.leaseToken])
     UuidSchema.parse(value);
@@ -323,7 +399,7 @@ export async function withRepositoryAction<T>(
     )
       throw new QueueError('lease_lost');
     // Lock order: Job -> current owner/login/credential -> publication. Never wait on network here.
-    const data = await authorisedAction(tx, job);
+    const data = await authorisedAction(tx, job, intent);
     const [publication] =
       await tx`select revision,steps,metadata,remote,ci,ci_evidence from allrice_platform_repository_publications where id=${data.row.publication_id} and owner_id=${job.owner_id} for update`;
     if (!publication) throw new DataAccessError('authorization_denied');
@@ -335,10 +411,17 @@ export async function withRepositoryAction<T>(
     return callback(tx, data, job);
   });
 }
-export async function repositoryRequestGate(lease: RepositoryActionLease) {
-  return withRepositoryAction(lease, async (_tx, data, job) => ({
-    token: data.token,
-    remainingMs: Math.max(0, job.timeout_at.getTime() - Date.now()),
-  }));
+export async function repositoryRequestGate(
+  lease: RepositoryActionLease,
+  method: 'GET' | 'POST' | 'PUT' = 'POST',
+) {
+  return withRepositoryAction(
+    lease,
+    async (_tx, data, job) => ({
+      token: data.token,
+      remainingMs: Math.max(0, job.timeout_at.getTime() - Date.now()),
+    }),
+    method === 'GET' ? 'reconcile' : 'write',
+  );
 }
 export const newRepositoryActionId = () => randomUUID();

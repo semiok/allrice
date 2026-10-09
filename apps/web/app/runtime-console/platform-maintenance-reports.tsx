@@ -4,8 +4,10 @@ import {
   MaintenanceReportPageSchema,
   MaintenanceReportAuthoritySchema,
   type MaintenanceReportPayload,
+  type MaintenanceDeployment,
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
+import { MaintenanceReportActions } from './platform-maintenance-report-actions';
 import css from './technical-assistant.module.css';
 type Page = ReturnType<typeof MaintenanceReportPageSchema.parse>;
 const endpoint = '/api/v1/admin/technical-assistant/maintenance/reports';
@@ -36,8 +38,12 @@ const findings: Record<
 };
 export function PlatformMaintenanceReports({
   deploymentId,
+  deployment,
+  ready = false,
 }: {
   deploymentId: string | null;
+  deployment?: MaintenanceDeployment;
+  ready?: boolean;
 }) {
   const [data, setData] = useState<Page | null>(null),
     [busy, setBusy] = useState(false),
@@ -58,9 +64,11 @@ export function PlatformMaintenanceReports({
       );
       if (current === epoch.current)
         setAuthority((old) => ({ ...old, [id]: value }));
+      return value;
     } catch {
       if (current === epoch.current)
         setError('中央复现依据暂时不可读，请刷新重试。');
+      return null;
     }
   }
   async function load(cursor?: string) {
@@ -195,7 +203,16 @@ export function PlatformMaintenanceReports({
           <AdminButton onClick={() => download(report)}>
             下载问题报告
           </AdminButton>{' '}
-          <AdminButton disabled>修复并提交 PR（待中央复现接入）</AdminButton>
+          <MaintenanceReportActions
+            reportId={report.reportId}
+            reportDigest={report.payloadDigest}
+            authority={authority[report.reportId]}
+            deployment={
+              deployment?.id === report.deploymentId ? deployment : undefined
+            }
+            ready={ready}
+            refresh={() => loadAuthority(report.reportId)}
+          />
         </details>
       ))}
       {data?.nextCursor && (

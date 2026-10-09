@@ -1,3 +1,7 @@
+import {
+  MaintenancePublicationProvenanceSchema,
+  maintenancePublicationText,
+} from './platform-maintenance-provenance.ts';
 import { z } from 'zod';
 import { UuidSchema } from '@allrice/contracts';
 import { ChecksumSchema } from '@allrice/contracts';
@@ -15,7 +19,7 @@ import {
   RepositoryPublicationMetadataSchema,
   RepositoryPublicationSourceSchema,
   RepositoryPublicationCiSchema,
-  RepositoryPublicationSteps,
+  repositoryPublicationStepsFor,
   RepositoryPublicationStepSchema,
   type RepositoryPublicationStep,
 } from './platform-repository-publication-contracts.ts';
@@ -54,19 +58,30 @@ export function repositoryFactsDigest(row: Record<string, unknown>) {
   });
 }
 export async function readRepositoryAction(lease: RepositoryActionLease) {
-  return withRepositoryAction(lease, async (_tx, d) => ({
-    id: d.row.publication_id as string,
-    mode: d.request.action,
-    source: d.source,
-    createdAt: (d.row.publication_created_at as Date).toISOString(),
-    metadata: d.row.metadata
-      ? RepositoryPublicationMetadataSchema.parse(d.row.metadata)
-      : null,
-    steps: RepositoryStoredStepsSchema.parse(d.row.steps),
-    remote: d.row.remote
-      ? RepositoryPublicationRemoteSchema.parse(d.row.remote)
-      : null,
-  }));
+  return withRepositoryAction(
+    lease,
+    async (_tx, d) => ({
+      ...(d.row.provenance
+        ? {
+            provenance: MaintenancePublicationProvenanceSchema.parse(
+              d.row.provenance,
+            ),
+          }
+        : {}),
+      id: d.row.publication_id as string,
+      mode: d.request.action,
+      source: d.source,
+      createdAt: (d.row.publication_created_at as Date).toISOString(),
+      metadata: d.row.metadata
+        ? RepositoryPublicationMetadataSchema.parse(d.row.metadata)
+        : null,
+      steps: RepositoryStoredStepsSchema.parse(d.row.steps),
+      remote: d.row.remote
+        ? RepositoryPublicationRemoteSchema.parse(d.row.remote)
+        : null,
+    }),
+    'reconcile',
+  );
 }
 export async function freezeRepositoryPublicationMetadata(
   lease: RepositoryActionLease,
@@ -74,6 +89,25 @@ export async function freezeRepositoryPublicationMetadata(
 ) {
   const metadata = RepositoryPublicationMetadataSchema.parse(raw);
   return withRepositoryAction(lease, async (tx, d) => {
+    if (d.source.version === 2) {
+      const provenance = MaintenancePublicationProvenanceSchema.parse(
+          d.row.provenance,
+        ),
+        text = maintenancePublicationText(provenance, d.source.reportDigest);
+      if (
+        metadata.author.login !== provenance.githubBot.login ||
+        metadata.author.userId !== provenance.githubBot.userId ||
+        metadata.author.message !== text.message ||
+        technicalDigest(metadata.maintenance) !==
+          technicalDigest({
+            provenanceDigest: technicalDigest(provenance),
+            title: text.title,
+            body: text.body,
+            labels: text.labels,
+          })
+      )
+        throw new QueueError('conflict');
+    } else if (metadata.maintenance) throw new QueueError('conflict');
     if (d.row.metadata) {
       if (technicalDigest(d.row.metadata) !== technicalDigest(metadata))
         throw new QueueError('conflict');
@@ -111,10 +145,13 @@ export async function startRepositoryPublicationStep(
     }
     if (
       d.request.action !== 'publish' ||
-      RepositoryPublicationSteps.slice(
-        0,
-        RepositoryPublicationSteps.indexOf(step),
-      ).some((s) => steps[s]?.state !== 'confirmed')
+      !repositoryPublicationStepsFor(d.source).includes(step as never) ||
+      repositoryPublicationStepsFor(d.source)
+        .slice(
+          0,
+          repositoryPublicationStepsFor(d.source).indexOf(step as never),
+        )
+        .some((s) => steps[s]?.state !== 'confirmed')
     )
       throw new QueueError('conflict');
     steps[step] = {
@@ -133,43 +170,66 @@ export async function confirmRepositoryPublicationStep(
   identity: unknown,
 ) {
   RepositoryPublicationStepSchema.parse(step);
-  return withRepositoryAction(lease, async (tx, d) => {
-    const metadata = RepositoryPublicationMetadataSchema.parse(d.row.metadata),
-      steps = RepositoryStoredStepsSchema.parse(d.row.steps);
-    const old = steps[step],
-      expected = technicalDigest({
-        step,
-        sourceDigest: d.row.source_digest,
-        metadata,
-      });
-    if (!old || old.intentDigest !== expected) throw new QueueError('conflict');
-    let remote = d.row.remote;
-    if (step === 'pull') {
-      remote = RepositoryPublicationRemoteSchema.parse(identity);
-      if (
-        remote.branch !== `allrice/repairs/${d.row.publication_id}` ||
-        remote.headSha !== metadata.commit ||
-        remote.tree !== metadata.tree ||
-        remote.baseSha !== d.source.baseSha ||
-        (d.row.remote &&
-          technicalDigest(d.row.remote) !== technicalDigest(remote))
-      )
+  return withRepositoryAction(
+    lease,
+    async (tx, d) => {
+      const metadata = RepositoryPublicationMetadataSchema.parse(
+          d.row.metadata,
+        ),
+        steps = RepositoryStoredStepsSchema.parse(d.row.steps);
+      const old = steps[step],
+        expected = technicalDigest({
+          step,
+          sourceDigest: d.row.source_digest,
+          metadata,
+        });
+      if (!old || old.intentDigest !== expected)
         throw new QueueError('conflict');
-    } else {
-      const sha = RepositoryGitShaSchema.parse(identity);
-      if (
-        sha !==
-        (step === 'blob'
-          ? d.source.afterBlob
-          : step === 'tree'
-            ? metadata.tree
-            : metadata.commit)
-      )
-        throw new QueueError('conflict');
-    }
-    steps[step] = { ...old, state: 'confirmed' };
-    await tx`update allrice_platform_repository_publications set steps=${tx.json(steps)},remote=${remote ? tx.json(remote) : null},revision=revision+1,updated_at=clock_timestamp() where id=${d.row.publication_id}`;
-  });
+      let remote = d.row.remote;
+      if (step === 'pull') {
+        remote = RepositoryPublicationRemoteSchema.parse(identity);
+        if (
+          remote.branch !== `allrice/repairs/${d.row.publication_id}` ||
+          remote.headSha !== metadata.commit ||
+          remote.tree !== metadata.tree ||
+          remote.baseSha !== d.source.baseSha ||
+          (d.row.remote &&
+            technicalDigest(d.row.remote) !== technicalDigest(remote))
+        )
+          throw new QueueError('conflict');
+      } else if (step === 'maintenance_label' || step === 'company_label') {
+        if (
+          d.source.version !== 2 ||
+          identity !==
+            metadata.maintenance?.labels[step === 'maintenance_label' ? 0 : 1]
+        )
+          throw new QueueError('conflict');
+      } else if (step === 'labels') {
+        if (
+          d.source.version !== 2 ||
+          !Array.isArray(identity) ||
+          !metadata.maintenance?.labels.every((label) =>
+            identity.includes(label),
+          )
+        )
+          throw new QueueError('conflict');
+      } else {
+        const sha = RepositoryGitShaSchema.parse(identity);
+        if (
+          sha !==
+          (step === 'blob'
+            ? d.source.afterBlob
+            : step === 'tree'
+              ? metadata.tree
+              : metadata.commit)
+        )
+          throw new QueueError('conflict');
+      }
+      steps[step] = { ...old, state: 'confirmed' };
+      await tx`update allrice_platform_repository_publications set steps=${tx.json(steps)},remote=${remote ? tx.json(remote) : null},revision=revision+1,updated_at=clock_timestamp() where id=${d.row.publication_id}`;
+    },
+    'reconcile',
+  );
 }
 /** Same original receipt checker used when observing CI and freezing review.
  * It performs no IO and does not accept a model-rated substitute for a gate. */
@@ -251,73 +311,81 @@ export async function recordRepositoryCiObservation(
   raw: unknown,
   rawEvidence: unknown = [],
 ) {
-  return withRepositoryAction(lease, async (tx, d, job) => {
-    const { ci, evidence } = validateRepositoryCiEvidence(
-      raw,
-      rawEvidence,
-      d.source,
-      d.row.metadata,
-      d.row.remote,
-    );
-    await tx`update allrice_platform_repository_publications set ci=${tx.json(ci)},ci_evidence=${evidence.length ? tx.json(evidence) : null},revision=revision+1,updated_at=clock_timestamp() where id=${d.row.publication_id}`;
-    const observation = {
-      inputDigest: d.row.input_digest,
-      jobAttempt: job.attempt,
-      factsDigest: repositoryFactsDigest({
-        ...d.row,
-        ci,
-        ci_evidence: evidence.length ? evidence : null,
-      }),
-    };
-    await tx`update allrice_platform_repository_actions set observation=${tx.json(observation)} where id=${d.row.id}`;
-  });
+  return withRepositoryAction(
+    lease,
+    async (tx, d, job) => {
+      const { ci, evidence } = validateRepositoryCiEvidence(
+        raw,
+        rawEvidence,
+        d.source,
+        d.row.metadata,
+        d.row.remote,
+      );
+      await tx`update allrice_platform_repository_publications set ci=${tx.json(ci)},ci_evidence=${evidence.length ? tx.json(evidence) : null},revision=revision+1,updated_at=clock_timestamp() where id=${d.row.publication_id}`;
+      const observation = {
+        inputDigest: d.row.input_digest,
+        jobAttempt: job.attempt,
+        factsDigest: repositoryFactsDigest({
+          ...d.row,
+          ci,
+          ci_evidence: evidence.length ? evidence : null,
+        }),
+      };
+      await tx`update allrice_platform_repository_actions set observation=${tx.json(observation)} where id=${d.row.id}`;
+    },
+    'reconcile',
+  );
 }
 export async function finishRepositoryAction(lease: RepositoryActionLease) {
-  return withRepositoryAction(lease, async (tx, d, job) => {
-    const metadata = d.row.metadata
-        ? RepositoryPublicationMetadataSchema.parse(d.row.metadata)
-        : null,
-      steps = RepositoryStoredStepsSchema.parse(d.row.steps);
-    if (
-      d.request.action === 'publish' &&
-      (RepositoryPublicationSteps.some(
-        (s) => steps[s]?.state !== 'confirmed',
-      ) ||
-        !d.row.remote)
-    )
-      throw new QueueError('conflict');
-    if (d.row.remote) {
-      const remote = RepositoryPublicationRemoteSchema.parse(d.row.remote);
+  return withRepositoryAction(
+    lease,
+    async (tx, d, job) => {
+      const metadata = d.row.metadata
+          ? RepositoryPublicationMetadataSchema.parse(d.row.metadata)
+          : null,
+        steps = RepositoryStoredStepsSchema.parse(d.row.steps);
       if (
-        !metadata ||
-        remote.headSha !== metadata.commit ||
-        remote.tree !== metadata.tree ||
-        remote.baseSha !== d.source.baseSha ||
-        remote.branch !== `allrice/repairs/${d.row.publication_id}`
+        d.request.action === 'publish' &&
+        (repositoryPublicationStepsFor(d.source).some(
+          (s) => steps[s]?.state !== 'confirmed',
+        ) ||
+          !d.row.remote)
       )
         throw new QueueError('conflict');
-    }
-    if (
-      d.request.action === 'inspect' &&
-      (!d.row.observation ||
-        d.row.observation.inputDigest !== d.row.input_digest ||
-        d.row.observation.jobAttempt !== job.attempt ||
-        d.row.observation.factsDigest !== repositoryFactsDigest(d.row))
-    )
-      throw new QueueError('conflict');
-    const receipt = RepositoryActionReceiptSchema.parse({
-      version: 1,
-      publicationId: d.row.publication_id,
-      inputDigest: d.row.input_digest,
-      sourceDigest: d.row.source_digest,
-      jobAttempt: job.attempt,
-      action: d.request.action,
-      factsDigest: repositoryFactsDigest(d.row),
-    });
-    await tx`update allrice_platform_repository_actions set receipt=${tx.json(receipt)} where id=${d.row.id}`;
-    return {
-      publicationId: d.row.publication_id as string,
-      action: d.request.action,
-    };
-  });
+      if (d.row.remote) {
+        const remote = RepositoryPublicationRemoteSchema.parse(d.row.remote);
+        if (
+          !metadata ||
+          remote.headSha !== metadata.commit ||
+          remote.tree !== metadata.tree ||
+          remote.baseSha !== d.source.baseSha ||
+          remote.branch !== `allrice/repairs/${d.row.publication_id}`
+        )
+          throw new QueueError('conflict');
+      }
+      if (
+        d.request.action === 'inspect' &&
+        (!d.row.observation ||
+          d.row.observation.inputDigest !== d.row.input_digest ||
+          d.row.observation.jobAttempt !== job.attempt ||
+          d.row.observation.factsDigest !== repositoryFactsDigest(d.row))
+      )
+        throw new QueueError('conflict');
+      const receipt = RepositoryActionReceiptSchema.parse({
+        version: 1,
+        publicationId: d.row.publication_id,
+        inputDigest: d.row.input_digest,
+        sourceDigest: d.row.source_digest,
+        jobAttempt: job.attempt,
+        action: d.request.action,
+        factsDigest: repositoryFactsDigest(d.row),
+      });
+      await tx`update allrice_platform_repository_actions set receipt=${tx.json(receipt)} where id=${d.row.id}`;
+      return {
+        publicationId: d.row.publication_id as string,
+        action: d.request.action,
+      };
+    },
+    'reconcile',
+  );
 }

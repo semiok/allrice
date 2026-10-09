@@ -9,6 +9,8 @@ import {
 import { AdminButton } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 
+import { PlatformMaintenanceGithubBot } from './platform-maintenance-github-bot';
+
 import { PlatformMaintenanceReports } from './platform-maintenance-reports';
 
 const endpoint = '/api/v1/admin/technical-assistant/maintenance';
@@ -177,6 +179,7 @@ export function PlatformMaintenance() {
   return (
     <section className={css.card} aria-label="维护设置">
       <h2>维护设置</h2>
+      <PlatformMaintenanceGithubBot />
       <p className={css.meta}>
         登记独立部署的公司，下载连接配置后接入巡检报告。
       </p>
@@ -294,7 +297,11 @@ export function PlatformMaintenance() {
           />
         </>
       )}
-      <PlatformMaintenanceReports deploymentId={selected || null} />
+      <PlatformMaintenanceReports
+        deploymentId={selected || null}
+        deployment={deployment}
+        ready={catalog?.capabilities.repairReady ?? false}
+      />
       {message && <p role="status">{message}</p>}
       {error && (
         <p role="alert" className={css.error}>
@@ -352,15 +359,44 @@ function MaintenancePolicyEditor({
             setPolicy({
               ...policy,
               mode: e.target.value as MaintenancePolicy['mode'],
+              automaticAuthorizationUntil: null,
             })
           }
         >
           <option value="report_only">仅检查报告</option>
           <option value="repair_and_pr" disabled={!ready}>
-            修复并提交 PR{!ready ? '（接入中）' : ''}
+            修复并提交 PR{!ready ? '（未就绪）' : ''}
           </option>
         </select>
       </label>
+      {policy.mode === 'repair_and_pr' && (
+        <label>
+          自动授权到期（最多七天）
+          <input
+            aria-label="自动修复授权到期"
+            type="datetime-local"
+            disabled={busy}
+            value={
+              policy.automaticAuthorizationUntil
+                ? new Date(
+                    Date.parse(policy.automaticAuthorizationUntil) -
+                      new Date().getTimezoneOffset() * 60000,
+                  )
+                    .toISOString()
+                    .slice(0, 16)
+                : ''
+            }
+            onChange={(e) =>
+              setPolicy({
+                ...policy,
+                automaticAuthorizationUntil: e.target.value
+                  ? new Date(e.target.value).toISOString()
+                  : null,
+              })
+            }
+          />
+        </label>
+      )}
       <label>
         检查间隔（分钟，接入后生效）
         <input
@@ -396,6 +432,51 @@ function MaintenancePolicyEditor({
         />
       </label>
       <label>
+        每日修复次数
+        <input
+          aria-label="每日修复次数"
+          type="number"
+          min={1}
+          max={20}
+          value={policy.dailyRepairLimit}
+          disabled={busy}
+          onChange={(e) =>
+            setPolicy({ ...policy, dailyRepairLimit: Number(e.target.value) })
+          }
+        />
+      </label>
+      <label>
+        最多候选版本
+        <input
+          aria-label="维护候选版本上限"
+          type="number"
+          min={1}
+          max={3}
+          value={policy.maxCandidateRevisions}
+          disabled={busy}
+          onChange={(e) =>
+            setPolicy({
+              ...policy,
+              maxCandidateRevisions: Number(e.target.value),
+            })
+          }
+        />
+      </label>
+      <label>
+        累计输出停止阈值（Token）
+        <input
+          aria-label="维护输出停止阈值"
+          type="number"
+          min={1000}
+          max={100000}
+          value={policy.maxOutputTokens}
+          disabled={busy}
+          onChange={(e) =>
+            setPolicy({ ...policy, maxOutputTokens: Number(e.target.value) })
+          }
+        />
+      </label>
+      <label>
         <input
           aria-label="暂停维护任务"
           type="checkbox"
@@ -409,8 +490,11 @@ function MaintenancePolicyEditor({
         {busy ? '保存中…' : '保存维护设置'}
       </AdminButton>
       <p className={css.meta}>
-        {!ready && '报告接入可用；修复与 PR 链路尚未接通。'}{' '}
-        自动合并和自动部署关闭；历史报告与 PR 保留。
+        {!ready && '机器人授权或当前源码基线尚未就绪，报告接入可用。'}{' '}
+        自动授权只覆盖启用后新收到且新采样的确证缺陷，修改配置会重新计算起点。每任务最多
+        16
+        次模型调用；达到累计输出阈值后停止，单次响应可能超过阈值。自动合并和自动部署关闭；历史报告与
+        PR 保留。
       </p>
       {message && <p role="status">{message}</p>}
     </div>

@@ -1,3 +1,5 @@
+import { maintenanceGithubReady } from './platform-maintenance-github.ts';
+import { repositoryCatalog } from './platform-repository-source.ts';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import type { RequestContext } from '@allrice/contracts';
@@ -52,16 +54,34 @@ function mapped(row: Record<string, unknown>) {
     updatedAt: time(row.updated_at),
   });
 }
+async function repairReady(tx: postgres.TransactionSql) {
+  if (!(await maintenanceGithubReady(tx))) return false;
+  try {
+    return repositoryCatalog(
+      process.env.ALLRICE_REPOSITORY_BASELINE_DIR,
+    ).baselines.some(
+      (b) =>
+        b.sourceSha === process.env.ALLRICE_RELEASE_SHA &&
+        !!b.compiledDependencies,
+    );
+  } catch {
+    return false;
+  }
+}
 export async function listMaintenanceDeployments(context: RequestContext) {
   const rows = await getDatabase().begin(async (tx) => {
     const owner = await currentMaintenanceAdmin(context, tx);
-    return tx`select * from allrice_platform_maintenance_deployments
-      where owner_id=${owner} order by created_at desc,id desc limit 100`;
+    return {
+      deployments:
+        await tx`select * from allrice_platform_maintenance_deployments
+      where owner_id=${owner} order by created_at desc,id desc limit 100`,
+      ready: await repairReady(tx),
+    };
   });
   return MaintenanceCatalogSchema.parse({
-    deployments: rows.map(mapped),
+    deployments: rows.deployments.map(mapped),
     capabilities: {
-      repairReady: false,
+      repairReady: rows.ready,
       automaticMerge: false,
       automaticDeployment: false,
       globalRepairConcurrency: 1,
@@ -118,14 +138,29 @@ export async function updateMaintenanceDeployment(
 ) {
   const request = UpdateMaintenanceDeploymentSchema.parse(input);
   UuidSchema.parse(id);
-  // The pipeline is not enabled by merely saving a future policy.
-  if (request.policy.mode === 'repair_and_pr')
-    throw new DataAccessError('grant_invalid');
+  const policy = {
+    ...request.policy,
+    automaticAuthorizationUntil:
+      request.policy.mode === 'report_only'
+        ? null
+        : request.policy.automaticAuthorizationUntil,
+  };
   const sql = getDatabase();
   return sql.begin(async (tx) => {
     const owner = await currentMaintenanceAdmin(context, tx);
+    if (policy.mode === 'repair_and_pr') {
+      const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
+      const expiry = Date.parse(policy.automaticAuthorizationUntil ?? '');
+      if (
+        !(await repairReady(tx)) ||
+        !Number.isFinite(expiry) ||
+        expiry <= clock!.now.getTime() ||
+        expiry > clock!.now.getTime() + 7 * 86400000
+      )
+        throw new DataAccessError('grant_invalid');
+    }
     const [row] = await tx`update allrice_platform_maintenance_deployments
-      set policy=${tx.json(request.policy)},revision=revision+1,updated_at=clock_timestamp()
+      set policy=${tx.json(policy)},enabled_at=${policy.mode === 'repair_and_pr' && !policy.paused ? tx`clock_timestamp()` : null},revision=revision+1,updated_at=clock_timestamp()
       where id=${id} and owner_id=${owner} and revision=${request.expectedRevision}
       returning *`;
     if (!row) {

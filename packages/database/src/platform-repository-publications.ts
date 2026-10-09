@@ -17,7 +17,7 @@ import {
   RepositoryPublicationRequestSchema,
   RepositoryPublicationSchema,
   RepositoryPublicationSourceSchema,
-  RepositoryPublicationSteps,
+  repositoryPublicationStepsFor,
   repositoryPublicationJobType,
 } from './platform-repository-publication-contracts.ts';
 
@@ -85,7 +85,7 @@ export async function getPlatformRepositoryPublication(
     candidateChecksum: source.candidateChecksum,
     revision: p.revision,
     branch: `allrice/repairs/${p.id}`,
-    steps: RepositoryPublicationSteps.map((step) => ({
+    steps: repositoryPublicationStepsFor(source).map((step) => ({
       step,
       state: p.steps[step]?.state ?? 'not_started',
     })),

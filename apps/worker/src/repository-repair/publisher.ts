@@ -1,4 +1,6 @@
 import {
+  maintenancePublicationText,
+  technicalDigest,
   readRepositoryAction,
   freezeRepositoryPublicationMetadata,
   startRepositoryPublicationStep,
@@ -49,7 +51,10 @@ export async function publishRepositoryCandidate(
 ) {
   const github =
       options.github ??
-      new FixedRepositoryGithub(() => repositoryRequestGate(lease), signal),
+      new FixedRepositoryGithub(
+        (method) => repositoryRequestGate(lease, method),
+        signal,
+      ),
     store = options.store ?? repositoryPublicationStore;
   const action = await store.read(lease),
     source = action.source,
@@ -73,6 +78,19 @@ export async function publishRepositoryCandidate(
   }
   try {
     await github.repository();
+    const provenance = action.provenance;
+    if (source.version === 2) {
+      if (!provenance) throw conflict();
+      const user = await github.user();
+      if (
+        user.id !== provenance.githubBot.userId ||
+        user.login !== provenance.githubBot.login
+      )
+        throw conflict();
+    } else if (provenance) throw conflict();
+    const attribution = provenance
+      ? maintenancePublicationText(provenance, source.reportDigest)
+      : null;
     const currentBase = await github.main();
     if (action.mode === 'publish' && currentBase !== source.baseSha)
       throw conflict();
@@ -108,17 +126,35 @@ export async function publishRepositoryCandidate(
           login: user.login,
           userId: user.id,
           timestamp: action.createdAt.replace(/\.\d{3}Z$/, 'Z'),
-          message: 'fix: redact command output credentials',
+          message:
+            attribution?.message ?? 'fix: redact command output credentials',
         };
       action.metadata = await store.freeze(lease, {
         tree,
         workflowBlob: workflow.sha,
         commit: repositoryCommitIdentity(tree, source.baseSha, author).sha,
         author,
+        ...(attribution
+          ? {
+              maintenance: {
+                provenanceDigest: technicalDigest(provenance),
+                title: attribution.title,
+                body: attribution.body,
+                labels: attribution.labels,
+              },
+            }
+          : {}),
       });
     }
     const metadata = action.metadata;
     if (
+      (attribution &&
+        (metadata.maintenance?.provenanceDigest !==
+          technicalDigest(provenance) ||
+          metadata.maintenance.title !== attribution.title ||
+          metadata.maintenance.body !== attribution.body ||
+          metadata.author.login !== provenance!.githubBot.login ||
+          metadata.author.userId !== provenance!.githubBot.userId)) ||
       metadata.tree !== tree ||
       metadata.workflowBlob !== workflow.sha ||
       repositoryCommitIdentity(tree, source.baseSha, metadata.author).sha !==
@@ -128,7 +164,7 @@ export async function publishRepositoryCandidate(
     async function step(
       name: RepositoryPublicationStep,
       write: () => Promise<void>,
-      read: () => Promise<string | Record<string, unknown> | null>,
+      read: () => Promise<unknown | null>,
     ) {
       signal.throwIfAborted();
       const previous = action.steps[name];
@@ -227,13 +263,18 @@ export async function publishRepositoryCandidate(
       throw conflict();
     const pullDone = await step(
       'pull',
-      () => github.createPull(branch, action.id),
+      () => github.createPull(branch, action.id, attribution ?? undefined),
       async () => {
         const rows = await github.pulls(branch);
         if (!rows.length) return null;
         if (rows.length !== 1) throw conflict();
         const pull = rows[0]!;
         if (
+          (provenance &&
+            (pull.author?.id !== provenance.githubBot.userId ||
+              pull.author?.login !== provenance.githubBot.login ||
+              pull.title !== attribution!.title ||
+              pull.body !== attribution!.body)) ||
           pull.headSha !== metadata.commit ||
           pull.baseSha !== source.baseSha ||
           (action.mode === 'publish' && pull.state !== 'open')
@@ -251,6 +292,32 @@ export async function publishRepositoryCandidate(
         };
       },
     );
+    if (pullDone && attribution) {
+      const current = await store.read(lease),
+        pull = current.remote;
+      if (!pull) throw conflict();
+      for (const [index, name] of attribution.labels.entries()) {
+        const complete = await step(
+          index === 0 ? 'maintenance_label' : 'company_label',
+          async () => {
+            if (!(await github.label(name))) await github.createLabel(name);
+          },
+          () => github.label(name),
+        );
+        if (!complete) return finishUnknown();
+      }
+      const labels = await step(
+        'labels',
+        () => github.addLabels(pull.number, attribution.labels),
+        async () => {
+          const existing = await github.pullLabels(pull.number);
+          return attribution.labels.every((label) => existing.includes(label))
+            ? existing
+            : null;
+        },
+      );
+      if (!labels) return finishUnknown();
+    }
     if (pullDone && options.inspectCi) {
       const current = await store.read(lease);
       const inspected = await options.inspectCi(github, current, signal);

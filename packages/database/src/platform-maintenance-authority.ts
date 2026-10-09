@@ -27,6 +27,10 @@ import {
   MaintenanceGrantSchema,
   type MaintenanceDiagnosisProof,
 } from './platform-maintenance-authority-contracts.ts';
+import {
+  maintenanceGithubIdentity,
+  readMaintenanceGithubBot,
+} from './platform-maintenance-github.ts';
 type Tx = postgres.TransactionSql;
 type Row = Record<string, unknown>;
 const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : null);
@@ -56,6 +60,14 @@ function diagnosis(row: Row) {
 function grant(row: Row) {
   return MaintenanceGrantSchema.parse({
     id: row.id,
+    requestId: row.request_id,
+    ...(row.can_control !== undefined
+      ? {
+          canControl: row.can_control,
+          repairStatus: row.repair_status ?? null,
+          publication: row.publication ?? null,
+        }
+      : {}),
     reportId: row.report_id,
     deploymentId: row.deployment_id,
     defectId: row.defect_id,
@@ -202,8 +214,21 @@ export async function getMaintenanceReportAuthority(
     const diagnoses =
       await tx`select * from allrice_platform_maintenance_diagnoses where report_id=${reportId} order by created_at desc,id desc limit 10`;
     const grants =
-      await tx`select g.*,l.attempt_id from allrice_platform_maintenance_grants g join allrice_platform_maintenance_grant_attempts l on l.grant_id=g.id where g.report_id=${reportId} and g.issuer_id=${owner} order by g.created_at desc,g.id desc limit 10`;
-    return { diagnoses: diagnoses.map(diagnosis), grants: grants.map(grant) };
+      await tx`select g.*,l.attempt_id,a.repair_task_id shared_repair_task_id,a.publication_id shared_publication_id,(a.primary_grant_id=g.id) can_control,j.status repair_status,
+      case when p.id is null then null else jsonb_build_object('id',p.id,'url',p.remote->>'url','number',(p.remote->>'number')::int,'ci',coalesce(p.ci,'{"state":"not_observed","observedAt":null,"workflowRunId":null,"runAttempt":null,"headSha":null,"checkoutSha":null,"checkoutTree":null,"materialDigest":null,"checks":[]}'::jsonb),'sourceCompanySlug',p.provenance->>'companySlug') end publication
+      from allrice_platform_maintenance_grants g join allrice_platform_maintenance_grant_attempts l on l.grant_id=g.id join allrice_platform_maintenance_attempts a on a.id=l.attempt_id
+      left join allrice_platform_repair_tasks q on q.id=a.repair_task_id left join allrice_jobs j on j.id=q.job_id left join allrice_platform_repository_publications p on p.id=a.publication_id
+      where g.report_id=${reportId} and g.issuer_id=${owner} order by g.created_at desc,g.id desc limit 10`;
+    return {
+      diagnoses: diagnoses.map(diagnosis),
+      grants: grants.map((r) =>
+        grant({
+          ...r,
+          repair_task_id: r.shared_repair_task_id,
+          publication_id: r.shared_publication_id,
+        }),
+      ),
+    };
   });
 }
 async function issue(
@@ -306,6 +331,7 @@ async function issue(
     repairTimeoutMs: p.repairTimeoutMinutes * 60000,
     maxCandidateRevisions: p.maxCandidateRevisions,
     maxOutputTokens: p.maxOutputTokens,
+    githubBot: await maintenanceGithubIdentity(tx),
     outputBudgetMode: 'observed_threshold',
     maxModelCalls: 16,
     expiresAt,
@@ -397,6 +423,8 @@ export async function assertMaintenanceGrant(
       Date.parse(p.automaticAuthorizationUntil) <= now.getTime())
   )
     denied();
+  if (!f.githubBot) denied();
+  await readMaintenanceGithubBot(tx, f.githubBot!, 'write');
   const [r] =
     await tx`select payload_digest from allrice_platform_maintenance_reports where id=${f.reportId} and deployment_id=${d!.id}`;
   const [a] =
@@ -426,4 +454,31 @@ export async function revokeMaintenanceGrant(
       await tx`select attempt_id from allrice_platform_maintenance_grant_attempts where grant_id=${g.id}`;
     return grant({ ...g, attempt_id: link!.attempt_id });
   });
+}
+
+/** Read-only observation of a previously authorized attempt. Expiry/revocation
+ * never grants new writes; rotation is permitted only for the same bot account. */
+export async function assertMaintenanceReconciliation(
+  tx: Tx,
+  id: string,
+  owner: string,
+) {
+  await currentIssuer(tx, owner);
+  const [g] =
+    await tx`select * from allrice_platform_maintenance_grants where id=${UuidSchema.parse(id)} and issuer_id=${owner} for share`;
+  if (!g) denied();
+  const frozen = MaintenanceGrantFrozenSchema.parse(g!.frozen);
+  if (
+    technicalDigest(frozen) !== g!.frozen_digest ||
+    frozen.reportId !== g!.report_id ||
+    frozen.defectId !== g!.defect_id ||
+    !frozen.githubBot
+  )
+    denied();
+  const bot = await readMaintenanceGithubBot(
+    tx,
+    frozen.githubBot!,
+    'reconcile',
+  );
+  return { row: g!, frozen, bot };
 }

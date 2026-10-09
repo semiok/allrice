@@ -175,3 +175,16 @@ export * from './platform-maintenance-profile.ts';
 
 export { startMaintenanceRepairGrant } from './platform-maintenance-repair.ts';
 export { platformMaintenanceRepairInstructions } from './platform-repair.ts';
+
+export {
+  getMaintenanceGithubBot,
+  updateMaintenanceGithubBot,
+} from './platform-maintenance-github.ts';
+
+export { maintenancePublicationText } from './platform-maintenance-provenance.ts';
+
+export {
+  authorizeMaintenanceReport,
+  controlMaintenanceGrant,
+  runMaintenanceExecutionTick,
+} from './platform-maintenance-execution.ts';

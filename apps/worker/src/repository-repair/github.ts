@@ -38,9 +38,14 @@ export interface RepositoryRemotePull {
   baseSha: string;
   draft: boolean;
   state: 'open' | 'closed';
+  author?: { login: string; id: number };
+  title?: string;
+  body?: string;
 }
 export interface RepositoryGithubGate {
-  (): Promise<{ token: string; remainingMs: number }>;
+  (
+    method: 'GET' | 'POST' | 'PUT',
+  ): Promise<{ token: string; remainingMs: number }>;
 }
 
 /** Trusted Worker transport. No model URL, automatic redirect or raw-error echo. */
@@ -59,7 +64,7 @@ export class FixedRepositoryGithub {
     if (this.readOnly && method !== 'GET')
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
     this.signal.throwIfAborted();
-    const { token, remainingMs } = await this.gate();
+    const { token, remainingMs } = await this.gate(method);
     if (!token.startsWith('github_pat_') || remainingMs < 1)
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_UNAVAILABLE');
     // Every caller below constructs a fixed endpoint; queries never change the origin.
@@ -258,6 +263,16 @@ export class FixedRepositoryGithub {
       baseSha: sha(base.sha),
       draft: row.draft,
       state: row.state as 'open' | 'closed',
+      ...(row.user
+        ? {
+            author: {
+              id: positive(object(row.user).id),
+              login: String(object(row.user).login),
+            },
+          }
+        : {}),
+      ...(typeof row.title === 'string' ? { title: row.title } : {}),
+      ...(typeof row.body === 'string' ? { body: row.body } : {}),
     };
   }
   async pulls(branch: string) {
@@ -367,7 +382,11 @@ export class FixedRepositoryGithub {
       sha: sha(commit),
     });
   }
-  async createPull(branch: string, publicationId: string) {
+  async createPull(
+    branch: string,
+    publicationId: string,
+    attribution?: { title: string; body: string },
+  ) {
     this.branchName(branch);
     if (branch !== 'allrice/repairs/' + publicationId)
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
@@ -375,9 +394,51 @@ export class FixedRepositoryGithub {
       head: branch,
       base: 'main',
       draft: true,
-      title: 'fix: candidate command output redaction',
-      body: `AllRice fixed repository candidate ${publicationId}.\n\nOnly the approved command-output replacement is included. Existing CI and independent review are required before merge.`,
+      title: attribution?.title ?? 'fix: candidate command output redaction',
+      body:
+        attribution?.body ??
+        `AllRice fixed repository candidate ${publicationId}.\n\nOnly the approved command-output replacement is included. Existing CI and independent review are required before merge.`,
     });
+  }
+  async label(name: string) {
+    this.labelName(name);
+    const raw = await this.request(
+      prefix + '/labels/' + encodeURIComponent(name),
+    );
+    if (raw === null) return null;
+    if (object(raw).name !== name)
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
+    return name;
+  }
+  private labelName(name: string) {
+    if (
+      name !== 'allrice-maintenance' &&
+      !/^company:[a-z][a-z0-9-]{0,41}$/.test(name)
+    )
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
+  }
+  async createLabel(name: string) {
+    this.labelName(name);
+    await this.request(prefix + '/labels', 'POST', {
+      name,
+      color: name === 'allrice-maintenance' ? '0366d6' : 'c5def5',
+    });
+  }
+  async addLabels(number: number, labels: readonly [string, string]) {
+    labels.forEach((label) => this.labelName(label));
+    await this.request(
+      prefix + '/issues/' + positive(number) + '/labels',
+      'POST',
+      { labels },
+    );
+  }
+  async pullLabels(number: number) {
+    const raw = await this.request(
+      prefix + '/issues/' + positive(number) + '/labels?per_page=100',
+    );
+    if (!Array.isArray(raw) || raw.length >= 100)
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
+    return raw.map((label) => String(object(label).name));
   }
   async workflow() {
     return object(await this.request(prefix + '/actions/workflows/ci.yml'));
@@ -443,7 +504,7 @@ export class FixedRepositoryGithub {
   }
   async downloadArtifact(id: number) {
     this.signal.throwIfAborted();
-    const first = await this.gate();
+    const first = await this.gate('GET');
     if (first.remainingMs < 1)
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_UNAVAILABLE');
     let ticket: Response;
@@ -491,7 +552,7 @@ export class FixedRepositoryGithub {
       )
     )
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
-    const next = await this.gate();
+    const next = await this.gate('GET');
     if (next.remainingMs < 1)
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_UNAVAILABLE');
     let response: Response;

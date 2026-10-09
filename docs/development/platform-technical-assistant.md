@@ -1,4 +1,20 @@
-# Platform technical assistant — MET167 PR1
+# Platform technical assistant — configurable company maintenance
+
+## Current product boundary — configurable repair and PRs
+
+Independent company deployments register an installation and send bounded, immutable diagnostic facts to the central platform using their own rotatable installation keys. The central console filters reports by company/deployment, verifies the current central source independently of the installed company release, and preserves every source report. A confirmed defect uses the exact target baseline, fixture, oracle and approved-file manifest for deduplication; matching error text alone is insufficient.
+
+The default is **report only**. An administrator may select **repair and submit PR for this report only** without changing that default, or explicitly configure a bounded automatic authorization (expiry within seven days, daily repair count, candidate revisions, wall time and observed output threshold). Automatic processing starts at the recorded activation watermark: only reports both sampled and received after activation can be authorized automatically. Pause, downgrade, installation-key rotation/revocation, expired authority, or changed target baseline fence new work. A dispatched write with an unknown result is never replayed automatically; its saved intent can be reconciled by reads.
+
+**AllRice PR Bot** is the agreed display name, not an assumed GitHub login. Configure its real GitHub username and repository-scoped fine-grained token in the central console's **Unified GitHub robot** panel. The service verifies the exact account ID/login and fixed `semiok/allrice` repository ID `1323769790`. Grant Contents, Pull requests and Issues read/write, and Actions and Checks read. The encrypted token stays only at the central platform; company installations, model prompts and candidate sandboxes never receive it. No operator/Composio or employee OAuth credential is substituted. New write authority freezes the bot revision; read-only reconciliation after rotation requires the same bot account.
+
+The currently registered repair profile covers **only command-output credential redaction in `packages/project-runtime/src/command-output.ts`**. Other diagnoses remain reports. The existing Employee Run, native DSH programming tools, offline compiled verifier, private artifacts, queue and publication ledger are reused. Original before/after assertions, trusted two-package compilation receipts and an approved full-file manifest are required before a PR can be queued. The observed output budget is a stop threshold, not a strict provider billing cap; one native model call may exceed it. At most sixteen dispatched model calls are allowed.
+
+PR author/commit identity comes from the verified central bot. Company attribution is frozen in title, `company:<slug>` and `allrice-maintenance` labels, plus immutable provenance in the body. One canonical defect attempt has one publication; other company reports retain their own authorization/source record and see a limited shared PR/CI projection, without controlling the original task. The console provides revoke, PR link and GET-only original CI reconciliation. The product **never marks ready, merges main, or deploys Dev/Prod**. Legacy merge/review/write endpoints remain disabled; older records stay readable. The older PR-by-PR sections below describe historical implementation, not enabled product merge permissions.
+
+APIs are private/no-store admin routes under `/api/v1/admin/technical-assistant/maintenance`: `GET/PUT github-bot`, `GET/POST reports/:id/authority`, and `POST grants/:id` with only `revoke` or `inspect`. All writes require a current platform admin session, same origin, bounded JSON and persisted authority; ordinary company accounts cannot use them. Machine ingestion is separately authenticated under `/api/v1/maintenance`.
+
+Configuration tests, synthetic HTTP publication protocols and isolated PostgreSQL authority tests are separate from actual robot acceptance. A green feature PR or simulated GitHub response is not evidence of a product bot PR. Real product acceptance requires the administrator's dedicated bot account/repository authorization and a confirmed current-source defect; record that gap explicitly if credentials are absent.
 
 ## Platform repository credential — MET167 PR4a1
 

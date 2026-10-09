@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 
 import { UuidSchema, makeHealthResponse } from '@allrice/contracts';
 import {
+  runMaintenanceExecutionTick,
   claimDueAutomations,
   processFolderTriggerEvents,
   claimNextJob,
@@ -412,6 +413,7 @@ function maintenanceReportingTick() {
         maintenanceDiagnosticRuntime,
         maintenanceReportingAborter.signal,
       );
+      await runMaintenanceExecutionTick(maintenanceReportingAborter.signal);
     }
   })
     .catch(() =>
