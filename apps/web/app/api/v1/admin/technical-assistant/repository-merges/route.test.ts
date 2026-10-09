@@ -110,7 +110,8 @@ describe('private repository merge API boundary', () => {
     expect(mocks.find).toHaveBeenCalledWith({}, id);
     expect(mocks.create).not.toHaveBeenCalled();
     mocks.create.mockRejectedValue(new QueueError('conflict'));
-    expect((await POST(write(request()))).status).toBe(409);
+    expect((await POST(write(request()))).status).toBe(403);
+    expect(mocks.create).not.toHaveBeenCalled();
     mocks.credential.mockResolvedValue({ state: 'configured', revision: 1 });
     mocks.panel.mockResolvedValue({ token: 'SYNTHETIC_SECRET' });
     const invalid = await GET(new Request(endpoint + '?publicationId=' + id));

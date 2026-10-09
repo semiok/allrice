@@ -180,7 +180,7 @@ export function PlatformRepositoryReviews({
     }
   };
   const stop = async () => {
-    if (readOnly || !active || mutating.current) return;
+    if (!active || mutating.current) return;
     mutating.current = true;
     setBusy(true);
     try {
@@ -232,7 +232,7 @@ export function PlatformRepositoryReviews({
           </AdminButton>
         )}
         {active && (
-          <AdminButton disabled={readOnly || busy} onClick={() => void stop()}>
+          <AdminButton disabled={busy} onClick={() => void stop()}>
             停止审查
           </AdminButton>
         )}

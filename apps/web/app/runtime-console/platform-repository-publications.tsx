@@ -165,7 +165,7 @@ export function PlatformRepositoryPublications({
     setPending(null);
   }
   async function submit(action: 'publish' | 'inspect') {
-    if (readOnly) return;
+    if (readOnly && action === 'publish') return;
     if (
       busy ||
       pending ||
@@ -252,7 +252,6 @@ export function PlatformRepositoryPublications({
     }
   }
   async function stop() {
-    if (readOnly) return;
     if (!current || !active || busy) return;
     sequence.current++;
     setBusy(true);
@@ -394,7 +393,6 @@ export function PlatformRepositoryPublications({
           <div className={css.controls}>
             <AdminButton
               disabled={
-                readOnly ||
                 busy ||
                 !!pending ||
                 !!active ||
@@ -405,10 +403,7 @@ export function PlatformRepositoryPublications({
               核对远端与 CI
             </AdminButton>
             {active && (
-              <AdminButton
-                disabled={readOnly || busy}
-                onClick={() => void stop()}
-              >
+              <AdminButton disabled={busy} onClick={() => void stop()}>
                 停止当前操作
               </AdminButton>
             )}

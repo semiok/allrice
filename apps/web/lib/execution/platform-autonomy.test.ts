@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
+import { DataAccessError } from '@allrice/database';
 import { repairFixture } from '../../test/platform-repair-fixture';
 
 const mocks = vi.hoisted(() => ({
@@ -41,45 +42,105 @@ describe('production diagnosis/report-only boundary', () => {
       actor: { type: 'user', id: crypto.randomUUID() },
     });
   });
-  it('refuses every source/repository mutation even for an authenticated platform admin', async () => {
-    const origin = 'https://admin.allrice.test';
-    const context = { params: Promise.resolve({ id: crypto.randomUUID() }) };
-    for (const [name, create, cancel] of [
-      ['repair', repair, cancelRepair],
-      ['repository-publications', publish, cancelPublish],
-      ['repository-reviews', review, cancelReview],
-      ['repository-merges', merge, cancelMerge],
+  it('refuses new repair, review, publication and merge writes for platform administrators', async () => {
+    const origin = 'https://admin.allrice.test',
+      uuid = () => crypto.randomUUID();
+    for (const [name, create, body] of [
+      ['repair', repair, {}],
+      ['repository-reviews', review, {}],
+      [
+        'repository-publications',
+        publish,
+        {
+          action: 'publish',
+          requestId: uuid(),
+          repairTaskId: uuid(),
+          credentialRevision: 1,
+        },
+      ],
+      [
+        'repository-merges',
+        merge,
+        {
+          action: 'merge',
+          requestId: uuid(),
+          publicationId: uuid(),
+          reviewSubjectId: uuid(),
+          expectedSubjectDigest: 'sha256:' + 'a'.repeat(64),
+          credentialRevision: 1,
+        },
+      ],
     ] as const) {
-      const url = origin + '/api/v1/admin/technical-assistant/' + name;
-      for (const response of [
-        await create(
-          new Request(url, {
-            method: 'POST',
-            headers: { origin, 'content-type': 'application/json' },
-            body: '{}',
-          }),
-        ),
-        await cancel(
-          new Request(
-            url +
-              '/' +
-              crypto.randomUUID() +
-              '?actionId=' +
-              crypto.randomUUID(),
-            { method: 'DELETE', headers: { origin } },
-          ),
-          context,
-        ),
-      ]) {
-        expect(response.status).toBe(403);
-        expect(await response.json()).toEqual({
-          error: 'platform_autonomous_actions_deferred',
-        });
-        expect(response.headers.get('cache-control')).toBe('private, no-store');
-      }
+      const response = await create(
+        new Request(origin + '/api/v1/admin/technical-assistant/' + name, {
+          method: 'POST',
+          headers: { origin, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({
+        error: 'platform_autonomous_actions_deferred',
+      });
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
     }
-    expect(mocks.auth).toHaveBeenCalledTimes(8);
     expect(mocks.mutation).not.toHaveBeenCalled();
+  });
+  it('keeps cancellation and read-only result reconciliation available without enabling repair or merge', async () => {
+    const origin = 'https://admin.allrice.test',
+      uuid = () => crypto.randomUUID();
+    mocks.mutation.mockRejectedValue(new DataAccessError('not_found'));
+    for (const [name, cancel] of [
+      ['repair', cancelRepair],
+      ['repository-publications', cancelPublish],
+      ['repository-reviews', cancelReview],
+      ['repository-merges', cancelMerge],
+    ] as const) {
+      const response = await cancel(
+        new Request(
+          origin +
+            '/api/v1/admin/technical-assistant/' +
+            name +
+            '/' +
+            uuid() +
+            '?actionId=' +
+            uuid(),
+          { method: 'DELETE', headers: { origin } },
+        ),
+        { params: Promise.resolve({ id: uuid() }) },
+      );
+      expect(response.status).toBe(404);
+    }
+    for (const [action, body] of [
+      [
+        publish,
+        {
+          action: 'inspect',
+          requestId: uuid(),
+          publicationId: uuid(),
+          credentialRevision: 1,
+        },
+      ],
+      [
+        merge,
+        {
+          action: 'reconcile',
+          requestId: uuid(),
+          mergeId: uuid(),
+          credentialRevision: 1,
+        },
+      ],
+    ] as const) {
+      const response = await action(
+        new Request(origin + '/api/v1/admin/technical-assistant/repository', {
+          method: 'POST',
+          headers: { origin, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        }),
+      );
+      expect(response.status).toBe(404);
+    }
+    expect(mocks.mutation).toHaveBeenCalledTimes(6);
   });
   it('keeps historical repair results readable through the unchanged typed GET', async () => {
     const task = repairFixture();

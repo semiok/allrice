@@ -9,6 +9,7 @@ import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 const endpoint = '/api/v1/admin/technical-assistant/repository-merges';
 const reasons = {
+  automatic_merge_disabled: '自动合并已关闭，请在 GitHub 审阅和合并。',
   repository_authorization_required: '请先配置当前管理员的仓库授权。',
   completed_review_required: '需要准确、完整的独立审查和交付成果。',
   merge_active: '合并操作正在执行。',
@@ -113,7 +114,7 @@ export function PlatformRepositoryMerges({
     return () => clearInterval(timer);
   }, [active?.id, read]);
   const send = async (request: RequestData) => {
-    if (readOnly) return;
+    if (request.action === 'merge') return;
     if (mutating.current) return;
     setAbsent(false);
     mutating.current = true;
@@ -135,11 +136,7 @@ export function PlatformRepositoryMerges({
       if (mounted.current) {
         remember(null);
         await read();
-        setNotice(
-          request.action === 'merge'
-            ? '已提交固定候选合并。'
-            : '已提交原结果核对；不会再次发出合并。',
-        );
+        setNotice('已提交原结果核对；不会再次发出合并。');
       }
     } catch {
       if (mounted.current)
@@ -218,7 +215,7 @@ export function PlatformRepositoryMerges({
     }
   };
   const stop = async () => {
-    if (readOnly || !operation || !active || mutating.current) return;
+    if (!operation || !active || mutating.current) return;
     mutating.current = true;
     setBusy(true);
     try {
@@ -282,14 +279,14 @@ export function PlatformRepositoryMerges({
         )}
         {operation && !active && (
           <AdminButton
-            disabled={readOnly || busy || !!pending || !credentialRevision}
+            disabled={busy || !!pending || !credentialRevision}
             onClick={() => void submit('reconcile')}
           >
             核对原合并结果
           </AdminButton>
         )}
         {active && (
-          <AdminButton disabled={readOnly || busy} onClick={() => void stop()}>
+          <AdminButton disabled={busy} onClick={() => void stop()}>
             停止合并操作
           </AdminButton>
         )}

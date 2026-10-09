@@ -1,0 +1,49 @@
+import { readAdminJson } from '../../../../../../lib/tenant-administration/http';
+import {
+  listMaintenanceDeployments,
+  registerMaintenanceDeployment,
+  MaintenanceConflict,
+} from '@allrice/database';
+import { requirePlatformAdminContext } from '../../../../../../lib/identity/platform-admin';
+import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
+import { executionErrorResponse } from '../../../../../../lib/execution/responses';
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+const headers = { 'Cache-Control': 'private, no-store' };
+export async function GET(request: Request) {
+  try {
+    return Response.json(
+      await listMaintenanceDeployments(
+        await requirePlatformAdminContext(request),
+      ),
+      { headers },
+    );
+  } catch (error) {
+    return executionErrorResponse(error);
+  }
+}
+export async function POST(request: Request) {
+  try {
+    if (!sameOriginBrowserWrite(request))
+      return new Response(null, { status: 403, headers });
+    if (
+      !(
+        request.headers.get('content-type')?.split(';')[0] ===
+        'application/json'
+      )
+    )
+      return new Response(null, { status: 415, headers });
+    const context = await requirePlatformAdminContext(request);
+    const body = await readAdminJson(request, 2000);
+    return Response.json(await registerMaintenanceDeployment(context, body), {
+      headers,
+    });
+  } catch (error) {
+    if (error instanceof MaintenanceConflict)
+      return Response.json(
+        { error: 'maintenance_configuration_conflict' },
+        { status: 409, headers },
+      );
+    return executionErrorResponse(error);
+  }
+}

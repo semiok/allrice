@@ -6,6 +6,7 @@ import {
   technicalDigest,
   validateRepositoryCiEvidence,
   type RepositoryActionLease,
+  assertMaintenanceWriteAction,
 } from '@allrice/database';
 import { FixedRepositoryGithub } from './github.js';
 import { inspectRepositoryCi } from './ci.js';
@@ -33,6 +34,7 @@ export async function mergeRepositoryCandidate(
   const store = options.store ?? repositoryMergeStore,
     a = await store.read(lease),
     m = a.review.material;
+  if (a.mode !== 'reconcile') assertMaintenanceWriteAction('merge');
   const github =
     options.github ??
     new FixedRepositoryGithub(
