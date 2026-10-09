@@ -57,6 +57,17 @@ export class ArtifactReviewError extends Error {
     super(code);
   }
 }
+/** A parent was rejected inside publication, before any new storage write or
+ * version registration. This is not a transport/commit failure receipt. */
+export class ArtifactPublicationParentError extends ArtifactReviewError {
+  constructor(
+    readonly runId: string,
+    readonly callId: string,
+    code: 'artifact_not_found' | 'version_changed',
+  ) {
+    super(code);
+  }
+}
 /** Issued only after PostgreSQL aborted publication and any private blob was
  * confirmed removed. A lost commit acknowledgement must never create this. */
 export class ArtifactPublicationRollbackError extends Error {
@@ -920,19 +931,38 @@ export async function publishWorkbenchArtifact(
           derivedSource.provenance.operationId!,
         );
       let parent: WorkbenchArtifact | null = null;
+      let publicationKind: WorkbenchArtifact['kind'] = input.kind;
       if (parentObjectId) {
         const [p] = await tx<
           { id: string }[]
         >`select id from allrice_deliverable_versions where object_id=${UuidSchema.parse(parentObjectId)} and session_id=${input.sessionId}
         and organization_id=${context.organizationId} and workspace_id=${context.workspaceId!} and owner_id=${owner}`;
-        if (!p) fail('artifact_not_found');
+        if (!p)
+          throw new ArtifactPublicationParentError(
+            context.runId,
+            input.callId,
+            'artifact_not_found',
+          );
         parent = await readArtifact(tx, principal, input.sessionId, p.id);
+        // Python/Bridge results are `file` artifacts. A content export may
+        // revise their JSON/text without changing the series' kind or claiming
+        // a new execution receipt. Binary files and action proposals stay strict.
+        if (
+          input.kind === 'document' &&
+          parent.kind === 'file' &&
+          ['json', 'text'].includes(input.format)
+        )
+          publicationKind = 'file';
         if (
           parent.stale ||
-          parent.kind !== input.kind ||
+          parent.kind !== publicationKind ||
           parent.version.format !== input.format
         )
-          fail('version_changed');
+          throw new ArtifactPublicationParentError(
+            context.runId,
+            input.callId,
+            'version_changed',
+          );
       }
       const execution =
         input.kind === 'changeset'
@@ -999,10 +1029,10 @@ export async function publishWorkbenchArtifact(
         stepId: null,
       };
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
-      values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${publishingRunId},${input.kind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
+      values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${publishingRunId},${publicationKind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-      values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: input.kind, ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
+      values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: publicationKind, ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
       const artifact = await readArtifact(
         tx,
         principal,

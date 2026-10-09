@@ -7,6 +7,7 @@ import {
   publishWorkbenchChangesetProposal,
   workbenchEnabled,
   ArtifactPublicationRollbackError,
+  ArtifactPublicationParentError,
 } from '@allrice/database';
 import {
   ChangesetProposalSchema,
@@ -314,6 +315,25 @@ export const createWorkspaceExport: RiceToolHandler = async ({
             );
       } catch (error) {
         if (
+          error instanceof ArtifactPublicationParentError &&
+          error.runId === input.context.runId &&
+          error.callId === input.call.id
+        ) {
+          const failure = new HandlerError(
+            'TOOL_PUBLICATION_PARENT_INVALID',
+            error.code === 'artifact_not_found'
+              ? '未找到当前会话中可访问的上一版文件，本次未发布；请读取真实文件对象 ID 后再续版。'
+              : '上一版已更新或格式/成果类型不兼容，本次未发布；请读取最新版本，同格式续版或明确交付新的系列。',
+            false,
+          );
+          confirmToolFailure(failure, {
+            runId: input.context.runId,
+            callId: input.call.id,
+            toolName: input.call.name,
+          });
+          throw failure;
+        }
+        if (
           error instanceof ArtifactPublicationRollbackError &&
           error.runId === input.context.runId &&
           error.callId === input.call.id
@@ -340,7 +360,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         // This is the checksum of the persisted, server-normalized object,
         // not a model-computed hash of its input proposal.
         digest: artifact.object.checksum,
-        artifactKind: kind,
+        artifactKind: artifact.kind,
         ...(kind === 'changeset'
           ? {
               executionStarted: false,
