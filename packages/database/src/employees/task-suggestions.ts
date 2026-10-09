@@ -184,6 +184,57 @@ function legacyDefaults(
       ].every((tool) => skill.requiredToolRefs.includes(tool)),
   );
   if (!office) return [...projectTasks, ...base].slice(0, 8);
+  const scientific = manifest.runtimePackage?.skills.find(
+    (skill) =>
+      skill.name === 'scientific-analysis' &&
+      [
+        'workspace.document.read',
+        'workspace.skill.read',
+        'python.execute',
+        'workspace.export.create',
+      ].every((tool) => skill.requiredToolRefs.includes(tool)),
+  );
+  const scientificTasks: TaskSuggestion[] = scientific
+    ? [
+        {
+          id: 'analyze-research-data',
+          title: '分析研究数据',
+          description: '科研：核对来源、计算与限制，交付可复算研究成果。',
+          template:
+            '围绕{{研究问题}}分析我添加的资料和数据。先核对来源、样本、单位与缺失处理，实际计算并验证结果，区分描述、关联与因果；交付研究报告、图表、结构化结果及可复算脚本，引用可核查，未完成项如实说明。',
+          slots: [{ name: '研究问题', label: '研究问题', required: true }],
+          requires: {
+            nativeSkillIds: [scientific.id, office.id],
+            toolNames: [
+              'workspace.document.read',
+              'workspace.skill.read',
+              'python.execute',
+              'workspace.export.create',
+            ],
+            readiness: ['report'],
+          },
+          preparation: ['files'],
+        },
+        {
+          id: 'iterate-research-analysis',
+          title: '继续研究分析',
+          description: '科研：复用原始资料，验证变化并保留报告版本。',
+          template:
+            '继续本会话中已交付的研究，实现{{改动}}。先读取原始输入、上一版报告与计算脚本，只做本次变更，验证保留的结果和新增分析；交付可复算结果与报告新版本，说明改动并保留上一版成果。',
+          slots: [{ name: '改动', label: '本次研究改动', required: true }],
+          requires: {
+            nativeSkillIds: [scientific.id, office.id],
+            toolNames: [
+              'workspace.document.read',
+              'workspace.skill.read',
+              'python.execute',
+              'workspace.export.create',
+            ],
+            readiness: ['report'],
+          },
+        },
+      ]
+    : [];
   // Format support comes from the actual frozen Office Skill plus its Broker tool.
   const requires = {
     nativeSkillIds: [office.id],
@@ -196,6 +247,7 @@ function legacyDefaults(
   };
   const officeTasks: TaskSuggestion[] = [
     ...projectTasks,
+    ...scientificTasks,
     {
       id: 'office-word-report',
       title: '制作 Word 报告',
