@@ -8,7 +8,7 @@ import {
   type TaskSuggestionDisplay,
 } from '@allrice/contracts';
 
-import { financeTaskSuggestions } from './finance-task-suggestions.js';
+import { financeTaskSuggestions } from './finance-task-suggestions.ts';
 
 const toolCapabilities = new Map(
   allRiceToolManifest.map((tool) => [
