@@ -62,7 +62,7 @@ export function freezeRepositoryPublicationSource(
         r.sourceFileCount !== frozen.baseline.fileCount ||
         r.sourceBytes !==
           frozen.baseline.sourceBytes +
-            (r.candidateChecksum === candidate.checksum
+            (frozen.version === 2 && r.candidateChecksum === candidate.checksum
               ? Buffer.from(patch.afterBase64, 'base64').length -
                 Buffer.byteLength(frozen.baselineText)
               : 0) ||
