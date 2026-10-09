@@ -19,7 +19,7 @@ export class MaintenanceConflict extends Error {
     super('maintenance_configuration_conflict');
   }
 }
-async function currentAdmin(
+export async function currentMaintenanceAdmin(
   context: RequestContext,
   sql: postgres.TransactionSql,
 ) {
@@ -54,7 +54,7 @@ function mapped(row: Record<string, unknown>) {
 }
 export async function listMaintenanceDeployments(context: RequestContext) {
   const rows = await getDatabase().begin(async (tx) => {
-    const owner = await currentAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx);
     return tx`select * from allrice_platform_maintenance_deployments
       where owner_id=${owner} order by created_at desc,id desc limit 100`;
   });
@@ -81,9 +81,9 @@ export async function registerMaintenanceDeployment(
   const key = randomBytes(32).toString('base64url');
   const sql = getDatabase();
   return sql.begin(async (tx) => {
-    const owner = await currentAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx);
     await tx`select pg_advisory_xact_lock(hashtext(${`maintenance-register:${owner}`}))`;
-    await currentAdmin(context, tx);
+    await currentMaintenanceAdmin(context, tx);
     const [existing] =
       await tx`select * from allrice_platform_maintenance_deployments
       where owner_id=${owner} and request_id=${request.requestId}`;
@@ -107,7 +107,7 @@ export async function registerMaintenanceDeployment(
       (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
       values (${context.organizationId},${context.workspaceId},${owner},'platform_maintenance.register','maintenance_deployment',${row!.id},
       'recorded','platform_admin',${context.requestId},${tx.json({ companySlug: request.companySlug, deploymentName: request.deploymentName })})`;
-    await currentAdmin(context, tx);
+    await currentMaintenanceAdmin(context, tx);
     return { deployment: mapped(row!), installationKey: key };
   });
 }
@@ -123,7 +123,7 @@ export async function updateMaintenanceDeployment(
     throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   return sql.begin(async (tx) => {
-    const owner = await currentAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx);
     const [row] = await tx`update allrice_platform_maintenance_deployments
       set policy=${tx.json(request.policy)},revision=revision+1,updated_at=clock_timestamp()
       where id=${id} and owner_id=${owner} and revision=${request.expectedRevision}
@@ -134,7 +134,7 @@ export async function updateMaintenanceDeployment(
       if (!owned) throw new DataAccessError('not_found');
       throw new MaintenanceConflict();
     }
-    await currentAdmin(context, tx);
+    await currentMaintenanceAdmin(context, tx);
     await tx`insert into allrice_audit_events
       (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
       values (${context.organizationId},${context.workspaceId},${owner},'platform_maintenance.configure','maintenance_deployment',${id},
@@ -153,7 +153,7 @@ export async function rotateMaintenanceCredential(
   const request = RotateMaintenanceCredentialSchema.parse(input);
   UuidSchema.parse(id);
   return getDatabase().begin(async (tx) => {
-    const owner = await currentAdmin(context, tx);
+    const owner = await currentMaintenanceAdmin(context, tx);
     const key =
       request.action === 'rotate'
         ? randomBytes(32).toString('base64url')
@@ -171,7 +171,7 @@ export async function rotateMaintenanceCredential(
       if (!owned) throw new DataAccessError('not_found');
       throw new MaintenanceConflict();
     }
-    await currentAdmin(context, tx);
+    await currentMaintenanceAdmin(context, tx);
     await tx`insert into allrice_audit_events
       (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
       values (${context.organizationId},${context.workspaceId},${owner},${`platform_maintenance.${request.action}`},'maintenance_deployment',${id},

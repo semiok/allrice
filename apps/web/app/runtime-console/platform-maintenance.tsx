@@ -9,6 +9,8 @@ import {
 import { AdminButton } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 
+import { PlatformMaintenanceReports } from './platform-maintenance-reports';
+
 const endpoint = '/api/v1/admin/technical-assistant/maintenance';
 type Catalog = ReturnType<typeof MaintenanceCatalogSchema.parse>;
 export function PlatformMaintenance() {
@@ -176,7 +178,7 @@ export function PlatformMaintenance() {
     <section className={css.card} aria-label="维护设置">
       <h2>维护设置</h2>
       <p className={css.meta}>
-        登记独立部署的公司，保存维护偏好和连接凭据。公司部署巡检和修复接通后生效。
+        登记独立部署的公司，下载连接配置后接入巡检报告。
       </p>
       <div className={css.controls}>
         <label>
@@ -292,6 +294,7 @@ export function PlatformMaintenance() {
           />
         </>
       )}
+      <PlatformMaintenanceReports deploymentId={selected || null} />
       {message && <p role="status">{message}</p>}
       {error && (
         <p role="alert" className={css.error}>
@@ -406,7 +409,7 @@ function MaintenancePolicyEditor({
         {busy ? '保存中…' : '保存维护设置'}
       </AdminButton>
       <p className={css.meta}>
-        {!ready && '公司部署巡检与修复尚未接通，当前仅保存配置。'}{' '}
+        {!ready && '报告接入可用；修复与 PR 链路尚未接通。'}{' '}
         自动合并和自动部署关闭；历史报告与 PR 保留。
       </p>
       {message && <p role="status">{message}</p>}

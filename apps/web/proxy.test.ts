@@ -9,6 +9,63 @@ import {
 import { createPortalSession } from './lib/portal/session';
 import { resolvePortal } from './lib/portal/config';
 
+describe('installation maintenance machine boundary', () => {
+  it('passes only exact methods to installation-key authentication without a browser cookie', () => {
+    vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
+    try {
+      for (const host of ['allrice.bplabs.xyz', 'allrice-admin.bplabs.xyz']) {
+        for (const [path, methods] of [
+          ['/api/v1/maintenance/connection', ['GET']],
+          ['/api/v1/maintenance/reports', ['GET', 'POST']],
+        ] as const) {
+          for (const method of methods) {
+            const request = new NextRequest(`https://${host}${path}`, {
+              method,
+              headers: { host },
+            });
+            expect(request.cookies.size).toBe(0);
+            expect(proxy(request).headers.get('x-middleware-next')).toBe('1');
+          }
+          for (const method of ['PUT', 'DELETE', 'PATCH', 'HEAD'])
+            expect(
+              proxy(
+                new NextRequest(`https://${host}${path}`, {
+                  method,
+                  headers: { host },
+                }),
+              ).status,
+            ).toBe(401);
+          expect(
+            proxy(
+              new NextRequest(`https://${host}${path}/extra`, {
+                headers: { host },
+              }),
+            ).status,
+          ).toBe(401);
+        }
+        expect(
+          proxy(
+            new NextRequest(`https://${host}/api/v1/maintenance/connection`, {
+              method: 'POST',
+              headers: { host },
+            }),
+          ).status,
+        ).toBe(401);
+        expect(
+          proxy(
+            new NextRequest(
+              `https://${host}/api/v1/admin/technical-assistant/maintenance/reports`,
+              { headers: { host } },
+            ),
+          ).status,
+        ).toBe(401);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe('Rice Bridge portal boundary', () => {
   it('exempts only fixed read-only runtime software URLs', () => {
     vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');

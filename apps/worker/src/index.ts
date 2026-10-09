@@ -45,6 +45,7 @@ import {
 import { readWorkerCapabilities } from './harness/runtime-capabilities.js';
 import { refreshManagedCloudEnvironments } from './managed-cloud-environments.js';
 import { workerProducerRunner } from './dev-producer.js';
+import { runMaintenanceReportingProducer } from './maintenance-reporting.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -104,6 +105,7 @@ let databaseReady = false;
 let lastDatabaseError: string | undefined;
 let stopping = false;
 const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
+const maintenanceReportingAborter = new AbortController();
 let tickRunning = false;
 let automationTickRunning = false;
 let platformEmployeeTestTickRunning = false;
@@ -381,6 +383,28 @@ async function automationTick() {
   }
 }
 
+let maintenanceReportingTask: Promise<void> | null = null;
+function maintenanceReportingTick() {
+  if (
+    maintenanceReportingTask ||
+    stopping ||
+    !databaseReady ||
+    !process.env.ALLRICE_MAINTENANCE_CONNECTION_FILE
+  )
+    return;
+  maintenanceReportingTask = runProducer('automation', () =>
+    runMaintenanceReportingProducer({
+      signal: maintenanceReportingAborter.signal,
+    }),
+  )
+    .catch(() =>
+      console.error('[MET-167] maintenance report database outcome unknown'),
+    )
+    .finally(() => {
+      maintenanceReportingTask = null;
+    });
+}
+
 async function platformEmployeeTestTick() {
   if (platformEmployeeTestTickRunning || stopping || !databaseReady) return;
   platformEmployeeTestTickRunning = true;
@@ -426,10 +450,10 @@ const mcpDiscoveryTimer = setInterval(mcpDiscoveryTick, pollIntervalMs);
 const cloudRecoveryTimer = setInterval(cloudRecoveryTick, 10_000);
 const managedCloudTimer = setInterval(managedCloudTick, 60_000);
 const mcpRecoveryTimer = setInterval(mcpRecoveryTick, 10_000);
-const automationTimer = setInterval(
-  () => void automationTick(),
-  pollIntervalMs,
-);
+const automationTimer = setInterval(() => {
+  void automationTick();
+  maintenanceReportingTick();
+}, pollIntervalMs);
 const platformEmployeeTestTimer = setInterval(
   () => void platformEmployeeTestTick(),
   pollIntervalMs,
@@ -440,6 +464,7 @@ const codexAuthorizationTimer = setInterval(
 );
 void tick();
 void automationTick();
+maintenanceReportingTick();
 void platformEmployeeTestTick();
 codexAuthorizationTick();
 void refreshDshRuntimeInventory();
@@ -479,6 +504,7 @@ function shutdown(signal: string) {
     clearInterval(managedCloudTimer);
     clearInterval(mcpRecoveryTimer);
     mcpDiscoveryAborter.abort();
+    maintenanceReportingAborter.abort();
     clearInterval(automationTimer);
     clearInterval(platformEmployeeTestTimer);
     clearInterval(codexAuthorizationTimer);
@@ -495,6 +521,7 @@ function shutdown(signal: string) {
     await codexAuthorizationBroker.close();
     await codexAuthorizationTask;
     await codexProbeTask;
+    await maintenanceReportingTask;
     await producerLifecycle.waitForCurrentRoots();
     await closeHarnessAdapters();
     await dshInventoryTask;
