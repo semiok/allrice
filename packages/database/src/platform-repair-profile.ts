@@ -83,7 +83,7 @@ const f=new LocalCommandOutputFilter(),b=Buffer.from(input.input);let text='';
 if(input.split){text+=f.push(b.subarray(0,input.split));text+=f.push(b.subarray(input.split),true);}else text=f.push(b,true);
 process.stdout.write(JSON.stringify({text}));
 `;
-const harness = String.raw`
+export const repositoryHarness = String.raw`
 import {readFileSync,writeFileSync,mkdirSync,chmodSync,readdirSync,lstatSync,unlinkSync} from 'node:fs';
 import {createHash} from 'node:crypto';
 import {gunzipSync} from 'node:zlib';
@@ -151,7 +151,7 @@ process.exitCode=exitCode;
 `;
 export const repairHarnessChecksum = repositoryDigest(
   JSON.stringify({
-    harness,
+    harness: repositoryHarness,
     childHarness,
     cases: repairAssertionCases,
     slot: {
@@ -203,7 +203,9 @@ export function repositoryVerificationCommand(input: {
       'const config=' +
       JSON.stringify(config) +
       ';\n' +
-      (input.compiled ? compiledRepositoryHarness(harness) : harness),
+      (input.compiled
+        ? compiledRepositoryHarness(repositoryHarness)
+        : repositoryHarness),
     inputs: [
       {
         path: 'repository.json.gz',
@@ -308,5 +310,7 @@ export function readRepositoryVerification(
   return proof;
 }
 export function repairHarnessChecksumFor(compiled: boolean) {
-  return compiled ? compiledHarnessChecksum(harness) : repairHarnessChecksum;
+  return compiled
+    ? compiledHarnessChecksum(repositoryHarness)
+    : repairHarnessChecksum;
 }

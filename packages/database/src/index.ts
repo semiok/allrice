@@ -152,7 +152,12 @@ export {
 
 export * from './platform-repository-merges.ts';
 export { repositoryMergeRequestGate } from './platform-repository-merge-authority.ts';
-export { readServiceBuildIdentity } from './service-build-identity.ts';
+export {
+  readServiceBuildIdentity,
+  verifyServiceBuildIdentity,
+  ServiceBuildManifestSchema,
+  type ServiceBuildIdentity,
+} from './service-build-identity.ts';
 
 export { readDevMaintenance, DevMaintenanceError } from './dev-maintenance.ts';
 export {
@@ -164,3 +169,6 @@ export {
 export * from './platform-maintenance-reports.ts';
 
 export * from './platform-maintenance-source.ts';
+
+export * from './platform-maintenance-authority.ts';
+export * from './platform-maintenance-profile.ts';
