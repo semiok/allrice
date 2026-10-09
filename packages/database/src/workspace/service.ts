@@ -500,11 +500,13 @@ export async function createChatSession(
   const assignment = parsed.employeeAssignmentId
     ? null
     : await ensureDefaultEmployee(context, parsed.workspaceId);
+  const assignmentId = parsed.employeeAssignmentId ?? assignment?.id;
+  if (!assignmentId) throw new DataAccessError('not_found');
   return createAssignedChatSession(
     context,
     {
       ...parsed,
-      employeeAssignmentId: parsed.employeeAssignmentId ?? assignment!.id,
+      employeeAssignmentId: assignmentId,
     },
     options,
   );
