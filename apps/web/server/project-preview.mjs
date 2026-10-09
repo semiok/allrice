@@ -341,7 +341,7 @@ export function createProjectPreviewGateway({
                     'cache-control': 'private, no-store',
                     'referrer-policy': 'no-referrer',
                     'x-content-type-options': 'nosniff',
-                    'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${frameOrigins.join(' ')}; sandbox allow-scripts allow-same-origin allow-forms`,
+                    'content-security-policy': `default-src 'self' blob: data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ${secure ? 'wss:' : 'ws:'}//${projectPreviewHost(id, suffix)}; img-src 'self' blob: data:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors ${frameOrigins.join(' ')}; sandbox allow-scripts allow-same-origin allow-forms allow-downloads`,
                   });
                   idle.refresh();
                 } else if (frame.type === 'preview.data') {
