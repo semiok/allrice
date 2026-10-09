@@ -45,6 +45,28 @@ afterEach(async () => {
 });
 
 describe('P19 deterministic business resource — subprocess tests, not sandbox evidence', () => {
+  it('retains finance ambiguities until confirmed input corrections and preserves nonzero remaining differences', async () => {
+    const fixture = resolve(skill, '../../tests/fixtures/finance');
+    const expected = JSON.parse(
+      await readFile(join(fixture, 'expected.json'), 'utf8'),
+    );
+    for (const [name, suffix] of [
+      ['initial', ''],
+      ['corrected', '-corrected'],
+    ] as const) {
+      const { result } = await run(
+        await readFile(join(fixture, `invoices${suffix}.csv`), 'utf8'),
+        await readFile(join(fixture, `payments${suffix}.csv`), 'utf8'),
+      );
+      expect(result).toEqual(expected[name]);
+      expect(result.totals.valid_payment_cents).toBe(
+        result.totals.allocated_payment_cents +
+          result.totals.unallocated_payment_cents,
+      );
+      expect(result.rows[0].invoice_id).toBe('0001');
+    }
+  });
+
   it('matches an independent cents reference including duplicate, missing and unallocated records', async () => {
     const { result } = await run();
     expect(result.totals).toEqual({

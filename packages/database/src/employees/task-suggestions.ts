@@ -8,6 +8,8 @@ import {
   type TaskSuggestionDisplay,
 } from '@allrice/contracts';
 
+import { financeTaskSuggestions } from './finance-task-suggestions.js';
+
 const toolCapabilities = new Map(
   allRiceToolManifest.map((tool) => [
     tool.canonicalName as string,
@@ -134,6 +136,7 @@ function legacyDefaults(
   manifest: Extract<EmployeeManifest, { schemaVersion: 2 }>,
 ): TaskSuggestion[] {
   const base = baseDefaults();
+  const financeTasks = financeTaskSuggestions(manifest);
   const project = manifest.runtimePackage?.skills.find(
     (skill) =>
       skill.name === 'project-development' &&
@@ -183,7 +186,7 @@ function legacyDefaults(
         'workspace.export.create',
       ].every((tool) => skill.requiredToolRefs.includes(tool)),
   );
-  if (!office) return [...projectTasks, ...base].slice(0, 8);
+  if (!office) return [...projectTasks, ...financeTasks, ...base].slice(0, 8);
   const scientific = manifest.runtimePackage?.skills.find(
     (skill) =>
       skill.name === 'scientific-analysis' &&
@@ -248,6 +251,7 @@ function legacyDefaults(
   const officeTasks: TaskSuggestion[] = [
     ...projectTasks,
     ...scientificTasks,
+    ...financeTasks,
     {
       id: 'office-word-report',
       title: '制作 Word 报告',

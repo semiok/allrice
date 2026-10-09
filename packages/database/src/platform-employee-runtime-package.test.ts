@@ -15,6 +15,7 @@ import type { PlatformEmployeeDefinition } from '@allrice/contracts';
 import { employeeManifest } from './employee-config.js';
 import { frozenPackageSkills } from './skill-bundles.ts';
 import { projectEmployeeTaskSuggestions } from './employees/task-suggestions.ts';
+import { loadPlatformContentCatalog } from './platform-content/catalog.js';
 import {
   buildEmployeeRuntimePackage,
   platformEmployeeTestCanFinalize,
@@ -333,6 +334,75 @@ it('offers reproducible research only with its frozen method, Office and executa
   const explicit = structuredClone(manifest);
   explicit.taskSuggestions = [];
   expect(projectEmployeeTaskSuggestions(explicit)).toEqual([]);
+});
+
+it('offers finance tasks only with the frozen reconciliation script and all actual grants', async () => {
+  const skill = (await loadPlatformContentCatalog()).skills.find(
+    (value) => value.name === 'business-reconciliation',
+  )!;
+  const tools = skill.requiredToolRefs;
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: {
+      ...definition,
+      capabilities: { ...definition.capabilities, toolNames: tools },
+    },
+    skills: [
+      {
+        ...skills[0]!,
+        id: skill.id,
+        name: skill.name,
+        content: skill.content,
+        checksum: skill.checksum,
+        required_tool_refs: tools,
+        bundle: skill.bundle,
+      },
+    ],
+  });
+  const manifest = employeeManifest({
+    key: 'finance',
+    name: '财务伙伴',
+    description: 'Synthetic frozen finance employee without Office or Bridge',
+    runtimePackage,
+    toolNames: tools,
+  });
+  if (manifest.schemaVersion !== 2) throw Error('current employee required');
+  const before = JSON.stringify(manifest);
+  const financeIds = (value: typeof manifest) =>
+    projectEmployeeTaskSuggestions(value)
+      .map((task) => task.id)
+      .filter((id) =>
+        ['reconcile-payments', 'revise-reconciliation'].includes(id),
+      );
+  expect(financeIds(manifest)).toEqual([
+    'reconcile-payments',
+    'revise-reconciliation',
+  ]);
+  expect(JSON.stringify(manifest)).toBe(before);
+  expect(JSON.stringify(projectEmployeeTaskSuggestions(manifest))).not.toMatch(
+    /requires|nativeSkillIds|toolNames|runtimePackage|bridge/,
+  );
+  for (const tool of tools) {
+    const missing = structuredClone(manifest);
+    missing.capabilityBindings.toolNames = tools.filter(
+      (name) => name !== tool,
+    );
+    expect(financeIds(missing)).toEqual([]);
+  }
+  for (const capability of ['storage:read', 'storage:write'] as const) {
+    const denied = structuredClone(manifest);
+    denied.securityPolicy.deniedCapabilities.push(capability);
+    expect(financeIds(denied)).toEqual([]);
+  }
+  const withoutScript = structuredClone(manifest);
+  withoutScript.runtimePackage!.skills[0]!.bundle!.resources = [];
+  expect(financeIds(withoutScript)).toEqual([]);
+  const withoutSkill = structuredClone(manifest);
+  withoutSkill.runtimePackage!.skills = [];
+  expect(financeIds(withoutSkill)).toEqual([]);
+  const explicit = structuredClone(manifest);
+  explicit.taskSuggestions = [];
+  expect(financeIds(explicit)).toEqual([]);
 });
 
 function validFrozenExecutionSnapshot() {
