@@ -195,6 +195,89 @@ it('projects Office formats only from the actual frozen native Skill and granted
   ).toBe(false);
 });
 
+it('projects operations tasks from frozen methods and actual computation/export permissions', () => {
+  const tools = [
+    'workspace.document.read',
+    'workspace.skill.read',
+    'python.execute',
+    'workspace.export.create',
+  ];
+  const operationsSkills = [
+    { ...skills[0]!, name: 'office', required_tool_refs: tools },
+    {
+      ...skills[0]!,
+      id: '10000000-0000-4000-8000-000000000002',
+      name: 'operations-review',
+      required_tool_refs: tools,
+    },
+  ];
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: {
+      ...definition,
+      capabilities: { ...definition.capabilities, toolNames: tools },
+    },
+    skills: operationsSkills,
+  });
+  const manifest = employeeManifest({
+    key: 'operations',
+    name: '经营运营伙伴',
+    description: 'Synthetic frozen operations employee',
+    runtimePackage,
+    toolNames: tools,
+  });
+  if (manifest.schemaVersion !== 2) throw Error('current employee required');
+  const before = JSON.stringify(manifest);
+  const tasks = projectEmployeeTaskSuggestions(manifest);
+  expect(tasks.slice(0, 2).map((task) => task.id)).toEqual([
+    'review-operations',
+    'iterate-operations-review',
+  ]);
+  expect(tasks.length).toBeLessThanOrEqual(8);
+  expect(tasks.slice(0, 2).map((task) => task.readiness)).toEqual([
+    ['report'],
+    ['report'],
+  ]);
+  expect(
+    tasks.slice(0, 2).some((task) => task.preparation?.includes('bridge')),
+  ).toBe(false);
+  expect(JSON.stringify(tasks)).not.toMatch(
+    /nativeSkillIds|toolNames|runtimePackage|credentialReference/,
+  );
+  expect(JSON.stringify(manifest)).toBe(before);
+  for (const name of ['office', 'operations-review']) {
+    const missing = structuredClone(manifest);
+    missing.runtimePackage!.skills = missing.runtimePackage!.skills.filter(
+      (skill) => skill.name !== name,
+    );
+    expect(
+      projectEmployeeTaskSuggestions(missing).map((task) => task.id),
+    ).not.toContain('review-operations');
+  }
+  for (const tool of tools) {
+    const missing = structuredClone(manifest);
+    missing.capabilityBindings.toolNames = tools.filter((t) => t !== tool);
+    expect(
+      projectEmployeeTaskSuggestions(missing).map((task) => task.id),
+    ).not.toContain('review-operations');
+  }
+  for (const capability of ['storage:read', 'storage:write'] as const) {
+    const denied = structuredClone(manifest);
+    denied.securityPolicy.deniedCapabilities.push(capability);
+    expect(
+      projectEmployeeTaskSuggestions(denied).map((task) => task.id),
+    ).not.toContain('review-operations');
+  }
+  const unrelatedDenial = structuredClone(manifest);
+  unrelatedDenial.securityPolicy.deniedCapabilities.push('automation:write');
+  expect(
+    projectEmployeeTaskSuggestions(unrelatedDenial).map((task) => task.id),
+  ).toContain('review-operations');
+  const configured = structuredClone(manifest);
+  configured.taskSuggestions = [];
+  expect(projectEmployeeTaskSuggestions(configured)).toEqual([]);
+});
+
 it('projects development and iteration tasks only from a frozen project Skill and actual tools', () => {
   const skillTools = ['workspace.project', 'workspace.skill.read'];
   const tools = [...skillTools, 'local.process.execute'];
@@ -403,6 +486,65 @@ it('offers finance tasks only with the frozen reconciliation script and all actu
   const explicit = structuredClone(manifest);
   explicit.taskSuggestions = [];
   expect(financeIds(explicit)).toEqual([]);
+});
+
+it('keeps both task entries for all four role methods inside the eight-task limit', async () => {
+  const catalog = await loadPlatformContentCatalog();
+  const names = [
+    'project-development',
+    'scientific-analysis',
+    'business-reconciliation',
+    'operations-review',
+    'office',
+  ];
+  const selected = names.map((name) => {
+    const skill = catalog.skills.find((value) => value.name === name);
+    if (!skill) throw Error('Required role Skill missing: ' + name);
+    return skill;
+  });
+  const tools = [
+    ...new Set(selected.flatMap((skill) => skill.requiredToolRefs)),
+  ];
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: {
+      ...definition,
+      capabilities: { ...definition.capabilities, toolNames: tools },
+    },
+    skills: selected.map((skill) => ({
+      ...skills[0]!,
+      id: skill.id,
+      name: skill.name,
+      content: skill.content,
+      checksum: skill.checksum,
+      required_tool_refs: skill.requiredToolRefs,
+      bundle: skill.bundle,
+    })),
+  });
+  const manifest = employeeManifest({
+    key: 'four-role-methods',
+    name: '角色方法验收',
+    description: 'Frozen methods for project, research, finance and operations',
+    runtimePackage,
+    toolNames: tools,
+  });
+  const before = JSON.stringify(manifest);
+  const tasks = projectEmployeeTaskSuggestions(manifest);
+  expect(tasks).toHaveLength(8);
+  expect(tasks.map((task) => task.id)).toEqual(
+    expect.arrayContaining([
+      'develop-project',
+      'iterate-project',
+      'analyze-research-data',
+      'iterate-research-analysis',
+      'reconcile-payments',
+      'revise-reconciliation',
+      'review-operations',
+      'iterate-operations-review',
+    ]),
+  );
+  expect(new Set(tasks.map((task) => task.id)).size).toBe(8);
+  expect(JSON.stringify(manifest)).toBe(before);
 });
 
 function validFrozenExecutionSnapshot() {

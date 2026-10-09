@@ -238,6 +238,57 @@ function legacyDefaults(
         },
       ]
     : [];
+  const operations = manifest.runtimePackage?.skills.find(
+    (skill) =>
+      skill.name === 'operations-review' &&
+      [
+        'workspace.document.read',
+        'workspace.skill.read',
+        'python.execute',
+        'workspace.export.create',
+      ].every((tool) => skill.requiredToolRefs.includes(tool)),
+  );
+  const operationsTasks: TaskSuggestion[] = operations
+    ? [
+        {
+          id: 'review-operations',
+          title: '经营复盘与行动计划',
+          description: '运营：复算指标、核对异常，交付报告与可执行计划。',
+          template:
+            '围绕{{复盘目标}}分析我添加的经营资料和数据。先核对期间、单位、指标定义与预算约束，实际复算并解释异常；交付复盘报告、关键图表、指标数表及复算脚本，行动计划明确岗位负责人、期限和量化检查。区分建议与已执行事项，不按历史表现承诺未来收益。',
+          slots: [{ name: '复盘目标', label: '复盘目标', required: true }],
+          requires: {
+            nativeSkillIds: [operations.id, office.id],
+            toolNames: [
+              'workspace.document.read',
+              'workspace.skill.read',
+              'python.execute',
+              'workspace.export.create',
+            ],
+            readiness: ['report'],
+          },
+          preparation: ['files'],
+        },
+        {
+          id: 'iterate-operations-review',
+          title: '继续运营复盘',
+          description: '运营：更正数据或调整目标，验证变化并保留交付版本。',
+          template:
+            '继续本会话中已交付的运营复盘，实现{{改动}}。先读取原始资料、修订来源及上一版成果与脚本，只做本次变更；验证受影响的指标、图表、结论和行动约束，保留未变项，交付报告新版本并说明差异，保留上一版成果。',
+          slots: [{ name: '改动', label: '本次运营改动', required: true }],
+          requires: {
+            nativeSkillIds: [operations.id, office.id],
+            toolNames: [
+              'workspace.document.read',
+              'workspace.skill.read',
+              'python.execute',
+              'workspace.export.create',
+            ],
+            readiness: ['report'],
+          },
+        },
+      ]
+    : [];
   // Format support comes from the actual frozen Office Skill plus its Broker tool.
   const requires = {
     nativeSkillIds: [office.id],
@@ -252,6 +303,7 @@ function legacyDefaults(
     ...projectTasks,
     ...scientificTasks,
     ...financeTasks,
+    ...operationsTasks,
     {
       id: 'office-word-report',
       title: '制作 Word 报告',

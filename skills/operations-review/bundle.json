@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "contentChecksum": "sha256:8470d7ed8ef95721acc4fae7d6cb1a1f0e0b4e69a491f3efd9e99783b4c72cc1",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/operations-review?content-sha256=8470d7ed8ef95721acc4fae7d6cb1a1f0e0b4e69a491f3efd9e99783b4c72cc1",
+  "license": "Apache-2.0",
+  "reviewedBy": "MET-175 bounded operations workflow and version contract review",
+  "resources": [
+    {
+      "path": "references/delivery.md",
+      "mediaType": "text/markdown",
+      "byteLength": 1989,
+      "checksum": "sha256:c64a2fbdf9748baecd3af5a92bba0908ffe03114c3cf22ba802e05dd2dacf7e4"
+    },
+    {
+      "path": "references/workflow.md",
+      "mediaType": "text/markdown",
+      "byteLength": 2179,
+      "checksum": "sha256:69c518514447be5c752e07821fdb188fd58bb1194eb510b699c0f61a57f66159"
+    }
+  ],
+  "dependencies": [
+    {
+      "kind": "tool",
+      "name": "workspace.document.read"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.skill.read"
+    },
+    {
+      "kind": "tool",
+      "name": "python.execute"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.export.create"
+    }
+  ],
+  "checksum": "sha256:381e8031f15fa04374df8614d5244d602ea1506f0d068f2f57b88ae67ac75fca"
+}
