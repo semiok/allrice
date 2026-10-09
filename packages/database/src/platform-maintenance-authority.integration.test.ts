@@ -1,3 +1,15 @@
+import { acceptedRepositoryFixture } from './platform-repository-publication.fixture.ts';
+import { startMaintenancePublication } from './platform-maintenance-publication.ts';
+import {
+  repositoryRequestGate,
+  readAcceptedRepositorySource,
+} from './platform-repository-publication-authority.ts';
+import { readRepositoryAction } from './platform-repository-publication-ledger.ts';
+import { repositoryCandidate } from './platform-repository-source.ts';
+import {
+  maintenanceCompiledProfileId,
+  RepairReportSchema,
+} from './platform-repair-contracts.ts';
 /** Real PostgreSQL authority tests. Synthetic build-proof transport below is
  * not evidence that the production module or compiled verifier ran. */
 import { randomUUID } from 'node:crypto';
@@ -12,6 +24,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
+import { updateMaintenanceGithubBot } from './platform-maintenance-github.ts';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
@@ -66,7 +79,11 @@ import {
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
 } from '@allrice/contracts';
-import { claimNextJob, startClaimedJob } from './execution/queue.ts';
+import {
+  claimNextJob,
+  startClaimedJob,
+  heartbeatJob,
+} from './execution/queue.ts';
 import { getPlatformRepairExecution } from './platform-repair-authority.ts';
 import {
   readPlatformRepairSource,
@@ -112,6 +129,31 @@ suite('immutable report-bound maintenance authority', () => {
       'authority-admin@example.test,authority-other@example.test',
     );
     vi.stubEnv('ALLRICE_RELEASE_SHA', 'a'.repeat(40));
+    vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'c'.repeat(64));
+    vi.stubEnv('ALLRICE_MAINTENANCE_CENTRAL_ENABLED', '1');
+    await updateMaintenanceGithubBot(
+      admin,
+      {
+        action: 'replace',
+        requestId: randomUUID(),
+        expectedRevision: 0,
+        expectedLogin: 'rice-maintenance',
+        token: 'github_pat_' + 'SyntheticOnly'.repeat(7),
+      },
+      {
+        fetcher: (async (url) =>
+          Response.json(
+            String(url).endsWith('/user')
+              ? { id: 901, login: 'rice-maintenance' }
+              : {
+                  id: 1323769790,
+                  full_name: 'semiok/allrice',
+                  permissions: { push: true },
+                },
+          )) as typeof fetch,
+      },
+    );
+
     root = realpathSync(
       mkdtempSync(join(tmpdir(), 'allrice-maintenance-authority-')),
     );
@@ -724,8 +766,16 @@ suite('immutable report-bound maintenance authority', () => {
     const i = await install(),
       r = await report(i, new Date(Date.now() - 60000).toISOString());
     await recordMaintenanceDiagnosis(r.reportId, proof);
-    // Test the service fence directly; the public pipeline remains disabled in PR2a.
-    await fixture.db`update allrice_platform_maintenance_deployments set policy=${fixture.db.json({ ...defaultMaintenancePolicy, mode: 'repair_and_pr', automaticAuthorizationUntil: new Date(Date.now() + 600000).toISOString() })},enabled_at=clock_timestamp() where id=${i.deployment.id}`;
+    await updateMaintenanceDeployment(admin, i.deployment.id, {
+      expectedRevision: 1,
+      policy: {
+        ...defaultMaintenancePolicy,
+        mode: 'repair_and_pr',
+        automaticAuthorizationUntil: new Date(
+          Date.now() + 600000,
+        ).toISOString(),
+      },
+    });
     await expect(createAutomaticMaintenanceGrant(r.reportId)).rejects.toThrow();
     const fresh = await report(i);
     await recordMaintenanceDiagnosis(fresh.reportId, proof);
@@ -739,7 +789,7 @@ suite('immutable report-bound maintenance authority', () => {
       reportId: r.reportId,
       expectedReportDigest: r.payloadDigest,
       expectedDiagnosisDigest: d.proofDigest,
-      expectedDeploymentRevision: 1,
+      expectedDeploymentRevision: 2,
     });
     expect(manual.origin).toBe('manual');
     await revokeMaintenanceGrant(admin, manual.id);
@@ -843,6 +893,217 @@ suite('immutable report-bound maintenance authority', () => {
       )[0]!.n,
     ).toBe(1);
     await revokeMaintenanceGrant(admin, granted.id);
+  });
+  it('wires a persisted grant through the real publication queue, fences inspect writes, and avoids running-repair lock inversion', async () => {
+    // Finish only this suite's already-canceled synthetic Job; no Worker runs here.
+    await fixture.db`update allrice_jobs set status='canceled' where owner_id=${admin.actor.id} and cancel_requested_at is not null`;
+    const installation = await install(),
+      receipt = await report(installation);
+    const uniqueProof = {
+      ...proof,
+      probeResults: proof.probeResults.map((r, i) =>
+        i === 0 ? r : { ...r, secretAbsent: true, passed: true },
+      ),
+      failedAssertions: proof.failedAssertions.slice(0, 1),
+    };
+    const diagnosis = await recordMaintenanceDiagnosis(
+      receipt.reportId,
+      uniqueProof,
+    );
+    const grant = await createMaintenanceGrant(admin, {
+      requestId: randomUUID(),
+      reportId: receipt.reportId,
+      expectedReportDigest: receipt.payloadDigest,
+      expectedDiagnosisDigest: diagnosis.proofDigest,
+      expectedDeploymentRevision: 1,
+    });
+    const started = await startMaintenanceRepairGrant(grant.id);
+    const [q] =
+      await fixture.db`select * from allrice_platform_repair_tasks where id=${started.repairTaskId!}`;
+    const principal = {
+      ...admin,
+      organizationId: q!.organization_id,
+      workspaceId: q!.workspace_id,
+    };
+    let held!: () => void, credentials!: () => void;
+    const jobHeld = new Promise<void>((r) => (held = r)),
+      credentialHeld = new Promise<void>((r) => (credentials = r));
+    // Real barrier: repair owns Job UPDATE, publication owns issuer/bot locks.
+    // A running Job must be excluded before SELECT ... FOR SHARE waits on it.
+    const repairTx = fixture.db.begin(async (tx) => {
+      await tx`set local statement_timeout='2s'`;
+      await tx`select id from allrice_jobs where id=${q!.job_id} for update`;
+      held();
+      await credentialHeld;
+      await assertMaintenanceGrant(tx, grant.id, admin.actor.id);
+    });
+    const publicationTx = fixture.db.begin(async (tx) => {
+      await tx`set local statement_timeout='2s'`;
+      await jobHeld;
+      await assertMaintenanceGrant(tx, grant.id, admin.actor.id);
+      credentials();
+      await expect(
+        readAcceptedRepositorySource(tx, principal, q!.id, baseline.sourceSha),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    });
+    expect(
+      (await Promise.allSettled([repairTx, publicationTx])).map(
+        (r) => r.status,
+      ),
+    ).toEqual(['fulfilled', 'fulfilled']);
+    await expect(startMaintenancePublication(grant.id)).rejects.toMatchObject({
+      code: 'not_found',
+    });
+    // Explicitly synthetic accepted verifier receipts: this tests PostgreSQL
+    // admission and authority, not physical compilation or an actual repair.
+    const synthetic = acceptedRepositoryFixture(
+      admin.sessionId!,
+      admin.authenticatedAt!,
+    );
+    const frozen = q!.frozen,
+      after =
+        frozen.baselineText + '\n// synthetic publication authority fixture\n';
+    const candidate = repositoryCandidate(1, [
+      {
+        path: repairProductPath,
+        beforeChecksum: repositoryDigest(frozen.baselineText),
+        afterBase64: Buffer.from(after).toString('base64'),
+      },
+    ]);
+    const deps = frozen.baseline.compiledDependencies;
+    const verification = (
+      r: typeof synthetic.report.before.report,
+      revision: number,
+    ) => {
+      if (r.version !== 2) throw Error('COMPILED_SYNTHETIC_FIXTURE_REQUIRED');
+      return {
+        ...r,
+        version: 3,
+        profileId: maintenanceCompiledProfileId,
+        baselineId: baseline.id,
+        sourceSha: baseline.sourceSha,
+        baselineSourceDigest: baseline.sourceDigest,
+        restoredDigest: baseline.sourceDigest,
+        candidateChecksum: revision
+          ? candidate.checksum
+          : repositoryCandidate(0, []).checksum,
+        rootLockChecksum: baseline.rootLockChecksum,
+        dependencyConfigurationDigest: baseline.dependencyConfigurationDigest,
+        harnessChecksum: frozen.harnessChecksum,
+        sourceFileCount: baseline.fileCount,
+        sourceBytes:
+          baseline.sourceBytes +
+          (revision
+            ? Buffer.byteLength(after) - Buffer.byteLength(frozen.baselineText)
+            : 0),
+        verificationPlanDigest: frozen.maintenance.verificationPlanDigest,
+        manifestDigest: technicalDigest(
+          frozen.maintenance.verificationPlan.approvedFiles,
+        ),
+        compiled: {
+          ...r.compiled,
+          dependencyBundleChecksum: deps.bundleChecksum,
+          dependencyMaterialDigest: deps.materialDigest,
+          planDigest: deps.planDigest,
+        },
+      };
+    };
+    const accepted = RepairReportSchema.parse({
+      ...synthetic.report,
+      candidateChecksum: candidate.checksum,
+      before: {
+        ...synthetic.report.before,
+        report: verification(synthetic.report.before.report, 0),
+      },
+      after: {
+        ...synthetic.report.after,
+        report: verification(synthetic.report.after.report, 1),
+      },
+    });
+    await fixture.db`update allrice_platform_repair_tasks set candidate=${fixture.db.json(candidate)},report=${fixture.db.json(accepted)} where id=${q!.id}`;
+    await fixture.db`update allrice_jobs set status='succeeded' where id=${q!.job_id}`;
+    const p = await startMaintenancePublication(grant.id);
+    expect((await startMaintenancePublication(grant.id)).runId).toBe(p.runId);
+    const [a] =
+      await fixture.db`select a.*,p.provenance from allrice_platform_repository_actions a join allrice_platform_repository_publications p on p.id=a.publication_id where a.publication_id=${p.publicationId}`;
+    expect(a!.authority_version).toBe(2);
+    expect(a!.login_session_id).toBeNull();
+    expect(a!.maintenance_grant_id).toBe(grant.id);
+    expect(a!.provenance.companySlug).toBe(installation.deployment.companySlug);
+    const workerId = randomUUID(),
+      j = await claimNextJob(workerId, 60000);
+    expect(j!.id).toBe(a!.job_id);
+    await startClaimedJob(workerId, j!.id, j!.lease!.token);
+    const lease = {
+      workerId,
+      jobId: j!.id,
+      leaseToken: j!.lease!.token,
+      attempt: j!.attempt,
+    };
+    expect((await repositoryRequestGate(lease, 'POST')).token).toMatch(
+      /^github_pat_/,
+    );
+    const shown = await getMaintenanceReportAuthority(admin, receipt.reportId);
+    expect(shown.grants[0]!.publication?.id).toBe(p.publicationId);
+    await revokeMaintenanceGrant(admin, grant.id);
+    await expect(repositoryRequestGate(lease, 'POST')).rejects.toThrow();
+    expect((await repositoryRequestGate(lease, 'GET')).token).toMatch(
+      /^github_pat_/,
+    );
+    // Inspection is a separate canonical Job; only GET may use reconciliation
+    // even after revocation, expiry and a same-account credential rotation.
+    await fixture.db`update allrice_jobs set status='failed' where id=${j!.id}`;
+    const inspect = await startMaintenancePublication(grant.id, 'inspect');
+    const inspectWorker = randomUUID(),
+      ij = await claimNextJob(inspectWorker, 60000);
+    expect(
+      (await fixture.db`select run_id from allrice_jobs where id=${ij!.id}`)[0]!
+        .run_id,
+    ).toBe(inspect.runId);
+    await startClaimedJob(inspectWorker, ij!.id, ij!.lease!.token);
+    const il = {
+      workerId: inspectWorker,
+      jobId: ij!.id,
+      leaseToken: ij!.lease!.token,
+      attempt: ij!.attempt,
+    };
+    await fixture.db`update allrice_platform_maintenance_grants set expires_at=clock_timestamp()-interval '1 second' where id=${grant.id}`;
+    await updateMaintenanceGithubBot(
+      admin,
+      {
+        action: 'replace',
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        expectedLogin: 'rice-maintenance',
+        token: 'github_pat_' + 'SyntheticOnly'.repeat(7),
+      },
+      {
+        fetcher: (async (url) =>
+          Response.json(
+            String(url).endsWith('/user')
+              ? { id: 901, login: 'rice-maintenance' }
+              : {
+                  id: 1323769790,
+                  full_name: 'semiok/allrice',
+                  permissions: { push: true },
+                },
+          )) as typeof fetch,
+      },
+    );
+    expect((await readRepositoryAction(il)).source.version).toBe(2);
+    expect(
+      await heartbeatJob(il.workerId, il.jobId, il.leaseToken, 60000),
+    ).toEqual({ active: true, canceled: false });
+    for (const method of ['POST', 'PUT'] as const)
+      await expect(repositoryRequestGate(il, method)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+    expect((await repositoryRequestGate(il, 'GET')).token).toMatch(
+      /^github_pat_/,
+    );
+    await expect(
+      getMaintenanceReportAuthority(other, receipt.reportId),
+    ).rejects.toThrow();
   });
   it('invalid fixture reports cannot occupy the finite diagnosis window', async () => {
     const installation = await install();

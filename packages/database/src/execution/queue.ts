@@ -1,4 +1,6 @@
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import { MaintenanceRepositoryBindingSchema } from '../platform-maintenance-publication-contracts.ts';
+import { assertMaintenanceReconciliation } from '../platform-maintenance-authority.ts';
 import { assertMaintenanceGrant } from '../platform-maintenance-authority.ts';
 import { resolvePlatformPreviewContext } from '../platform-employees/preview-context.ts';
 import { acquireDevAdmission, devAdmissionOpen } from '../dev-maintenance.ts';
@@ -378,13 +380,17 @@ type EnqueueOptions = {
 };
 type RunAdmission =
   | { kind: 'browser'; context: RequestContext }
-  | { kind: 'maintenance_repair'; context: ResourcePrincipal };
+  | { kind: 'maintenance_repair'; context: ResourcePrincipal }
+  | { kind: 'maintenance_repository'; context: ResourcePrincipal };
 export async function enqueueRun(
   context: RequestContext,
   input: unknown,
   options: EnqueueOptions = {},
 ) {
-  if (options.repairBinding?.frozen.version === 2)
+  if (
+    options.repairBinding?.frozen.version === 2 ||
+    (options.repositoryBinding && 'version' in options.repositoryBinding)
+  )
     throw new QueueError('policy_denied');
   return enqueueRunCore({ kind: 'browser', context }, input, options);
 }
@@ -443,6 +449,47 @@ export async function enqueueMaintenanceRepairRun(
     { kind: 'maintenance_repair', context: principal },
     input,
     options,
+  );
+}
+/** Server-only existing queue lane for grant-authorized PR writes and GET-only reconciliation. */
+export async function enqueueMaintenanceRepositoryRun(
+  input: unknown,
+  raw: unknown,
+) {
+  const b = MaintenanceRepositoryBindingSchema.parse(raw);
+  const principal = await getDatabase().begin(async (tx) => {
+    const [g] =
+      await tx`select issuer_id from allrice_platform_maintenance_grants where id=${b.grantId}`;
+    if (!g) throw new DataAccessError('not_found');
+    if (b.request.action === 'publish')
+      await assertMaintenanceGrant(tx, b.grantId, g.issuer_id);
+    else await assertMaintenanceReconciliation(tx, b.grantId, g.issuer_id);
+    const { context: c } = await resolvePlatformPreviewContext(
+      tx,
+      { environment: 'platform', workspaceId: null, ownerId: g.issuer_id },
+      g.issuer_id,
+    );
+    return {
+      requestId: b.request.requestId,
+      actor: { type: 'user' as const, id: g.issuer_id as string },
+      organizationId: c.organization_id,
+      workspaceId: c.workspace_id,
+      memberships: [
+        {
+          id: c.membership_id,
+          organizationId: c.organization_id,
+          workspaceId: c.workspace_id,
+          userId: g.issuer_id as string,
+          role: c.role,
+          active: true,
+        },
+      ],
+    };
+  });
+  return enqueueRunCore(
+    { kind: 'maintenance_repository', context: principal },
+    input,
+    { repositoryBinding: b },
   );
 }
 async function enqueueRunCore(
@@ -618,13 +665,26 @@ async function enqueueRunCore(
         );
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
-    if (admission.kind === 'maintenance_repair') {
+    if (admission.kind !== 'browser') {
       // Serialize before taking issuer/grant/attempt locks. In particular a
       // second start must never hold issuer SHARE while awaiting this mutex.
       await transaction`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
       await transaction`select id from allrice_users where id=${ownerId} for update`;
     }
     await acquireDevAdmission(transaction);
+    if (admission.kind === 'maintenance_repository') {
+      const b = MaintenanceRepositoryBindingSchema.parse(
+        options.repositoryBinding,
+      );
+      if (b.request.action === 'publish') {
+        const g = await assertMaintenanceGrant(transaction, b.grantId, ownerId);
+        timeoutAt = new Date(
+          Math.min(timeoutAt.getTime(), Date.parse(g.frozen.expiresAt)),
+        );
+      } else
+        await assertMaintenanceReconciliation(transaction, b.grantId, ownerId);
+    }
+
     await transaction`
       select pg_advisory_xact_lock(
         hashtextextended(${`${context.organizationId}:${submission.idempotencyKey}`}, 0)
@@ -684,7 +744,7 @@ async function enqueueRunCore(
       if (options.repositoryBinding)
         await assertExistingRepositoryAction(
           transaction,
-          { ...browserContext(), workspaceId },
+          { ...context, workspaceId },
           existing[0].run_id,
           options.repositoryBinding,
         );
@@ -747,7 +807,7 @@ async function enqueueRunCore(
       } else
         await admitQualityEnqueue(
           transaction,
-          { ...admission.context, workspaceId },
+          { ...browserContext(), workspaceId },
           options.employeeBinding.employeeAssignmentId,
           options.qualityBinding,
           options.repairBinding,
@@ -1000,7 +1060,7 @@ async function enqueueRunCore(
     if (options.repositoryBinding) {
       await bindRepositoryAction(
         transaction,
-        { ...browserContext(), workspaceId },
+        { ...context, workspaceId },
         run.id,
         job.id,
         options.repositoryBinding,
@@ -1199,13 +1259,10 @@ async function enqueueRunCore(
     return { runId: run.id, created: true, delivery, activeRunId };
   });
   const row =
-    admission.kind === 'maintenance_repair'
+    admission.kind !== 'browser'
       ? await selectRunJob(context.organizationId, workspaceId, result.runId)
       : null;
-  if (
-    admission.kind === 'maintenance_repair' &&
-    (!row || row.owner_id !== ownerId)
-  )
+  if (admission.kind !== 'browser' && (!row || row.owner_id !== ownerId))
     throw new QueueError('not_found');
   return {
     run: row

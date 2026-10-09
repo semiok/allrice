@@ -16,7 +16,11 @@ import {
   type repositoryPublicationStore,
 } from './publisher.js';
 
-function fixture(lostAck?: RepositoryPublicationStep) {
+function fixture(
+  lostAck?: RepositoryPublicationStep,
+  maintenance = false,
+  revokeAfter?: RepositoryPublicationStep,
+) {
   const id = randomUUID(),
     before = Buffer.from('original'),
     after = Buffer.from('corrected');
@@ -43,7 +47,18 @@ function fixture(lostAck?: RepositoryPublicationStep) {
     );
   const digest = repositoryDigest('fixture');
   const source = RepositoryPublicationSourceSchema.parse({
-    version: 1,
+    version: maintenance ? 2 : 1,
+    ...(maintenance
+      ? {
+          maintenance: {
+            grantId: randomUUID(),
+            grantDigest: digest,
+            attemptId: randomUUID(),
+            verificationPlanDigest: digest,
+            manifestDigest: digest,
+          },
+        }
+      : {}),
     repairTaskId: randomUUID(),
     repairRunId: randomUUID(),
     repairJobId: randomUUID(),
@@ -71,6 +86,29 @@ function fixture(lostAck?: RepositoryPublicationStep) {
   const remote = new Set<RepositoryPublicationStep>(),
     postCounts: Partial<Record<RepositoryPublicationStep, number>> = {};
   const action: Awaited<ReturnType<typeof repositoryPublicationStore.read>> = {
+    ...(maintenance && source.version === 2
+      ? {
+          provenance: {
+            version: 1 as const,
+            companySlug: 'test-company',
+            companyName: 'Synthetic company',
+            deploymentName: 'Isolated test',
+            deploymentId: randomUUID(),
+            installedReleaseSha: base,
+            reportId: randomUUID(),
+            reportDigest: digest,
+            diagnosisId: randomUUID(),
+            diagnosisDigest: digest,
+            defectId: randomUUID(),
+            grantId: source.maintenance.grantId,
+            grantDigest: digest,
+            attemptId: source.maintenance.attemptId,
+            targetSha: base,
+            verificationPlanDigest: digest,
+            githubBot: { revision: 1, login: 'rice-maintenance', userId: 10 },
+          },
+        }
+      : {}),
     id,
     mode: 'publish',
     source,
@@ -85,14 +123,15 @@ function fixture(lostAck?: RepositoryPublicationStep) {
     leaseToken: randomUUID(),
     attempt: 1,
   };
-  const gate = async () => {
+  const gate = async (method: 'GET' | 'POST' | 'PUT' = 'POST') => {
     gateCalls++;
-    if (!active) throw Error('AUTH_REVOKED');
+    if (!active && (!maintenance || method !== 'GET'))
+      throw Error('AUTH_REVOKED');
     return { token: 'github_pat_SyntheticOnly', remainingMs: 120000 };
   };
   const store: typeof repositoryPublicationStore = {
     read: async () => {
-      await gate();
+      await gate('GET');
       return structuredClone(action);
     },
     freeze: async (_l, raw) => {
@@ -112,39 +151,59 @@ function fixture(lostAck?: RepositoryPublicationStep) {
       return true;
     },
     confirm: async (_l, step, raw) => {
-      await gate();
+      await gate('GET');
       action.steps[step]!.state = 'confirmed';
       if (step === 'pull') action.remote = raw as typeof action.remote;
     },
     observe: vi.fn(async () => {}),
     finish: async () => {
-      await gate();
+      await gate('GET');
       return { publicationId: id, action: action.mode };
     },
   };
   const json = (body: unknown, status = 200) => Response.json(body, { status });
+  const labels = new Set<string>(['unrelated']);
+  const namedLabels = new Set<string>();
   const fetcher = (async (input, init) => {
     const path = new URL(String(input)).pathname.replace(
       '/repos/semiok/allrice',
       '',
     );
     if (init?.method === 'POST') {
+      const payload = JSON.parse(String(init.body));
       const step: RepositoryPublicationStep =
-        path === '/git/blobs'
-          ? 'blob'
-          : path === '/git/trees'
-            ? 'tree'
-            : path === '/git/commits'
-              ? 'commit'
-              : path === '/git/refs'
-                ? 'branch'
-                : 'pull';
+        path === '/labels'
+          ? payload.name === 'allrice-maintenance'
+            ? 'maintenance_label'
+            : 'company_label'
+          : path === '/issues/312/labels'
+            ? 'labels'
+            : path === '/git/blobs'
+              ? 'blob'
+              : path === '/git/trees'
+                ? 'tree'
+                : path === '/git/commits'
+                  ? 'commit'
+                  : path === '/git/refs'
+                    ? 'branch'
+                    : 'pull';
       postCounts[step] = (postCounts[step] ?? 0) + 1;
       remote.add(step);
+      if (step === 'maintenance_label' || step === 'company_label')
+        namedLabels.add(payload.name);
+      if (step === 'labels')
+        payload.labels.forEach((name: string) => labels.add(name));
       if (step === 'branch') branch = action.metadata!.commit;
       if (step === 'pull')
         pulls = [
           {
+            ...(maintenance
+              ? {
+                  user: { id: 10, login: 'rice-maintenance' },
+                  title: payload.title,
+                  body: payload.body,
+                }
+              : {}),
             number: 312,
             html_url: 'https://github.com/semiok/allrice/pull/312',
             draft: true,
@@ -161,6 +220,7 @@ function fixture(lostAck?: RepositoryPublicationStep) {
             },
           },
         ];
+      if (step === revokeAfter) active = false;
       if (step === lostAck) throw Error('response lost after remote commit');
       return json({});
     }
@@ -169,7 +229,17 @@ function fixture(lostAck?: RepositoryPublicationStep) {
         id: platformRepository.id,
         full_name: platformRepository.fullName,
       });
-    if (path === '/user') return json({ id: 10, login: 'operator' });
+    if (path === '/user')
+      return json({
+        id: 10,
+        login: maintenance ? 'rice-maintenance' : 'operator',
+      });
+    if (path.startsWith('/labels/')) {
+      const name = decodeURIComponent(path.slice(8));
+      return namedLabels.has(name) ? json({ name }) : json({}, 404);
+    }
+    if (path === '/issues/312/labels')
+      return json([...labels].map((name) => ({ name })));
     if (path === '/git/ref/heads/main')
       return json({ ref: 'refs/heads/main', object: { sha: main } });
     if (path === `/git/commits/${base}`)
@@ -239,6 +309,13 @@ function fixture(lostAck?: RepositoryPublicationStep) {
     postCounts,
     remote,
     files,
+    labels,
+    corruptPull: () => {
+      (pulls[0] as Record<string, unknown>).user = {
+        id: 999,
+        login: 'foreign',
+      };
+    },
     run: () =>
       publishRepositoryCandidate(lease, new AbortController().signal, {
         github,
@@ -339,5 +416,65 @@ describe('fixed candidate publication single-write recovery', () => {
     g.action.mode = 'inspect';
     await g.run();
     expect(g.postCounts).toEqual({});
+  });
+});
+
+describe('maintenance bot company provenance and method-aware recovery', () => {
+  it.each([
+    'blob',
+    'tree',
+    'commit',
+    'branch',
+    'pull',
+    'maintenance_label',
+    'company_label',
+    'labels',
+  ] as const)(
+    'confirms the exact %s after a lost acknowledgement and preserves company attribution without replay',
+    async (lost) => {
+      const f = fixture(lost, true);
+      await f.run();
+      await f.run();
+      expect(f.postCounts).toEqual({
+        blob: 1,
+        tree: 1,
+        commit: 1,
+        branch: 1,
+        pull: 1,
+        maintenance_label: 1,
+        company_label: 1,
+        labels: 1,
+      });
+      expect(f.action.metadata?.author).toMatchObject({
+        login: 'rice-maintenance',
+        userId: 10,
+        message: 'fix(test-company): redact command output credentials',
+      });
+      expect(f.action.metadata?.maintenance?.title).toContain('test-company');
+      expect(f.action.metadata?.maintenance?.body).toContain(
+        f.action.provenance!.reportId,
+      );
+      expect(f.labels).toEqual(
+        new Set(['unrelated', 'allrice-maintenance', 'company:test-company']),
+      );
+      expect(JSON.stringify(f.action.metadata)).not.toContain('github_pat_');
+    },
+  );
+  it('revocation permits exact GET reconciliation but prevents all later writes', async () => {
+    const f = fixture('commit', true, 'commit');
+    await expect(f.run()).rejects.toThrow('AUTH_REVOKED');
+    expect(f.postCounts).toEqual({ blob: 1, tree: 1, commit: 1 });
+    f.action.mode = 'inspect';
+    await f.run();
+    expect(f.postCounts).toEqual({ blob: 1, tree: 1, commit: 1 });
+  });
+  it('refuses a PR created by a different account instead of accepting title attribution alone', async () => {
+    const f = fixture(undefined, true);
+    await f.run();
+    f.corruptPull();
+    await expect(f.run()).rejects.toMatchObject({
+      code: 'REPOSITORY_REMOTE_CONFLICT',
+    });
+    expect(Object.values(f.postCounts).every((n) => n === 1)).toBe(true);
   });
 });

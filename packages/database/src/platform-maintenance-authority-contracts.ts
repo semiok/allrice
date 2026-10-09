@@ -4,7 +4,9 @@ import {
   UuidSchema,
   isRuntimeRelativePath,
 } from '@allrice/contracts';
+import { RepositoryPublicationCiSchema } from './platform-repository-publication-contracts.ts';
 import { RepositoryBaselineSchema } from './platform-repair-contracts.ts';
+import { MaintenanceGithubIdentitySchema } from './platform-maintenance-github-contracts.ts';
 const sha = z.string().regex(/^[a-f0-9]{40}$/);
 export const maintenanceRepairSpecId = 'command-output.credentials.v2' as const;
 export const MaintenanceApprovedFileSchema = z
@@ -149,6 +151,7 @@ export const MaintenanceGrantFrozenSchema = z
     maxOutputTokens: z.number().int().min(1000).max(100000),
     // Old report-only grants remain readable. New execution requires this
     // explicit subscription-safe threshold semantics and finite call budget.
+    githubBot: MaintenanceGithubIdentitySchema.optional(),
     outputBudgetMode: z.literal('observed_threshold').optional(),
     maxModelCalls: z.literal(16).optional(),
     expiresAt: z.string().datetime({ offset: true }),
@@ -156,6 +159,23 @@ export const MaintenanceGrantFrozenSchema = z
   .strict();
 export const MaintenanceGrantSchema = z
   .object({
+    requestId: UuidSchema.optional(),
+    canControl: z.boolean().optional(),
+    repairStatus: z.string().max(40).nullable().optional(),
+    publication: z
+      .object({
+        id: UuidSchema,
+        url: z
+          .string()
+          .regex(/^https:\/\/github\.com\/semiok\/allrice\/pull\/[1-9]\d*$/)
+          .nullable(),
+        number: z.number().int().positive().nullable(),
+        ci: RepositoryPublicationCiSchema,
+        sourceCompanySlug: z.string(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     id: UuidSchema,
     reportId: UuidSchema,
     deploymentId: UuidSchema,

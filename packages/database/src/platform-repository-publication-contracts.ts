@@ -84,8 +84,21 @@ export const RepositoryPublicationSteps = [
   'branch',
   'pull',
 ] as const;
+export const MaintenanceRepositoryPublicationSteps = [
+  ...RepositoryPublicationSteps,
+  'maintenance_label',
+  'company_label',
+  'labels',
+] as const;
+export function repositoryPublicationStepsFor(
+  source: RepositoryPublicationSource,
+) {
+  return source.version === 2
+    ? MaintenanceRepositoryPublicationSteps
+    : RepositoryPublicationSteps;
+}
 export const RepositoryPublicationStepSchema = z.enum(
-  RepositoryPublicationSteps,
+  MaintenanceRepositoryPublicationSteps,
 );
 export type RepositoryPublicationStep = z.infer<
   typeof RepositoryPublicationStepSchema
@@ -209,7 +222,7 @@ export const RepositoryPublicationSchema = z
           })
           .strict(),
       )
-      .length(5),
+      .refine((steps) => steps.length === 5 || steps.length === 8),
     remote: RepositoryPublicationRemoteSchema.nullable(),
     ci: RepositoryPublicationCiSchema,
     actions: z.array(RepositoryPublicationActionSchema).max(20),
@@ -220,6 +233,18 @@ export type RepositoryPublication = z.infer<typeof RepositoryPublicationSchema>;
 
 export const RepositoryPublicationMetadataSchema = z
   .object({
+    maintenance: z
+      .object({
+        provenanceDigest: ChecksumSchema,
+        title: z.string().max(200),
+        body: z.string().max(10000),
+        labels: z.tuple([
+          z.literal('allrice-maintenance'),
+          z.string().regex(/^company:[a-z][a-z0-9-]{0,41}$/),
+        ]),
+      })
+      .strict()
+      .optional(),
     tree: RepositoryGitShaSchema,
     commit: RepositoryGitShaSchema,
     workflowBlob: RepositoryGitShaSchema,

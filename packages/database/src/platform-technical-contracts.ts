@@ -285,3 +285,5 @@ export * from './platform-maintenance-report-contracts.ts';
 export * from './platform-maintenance-probe.ts';
 
 export * from './platform-maintenance-authority-contracts.ts';
+
+export * from './platform-maintenance-github-contracts.ts';
