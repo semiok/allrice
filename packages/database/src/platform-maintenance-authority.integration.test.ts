@@ -974,37 +974,40 @@ suite('immutable report-bound maintenance authority', () => {
     const verification = (
       r: typeof synthetic.report.before.report,
       revision: number,
-    ) => ({
-      ...r,
-      version: 3,
-      profileId: maintenanceCompiledProfileId,
-      baselineId: baseline.id,
-      sourceSha: baseline.sourceSha,
-      baselineSourceDigest: baseline.sourceDigest,
-      restoredDigest: baseline.sourceDigest,
-      candidateChecksum: revision
-        ? candidate.checksum
-        : repositoryCandidate(0, []).checksum,
-      rootLockChecksum: baseline.rootLockChecksum,
-      dependencyConfigurationDigest: baseline.dependencyConfigurationDigest,
-      harnessChecksum: frozen.harnessChecksum,
-      sourceFileCount: baseline.fileCount,
-      sourceBytes:
-        baseline.sourceBytes +
-        (revision
-          ? Buffer.byteLength(after) - Buffer.byteLength(frozen.baselineText)
-          : 0),
-      verificationPlanDigest: frozen.maintenance.verificationPlanDigest,
-      manifestDigest: technicalDigest(
-        frozen.maintenance.verificationPlan.approvedFiles,
-      ),
-      compiled: {
-        ...r.compiled,
-        dependencyBundleChecksum: deps.bundleChecksum,
-        dependencyMaterialDigest: deps.materialDigest,
-        planDigest: deps.planDigest,
-      },
-    });
+    ) => {
+      if (r.version !== 2) throw Error('COMPILED_SYNTHETIC_FIXTURE_REQUIRED');
+      return {
+        ...r,
+        version: 3,
+        profileId: maintenanceCompiledProfileId,
+        baselineId: baseline.id,
+        sourceSha: baseline.sourceSha,
+        baselineSourceDigest: baseline.sourceDigest,
+        restoredDigest: baseline.sourceDigest,
+        candidateChecksum: revision
+          ? candidate.checksum
+          : repositoryCandidate(0, []).checksum,
+        rootLockChecksum: baseline.rootLockChecksum,
+        dependencyConfigurationDigest: baseline.dependencyConfigurationDigest,
+        harnessChecksum: frozen.harnessChecksum,
+        sourceFileCount: baseline.fileCount,
+        sourceBytes:
+          baseline.sourceBytes +
+          (revision
+            ? Buffer.byteLength(after) - Buffer.byteLength(frozen.baselineText)
+            : 0),
+        verificationPlanDigest: frozen.maintenance.verificationPlanDigest,
+        manifestDigest: technicalDigest(
+          frozen.maintenance.verificationPlan.approvedFiles,
+        ),
+        compiled: {
+          ...r.compiled,
+          dependencyBundleChecksum: deps.bundleChecksum,
+          dependencyMaterialDigest: deps.materialDigest,
+          planDigest: deps.planDigest,
+        },
+      };
+    };
     const accepted = RepairReportSchema.parse({
       ...synthetic.report,
       candidateChecksum: candidate.checksum,
