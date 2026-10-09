@@ -32,9 +32,8 @@ export const RepositoryPublicationRequestSchema = z.discriminatedUnion(
       .strict(),
   ],
 );
-export const RepositoryPublicationSourceSchema = z
+const RepositoryPublicationSourceFields = z
   .object({
-    version: z.literal(1),
     repairTaskId: UuidSchema,
     repairRunId: UuidSchema,
     repairJobId: UuidSchema,
@@ -55,6 +54,26 @@ export const RepositoryPublicationSourceSchema = z
     mode: z.literal('100644'),
   })
   .strict();
+export const RepositoryPublicationSourceSchema = z.discriminatedUnion(
+  'version',
+  [
+    RepositoryPublicationSourceFields.extend({
+      version: z.literal(1),
+    }).strict(),
+    RepositoryPublicationSourceFields.extend({
+      version: z.literal(2),
+      maintenance: z
+        .object({
+          grantId: UuidSchema,
+          grantDigest: ChecksumSchema,
+          attemptId: UuidSchema,
+          verificationPlanDigest: ChecksumSchema,
+          manifestDigest: ChecksumSchema,
+        })
+        .strict(),
+    }).strict(),
+  ],
+);
 export type RepositoryPublicationSource = z.infer<
   typeof RepositoryPublicationSourceSchema
 >;

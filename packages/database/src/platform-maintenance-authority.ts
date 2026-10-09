@@ -120,11 +120,14 @@ export async function recordMaintenanceDiagnosis(
   )
     denied();
   return getDatabase().begin(async (tx) => {
+    const [lookup] =
+      await tx`select owner_id from allrice_platform_maintenance_reports where id=${UuidSchema.parse(reportId)}`;
+    if (!lookup) denied();
+    await currentIssuer(tx, lookup!.owner_id);
     const [r] =
-      await tx`select r.*,d.policy,d.revoked_at from allrice_platform_maintenance_reports r join allrice_platform_maintenance_deployments d on d.id=r.deployment_id where r.id=${UuidSchema.parse(reportId)} for share of r,d`;
+      await tx`select r.*,d.policy,d.revoked_at from allrice_platform_maintenance_reports r join allrice_platform_maintenance_deployments d on d.id=r.deployment_id where r.id=${reportId} for share of r,d`;
     if (!r || r.revoked_at || MaintenancePolicySchema.parse(r.policy).paused)
       denied();
-    await currentIssuer(tx, r!.owner_id);
     const payload = MaintenanceReportPayloadSchema.parse(r!.payload),
       probe = payload.facts.probe;
     if (
@@ -214,10 +217,10 @@ async function issue(
   if (!lookup || (context && lookup.owner_id !== context.actor.id))
     throw new DataAccessError('not_found');
   const owner = lookup.owner_id as string;
-  const [d] =
-    await tx`select * from allrice_platform_maintenance_deployments where id=${lookup.deployment_id} and owner_id=${owner} for update`;
   await currentIssuer(tx, owner);
   if (context) await currentMaintenanceAdmin(context, tx);
+  const [d] =
+    await tx`select * from allrice_platform_maintenance_deployments where id=${lookup.deployment_id} and owner_id=${owner} for update`;
   const [r] =
     await tx`select * from allrice_platform_maintenance_reports where id=${request.reportId} and deployment_id=${d!.id} for share`;
   const [a] =
@@ -303,6 +306,8 @@ async function issue(
     repairTimeoutMs: p.repairTimeoutMinutes * 60000,
     maxCandidateRevisions: p.maxCandidateRevisions,
     maxOutputTokens: p.maxOutputTokens,
+    outputBudgetMode: 'observed_threshold',
+    maxModelCalls: 16,
     expiresAt,
   });
   if (context) await currentMaintenanceAdmin(context, tx);
@@ -356,11 +361,13 @@ export async function assertMaintenanceGrant(
   const [lookup] =
     await tx`select deployment_id from allrice_platform_maintenance_grants where id=${UuidSchema.parse(id)} and issuer_id=${owner}`;
   if (!lookup) denied();
+  // Match queue admission: issuer -> deployment -> grant -> attempt. A
+  // preflight must not hold grant SHARE while waiting for issuer UPDATE.
+  await currentIssuer(tx, owner);
   const [d] =
     await tx`select * from allrice_platform_maintenance_deployments where id=${lookup!.deployment_id} and owner_id=${owner} for share`;
   const [g] =
     await tx`select * from allrice_platform_maintenance_grants where id=${id} and issuer_id=${owner} for share`;
-  await currentIssuer(tx, owner);
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
   const now = clock!.now;
   if (!d || !g || g.revoked_at || d.revoked_at || g.expires_at <= now) denied();

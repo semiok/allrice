@@ -962,7 +962,11 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       );
     }
     if (this.progressBridge && !this.taskProgress)
-      this.taskProgress = installTaskProgress(this.ctx, this.progressBridge);
+      this.taskProgress = installTaskProgress(this.ctx, this.progressBridge, {
+        maintenanceOutputTokens: process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
+          ? Number(process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS)
+          : undefined,
+      });
     const requestedSkills = Array.isArray(params?.nativeSkills)
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];

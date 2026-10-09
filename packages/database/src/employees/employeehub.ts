@@ -235,7 +235,7 @@ export class EmployeeHubError extends Error {
   }
 }
 
-function userId(context: RequestContext) {
+function userId(context: Pick<RequestContext, 'actor'>) {
   if (context.actor.type !== 'user') {
     throw new DataAccessError('authentication_required');
   }
@@ -1098,7 +1098,7 @@ export async function setDefaultEmployee(
 }
 
 export async function prepareEmployeeRunBinding(input: {
-  context: RequestContext;
+  context: Pick<RequestContext, 'actor' | 'organizationId'>;
   workspaceId: string;
   assignmentId: string;
   employeeVersionId: string;

@@ -155,7 +155,7 @@ export async function createPlatformRepairController(
     before.report.exitCode !== 1
   )
     throw new HandlerError(
-      before.report.version === 2 &&
+      before.report.version !== 1 &&
         before.report.failureKind === 'harness_error'
         ? 'REPAIR_COMPILED_BUILD_FAILED'
         : 'REPAIR_BASELINE_NOT_FAILING',
@@ -180,7 +180,18 @@ export async function createPlatformRepairController(
         file: current.file,
         before,
         allowedPath: current.file.path,
-        maxCandidates: 3,
+        maxCandidates:
+          current.task.frozen.version === 2
+            ? current.task.frozen.maintenance.maxCandidateRevisions
+            : 3,
+        ...(current.task.frozen.version === 2
+          ? {
+              approvedFiles:
+                current.task.frozen.maintenance.verificationPlan.approvedFiles,
+              verificationPlanDigest:
+                current.task.frozen.maintenance.verificationPlanDigest,
+            }
+          : {}),
         wholeRepositoryBuildVerified: false,
         publishedToMain: false,
       };

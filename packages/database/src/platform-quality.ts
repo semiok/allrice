@@ -144,8 +144,11 @@ function fingerprint(
 
 /** A real published deployment, owner-only, in the existing private workspace.
  * Existing pauses and personal exclusions are never restored by retries. */
-export async function ensureQualityEmployee(context: RequestContext) {
-  return getDatabase().begin(async (tx) => {
+export async function ensureQualityEmployee(
+  context: Pick<RequestContext, 'actor'>,
+  transaction?: Tx,
+) {
+  const prepare = async (tx: Tx) => {
     const owner = await requirePlatformAdmin(context, tx);
     const { context: internal } = await resolvePlatformPreviewContext(
       tx,
@@ -244,7 +247,8 @@ export async function ensureQualityEmployee(context: RequestContext) {
       assignmentId: a.id as string,
       versionId: a.employee_version_id as string,
     };
-  });
+  };
+  return transaction ? prepare(transaction) : getDatabase().begin(prepare);
 }
 
 async function qualitySchemaAvailable(tx: Tx) {

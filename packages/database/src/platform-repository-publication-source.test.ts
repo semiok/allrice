@@ -36,4 +36,15 @@ describe('frozen accepted candidate publication', () => {
       freezeRepositoryPublicationSource(row, row.frozen.releaseSha),
     ).toThrow();
   });
+  it('preserves the historical baseline byte-count contract and rejects a forged count', () => {
+    const row = source();
+    const sha = row.frozen.releaseSha;
+    expect(freezeRepositoryPublicationSource(row, sha).version).toBe(1);
+    // Version 2 compilation receipts reported the restored baseline bytes,
+    // even when the accepted candidate changed the file length.
+    row.report.after.report.sourceBytes += 1;
+    expect(() => freezeRepositoryPublicationSource(row, sha)).toThrow(
+      'REPOSITORY_SOURCE_NOT_ACCEPTED',
+    );
+  });
 });

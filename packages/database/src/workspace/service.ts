@@ -1,3 +1,4 @@
+import type { ResourcePrincipal } from '../resource-principal.ts';
 import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
   archiveSessionActivity,
@@ -203,14 +204,14 @@ interface MemoryRecallRow {
   lexical_score: number | string;
 }
 
-function requireUser(context: RequestContext) {
+function requireUser(context: ResourcePrincipal) {
   if (context.actor.type !== 'user') {
     throw new DataAccessError('authentication_required');
   }
   return context.actor.id;
 }
 
-function hasWorkspaceAccess(context: RequestContext, workspaceId: string) {
+function hasWorkspaceAccess(context: ResourcePrincipal, workspaceId: string) {
   const userId = requireUser(context);
   return context.memberships.some(
     (membership) =>
@@ -222,16 +223,18 @@ function hasWorkspaceAccess(context: RequestContext, workspaceId: string) {
   );
 }
 
-async function audit(input: {
-  context: RequestContext;
-  workspaceId: string;
-  action: string;
-  resourceType: string;
-  resourceId: string;
-  decision?: 'allowed' | 'denied' | 'recorded';
-  reason: string;
-}) {
-  const sql = getDatabase();
+async function audit(
+  input: {
+    context: ResourcePrincipal;
+    workspaceId: string;
+    action: string;
+    resourceType: string;
+    resourceId: string;
+    decision?: 'allowed' | 'denied' | 'recorded';
+    reason: string;
+  },
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+) {
   await sql`
     insert into allrice_audit_events (
       organization_id, workspace_id, actor_id, action, resource_type,
@@ -246,13 +249,13 @@ async function audit(input: {
 }
 
 export async function resolveWorkspaceId(
-  context: RequestContext,
+  context: ResourcePrincipal,
   requestedWorkspaceId?: string,
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
   const requested = requestedWorkspaceId
     ? UuidSchema.parse(requestedWorkspaceId)
     : context.workspaceId;
-  const sql = getDatabase();
   const rows = requested
     ? await sql<{ id: string }[]>`
         select w.id from allrice_workspaces w
@@ -494,12 +497,38 @@ export async function createChatSession(
   options: { sessionId?: string } = {},
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
-  const workspaceId = await resolveWorkspaceId(context, parsed.workspaceId);
-  const defaultAssignment = parsed.employeeAssignmentId
+  const assignment = parsed.employeeAssignmentId
     ? null
     : await ensureDefaultEmployee(context, parsed.workspaceId);
-  const sql = getDatabase();
-  let assignment = defaultAssignment;
+  const assignmentId = parsed.employeeAssignmentId ?? assignment?.id;
+  if (!assignmentId) throw new DataAccessError('not_found');
+  return createAssignedChatSession(
+    context,
+    {
+      ...parsed,
+      employeeAssignmentId: assignmentId,
+    },
+    options,
+  );
+}
+/** Explicit-assignment core for server-authorized platform work. Membership,
+ * current published version and private owner checks remain mandatory. */
+export async function createAssignedChatSession(
+  context: ResourcePrincipal,
+  input: unknown,
+  options: { sessionId?: string } = {},
+  transaction?: TransactionSql,
+) {
+  const parsed = CreateChatSessionInputSchema.parse(input);
+  if (!parsed.employeeAssignmentId)
+    throw new DataAccessError('authorization_denied');
+  const sql = transaction ?? getDatabase();
+  const workspaceId = await resolveWorkspaceId(
+    context,
+    parsed.workspaceId,
+    sql,
+  );
+  let assignment: EmployeeAssignment | null = null;
   if (parsed.employeeAssignmentId) {
     const assignments = await sql<AssignmentRow[]>`
       select
@@ -564,14 +593,17 @@ export async function createChatSession(
     row.visibility !== 'private'
   )
     throw new DataAccessError('authorization_denied');
-  await audit({
-    context,
-    workspaceId: workspaceId,
-    action: 'session.create',
-    resourceType: 'chat_session',
-    resourceId: row.id,
-    reason: 'owner_with_workspace_membership',
-  });
+  await audit(
+    {
+      context,
+      workspaceId: workspaceId,
+      action: 'session.create',
+      resourceType: 'chat_session',
+      resourceId: row.id,
+      reason: 'owner_with_workspace_membership',
+    },
+    sql,
+  );
   return mapSession(row);
 }
 

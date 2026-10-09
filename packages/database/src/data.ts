@@ -1,3 +1,4 @@
+import type { ResourcePrincipal } from './resource-principal.ts';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -74,14 +75,17 @@ export class DataAccessError extends Error {
   }
 }
 
-function actorId(context: RequestContext) {
+function actorId(context: ResourcePrincipal) {
   if (context.actor.type !== 'user') {
     throw new DataAccessError('authentication_required');
   }
   return context.actor.id;
 }
 
-function hasWorkspaceMembership(context: RequestContext, workspaceId: string) {
+function hasWorkspaceMembership(
+  context: ResourcePrincipal,
+  workspaceId: string,
+) {
   return context.memberships.some(
     (membership) =>
       membership.active &&
@@ -138,7 +142,7 @@ function authorizeFile(
 
 async function audit(
   input: {
-    context: RequestContext;
+    context: ResourcePrincipal;
     workspaceId: string;
     action: string;
     resourceId: string;
@@ -161,7 +165,7 @@ async function audit(
 }
 
 export async function createStorageMetadata(
-  context: RequestContext,
+  context: ResourcePrincipal,
   input: unknown,
   database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {
@@ -246,7 +250,7 @@ export async function createStorageMetadata(
 }
 
 export async function markStorageReady(
-  context: RequestContext,
+  context: ResourcePrincipal,
   objectId: string,
   sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {

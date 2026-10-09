@@ -50,6 +50,7 @@ import {
   markCompanyRunLoaded,
   getPlatformRepairExecution,
   platformRepairInstructions,
+  platformMaintenanceRepairInstructions,
   getPlatformRepositoryReviewExecution,
   platformRepositoryReviewInstructions,
 } from '@allrice/database';
@@ -360,7 +361,9 @@ export async function executeEmployeeRun({
             '\n\n' +
             (repositoryReviewTask
               ? platformRepositoryReviewInstructions
-              : platformRepairInstructions),
+              : repairTask?.frozen.version === 2
+                ? platformMaintenanceRepairInstructions
+                : platformRepairInstructions),
           bootstrapConversation: '',
           authorizedMemoryContext: '',
           skillVersionIds: [],
@@ -1406,7 +1409,16 @@ export async function executeEmployeeRun({
               storageObjects: selectedStorageObjects,
               images: harnessImages,
               workDirectory: isolation.workDirectory,
-              executionEnvironment: isolation.environment,
+              executionEnvironment: {
+                ...isolation.environment,
+                ...(repairTask?.frozen.version === 2
+                  ? {
+                      ALLRICE_MAINTENANCE_OUTPUT_TOKENS: String(
+                        repairTask.frozen.maintenance.maxOutputTokens,
+                      ),
+                    }
+                  : {}),
+              },
               providerSnapshot,
               signal,
               attempt: execution.job.attempt,

@@ -56,7 +56,25 @@ import {
 } from './platform-maintenance-profile.ts';
 import { technicalDigest } from './platform-technical-tasks.ts';
 import type { MaintenanceDiagnosisProof } from './platform-maintenance-authority-contracts.ts';
+import { LocalStorageAdapter } from '@allrice/storage';
+import { preparePlatformRepairInput } from './platform-repair.ts';
+import { preparePlatformRepairVerification } from './platform-repair-verification.ts';
+import { startMaintenanceRepairGrant } from './platform-maintenance-repair.ts';
+import { createExperienceFixture } from './experience.fixture.ts';
+import { buildEmployeeRuntimePackage } from './platform-employees/runtime-package.ts';
+import {
+  PlatformEmployeeDefinitionSchema,
+  PlatformEmployeeRuntimeProfileSchema,
+} from '@allrice/contracts';
+import { claimNextJob, startClaimedJob } from './execution/queue.ts';
+import { getPlatformRepairExecution } from './platform-repair-authority.ts';
+import {
+  readPlatformRepairSource,
+  applyPlatformRepairCandidate,
+  cancelPlatformRepairTask,
+} from './platform-repair.ts';
 import { defaultMaintenancePolicy } from './platform-maintenance-contracts.ts';
+import { createTaskProgressRuntime } from './task-progress.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -311,7 +329,325 @@ suite('immutable report-bound maintenance authority', () => {
       getMaintenanceReportAuthority(ordinary, r.reportId),
     ).rejects.toThrow();
   });
+  it('creates one real Employee Run from persisted authority without fabricating a browser login; manifest, budgets and revocation survive DB round trips', async () => {
+    const company = await createExperienceFixture(fixture.db);
+    const untouched =
+      await fixture.db`select * from allrice_memberships where organization_id=${company.org} order by id`;
+    for (const f of [
+      'RUNTIME_POLICY',
+      'BRIDGE_OPERATION_LEDGER',
+      'LOCAL_COMMAND',
+      'CLOUD_RUNNER',
+      'BROWSER_CONTROL',
+      'WORKBENCH',
+    ])
+      vi.stubEnv('ALLRICE_' + f + '_ENABLED', '1');
+    await fixture.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
+    await fixture.db`update allrice_model_providers set enabled=true where provider_key='codex'`;
+    const [r] =
+      await fixture.db`select r.* from allrice_platform_employee_revisions r join allrice_platform_employees e on e.current_published_revision_id=r.id where e.employee_key='rice'`;
+    const definition = PlatformEmployeeDefinitionSchema.parse({
+      ...r!.definition,
+      capabilities: {
+        ...r!.definition.capabilities,
+        nativeSkillIds: [],
+        toolNames: [
+          'workspace.project',
+          'browser.workspace',
+          'cloud.process.execute',
+        ],
+      },
+    });
+    const runtimePackage = buildEmployeeRuntimePackage({
+      revision: r!.revision,
+      definition,
+      skills: [],
+    });
+    const profile = PlatformEmployeeRuntimeProfileSchema.parse({
+      ...r!.runtime_profile,
+      toolNames: definition.capabilities.toolNames,
+      nativeSkillIds: [],
+      nativeSkillChecksums: [],
+      runtimePackage,
+    });
+    await fixture.db`update allrice_platform_employee_revisions set definition=${fixture.db.json(definition)},runtime_profile=${fixture.db.json(profile)},checksum=${runtimePackage.checksum},status='published',published_at=now() where id=${r!.id}`;
+    await fixture.db`update allrice_platform_employees set status='published' where id=${r!.employee_id}`;
+    const a = await diagnosed(),
+      g = await createMaintenanceGrant(admin, a.request);
+    // Force the old issuer/deployment inversion: transaction A already owns
+    // issuer UPDATE, B must block there before taking deployment SHARE.
+    let announceIssuer!: () => void, announceWaiter!: (pid: number) => void;
+    const issuerHeld = new Promise<void>((resolve) => {
+      announceIssuer = resolve;
+    });
+    const waiterPid = new Promise<number>((resolve) => {
+      announceWaiter = resolve;
+    });
+    const lockOwner = fixture.db.begin(async (tx) => {
+      await tx`set local statement_timeout='2s'`;
+      const [self] = await tx`select pg_backend_pid() pid`;
+      await tx`select id from allrice_users where id=${admin.actor.id} for update`;
+      announceIssuer();
+      const pid = await waiterPid;
+      const until = Date.now() + 1000;
+      let blocked = false;
+      while (Date.now() < until) {
+        const [state] =
+          await fixture.db`select ${self!.pid}::int=any(pg_blocking_pids(${pid}::int)) blocked`;
+        if (state!.blocked) {
+          blocked = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(blocked).toBe(true);
+      await tx`select id from allrice_platform_maintenance_deployments where id=${g.deploymentId} for update`;
+    });
+    const lockWaiter = fixture.db.begin(async (tx) => {
+      await issuerHeld;
+      const [self] = await tx`select pg_backend_pid() pid`;
+      announceWaiter(self!.pid);
+      return assertMaintenanceGrant(tx, g.id, admin.actor.id);
+    });
+    const locks = await Promise.allSettled([lockOwner, lockWaiter]);
+    expect(locks.map((x) => x.status)).toEqual(['fulfilled', 'fulfilled']);
+    const concurrent = await Promise.all([
+      startMaintenanceRepairGrant(g.id),
+      startMaintenanceRepairGrant(g.id),
+    ]);
+    const started = concurrent[0]!;
+    expect(concurrent.map((x) => x.repairTaskId)).toEqual([
+      started.repairTaskId,
+      started.repairTaskId,
+    ]);
+    expect(concurrent.filter((x) => x.created)).toHaveLength(1);
+    expect((await startMaintenanceRepairGrant(g.id)).repairTaskId).toBe(
+      started.repairTaskId,
+    );
+    const [q] =
+      await fixture.db`select q.*,j.timeout_at,e.execution_snapshot from allrice_platform_repair_tasks q join allrice_jobs j on j.id=q.job_id join allrice_employee_runs e on e.run_id=q.run_id where q.id=${started.repairTaskId!}`;
+    expect(q!.frozen.version).toBe(2);
+    expect(q!.frozen).not.toHaveProperty('loginSessionId');
+    expect(q!.frozen).not.toHaveProperty('loginAuthenticatedAt');
+    expect(q!.frozen.maintenance.grantId).toBe(g.id);
+    expect(
+      q!.execution_snapshot.modelSnapshot.runLimits.maxOutputTokens,
+    ).toBeLessThanOrEqual(defaultMaintenancePolicy.maxOutputTokens);
+    expect(q!.timeout_at.getTime()).toBeLessThanOrEqual(
+      Date.parse(g.expiresAt),
+    );
+    const workerId = randomUUID(),
+      job = await claimNextJob(workerId, 60000);
+    expect(job?.id).toBe(q!.job_id);
+    const lease = {
+      workerId,
+      jobId: job!.id,
+      leaseToken: job!.lease!.token,
+      attempt: job!.attempt,
+    };
+    const claimed = await startClaimedJob(workerId, job!.id, lease.leaseToken);
+    const execution = await getPlatformRepairExecution(lease);
+    expect(execution.frozen.version).toBe(2);
+    const progress = createTaskProgressRuntime(
+      { context: claimed!.context, worker: lease },
+      fixture.db,
+    );
+    const nativeSessionId = 'maintenance-real-ledger';
+    const call = randomUUID();
+    const cap = defaultMaintenancePolicy.maxOutputTokens;
+    expect(
+      await progress({
+        action: 'model_prepare',
+        nativeSessionId,
+        callId: call,
+        requestedOutputTokens: cap,
+      }),
+    ).toMatchObject({ outputTokens: cap });
+    await progress({
+      action: 'start',
+      kind: 'model',
+      nativeSessionId,
+      callId: call,
+      outputTokens: cap,
+      requestDigest: technicalDigest('real-native-request'),
+    });
+    await progress({
+      action: 'finish',
+      kind: 'model',
+      nativeSessionId,
+      callId: call,
+      resultDigest: technicalDigest('first-result'),
+      outcome: 'success',
+      outputTokens: 1000,
+    });
+    // A new runtime object does not replenish the persisted grant budget.
+    const restarted = createTaskProgressRuntime(
+      { context: claimed!.context, worker: lease },
+      fixture.db,
+    );
+    const second = randomUUID();
+    expect(
+      await restarted({
+        action: 'model_prepare',
+        nativeSessionId,
+        callId: second,
+        requestedOutputTokens: cap,
+      }),
+    ).toMatchObject({ outputTokens: cap - 1000 });
+    await restarted({
+      action: 'start',
+      kind: 'model',
+      nativeSessionId,
+      callId: second,
+      outputTokens: cap - 1000,
+      requestDigest: technicalDigest('second-native-request'),
+    });
+    // An unresolved call retains its whole reservation; restarting cannot
+    // create new credit. Its first receipt will arrive only after cancel.
+    await expect(
+      restarted({
+        action: 'model_prepare',
+        nativeSessionId,
+        callId: randomUUID(),
+        requestedOutputTokens: 1000,
+      }),
+    ).rejects.toThrow('maintenance_model_usage_unknown');
+    const [clockBefore] =
+      await fixture.db`select policy from allrice_task_clocks where run_id=${q!.run_id}`;
+    await fixture.db`update allrice_task_clocks set policy=jsonb_set(policy,'{authorizationExpiresAt}',to_jsonb((select created_at+interval '1 millisecond' from allrice_jobs where id=${q!.job_id})::text)) where run_id=${q!.run_id}`;
+    await expect(
+      progress({ action: 'check', nativeSessionId }),
+    ).rejects.toThrow('authorization_denied');
+    await fixture.db`update allrice_task_clocks set policy=${fixture.db.json(clockBefore!.policy)} where run_id=${q!.run_id}`;
+    const source = await readPlatformRepairSource(lease);
+    const storage = new LocalStorageAdapter(join(root, 'private-storage'));
+    const input = await preparePlatformRepairInput(
+      lease,
+      claimed!.context,
+      storage,
+    );
+    const replay = await preparePlatformRepairInput(
+      lease,
+      claimed!.context,
+      storage,
+    );
+    expect(replay.object).toEqual(input.object);
+    await preparePlatformRepairInput(
+      lease,
+      claimed!.context,
+      storage,
+      'dependencies',
+    );
+    const prepared = await preparePlatformRepairVerification(
+      lease,
+      claimed!.context,
+      source.candidate.checksum,
+    );
+    const [v] =
+      await fixture.db`select proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+    expect(v!.proof.version).toBe(3);
+    expect(v!.proof.verificationPlanDigest).toBe(proof.verificationPlanDigest);
+    expect(prepared.arguments.inputs).toHaveLength(2);
+    expect(prepared.arguments.script).toContain(
+      'config.maintenance.verificationPlan.approvedFiles',
+    );
+    // A comment outside the old regex slot is allowed by this full-file
+    // manifest, but is not claimed to fix or pass any physical assertion.
+    const next = await applyPlatformRepairCandidate(
+      lease,
+      'full-file-manifest',
+      {
+        action: 'apply',
+        expectedCandidate: source.candidate.checksum,
+        proposal: {
+          files: [
+            {
+              path: repairProductPath,
+              before: source.file.text,
+              after:
+                source.file.text + '\n// isolated manifest transport fixture\n',
+            },
+          ],
+        },
+      },
+    );
+    expect(next.revision).toBe(1);
+    await expect(
+      applyPlatformRepairCandidate(lease, 'assertion-write', {
+        action: 'apply',
+        expectedCandidate: next.checksum,
+        proposal: {
+          files: [
+            {
+              path: 'packages/project-runtime/src/command-output.test.ts',
+              before: 'x',
+              after: 'y',
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow();
+    await revokeMaintenanceGrant(admin, g.id);
+    await expect(
+      progress({ action: 'check', nativeSessionId }),
+    ).rejects.toThrow('authorization_denied');
+    await expect(
+      progress({
+        action: 'start',
+        kind: 'model',
+        nativeSessionId,
+        callId: randomUUID(),
+        outputTokens: 1,
+        requestDigest: technicalDigest('revoked'),
+      }),
+    ).rejects.toThrow('authorization_denied');
+    await expect(readPlatformRepairSource(lease)).rejects.toThrow(
+      'authorization_denied',
+    );
+    // Historical read and explicit cancel remain possible after revocation.
+    await cancelPlatformRepairTask(admin, q!.id);
+    // The first receipt arrives after both revoke and cancel; it is stored
+    // once, remains readable, and cannot be rewritten by a conflicting replay.
+    await restarted({
+      action: 'finish',
+      kind: 'model',
+      nativeSessionId,
+      callId: second,
+      resultDigest: technicalDigest('unknown-usage'),
+      outcome: 'error',
+    });
+    const [settled] =
+      await fixture.db`select finished_at,result_digest,settled_output_tokens from allrice_task_calls where run_id=${q!.run_id} and call_id=${second}`;
+    expect(settled!.finished_at).toBeInstanceOf(Date);
+    expect(settled!.result_digest).toBe(technicalDigest('unknown-usage'));
+    expect(settled!.settled_output_tokens).toBeNull();
+    await restarted({
+      action: 'finish',
+      kind: 'model',
+      nativeSessionId,
+      callId: second,
+      resultDigest: technicalDigest('unknown-usage'),
+      outcome: 'error',
+    });
+    await expect(
+      restarted({
+        action: 'finish',
+        kind: 'model',
+        nativeSessionId,
+        callId: second,
+        resultDigest: technicalDigest('conflicting-result'),
+        outcome: 'error',
+        outputTokens: 100,
+      }),
+    ).rejects.toThrow('task_progress_receipt_conflict');
+    expect(
+      await fixture.db`select * from allrice_memberships where organization_id=${company.org} order by id`,
+    ).toEqual(untouched);
+  });
   it('manual report-only authorization is immutable, idempotent and deduplicated across installations', async () => {
+    const jobsBefore = (
+      await fixture.db`select count(*)::int n from allrice_jobs`
+    )[0]!.n;
     const a = await diagnosed(),
       b = await diagnosed();
     const [first, second] = await Promise.all([
@@ -335,7 +671,7 @@ suite('immutable report-bound maintenance authority', () => {
     expect(actual.frozen.origin).toBe('manual');
     expect(
       (await fixture.db`select count(*)::int n from allrice_jobs`)[0]!.n,
-    ).toBe(0);
+    ).toBe(jobsBefore);
     await revokeMaintenanceGrant(admin, first.id);
     const countBefore = (
       await fixture.db`select count(*)::int n from allrice_platform_maintenance_grants`

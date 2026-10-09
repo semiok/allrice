@@ -147,6 +147,10 @@ export const MaintenanceGrantFrozenSchema = z
     repairTimeoutMs: z.number().int().min(300000).max(7200000),
     maxCandidateRevisions: z.number().int().min(1).max(3),
     maxOutputTokens: z.number().int().min(1000).max(100000),
+    // Old report-only grants remain readable. New execution requires this
+    // explicit subscription-safe threshold semantics and finite call budget.
+    outputBudgetMode: z.literal('observed_threshold').optional(),
+    maxModelCalls: z.literal(16).optional(),
     expiresAt: z.string().datetime({ offset: true }),
   })
   .strict();
@@ -178,3 +182,5 @@ export const MaintenanceReportAuthoritySchema = z
     grants: z.array(MaintenanceGrantSchema).max(10),
   })
   .strict();
+
+export type MaintenanceRepairPlan = z.infer<typeof MaintenanceRepairPlanSchema>;

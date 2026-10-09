@@ -25,6 +25,16 @@ export function projectTaskClock(row: TaskClockRow, now: Date) {
     row.policy.timeoutMs === 0
       ? null
       : Math.max(0, row.policy.timeoutMs - activeMs);
+  const budgetDeadline =
+    row.policy.timeoutMs === 0 ||
+    (remainingMs! > 0 && (row.phase === 'waiting' || row.phase === 'queued'))
+      ? unboundedTaskDeadline
+      : new Date(now.getTime() + row.policy.timeoutMs - activeMs);
+  const authorizationDeadline = row.policy.authorizationExpiresAt
+    ? new Date(row.policy.authorizationExpiresAt)
+    : unboundedTaskDeadline;
+  if (!Number.isFinite(authorizationDeadline.getTime()))
+    throw Error('invalid_task_authorization_expiry');
   return {
     activeMs,
     waitingMs,
@@ -38,11 +48,9 @@ export function projectTaskClock(row: TaskClockRow, now: Date) {
       : 0,
     timeoutMs: row.policy.timeoutMs,
     sources: row.policy.sources,
-    deadlineAt:
-      row.policy.timeoutMs === 0 ||
-      (remainingMs! > 0 && (row.phase === 'waiting' || row.phase === 'queued'))
-        ? unboundedTaskDeadline
-        : new Date(now.getTime() + row.policy.timeoutMs - activeMs),
+    deadlineAt: new Date(
+      Math.min(budgetDeadline.getTime(), authorizationDeadline.getTime()),
+    ),
   };
 }
 
@@ -293,7 +301,8 @@ export async function taskDeadlineOpen(
 ) {
   const clock = await db.begin((tx) => readTaskClock(tx, runId));
   return clock
-    ? clock.remainingMs === null || clock.remainingMs > 0
+    ? clock.deadlineAt.getTime() > Date.now() &&
+        (clock.remainingMs === null || clock.remainingMs > 0)
     : Date.now() < Date.parse(legacyDeadline);
 }
 

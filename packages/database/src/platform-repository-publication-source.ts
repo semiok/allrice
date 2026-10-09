@@ -46,8 +46,8 @@ export function freezeRepositoryPublicationSource(
       candidate.checksum ||
     patch.beforeChecksum !== repositoryDigest(frozen.baselineText) ||
     report.candidateChecksum !== candidate.checksum ||
-    report.after.report.version !== 2 ||
-    report.before.report.version !== 2 ||
+    report.after.report.version !== (frozen.version === 2 ? 3 : 2) ||
+    report.before.report.version !== (frozen.version === 2 ? 3 : 2) ||
     report.after.report.candidateChecksum !== candidate.checksum ||
     report.after.report.actualMaterialDigest !==
       report.after.report.candidateMaterialDigest ||
@@ -60,14 +60,26 @@ export function freezeRepositoryPublicationSource(
         r.restoredDigest !== frozen.baseline.sourceDigest ||
         r.harnessChecksum !== frozen.harnessChecksum ||
         r.sourceFileCount !== frozen.baseline.fileCount ||
-        r.sourceBytes !== frozen.baseline.sourceBytes ||
-        (r.version === 2 &&
-          (r.compiled.dependencyBundleChecksum !==
-            frozen.baseline.compiledDependencies?.bundleChecksum ||
-            r.compiled.dependencyMaterialDigest !==
-              frozen.baseline.compiledDependencies?.materialDigest ||
-            r.compiled.planDigest !==
-              frozen.baseline.compiledDependencies?.planDigest)) ||
+        r.sourceBytes !==
+          frozen.baseline.sourceBytes +
+            (frozen.version === 2 && r.candidateChecksum === candidate.checksum
+              ? Buffer.from(patch.afterBase64, 'base64').length -
+                Buffer.byteLength(frozen.baselineText)
+              : 0) ||
+        (frozen.version === 2 &&
+          (r.version !== 3 ||
+            r.verificationPlanDigest !==
+              frozen.maintenance.verificationPlanDigest ||
+            r.manifestDigest !==
+              technicalDigest(
+                frozen.maintenance.verificationPlan.approvedFiles,
+              ))) ||
+        r.compiled.dependencyBundleChecksum !==
+          frozen.baseline.compiledDependencies?.bundleChecksum ||
+        r.compiled.dependencyMaterialDigest !==
+          frozen.baseline.compiledDependencies?.materialDigest ||
+        r.compiled.planDigest !==
+          frozen.baseline.compiledDependencies?.planDigest ||
         r.rootLockChecksum !== frozen.baseline.rootLockChecksum ||
         r.dependencyConfigurationDigest !==
           frozen.baseline.dependencyConfigurationDigest,
@@ -77,12 +89,36 @@ export function freezeRepositoryPublicationSource(
   const after = Buffer.from(patch.afterBase64, 'base64');
   if (after.toString('base64') !== patch.afterBase64 || after.length > 50_000)
     throw Error('REPOSITORY_SOURCE_NOT_ACCEPTED');
-  repairTemplateSlot(
-    frozen.baselineText,
-    new TextDecoder('utf8', { fatal: true }).decode(after),
-  );
+  const text = new TextDecoder('utf8', { fatal: true }).decode(after);
+  if (frozen.version === 1) repairTemplateSlot(frozen.baselineText, text);
+  else {
+    const a = frozen.maintenance.verificationPlan.approvedFiles;
+    if (
+      a.length !== 1 ||
+      a[0]?.path !== patch.path ||
+      a[0].mode !== '100644' ||
+      a[0].beforeChecksum !== patch.beforeChecksum ||
+      after.length > a[0].maxBytes ||
+      after.includes(0) ||
+      !text
+    )
+      throw Error('REPOSITORY_SOURCE_NOT_ACCEPTED');
+  }
   return RepositoryPublicationSourceSchema.parse({
-    version: 1,
+    version: frozen.version === 2 ? 2 : 1,
+    ...(frozen.version === 2
+      ? {
+          maintenance: {
+            grantId: frozen.maintenance.grantId,
+            grantDigest: frozen.maintenance.grantDigest,
+            attemptId: frozen.maintenance.attemptId,
+            verificationPlanDigest: frozen.maintenance.verificationPlanDigest,
+            manifestDigest: technicalDigest(
+              frozen.maintenance.verificationPlan.approvedFiles,
+            ),
+          },
+        }
+      : {}),
     repairTaskId: row.id,
     repairRunId: row.run_id,
     repairJobId: row.job_id,

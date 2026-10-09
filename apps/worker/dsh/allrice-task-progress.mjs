@@ -1,5 +1,9 @@
 /* Native DSH middleware only; no Agent loop, extra model or action authority. */
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  hasModelOutput,
+  settledTokenUsage,
+} from './allrice-assistant-runtime.mjs';
 
 // Strip transport/log noise only. Business dates, paths and query text remain.
 const noise = new Set([
@@ -90,11 +94,43 @@ export function progressResult(name, block) {
   };
 }
 
-export function installTaskProgress(ctx, bridge) {
+const exactModelDigest = (value) =>
+  `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+
+export function installTaskProgress(ctx, bridge, configuration = {}) {
   let writes = Promise.resolve(),
     failure;
   const toolNames = new Map(); // outstanding calls only; cleared at receipt
   let prompting;
+  const admissions = new Map();
+  async function prepareModel(agent, requested, signal) {
+    if (admissions.has(agent.id))
+      throw Error('maintenance_model_unknown_no_replay');
+    if (!Number.isSafeInteger(requested) || requested < 1 || requested > 100000)
+      throw Error('maintenance_model_output_bound_required');
+    const callId = randomUUID();
+    const reservation = await bridge(
+      {
+        action: 'model_prepare',
+        nativeSessionId: agent.id,
+        callId,
+        requestedOutputTokens: requested,
+      },
+      signal,
+    );
+    if (
+      reservation.prepared !== true ||
+      !Number.isSafeInteger(reservation.outputTokens) ||
+      reservation.outputTokens < 1 ||
+      reservation.outputTokens > requested
+    )
+      throw Error('maintenance_model_output_grant_invalid');
+    admissions.set(agent.id, {
+      callId,
+      outputTokens: reservation.outputTokens,
+    });
+    return reservation.outputTokens;
+  }
   function rootFor(agent) {
     for (let depth = 0; depth < 32; depth++) {
       if (ctx.agents.roots().includes(agent)) return agent;
@@ -223,27 +259,96 @@ export function installTaskProgress(ctx, bridge) {
   ctx.on('agent/request', async ({ agent, signal }, next) => {
     // Check before admission/dispatch, not after losing a completed answer.
     await check(agent, signal);
-    return next();
+    const config = await next();
+    if (!configuration.maintenanceOutputTokens) return config;
+    return {
+      ...config,
+      maxTokens: await prepareModel(
+        agent,
+        Math.min(
+          config.maxTokens ?? configuration.maintenanceOutputTokens,
+          configuration.maintenanceOutputTokens,
+        ),
+        signal,
+      ),
+    };
   });
   ctx.on('llm/stream', async function* (options, next) {
     const agent = ctx.agents.get(options.sessionId);
     if (!agent) {
+      if (configuration.maintenanceOutputTokens)
+        throw Error('maintenance_model_native_scope_lost');
       yield* next();
       return;
     }
     await check(agent, options.signal);
-    const callId = randomUUID();
+    if (
+      configuration.maintenanceOutputTokens &&
+      options.purpose === 'compaction'
+    ) {
+      const granted = await prepareModel(
+        agent,
+        options.maxTokens,
+        options.signal,
+      );
+      if (granted !== options.maxTokens)
+        throw Error('maintenance_compaction_output_budget_exhausted');
+    }
+    const admission = admissions.get(agent.id);
+    if (
+      optionsForBudget() &&
+      (!admission || admission.outputTokens !== options.maxTokens)
+    )
+      throw Error('maintenance_model_preparation_required');
+    const callId = admission?.callId ?? randomUUID();
     await bridge(
-      { action: 'start', kind: 'model', nativeSessionId: agent.id, callId },
+      {
+        action: 'start',
+        kind: 'model',
+        nativeSessionId: agent.id,
+        callId,
+        ...(admission
+          ? {
+              outputTokens: admission.outputTokens,
+              requestDigest: exactModelDigest({
+                provider: options.provider,
+                model: options.model,
+                reasoningEffort: options.reasoningEffort,
+                temperature: options.temperature,
+                maxTokens: options.maxTokens,
+                messages: options.messages,
+                system: options.system ?? '',
+                tools: options.tools ?? [],
+              }),
+            }
+          : {}),
+      },
       options.signal,
     );
     let completed = false;
+    let usage,
+      observedOutput = false,
+      terminal = false;
     try {
-      yield* next();
+      for await (const chunk of next()) {
+        if (chunk.type === 'usage') usage = chunk.usage;
+        if (
+          chunk.type === 'finish' &&
+          ['stop', 'tool-calls'].includes(chunk.reason?.kind)
+        )
+          terminal = true;
+        if (hasModelOutput(chunk)) observedOutput = true;
+        yield chunk;
+      }
       completed = true;
     } finally {
-      // This is a local request completion receipt, NOT a fabricated Token
-      // receipt or proof of provider billing. Provider usage stays separate.
+      const settled =
+        completed && terminal && usage
+          ? settledTokenUsage(usage, observedOutput)
+          : {};
+      // Subscription routes do not promise a provider-enforced cap. Their
+      // observed cumulative threshold fences the next call; an overshooting
+      // receipt is retained, never clamped or represented as unused credit.
       await bridge({
         action: 'finish',
         kind: 'model',
@@ -251,8 +356,15 @@ export function installTaskProgress(ctx, bridge) {
         callId,
         outcome: completed ? 'success' : 'error',
         resultDigest: progressDigest({ completed }),
+        ...(admission && settled.outputTokens !== undefined
+          ? { outputTokens: settled.outputTokens }
+          : {}),
       });
+      admissions.delete(agent.id);
     }
   });
+  function optionsForBudget() {
+    return !!configuration.maintenanceOutputTokens;
+  }
   return { flush };
 }

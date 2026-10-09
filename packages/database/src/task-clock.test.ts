@@ -52,6 +52,24 @@ describe('MET-153 frozen task policy and elapsed-time accounting', () => {
       projectTaskClock(resumed, new Date(7000000)).deadlineAt.getTime(),
     ).toBe(5400000);
   });
+  it('keeps a persisted authorization deadline while queued, waiting or unbounded; elapsed budget cannot renew authority', () => {
+    const expires = new Date(60000).toISOString();
+    for (const phase of ['queued', 'waiting', 'active'] as const) {
+      const p = projectTaskClock(
+        {
+          ...row,
+          phase,
+          policy: {
+            ...resolveTaskRuntimePolicy([source(0)]),
+            authorizationExpiresAt: expires,
+          },
+        },
+        new Date(120000),
+      );
+      expect(p.deadlineAt.getTime()).toBe(60000);
+      expect(p.remainingMs).toBeNull();
+    }
+  });
   it('does not accrue queue or terminal time; unlimited remains explicit', () => {
     expect(
       projectTaskClock({ ...row, phase: 'queued' }, new Date(10000)).activeMs,

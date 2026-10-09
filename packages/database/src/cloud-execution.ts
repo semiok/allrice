@@ -1,3 +1,4 @@
+import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { initializeProjectServiceLease } from './project-services.ts';
 import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -715,7 +716,7 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
         b.metric === 'tool_calls'
           ? 1
           : b.metric === 'wall_time'
-            ? repositoryProof?.version === 2
+            ? isCompiledRepositoryExecution(repositoryProof)
               ? repositoryProof.timeoutMs
               : payload.arguments.limits.timeoutMs
             : b.metric === 'output_bytes'
