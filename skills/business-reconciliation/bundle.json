@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.1",
-  "contentChecksum": "sha256:c26c7972b977abd2de33fb4c2b70d98ff48d92c133ba3088924298ae6e49e3b3",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=c26c7972b977abd2de33fb4c2b70d98ff48d92c133ba3088924298ae6e49e3b3",
+  "version": "1.1.0",
+  "contentChecksum": "sha256:b80c23aa97d511242f318b6065e94ce599a72d24f3379ebe86074c616f14ffdb",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/business-reconciliation?content-sha256=b80c23aa97d511242f318b6065e94ce599a72d24f3379ebe86074c616f14ffdb",
   "license": "Apache-2.0",
-  "reviewedBy": "MET-155 existing cloud reconciliation workflow",
+  "reviewedBy": "MET-174 finance reconciliation and continuation",
   "resources": [
     {
       "path": "references/format.md",
       "mediaType": "text/markdown",
-      "byteLength": 1517,
-      "checksum": "sha256:86675eee7e7acef4c32b316cd12e0a538e1f7fe68909b29ca9e391095269d944"
+      "byteLength": 2314,
+      "checksum": "sha256:2f703d4181e4c0c8f5d25a5e6a7dcc468364d679d8fc07adebbf1e6d8fc80c20"
     },
     {
       "path": "scripts/reconcile.mjs",
@@ -55,5 +55,5 @@
       "imageDigest": "sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
     }
   ],
-  "checksum": "sha256:23ee58cc797e8d5cb4425dce8a0d9342000d28a444626b919d766e57380691ce"
+  "checksum": "sha256:915fdf29da52fc14daddec529d5909995b37de843da5ca6a0ae172841b67018c"
 }

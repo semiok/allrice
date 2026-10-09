@@ -1,0 +1,143 @@
+{
+  "initial": {
+    "schemaVersion": 1,
+    "currency": "CNY",
+    "rows": [
+      {
+        "invoice_id": "0001",
+        "invoice_cents": 100010,
+        "paid_cents": 100010,
+        "difference_cents": 0,
+        "status": "matched"
+      },
+      {
+        "invoice_id": "0002",
+        "invoice_cents": 80000,
+        "paid_cents": 50000,
+        "difference_cents": 30000,
+        "status": "underpaid"
+      },
+      {
+        "invoice_id": "0003",
+        "invoice_cents": 20000,
+        "paid_cents": 0,
+        "difference_cents": 20000,
+        "status": "ambiguous"
+      },
+      {
+        "invoice_id": "DUP",
+        "invoice_cents": null,
+        "paid_cents": 0,
+        "difference_cents": null,
+        "status": "ambiguous"
+      },
+      {
+        "invoice_id": "OVER",
+        "invoice_cents": 5000,
+        "paid_cents": 7500,
+        "difference_cents": -2500,
+        "status": "overpaid"
+      },
+      {
+        "invoice_id": "ZERO",
+        "invoice_cents": 0,
+        "paid_cents": 0,
+        "difference_cents": 0,
+        "status": "matched"
+      }
+    ],
+    "issues": [
+      {
+        "code": "duplicate_invoice_id",
+        "id": "DUP",
+        "rows": [5, 6]
+      },
+      {
+        "code": "duplicate_payment_id",
+        "id": "P04",
+        "rows": [5, 6]
+      },
+      {
+        "code": "unallocated_payment",
+        "id": "P05",
+        "invoice_id": "DUP",
+        "row": 7,
+        "amount_cents": 10000
+      },
+      {
+        "code": "unallocated_payment",
+        "id": "P06",
+        "invoice_id": "MISSING",
+        "row": 8,
+        "amount_cents": 9000
+      }
+    ],
+    "totals": {
+      "invoice_rows": 7,
+      "payment_rows": 9,
+      "invoice_cents": 205010,
+      "valid_payment_cents": 176510,
+      "allocated_payment_cents": 157510,
+      "unallocated_payment_cents": 19000,
+      "difference_cents": 47500
+    }
+  },
+  "corrected": {
+    "schemaVersion": 1,
+    "currency": "CNY",
+    "rows": [
+      {
+        "invoice_id": "0001",
+        "invoice_cents": 100010,
+        "paid_cents": 100010,
+        "difference_cents": 0,
+        "status": "matched"
+      },
+      {
+        "invoice_id": "0002",
+        "invoice_cents": 80000,
+        "paid_cents": 80000,
+        "difference_cents": 0,
+        "status": "matched"
+      },
+      {
+        "invoice_id": "0003",
+        "invoice_cents": 20000,
+        "paid_cents": 20000,
+        "difference_cents": 0,
+        "status": "matched"
+      },
+      {
+        "invoice_id": "DUP",
+        "invoice_cents": 35000,
+        "paid_cents": 10000,
+        "difference_cents": 25000,
+        "status": "underpaid"
+      },
+      {
+        "invoice_id": "OVER",
+        "invoice_cents": 5000,
+        "paid_cents": 7500,
+        "difference_cents": -2500,
+        "status": "overpaid"
+      },
+      {
+        "invoice_id": "ZERO",
+        "invoice_cents": 0,
+        "paid_cents": 0,
+        "difference_cents": 0,
+        "status": "matched"
+      }
+    ],
+    "issues": [],
+    "totals": {
+      "invoice_rows": 6,
+      "payment_rows": 8,
+      "invoice_cents": 240010,
+      "valid_payment_cents": 217510,
+      "allocated_payment_cents": 217510,
+      "unallocated_payment_cents": 0,
+      "difference_cents": 22500
+    }
+  }
+}

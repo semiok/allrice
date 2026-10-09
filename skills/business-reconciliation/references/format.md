@@ -13,4 +13,8 @@ totals.valid_payment_cents = allocated_payment_cents + unallocated_payment_cents
 totals.difference_cents = invoice_cents - allocated_payment_cents。
 CSV 包含同样 rows 明细，文本列以单引号转义危险电子表格公式前缀。
 
+核对说明要区分原始行数与确定性金额：重复回款 ID 的所有行不进入 valid_payment_cents，而重复发票 ID 的所有行不进入 invoice_cents。净 difference_cents 可能包含关联重复回款的唯一发票，也会抵销超额与欠款；不能直接称为已确认的应收余额。逐项展示 ambiguous、underpaid、overpaid 与 unallocated_payment；歧义未解决前不宣布全部核对完毕。
+
+追加更正的三类身份必须分开：更正 CSV 使用本次 input objectId/checksum；导出源使用本次云端 JSON 的 versionId；同格式 Excel 版本链的 parentObjectId 使用上一版 XLSX 的 objectId。复算完成后再比较两版 totals 与异常，保留两份源输入和两个版本。上一版结果不能冒充本次执行结果。
+
 此版本不是账务入账工具，不写回 ERP/银行，不发送外部通知；结果是基于提供输入和明确口径的核对报告。
