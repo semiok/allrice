@@ -114,9 +114,12 @@ suite('report-only historical repair view', () => {
       await page.getByRole('button', { name: '刷新发布记录' }).click();
       expect(
         await page
-          .getByText('自主修复与发布延期，当前仅查看历史记录。', {
-            exact: true,
-          })
+          .getByText(
+            '旧修复入口仅供查看历史记录；新报告请在维护设置中授权处理。',
+            {
+              exact: true,
+            },
+          )
           .isVisible(),
       ).toBe(true);
       expect(writes).toEqual([]);

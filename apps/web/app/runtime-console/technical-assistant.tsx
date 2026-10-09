@@ -291,7 +291,8 @@ export function TechnicalAssistant() {
         <div>
           <h1>技术助手</h1>
           <p>
-            查看诊断、巡检与问题报告。自主修复、独立审查和发布已延期；历史结果仍可查看。
+            按公司查看诊断、巡检和问题报告；在维护设置中选择仅报告，或授权修复并提交
+            PR。合并与部署由你手动安排。
           </p>
         </div>
         <AdminButton icon="refresh" disabled={busy} onClick={() => void load()}>
