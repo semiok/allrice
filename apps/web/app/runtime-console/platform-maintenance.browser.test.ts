@@ -66,6 +66,8 @@ suite('maintenance configuration browser lifecycle', () => {
       await page.route(
         '**/api/v1/admin/technical-assistant/maintenance**',
         async (route: Route) => {
+          if (route.request().url().includes('/maintenance/reports'))
+            return route.fulfill({ json: { reports: [], nextCursor: null } });
           const req = route.request();
           if (req.method() === 'POST') {
             const input = req.postDataJSON();

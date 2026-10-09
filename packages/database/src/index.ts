@@ -160,3 +160,7 @@ export {
   readDevProducerLifecycle,
   type DevProducerContext,
 } from './dev-producer-lifecycle.ts';
+
+export * from './platform-maintenance-reports.ts';
+
+export * from './platform-maintenance-source.ts';

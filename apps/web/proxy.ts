@@ -96,6 +96,11 @@ export function proxy(request: NextRequest) {
     // This exact read-only endpoint authenticates its own scoped sync token.
     request.nextUrl.pathname === '/api/v1/internal/runtime-capabilities' ||
     publicPaths.has(request.nextUrl.pathname) ||
+    // Machine endpoints verify their installation key, never a browser cookie.
+    (request.method === 'GET' &&
+      request.nextUrl.pathname === '/api/v1/maintenance/connection') ||
+    (['GET', 'POST'].includes(request.method) &&
+      request.nextUrl.pathname === '/api/v1/maintenance/reports') ||
     // Immutable public software; the handler checks the fixed release whitelist
     // and real bytes. No member data or arbitrary filesystem URL is exposed.
     (['GET', 'HEAD'].includes(request.method) &&
