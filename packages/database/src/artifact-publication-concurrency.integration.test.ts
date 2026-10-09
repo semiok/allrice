@@ -1,8 +1,13 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TransactionSql } from 'postgres';
-import { ExecutionContextSchema, type StoragePort } from '@allrice/contracts';
+import {
+  ExecutionContextSchema,
+  type StoragePort,
+  type WorkbenchArtifact,
+} from '@allrice/contracts';
 import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   createAssistantFixtureDatabase,
   assistantFixtureStorage,
@@ -13,11 +18,17 @@ import { refreshTaskClock } from './task-clock.ts';
 import * as client from './core/client.ts';
 import { cancelRun, completeJob } from './execution/queue.ts';
 import {
+  ArtifactPublicationParentError,
   ArtifactPublicationRollbackError,
   publishWorkbenchArtifact,
+  getWorkbenchArtifact,
   readArtifactBytes,
   listWorkbenchArtifacts,
 } from './artifact-review.ts';
+import {
+  createToolBrokerExportObject,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import { getChatSessionHistory } from './workspace/service.ts';
 import { readTaskNextSteps } from './task-next-steps.ts';
 import { listCompanyDeliverables } from './company-deliverables.ts';
@@ -195,6 +206,171 @@ suite(
       expect(dashboard.work).toMatchObject({ completed: 0, canceled: 1 });
       expect(dashboard.deliverables.availableSeries).toBe(artifacts.length);
     }
+
+    async function seedArtifact(
+      f: Awaited<ReturnType<typeof setup>>,
+      input: Parameters<typeof publishWorkbenchArtifact>[0],
+      kind: WorkbenchArtifact['kind'],
+    ) {
+      const object = {
+        ...createToolBrokerExportObject({
+          context: input.context,
+          mediaType: input.mediaType,
+          sizeBytes: input.bytes.length,
+          checksum: `sha256:${createHash('sha256').update(input.bytes).digest('hex')}`,
+        }),
+        immutable: true,
+      };
+      await f.storage.put(
+        object,
+        new Blob([Uint8Array.from(input.bytes)]).stream(),
+      );
+      const version = await fixture.db.begin(async (tx) => {
+        // Persist through the same registration used by cloud execution,
+        // respecting the immutable metadata trigger from the first insert.
+        const version = await registerToolBrokerExport(
+          {
+            context: input.context,
+            sessionId: input.sessionId,
+            fileName: input.fileName,
+            format: input.format,
+            object,
+          },
+          tx,
+        );
+        await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
+        values(${version.id},${f.org},${f.workspace},${f.user},${f.rootRunId},${kind},${tx.json({ kind: 'tool_result', runId: f.rootRunId, operationId: randomUUID(), stepId: null })},null,${input.callId},${runtimePolicyDigest({ callId: input.callId, kind, checksum: object.checksum })})`;
+        return version;
+      });
+      return getWorkbenchArtifact(f.requestContext, f.session, version.id);
+    }
+
+    it.each(['json', 'text'] as const)(
+      'revises a persisted Python/Bridge %s file in its original immutable series',
+      async (format) => {
+        const f = await setup();
+        const originalInput = {
+          ...f.input,
+          format,
+          fileName: `metrics.${format}`,
+          bytes: Buffer.from(format === 'json' ? '{"value":1}' : 'first'),
+          mediaType: format === 'json' ? 'application/json' : 'text/plain',
+        };
+        const old = await seedArtifact(f, originalInput, 'file');
+        const input = {
+          ...originalInput,
+          callId: randomUUID(),
+          parentObjectId: old.object.id,
+          bytes: Buffer.from(format === 'json' ? '{"value":2}' : 'second'),
+          changeSummary: 'Correct the input-derived result',
+        };
+        const current = await publishWorkbenchArtifact(
+          input,
+          f.storage,
+          fixture.db,
+        );
+        expect(current.kind).toBe('file');
+        expect(current.version).toMatchObject({
+          seriesId: old.version.seriesId,
+          version: 2,
+          parentVersionId: old.id,
+          parentObjectId: old.object.id,
+          format,
+        });
+        expect(current.provenance).toMatchObject({
+          kind: 'model_proposal',
+          operationId: null,
+        });
+        expect(current.execution).toBeNull();
+        expect(await readArtifactBytes(f.storage, old.object)).toEqual(
+          originalInput.bytes,
+        );
+        expect(await readArtifactBytes(f.storage, current.object)).toEqual(
+          input.bytes,
+        );
+        const recovered = await publishWorkbenchArtifact(
+          input,
+          f.storage,
+          fixture.db,
+        );
+        expect(recovered.id).toBe(current.id);
+        expect(recovered.kind).toBe('file');
+        const put = vi.fn(f.storage.put.bind(f.storage));
+        await expect(
+          publishWorkbenchArtifact(
+            { ...input, callId: randomUUID() },
+            storageWithPut(f.storage, put),
+            fixture.db,
+          ),
+        ).rejects.toBeInstanceOf(ArtifactPublicationParentError);
+        expect(put).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['file', 'text', 'json'],
+      ['file', 'html', 'html'],
+      ['file', 'png', 'png'],
+      ['plan', 'json', 'json'],
+      ['changeset', 'json', 'json'],
+      ['command_output', 'text', 'text'],
+      ['browser_capture', 'json', 'json'],
+    ] as const)(
+      'rejects incompatible parent kind=%s format=%s to %s before storage',
+      async (kind, parentFormat, format) => {
+        const f = await setup();
+        const old = await seedArtifact(
+          f,
+          { ...f.input, format: parentFormat },
+          kind,
+        );
+        const input = {
+          ...f.input,
+          callId: randomUUID(),
+          parentObjectId: old.object.id,
+          format,
+        };
+        const put = vi.fn(f.storage.put.bind(f.storage));
+        await expect(
+          publishWorkbenchArtifact(
+            input,
+            storageWithPut(f.storage, put),
+            fixture.db,
+          ),
+        ).rejects.toMatchObject({
+          runId: f.rootRunId,
+          callId: input.callId,
+          code: 'version_changed',
+        });
+        expect(put).not.toHaveBeenCalled();
+        expect(
+          await fixture.db`select id from allrice_deliverable_versions where series_id=${old.version.seriesId}`,
+        ).toHaveLength(1);
+      },
+    );
+
+    it('rejects a foreign file parent without disclosing or rewriting it', async () => {
+      const foreign = await setup();
+      const old = await seedArtifact(foreign, foreign.input, 'file');
+      const f = await setup();
+      const input = { ...f.input, parentObjectId: old.object.id };
+      const put = vi.fn(f.storage.put.bind(f.storage));
+      await expect(
+        publishWorkbenchArtifact(
+          input,
+          storageWithPut(f.storage, put),
+          fixture.db,
+        ),
+      ).rejects.toMatchObject({
+        code: 'artifact_not_found',
+        runId: f.rootRunId,
+        callId: input.callId,
+      });
+      expect(put).not.toHaveBeenCalled();
+      expect(await readArtifactBytes(foreign.storage, old.object)).toEqual(
+        foreign.input.bytes,
+      );
+    });
 
     it('publication waits before taking the session lock while an actual clock/authority check owns the job', async () => {
       const f = await setup(),

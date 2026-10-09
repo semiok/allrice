@@ -60,6 +60,8 @@ vi.mock('@allrice/database', async (original) => ({
     .ManagedBrowserTaskStartError,
   ArtifactPublicationRollbackError: (await original<typeof Database>())
     .ArtifactPublicationRollbackError,
+  ArtifactPublicationParentError: (await original<typeof Database>())
+    .ArtifactPublicationParentError,
   completeManagedBrowserTask,
   createToolBrokerExportObject,
   createTraceableMemory,
@@ -91,7 +93,10 @@ import {
   riceToolDefinitionsForTurn,
   riceToolRisk,
 } from './tool-broker.js';
-import { ArtifactPublicationRollbackError } from '@allrice/database';
+import {
+  ArtifactPublicationRollbackError,
+  ArtifactPublicationParentError,
+} from '@allrice/database';
 import type * as Database from '@allrice/database';
 import { HandlerError, isConfirmedToolFailure } from './errors.js';
 import * as marketData from './market-data.js';
@@ -1225,6 +1230,87 @@ describe('Codex hosted search Tool Broker integration', () => {
     });
   });
 
+  it.each(['exact', 'foreign-call', 'foreign-run', 'unconfirmed'] as const)(
+    'settles a parent rejection only for its exact publication receipt (%s)',
+    async (mode) => {
+      const context = executionContext(),
+        callId = randomUUID();
+      const input = {
+        context,
+        sessionId: randomUUID(),
+        storageRoot: 'unused-mocked-port',
+        capabilities: ['storage:write' as const],
+        call: {
+          id: callId,
+          name: 'workspace.export.create',
+          arguments: {
+            fileName: 'metrics.json',
+            format: 'json',
+            content: '{"value":2}',
+            parentObjectId: randomUUID(),
+          },
+        },
+      };
+      workbenchEnabled.mockReturnValue(true);
+      const error =
+        mode === 'unconfirmed'
+          ? Object.assign(Error('lost commit acknowledgement'), {
+              code: 'version_changed',
+            })
+          : new ArtifactPublicationParentError(
+              mode === 'foreign-run' ? randomUUID() : context.runId,
+              mode === 'foreign-call' ? randomUUID() : callId,
+              'version_changed',
+            );
+      publishWorkbenchArtifact.mockRejectedValue(error);
+      const thrown = await executeRiceTool(input).catch(
+        (value: unknown) => value,
+      );
+      if (mode === 'exact')
+        expect(thrown).toMatchObject({
+          code: 'TOOL_PUBLICATION_PARENT_INVALID',
+          retryable: false,
+          message: expect.stringContaining('本次未发布'),
+        });
+      else expect(thrown).toBe(error);
+      expect(
+        isConfirmedToolFailure(thrown, {
+          runId: context.runId,
+          callId,
+          toolName: input.call.name,
+        }),
+      ).toBe(mode === 'exact');
+    },
+  );
+
+  it('returns the persisted file kind when revising a computed JSON series', async () => {
+    workbenchEnabled.mockReturnValue(true);
+    publishWorkbenchArtifact.mockResolvedValue({
+      id: randomUUID(),
+      kind: 'file',
+      object: { id: randomUUID(), checksum: 'persisted-checksum' },
+      version: { seriesId: randomUUID(), version: 2 },
+    });
+    const result = await executeRiceTool({
+      context: executionContext(),
+      sessionId: randomUUID(),
+      storageRoot: 'unused-mocked-port',
+      capabilities: ['storage:write'],
+      call: {
+        id: randomUUID(),
+        name: 'workspace.export.create',
+        arguments: {
+          fileName: 'metrics.json',
+          format: 'json',
+          content: '{"value":2}',
+          parentObjectId: randomUUID(),
+        },
+      },
+    });
+    expect(JSON.parse(result.modelContent).artifactKind).toBe('file');
+    expect(result.summary).toBe('已生成交付文件 metrics.json · v2');
+  });
+
   it('creates a sanitized, versioned deliverable and preserves its lineage', async () => {
     const context = executionContext();
     const sessionId = randomUUID();
@@ -1425,6 +1511,7 @@ describe('Codex hosted search Tool Broker integration', () => {
       files: [{ path: 'test.mjs', before: null, after: 'console.log(1)' }],
     };
     publishWorkbenchChangesetProposal.mockResolvedValue({
+      kind: 'changeset',
       id: randomUUID(),
       object: {
         id: randomUUID(),
