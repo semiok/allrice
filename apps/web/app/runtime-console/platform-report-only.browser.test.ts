@@ -10,7 +10,7 @@ const suite =
     ? describe
     : describe.skip;
 suite('report-only historical repair view', () => {
-  it('allows refresh and historical details while refusing every write control', async () => {
+  it('allows refresh, historical details and cancellation while refusing new repair controls', async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
     const built = await build({
@@ -104,7 +104,7 @@ suite('report-only historical repair view', () => {
         await page
           .getByRole('button', { name: '停止修复', exact: true })
           .isDisabled(),
-      ).toBe(true);
+      ).toBe(false);
       expect(
         await page
           .getByRole('button', { name: '提交候选到 GitHub', exact: true })

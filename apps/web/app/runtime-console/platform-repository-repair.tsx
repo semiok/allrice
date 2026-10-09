@@ -186,7 +186,6 @@ export function PlatformRepositoryRepair({
     }
   }
   async function stop() {
-    if (readOnly) return;
     if (!current || writing) return;
     setWriting(true);
     try {
@@ -341,10 +340,7 @@ export function PlatformRepositoryRepair({
               </AdminButton>
             )}
             {['queued', 'running'].includes(current.status) && (
-              <AdminButton
-                disabled={readOnly || writing}
-                onClick={() => void stop()}
-              >
+              <AdminButton disabled={writing} onClick={() => void stop()}>
                 停止修复
               </AdminButton>
             )}

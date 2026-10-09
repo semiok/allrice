@@ -1,4 +1,5 @@
 import { platformRepository } from '@allrice/database/technical-contracts';
+import { assertMaintenanceWriteAction } from '@allrice/database';
 
 const api = 'https://api.github.com';
 const prefix = `/repos/${platformRepository.fullName}`;
@@ -297,6 +298,7 @@ export class FixedRepositoryGithub {
     return this.request(prefix + '/branches/main/protection');
   }
   async readyPull(number: number, branch: string, nodeId: string) {
+    assertMaintenanceWriteAction('ready');
     const pull = await this.mergePull(number, branch);
     if (pull.nodeId !== nodeId || pull.state !== 'open' || pull.merged)
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_CONFLICT');
@@ -307,6 +309,7 @@ export class FixedRepositoryGithub {
     });
   }
   async mergeExactPull(number: number, headSha: string) {
+    assertMaintenanceWriteAction('merge');
     // A single server-side head condition. The caller also requires current
     // strict/admin-enforced base protection; it never invokes an admin bypass.
     await this.request(

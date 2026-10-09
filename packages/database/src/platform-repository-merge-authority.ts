@@ -3,6 +3,7 @@ import type { RequestContext } from '@allrice/contracts';
 import { UuidSchema, runtimeContractEqual } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
+import { assertMaintenanceWriteAction } from './platform-maintenance-actions.ts';
 import { QueueError } from './execution/queue.ts';
 import type { JobRow } from './queue/row-mappers.ts';
 import { resolvePlatformPreviewContext } from './platform-employees/preview-context.ts';
@@ -78,6 +79,7 @@ export async function bindRepositoryMerge(
   const b = RepositoryMergeBindingSchema.parse(raw),
     r = b.request,
     m = b.review.material;
+  if (r.action === 'merge') assertMaintenanceWriteAction('merge');
   if (
     b.inputDigest !== technicalDigest(r) ||
     b.loginSessionId !== context.sessionId ||
@@ -170,6 +172,7 @@ async function authority(tx: Tx, job: JobRow) {
   const request = RepositoryMergeRequestSchema.parse(a.request),
     review = RepositoryCompletedReviewSchema.parse(a.review),
     m = review.material;
+  if (request.action === 'merge') assertMaintenanceWriteAction('merge');
   if (
     job.max_attempts !== 1 ||
     job.cancel_requested_at ||

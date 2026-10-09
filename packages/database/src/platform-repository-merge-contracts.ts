@@ -162,6 +162,7 @@ export const RepositoryMergePanelSchema = z
     subjectDigest: ChecksumSchema.nullable(),
     reason: z
       .enum([
+        'automatic_merge_disabled',
         'repository_authorization_required',
         'completed_review_required',
         'merge_active',

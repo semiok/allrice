@@ -16,6 +16,7 @@ import { TechnicalTasks } from './technical-tasks';
 import { PlatformQuality } from './platform-quality';
 import { PlatformRepositoryRepair } from './platform-repository-repair';
 import { PlatformRepositoryCredentialPanel } from './platform-repository-credential';
+import { PlatformMaintenance } from './platform-maintenance';
 
 const endpoint = '/api/v1/admin/technical-assistant';
 const statusLabels = {
@@ -298,6 +299,7 @@ export function TechnicalAssistant() {
         </AdminButton>
       </header>
       <TechnicalTasks issueId={selected} />
+      <PlatformMaintenance />
       <PlatformQuality />
       <PlatformRepositoryCredentialPanel />
       <PlatformRepositoryRepair readOnly />

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { UuidSchema, WorkerOperationsSchema } from '@allrice/contracts';
 export * from './platform-repair-contracts.ts';
+export * from './platform-maintenance-contracts.ts';
 export * from './platform-repository-credential-contracts.ts';
 export * from './platform-repository-publication-contracts.ts';
 export * from './platform-repository-ci-contracts.ts';

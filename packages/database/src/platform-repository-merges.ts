@@ -3,6 +3,7 @@ import { UuidSchema } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { requirePlatformAdmin } from './platform-authority.ts';
 import { DataAccessError } from './data.ts';
+import { assertMaintenanceWriteAction } from './platform-maintenance-actions.ts';
 import {
   enqueueRun,
   QueueError,
@@ -143,10 +144,10 @@ export async function getPlatformRepositoryMergePanel(
     reason = 'started_review_fixed';
   return RepositoryMergePanelSchema.parse({
     publicationId: id,
-    canStart: reason === null,
+    canStart: false,
     reviewSubjectId: subjectId,
     subjectDigest,
-    reason,
+    reason: reason ?? 'automatic_merge_disabled',
     merges,
   });
 }
@@ -158,6 +159,7 @@ export async function createPlatformRepositoryMerge(
     owner = await requirePlatformAdmin(context),
     digest = technicalDigest(r),
     sql = getDatabase();
+  if (r.action === 'merge') assertMaintenanceWriteAction('merge');
   const [prior] =
     await sql`select merge_id,input_digest from allrice_platform_repository_merge_actions where owner_id=${owner} and request_id=${r.requestId}`;
   if (prior) {
@@ -270,6 +272,7 @@ export async function startRepositoryMergeEffect(
   step: 'ready' | 'merge',
   preflight: unknown,
 ) {
+  assertMaintenanceWriteAction(step);
   const proof = RepositoryMergePreflightSchema.parse(preflight);
   return withRepositoryMerge(lease, async (tx, d, j, c) => {
     if (d.request.action !== 'merge' || d.a.receipt)

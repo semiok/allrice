@@ -70,6 +70,15 @@ import { FixedRepositoryGithub } from '../../src/repository-repair/github.js';
 import { failJob } from '../../../../packages/database/src/execution/queue.ts';
 import { repositoryRequiredChecks } from '../../../../packages/database/src/platform-repository-publication-contracts.ts';
 import { platformRepository } from '../../../../packages/database/src/platform-repository-credential-contracts.ts';
+// These synthetic legacy merge protocol cases preserve pre-existing intent and
+// proof algorithms for historical reconciliation. The product action guard is
+// intentionally disabled ONLY in this test module; current production denial is
+// independently exercised without mocks in platform-maintenance.integration
+// and maintenance-write-boundary.test. No provider or remote write is executed.
+vi.mock(
+  '../../../../packages/database/src/platform-maintenance-actions.ts',
+  () => ({ assertMaintenanceWriteAction: () => {} }),
+);
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -1002,7 +1011,8 @@ suite(
             createPlatformRepositoryMerge(s.admin, mergeRequest(next)),
           ).rejects.toMatchObject({ code: 'conflict' });
         } else {
-          expect(panel.canStart).toBe(true);
+          expect(panel.canStart).toBe(false);
+          expect(panel.reason).toBe('automatic_merge_disabled');
           const current = await createPlatformRepositoryMerge(
             s.admin,
             mergeRequest(next),

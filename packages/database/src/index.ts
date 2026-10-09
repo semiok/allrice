@@ -127,6 +127,8 @@ export * from './project-services.ts';
 export * from './platform-technical-tasks.ts';
 export * from './platform-technical-health.ts';
 export * from './platform-quality.ts';
+export * from './platform-maintenance.ts';
+export * from './platform-maintenance-actions.ts';
 export * from './platform-quality-automation.ts';
 export * from './platform-quality-case.ts';
 export * from './platform-quality-live-case.ts';

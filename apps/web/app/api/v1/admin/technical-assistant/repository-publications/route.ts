@@ -45,7 +45,6 @@ export async function POST(request: Request) {
     )
       return new Response(null, { status: 403, headers });
     const context = await requirePlatformAdminContext(request);
-    if (platformAutonomyPaused()) return deferredPlatformActionResponse();
     const reader = request.body?.getReader();
     if (!reader) return new Response(null, { status: 400, headers });
     const chunks: Uint8Array[] = [];
@@ -70,12 +69,12 @@ export async function POST(request: Request) {
     } catch {
       return new Response(null, { status: 400, headers });
     }
+    const input = RepositoryPublicationRequestSchema.parse(raw);
+    if (input.action === 'publish' && platformAutonomyPaused())
+      return deferredPlatformActionResponse();
     return Response.json(
       RepositoryPublicationSchema.parse(
-        await createPlatformRepositoryAction(
-          context,
-          RepositoryPublicationRequestSchema.parse(raw),
-        ),
+        await createPlatformRepositoryAction(context, input),
       ),
       { headers },
     );

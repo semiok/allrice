@@ -9,6 +9,7 @@ import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 const endpoint = '/api/v1/admin/technical-assistant/repository-merges';
 const reasons = {
+  automatic_merge_disabled: '自动合并已关闭，请在 GitHub 审阅和合并。',
   repository_authorization_required: '请先配置当前管理员的仓库授权。',
   completed_review_required: '需要准确、完整的独立审查和交付成果。',
   merge_active: '合并操作正在执行。',
@@ -32,7 +33,6 @@ type Panel = ReturnType<typeof RepositoryMergePanelSchema.parse>;
 export function PlatformRepositoryMerges({
   publicationId,
   credentialRevision,
-  readOnly = false,
 }: {
   publicationId: string;
   credentialRevision: number | null;
@@ -113,7 +113,7 @@ export function PlatformRepositoryMerges({
     return () => clearInterval(timer);
   }, [active?.id, read]);
   const send = async (request: RequestData) => {
-    if (readOnly) return;
+    if (request.action === 'merge') return;
     if (mutating.current) return;
     setAbsent(false);
     mutating.current = true;
@@ -135,11 +135,7 @@ export function PlatformRepositoryMerges({
       if (mounted.current) {
         remember(null);
         await read();
-        setNotice(
-          request.action === 'merge'
-            ? '已提交固定候选合并。'
-            : '已提交原结果核对；不会再次发出合并。',
-        );
+        setNotice('已提交原结果核对；不会再次发出合并。');
       }
     } catch {
       if (mounted.current)
@@ -206,7 +202,9 @@ export function PlatformRepositoryMerges({
         } else {
           setAbsent(true);
           setNotice(
-            '尚未找到原请求。可继续核对，或使用相同编号重试；不会创建第二次合并。',
+            pending.action === 'merge'
+              ? '尚未找到原请求。自动合并已关闭，只能继续核对历史结果。'
+              : '尚未找到原核对请求。可继续核对，或使用相同编号重试。',
           );
         }
       }
@@ -218,7 +216,7 @@ export function PlatformRepositoryMerges({
     }
   };
   const stop = async () => {
-    if (readOnly || !operation || !active || mutating.current) return;
+    if (!operation || !active || mutating.current) return;
     mutating.current = true;
     setBusy(true);
     try {
@@ -243,20 +241,11 @@ export function PlatformRepositoryMerges({
     <section aria-label="候选合并 main">
       <h4>合并 main</h4>
       <p className={css.meta}>
-        合并前核对当前授权、远端版本、原始 CI 和完整审查成果。合并 main 与部署
-        Dev 分别记录。
+        自动合并已关闭。请在 GitHub
+        审阅和合并；这里保留历史结果的查看、停止和只读核对。
       </p>
       <div className={css.controls}>
-        <AdminButton
-          disabled={
-            readOnly ||
-            busy ||
-            !!pending ||
-            !panel?.canStart ||
-            !credentialRevision
-          }
-          onClick={() => void submit('merge')}
-        >
+        <AdminButton disabled onClick={() => void submit('merge')}>
           合并已审查候选
         </AdminButton>
         <AdminButton
@@ -272,24 +261,21 @@ export function PlatformRepositoryMerges({
             核对原合并请求
           </AdminButton>
         )}
-        {pending && absent && (
-          <AdminButton
-            disabled={readOnly || busy}
-            onClick={() => void retryPending()}
-          >
+        {pending?.action === 'reconcile' && absent && (
+          <AdminButton disabled={busy} onClick={() => void retryPending()}>
             重试原合并请求
           </AdminButton>
         )}
         {operation && !active && (
           <AdminButton
-            disabled={readOnly || busy || !!pending || !credentialRevision}
+            disabled={busy || !!pending || !credentialRevision}
             onClick={() => void submit('reconcile')}
           >
             核对原合并结果
           </AdminButton>
         )}
         {active && (
-          <AdminButton disabled={readOnly || busy} onClick={() => void stop()}>
+          <AdminButton disabled={busy} onClick={() => void stop()}>
             停止合并操作
           </AdminButton>
         )}
