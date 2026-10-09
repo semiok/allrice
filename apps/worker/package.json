@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json && node scripts/maintenance-source-proof.mjs",
     "clean": "rm -rf dist",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",

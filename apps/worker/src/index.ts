@@ -46,6 +46,10 @@ import { readWorkerCapabilities } from './harness/runtime-capabilities.js';
 import { refreshManagedCloudEnvironments } from './managed-cloud-environments.js';
 import { workerProducerRunner } from './dev-producer.js';
 import { runMaintenanceReportingProducer } from './maintenance-reporting.js';
+import {
+  captureMaintenanceDiagnosticRuntime,
+  runMaintenanceDiagnosisTick,
+} from './maintenance-diagnosis.js';
 
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
@@ -95,6 +99,10 @@ const codexAuthorizationBroker = new CodexAuthorizationBroker(
 );
 const serviceBuildIdentity = await readServiceBuildIdentity('worker');
 const producerLifecycle = await installDevProducerLifecycle('worker');
+const maintenanceDiagnosticRuntime =
+  process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
+    ? await captureMaintenanceDiagnosticRuntime(serviceBuildIdentity)
+    : null;
 
 const stopPressureLog = startExecutionPressureLog(
   executionRoot,
@@ -384,19 +392,28 @@ async function automationTick() {
 }
 
 let maintenanceReportingTask: Promise<void> | null = null;
+let maintenanceDiagnosisNextAt = 0;
 function maintenanceReportingTick() {
   if (
     maintenanceReportingTask ||
     stopping ||
     !databaseReady ||
-    !process.env.ALLRICE_MAINTENANCE_CONNECTION_FILE
+    (!process.env.ALLRICE_MAINTENANCE_CONNECTION_FILE &&
+      !maintenanceDiagnosticRuntime)
   )
     return;
-  maintenanceReportingTask = runProducer('automation', () =>
-    runMaintenanceReportingProducer({
+  maintenanceReportingTask = runProducer('automation', async () => {
+    await runMaintenanceReportingProducer({
       signal: maintenanceReportingAborter.signal,
-    }),
-  )
+    });
+    if (Date.now() >= maintenanceDiagnosisNextAt) {
+      maintenanceDiagnosisNextAt = Date.now() + 60000;
+      await runMaintenanceDiagnosisTick(
+        maintenanceDiagnosticRuntime,
+        maintenanceReportingAborter.signal,
+      );
+    }
+  })
     .catch(() =>
       console.error('[MET-167] maintenance report database outcome unknown'),
     )

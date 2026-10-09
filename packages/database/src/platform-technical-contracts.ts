@@ -283,3 +283,5 @@ export * from './platform-repository-merge-contracts.ts';
 export * from './platform-maintenance-report-contracts.ts';
 
 export * from './platform-maintenance-probe.ts';
+
+export * from './platform-maintenance-authority-contracts.ts';

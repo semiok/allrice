@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   MaintenanceReportPageSchema,
+  MaintenanceReportAuthoritySchema,
   type MaintenanceReportPayload,
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
@@ -42,6 +43,26 @@ export function PlatformMaintenanceReports({
     [busy, setBusy] = useState(false),
     [error, setError] = useState('');
   const epoch = useRef(0);
+  const [authority, setAuthority] = useState<
+    Record<string, ReturnType<typeof MaintenanceReportAuthoritySchema.parse>>
+  >({});
+  async function loadAuthority(id: string) {
+    const current = epoch.current;
+    try {
+      const response = await fetch(endpoint + '/' + id + '/authority', {
+        cache: 'no-store',
+      });
+      if (!response.ok) throw Error();
+      const value = MaintenanceReportAuthoritySchema.parse(
+        await response.json(),
+      );
+      if (current === epoch.current)
+        setAuthority((old) => ({ ...old, [id]: value }));
+    } catch {
+      if (current === epoch.current)
+        setError('中央复现依据暂时不可读，请刷新重试。');
+    }
+  }
   async function load(cursor?: string) {
     const current = ++epoch.current;
     setBusy(true);
@@ -64,6 +85,7 @@ export function PlatformMaintenanceReports({
   }
   useEffect(() => {
     setData(null);
+    setAuthority({});
     void load();
     return () => {
       epoch.current++;
@@ -71,9 +93,21 @@ export function PlatformMaintenanceReports({
   }, [deploymentId]);
   function download(report: Page['reports'][number]) {
     const url = URL.createObjectURL(
-        new Blob([JSON.stringify(report, null, 2)], {
-          type: 'application/json',
-        }),
+        new Blob(
+          [
+            JSON.stringify(
+              {
+                ...report,
+                centralAuthority: authority[report.reportId] ?? null,
+              },
+              null,
+              2,
+            ),
+          ],
+          {
+            type: 'application/json',
+          },
+        ),
       ),
       a = document.createElement('a');
     a.href = url;
@@ -95,7 +129,12 @@ export function PlatformMaintenanceReports({
         <p>暂无报告。独立部署连接后，检查结果会汇总到这里。</p>
       )}
       {data?.reports.map((report) => (
-        <details key={report.reportId}>
+        <details
+          key={report.reportId}
+          onToggle={(e) => {
+            if (e.currentTarget.open) void loadAuthority(report.reportId);
+          }}
+        >
           <summary>
             {report.companyName} · {report.deploymentName} ·{' '}
             <AdminStatus
@@ -137,6 +176,22 @@ export function PlatformMaintenanceReports({
           <p className={css.meta}>
             来源报告：{report.sourceReportId} · 内容摘要：{report.payloadDigest}
           </p>
+          {authority[report.reportId]?.diagnoses.map((diagnosis) => (
+            <div key={diagnosis.id} aria-label="中央复现结果">
+              <p>
+                {diagnosis.proof.verdict === 'confirmed_code'
+                  ? '中央已复现源码缺陷'
+                  : '中央当前版本未复现该缺陷'}{' '}
+                · 目标版本：<code>{diagnosis.targetSha}</code>
+              </p>
+              <p className={css.meta}>
+                已完成 {diagnosis.proof.probeResults.length} 项登记探测，
+                {diagnosis.proof.failedAssertions.length}{' '}
+                项未通过。源码与运行产物映射已核对；完整编译及修复前后回归仍需修复任务验证。
+              </p>
+              <p className={css.meta}>复现依据：{diagnosis.proofDigest}</p>
+            </div>
+          ))}
           <AdminButton onClick={() => download(report)}>
             下载问题报告
           </AdminButton>{' '}
