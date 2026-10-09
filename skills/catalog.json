@@ -301,6 +301,29 @@
         "workspace.export.create"
       ],
       "enabled": true
+    },
+    {
+      "id": "023f6252-1ecc-54af-adcf-d0ea5e54e89d",
+      "name": "operations-review",
+      "contentFile": "skills/operations-review/SKILL.md",
+      "bundleFile": "skills/operations-review/bundle.json",
+      "version": "1.0.0",
+      "checksum": "sha256:8470d7ed8ef95721acc4fae7d6cb1a1f0e0b4e69a491f3efd9e99783b4c72cc1",
+      "source": "allrice",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/operations-review?content-sha256=8470d7ed8ef95721acc4fae7d6cb1a1f0e0b4e69a491f3efd9e99783b4c72cc1",
+      "license": "Apache-2.0",
+      "reviewStatus": "reviewed",
+      "reviewedByLabel": "MET-175 bounded operations workflow and version contract review",
+      "createdByLabel": "MET-175",
+      "modelInvocable": true,
+      "userInvocable": true,
+      "requiredToolRefs": [
+        "workspace.document.read",
+        "workspace.skill.read",
+        "python.execute",
+        "workspace.export.create"
+      ],
+      "enabled": true
     }
   ]
 }
