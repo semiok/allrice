@@ -7,6 +7,7 @@ import { createServer, request } from 'node:http';
 import { setTimeout as delay } from 'node:timers/promises';
 import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { createProjectPreviewGateway } from './project-preview.mjs';
@@ -29,7 +30,10 @@ async function until(predicate) {
     await delay(5);
   }
 }
-async function fixture({ browserOrigins = false } = {}) {
+async function fixture({
+  browserOrigins = false,
+  browserContent = '<div id="source">fixture-preview</div>',
+} = {}) {
   const id = randomUUID(),
     token = 'opaque-session-ticket';
   let allowed = true,
@@ -58,7 +62,7 @@ async function fixture({ browserOrigins = false } = {}) {
     ) {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end(
-        `<iframe src="http://${host}/?_allrice_preview_ticket=${token}"></iframe>`,
+        `<iframe sandbox="allow-scripts allow-same-origin allow-forms allow-downloads" src="http://${host}/?_allrice_preview_ticket=${token}"></iframe>`,
       );
     } else void gateway.request(req, res);
   });
@@ -95,9 +99,7 @@ async function fixture({ browserOrigins = false } = {}) {
               });
               await options.onFrame({
                 type: 'preview.data',
-                data: Buffer.from(
-                  '<div id="source">fixture-preview</div>',
-                ).toString('base64'),
+                data: Buffer.from(browserContent).toString('base64'),
               });
               await options.onFrame({ type: 'preview.end' });
             })().catch(() => options.onClose());
@@ -282,6 +284,55 @@ describe('private preview live transfer authority', () => {
     }
   });
 
+  it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
+    'downloads a project CSV through the real gateway CSP without exposing its parent origin',
+    async () => {
+      const f = await fixture({
+        browserOrigins: true,
+        browserContent: `<button>Export CSV</button><script>document.querySelector('button').addEventListener('click', () => { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([${JSON.stringify('id,amount\n002,55.00\n')}],{type:'text/csv'}));a.download='diff.csv';a.click();URL.revokeObjectURL(a.href) });try { parent.previewEscaped=true } catch {}</script>`,
+      });
+      const { chromium } = createRequire(
+        new URL('../../worker/package.json', import.meta.url),
+      )('playwright-core');
+      const browser = await chromium.launch({
+        headless: true,
+        ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+          ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+          : {}),
+        args: [
+          '--no-proxy-server',
+          '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
+        ],
+      });
+      try {
+        const page = await browser.newPage(),
+          errors = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        await page.goto(f.mainOrigin, { waitUntil: 'load' });
+        const frame = page.frameLocator('iframe');
+        await frame
+          .getByRole('button', { name: 'Export CSV', exact: true })
+          .waitFor();
+        const pending = page.waitForEvent('download', { timeout: 5000 });
+        await frame
+          .getByRole('button', { name: 'Export CSV', exact: true })
+          .click();
+        const download = await pending;
+        expect(await download.failure()).toBeNull();
+        expect(download.suggestedFilename()).toBe('diff.csv');
+        expect(await readFile(await download.path(), 'utf8')).toBe(
+          'id,amount\n002,55.00\n',
+        );
+        expect(
+          await page.evaluate(() => Reflect.get(globalThis, 'previewEscaped')),
+        ).toBeUndefined();
+        expect(errors).toEqual([]);
+      } finally {
+        await browser.close();
+      }
+    },
+    20000,
+  );
   it.skipIf(process.env.ALLRICE_RUN_BROWSER_INTEGRATION !== '1')(
     'embeds the authenticated preview in employee and admin origins while rejecting another same-site frame and revoked access',
     async () => {
