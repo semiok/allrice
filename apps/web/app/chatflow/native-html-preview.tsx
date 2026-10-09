@@ -78,7 +78,7 @@ export function NativeHtmlPreview({
         key={liveSrc}
         className={native.frame}
         src={liveSrc}
-        sandbox="allow-scripts allow-same-origin allow-forms"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"
         referrerPolicy="no-referrer"
         title="项目实时预览"
         data-html-preview

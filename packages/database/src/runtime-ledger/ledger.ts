@@ -60,6 +60,8 @@ import {
 } from './types.ts';
 import {
   currentProjectService,
+  projectServiceStopReason,
+  type ProjectServiceStopReason,
   applyProjectServiceSourceReceipt,
 } from '../project-services.ts';
 import { exchangeLocalServiceLocked } from '../local-service-runtime.ts';
@@ -1071,6 +1073,7 @@ export function createRuntimeOperationLedger(options: {
             >`select id from allrice_project_services where id=${row.id}`
           : [];
         let allowed = false;
+        let stopReason: ProjectServiceStopReason = 'operation_not_continuing';
         if (
           row.snapshot.status === 'running' &&
           !row.snapshot.cancelRequestId &&
@@ -1085,7 +1088,8 @@ export function createRuntimeOperationLedger(options: {
               ensureRootAdmits(root, await now(tx));
             }
             allowed = true;
-          } catch {
+          } catch (error) {
+            stopReason = projectServiceStopReason(error);
             /* A revoked/ended Run may still request a bounded stop, never more input. */
           }
         }
@@ -1095,6 +1099,7 @@ export function createRuntimeOperationLedger(options: {
           rootDeadlineAt: root.deadline_at,
           events,
           allowed,
+          stopReason,
           deliveryOnly: input.deliveryOnly === true,
           now: await now(tx),
         });

@@ -70,6 +70,13 @@ suite('DSH native document previews', () => {
     );
     server = createServer((request, response) => {
       const path = new URL(request.url!, 'http://localhost').pathname;
+      if (path === '/csv-download-fixture.html') {
+        response.setHeader('content-type', 'text/html; charset=utf-8');
+        response.end(
+          `<button>下载差异 CSV</button><script>document.querySelector('button').addEventListener('click', () => { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['id,amount\\n002,55.00\\n'],{type:'text/csv'}));a.download='diff.csv';a.click();URL.revokeObjectURL(a.href) });try { parent.previewEscaped=true } catch {}</script>`,
+        );
+        return;
+      }
       if (path === '/api/dsh-ui/excel') {
         void nativeExcelAssetResponse(
           new Request('http://fixture' + request.url, {
@@ -302,6 +309,17 @@ suite('DSH native document previews', () => {
         .frameLocator('section[aria-label="static.html"] iframe')
         .getByRole('heading')
         .waitFor();
+      // The packed frame replaces its document; wait until loading finishes before clicking.
+      await expect
+        .poll(
+          () =>
+            page
+              .frameLocator('section[aria-label="interactive.html"] iframe')
+              .locator('body')
+              .evaluate((node) => node.ownerDocument.readyState),
+          { timeout: 5000 },
+        )
+        .toBe('complete');
       await page
         .frameLocator('section[aria-label="interactive.html"] iframe')
         .getByRole('button')
@@ -316,6 +334,37 @@ suite('DSH native document previews', () => {
           .locator('script')
           .count(),
       ).toBe(0);
+      expect(
+        await page.evaluate(() => Reflect.get(window, 'previewEscaped')),
+      ).toBeUndefined();
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+  it('allows a private project to export CSV while keeping its parent origin isolated', async () => {
+    const { page, errors } = await mount([
+      {
+        name: 'CSV project',
+        preview: { kind: 'html', base64: encode('unused') },
+        liveSrc: `http://rice-preview-download.localhost:${new URL(origin).port}/csv-download-fixture.html`,
+      },
+    ]);
+    try {
+      const frame = page.frameLocator('iframe[data-project-service-preview]');
+      await frame
+        .getByRole('button', { name: '下载差异 CSV', exact: true })
+        .waitFor({ timeout: 5000 });
+      const pending = page.waitForEvent('download', { timeout: 10000 });
+      await frame
+        .getByRole('button', { name: '下载差异 CSV', exact: true })
+        .click();
+      const downloaded = await pending;
+      expect(await downloaded.failure()).toBeNull();
+      expect(downloaded.suggestedFilename()).toBe('diff.csv');
+      const path = await downloaded.path();
+      expect(path).toBeTruthy();
+      expect(await readFile(path!, 'utf8')).toBe('id,amount\n002,55.00\n');
       expect(
         await page.evaluate(() => Reflect.get(window, 'previewEscaped')),
       ).toBeUndefined();

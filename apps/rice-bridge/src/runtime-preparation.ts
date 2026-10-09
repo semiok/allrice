@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import {
   BrowserProfileSchema,
+  RuntimeLocalCommandProfileSchema,
+  runtimeContractEqual,
   type BridgeEnvironment,
 } from '@allrice/contracts';
 import { configPath, type BridgeConfig } from './config.js';
@@ -17,6 +19,69 @@ import type { LocalCommandRunner } from './local-command-runner.js';
 import { bridgeVersion } from './version.js';
 import type { ManagedPythonSandbox } from './managed-python-sandbox.js';
 import { fileGuardianReady } from './file-guardian-resources.js';
+import { BridgeClientError } from './client.js';
+
+/** Keep the physical preflight and the authenticated profile report explicit.
+ * The report never changes the server's bounded freshness or grant checks. */
+export async function prepareAndReportLocalCommand<
+  Profile extends object,
+>(input: {
+  signal: AbortSignal;
+  prepare(): Promise<Profile>;
+  report(profile: Profile): Promise<unknown>;
+}): Promise<{
+  profile: Profile;
+  reportFailed: boolean;
+}> {
+  const profile = await input.prepare();
+  input.signal.throwIfAborted();
+  try {
+    const response = await input.report(profile);
+    const acknowledged = RuntimeLocalCommandProfileSchema.safeParse(
+      response && typeof response === 'object' && 'profile' in response
+        ? response.profile
+        : undefined,
+    );
+    const submitted = RuntimeLocalCommandProfileSchema.parse({
+      contractVersion: 1,
+      ...profile,
+      available: true,
+    });
+    if (
+      !acknowledged.success ||
+      !runtimeContractEqual(acknowledged.data, submitted)
+    )
+      throw new BridgeClientError('LOCAL_COMMAND_PROFILE_ACK_INVALID', 409);
+  } catch (error) {
+    input.signal.throwIfAborted();
+    // Only bounded transport failures are recoverable. Authentication, invalid
+    // responses and physical preflight failures keep the existing closed path.
+    const transient =
+      (error instanceof BridgeClientError &&
+        [500, 502, 503, 504].includes(error.status)) ||
+      (error instanceof TypeError &&
+        error.message === 'fetch failed' &&
+        error.cause instanceof Error &&
+        'code' in error.cause &&
+        [
+          'ECONNREFUSED',
+          'ECONNRESET',
+          'EPIPE',
+          'ETIMEDOUT',
+          'EAI_AGAIN',
+          'ENOTFOUND',
+          'UND_ERR_SOCKET',
+          'UND_ERR_CONNECT_TIMEOUT',
+          'UND_ERR_HEADERS_TIMEOUT',
+          'UND_ERR_BODY_TIMEOUT',
+        ].includes(String(error.cause.code))) ||
+      (error instanceof DOMException && error.name === 'TimeoutError');
+    if (!transient) throw error;
+    return { profile, reportFailed: true };
+  }
+  input.signal.throwIfAborted();
+  return { profile, reportFailed: false };
+}
 
 export function sandboxLaunchEnvironment(binary: string): NodeJS.ProcessEnv {
   return {
