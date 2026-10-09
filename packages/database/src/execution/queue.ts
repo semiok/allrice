@@ -1,3 +1,6 @@
+import type { ResourcePrincipal } from '../resource-principal.ts';
+import { assertMaintenanceGrant } from '../platform-maintenance-authority.ts';
+import { resolvePlatformPreviewContext } from '../platform-employees/preview-context.ts';
 import { acquireDevAdmission, devAdmissionOpen } from '../dev-maintenance.ts';
 import {
   RepositoryMergeBindingSchema,
@@ -110,6 +113,7 @@ import {
 import { prepareChangesetAction } from '../changeset-service.ts';
 import {
   RepairBindingSchema,
+  admitPlatformRepairBinding,
   bindPlatformRepairTask,
   assertExistingRepairBinding,
   type RepairBinding,
@@ -161,7 +165,7 @@ export class QueueError extends Error {
   }
 }
 
-function requireUser(context: RequestContext) {
+function requireUser(context: ResourcePrincipal) {
   if (context.actor.type !== 'user') {
     throw new DataAccessError('authentication_required');
   }
@@ -169,7 +173,7 @@ function requireUser(context: RequestContext) {
 }
 
 async function requireExecutionMembership(
-  context: RequestContext,
+  context: ResourcePrincipal,
   workspaceId: string,
 ) {
   const userId = requireUser(context);
@@ -324,58 +328,133 @@ function authorizeRun(context: RequestContext, row: RunRow) {
   if (!decision.allowed) throw new QueueError('not_found');
 }
 
+type EnqueueOptions = {
+  repositoryMergeBinding?: RepositoryMergeBinding;
+  repositoryBinding?: RepositoryActionBinding;
+  repositoryReviewBinding?: RepositoryReviewBinding;
+  technicalBinding?: TechnicalTaskBinding;
+  qualityBinding?: QualityBinding;
+  repairBinding?: RepairBinding;
+  folderEventId?: string;
+  skillBinding?: {
+    installationId: string;
+    skillVersionId: string;
+    providerSnapshot: Record<string, unknown>;
+  };
+  employeeBinding?: {
+    employeeAssignmentId: string;
+    employeeVersionId: string;
+    sessionId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    providerSnapshot: Record<string, unknown>;
+    skillVersionIds: string[];
+    skillBindings: unknown[];
+    nativeSkills: unknown[];
+    promptSnapshot: Record<string, unknown>;
+    executionSnapshot: Omit<
+      Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
+      'tenantContext' | 'createdAt'
+    >;
+  };
+  conversationDelivery?: {
+    sessionId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    clientUserMessageId: string;
+    message: string;
+    requestedMode: 'auto' | 'steer' | 'follow_up';
+    expectedTurnId?: string;
+    expectedGeneration?: number;
+    hasAttachments: boolean;
+  };
+  reviewContinuation?: ReviewContinuationInput;
+  changesetAction?: ChangesetActionInput;
+  workflowBinding?: {
+    employeeId: string;
+    workflowRevisionId: string;
+    sessionId: string | null;
+  };
+};
+type RunAdmission =
+  | { kind: 'browser'; context: RequestContext }
+  | { kind: 'maintenance_repair'; context: ResourcePrincipal };
 export async function enqueueRun(
   context: RequestContext,
   input: unknown,
-  options: {
-    repositoryMergeBinding?: RepositoryMergeBinding;
-    repositoryBinding?: RepositoryActionBinding;
-    repositoryReviewBinding?: RepositoryReviewBinding;
-    technicalBinding?: TechnicalTaskBinding;
-    qualityBinding?: QualityBinding;
-    repairBinding?: RepairBinding;
-    folderEventId?: string;
-    skillBinding?: {
-      installationId: string;
-      skillVersionId: string;
-      providerSnapshot: Record<string, unknown>;
-    };
-    employeeBinding?: {
-      employeeAssignmentId: string;
-      employeeVersionId: string;
-      sessionId: string;
-      userMessageId: string;
-      assistantMessageId: string;
-      providerSnapshot: Record<string, unknown>;
-      skillVersionIds: string[];
-      skillBindings: unknown[];
-      nativeSkills: unknown[];
-      promptSnapshot: Record<string, unknown>;
-      executionSnapshot: Omit<
-        Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>,
-        'tenantContext' | 'createdAt'
-      >;
-    };
-    conversationDelivery?: {
-      sessionId: string;
-      userMessageId: string;
-      assistantMessageId: string;
-      clientUserMessageId: string;
-      message: string;
-      requestedMode: 'auto' | 'steer' | 'follow_up';
-      expectedTurnId?: string;
-      expectedGeneration?: number;
-      hasAttachments: boolean;
-    };
-    reviewContinuation?: ReviewContinuationInput;
-    changesetAction?: ChangesetActionInput;
-    workflowBinding?: {
-      employeeId: string;
-      workflowRevisionId: string;
-      sessionId: string | null;
-    };
-  } = {},
+  options: EnqueueOptions = {},
 ) {
+  if (options.repairBinding?.frozen.version === 2)
+    throw new QueueError('policy_denied');
+  return enqueueRunCore({ kind: 'browser', context }, input, options);
+}
+/** Server-only lane. Scope is reconstructed from the persisted grant, never
+ * from a browser/model principal, and revalidated inside the enqueue Tx. */
+export async function enqueueMaintenanceRepairRun(
+  grantId: string,
+  input: unknown,
+  options: Required<
+    Pick<
+      EnqueueOptions,
+      'employeeBinding' | 'repairBinding' | 'conversationDelivery'
+    >
+  >,
+) {
+  const b = RepairBindingSchema.parse(options.repairBinding);
+  if (
+    b.frozen.version !== 2 ||
+    b.frozen.maintenance.grantId !== grantId ||
+    Object.keys(options).some(
+      (k) =>
+        !['employeeBinding', 'repairBinding', 'conversationDelivery'].includes(
+          k,
+        ),
+    )
+  )
+    throw new QueueError('policy_denied');
+  const principal = await getDatabase().begin(async (tx) => {
+    const [g] =
+      await tx`select issuer_id from allrice_platform_maintenance_grants where id=${UuidSchema.parse(grantId)}`;
+    if (!g) throw new DataAccessError('not_found');
+    await assertMaintenanceGrant(tx, grantId, g.issuer_id);
+    const { context: c } = await resolvePlatformPreviewContext(
+      tx,
+      { environment: 'platform', workspaceId: null, ownerId: g.issuer_id },
+      g.issuer_id,
+    );
+    return {
+      requestId: b.frozen.requestId,
+      actor: { type: 'user' as const, id: g.issuer_id as string },
+      organizationId: c.organization_id,
+      workspaceId: c.workspace_id,
+      memberships: [
+        {
+          id: c.membership_id,
+          organizationId: c.organization_id,
+          workspaceId: c.workspace_id,
+          userId: g.issuer_id as string,
+          role: c.role,
+          active: true,
+        },
+      ],
+    };
+  });
+  return enqueueRunCore(
+    { kind: 'maintenance_repair', context: principal },
+    input,
+    options,
+  );
+}
+async function enqueueRunCore(
+  admission: RunAdmission,
+  input: unknown,
+  options: EnqueueOptions,
+) {
+  const context = admission.context;
+  const browserContext = () => {
+    if (admission.kind !== 'browser') throw new QueueError('policy_denied');
+    return admission.context;
+  };
   const submission = CreateRunInputSchema.parse(input);
   // A browser, model or ordinary privileged caller cannot turn a generic Run
   // into host authority. The future supervisor uses a separately bound lane.
@@ -539,6 +618,12 @@ export async function enqueueRun(
         );
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
+    if (admission.kind === 'maintenance_repair') {
+      // Serialize before taking issuer/grant/attempt locks. In particular a
+      // second start must never hold issuer SHARE while awaiting this mutex.
+      await transaction`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
+      await transaction`select id from allrice_users where id=${ownerId} for update`;
+    }
     await acquireDevAdmission(transaction);
     await transaction`
       select pg_advisory_xact_lock(
@@ -578,7 +663,7 @@ export async function enqueueRun(
       if (options.qualityBinding)
         await assertExistingPlatformQualityBinding(
           transaction,
-          { ...context, workspaceId },
+          { ...browserContext(), workspaceId },
           existing[0].run_id,
           options.qualityBinding,
         );
@@ -592,21 +677,21 @@ export async function enqueueRun(
       if (options.repositoryMergeBinding)
         await assertExistingRepositoryMerge(
           transaction,
-          { ...context, workspaceId },
+          { ...browserContext(), workspaceId },
           existing[0].run_id,
           options.repositoryMergeBinding,
         );
       if (options.repositoryBinding)
         await assertExistingRepositoryAction(
           transaction,
-          { ...context, workspaceId },
+          { ...browserContext(), workspaceId },
           existing[0].run_id,
           options.repositoryBinding,
         );
       if (options.repositoryReviewBinding)
         await assertExistingRepositoryReviewBinding(
           transaction,
-          { ...context, workspaceId },
+          { ...browserContext(), workspaceId },
           existing[0].run_id,
           options.repositoryReviewBinding,
         );
@@ -630,21 +715,44 @@ export async function enqueueRun(
       await assertFolderTriggerMessage(
         transaction,
         options.folderEventId,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         binding.sessionId,
         options.conversationDelivery.clientUserMessageId,
         attachments.map((a) => a.object_id),
       );
     }
     if (options.employeeBinding) {
-      await admitQualityEnqueue(
-        transaction,
-        { ...context, workspaceId },
-        options.employeeBinding.employeeAssignmentId,
-        options.qualityBinding,
-        options.repairBinding,
-        options.repositoryReviewBinding,
-      );
+      if (admission.kind === 'maintenance_repair') {
+        if (
+          !options.repairBinding ||
+          options.repairBinding.frozen.version !== 2
+        )
+          throw new QueueError('policy_denied');
+        await admitPlatformRepairBinding(
+          transaction,
+          { ...context, workspaceId },
+          options.employeeBinding.employeeAssignmentId,
+          options.repairBinding,
+        );
+        const grant = await assertMaintenanceGrant(
+          transaction,
+          options.repairBinding.frozen.maintenance.grantId,
+          ownerId,
+        );
+        if (taskPolicy?.authorizationExpiresAt !== grant.frozen.expiresAt)
+          throw new QueueError('policy_denied');
+        timeoutAt = new Date(
+          Math.min(timeoutAt.getTime(), Date.parse(grant.frozen.expiresAt)),
+        );
+      } else
+        await admitQualityEnqueue(
+          transaction,
+          { ...admission.context, workspaceId },
+          options.employeeBinding.employeeAssignmentId,
+          options.qualityBinding,
+          options.repairBinding,
+          options.repositoryReviewBinding,
+        );
       const { assertWorkbenchSession } = await import('../artifact-review.ts');
       await assertWorkbenchSession(
         transaction,
@@ -662,7 +770,7 @@ export async function enqueueRun(
       const action = options.changesetAction;
       await prepareChangesetAction(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         options.conversationDelivery.sessionId,
         action,
       );
@@ -674,7 +782,7 @@ export async function enqueueRun(
     if (options.reviewContinuation && options.conversationDelivery) {
       await prepareReviewContinuation(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         options.conversationDelivery.sessionId,
         options.reviewContinuation,
       );
@@ -868,7 +976,7 @@ export async function enqueueRun(
       ) values (
         ${context.organizationId}, ${workspaceId}, ${ownerId}, ${run.id}, 'queued',
         ${submission.idempotencyKey}, ${submission.priority},
-        ${submission.maxAttempts}, ${availableAt}, ${taskPolicy ? unboundedTaskDeadline : timeoutAt},
+        ${submission.maxAttempts}, ${availableAt}, ${taskPolicy && admission.kind !== 'maintenance_repair' ? unboundedTaskDeadline : timeoutAt},
         ${transaction.json(toJsonValue(payload))}
       )
       returning id
@@ -878,7 +986,7 @@ export async function enqueueRun(
     if (options.repositoryMergeBinding) {
       await bindRepositoryMerge(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         run.id,
         job.id,
         options.repositoryMergeBinding,
@@ -892,7 +1000,7 @@ export async function enqueueRun(
     if (options.repositoryBinding) {
       await bindRepositoryAction(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         run.id,
         job.id,
         options.repositoryBinding,
@@ -906,7 +1014,7 @@ export async function enqueueRun(
     if (options.technicalBinding) {
       await bindPlatformTechnicalTask(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         run.id,
         job.id,
         options.technicalBinding,
@@ -1030,7 +1138,7 @@ export async function enqueueRun(
     if (options.qualityBinding && options.employeeBinding) {
       await bindPlatformQualityCheck(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         run.id,
         job.id,
         options.employeeBinding.sessionId,
@@ -1049,7 +1157,7 @@ export async function enqueueRun(
     if (options.repositoryReviewBinding && options.employeeBinding)
       await bindRepositoryReview(
         transaction,
-        { ...context, workspaceId },
+        { ...browserContext(), workspaceId },
         run.id,
         job.id,
         options.employeeBinding.sessionId,
@@ -1090,8 +1198,19 @@ export async function enqueueRun(
     });
     return { runId: run.id, created: true, delivery, activeRunId };
   });
+  const row =
+    admission.kind === 'maintenance_repair'
+      ? await selectRunJob(context.organizationId, workspaceId, result.runId)
+      : null;
+  if (
+    admission.kind === 'maintenance_repair' &&
+    (!row || row.owner_id !== ownerId)
+  )
+    throw new QueueError('not_found');
   return {
-    run: await getRun(context, workspaceId, result.runId),
+    run: row
+      ? mapRunSnapshot(row)
+      : await getRun(browserContext(), workspaceId, result.runId),
     created: result.created,
     delivery: result.delivery,
     activeRunId: result.activeRunId,

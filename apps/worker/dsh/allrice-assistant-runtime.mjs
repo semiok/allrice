@@ -58,7 +58,7 @@ function failureCode(value) {
 
 // Text/reasoning framing alone is not output. Keep tool identities, full end
 // blocks and malformed/unknown content conservative, even without deltas.
-function hasModelOutput(chunk) {
+export function hasModelOutput(chunk) {
   if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')
     return typeof chunk.text !== 'string' || chunk.text.length > 0;
   if (chunk.type === 'tool-call-delta') return true;

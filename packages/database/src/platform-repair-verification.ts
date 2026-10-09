@@ -10,6 +10,7 @@ import { DataAccessError } from './data.ts';
 import { QueueError } from './execution/queue.ts';
 import { cloudStableId } from './cloud-execution.ts';
 import {
+  RepairFrozenSchema,
   hasRepairMarker,
   repairSchemaAvailable,
   assertPlatformRepairLease,
@@ -22,6 +23,8 @@ import {
   repositorySourceLimits,
   compiledRepairLimits,
   compiledRepairProfileId,
+  maintenanceCompiledProfileId,
+  isCompiledRepositoryExecution,
 } from './platform-repair-contracts.ts';
 import { repairProfileId } from './platform-repair-contracts.ts';
 import { readPlatformRepairSource } from './platform-repair.ts';
@@ -61,6 +64,15 @@ export async function preparePlatformRepairVerification(
       id: source.task.input_object_id,
       checksum: source.source.baseline.archiveChecksum,
     },
+    ...(source.task.frozen.version === 2
+      ? {
+          maintenance: {
+            verificationPlan: source.task.frozen.maintenance.verificationPlan,
+            verificationPlanDigest:
+              source.task.frozen.maintenance.verificationPlanDigest,
+          },
+        }
+      : {}),
     ...(source.task.frozen.verificationMode === 'compiled_packages'
       ? {
           compiled: {
@@ -89,11 +101,26 @@ export async function preparePlatformRepairVerification(
     );
   const proof = RepositoryExecutionProofSchema.parse({
     version:
-      source.task.frozen.verificationMode === 'compiled_packages' ? 2 : 1,
+      source.task.frozen.version === 2
+        ? 3
+        : source.task.frozen.verificationMode === 'compiled_packages'
+          ? 2
+          : 1,
     profileId:
-      source.task.frozen.verificationMode === 'compiled_packages'
-        ? compiledRepairProfileId
-        : repairProfileId,
+      source.task.frozen.version === 2
+        ? maintenanceCompiledProfileId
+        : source.task.frozen.verificationMode === 'compiled_packages'
+          ? compiledRepairProfileId
+          : repairProfileId,
+    ...(source.task.frozen.version === 2
+      ? {
+          verificationPlanDigest:
+            source.task.frozen.maintenance.verificationPlanDigest,
+          manifestDigest: technicalDigest(
+            source.task.frozen.maintenance.verificationPlan.approvedFiles,
+          ),
+        }
+      : {}),
     commandDigest: repositoryDigest(JSON.stringify(command)),
     baselineId: source.source.baseline.id,
     candidateChecksum,
@@ -200,6 +227,7 @@ export async function resolvePlatformRepositoryExecutionProofTx(
   if (!v || !v.input_object_id)
     throw new DataAccessError('authorization_denied');
   const candidate = RepositoryCandidateSchema.parse(v.candidate);
+  const frozen = RepairFrozenSchema.parse(v.frozen);
   const expected = CloudCommandSchema.parse({
     capability: 'cloud.process.execute',
     arguments: repositoryVerificationCommand({
@@ -209,6 +237,14 @@ export async function resolvePlatformRepositoryExecutionProofTx(
         id: v.input_object_id,
         checksum: v.frozen.baseline.archiveChecksum,
       },
+      ...(frozen.version === 2
+        ? {
+            maintenance: {
+              verificationPlan: frozen.maintenance.verificationPlan,
+              verificationPlanDigest: frozen.maintenance.verificationPlanDigest,
+            },
+          }
+        : {}),
       ...(v.frozen.verificationMode === 'compiled_packages'
         ? {
             compiled: {
@@ -235,8 +271,12 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     proof.baselineId !== v.frozen.baselineId ||
     proof.candidateChecksum !== candidate.checksum ||
     proof.version !==
-      (v.frozen.verificationMode === 'compiled_packages' ? 2 : 1) ||
-    (proof.version === 2 &&
+      (frozen.version === 2
+        ? 3
+        : v.frozen.verificationMode === 'compiled_packages'
+          ? 2
+          : 1) ||
+    (isCompiledRepositoryExecution(proof) &&
       (proof.dependencyChecksum !==
         v.frozen.baseline.compiledDependencies?.bundleChecksum ||
         proof.planDigest !==
@@ -244,6 +284,14 @@ export async function resolvePlatformRepositoryExecutionProofTx(
         proof.timeoutMs !== v.frozen.baseline.compiledDependencies?.timeoutMs ||
         proof.memoryMiB !==
           v.frozen.baseline.compiledDependencies?.memoryMiB)) ||
+    (frozen.version === 2 &&
+      (proof.version !== 3 ||
+        proof.verificationPlanDigest !==
+          frozen.maintenance.verificationPlanDigest ||
+        proof.manifestDigest !==
+          technicalDigest(
+            frozen.maintenance.verificationPlan.approvedFiles,
+          ))) ||
     scope.operationId !==
       cloudStableId(
         'cloud-command:' + scope.runId + ':repair-verify:' + candidate.revision,
@@ -328,13 +376,20 @@ export async function recordPlatformRepairVerification(
       source.task.frozen.verificationMode === 'compiled_packages'
         ? source.task.frozen.baseline.compiledDependencies
         : undefined,
+      source.task.frozen.version === 2
+        ? {
+            verificationPlan: source.task.frozen.maintenance.verificationPlan,
+            verificationPlanDigest:
+              source.task.frozen.maintenance.verificationPlanDigest,
+          }
+        : undefined,
     );
     if (
       report.exitCode !== v.outcome.exitCode ||
       !['failed', 'succeeded'].includes(v.runtime_status) ||
       (report.exitCode === 0) !== (v.runtime_status === 'succeeded') ||
       (report.failureKind === 'harness_error' && report.version === 1) ||
-      (report.version === 2 &&
+      (report.version !== 1 &&
         (v.outcome.repositoryIsolation?.compilerUid !== 1002 ||
           v.outcome.repositoryIsolation?.tmpfsMiB !== 128 ||
           v.outcome.repositoryIsolation?.inputLimit !== 23000000 ||

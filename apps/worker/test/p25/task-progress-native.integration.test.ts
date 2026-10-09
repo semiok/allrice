@@ -15,6 +15,97 @@ import {
 import { p24Fixture } from '../p24/fixture.js';
 
 describe('MET153 actual native progress wire', () => {
+  it('carries a maintenance reservation through the actual native provider wire and settles each call', async () => {
+    const model = await p24Fixture(async (_request, index) => ({
+      ...(index < 3
+        ? { nativeTool: { name: 'local_fs_list', arguments: { path: '.' } } }
+        : { text: 'Bounded synthetic final.' }),
+      usage: {
+        prompt_tokens: 100,
+        completion_tokens: 1200,
+        total_tokens: 1300,
+      },
+    }));
+    const client = new DshProtocolClient({
+      command: process.execPath,
+      args: [
+        resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
+      ],
+      cwd: model.root,
+      requestTimeoutMs: 15000,
+      environment: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        ALLRICE_PROGRESS_GUARD_ENABLED: '1',
+        ALLRICE_MAINTENANCE_OUTPUT_TOKENS: '3000',
+        DSH_CORDIS_CONFIG: resolve(
+          import.meta.dirname,
+          '../../dsh/allrice-restricted.cordis.yml',
+        ),
+        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+        DSH_SESSION_ROOT: join(model.root, 'sessions'),
+        DSH_HOME: model.root,
+        DSH_CWD: model.root,
+        DSH_CREDENTIALS_PATH: join(model.root, 'credentials.yaml'),
+        DSH_MODEL: 'native-maintenance-budget',
+        DSH_CODEX_MODEL: 'gpt-5.6-luna',
+        DSH_OPENAI_COMPATIBLE_MODEL: 'native-maintenance-budget',
+        OPENAI_COMPATIBLE_API_KEY: 'synthetic-only',
+        OPENAI_COMPATIBLE_BASE_URL: model.baseUrl,
+      },
+    });
+    const notices: DshNotification[] = [],
+      starts: Record<string, unknown>[] = [],
+      receipts: Record<string, unknown>[] = [];
+    client.subscribe((n) => notices.push(n));
+    let remaining = 3000;
+    client.setRequestHandler(async (method, p) => {
+      expect(method).toBe('allrice/progress');
+      if (p.action === 'model_prepare') {
+        expect(remaining).toBeGreaterThan(0);
+        return {
+          prepared: true,
+          outputTokens: Math.min(Number(p.requestedOutputTokens), remaining),
+        };
+      }
+      if (p.action === 'start' && p.kind === 'model') starts.push(p);
+      if (p.action === 'finish' && p.kind === 'model') {
+        receipts.push(p);
+        remaining -= Number(p.outputTokens);
+      }
+      return { paused: false };
+    });
+    try {
+      await client.initialize({
+        cwd: model.root,
+        provider: 'openai-compatible',
+        model: 'native-maintenance-budget',
+        nativeTools: ['local.fs.list'],
+        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        requireTaskProgress: true,
+      });
+      const session = `maintenance-budget-${randomUUID()}`;
+      await client.prompt(session, 'Synthetic call budget wire.');
+      await expect.poll(() => receipts.length, { timeout: 15000 }).toBe(3);
+      expect(starts.map((s) => s.outputTokens)).toEqual([3000, 1800, 600]);
+      expect(receipts.map((r) => r.outputTokens)).toEqual([1200, 1200, 1200]);
+      expect(remaining).toBe(-600); // Actual overrun preserved, not clamped.
+      expect(
+        starts.every((s) =>
+          /^sha256:[a-f0-9]{64}$/.test(String(s.requestDigest)),
+        ),
+      ).toBe(true);
+      expect(
+        model.requests.map((r) => {
+          const wire = r as unknown as Record<string, unknown>;
+          return wire.max_tokens ?? wire.max_completion_tokens;
+        }),
+      ).toEqual([3000, 1800, 600]);
+    } finally {
+      await client.close();
+      await model.close();
+    }
+  }, 45000);
+
   it.each(['continue', 'cancel'] as const)(
     'pauses after actual repeated tool errors and handles %s',
     async (decision) => {

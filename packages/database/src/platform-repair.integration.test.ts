@@ -388,6 +388,8 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     const q = await submit(),
       lease = await start(q),
       e = await getPlatformRepairExecution(lease);
+    expect(e.frozen.version).toBe(1);
+    if (e.frozen.version !== 1) throw Error('legacy_fixture_expected');
     expect(e.frozen.loginSessionId).toBe(admin.sessionId);
     expect(e.frozen.baselineId).toBe(baseline.id);
     await expect(

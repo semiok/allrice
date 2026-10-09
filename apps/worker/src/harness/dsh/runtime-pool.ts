@@ -315,6 +315,14 @@ export class DshRuntimePool {
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
       ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
       ...(input.input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
+      ...(input.input.progress &&
+      input.input.executionEnvironment.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
+        ? {
+            ALLRICE_MAINTENANCE_OUTPUT_TOKENS:
+              input.input.executionEnvironment
+                .ALLRICE_MAINTENANCE_OUTPUT_TOKENS,
+          }
+        : {}),
     };
     if (input.snapshot.route === 'openai-codex') {
       // The DSH credential service resolves and refreshes the platform OAuth

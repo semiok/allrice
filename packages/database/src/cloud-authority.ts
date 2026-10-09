@@ -1,3 +1,4 @@
+import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { createHash } from 'node:crypto';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import {
@@ -116,7 +117,7 @@ export function cloudCommandBinding(
       imageDigest: payload.imageDigest,
     }),
     budgetDigest: digest(
-      repositoryProof?.version === 2
+      isCompiledRepositoryExecution(repositoryProof)
         ? {
             ...payload.arguments.limits,
             timeoutMs: repositoryProof.timeoutMs,

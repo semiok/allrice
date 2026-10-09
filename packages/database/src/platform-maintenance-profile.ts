@@ -4,19 +4,19 @@ import { technicalDigest } from './platform-technical-tasks.ts';
 import {
   repairAssertionCases,
   repositoryHarness,
-} from './platform-repair-profile.ts';
+} from './platform-repair-oracle.ts';
 import {
   compiledRepositoryHarness,
   compiledRepairChildHarness,
 } from './platform-repair-compiled-profile.ts';
 import { MaintenanceRepairPlanSchema } from './platform-maintenance-authority-contracts.ts';
 import {
+  maintenanceCompiledProfileId,
   repairProductPath,
   type RepositoryBaseline,
   type RepositoryArchive,
 } from './platform-repair-contracts.ts';
-export const maintenanceCompiledProfileId =
-  'allrice.maintenance.compiled.v1' as const;
+export { maintenanceCompiledProfileId } from './platform-repair-contracts.ts';
 /** Same immutable parent/compiler/child isolation, with an explicit approved
  * source manifest instead of a regex-replacement slot. Assertions never enter
  * the candidate's write set. This registered profile covers one pure module. */

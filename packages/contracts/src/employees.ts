@@ -531,6 +531,8 @@ export const EmployeeExecutionSnapshotV2Schema =
     taskRuntimePolicy: z
       .object({
         version: z.literal(1),
+        // An independent server authorization expiry never pauses with a task.
+        authorizationExpiresAt: TimestampSchema.optional(),
         timeoutMs: z.union([
           z.literal(0),
           z.number().int().min(1_000).max(86_400_000),

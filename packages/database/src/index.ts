@@ -172,3 +172,6 @@ export * from './platform-maintenance-source.ts';
 
 export * from './platform-maintenance-authority.ts';
 export * from './platform-maintenance-profile.ts';
+
+export { startMaintenanceRepairGrant } from './platform-maintenance-repair.ts';
+export { platformMaintenanceRepairInstructions } from './platform-repair.ts';

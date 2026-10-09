@@ -8,6 +8,7 @@ export const unboundedTaskDeadline = new Date('9999-01-01T00:00:00.000Z');
 
 export interface TaskRuntimePolicy {
   version: 1;
+  authorizationExpiresAt?: string;
   timeoutMs: number;
   sources: { scope: string; scopeId: string; timeoutMs: number }[];
 }

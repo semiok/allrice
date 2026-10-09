@@ -23,6 +23,8 @@ export const repositorySourceLimits = Object.freeze({
   archiveBytes: 12_000_000,
   jsonBytes: 48_000_000,
 });
+export const maintenanceCompiledProfileId =
+  'allrice.maintenance.compiled.v1' as const;
 export const repairProfileId = 'allrice.output-redaction.v1' as const;
 export const repairProductPath =
   'packages/project-runtime/src/command-output.ts';
@@ -144,6 +146,14 @@ export const RepositoryVerificationSchema = z.discriminatedUnion('version', [
     dependencyMode: z.literal('pnpm_frozen_two_packages'),
     compiled: CompiledRepositoryEvidenceSchema,
   }).strict(),
+  RepositoryVerificationFields.extend({
+    version: z.literal(3),
+    profileId: z.literal(maintenanceCompiledProfileId),
+    dependencyMode: z.literal('pnpm_frozen_two_packages'),
+    compiled: CompiledRepositoryEvidenceSchema,
+    verificationPlanDigest: ChecksumSchema,
+    manifestDigest: ChecksumSchema,
+  }).strict(),
 ]);
 export type RepositoryVerification = z.infer<
   typeof RepositoryVerificationSchema
@@ -173,10 +183,28 @@ export const RepositoryExecutionProofSchema = z.discriminatedUnion('version', [
     timeoutMs: CompiledVerificationTimeoutSchema,
     memoryMiB: z.literal(768),
   }).strict(),
+  RepositoryExecutionProofFields.extend({
+    version: z.literal(3),
+    profileId: z.literal(maintenanceCompiledProfileId),
+    inputLimit: z.literal(compiledRepairLimits.inputBytes),
+    tmpfsMiB: z.literal(compiledRepairLimits.tmpfsMiB),
+    dependencyChecksum: ChecksumSchema,
+    planDigest: ChecksumSchema,
+    timeoutMs: CompiledVerificationTimeoutSchema,
+    memoryMiB: z.literal(768),
+    verificationPlanDigest: ChecksumSchema,
+    manifestDigest: ChecksumSchema,
+  }).strict(),
 ]);
 export type RepositoryExecutionProof = z.infer<
   typeof RepositoryExecutionProofSchema
 >;
+
+export function isCompiledRepositoryExecution(
+  proof: RepositoryExecutionProof | undefined,
+): proof is Extract<RepositoryExecutionProof, { version: 2 | 3 }> {
+  return !!proof && proof.version !== 1;
+}
 
 export const CreateRepairTaskSchema = z
   .object({
@@ -242,8 +270,8 @@ export const RepairReportSchema = z
       r.after.report.exitCode === 0 &&
       r.after.report.candidateChecksum === r.candidateChecksum &&
       r.before.report.version === r.after.report.version &&
-      (r.before.report.version !== 2 ||
-        (r.after.report.version === 2 &&
+      (r.before.report.version === 1 ||
+        (r.after.report.version !== 1 &&
           r.before.report.compiled.planDigest ===
             r.after.report.compiled.planDigest &&
           r.before.report.compiled.dependencyBundleChecksum ===
@@ -260,6 +288,11 @@ export const RepairReportSchema = z
               !s.signal &&
               !s.outputTruncated,
           ))) &&
+      (r.before.report.version !== 3 ||
+        (r.after.report.version === 3 &&
+          r.before.report.verificationPlanDigest ===
+            r.after.report.verificationPlanDigest &&
+          r.before.report.manifestDigest === r.after.report.manifestDigest)) &&
       r.artifacts.some((a) => a.kind === 'candidate') &&
       r.artifacts.some((a) => a.kind === 'report'),
     'Repair completion requires actual before/after verification for the candidate',

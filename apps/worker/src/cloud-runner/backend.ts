@@ -40,6 +40,7 @@ import {
 import type { ExecutionDiagnosticEvent } from '@allrice/database';
 import {
   RepositoryExecutionProofSchema,
+  isCompiledRepositoryExecution,
   compiledRepairLimits,
   compiledRepairProfileId,
   CompiledVerificationTimeoutSchema,
@@ -966,9 +967,10 @@ export class CloudRunnerBackend {
         command.arguments.limits.outputBytes !== 16_384 ||
         command.arguments.limits.artifactBytes !== 16_384 ||
         command.arguments.limits.cpuMillis !== 1000 ||
-        command.arguments.inputs.length !== (proof.version === 2 ? 2 : 1) ||
+        command.arguments.inputs.length !==
+          (isCompiledRepositoryExecution(proof) ? 2 : 1) ||
         command.arguments.inputs[0]?.path !== 'repository.json.gz' ||
-        (proof.version === 2 &&
+        (isCompiledRepositoryExecution(proof) &&
           (command.arguments.inputs[1]?.path !== 'dependencies.json.gz' ||
             command.arguments.inputs[1]?.checksum !== proof.dependencyChecksum))
       )
@@ -1103,10 +1105,9 @@ export class CloudRunnerBackend {
   ): Promise<CloudRunResult> {
     return this.executeWithSlot(
       {
-        memoryMiB:
-          options.repositoryExecution?.version === 2
-            ? options.repositoryExecution.memoryMiB
-            : args.limits.memoryMiB,
+        memoryMiB: isCompiledRepositoryExecution(options.repositoryExecution)
+          ? options.repositoryExecution.memoryMiB
+          : args.limits.memoryMiB,
       },
       imageDigest,
       options,
@@ -1555,7 +1556,7 @@ export class CloudRunnerBackend {
     if (!uuid.test(attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
     await this.preflight(imageDigest);
-    if (options.repositoryExecution?.version === 2) {
+    if (isCompiledRepositoryExecution(options.repositoryExecution)) {
       const { stdout } = await attestWatchdog();
       const guard = JSON.parse(stdout).repositoryCompiled;
       if (
@@ -1592,7 +1593,7 @@ export class CloudRunnerBackend {
     const deadline = Math.min(
       Date.parse(options.deadlineAt),
       Date.now() +
-        (options.repositoryExecution?.version === 2
+        (isCompiledRepositoryExecution(options.repositoryExecution)
           ? options.repositoryExecution.timeoutMs
           : command.arguments.limits.timeoutMs),
     );
@@ -1612,7 +1613,7 @@ export class CloudRunnerBackend {
         ...(options.repositoryExecution
           ? {
               repositoryIsolation: true,
-              ...(options.repositoryExecution.version === 2
+              ...(isCompiledRepositoryExecution(options.repositoryExecution)
                 ? { repositoryGc: true }
                 : {}),
             }
@@ -1631,12 +1632,12 @@ export class CloudRunnerBackend {
           Image: imageDigest,
           Entrypoint: ['/usr/local/bin/node'],
           Cmd: [
-            ...(options.repositoryExecution?.version === 2
+            ...(isCompiledRepositoryExecution(options.repositoryExecution)
               ? ['--expose-gc']
               : []),
             '--input-type=module',
             '--eval',
-            options.repositoryExecution?.version === 2
+            isCompiledRepositoryExecution(options.repositoryExecution)
               ? repositoryCompiledSupervisor
               : cloudSupervisor,
           ],
@@ -1653,7 +1654,7 @@ export class CloudRunnerBackend {
                   'xyz.bplabs.allrice.cloud.kind': 'repository',
                   'xyz.bplabs.allrice.repository.command':
                     options.repositoryExecution.commandDigest,
-                  ...(options.repositoryExecution.version === 2
+                  ...(isCompiledRepositoryExecution(options.repositoryExecution)
                     ? {
                         'xyz.bplabs.allrice.repository.profile':
                           compiledRepairProfileId,
@@ -1683,13 +1684,13 @@ export class CloudRunnerBackend {
             SecurityOpt: ['no-new-privileges'],
             PidsLimit: limits.pids,
             Memory:
-              (options.repositoryExecution?.version === 2
+              (isCompiledRepositoryExecution(options.repositoryExecution)
                 ? options.repositoryExecution.memoryMiB
                 : limits.memoryMiB) *
               1024 *
               1024,
             MemorySwap:
-              (options.repositoryExecution?.version === 2
+              (isCompiledRepositoryExecution(options.repositoryExecution)
                 ? options.repositoryExecution.memoryMiB
                 : limits.memoryMiB) *
               1024 *
