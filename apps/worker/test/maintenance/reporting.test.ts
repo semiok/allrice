@@ -11,15 +11,15 @@ import {
   it,
   vi,
 } from 'vitest';
-import { DevProducerLifecycle } from '../../../packages/database/src/dev-producer-lifecycle.ts';
-import type { ServiceBuildIdentity } from '../../../packages/database/src/service-build-identity.ts';
+import { DevProducerLifecycle } from '../../../../packages/database/src/dev-producer-lifecycle.ts';
+import type { ServiceBuildIdentity } from '../../../../packages/database/src/service-build-identity.ts';
 const db = vi.hoisted(() => ({
   collectMaintenanceSourceReports: vi.fn(),
   claimMaintenanceSourceReport: vi.fn(),
   settleMaintenanceSourceReport: vi.fn(),
 }));
 vi.mock('@allrice/database', () => db);
-import { runMaintenanceReportingProducer } from './maintenance-reporting.ts';
+import { runMaintenanceReportingProducer } from '../../src/maintenance-reporting.ts';
 const deploymentId = randomUUID();
 const state = {
   deploymentId,
