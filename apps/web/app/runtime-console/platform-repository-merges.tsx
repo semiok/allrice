@@ -33,7 +33,6 @@ type Panel = ReturnType<typeof RepositoryMergePanelSchema.parse>;
 export function PlatformRepositoryMerges({
   publicationId,
   credentialRevision,
-  readOnly = false,
 }: {
   publicationId: string;
   credentialRevision: number | null;
@@ -203,7 +202,9 @@ export function PlatformRepositoryMerges({
         } else {
           setAbsent(true);
           setNotice(
-            '尚未找到原请求。可继续核对，或使用相同编号重试；不会创建第二次合并。',
+            pending.action === 'merge'
+              ? '尚未找到原请求。自动合并已关闭，只能继续核对历史结果。'
+              : '尚未找到原核对请求。可继续核对，或使用相同编号重试。',
           );
         }
       }
@@ -240,20 +241,11 @@ export function PlatformRepositoryMerges({
     <section aria-label="候选合并 main">
       <h4>合并 main</h4>
       <p className={css.meta}>
-        合并前核对当前授权、远端版本、原始 CI 和完整审查成果。合并 main 与部署
-        Dev 分别记录。
+        自动合并已关闭。请在 GitHub
+        审阅和合并；这里保留历史结果的查看、停止和只读核对。
       </p>
       <div className={css.controls}>
-        <AdminButton
-          disabled={
-            readOnly ||
-            busy ||
-            !!pending ||
-            !panel?.canStart ||
-            !credentialRevision
-          }
-          onClick={() => void submit('merge')}
-        >
+        <AdminButton disabled onClick={() => void submit('merge')}>
           合并已审查候选
         </AdminButton>
         <AdminButton
@@ -269,11 +261,8 @@ export function PlatformRepositoryMerges({
             核对原合并请求
           </AdminButton>
         )}
-        {pending && absent && (
-          <AdminButton
-            disabled={readOnly || busy}
-            onClick={() => void retryPending()}
-          >
+        {pending?.action === 'reconcile' && absent && (
+          <AdminButton disabled={busy} onClick={() => void retryPending()}>
             重试原合并请求
           </AdminButton>
         )}

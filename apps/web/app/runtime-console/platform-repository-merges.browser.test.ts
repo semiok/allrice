@@ -9,7 +9,7 @@ const suite =
     ? describe
     : describe.skip;
 suite('repository merge browser durable request recovery', () => {
-  it('recovers a lost reply across reload, retries only the same absent request, stops its canonical Run and distinguishes main from Dev', async () => {
+  it('never starts or retries a merge, recovers historical requests, stops their Run and reconciles a lost read-only reply across reload', async () => {
     const require = createRequire(import.meta.url),
       { build } = createRequire(require.resolve('tsx'))('esbuild');
     const built = await build({
@@ -95,12 +95,36 @@ suite('repository merge browser durable request recovery', () => {
       const page = await browser.newPage();
       page.on('pageerror', (e: Error) => errors.push(e.message));
       await page.addInitScript(
-        ({ publicationId }: { publicationId: string }) => {
+        ({
+          publicationId,
+          subjectId,
+          digest,
+          requestId,
+        }: {
+          publicationId: string;
+          subjectId: string;
+          digest: string;
+          requestId: string;
+        }) => {
           (
             window as unknown as { repositoryMergeFixture: unknown }
           ).repositoryMergeFixture = { publicationId, credentialRevision: 1 };
+          if (!sessionStorage.getItem('fixture-seeded')) {
+            sessionStorage.setItem('fixture-seeded', '1');
+            sessionStorage.setItem(
+              `allrice.repository.merge.pending:${publicationId}`,
+              JSON.stringify({
+                action: 'merge',
+                publicationId,
+                requestId,
+                reviewSubjectId: subjectId,
+                expectedSubjectDigest: digest,
+                credentialRevision: 1,
+              }),
+            );
+          }
         },
-        { publicationId },
+        { publicationId, subjectId, digest, requestId: action.requestId },
       );
       await page.route(
         '**/api/v1/admin/technical-assistant/repository-merges**',
@@ -137,15 +161,6 @@ suite('repository merge browser durable request recovery', () => {
       );
       const address = server.address() as { port: number };
       await page.goto(`http://127.0.0.1:${address.port}`);
-      await page
-        .getByRole('button', { name: '合并已审查候选', exact: true })
-        .click();
-      await expect
-        .poll(() =>
-          page.getByText('提交结果尚无法确认。', { exact: false }).isVisible(),
-        )
-        .toBe(true);
-      await page.reload();
       await expect
         .poll(() =>
           page.getByRole('button', { name: '核对原合并请求' }).isVisible(),
@@ -157,9 +172,18 @@ suite('repository merge browser durable request recovery', () => {
           .isDisabled(),
       ).toBe(true);
       await page.getByRole('button', { name: '核对原合并请求' }).click();
-      await page.getByRole('button', { name: '重试原合并请求' }).click();
-      await expect.poll(() => writes.length).toBe(2);
-      expect(writes[1]).toEqual(writes[0]);
+      await page
+        .getByText('尚未找到原请求。自动合并已关闭，只能继续核对历史结果。', {
+          exact: true,
+        })
+        .waitFor();
+      expect(
+        await page.getByRole('button', { name: '重试原合并请求' }).count(),
+      ).toBe(0);
+      expect(writes).toHaveLength(0);
+      visible = true;
+      await page.reload();
+      await page.getByRole('button', { name: '核对原合并请求' }).click();
       await expect
         .poll(() =>
           page.getByRole('button', { name: '停止合并操作' }).isVisible(),
@@ -177,10 +201,16 @@ suite('repository merge browser durable request recovery', () => {
         )
         .toBe(true);
       await page.getByRole('button', { name: '核对原合并结果' }).click();
-      await expect.poll(() => writes.length).toBe(3);
-      expect(writes[2]!.action).toBe('reconcile');
-      expect(writes[2]!.mergeId).toBe(operation.id);
-      expect(writes.filter((w) => w.action === 'merge')).toHaveLength(2);
+      await expect.poll(() => writes.length).toBe(1);
+      expect(writes[0]!.action).toBe('reconcile');
+      expect(writes[0]!.mergeId).toBe(operation.id);
+      await page.getByText('提交结果尚无法确认。', { exact: false }).waitFor();
+      await page.reload();
+      await page.getByRole('button', { name: '核对原合并请求' }).click();
+      await page
+        .getByText('已找到原请求；没有重复合并。', { exact: true })
+        .waitFor();
+      expect(writes.filter((w) => w.action === 'merge')).toHaveLength(0);
       operation.receipt = {
         version: 1,
         publicationId,
