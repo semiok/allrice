@@ -222,7 +222,9 @@ export function PlatformRepositoryRepair({
     <section className={css.card} aria-label="仓库修复候选">
       <h3>仓库修复候选</h3>
       {readOnly && (
-        <p role="status">自主修复与发布延期，当前仅查看历史记录。</p>
+        <p role="status">
+          旧修复入口仅供查看历史记录；新报告请在维护设置中授权处理。
+        </p>
       )}
       <p className={css.meta}>
         从登记的完整 AllRice
