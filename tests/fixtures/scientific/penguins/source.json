@@ -1,0 +1,8 @@
+{
+  "dataUrl": "https://raw.githubusercontent.com/allisonhorst/palmerpenguins/8957207b78d6ccd1b4654a9dd9c9041b657478ab/inst/extdata/penguins.csv",
+  "commit": "8957207b78d6ccd1b4654a9dd9c9041b657478ab",
+  "checksum": "sha256:f204db2c753b0937caac3cb35258562c14f073e4bbc76be24b4c51ce22767a93",
+  "license": "CC0-1.0",
+  "datasetDOI": "10.5281/zenodo.3960218",
+  "paperDOI": "10.1371/journal.pone.0090081"
+}

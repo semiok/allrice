@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "version": "1.0.0",
+  "contentChecksum": "sha256:9b1efe4bd101c704d441e603573f50dca47033040dffd0a784c8620ef18b0608",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/scientific-analysis?content-sha256=9b1efe4bd101c704d441e603573f50dca47033040dffd0a784c8620ef18b0608",
+  "license": "Apache-2.0",
+  "reviewedBy": "MET-173 reproducible scientific workflow review",
+  "resources": [
+    {
+      "path": "references/delivery.md",
+      "mediaType": "text/markdown",
+      "byteLength": 1989,
+      "checksum": "sha256:2bc627a8b1ee2d5d88eb317aada270bc229961908f5736165e2eca4597d057e8"
+    },
+    {
+      "path": "references/workflow.md",
+      "mediaType": "text/markdown",
+      "byteLength": 2047,
+      "checksum": "sha256:a3ec77d107a7998a3f73c741a9c218b0f174f9f792f71254725b9800c1425e31"
+    }
+  ],
+  "dependencies": [
+    {
+      "kind": "tool",
+      "name": "workspace.document.read"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.skill.read"
+    },
+    {
+      "kind": "tool",
+      "name": "python.execute"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.export.create"
+    }
+  ],
+  "checksum": "sha256:81b8d96a38855c8c1966b94d5b67b2295ca1246cc0efa0875795e1417f365911"
+}

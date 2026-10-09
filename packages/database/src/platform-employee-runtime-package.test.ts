@@ -262,6 +262,79 @@ it('projects development and iteration tasks only from a frozen project Skill an
   expect(projectEmployeeTaskSuggestions(explicit)).toEqual([]);
 });
 
+it('offers reproducible research only with its frozen method, Office and executable Python permission', () => {
+  const tools = [
+    'workspace.document.read',
+    'workspace.skill.read',
+    'workspace.export.create',
+    'python.execute',
+  ];
+  const scientificDefinition = {
+    ...definition,
+    capabilities: { ...definition.capabilities, toolNames: tools },
+  };
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: scientificDefinition,
+    skills: [
+      { ...skills[0]!, name: 'office', required_tool_refs: tools },
+      {
+        ...skills[0]!,
+        id: 'b9a98b27-c04d-4d1d-a45d-c072fed4d6ca',
+        name: 'scientific-analysis',
+        required_tool_refs: tools,
+      },
+    ],
+  });
+  const manifest = employeeManifest({
+    key: 'scientist',
+    name: '科研人员',
+    description: 'Synthetic frozen scientific employee',
+    runtimePackage,
+    toolNames: tools,
+  });
+  if (manifest.schemaVersion !== 2) throw Error('current employee required');
+  const before = JSON.stringify(manifest);
+  const ids = (value: typeof manifest) =>
+    projectEmployeeTaskSuggestions(value).map((task) => task.id);
+  expect(ids(manifest).slice(0, 2)).toEqual([
+    'analyze-research-data',
+    'iterate-research-analysis',
+  ]);
+  expect(projectEmployeeTaskSuggestions(manifest).length).toBeLessThanOrEqual(
+    8,
+  );
+  expect(JSON.stringify(manifest)).toBe(before);
+  for (const tool of tools) {
+    const missing = structuredClone(manifest);
+    missing.capabilityBindings.toolNames = tools.filter(
+      (name) => name !== tool,
+    );
+    expect(ids(missing)).not.toContain('analyze-research-data');
+    expect(ids(missing)).not.toContain('iterate-research-analysis');
+  }
+  for (const skill of ['office', 'scientific-analysis']) {
+    const missing = structuredClone(manifest);
+    missing.runtimePackage!.skills = missing.runtimePackage!.skills.filter(
+      (value) => value.name !== skill,
+    );
+    expect(ids(missing)).not.toContain('analyze-research-data');
+  }
+  for (const capability of ['storage:read', 'storage:write'] as const) {
+    const denied = structuredClone(manifest);
+    denied.securityPolicy.deniedCapabilities.push(capability);
+    expect(ids(denied)).not.toContain('analyze-research-data');
+    const undeclared = structuredClone(manifest);
+    undeclared.capabilities = undeclared.capabilities.filter(
+      (value) => value !== capability,
+    );
+    expect(ids(undeclared)).not.toContain('analyze-research-data');
+  }
+  const explicit = structuredClone(manifest);
+  explicit.taskSuggestions = [];
+  expect(projectEmployeeTaskSuggestions(explicit)).toEqual([]);
+});
+
 function validFrozenExecutionSnapshot() {
   const content = '# Web Research\n\n先搜索，再交叉核验并附来源。';
   const validSkills = [

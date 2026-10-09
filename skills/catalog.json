@@ -278,6 +278,29 @@
       "userInvocable": true,
       "requiredToolRefs": ["workspace.project", "workspace.skill.read"],
       "enabled": true
+    },
+    {
+      "id": "b9a98b27-c04d-4d1d-a45d-c072fed4d6ca",
+      "name": "scientific-analysis",
+      "contentFile": "skills/scientific-analysis/SKILL.md",
+      "bundleFile": "skills/scientific-analysis/bundle.json",
+      "version": "1.0.0",
+      "checksum": "sha256:9b1efe4bd101c704d441e603573f50dca47033040dffd0a784c8620ef18b0608",
+      "source": "allrice",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/scientific-analysis?content-sha256=9b1efe4bd101c704d441e603573f50dca47033040dffd0a784c8620ef18b0608",
+      "license": "Apache-2.0",
+      "reviewStatus": "reviewed",
+      "reviewedByLabel": "MET-173 reproducible scientific workflow review",
+      "createdByLabel": "MET-173 scientific workflow refinement",
+      "modelInvocable": true,
+      "userInvocable": true,
+      "requiredToolRefs": [
+        "workspace.document.read",
+        "workspace.skill.read",
+        "python.execute",
+        "workspace.export.create"
+      ],
+      "enabled": true
     }
   ]
 }
