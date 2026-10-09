@@ -488,6 +488,65 @@ it('offers finance tasks only with the frozen reconciliation script and all actu
   expect(financeIds(explicit)).toEqual([]);
 });
 
+it('keeps both task entries for all four role methods inside the eight-task limit', async () => {
+  const catalog = await loadPlatformContentCatalog();
+  const names = [
+    'project-development',
+    'scientific-analysis',
+    'business-reconciliation',
+    'operations-review',
+    'office',
+  ];
+  const selected = names.map((name) => {
+    const skill = catalog.skills.find((value) => value.name === name);
+    if (!skill) throw Error('Required role Skill missing: ' + name);
+    return skill;
+  });
+  const tools = [
+    ...new Set(selected.flatMap((skill) => skill.requiredToolRefs)),
+  ];
+  const runtimePackage = buildEmployeeRuntimePackage({
+    revision: 7,
+    definition: {
+      ...definition,
+      capabilities: { ...definition.capabilities, toolNames: tools },
+    },
+    skills: selected.map((skill) => ({
+      ...skills[0]!,
+      id: skill.id,
+      name: skill.name,
+      content: skill.content,
+      checksum: skill.checksum,
+      required_tool_refs: skill.requiredToolRefs,
+      bundle: skill.bundle,
+    })),
+  });
+  const manifest = employeeManifest({
+    key: 'four-role-methods',
+    name: '角色方法验收',
+    description: 'Frozen methods for project, research, finance and operations',
+    runtimePackage,
+    toolNames: tools,
+  });
+  const before = JSON.stringify(manifest);
+  const tasks = projectEmployeeTaskSuggestions(manifest);
+  expect(tasks).toHaveLength(8);
+  expect(tasks.map((task) => task.id)).toEqual(
+    expect.arrayContaining([
+      'develop-project',
+      'iterate-project',
+      'analyze-research-data',
+      'iterate-research-analysis',
+      'reconcile-payments',
+      'revise-reconciliation',
+      'review-operations',
+      'iterate-operations-review',
+    ]),
+  );
+  expect(new Set(tasks.map((task) => task.id)).size).toBe(8);
+  expect(JSON.stringify(manifest)).toBe(before);
+});
+
 function validFrozenExecutionSnapshot() {
   const content = '# Web Research\n\n先搜索，再交叉核验并附来源。';
   const validSkills = [
