@@ -83,8 +83,14 @@ export const technicalNativeTools = [
               additionalProperties: false,
               properties: {
                 path: { type: 'string', required: true },
-                before: { type: 'string', required: true },
-                after: { type: 'string', required: true },
+                before: {
+                  oneOf: [{ type: 'string' }, { type: 'null' }],
+                  required: true,
+                },
+                after: {
+                  oneOf: [{ type: 'string' }, { type: 'null' }],
+                  required: true,
+                },
               },
             },
           },
