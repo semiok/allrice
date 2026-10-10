@@ -314,13 +314,13 @@ suite('report-only historical repair view', () => {
           { exact: true },
         )
         .waitFor();
-      await page
-        .getByText('统一 GitHub 机器人 · 未配置', { exact: true })
-        .click();
-      await page.getByLabel('机器人 GitHub 用户名').waitFor();
+      await page.getByText('GitHub 提交账号 · 未配置', { exact: true }).click();
+      expect(await page.getByLabel('GitHub 用户名').inputValue()).toBe(
+        'semiok',
+      );
       expect(
         await page
-          .getByRole('button', { name: '保存机器人授权', exact: true })
+          .getByRole('button', { name: '保存 GitHub 授权', exact: true })
           .isDisabled(),
       ).toBe(true);
       expect(

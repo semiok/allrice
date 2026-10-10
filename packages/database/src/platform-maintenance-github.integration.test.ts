@@ -18,7 +18,7 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-suite('central GitHub robot credential and immutable account identity', () => {
+suite('central personal GitHub token and immutable identity', () => {
   let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>,
     admin: RequestContext,
     other: RequestContext,
@@ -28,7 +28,7 @@ suite('central GitHub robot credential and immutable account identity', () => {
   const fetcher = vi.fn(async (url: string | URL | Request) =>
     Response.json(
       String(url).endsWith('/user')
-        ? { id: 901, login: 'rice-maintenance' }
+        ? { id: 901, login: 'semiok' }
         : {
             id: 1323769790,
             full_name: 'semiok/allrice',
@@ -68,7 +68,7 @@ suite('central GitHub robot credential and immutable account identity', () => {
     vi.unstubAllEnvs();
     if (f) await f.close();
   });
-  it('verifies fixed repository and account before saving; facts are shared but no credential leaves the server', async () => {
+  it('accepts the personal repository owner after identity verification; facts are shared but no credential leaves the server', async () => {
     expect((await getMaintenanceGithubBot(admin)).state).toBe('not_configured');
     await expect(
       updateMaintenanceGithubBot(
@@ -88,7 +88,7 @@ suite('central GitHub robot credential and immutable account identity', () => {
       action: 'replace',
       requestId: randomUUID(),
       expectedRevision: 0,
-      expectedLogin: 'rice-maintenance',
+      expectedLogin: 'semiok',
       token,
     };
     const result = await updateMaintenanceGithubBot(admin, request, {
@@ -97,7 +97,7 @@ suite('central GitHub robot credential and immutable account identity', () => {
     expect(result).toMatchObject({
       revision: 1,
       state: 'configured',
-      identity: { revision: 1, userId: 901, login: 'rice-maintenance' },
+      identity: { revision: 1, userId: 901, login: 'semiok' },
       lastWriteRequestId: request.requestId,
     });
     expect(JSON.stringify(result)).not.toContain(token);
@@ -141,7 +141,7 @@ suite('central GitHub robot credential and immutable account identity', () => {
             action: 'replace',
             requestId: randomUUID(),
             expectedRevision: 1,
-            expectedLogin: 'rice-maintenance',
+            expectedLogin: 'semiok',
             token,
           },
           { fetcher },
