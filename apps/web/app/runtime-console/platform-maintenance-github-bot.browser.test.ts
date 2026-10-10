@@ -110,7 +110,7 @@ suite('platform repository credential browser write reconciliation', () => {
               identity:
                 input.action === 'replace'
                   ? {
-                      login: 'rice-maintenance',
+                      login: 'semiok',
                       userId: 901,
                       revision: settings.revision + 1,
                     }
@@ -132,25 +132,49 @@ suite('platform repository credential browser write reconciliation', () => {
         'http://127.0.0.1:' + (server.address() as { port: number }).port,
       );
       await initialStarted;
+      await page.getByText('GitHub 提交账号 · 读取中', { exact: true }).click();
+      await page.getByRole('button', { name: '刷新 GitHub 授权' }).click();
       await page
-        .getByText('统一 GitHub 机器人 · 读取中', { exact: true })
-        .click();
-      await page.getByRole('button', { name: '刷新机器人授权' }).click();
-      await page
-        .getByText('统一 GitHub 机器人 · 未配置', { exact: true })
+        .getByText('GitHub 提交账号 · 未配置', { exact: true })
         .waitFor();
-      const field = page.getByLabel('机器人令牌'),
-        save = page.getByRole('button', { name: '保存机器人授权' }),
-        remove = page.getByRole('button', { name: '移除机器人授权' });
-      await page.getByLabel('机器人 GitHub 用户名').fill('rice-maintenance');
+      const field = page.getByLabel('GitHub 个人令牌'),
+        save = page.getByRole('button', { name: '保存 GitHub 授权' }),
+        remove = page.getByRole('button', { name: '移除 GitHub 授权' });
+      expect(await page.getByLabel('GitHub 用户名').inputValue()).toBe(
+        'semiok',
+      );
+      const creation = new URL(
+        (await page
+          .getByRole('link', { name: '创建 GitHub 细粒度令牌' })
+          .getAttribute('href'))!,
+      );
+      expect(creation.origin + creation.pathname).toBe(
+        'https://github.com/settings/personal-access-tokens/new',
+      );
+      expect(Object.fromEntries(creation.searchParams)).toEqual({
+        name: 'AllRice-maintenance',
+        target_name: 'semiok',
+        expires_in: '30',
+        contents: 'write',
+        pull_requests: 'write',
+        issues: 'write',
+        actions: 'read',
+      });
+      expect(await page.locator('body').innerText()).toContain(
+        '只需在这里授权一次',
+      );
+      expect(await page.locator('body').innerText()).toContain(
+        '仅选择 allrice',
+      );
+      expect(await save.isDisabled()).toBe(true);
       await field.fill(token);
       await save.click();
       await page.getByText('已回读确认配置结果。', { exact: true }).waitFor();
       expect(await field.inputValue()).toBe('');
       expect(writes).toHaveLength(1);
-      expect(writes[0]).toMatchObject({ expectedLogin: 'rice-maintenance' });
+      expect(writes[0]).toMatchObject({ expectedLogin: 'semiok' });
       expect(await page.locator('body').innerText()).not.toContain(token);
-      expect(await page.getByText('机器人账号与仓库身份已核对').count()).toBe(
+      expect(await page.getByText('GitHub 账号与仓库身份已核对').count()).toBe(
         1,
       );
       releaseInitial();
@@ -163,7 +187,7 @@ suite('platform repository credential browser write reconciliation', () => {
       );
       expect(
         await page
-          .getByText('统一 GitHub 机器人 · 已配置', { exact: true })
+          .getByText('GitHub 提交账号 · 已配置', { exact: true })
           .count(),
       ).toBe(1);
       expect(await remove.isEnabled()).toBe(true);
@@ -174,14 +198,14 @@ suite('platform repository credential browser write reconciliation', () => {
         .waitFor();
       expect(writes).toHaveLength(2);
       expect(await remove.isDisabled()).toBe(true);
-      await page.getByRole('button', { name: '刷新机器人授权' }).click();
+      await page.getByRole('button', { name: '刷新 GitHub 授权' }).click();
       await page
         .getByText('已读取当前配置，上次请求未确认。', { exact: false })
         .waitFor();
       expect(writes).toHaveLength(2);
       mode = 'accept';
       await remove.click();
-      await page.getByText('机器人授权已移除。', { exact: true }).waitFor();
+      await page.getByText('GitHub 授权已移除。', { exact: true }).waitFor();
       expect(writes).toHaveLength(3);
       expect(writes[2]!.requestId).not.toBe(writes[1]!.requestId);
       expect(writes[2]!).not.toHaveProperty('token');

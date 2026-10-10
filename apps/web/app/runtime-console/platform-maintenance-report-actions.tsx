@@ -168,7 +168,7 @@ export function MaintenanceReportActions({
       </p>
       {!ready && (
         <p className={css.meta}>
-          统一机器人授权或当前源码基线尚未就绪；报告可继续查看和下载。
+          GitHub 提交账号授权或当前源码基线尚未就绪；报告可继续查看和下载。
         </p>
       )}
       {authority?.grants.map((g) => (

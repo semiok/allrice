@@ -3,17 +3,30 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MaintenanceGithubBotSchema,
   PlatformRepositoryTokenSchema,
+  platformRepository,
   type MaintenanceGithubBot,
 } from '@allrice/database/technical-contracts';
 import { AdminButton, AdminStatus } from '../../components/admin/admin-ui';
 import css from './technical-assistant.module.css';
 
 const endpoint = '/api/v1/admin/technical-assistant/maintenance/github-bot';
+const repositoryOwner = platformRepository.fullName.split('/')[0]!;
+const tokenCreationUrl =
+  'https://github.com/settings/personal-access-tokens/new?' +
+  new URLSearchParams({
+    name: 'AllRice-maintenance',
+    target_name: repositoryOwner,
+    expires_in: '30',
+    contents: 'write',
+    pull_requests: 'write',
+    issues: 'write',
+    actions: 'read',
+  });
 type Pending = { requestId: string; expectedRevision: number };
 export function PlatformMaintenanceGithubBot() {
   const [settings, setSettings] = useState<MaintenanceGithubBot | null>(null),
     [token, setToken] = useState(''),
-    [login, setLogin] = useState(''),
+    [login, setLogin] = useState(repositoryOwner),
     [busy, setBusy] = useState(false),
     [pending, setPending] = useState<Pending | null>(null),
     [notice, setNotice] = useState('');
@@ -33,7 +46,7 @@ export function PlatformMaintenanceGithubBot() {
       })
       .catch(() => {
         if (mounted.current && sequence.current === epoch)
-          setNotice('机器人授权配置暂不可读，请刷新核对。');
+          setNotice('GitHub 授权配置暂不可读，请刷新核对。');
       });
     return () => {
       mounted.current = false;
@@ -61,7 +74,7 @@ export function PlatformMaintenanceGithubBot() {
             '已读取当前配置，上次请求未确认。需要变更时，请重新输入令牌并保存。',
           );
         }
-      } else setNotice('已刷新机器人授权配置。');
+      } else setNotice('已刷新 GitHub 授权配置。');
     } catch {
       if (mounted.current && sequence.current === epoch)
         setNotice('当前配置暂未确认，请稍后刷新。');
@@ -77,7 +90,7 @@ export function PlatformMaintenanceGithubBot() {
       (!PlatformRepositoryTokenSchema.safeParse(secret).success ||
         !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/.test(login.trim()))
     ) {
-      setNotice('请填写 GitHub 的细粒度机器人令牌。');
+      setNotice('请填写 GitHub 用户名和细粒度个人令牌。');
       return;
     }
     const request = {
@@ -113,8 +126,8 @@ export function PlatformMaintenanceGithubBot() {
         setPending(null);
         setNotice(
           action === 'remove'
-            ? '机器人授权已移除。'
-            : '机器人授权已保存。账号与仓库已核对；提交时继续检查冻结身份和当前权限。',
+            ? 'GitHub 授权已移除。'
+            : 'GitHub 授权已保存。账号与仓库已核对；提交时继续检查冻结身份和当前权限。',
         );
       }
     } catch {
@@ -136,36 +149,33 @@ export function PlatformMaintenanceGithubBot() {
     }
   }
   return (
-    <details className={css.card} aria-label="统一 GitHub 机器人">
+    <details className={css.card} aria-label="GitHub 提交账号">
       <summary>
-        统一 GitHub 机器人 ·{' '}
+        GitHub 提交账号 ·{' '}
         {settings?.configured ? '已配置' : settings ? '未配置' : '读取中'}
       </summary>
       <p className={css.meta}>
-        AllRice PR Bot 用于把已验证的修复候选提交到 semiok/allrice，并读取该 PR
-        的构建与测试结果。公司名称会写入标题、标签与来源记录。只在统一管理平台保存机器人令牌，公司部署不接收它。
+        统一平台使用你的 GitHub 账号提交修复
+        PR，并读取构建与测试结果。只需在这里授权一次，各公司部署只上报问题，不需要分别授权。PR
+        标题、标签与来源记录会标明公司。
       </p>
       {settings && (
         <AdminStatus
           tone={settings.state === 'configured' ? 'muted' : 'warning'}
         >
           {settings.state === 'configured'
-            ? '机器人账号与仓库身份已核对'
+            ? 'GitHub 账号与仓库身份已核对'
             : settings.state === 'unavailable'
               ? '已保存的授权不可用，请重新配置'
-              : '尚未配置机器人授权'}
+              : '尚未配置 GitHub 授权'}
         </AdminStatus>
       )}
       <p className={css.meta}>
-        使用专用机器人账号创建细粒度令牌，填写实际 GitHub
-        用户名（不能包含空格），仅选择 semiok/allrice。需要 Contents、Pull
-        requests 与 Issues（公司标签）的读写权限，Actions 与 Checks 的只读权限。
+        登录 semiok 创建细粒度个人令牌，Resource owner 选择 semiok，Only select
+        repositories 仅选择 allrice。需要 Contents、Pull requests 与
+        Issues（公司标签）的读写权限，Actions 的只读权限。
       </p>
-      <a
-        href="https://github.com/settings/personal-access-tokens/new"
-        target="_blank"
-        rel="noreferrer"
-      >
+      <a href={tokenCreationUrl} target="_blank" rel="noreferrer">
         创建 GitHub 细粒度令牌
       </a>
       {settings?.identity && (
@@ -175,14 +185,14 @@ export function PlatformMaintenanceGithubBot() {
       )}
       {settings?.state === 'central_disabled' && (
         <p role="status">
-          当前是公司部署，仅上报检查报告。请在统一管理平台配置机器人。
+          当前是公司部署，仅上报检查报告。请在统一管理平台配置 GitHub 提交账号。
         </p>
       )}
       <div className={css.controls}>
         <label>
-          机器人 GitHub 用户名
+          GitHub 用户名
           <input
-            aria-label="机器人 GitHub 用户名"
+            aria-label="GitHub 用户名"
             value={login}
             maxLength={39}
             disabled={busy || !!pending}
@@ -190,7 +200,7 @@ export function PlatformMaintenanceGithubBot() {
           />
         </label>
         <label>
-          机器人令牌
+          GitHub 个人令牌
           <input
             type="password"
             autoComplete="new-password"
@@ -199,7 +209,7 @@ export function PlatformMaintenanceGithubBot() {
             value={token}
             onChange={(event) => setToken(event.target.value)}
             disabled={busy || !!pending}
-            aria-label="机器人令牌"
+            aria-label="GitHub 个人令牌"
           />
         </label>
         <AdminButton
@@ -213,16 +223,16 @@ export function PlatformMaintenanceGithubBot() {
           }
           onClick={() => void write('replace')}
         >
-          保存机器人授权
+          保存 GitHub 授权
         </AdminButton>
         <AdminButton
           disabled={!settings?.configured || busy || !!pending}
           onClick={() => void write('remove')}
         >
-          移除机器人授权
+          移除 GitHub 授权
         </AdminButton>
         <AdminButton disabled={busy} onClick={() => void refresh()}>
-          刷新机器人授权
+          刷新 GitHub 授权
         </AdminButton>
       </div>
       {notice && <p role="status">{notice}</p>}
