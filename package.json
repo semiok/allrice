@@ -46,9 +46,11 @@
     "lint": "eslint . --max-warnings=0",
     "met62:verify": "pnpm acceptance:release-gate",
     "met62:auth-smoke": "pnpm acceptance:platform-governance",
+    "preflight": "node scripts/preflight.mjs",
     "test": "pnpm --filter @allrice/contracts build && vitest run",
     "test:compose": "bash scripts/compose-smoke.sh",
-    "typecheck": "pnpm -r --if-present run typecheck",
+    "typecheck": "pnpm -r --if-present run typecheck && pnpm typecheck:integration",
+    "typecheck:integration": "tsc -p tests/integration/tsconfig.json",
     "dsh-ui:verify": "node scripts/dsh-ui.mjs verify",
     "dsh-ui:sync": "node scripts/dsh-ui.mjs sync"
   },
