@@ -183,6 +183,24 @@ The smoke uses Compose project `allrice-met39` and host port `18080` by default.
 
 ## Validation
 
+Run the local submission preflight to collect failures from the existing DSH,
+format, lint, workspace and cross-app TypeScript checks, native tool/production
+dependency wiring tests, and production build in one pass:
+
+```bash
+pnpm preflight
+```
+
+`pnpm preflight --plan` lists the checks without running them. During editing,
+`pnpm preflight --quick` omits only the production build and explicitly reports
+that omission. The preflight starts no database, paid model task, Bridge
+installation or deployment. Its build retains normal framework environment
+handling. Full CI and affected database,
+browser, device and actual Dev checks still apply. Reuse previous model Runs
+and unchanged backend evidence when fixing a selector, report or QA script.
+
+Individual checks remain available:
+
 ```bash
 pnpm format:check
 pnpm lint
@@ -190,6 +208,10 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
+
+`pnpm typecheck` includes both workspace packages and the existing cross-app
+`tests/integration/tsconfig.json`. Run `pnpm typecheck:integration` to check only
+that boundary. CI uses the same root command, without compiling it twice.
 
 ## Feature documentation
 

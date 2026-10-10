@@ -117,8 +117,6 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
-      # Cross-app tests must not become production Web dependency edges.
-      - run: pnpm exec tsc -p tests/integration/tsconfig.json
       # Native child processes and fsync journals need bounded contention.
       - name: Capture versioned deterministic regression source
         id: native-capture
