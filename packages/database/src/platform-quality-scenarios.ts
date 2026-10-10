@@ -51,6 +51,20 @@ export const qualityRegressionScenarios = [
       '合成服务与模型；不调用用户已连接的 GitHub、Linear 或其他真实服务。',
   },
   {
+    id: 'maintenance.private-repair.v1',
+    title: '私有修复原生参数与历史字节',
+    group: 'native',
+    input: '固定空值前后内容、权限注入参数，以及历史候选与伪造字节计数。',
+    expected:
+      '实际 DSH 定义与 Broker 空值参数一致；工具不能注入权限，历史候选保留原字节契约。',
+    files: [
+      'apps/worker/src/jobs/platform-repair.native.test.ts',
+      'packages/database/src/platform-repository-publication-source.test.ts',
+    ],
+    boundary:
+      '真实 DSH 与合成 Broker 回执及历史固定样本；不证明付费模型修复、机器人 PR 或增删文件授权。',
+  },
+  {
     id: 'chat.production-two-turn.v1',
     title: '同一会话两轮正式交付',
     group: 'postgres',
