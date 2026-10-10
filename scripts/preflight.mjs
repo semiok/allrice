@@ -15,9 +15,7 @@ export const preflightSteps = [
   {
     id: 'wiring',
     args: [
-      'exec',
-      'vitest',
-      'run',
+      'test',
       '--maxWorkers=2',
       'infra/docker/workspace-manifests.test.ts',
       'packages/contracts/src/tool-manifest.test.ts',
