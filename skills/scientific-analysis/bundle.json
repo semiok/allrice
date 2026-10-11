@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.0",
-  "contentChecksum": "sha256:9b1efe4bd101c704d441e603573f50dca47033040dffd0a784c8620ef18b0608",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/scientific-analysis?content-sha256=9b1efe4bd101c704d441e603573f50dca47033040dffd0a784c8620ef18b0608",
+  "version": "1.0.1",
+  "contentChecksum": "sha256:35629668ce5cedafa89e23191b4908d05699415f1567a546ff7e88aa20e99195",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/scientific-analysis?content-sha256=35629668ce5cedafa89e23191b4908d05699415f1567a546ff7e88aa20e99195",
   "license": "Apache-2.0",
-  "reviewedBy": "MET-173 reproducible scientific workflow review",
+  "reviewedBy": "Role tier benchmark: managed chart fonts, offline reports and bounded delivery",
   "resources": [
     {
       "path": "references/delivery.md",
       "mediaType": "text/markdown",
-      "byteLength": 1989,
-      "checksum": "sha256:2bc627a8b1ee2d5d88eb317aada270bc229961908f5736165e2eca4597d057e8"
+      "byteLength": 2596,
+      "checksum": "sha256:cbd2b732b48feb0ea40d14ed209fe23378e441f8fdc52e8a42c0089cc571b821"
     },
     {
       "path": "references/workflow.md",
@@ -37,5 +37,5 @@
       "name": "workspace.export.create"
     }
   ],
-  "checksum": "sha256:81b8d96a38855c8c1966b94d5b67b2295ca1246cc0efa0875795e1417f365911"
+  "checksum": "sha256:87951296dcaab37934d23df286dc8b003cd3b1e144fba61c8b7d5da1db720955"
 }
