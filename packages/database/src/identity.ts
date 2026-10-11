@@ -14,6 +14,8 @@ import {
   EmailSchema,
   LoginInputSchema,
   PasswordSchema,
+  ExistingPasswordSchema,
+  organizationInitialPassword,
   UsernameSchema,
   ChangePasswordInputSchema,
   UuidSchema,
@@ -92,7 +94,14 @@ function derivePassword(password: string, salt: Buffer) {
 }
 
 export async function hashPassword(password: string) {
-  const parsed = PasswordSchema.parse(password);
+  return encodePassword(PasswordSchema.parse(password));
+}
+
+export async function hashOrganizationInitialPassword(username: string) {
+  return encodePassword(organizationInitialPassword(username));
+}
+
+async function encodePassword(parsed: string) {
   const salt = randomBytes(16);
   const derived = await derivePassword(parsed, salt);
   return [
@@ -122,7 +131,7 @@ export async function verifyPassword(password: string, encoded: string) {
   }
   const expected = Buffer.from(hashValue, 'base64url');
   const actual = await derivePassword(
-    PasswordSchema.parse(password),
+    ExistingPasswordSchema.parse(password),
     Buffer.from(saltValue, 'base64url'),
   );
   return expected.length === actual.length && timingSafeEqual(expected, actual);

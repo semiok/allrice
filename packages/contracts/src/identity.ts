@@ -5,6 +5,8 @@ import { RoleSchema } from './authorization.ts';
 
 export const EmailSchema = z.string().trim().toLowerCase().email().max(320);
 export const PasswordSchema = z.string().min(8).max(256);
+// Existing credentials may be shorter than the policy for a user-chosen password.
+export const ExistingPasswordSchema = z.string().min(1).max(256);
 export const UsernameSchema = z
   .string()
   .trim()
@@ -20,7 +22,7 @@ export const LoginInputSchema = z
   .object({
     username: UsernameSchema.optional(),
     email: EmailSchema.optional(),
-    password: PasswordSchema,
+    password: ExistingPasswordSchema,
   })
   .strict()
   .refine((value) => Boolean(value.username) !== Boolean(value.email), {
@@ -29,7 +31,7 @@ export const LoginInputSchema = z
 
 export const ChangePasswordInputSchema = z
   .object({
-    currentPassword: PasswordSchema,
+    currentPassword: ExistingPasswordSchema,
     newPassword: PasswordSchema,
   })
   .strict();

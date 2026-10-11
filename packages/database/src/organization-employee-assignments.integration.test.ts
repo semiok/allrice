@@ -107,7 +107,7 @@ integration('MET-161 personal AI assignment and frozen company persona', () => {
           ],
         })
       ).created[0]!;
-      const signed = await login({ username, password: 'admin@321' });
+      const signed = await login({ username, password: `${username}@123` });
       const context = (await authenticateSession(signed.session.token))!;
       return {
         ...p,

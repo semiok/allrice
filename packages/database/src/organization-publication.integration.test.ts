@@ -86,7 +86,7 @@ suite('MET-161 global publication from actual assignments', () => {
       })
     ).created[0]!;
     const context = (await authenticateSession(
-      (await login({ username, password: 'admin@321' })).session.token,
+      (await login({ username, password: `${username}@123` })).session.token,
     ))!;
     const change = async (action: 'include' | 'exclude') => {
       const e = (

@@ -7,6 +7,7 @@ import {
   createSession,
   ensureBootstrapPortalPrincipal,
   login,
+  changePassword,
 } from './identity.ts';
 import {
   createManagedOrganization,
@@ -87,7 +88,10 @@ integration('MET-161 company and employee account administration', () => {
       jobTitle: '财务',
       status: 'active',
     });
-    const signed = await login({ username: e.username, password: 'admin@321' });
+    const signed = await login({
+      username: e.username,
+      password: `${e.username}@123`,
+    });
     const context = (await authenticateSession(signed.session.token))!;
     expect(context.organizationId).toBe(c.organizationId);
     expect(context.memberships).toEqual([
@@ -183,19 +187,23 @@ integration('MET-161 company and employee account administration', () => {
       ).people[0]?.userId,
     ).toBe(e.userId);
     expect(
-      (await login({ username: e.username, password: 'admin@321' })).user.id,
+      (await login({ username: e.username, password: `${e.username}@123` }))
+        .user.id,
     ).toBe(e.userId);
   });
   it('resets and disables accounts without deleting history or reviving old sessions on re-enable', async () => {
     const c = await company(),
       e = await employee(c.organizationId);
-    const old = await login({ username: e.username, password: 'admin@321' });
+    const old = await login({
+      username: e.username,
+      password: `${e.username}@123`,
+    });
     await resetOrganizationPassword(admin, c.organizationId, e.userId, {
       password: 'changed-password',
     });
     expect(await authenticateSession(old.session.token)).toBeNull();
     await expect(
-      login({ username: e.username, password: 'admin@321' }),
+      login({ username: e.username, password: `${e.username}@123` }),
     ).rejects.toMatchObject({ code: 'authentication_failed' });
     const active = await login({
       username: e.username,
@@ -225,16 +233,82 @@ integration('MET-161 company and employee account administration', () => {
     const events =
       await fixture.db`select metadata from allrice_audit_events where resource_id=${e.userId}`;
     expect(events.length).toBeGreaterThan(2);
+    expect(JSON.stringify(events)).not.toMatch(/@123|changed-password|scrypt/);
+  });
+  it('creates per-account defaults, changes short credentials, and resets using the current account name', async () => {
+    const c = await company();
+    await importOrganizationPeople(admin, c.organizationId, {
+      people: [
+        { username: ' LI ', displayName: '小李' },
+        { username: 'Snow', displayName: '小雪' },
+        {
+          username: 'custom',
+          displayName: '自定义',
+          password: 'custom-password',
+        },
+      ],
+    });
+    const li = (
+      await listOrganizationPeople(admin, c.organizationId)
+    ).people.find((p) => p.username === 'li')!;
+    const signed = await login({ username: 'LI', password: 'li@123' });
+    expect(signed.user.id).toBe(li.userId);
+    expect(
+      (await login({ username: 'snow', password: 'snow@123' })).user.username,
+    ).toBe('snow');
+    expect(
+      (await login({ username: 'custom', password: 'custom-password' })).user
+        .username,
+    ).toBe('custom');
+    await expect(
+      login({ username: 'snow', password: 'admin@321' }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    await changePassword((await authenticateSession(signed.session.token))!, {
+      currentPassword: 'li@123',
+      newPassword: 'employee-changed-password',
+    });
+    const changed = await login({
+      username: 'li',
+      password: 'employee-changed-password',
+    });
+    await resetOrganizationPassword(admin, c.organizationId, li.userId, {});
+    expect(await authenticateSession(changed.session.token)).toBeNull();
+    await expect(
+      login({ username: 'li', password: 'employee-changed-password' }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    expect((await login({ username: 'li', password: 'li@123' })).user.id).toBe(
+      li.userId,
+    );
+    const current = (
+      await listOrganizationPeople(admin, c.organizationId)
+    ).people.find((p) => p.userId === li.userId)!;
+    await updateOrganizationPerson(admin, c.organizationId, li.userId, {
+      username: 'Lu',
+      displayName: '小卢',
+      expectedVersion: current.version,
+    });
+    // Editing the account alone preserves its credential; resetting then uses its new name.
+    const renamed = await login({ username: 'lu', password: 'li@123' });
+    await resetOrganizationPassword(admin, c.organizationId, li.userId, {});
+    expect(await authenticateSession(renamed.session.token)).toBeNull();
+    await expect(
+      login({ username: 'lu', password: 'li@123' }),
+    ).rejects.toMatchObject({ code: 'authentication_failed' });
+    expect((await login({ username: 'lu', password: 'lu@123' })).user.id).toBe(
+      li.userId,
+    );
+    const events =
+      await fixture.db`select metadata from allrice_audit_events where resource_id=${li.userId}`;
     expect(JSON.stringify(events)).not.toMatch(
-      /admin@321|changed-password|scrypt/,
+      /@123|employee-changed-password|scrypt/,
     );
   });
   it('requires current platform authority for all management and protects the platform account', async () => {
     const c = await company(),
       e = await employee(c.organizationId);
     const user = (await authenticateSession(
-      (await login({ username: e.username, password: 'admin@321' })).session
-        .token,
+      (await login({ username: e.username, password: `${e.username}@123` }))
+        .session.token,
     ))!;
     await expect(
       createManagedOrganization(user, { name: '越权公司' }),
