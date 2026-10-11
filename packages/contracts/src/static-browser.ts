@@ -11,7 +11,7 @@ export const StaticBrowserReferenceSchema = z
   .strict();
 export const staticBrowserMaximumBytes = 100_000;
 export const staticBrowserImageV1 =
-  'sha256:80e653fb8d92e97fe8ccf1e7a852f72f56097c3a57efdfc56bfe337f70d0bd1b';
+  'sha256:e0ef9ce00e900780e7b34a876a38549eb83ba597c62cb7d22c4986af2b725c77';
 export const StaticBrowserTargetSchema = StaticBrowserReferenceSchema.extend({
   version: z.literal(1),
   objectId: UuidSchema,

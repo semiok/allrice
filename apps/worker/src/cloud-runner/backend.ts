@@ -1058,7 +1058,11 @@ export class CloudRunnerBackend {
               OpenStdin: true,
               StdinOnce: false,
               Tty: false,
-              Env: ['HOME=/tmp/browser-home', 'TMPDIR=/tmp'],
+              Env: [
+                'HOME=/tmp/browser-home',
+                'TMPDIR=/tmp',
+                `ALLRICE_STATIC_BROWSER_DEADLINE=${new Date(deadline).toISOString()}`,
+              ],
               Labels: {
                 [attemptLabel]: owned.attemptId,
                 'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',

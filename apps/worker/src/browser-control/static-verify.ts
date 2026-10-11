@@ -30,6 +30,7 @@ import {
 } from '@allrice/database';
 import { CloudRunnerBackend } from '../cloud-runner/backend.js';
 import { waitBrowserOperationResult } from './controller.js';
+import { HandlerError } from '../errors.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import type { BrowserWorkspaceToolInputSchema } from './tool-input.js';
 import type { z } from 'zod';
@@ -156,7 +157,13 @@ export async function runStaticBrowserVerification(
         result.reason !== 'completed' ||
         !result.staticVerification
       )
-        throw Error(`STATIC_BROWSER_${result.reason.toUpperCase()}`);
+        throw new HandlerError(
+          result.reason === 'deadline'
+            ? 'STATIC_BROWSER_DEADLINE'
+            : 'STATIC_BROWSER_VERIFICATION_UNCONFIRMED',
+          `页面验证未能确认（${result.reason}）。验证 ${row.id}，执行 ${row.attempt_id}；请查看已有记录，不要重放此执行。`,
+          false,
+        );
       screenshot = Buffer.from(
         result.staticVerification.screenshotBase64,
         'base64',
@@ -285,7 +292,12 @@ export async function runStaticBrowserVerification(
       where id=${row.id} and job_lease_token=${row.job_lease_token} and state='running'`.catch(
       () => undefined,
     );
-    throw error;
+    if (error instanceof HandlerError) throw error;
+    throw new HandlerError(
+      'STATIC_BROWSER_VERIFICATION_UNCONFIRMED',
+      `页面验证未能确认。验证 ${row.id}，执行 ${row.attempt_id}；请查看已有记录，不要重放此执行。`,
+      false,
+    );
   } finally {
     if (row.location === 'cloud') {
       const stopped = await backend.stop(row.attempt_id).catch(() => false);
