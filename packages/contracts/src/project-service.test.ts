@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CloudProjectCommandSchema,
   ProjectServiceStartInputSchema,
+  CloudProjectRunResultSchema,
 } from './project-execution.ts';
 import { ProjectServiceConfigSchema } from './project-service.ts';
 import { RuntimeLocalServiceConfigSchema } from './runtime-v2/local-service.ts';
@@ -14,6 +15,31 @@ import {
 import { cloudToolchainImageV1 } from './runtime-v2/cloud-command.ts';
 
 const id = '11111111-1111-4111-8111-111111111111';
+it('accepts a reviewed service stop cause in the private physical result and retains old results', () => {
+  const result = {
+    containerId: 'a'.repeat(64),
+    exitCode: 137,
+    stopped: true,
+    reason: 'canceled',
+    output: '',
+    artifacts: [],
+    elapsedMs: 100,
+    imageDigest: cloudToolchainImageV1,
+  };
+  expect(CloudProjectRunResultSchema.safeParse(result).success).toBe(true);
+  expect(
+    CloudProjectRunResultSchema.parse({
+      ...result,
+      serviceStopReason: 'guard_lost',
+    }).serviceStopReason,
+  ).toBe('guard_lost');
+  expect(
+    CloudProjectRunResultSchema.safeParse({
+      ...result,
+      serviceStopReason: 'token=secret',
+    }).success,
+  ).toBe(false);
+});
 const digest = (s: string) =>
   'sha256:' + createHash('sha256').update(s).digest('hex');
 const lock = "lockfileVersion: '9.0'\n";

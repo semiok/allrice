@@ -30,6 +30,10 @@ import {
   type CloudRunResult,
 } from './backend.js';
 import { cloudServiceAdmissionTimeout } from './service-admission.js';
+import {
+  cloudServiceStopCause,
+  inFlightHeartbeat,
+} from './service-diagnostics.js';
 
 type Created = Awaited<
   | ReturnType<typeof createCloudCommandOperation>
@@ -84,6 +88,8 @@ export async function runCloudCommandOperation(
           operationId,
           { action: 'stop' },
           db,
+          undefined,
+          cloudServiceStopCause(options.signal?.reason),
         )
       : ledger.cancelRoot(scope, binding.task.rootRunId, randomUUID());
   if (!leaseToken) {
@@ -148,6 +154,7 @@ export async function runCloudCommandOperation(
     };
   }
   const receipt = { scope, operationId, leaseToken, attempt: binding.attempt };
+  let firstServiceStopReason: CloudRunResult['serviceStopReason'];
   const uncertain = async (code?: string) => {
     const receiptId = cloudStableId(`${operationId}:unknown`);
     if (
@@ -160,14 +167,36 @@ export async function runCloudCommandOperation(
       ...receipt,
       receiptId,
       signal: { type: 'operation.uncertain', reason: 'receipt_missing' },
-      ...(code ? { evidence: { code } } : {}),
+      ...(code || firstServiceStopReason
+        ? {
+            evidence: {
+              ...(code ? { code } : {}),
+              ...(firstServiceStopReason
+                ? { serviceStopReason: firstServiceStopReason }
+                : {}),
+            },
+          }
+        : {}),
     });
   };
+  const heartbeat = inFlightHeartbeat(() =>
+    ledger.exchangeCloudProjectService({
+      ...receipt,
+      events: [],
+      sourceReceipts: [],
+    }),
+  );
   const serviceExchange = (
     events: RuntimeLocalServiceEvent[] = [],
     sourceReceipts: { updateId: string; sourceDigest: string }[] = [],
   ) =>
-    ledger.exchangeCloudProjectService({ ...receipt, events, sourceReceipts });
+    events.length || sourceReceipts.length
+      ? ledger.exchangeCloudProjectService({
+          ...receipt,
+          events,
+          sourceReceipts,
+        })
+      : heartbeat();
   const maintainLease = async () => {
     if (
       options.signal?.aborted ||
@@ -265,6 +294,9 @@ export async function runCloudCommandOperation(
             ? {
                 projectService: {
                   id: operationId,
+                  onStopCause: (cause) => {
+                    firstServiceStopReason ??= cause;
+                  },
                   hardDeadlineAt: (await serviceExchange()).hardDeadlineAt,
                   exchange: () => serviceExchange(),
                   onEvent: async (event: RuntimeLocalServiceEvent) => {
@@ -324,6 +356,8 @@ export async function runCloudCommandOperation(
         }
       }
     }
+    if (firstServiceStopReason)
+      outcome = { ...outcome, serviceStopReason: firstServiceStopReason };
     await db`update allrice_cloud_execution_attempts set outcome=${db.json(outcome)} where operation_id=${operationId} and outcome is null`;
   }
   // No deletion until durable bytes/versions AND result receipt. Failed writes
@@ -351,6 +385,9 @@ export async function runCloudCommandOperation(
     workCopy: 'cloud_copy',
     exitCode: outcome.exitCode,
     reason: outcome.reason,
+    ...(outcome.serviceStopReason
+      ? { serviceStopReason: outcome.serviceStopReason }
+      : {}),
     stopped: outcome.stopped,
     output: outcome.output,
     ...('kind' in payload
@@ -575,7 +612,7 @@ export async function startCloudProjectService(
 }
 export async function stopCloudProjectServices() {
   for (const service of activeCloudProjectServices.values())
-    service.abort.abort();
+    service.abort.abort(new Error('CLOUD_SERVICE_WORKER_SHUTDOWN'));
   await Promise.allSettled(
     [...activeCloudProjectServices.values()].map((service) => service.task),
   );

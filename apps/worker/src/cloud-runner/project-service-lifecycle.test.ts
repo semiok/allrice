@@ -9,7 +9,13 @@ import type { CloudProjectCommand } from '@allrice/contracts';
 import { CloudRunnerBackend, type CloudRunResult } from './backend.js';
 
 describe('cloud service bounded failure ownership', () => {
-  for (const failure of ['shutdown', 'authority unavailable'] as const)
+  for (const failure of [
+    'shutdown',
+    'authority unavailable',
+    'guard error',
+    'log EOF',
+    'normal exit',
+  ] as const)
     it(
       failure +
         ' closes control and stalled Docker logs without claiming cleanup',
@@ -21,6 +27,8 @@ describe('cloud service bounded failure ownership', () => {
         server.on('request', (_request, response) => {
           response.writeHead(200);
           response.flushHeaders();
+          if (failure === 'log EOF' || failure === 'normal exit')
+            response.end();
           response.once('close', () => {
             logClosed = true;
           });
@@ -36,7 +44,17 @@ describe('cloud service bounded failure ownership', () => {
           .spyOn(backend, 'stop')
           .mockImplementation(() => new Promise(() => {}));
         const collecting = vi.spyOn(backend, 'collect');
+        if (failure === 'normal exit')
+          collecting.mockResolvedValue({
+            reason: 'completed',
+            stopped: true,
+            exitCode: 0,
+          } as CloudRunResult);
         const cleanup = vi.spyOn(backend, 'cleanup');
+        vi.spyOn(backend, 'inspect').mockResolvedValue({
+          State: { Running: failure !== 'normal exit' },
+        } as never);
+        const onStopCause = vi.fn();
         const id = randomUUID(),
           deadline = new Date(Date.now() + 3_600_000).toISOString();
         const options = {
@@ -46,6 +64,7 @@ describe('cloud service bounded failure ownership', () => {
           maintainLease: async () => true,
           projectService: {
             id,
+            onStopCause,
             hardDeadlineAt: deadline,
             exchange: () =>
               failure === 'authority unavailable'
@@ -82,8 +101,28 @@ describe('cloud service bounded failure ownership', () => {
             async () => {},
             guard,
           );
-          if (failure === 'shutdown')
-            timer = setTimeout(() => abort.abort(), 250);
+          if (failure === 'shutdown' || failure === 'guard error')
+            timer = setTimeout(
+              () =>
+                abort.abort(
+                  Error(
+                    failure === 'shutdown'
+                      ? 'CLOUD_SERVICE_WORKER_SHUTDOWN'
+                      : 'CLOUD_SERVICE_GUARD_LOST',
+                  ),
+                ),
+              250,
+            );
+          if (failure === 'normal exit') {
+            await expect(task).resolves.toMatchObject({
+              reason: 'completed',
+              exitCode: 0,
+            });
+            expect(guard.close).not.toHaveBeenCalled();
+            expect(onStopCause).not.toHaveBeenCalled();
+            expect(stopping).not.toHaveBeenCalled();
+            return;
+          }
           await expect(task).rejects.toThrow();
           expect(Date.now() - started).toBeLessThan(12_000);
           expect(guard.close).toHaveBeenCalled();
@@ -92,6 +131,14 @@ describe('cloud service bounded failure ownership', () => {
           expect(stopping).toHaveBeenCalledWith(options.attemptId);
           expect(collecting).not.toHaveBeenCalled();
           expect(cleanup).not.toHaveBeenCalled();
+          expect(onStopCause).toHaveBeenCalledWith(
+            {
+              shutdown: 'worker_shutdown',
+              'authority unavailable': 'control_timeout',
+              'guard error': 'guard_lost',
+              'log EOF': 'connection_lost',
+            }[failure],
+          );
         } finally {
           if (timer) clearTimeout(timer);
           abort.abort();

@@ -135,6 +135,12 @@ suite(
       );
       expect(stopped.stopped).toBe(false);
       expect((await f.exchange()).stopRequested).toBe(true);
+      expect(
+        (await readProjectService(f.requestContext, f.id, f.db)).stopReason,
+      ).toBe('user_requested');
+      const [audit] =
+        await f.db`select count(*)::int as n from allrice_audit_events where resource_id=${f.id} and action='runtime.project_service.stop_requested'`;
+      expect(audit!.n).toBe(1);
     });
     it('serializes a service heartbeat with the successful Run and conversation handoff', async () => {
       const f = await readyFixture();
@@ -196,6 +202,40 @@ suite(
       expect(conversation!.state).toBe('error');
       expect(conversation!.active_run_id).toBeNull();
     });
+    it('internal shutdown and historical records never claim a user stop', async () => {
+      const f = await readyFixture();
+      await projectServiceUserAction(
+        f.requestContext,
+        f.id,
+        { action: 'stop' },
+        f.db,
+        undefined,
+        'worker_shutdown',
+      );
+      expect(
+        (await readProjectService(f.requestContext, f.id, f.db)).stopReason,
+      ).toBe('worker_shutdown');
+      const historical = await readyFixture();
+      // A legacy persisted stop intent has neither audit cause nor outcome.
+      await historical.db`update allrice_project_services set stop_requested=true where id=${historical.id}`;
+      const view = await readProjectService(
+        historical.requestContext,
+        historical.id,
+        historical.db,
+      );
+      expect(view.stopped).toBe(false);
+      expect(view.stopReason).toBe('unknown');
+      await historical.db`update allrice_cloud_execution_attempts set outcome=${historical.db.json({ serviceStopReason: 'token=private-secret' })} where operation_id=${historical.id}`;
+      expect(
+        (
+          await readProjectService(
+            historical.requestContext,
+            historical.id,
+            historical.db,
+          )
+        ).stopReason,
+      ).toBe('unknown');
+    });
     it('stop, current grant revocation and expired visible lease close authority without fabricating stop', async () => {
       const f = await readyFixture();
       await f.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.grant}`;
@@ -209,6 +249,22 @@ suite(
       const expired = await readyFixture();
       await expired.db`update allrice_project_services set expires_at=clock_timestamp()-interval '1 second' where id=${expired.id}`;
       expect((await expired.exchange()).stopRequested).toBe(true);
+      expect(
+        (
+          await readProjectService(
+            expired.requestContext,
+            expired.id,
+            expired.db,
+          )
+        ).stopReason,
+      ).toBe('lease_expired');
+      const [audit] =
+        await f.db`select reason,metadata from allrice_audit_events where resource_id=${f.id} and action='runtime.project_service.stop_requested'`;
+      expect(audit!.reason).toBe('cloud_authority_unavailable');
+      expect(audit!.metadata).toMatchObject({
+        backend: 'cloud',
+        stage: 'service_heartbeat',
+      });
     });
     it('ordered readiness cannot change its container, port, attempt or one-time hard ceiling', async () => {
       const f = await readyFixture();

@@ -1,5 +1,11 @@
 # Office
 
+### Generation and preview font parity
+
+New reports use Noto Sans CJK SC (including explicit DOCX East Asian run fonts), and Noto Sans Mono CJK SC for code. Web and Worker images include the same Debian `fonts-noto-cjk=1:20220127+repack1-1` family used by managed Python, plus `fonts-dejavu-core=2.37-6` for existing reports. Their copyright notices are retained. DSH's native provider discovers these through its standard OS font catalog; AllRice does not replace the renderer or suppress missing-font diagnostics.
+
+For a host-based deployment, provision these fonts in the service user's native font directory before starting Web/Worker (`~/Library/Fonts` on macOS, `~/.local/share/fonts` on Linux). The managed runtime's `NotoSansCJK-Regular.ttc` is SHA256 `b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a`. Retain the source package's copyright, and restart the native provider after changing the catalog. Verify actual Chinese headings, tables, code and `missingFonts` on the same delivered Office bytes. A downloaded source document's other fonts may still require its own installed family; fallback is not exact-font preservation.
+
 Tracking: [MET-157](https://linear.app/metasnowsky/issue/MET-157), under the DSH Skill adaptation plan MET-156.
 
 ## Current delivery: DSH native Office workflow (1.3)

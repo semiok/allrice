@@ -135,7 +135,10 @@ suite('cloud project first complete native chain', () => {
       vi.spyOn(CloudRunnerBackend.prototype, 'putArchive').mockImplementation(
         async function (id, bytes, signal) {
           if (
-            Buffer.from(bytes).includes(Buffer.from('.allrice/staging-ready'))
+            Buffer.from(bytes).includes(
+              Buffer.from('.allrice/staging-ready'),
+            ) ||
+            Buffer.from(bytes).includes(Buffer.from('.allrice/source-'))
           )
             await delay(6500);
           return originalArchive.call(this, id, bytes, signal);
@@ -377,6 +380,7 @@ suite('cloud project first complete native chain', () => {
         document.body.textContent.includes('43'),
       );
       proof.hmr = true;
+      proof.renewalContinuesDuringSlowSourceStaging = true;
       const finalized = await f.runtime.finalizeRoot({
         scope: f.task.scope,
         rootRunId: f.context.runId,
@@ -393,7 +397,15 @@ suite('cloud project first complete native chain', () => {
         await database`select state,active_run_id from allrice_conversation_runtimes where session_id=${f.task.chatSessionId}`;
       expect(conversation.state).toBe('idle');
       expect(conversation.active_run_id).toBeNull();
-      await delay(70000);
+      const soakMs = Math.max(
+        70000,
+        Math.min(
+          330000,
+          Number(process.env.ALLRICE_CLOUD_SERVICE_SOAK_MS) || 70000,
+        ),
+      );
+      await delay(soakMs);
+      proof.postRunSoakMs = soakMs;
       await recoverCloudCommandOperations({ database, backend });
       expect(
         (await readProjectService(f.requestContext, f.id, database)).state,
@@ -446,6 +458,9 @@ suite('cloud project first complete native chain', () => {
       expect(
         (await readProjectService(f.requestContext, f.id, database)).stopped,
       ).toBe(true);
+      expect(
+        (await readProjectService(f.requestContext, f.id, database)).stopReason,
+      ).toBe('user_requested');
       proof.physicalCleanup = true;
       proof.passed = true;
     } finally {
@@ -470,5 +485,5 @@ suite('cloud project first complete native chain', () => {
       vi.unstubAllEnvs();
       vi.restoreAllMocks();
     }
-  }, 240000);
+  }, 600000);
 });

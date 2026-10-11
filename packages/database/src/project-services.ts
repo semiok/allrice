@@ -3,6 +3,7 @@ import type { TransactionSql } from 'postgres';
 import {
   ProjectServiceConfigSchema,
   ProjectServiceViewSchema,
+  ProjectServiceStopCauseSchema,
   ProjectServiceSourceUpdateSchema,
   ProjectServiceSourceReceiptSchema,
   ProjectServiceTargetSchema,
@@ -27,6 +28,7 @@ import {
   type ExecutionContext,
   type StoragePort,
   type ProjectServiceView,
+  type ProjectServiceStopCause,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
@@ -376,10 +378,12 @@ export async function currentProjectService(
       )
     )
       denied();
-    await checkContinuingCloudProjectAuthority(
-      tx,
-      { ...actor, requestId: id },
-      binding,
+    await diagnoseAuthority('cloud_authority_unavailable', () =>
+      checkContinuingCloudProjectAuthority(
+        tx,
+        { ...actor, requestId: id },
+        binding,
+      ),
     );
   }
   return { row, snapshot, command };
@@ -444,12 +448,16 @@ export async function projectServiceUserAction(
   raw: unknown,
   db: DB = getDatabase(),
   authorizeControl?: (tx: TransactionSql) => Promise<unknown>,
+  stopCause: ProjectServiceStopCause = 'user_requested',
 ) {
   const action = ProjectServiceUserActionSchema.parse(raw);
   await db.begin(async (tx) => {
     const row = await ownedLocked(tx, p, id);
     await authorizeControl?.(tx);
     if (action.action === 'stop') {
+      if (!row.stop_requested)
+        await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+          values(${row.organization_id},${row.workspace_id},${row.owner_id},'runtime.project_service.stop_requested','runtime_operation',${id},'recorded',${stopCause},${json(tx, { version: 1, backend: row.backend, stage: stopCause === 'user_requested' ? 'user_control' : 'worker_control', runId: row.run_id })})`;
       await tx`update allrice_project_services set stop_requested=true where id=${id}`;
       await tx`update allrice_local_services set stop_requested=true,state='stopping' where operation_id=${id}`;
     } else if (action.action === 'renew') {
@@ -481,8 +489,15 @@ export async function readProjectService(
 ): Promise<ProjectServiceView> {
   return db.begin(async (tx) => {
     const [r] = await tx<
-      (Row & { snapshot: unknown; ready: boolean })[]
-    >`select s.*,o.snapshot,case when s.backend='cloud' then c.service_ready else l.ready end as ready from allrice_project_services s
+      (Row & {
+        snapshot: unknown;
+        ready: boolean;
+        outcome: unknown;
+        stop_reason: string | null;
+      })[]
+    >`select s.*,o.snapshot,c.outcome,
+      (select a.reason from allrice_audit_events a where a.organization_id=s.organization_id and a.workspace_id=s.workspace_id and a.resource_id=s.id and a.action='runtime.project_service.stop_requested' order by a.occurred_at asc limit 1) as stop_reason,
+      case when s.backend='cloud' then c.service_ready else l.ready end as ready from allrice_project_services s
       join allrice_runtime_operations o on o.id=s.id left join allrice_local_services l on l.operation_id=s.id
       left join allrice_cloud_execution_attempts c on c.operation_id=s.id
       where s.id=${id} and s.organization_id=${p.organizationId} and s.workspace_id=${p.workspaceId!} and s.owner_id=${p.actor.id}`;
@@ -519,10 +534,37 @@ export async function readProjectService(
       lastSeenAt: r.heartbeat_at?.toISOString() ?? null,
       stopRequested,
       stopped,
+      stopReason:
+        stopped || stopRequested
+          ? publicProjectServiceStopReason(r.stop_reason, r.outcome)
+          : null,
       updatePending: r.pending_update !== null,
       canRenew: state === 'ready' && r.expires_at < r.hard_deadline_at,
     });
   });
+}
+
+/** Historical exit codes cannot explain why a service stopped. Expose only
+ * reviewed codes from durable authority intent or the trusted runner. */
+function publicProjectServiceStopReason(
+  intent: string | null,
+  outcome: unknown,
+) {
+  const safeIntent = ProjectServiceStopCauseSchema.safeParse(intent);
+  if (safeIntent.success) return safeIntent.data;
+  if (intent === 'hard_deadline_reached' || intent === 'service_not_current')
+    return intent === 'hard_deadline_reached'
+      ? 'lease_expired'
+      : 'authority_changed';
+  if (intent) return 'authority_changed';
+  if (outcome && typeof outcome === 'object') {
+    const cause = ProjectServiceStopCauseSchema.safeParse(
+      Reflect.get(outcome, 'serviceStopReason'),
+    );
+    if (cause.success) return cause.data;
+    if (Reflect.get(outcome, 'reason') === 'completed') return 'process_exited';
+  }
+  return 'unknown';
 }
 
 export async function projectServiceWorkerControl(

@@ -23,6 +23,8 @@ export const preflightSteps = [
       'apps/worker/src/tool-broker/registry.test.ts',
       'apps/worker/src/harness/dsh-office-native.test.ts',
       'apps/worker/src/jobs/platform-repair.native.test.ts',
+      'packages/database/src/platform-content/catalog.test.ts',
+      'scripts/acceptance/runtime/role-task-preflight.test.ts',
     ],
   },
   { id: 'production-build', args: ['build'] },

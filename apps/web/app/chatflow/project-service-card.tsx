@@ -99,6 +99,21 @@ export function ProjectServiceCard({
     unknown: '状态待核实',
   };
   const available = project?.state === 'ready' && !project.stopRequested;
+  const stopLabels: Record<
+    NonNullable<ProjectServiceView['stopReason']>,
+    string
+  > = {
+    user_requested: '已按请求停止预览。',
+    lease_expired: '预览租期已结束。',
+    authority_changed: '运行权限或项目状态发生变化，预览已停止。',
+    connection_lost: '预览连接中断，服务已停止。',
+    control_timeout: '预览控制请求超时，服务已停止。',
+    guard_lost: '预览运行保护已断开，服务已停止。',
+    worker_shutdown: '运行服务已重启或关闭，预览已停止。',
+    source_update_failed: '源码同步未能完成，预览已停止。',
+    process_exited: '预览进程已退出。',
+    unknown: '未记录具体停止原因。',
+  };
   return (
     <section aria-label="项目实时预览">
       <p role="status">
@@ -106,8 +121,18 @@ export function ProjectServiceCard({
         {project &&
           ` · ${project.backend === 'local' ? '本地' : '云端'} · ${new Date(project.expiresAt).toLocaleTimeString()} 到期`}
       </p>
-      {project && !project.stopped && (
+      {project && !project.stopped && !project.stopRequested && (
         <p>本轮回复结束后，预览在到期前继续运行。</p>
+      )}
+      {project?.stopReason && project.stopped && (
+        <p>
+          {stopLabels[project.stopReason]}
+          {project.stopped &&
+            ' 已保存的源码和成果仍可下载；需要预览时，可让 AI 从这个项目重新启动。'}
+        </p>
+      )}
+      {project?.stopRequested && !project.stopped && (
+        <p>已请求停止预览，正在等待运行环境确认。</p>
       )}
       <button
         type="button"
