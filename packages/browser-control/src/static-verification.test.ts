@@ -72,7 +72,7 @@ describe('finite saved-page verification', () => {
       'navigate',
       'click',
     ]);
-    expect(f.observe.mock.calls).toHaveLength(4);
+    expect(f.observe.mock.calls).toHaveLength(2);
     expect(browserVerificationMatchesPlan(report, plan)).toBe(true);
     expect(
       browserVerificationMatchesPlan(
@@ -148,4 +148,120 @@ describe('finite saved-page verification', () => {
       errorCode: 'STATIC_BROWSER_SENSITIVE_INPUT_DENIED',
     });
   });
+  it('reuses one actual observation across consecutive assertions', async () => {
+    const f = fixture();
+    f.plan = BrowserVerificationPlanSchema.parse({
+      version: 1,
+      steps: [
+        { type: 'click', selector: { tag: 'button', label: 'Compute' } },
+        ...Array.from({ length: 13 }, () => ({
+          type: 'text_contains',
+          expected: '42',
+        })),
+        { type: 'click', selector: { tag: 'button', label: 'Compute' } },
+      ],
+    });
+    const report = await verifyStaticBrowser(f);
+    expect(report.verdict).toBe('passed');
+    expect(report.steps).toHaveLength(15);
+    expect(f.observe).toHaveBeenCalledTimes(3);
+    expect(
+      new Set(report.steps.slice(0, 14).map((s) => s.observationId)).size,
+    ).toBe(1);
+  });
+  it('still rejects a changed DOM when an observation is reused, without replay', async () => {
+    const f = fixture();
+    f.perform.mockImplementation(async (action) => {
+      if (action.type === 'click') throw Error('BROWSER_OBSERVATION_CHANGED');
+    });
+    const report = await verifyStaticBrowser(f);
+    expect(report).toMatchObject({
+      verdict: 'unknown',
+      errorCode: 'BROWSER_OBSERVATION_CHANGED',
+    });
+    expect(report.steps).toHaveLength(1);
+    expect(f.perform.mock.calls.map((c) => c[0].type)).toEqual([
+      'navigate',
+      'click',
+    ]);
+  });
+  it('does not act on a freshly returned but already expired observation', async () => {
+    const f = fixture(),
+      observation = await f.observe();
+    f.observe.mockResolvedValue({
+      ...observation,
+      expiresAt: new Date(0).toISOString(),
+    });
+    expect(await verifyStaticBrowser(f)).toMatchObject({
+      verdict: 'unknown',
+      errorCode: 'STATIC_BROWSER_OBSERVATION_EXPIRED',
+      steps: [],
+    });
+    expect(f.perform.mock.calls.map((c) => c[0].type)).toEqual(['navigate']);
+  });
+  it('refreshes expired captures before acting, without replaying an earlier action', async () => {
+    const f = fixture(),
+      first = await f.observe();
+    const original = f.observe.getMockImplementation()!;
+    let clock = Date.now(),
+      checks = 0;
+    f.observe.mockClear().mockResolvedValueOnce(first);
+    f.assertCurrent.mockImplementation(async () => {
+      if (++checks === 4) clock = Date.parse(first.expiresAt);
+    });
+    // The refreshed capture is fresh on the trusted executor's clock.
+    f.observe.mockImplementation(async () => ({
+      ...(await original()),
+      expiresAt: new Date(clock + 5000).toISOString(),
+    }));
+    expect(await verifyStaticBrowser({ ...f, now: () => clock })).toMatchObject(
+      { verdict: 'passed' },
+    );
+    expect(
+      f.perform.mock.calls.filter((c) => c[0].type === 'click'),
+    ).toHaveLength(1);
+    expect(f.observe).toHaveBeenCalledTimes(3);
+  });
+  it.each(['initial observation', 'action', 'post-action observation'])(
+    'bounds a stalled %s and retains completed steps without replay',
+    async (stage) => {
+      vi.useFakeTimers();
+      try {
+        const f = fixture(),
+          blocked = () => new Promise<never>(() => {});
+        if (stage === 'initial observation')
+          f.observe.mockImplementation(blocked);
+        else if (stage === 'action')
+          f.perform.mockImplementation(async (action) => {
+            if (action.type === 'click') await blocked();
+          });
+        else {
+          const first = await f.observe();
+          f.observe
+            .mockClear()
+            .mockResolvedValueOnce(first)
+            .mockImplementation(blocked);
+        }
+        const result = verifyStaticBrowser({
+          ...f,
+          deadlineAt: Date.now() + 50,
+        });
+        await vi.advanceTimersByTimeAsync(60);
+        const report = await result;
+        expect(report).toMatchObject({
+          verdict: 'unknown',
+          errorCode: 'STATIC_BROWSER_DEADLINE',
+        });
+        expect(report.steps).toHaveLength(
+          stage === 'initial observation' ? 0 : 1,
+        );
+        expect(
+          f.perform.mock.calls.filter((c) => c[0].type === 'click'),
+        ).toHaveLength(stage === 'initial observation' ? 0 : 1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });

@@ -24,29 +24,60 @@ export async function verifyStaticBrowser(input: {
     observation: BrowserObservation | null,
   ) => Promise<void>;
   now?: () => number;
+  /** Trusted executor deadline; never supplied by a saved-page plan. */
+  deadlineAt?: number;
 }): Promise<BrowserVerificationReport> {
   const target = StaticBrowserTargetSchema.parse(input.target),
     plan = BrowserVerificationPlanSchema.parse(input.plan),
     now = input.now ?? Date.now,
     start = now(),
-    deadline = start + plan.timeoutMs,
+    deadline = Math.min(start + plan.timeoutMs, input.deadlineAt ?? Infinity),
     steps: BrowserVerificationReport['steps'] = [];
   let verdict: BrowserVerificationReport['verdict'] = 'passed',
     errorCode: string | null = null;
+  const bounded = async <T>(task: () => Promise<T>): Promise<T> => {
+    const remaining = deadline - now();
+    if (remaining <= 0) throw Error('STATIC_BROWSER_DEADLINE');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        task(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(Error('STATIC_BROWSER_DEADLINE')),
+            remaining,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   const check = async () => {
     if (now() >= deadline) throw Error('STATIC_BROWSER_DEADLINE');
-    await input.assertCurrent();
+    await bounded(input.assertCurrent);
   };
   try {
     await check();
-    await input.perform(
-      { type: 'navigate', url: staticBrowserDocumentUrl(target) },
-      null,
+    await bounded(() =>
+      input.perform(
+        { type: 'navigate', url: staticBrowserDocumentUrl(target) },
+        null,
+      ),
     );
+    let current: BrowserObservation | null = null;
     for (const [index, step] of plan.steps.entries()) {
       await check();
-      let observation = await input.observe();
+      // Reuse the last completed observation for assertions and the next
+      // action. The driver still rejects changed DOM/controls before acting.
+      // Expiration refreshes observation only; an unknown action is never retried.
+      let observation: BrowserObservation =
+        current && Date.parse(current.expiresAt) > now()
+          ? current
+          : await bounded(input.observe);
       await check();
+      if (Date.parse(observation.expiresAt) <= now())
+        throw Error('STATIC_BROWSER_OBSERVATION_EXPIRED');
       if (observation.url !== staticBrowserDocumentUrl(target))
         throw Error('STATIC_BROWSER_TARGET_CHANGED');
       let status: BrowserVerificationReport['steps'][number]['status'] =
@@ -66,14 +97,16 @@ export async function verifyStaticBrowser(input: {
           (step.type === 'fill' && !['input', 'textarea'].includes(el.tag))
         )
           throw Error('STATIC_BROWSER_SENSITIVE_INPUT_DENIED');
-        await input.perform(
-          step.type === 'click'
-            ? { type: 'click', elementId: el.id }
-            : { type: 'fill', elementId: el.id, value: step.value },
-          observation,
+        await bounded(() =>
+          input.perform(
+            step.type === 'click'
+              ? { type: 'click', elementId: el.id }
+              : { type: 'fill', elementId: el.id, value: step.value },
+            observation,
+          ),
         );
         await check();
-        observation = await input.observe();
+        observation = await bounded(input.observe);
         if (observation.url !== staticBrowserDocumentUrl(target))
           throw Error('STATIC_BROWSER_TARGET_CHANGED');
       } else {
@@ -97,6 +130,7 @@ export async function verifyStaticBrowser(input: {
               : 'STATIC_BROWSER_ASSERTION_FAILED';
         }
       }
+      current = observation;
       steps.push({
         index,
         type: step.type,

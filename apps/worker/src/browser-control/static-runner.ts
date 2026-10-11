@@ -28,7 +28,13 @@ if (!raw || typeof raw !== 'object' || !('document' in raw) || !('plan' in raw))
 const document = StaticBrowserDocumentSchema.parse(raw.document),
   plan = BrowserVerificationPlanSchema.parse(raw.plan),
   url = staticBrowserDocumentUrl(document.target),
-  expires = Date.now() + 90_000;
+  physicalDeadline = Date.parse(
+    process.env.ALLRICE_STATIC_BROWSER_DEADLINE ?? '',
+  ),
+  expires = Math.min(physicalDeadline, Date.now() + 90_000),
+  verificationDeadline = expires - 5000;
+if (!Number.isFinite(expires) || verificationDeadline <= Date.now())
+  throw Error('STATIC_BROWSER_DEADLINE');
 const assertCurrent = async () => {
   if (Date.now() >= expires) throw Error('STATIC_BROWSER_DEADLINE');
 };
@@ -38,7 +44,7 @@ const browser = await chromium.launch({
   executablePath: '/usr/bin/chromium',
   headless: true,
   chromiumSandbox: false,
-  timeout: 30_000,
+  timeout: Math.max(1, Math.min(30_000, verificationDeadline - Date.now())),
   args: ['--disable-gpu', '--disable-dev-shm-usage', '--disable-quic'],
 });
 const browserVersion = browser.version();
@@ -76,21 +82,26 @@ try {
     async () => {},
   );
   const driver = renderer;
-  let capture: { observation: BrowserObservation; screenshot: Buffer } | null =
-    null;
+  const capture: {
+    current: { observation: BrowserObservation; screenshot: Buffer } | null;
+  } = { current: null };
   const report = await verifyStaticBrowser({
     target: document.target,
     plan,
     assertCurrent,
+    deadlineAt: verificationDeadline,
     observe: async () => {
-      capture = await driver.observe(1);
-      return capture.observation;
+      capture.current = await driver.observe(1);
+      return capture.current.observation;
     },
     perform: async (action, observation) => {
       await driver.perform(action, observation);
     },
   });
-  const last = capture ?? (await renderer.observe(1));
+  // Never start another unbounded observation after the verification deadline.
+  // A missing capture cannot stand in for a genuine observed screenshot.
+  const last = capture.current;
+  if (!last) throw Error('STATIC_BROWSER_CAPTURE_UNAVAILABLE');
   const screenshot = last.screenshot;
   await renderer.close();
   renderer = undefined;
