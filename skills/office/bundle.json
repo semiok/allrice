@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "version": "1.7.3",
-  "contentChecksum": "sha256:496cf6e093ba821fcda8d7d78153dcdb2e45a0c1ab01d5b0c8a2804bab1a83c3",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=496cf6e093ba821fcda8d7d78153dcdb2e45a0c1ab01d5b0c8a2804bab1a83c3",
+  "version": "1.7.4",
+  "contentChecksum": "sha256:5fe40c121851d24e92c3947e71ee6d41c9c1652e56223f825b5a727040fb296f",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=5fe40c121851d24e92c3947e71ee6d41c9c1652e56223f825b5a727040fb296f",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "Role tier benchmark: managed chart fonts, offline reports and bounded delivery",
+  "reviewedBy": "Role tier benchmark follow-up: explicit chart export DPI",
   "resources": [
     {
       "path": "references/charts.md",
       "mediaType": "text/markdown",
-      "byteLength": 2056,
-      "checksum": "sha256:9aff31cea44849d7d1e77417b621cb56d2c54cff0bbf5cc0caf43ec5b8821f95"
+      "byteLength": 2557,
+      "checksum": "sha256:5192659dc3b428bcb9ae5e74abe59d7bd6454df1ba3745e0a3d704cf659d933e"
     },
     {
       "path": "references/LICENSE.dsh",
@@ -71,5 +71,5 @@
       "name": "python.execute"
     }
   ],
-  "checksum": "sha256:4d98d5486bcd839edbcca53487c2e0c2a5af1e3727438effaeb3baac5bff8970"
+  "checksum": "sha256:0bb151bd5fd1d33086aae4485ad5780ae288759cadd9db77e40e5f47e429939e"
 }
