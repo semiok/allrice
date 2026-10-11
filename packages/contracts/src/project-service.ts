@@ -60,6 +60,21 @@ export const ProjectServiceStateSchema = z.enum([
   'failed',
   'unknown',
 ]);
+export const ProjectServiceStopCauseSchema = z.enum([
+  'user_requested',
+  'lease_expired',
+  'authority_changed',
+  'connection_lost',
+  'control_timeout',
+  'guard_lost',
+  'worker_shutdown',
+  'source_update_failed',
+  'process_exited',
+  'unknown',
+]);
+export type ProjectServiceStopCause = z.infer<
+  typeof ProjectServiceStopCauseSchema
+>;
 export const ProjectServiceViewSchema = z
   .object({
     version: z.literal(1),
@@ -77,6 +92,8 @@ export const ProjectServiceViewSchema = z
     stopped: z.boolean(),
     updatePending: z.boolean(),
     canRenew: z.boolean(),
+    // Older durable records have no cause. Never infer one from an exit code.
+    stopReason: ProjectServiceStopCauseSchema.nullable().optional(),
   })
   .strict();
 export type ProjectServiceView = z.infer<typeof ProjectServiceViewSchema>;

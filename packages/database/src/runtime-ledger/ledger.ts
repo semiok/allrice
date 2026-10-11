@@ -1229,6 +1229,7 @@ export function createRuntimeOperationLedger(options: {
         if (!service) throw new RuntimeLedgerError('unavailable');
         const at = await now(tx);
         let allowed = false;
+        let stopReason: ProjectServiceStopReason = 'operation_not_continuing';
         if (
           row.snapshot.status === 'running' &&
           !row.snapshot.cancelRequestId &&
@@ -1238,8 +1239,8 @@ export function createRuntimeOperationLedger(options: {
           try {
             await currentProjectService(tx, row.id);
             allowed = true;
-          } catch {
-            /* Fail closed; ordered physical facts may still arrive. */
+          } catch (error) {
+            stopReason = projectServiceStopReason(error);
           }
         }
         const stopRequested = !allowed || service.stop_requested;
@@ -1290,6 +1291,13 @@ export function createRuntimeOperationLedger(options: {
             processId: row.id,
           });
         if (stopRequested) {
+          if (!service.stop_requested) {
+            const binding = row.snapshot.binding;
+            await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
+              values(${binding.task.scope.organizationId},${binding.task.scope.workspaceId},${binding.requestedBy.id},
+                'runtime.project_service.stop_requested','runtime_operation',${row.id},'recorded',${service.expires_at <= at || service.hard_deadline_at <= at ? 'lease_expired' : stopReason},
+                ${json(tx, { version: 1, backend: 'cloud', stage: 'service_heartbeat', runId: binding.task.runId })})`;
+          }
           await tx`update allrice_project_services set stop_requested=true where id=${row.id}`;
           if (
             row.snapshot.status === 'running' &&

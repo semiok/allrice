@@ -181,6 +181,7 @@ export function createCloudOperationLedger(
         stopped?: unknown;
         reason?: unknown;
         exitCode?: unknown;
+        serviceStopReason?: unknown;
         artifacts?: unknown;
       } | null;
       const success =
@@ -218,6 +219,7 @@ export function createCloudOperationLedger(
         evidence?.stopped !== true ||
         evidence?.reason !== result.data.reason ||
         evidence?.exitCode !== result.data.exitCode ||
+        evidence?.serviceStopReason !== result.data.serviceStopReason ||
         (success &&
           (result.data.reason !== 'completed' || result.data.exitCode !== 0))
       )

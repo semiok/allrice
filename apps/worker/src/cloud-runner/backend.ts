@@ -1,6 +1,7 @@
 import { request } from 'node:http';
 import { openCloudProjectServiceGuard } from './project-service-guard.js';
 import { sendCloudInput } from './input-transfer.js';
+import { cloudServiceStopCause } from './service-diagnostics.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -29,6 +30,7 @@ import {
   canonicalRuntimeBridgeJson,
   ProjectServiceSourceUpdateSchema,
   type RuntimeLocalServiceEvent,
+  type ProjectServiceStopCause,
   type StaticBrowserDocument,
   type BrowserVerificationPlan,
   type BrowserVerificationReport,
@@ -81,6 +83,7 @@ export type CloudProjectServiceHooks = {
     updateId: string;
     sourceDigest: string;
   }) => Promise<void>;
+  onStopCause?: (cause: ProjectServiceStopCause) => void;
 };
 export class CloudRunnerError extends Error {}
 async function serviceCall<T>(task: Promise<T>, timeoutMs = 3000): Promise<T> {
@@ -104,6 +107,7 @@ export class CloudProjectPreparationError extends CloudRunnerError {
   readonly notStarted = true;
 }
 export type CloudRunResult = {
+  serviceStopReason?: ProjectServiceStopCause;
   containerId: string;
   exitCode: number | null;
   stopped: boolean;
@@ -1750,7 +1754,12 @@ export class CloudRunnerBackend {
       }
     >();
     const updates = new Set<string>();
-    const stop = () => {
+    let serviceStopReason: ProjectServiceStopCause | undefined;
+    const stop = (cause: ProjectServiceStopCause = 'connection_lost') => {
+      if (!serviceStopReason) {
+        serviceStopReason = cause;
+        service.onStopCause?.(cause);
+      }
       reason = 'canceled';
       controlAbort.abort();
       guard.close();
@@ -1801,7 +1810,10 @@ export class CloudRunnerBackend {
               }),
             ),
           );
-        void facts.catch(() => stop().catch(() => undefined));
+        void facts.catch((error: unknown) => {
+          if (!ended)
+            void stop(cloudServiceStopCause(error)).catch(() => undefined);
+        });
       },
     );
     const send = async (frame: Record<string, unknown>) => {
@@ -1836,7 +1848,10 @@ export class CloudRunnerBackend {
       Math.max(1000, deadline - Date.now()) + 15_000,
       logsAbort.signal,
     );
-    void logs.catch(() => stop().catch(() => undefined));
+    void logs.catch(() => {
+      if (!ended) void stop('connection_lost').catch(() => undefined);
+    });
+    let sourceTask: Promise<void> | undefined;
     let tickTask: Promise<void> | undefined,
       timer: ReturnType<typeof setInterval> | undefined;
     const tick = async () => {
@@ -1857,7 +1872,9 @@ export class CloudRunnerBackend {
           expiry <= Date.now() ||
           !(await serviceCall(options.maintainLease()))
         ) {
-          await stop();
+          await stop(
+            expiry <= Date.now() ? 'lease_expired' : 'authority_changed',
+          );
           return;
         }
         controlAbort.signal.throwIfAborted();
@@ -1869,43 +1886,63 @@ export class CloudRunnerBackend {
           const update = ProjectServiceSourceUpdateSchema.parse(
             lease.projectService.sourceUpdate,
           );
-          if (!updates.has(update.updateId)) {
+          if (!sourceTask && !updates.has(update.updateId)) {
             // Mark before staging: lost ACKs cannot reapply an uncertain update.
             updates.add(update.updateId);
-            const physical = await this.inspect(options.attemptId);
-            if (!physical || physical.Id !== id)
-              throw new CloudRunnerError('CLOUD_SERVICE_IDENTITY');
-            await assertCloudProjectContainer(this, physical, command);
-            const bytes = Buffer.from(JSON.stringify(update)),
-              checksum =
-                'sha256:' + createHash('sha256').update(bytes).digest('hex');
-            await this.putArchive(
-              id,
-              createLocalPythonArchive([
-                {
-                  path: '.allrice/source-' + update.updateId + '.json',
-                  bytes,
-                  mode: 0o444,
-                },
-              ]),
-              AbortSignal.any([
-                controlAbort.signal,
-                AbortSignal.timeout(15_000),
-                ...(options.signal ? [options.signal] : []),
-              ]),
-            );
-            await send({ type: 'source', updateId: update.updateId, checksum });
-            await serviceCall(facts);
+            // Source staging may take longer than the five-second physical
+            // lease. Keep renewals running while one immutable update stages.
+            sourceTask = (async () => {
+              const physical = await this.inspect(options.attemptId);
+              if (!physical || physical.Id !== id)
+                throw new CloudRunnerError('CLOUD_SERVICE_IDENTITY');
+              await assertCloudProjectContainer(this, physical, command);
+              const bytes = Buffer.from(JSON.stringify(update)),
+                checksum =
+                  'sha256:' + createHash('sha256').update(bytes).digest('hex');
+              await this.putArchive(
+                id,
+                createLocalPythonArchive([
+                  {
+                    path: '.allrice/source-' + update.updateId + '.json',
+                    bytes,
+                    mode: 0o444,
+                  },
+                ]),
+                AbortSignal.any([
+                  controlAbort.signal,
+                  AbortSignal.timeout(15_000),
+                  ...(options.signal ? [options.signal] : []),
+                ]),
+              );
+              await send({
+                type: 'source',
+                updateId: update.updateId,
+                checksum,
+              });
+              await serviceCall(facts);
+            })()
+              .catch(async () => {
+                if (!ended) await stop('source_update_failed');
+              })
+              .finally(() => {
+                sourceTask = undefined;
+              });
           }
         }
-      } catch {
-        if (!ended) await stop().catch(() => undefined);
+      } catch (error) {
+        if (!ended)
+          await stop(cloudServiceStopCause(error)).catch(() => undefined);
       } finally {
         busy = false;
       }
     };
     const onAbort = () => {
-      void stop();
+      void stop(
+        options.signal?.reason instanceof Error &&
+          options.signal.reason.name !== 'AbortError'
+          ? cloudServiceStopCause(options.signal.reason)
+          : 'unknown',
+      );
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
     try {
@@ -1928,14 +1965,26 @@ export class CloudRunnerBackend {
       }, 1000);
       await stage?.(id);
       controlReady = true;
-      await tick();
+      if (!tickTask)
+        tickTask = tick().finally(() => {
+          tickTask = undefined;
+        });
+      // EOF is a terminal fact even if a control ACK is still outstanding.
+      // Do not turn a lost log connection into a later ACK timeout.
+      await Promise.race([tickTask, logs]);
       await logs;
       ended = true;
       await serviceCall(facts);
       const physical = await this.inspect(options.attemptId);
       if (physical?.State.Running)
         throw new CloudRunnerError('CLOUD_SERVICE_MISSING_EXIT');
-      return this.collect(options.attemptId, command, startedAt, reason);
+      return {
+        ...(await this.collect(options.attemptId, command, startedAt, reason)),
+        ...(serviceStopReason ? { serviceStopReason } : {}),
+      };
+    } catch (error) {
+      await stop(cloudServiceStopCause(error));
+      throw error;
     } finally {
       ended = true;
       controlAbort.abort();
@@ -1943,8 +1992,11 @@ export class CloudRunnerBackend {
       options.signal?.removeEventListener('abort', onAbort);
       if (stopDeadline) clearTimeout(stopDeadline);
       if (timer) clearInterval(timer);
-      guard.close();
+      // The outer owner sets physicalClosing before closing this guard.
+      // A normal EOF must not turn an in-flight renew into guard_lost.
       if (tickTask) await serviceCall(tickTask, 3500).catch(() => undefined);
+      if (sourceTask)
+        await serviceCall(sourceTask, 3500).catch(() => undefined);
       for (const ack of acks.values()) {
         clearTimeout(ack.timer);
         ack.reject(new CloudRunnerError('CLOUD_SERVICE_STOPPED'));
@@ -2045,9 +2097,13 @@ export class CloudRunnerBackend {
         physicalTimer = setInterval(() => {
           if (!physicalClosing && !physicalTask)
             physicalTask = beat()
-              .catch(() => {
+              .catch((error: unknown) => {
+                if (physicalClosing) return;
+                options.projectService?.onStopCause?.(
+                  cloudServiceStopCause(error),
+                );
                 serviceGuard?.close();
-                physicalFailure.abort();
+                physicalFailure.abort(error);
                 stdin?.destroy();
               })
               .finally(() => {

@@ -28,6 +28,7 @@ import {
 
 import {
   ProjectServiceConfigSchema,
+  ProjectServiceStopCauseSchema,
   ProjectServiceControlInputSchema,
   projectServiceReadinessLimit,
 } from './project-service.ts';
@@ -241,6 +242,7 @@ export const CloudProjectRunResultSchema = z
     imageDigest: ChecksumSchema,
     projectPreparation: RuntimeProjectPreparationEvidenceSchema.optional(),
     errorCode: z.string().max(128).optional(),
+    serviceStopReason: ProjectServiceStopCauseSchema.optional(),
   })
   .strict();
 export type CloudProjectRunResult = z.infer<typeof CloudProjectRunResultSchema>;
