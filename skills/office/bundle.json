@@ -1,11 +1,17 @@
 {
   "schemaVersion": 1,
-  "version": "1.7.2",
-  "contentChecksum": "sha256:6b7987447b9412092c7b2f40a8a06d13945d3c11184de98cf9c86a8a78f3e0e7",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=6b7987447b9412092c7b2f40a8a06d13945d3c11184de98cf9c86a8a78f3e0e7",
+  "version": "1.7.3",
+  "contentChecksum": "sha256:496cf6e093ba821fcda8d7d78153dcdb2e45a0c1ab01d5b0c8a2804bab1a83c3",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=496cf6e093ba821fcda8d7d78153dcdb2e45a0c1ab01d5b0c8a2804bab1a83c3",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "MET-166 writable Office output and in-memory intermediate charts",
+  "reviewedBy": "Role tier benchmark: managed chart fonts, offline reports and bounded delivery",
   "resources": [
+    {
+      "path": "references/charts.md",
+      "mediaType": "text/markdown",
+      "byteLength": 2056,
+      "checksum": "sha256:9aff31cea44849d7d1e77417b621cb56d2c54cff0bbf5cc0caf43ec5b8821f95"
+    },
     {
       "path": "references/LICENSE.dsh",
       "mediaType": "text/plain",
@@ -65,5 +71,5 @@
       "name": "python.execute"
     }
   ],
-  "checksum": "sha256:89b162c383cf95c15c946263e46a35d440e5009a4ca04fca2cf30c34ef82ca0e"
+  "checksum": "sha256:4d98d5486bcd839edbcca53487c2e0c2a5af1e3727438effaeb3baac5bff8970"
 }

@@ -105,12 +105,12 @@
       "reason": "Adapt server-authorized frozen Allrice message text to the native SessionReferenceResolver. Use an isolated query port and native pre-step durable context; no runtime journal discovery, new tools or additional model loop. Platform ACL, input idempotency, visibility and queued-start rechecks remain authoritative."
     },
     {
-      "id": "dsh-pi-ai-websocket-close-1006-v1",
-      "issue": "Run 917f3a15",
+      "id": "dsh-pi-ai-premature-websocket-close-v2",
+      "issue": "Run 917f3a15; Run 4299ba50",
       "upstreamVersion": "0.1.5-rc.3",
       "kind": "compatibility-fix",
       "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
-      "reason": "Classify the exact pi-ai abnormal WebSocket close 1006 as TRANSPORT so existing bounded native request retries can continue from saved tool results. Other unknown errors, auth and policy failures remain nonretryable. No whole-turn replay or new retry loop."
+      "reason": "Classify observed premature pi-ai WebSocket closes 1006 and exact 1000 as TRANSPORT, using existing bounded native request retries and saved tool results. Pinned pi-ai ignores normal close after a response terminal event. Auth, policy, unknown codes and 1000 with a reason remain unchanged. No whole-Run replay or new retry loop."
     },
     {
       "id": "allrice-admin-authenticated-origin-pnpm-v1",
@@ -126,7 +126,7 @@
       "package": "@deepseek-ai/dsh-llm-pi-ai",
       "version": "0.1.5-rc.3",
       "path": "patches/@deepseek-ai__dsh-llm-pi-ai@0.1.5-rc.3.patch",
-      "responsibilityId": "dsh-pi-ai-websocket-close-1006-v1"
+      "responsibilityId": "dsh-pi-ai-premature-websocket-close-v2"
     },
     {
       "package": "@deepseek-ai/dsh-client-connection",
