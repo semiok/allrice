@@ -14,6 +14,8 @@ export function projectStagingArchives(input: {
   prepared: { files: { path: string; bytes: Buffer }[] };
   deadlineUnixMs: number;
   deadlineReason: 'timeout' | 'lease_lost';
+  /** Trusted cloud service staging only; never supplied by project/model code. */
+  privateServiceCache?: true;
 }) {
   const a = input.command.arguments;
   const chunks: { path: string; bytes: Buffer }[] = [];
@@ -64,6 +66,7 @@ export function projectStagingArchives(input: {
           },
           deadlineUnixMs: input.deadlineUnixMs,
           deadlineReason: input.deadlineReason,
+          ...(input.privateServiceCache ? { privateServiceCache: true } : {}),
           assemblies,
         }),
       ),

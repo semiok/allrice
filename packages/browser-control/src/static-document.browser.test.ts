@@ -29,7 +29,7 @@ suite('saved-document real browser boundary', () => {
     if (!address || typeof address === 'string')
       throw Error('owned port required');
     const external = '127.0.0.1:' + address.port;
-    const html = `<!doctype html><title>Saved only</title><button onclick="document.querySelector('output').textContent=42;window.open('http://${external}/popup')">Compute</button><output>0</output><img src="http://${external}/image"><script>fetch('http://${external}/fetch').catch(()=>document.body.append(' Network denied'));try{new WebSocket('ws://${external}/ws')}catch{}document.body.append(' Cookies:'+document.cookie)</script>`;
+    const html = `<!doctype html><title>Saved only</title><button onclick="document.querySelector('output').textContent=42;window.open('http://${external}/popup')">Compute</button><output>0</output><label for="when">日期<span data-private>PRIVATE_CANARY</span><span hidden>HIDDEN_CANARY</span><span style="display:none">CSS_CANARY</span></label><input id="when" type="date"><label>事项<input id="topic"><textarea hidden>TEXTAREA_CANARY</textarea></label><span id="owner-label">预约人<span aria-hidden="true">ARIA_CANARY</span></span><input aria-labelledby="owner-label"><textarea hidden id="private-reference">REFERENCE_CANARY</textarea><input aria-labelledby="private-reference"><img src="http://${external}/image"><script>fetch('http://${external}/fetch').catch(()=>document.body.append(' Network denied'));try{new WebSocket('ws://${external}/ws')}catch{}document.body.append(' Cookies:'+document.cookie)</script>`;
     const target = StaticBrowserTargetSchema.parse({
       version: 1,
       versionId: randomUUID(),
@@ -87,6 +87,21 @@ suite('saved-document real browser boundary', () => {
           version: 1,
           timeoutMs: 30000,
           steps: [
+            {
+              type: 'fill',
+              selector: { tag: 'input', label: '日期' },
+              value: '2026-10-15',
+            },
+            {
+              type: 'fill',
+              selector: { tag: 'input', label: '事项' },
+              value: 'Synthetic meeting',
+            },
+            {
+              type: 'fill',
+              selector: { tag: 'input', label: '预约人' },
+              value: 'Synthetic owner',
+            },
             { type: 'click', selector: { tag: 'button', label: 'Compute' } },
             { type: 'text_contains', expected: '42' },
             { type: 'text_contains', expected: 'Network denied' },
@@ -99,6 +114,16 @@ suite('saved-document real browser boundary', () => {
         },
       });
       expect(report.verdict).toBe('passed');
+      const observation = (await driver.observe(1)).observation;
+      for (const canary of [
+        'PRIVATE_CANARY',
+        'HIDDEN_CANARY',
+        'CSS_CANARY',
+        'TEXTAREA_CANARY',
+        'ARIA_CANARY',
+        'REFERENCE_CANARY',
+      ])
+        expect(JSON.stringify(observation.elements)).not.toContain(canary);
       expect(http).toBe(0);
       expect(upgrades).toBe(0);
       expect(context.pages()).toHaveLength(1);

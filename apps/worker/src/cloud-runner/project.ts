@@ -29,6 +29,8 @@ const ownerLabel = 'xyz.bplabs.allrice.project.fence-owner';
 const deadlineLabel = 'xyz.bplabs.allrice.project.fence-deadline';
 const fenceName = 'allrice-project-cache-fence';
 const profileLabel = 'xyz.bplabs.allrice.project.profile';
+const privateServiceCacheLabel =
+  'xyz.bplabs.allrice.project.private-service-cache';
 function projectProfile(command: CloudProjectCommand) {
   const spec = command.arguments.projectPreparation;
   return spec.manager === 'pnpm'
@@ -49,7 +51,7 @@ type Volume = {
 export type CloudProjectContainer = {
   Id: string;
   Config: { Image?: string; Labels: Record<string, string> };
-  Mounts?: { Type: string; Name: string; Destination: string }[];
+  Mounts?: { Type: string; Name: string; Destination: string; RW?: boolean }[];
   HostConfig?: {
     Runtime?: string;
     NetworkMode?: string;
@@ -238,6 +240,13 @@ export async function assertCloudProjectContainer(
       c.Config.Labels['xyz.bplabs.allrice.cloud.service'] !== 'project-v1')
   )
     throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
+  if (
+    c.Config.Labels[privateServiceCacheLabel] &&
+    (c.Config.Labels[privateServiceCacheLabel] !== 'work-copy-v1' ||
+      c.Config.Labels['xyz.bplabs.allrice.cloud.service'] !== 'project-v1' ||
+      !c.Mounts?.some((m) => m.Destination === '/cache' && m.RW === false))
+  )
+    throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
   await inspectVolume(
     api,
     `allrice-project-work-${attempt}`,
@@ -294,8 +303,13 @@ export async function prepareCloudProject(
     ...input,
     imageDigest: command.imageDigest,
   });
-  const maintainLease = async () =>
-    (await fence.valid()) && input.maintainLease();
+  let fenceReleased = false;
+  const maintainLease = async () => {
+    // A concurrent heartbeat may have started its GET before handoff deleted
+    // the fence. Re-read the phase after awaiting, before deciding revocation.
+    const valid = fenceReleased || (await fence.valid());
+    return (fenceReleased || valid) && input.maintainLease();
+  };
   const revoked = new AbortController(),
     signal = AbortSignal.any([input.signal, revoked.signal]);
   let checking = false;
@@ -361,6 +375,7 @@ export async function prepareCloudProject(
         ? {
             'xyz.bplabs.allrice.cloud.service': 'project-v1',
             'xyz.bplabs.allrice.cloud.service-id': input.serviceId!,
+            [privateServiceCacheLabel]: 'work-copy-v1',
           }
         : {}),
       [payloadLabel]: payloadDigest(command),
@@ -417,6 +432,9 @@ export async function prepareCloudProject(
       prepared,
       deadlineUnixMs: input.deadline,
       deadlineReason: 'timeout',
+      ...(command.arguments.background
+        ? { privateServiceCache: true as const }
+        : {}),
     });
     return {
       command,
@@ -473,7 +491,12 @@ export async function prepareCloudProject(
           CpuQuota: command.arguments.limits.cpuMillis * 100,
           Mounts: [
             { Type: 'volume', Source: workVolume, Target: '/tmp/work' },
-            { Type: 'volume', Source: cacheVolume, Target: '/cache' },
+            {
+              Type: 'volume',
+              Source: cacheVolume,
+              Target: '/cache',
+              ...(command.arguments.background ? { ReadOnly: true } : {}),
+            },
           ],
           Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777' },
           ShmSize: 8 * 1024 ** 2,
@@ -489,11 +512,25 @@ export async function prepareCloudProject(
           ],
         },
       },
+      releaseServiceCacheFence: async () => {
+        if (!command.arguments.background || fenceReleased) return;
+        // Creation pins the quota reservation. The supervisor only writes its
+        // private work store; neither tenant code nor installers can write /cache.
+        const c = await api.inspect(input.attemptId);
+        if (!c) throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
+        await assertCloudProjectContainer(api, c, command);
+        if (c.Config.Labels[privateServiceCacheLabel] !== 'work-copy-v1')
+          throw Error('CLOUD_CONTAINER_IDENTITY_CHANGED');
+        fenceReleased = true;
+        clearInterval(heartbeat);
+        await fence.release();
+      },
       release: async (createUncertain = false) => {
         clearInterval(heartbeat);
         if (createUncertain) return;
         const c = await api.inspect(input.attemptId);
-        if (!c || c.State.Status === 'exited') await fence.release();
+        if (!fenceReleased && (!c || c.State.Status === 'exited'))
+          await fence.release();
       },
     };
   } catch (error) {

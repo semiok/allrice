@@ -308,15 +308,67 @@ export async function createControlledBrowserRenderer(
         /password|passwd|secret|token|otp|one.time|verification|credential/i.test(
           hint,
         );
+      // Use the document's accessible control names, including ordinary HTML
+      // labels. Do not make models rewrite correct forms with extra aria-labels.
+      // A label/reference can contain private descendants or input initial text.
+      // Apply the page summary's exclusions before exposing it as a control name.
+      const safeText = (element: Element | null) => {
+        if (!element) return '';
+        const walker = element.ownerDocument.createTreeWalker(
+          element,
+          NodeFilter.SHOW_TEXT,
+        );
+        let text = '',
+          visited = 0,
+          node: Node | null;
+        while (
+          (node = walker.nextNode()) &&
+          visited++ < 10000 &&
+          text.length < 200
+        ) {
+          if (
+            node.parentElement?.closest(
+              'script,style,textarea,input,[hidden],[aria-hidden="true"],[data-private]',
+            )
+          )
+            continue;
+          let visible = true;
+          for (let p = node.parentElement; p; p = p.parentElement) {
+            const style = getComputedStyle(p);
+            if (style.display === 'none' || style.visibility === 'hidden') {
+              visible = false;
+              break;
+            }
+          }
+          if (visible)
+            text += (node.nodeValue ?? '').slice(0, 200 - text.length);
+        }
+        return text.trim();
+      };
+      const labelledBy = (el.getAttribute('aria-labelledby') ?? '')
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((id) => safeText(el.ownerDocument.getElementById(id)))
+        .filter(Boolean)
+        .join(' ');
+      const labels =
+        'labels' in el
+          ? Array.from((el as HTMLInputElement).labels ?? [])
+              .map((label) => safeText(label))
+              .filter(Boolean)
+              .join(' ')
+          : '';
       return {
         id,
         tag,
         inputType,
         sensitive,
         label: (
-          el.getAttribute('aria-label') ??
-          el.getAttribute('placeholder') ??
-          (tag === 'input' ? '' : el.textContent) ??
+          labelledBy ||
+          el.getAttribute('aria-label') ||
+          labels ||
+          el.getAttribute('placeholder') ||
+          (tag === 'input' ? '' : safeText(el)) ||
           tag
         ).slice(0, 200),
       };

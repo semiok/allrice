@@ -20,7 +20,10 @@ import { createAssistantLocalCommandFixture } from './local-command-assistant.fi
 import { executeProjectWorkspace } from './project-workspace.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
-import { selectProjectExecution } from './project-execution.ts';
+import {
+  selectProjectExecution,
+  readProjectWorkflowBudget,
+} from './project-execution.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
 import { createCloudProjectOperation } from './cloud-execution.ts';
 import {
@@ -442,12 +445,42 @@ suite(
       expect(
         (await selectProjectExecution(replayInput!, f.db)).choice.location,
       ).toBe('local');
+      expect(
+        await readProjectWorkflowBudget(
+          { context: f.context, worker: f.worker },
+          f.db,
+        ),
+      ).toMatchObject({
+        executions: 8,
+        used: { executions: 8, edits: 0 },
+        remaining: { executions: 0, edits: 3 },
+        nextAction: 'read_or_deliver_only',
+      });
+      await expect(
+        readProjectWorkflowBudget(
+          {
+            context: { ...f.context, workspaceId: randomUUID() },
+            worker: f.worker,
+          },
+          f.db,
+        ),
+      ).rejects.toThrow('run_or_frozen_configuration_changed');
       await expect(
         selectProjectExecution({ ...replayInput!, callId: randomUUID() }, f.db),
       ).rejects.toThrow('project_workflow_budget_exhausted');
       const g = await setup();
       await g.select();
       await g.db`update allrice_audit_events set occurred_at=clock_timestamp()-interval '31 minutes' where action='execution.location' and metadata->>'runId'=${g.rootRunId}`;
+      expect(
+        await readProjectWorkflowBudget(
+          { context: g.context, worker: g.worker },
+          g.db,
+        ),
+      ).toMatchObject({
+        used: { executions: 1 },
+        remaining: { elapsedMs: 0 },
+        nextAction: 'read_or_deliver_only',
+      });
       await expect(
         selectProjectExecution(
           {

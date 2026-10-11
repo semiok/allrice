@@ -59,6 +59,61 @@ export function projectProfileDigest(
   });
 }
 
+/** Read the same durable counters used by admission; never grants executions. */
+export async function readProjectWorkflowBudget(
+  input: {
+    context: ExecutionContext;
+    worker: { attempt: number; leaseToken: string };
+  },
+  database = getDatabase(),
+) {
+  const ctx = input.context,
+    owner = ctx.policySnapshot.subjectId;
+  const [row] = await database<
+    {
+      calls: number;
+      edits: number;
+      expires_at: string | null;
+      remaining_ms: number;
+    }[]
+  >`
+    select (select count(distinct metadata->>'callId')::int from allrice_audit_events
+      where organization_id=r.organization_id and workspace_id=r.workspace_id and actor_id=r.owner_id
+        and action='execution.location' and resource_type='saved_project' and metadata->>'runId'=r.id::text) calls,
+      (select coalesce(sum(revision),0)::int from allrice_project_workspace_heads
+        where root_run_id=r.id and organization_id=r.organization_id and workspace_id=r.workspace_id and owner_id=r.owner_id) edits,
+      (select min(occurred_at)+interval '30 minutes' from allrice_audit_events
+        where organization_id=r.organization_id and workspace_id=r.workspace_id and actor_id=r.owner_id
+          and action='execution.location' and resource_type='saved_project' and metadata->>'runId'=r.id::text) expires_at,
+      (select greatest(0,coalesce(extract(epoch from(min(occurred_at)+interval '30 minutes'-clock_timestamp()))*1000,${projectWorkflowBudget.elapsedMs}))::int
+        from allrice_audit_events where organization_id=r.organization_id and workspace_id=r.workspace_id and actor_id=r.owner_id
+          and action='execution.location' and resource_type='saved_project' and metadata->>'runId'=r.id::text) remaining_ms
+    from allrice_runs r join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId}
+    where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId}
+      and r.owner_id=${owner} and r.policy_snapshot_id=${ctx.policySnapshot.id} and r.state='running'
+      and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
+      and j.status='running' and j.worker_id=${ctx.worker.id} and j.attempt=${input.worker.attempt}
+      and j.lease_token=${input.worker.leaseToken} and j.lease_expires_at>clock_timestamp()
+      and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null`;
+  if (!row) throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+  return {
+    ...projectWorkflowBudget,
+    used: { executions: row.calls, edits: row.edits },
+    remaining: {
+      executions: Math.max(0, projectWorkflowBudget.executions - row.calls),
+      edits: Math.max(0, projectWorkflowBudget.edits - row.edits),
+      elapsedMs: row.remaining_ms,
+    },
+    expiresAt: row.expires_at,
+    nextAction:
+      row.calls >= projectWorkflowBudget.executions || row.remaining_ms === 0
+        ? 'read_or_deliver_only'
+        : row.calls >= projectWorkflowBudget.executions - 2
+          ? 'reserve_final_build_and_preview'
+          : 'reuse_successful_checks_and_current_preview',
+  };
+}
+
 /** One canonical call chooses once in the existing audit journal. No execution or new queue here. */
 export async function selectProjectExecution(
   input: {

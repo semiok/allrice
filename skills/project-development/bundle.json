@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.1",
+  "version": "1.0.2",
   "contentChecksum": "sha256:c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
   "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
   "license": "Apache-2.0",
@@ -15,8 +15,8 @@
     {
       "path": "references/workflow.md",
       "mediaType": "text/markdown",
-      "byteLength": 4686,
-      "checksum": "sha256:e7fdae528dea813d771f68149d6feaad6f7e643dbe5965515d5900359f38119d"
+      "byteLength": 6567,
+      "checksum": "sha256:3b4279d823aeb6413b6b6bc0c1c582871404ecbfd5792f2ae81330abdd2fa46e"
     }
   ],
   "dependencies": [
@@ -29,5 +29,5 @@
       "name": "workspace.skill.read"
     }
   ],
-  "checksum": "sha256:8fbc2c371dc507e1383b7fd91349b5cae74746c641c90a8917149dc73b7387f1"
+  "checksum": "sha256:2ef3219589b51111e127021da0d02c998773f5bb6005fd308c27e3d563f37942"
 }
