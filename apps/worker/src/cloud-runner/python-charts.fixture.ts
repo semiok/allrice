@@ -33,6 +33,24 @@ category_boxes = [text.get_window_extent(renderer) for text in ax.get_yticklabel
 assert all(not value.overlaps(category) for value in value_boxes for category in category_boxes)
 assert all(fig.bbox.contains(box.x0, box.y0) and fig.bbox.contains(box.x1, box.y1)
     for box in value_boxes + category_boxes)
+# Locators can expose undrawn ticks outside the limits. The public axis bbox
+# includes only the ticks participating in drawing, unlike get_xticklabels().
+xmin, xmax = sorted(ax.get_xlim())
+undrawn_ticks = [tick for tick in ax.xaxis.get_major_ticks()
+    if tick.get_loc() < xmin or tick.get_loc() > xmax]
+assert undrawn_ticks
+axis_boxes = [axis.get_tightbbox(renderer) for axis in (ax.xaxis, ax.yaxis)]
+visible_boxes = [box for box in axis_boxes if box is not None]
+visible_boxes += value_boxes + [ax.title.get_window_extent(renderer)]
+assert all(fig.bbox.contains(box.x0, box.y0) and fig.bbox.contains(box.x1, box.y1)
+    for box in visible_boxes)
+# Filtering non-rendered ticks must not hide a genuinely misplaced annotation.
+bad_label = ax.text(2, 2, '越界标签', transform=ax.transAxes)
+bad_box = bad_label.get_window_extent(renderer)
+clipped_label_detected = not (fig.bbox.contains(bad_box.x0, bad_box.y0)
+    and fig.bbox.contains(bad_box.x1, bad_box.y1))
+assert clipped_label_detected
+bad_label.remove()
 plt.close(fig)
 with Image.open('output/chart.png') as image:
     image.load()
@@ -49,6 +67,7 @@ with Image.open('dpi-check.png') as image:
 facts = {'rows':len(data), 'plotted':len(valid), 'missing':int(amounts.isna().sum()),
     'values':valid['金额'].tolist(), 'sum':int(valid['金额'].sum()),
     'backend':matplotlib.get_backend(), 'font':font_path, 'labels_overlap':False,
+    'undrawn_ticks_ignored':len(undrawn_ticks), 'clipped_label_detected':clipped_label_detected,
     'explicit_dpi_size':[1280, 640],
     'font_checksum':'sha256:'+hashlib.sha256(open(font_path,'rb').read()).hexdigest()}
 open('output/data-quality.json','w').write(json.dumps(facts, ensure_ascii=False))

@@ -1,16 +1,16 @@
 {
   "schemaVersion": 1,
-  "version": "1.7.4",
-  "contentChecksum": "sha256:5fe40c121851d24e92c3947e71ee6d41c9c1652e56223f825b5a727040fb296f",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=5fe40c121851d24e92c3947e71ee6d41c9c1652e56223f825b5a727040fb296f",
+  "version": "1.7.5",
+  "contentChecksum": "sha256:0a6d3815524a8d6f60af1e94c76bb4d8c30f825378ae7e8cb979df6641c6a595",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=0a6d3815524a8d6f60af1e94c76bb4d8c30f825378ae7e8cb979df6641c6a595",
   "license": "Apache-2.0 AND MIT",
-  "reviewedBy": "Role tier benchmark follow-up: explicit chart export DPI",
+  "reviewedBy": "Role task closeout: rendered chart bounds and scoped recovery",
   "resources": [
     {
       "path": "references/charts.md",
       "mediaType": "text/markdown",
-      "byteLength": 2557,
-      "checksum": "sha256:5192659dc3b428bcb9ae5e74abe59d7bd6454df1ba3745e0a3d704cf659d933e"
+      "byteLength": 3629,
+      "checksum": "sha256:e1b8ff25b52921eb74a2d31a9b5f5362d808d661cbb1afcdc9349722c3efd1bf"
     },
     {
       "path": "references/LICENSE.dsh",
@@ -71,5 +71,5 @@
       "name": "python.execute"
     }
   ],
-  "checksum": "sha256:0bb151bd5fd1d33086aae4485ad5780ae288759cadd9db77e40e5f47e429939e"
+  "checksum": "sha256:9e3a7c60eebf1b628240d5a16f72a5daa6d51535c0e95dc4ceeaeb3d453eddd0"
 }

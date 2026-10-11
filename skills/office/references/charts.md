@@ -6,6 +6,10 @@ Long categories work well on the vertical axis. `bar_label` positions positive a
 
 The managed environment sets `savefig.dpi` to 120 independently of the figure DPI. Pass the chosen DPI to both creation and saving, as below. Check the actual saved PNG. Only require exact pixels when the task specifies them; do not invent a pixel-size acceptance condition from `figsize * dpi` (cropping and rounding can change it). If a self-imposed check fails, inspect the actual file and correct that check without changing the analysis or regenerating unrelated deliverables.
 
+For an optional layout check after `fig.canvas.draw()`, use each axis's public `get_tightbbox(renderer)` and the bounding boxes of the title and actual value annotations. Do not require every `get_xticklabels()` or `get_yticklabels()` object to fit the canvas: locators can return ticks outside the axis limits which are not drawn, even when their Text objects report `get_visible()`. A failed check should identify the text, bounding box, figure bounds and axis limits before changing the chart. These geometry checks supplement inspection of the saved PNG; they do not prove the absence of overlap.
+
+Keep recovery local to the failed plotting or validation code; retain the already verified calculation and report logic. A failed invocation may return no artifacts, and another invocation has a separate sandbox. Reuse a file only when the tool actually returned its artifact object and checksum; otherwise rerun the minimally corrected script with the original inputs. Never claim unreturned files are available or replace a required check with unconditional success.
+
 ```python
 import matplotlib.pyplot as plt
 from matplotlib import font_manager, ft2font

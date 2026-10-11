@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.1",
-  "contentChecksum": "sha256:822269990b9ff2243c07ff58a552e3ff94febb8c9061bc6f9161b4a33b40ef9f",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/operations-review?content-sha256=822269990b9ff2243c07ff58a552e3ff94febb8c9061bc6f9161b4a33b40ef9f",
+  "version": "1.0.2",
+  "contentChecksum": "sha256:73d9c3947e67169ce1e9283839e9c42fbdf7fc977015f3189deabd8712460378",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/operations-review?content-sha256=73d9c3947e67169ce1e9283839e9c42fbdf7fc977015f3189deabd8712460378",
   "license": "Apache-2.0",
-  "reviewedBy": "Role tier benchmark: managed chart fonts, offline reports and bounded delivery",
+  "reviewedBy": "Role task closeout: rendered chart bounds and scoped recovery",
   "resources": [
     {
       "path": "references/delivery.md",
@@ -37,5 +37,5 @@
       "name": "workspace.export.create"
     }
   ],
-  "checksum": "sha256:552449fa66e542abb029045734e1f7c9575e19e6a7ccd42d19379aaa642bc776"
+  "checksum": "sha256:1c1da3f4989cca23a387feef00079f548d31178d4587e734a8f6081ffc5df76e"
 }
