@@ -266,7 +266,7 @@
       "name": "project-development",
       "contentFile": "skills/project-development/SKILL.md",
       "bundleFile": "skills/project-development/bundle.json",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "checksum": "sha256:c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
       "source": "allrice",
       "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",

@@ -3,6 +3,7 @@ import {
   publishLocalProjectArtifacts,
   ProjectWorkspaceError,
   selectProjectExecution,
+  readProjectWorkflowBudget,
   createLocalCommandOperation,
   waitLocalCommandOperation,
   createCloudProjectOperation,
@@ -14,7 +15,6 @@ import {
 import {
   ProjectRunnableInputSchema,
   projectServiceLimits,
-  projectWorkflowBudget,
   cloudPythonImageV1,
   cloudToolchainImageV1,
 } from '@allrice/contracts';
@@ -42,6 +42,14 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       '项目操作需要当前任务的有效执行上下文。',
       false,
     );
+  const budget = () =>
+    readProjectWorkflowBudget({
+      context: input.context,
+      worker: {
+        attempt: input.managedBrowserJobAttempt!,
+        leaseToken: input.managedBrowserJobLeaseToken!,
+      },
+    });
   try {
     if (
       [
@@ -62,7 +70,10 @@ export const runProjectWorkspace: RiceToolHandler = async ({
         new LocalStorageAdapter(input.storageRoot),
       );
       return {
-        modelContent: JSON.stringify({ service: result }),
+        modelContent: JSON.stringify({
+          service: result,
+          workflowBudget: await budget(),
+        }),
         summary: `项目服务 · ${result.state}`,
       };
     }
@@ -167,6 +178,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       if (selected.selection.choice.status !== 'execute')
         return {
           modelContent: JSON.stringify({
+            workflowBudget: await budget(),
             status:
               selected.selection.choice.status === 'reconcile'
                 ? 'unknown'
@@ -198,6 +210,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           );
           return {
             modelContent: JSON.stringify({
+              workflowBudget: await budget(),
               service,
               executionChoice: selected.selection.choice,
               project: command.project,
@@ -227,6 +240,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           : result;
         return {
           modelContent: JSON.stringify({
+            workflowBudget: await budget(),
             ...publicResult,
             artifacts,
             project: command.project,
@@ -253,6 +267,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
         });
         return {
           modelContent: JSON.stringify({
+            workflowBudget: await budget(),
             service,
             executionChoice: selected.selection.choice,
             project: command.project,
@@ -268,6 +283,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       });
       return {
         modelContent: JSON.stringify({
+          workflowBudget: await budget(),
           ...result,
           project: command.project,
           executionLocation: 'cloud',
@@ -293,8 +309,8 @@ export const runProjectWorkspace: RiceToolHandler = async ({
     );
     return {
       modelContent: JSON.stringify({
+        workflowBudget: await budget(),
         ...result,
-        workflowBudget: projectWorkflowBudget,
       }),
       summary:
         args.action === 'open' || args.action === 'apply'
@@ -310,7 +326,8 @@ export const runProjectWorkspace: RiceToolHandler = async ({
     )
       throw new HandlerError(
         'PROJECT_WORKFLOW_BUDGET_EXHAUSTED',
-        '本轮项目执行预算已用完。保留当前源码和失败记录，用 deliver 交付结果；不要继续修改、执行或换端重试。',
+        '本轮项目执行预算已用完。保留当前源码和失败记录，用 deliver 交付结果；不要继续修改、执行或换端重试。 ' +
+          JSON.stringify({ workflowBudget: await budget() }),
         false,
       );
     if (error instanceof ProjectWorkspaceError)

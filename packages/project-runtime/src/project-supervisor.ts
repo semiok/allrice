@@ -18,6 +18,10 @@ const root='/tmp/work',bootDeadline=Number(process.argv[1]||0);
 // Cloud's bounded tmpfs work volume is mounted at start. Wait for the final trusted staging marker.
 if(bootDeadline>0)for(;;){try{if(await readFile(root+'/.allrice/staging-ready','utf8')==='ready')break;}catch(e){if(e.code!=='ENOENT')throw e;}if(Date.now()>=bootDeadline)process.exit(124);await new Promise(r=>setTimeout(r,20));}
 const a=JSON.parse(await readFile(root+'/.allrice/config.json','utf8'));
+// Cloud previews must not keep a writable shared dependency cache alive. Their
+// private store shares the existing bounded work tmpfs and dies with that work copy.
+const cacheRoot=a.privateServiceCache===true&&a.command.background?root+'/service-cache':'/cache';
+if(cacheRoot!=='/cache')await mkdir(cacheRoot,{mode:0o700});
 let finished=false,size=0,frames=0,installation='failed';
 const emit=e=>process.stdout.write(JSON.stringify(e)+'\n');
 const end=(reason,code)=>{if(finished)return;finished=true;emit({type:'exit',reason,code,installation});process.stdout.write('',()=>process.exit(code));setTimeout(()=>process.exit(code),100).unref();};
@@ -27,11 +31,11 @@ let cacheChecking=null;
 async function checkCache(){
  const maximumBytes=a.command.projectPreparation.resourceProfile==='web-development'?512000000:128000000;
  const maximumFiles=a.command.projectPreparation.resourceProfile==='web-development'?50000:20000;
- let total=0,count=0;const dirs=['/cache'];
+ let total=0,count=0;const dirs=[cacheRoot];
  while(dirs.length){const dir=dirs.pop();let entries;
   // Installers atomically publish/remove temporary store files and directories.
   // Only vanished descendants are benign; loss of the mount or other I/O errors fails closed.
-  try{entries=await readdir(dir,{withFileTypes:true});}catch(e){if(dir!=='/cache'&&e.code==='ENOENT')continue;throw e;}
+  try{entries=await readdir(dir,{withFileTypes:true});}catch(e){if(dir!==cacheRoot&&e.code==='ENOENT')continue;throw e;}
   count+=entries.length;if(count>maximumFiles)throw Error('cache limit');
   // Bound metadata concurrency: serial lstat of a native framework store can
   // consume the execution budget under gVisor. Keep the same byte/file checks.
@@ -44,7 +48,7 @@ async function checkCache(){
    total+=sizes.reduce((sum,size)=>sum+size,0);if(total>maximumBytes)throw Error('cache limit');
   }
  }
- const cacheRoot=await lstat('/cache');if(!cacheRoot.isDirectory()||cacheRoot.isSymbolicLink())throw Error('cache mount changed');
+ const cacheState=await lstat(cacheRoot);if(!cacheState.isDirectory()||cacheState.isSymbolicLink())throw Error('cache mount changed');
 }
 function boundedCacheCheck(){
  if(cacheChecking)return cacheChecking;
@@ -96,10 +100,10 @@ try{
  const sourceDigest='sha256:'+createHash('sha256').update(JSON.stringify(manifest)).digest('hex');if(sourceDigest!==a.command.projectPreparation.sourceDigest)throw Error('project source changed');
  emit({type:'source_verified',sourceDigest});
  await ownership(root+'/project');await ownership(root+'/home');await ownership(root+'/tmp');
- await mkdir('/cache/pnpm',{recursive:true,mode:0o700});await chown('/cache/pnpm',1000,1000);
+ await mkdir(cacheRoot+'/pnpm',{recursive:true,mode:0o700});if(cacheRoot!=='/cache')await chown(cacheRoot,1000,1000);await chown(cacheRoot+'/pnpm',1000,1000);
  // Extraction is of a fixed release archive, never a source-provided tar.
  if(await run('/bin/tar',['-xzf',root+'/.allrice/manager.tar.gz','-C',root+'/tools'],false))throw Error('manager extraction');
- const pnpm=root+'/tools/package/bin/pnpm.cjs',flags=['--store-dir=/cache/pnpm','--offline','--ignore-pnpmfile','--config.manage-package-manager-versions=false','--config.verify-store-integrity=true'];
+ const pnpm=root+'/tools/package/bin/pnpm.cjs',flags=['--store-dir='+cacheRoot+'/pnpm','--offline','--ignore-pnpmfile','--config.manage-package-manager-versions=false','--config.verify-store-integrity=true'];
  const s=a.command.projectPreparation;
  emit({type:'stage',stage:'preparing'});
  await writeFile(root+'/project/'+s.lockPath,await readFile(root+'/.allrice/pnpm-install-lock'));

@@ -98,7 +98,10 @@ suite('cloud project first complete native chain', () => {
       const files = await Promise.all(
           names.map(async (path) => ({
             path,
-            text: await readFile(new URL(path, folder), 'utf8'),
+            text:
+              (path === 'vite.config.js'
+                ? "import fs from 'node:fs';import assert from 'node:assert/strict';assert.throws(()=>fs.writeFileSync('/cache/preview-owned','denied'));fs.writeFileSync('/tmp/work/service-cache/preview-owned','private');\n"
+                : '') + (await readFile(new URL(path, folder), 'utf8')),
           })),
         ),
         lock = yaml(files.find((x) => x.path === 'pnpm-lock.yaml').text);
@@ -236,6 +239,25 @@ suite('cloud project first complete native chain', () => {
       proof.nativeFinishedAt = new Date().toISOString();
       expect(ProjectServiceViewSchema.parse(ready).state).toBe('ready');
       expect(ready.backend).toBe('cloud');
+      // Regression: a live preview previously held the daemon cache fence for
+      // its entire lease. A second backend must build the same project now.
+      const finiteCommand = { ...f.command };
+      delete finiteCommand.service;
+      const built = JSON.parse(
+        (
+          await broker({
+            ...finiteCommand,
+            action: 'execute',
+            args: [
+              '-e',
+              "const fs=require('node:fs'),assert=require('node:assert/strict');assert.ok(fs.existsSync('node_modules/vite'));assert.equal(fs.existsSync('/cache/preview-owned'),false);console.log('concurrent same-cache build passed');",
+            ],
+          })
+        ).modelContent,
+      );
+      expect(built.status).toBe('succeeded');
+      expect(built.workflowBudget.used.executions).toBe(2);
+      proof.concurrentBuildWhilePreviewReady = true;
       f.id = ready.id;
       proof.serviceId = f.id;
       proof.delayedStartAndStagingMs = 6500;

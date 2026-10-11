@@ -25,6 +25,59 @@ it('passes exact saved HTML and finite verification plan through real DSH, rejec
         html: '<script>fetch("https://example.com")</script>',
       },
     },
+    inspectSchema(schema) {
+      expect(schema.properties).toMatchObject({
+        command: { enum: ['profiles', 'open', 'act', 'close', 'verify'] },
+        artifact: {
+          additionalProperties: false,
+          required: ['versionId', 'checksum'],
+        },
+        plan: {
+          additionalProperties: false,
+          required: ['version', 'steps'],
+          properties: {
+            steps: {
+              items: {
+                properties: {
+                  selector: {
+                    additionalProperties: false,
+                    required: ['tag', 'label'],
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+    },
+  });
+}, 45000);
+
+it('rejects unsupported selector keys before the Broker with the exact schema error', async () => {
+  const args = {
+    command: 'verify',
+    artifact: { versionId: randomUUID(), checksum: 'sha256:' + 'a'.repeat(64) },
+    plan: { version: 1, steps: [{ type: 'text_contains', expected: 'saved' }] },
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'browser.workspace',
+    wireName: 'browser_workspace',
+    args,
+    invalidArgs: {
+      ...args,
+      plan: {
+        version: 1,
+        steps: [
+          {
+            type: 'fill',
+            selector: { tag: 'input', label: '日期', exact: true },
+            value: '2026-10-15',
+          },
+          { type: 'text_contains', expected: 'saved' },
+        ],
+      },
+    },
+    invalidResultIncludes: 'exact',
   });
 }, 45000);
 it('P21 browser uses native DSH to the existing Broker, with exact action envelope', async () => {

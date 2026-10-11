@@ -24,14 +24,17 @@ function checker(
 ) {
   const start = nodeProjectSupervisor.indexOf('async function checkCache()');
   const end = nodeProjectSupervisor.indexOf('\nconst cacheTimer=', start);
-  const source = nodeProjectSupervisor
-    .slice(start, end)
-    .replaceAll("'/cache'", JSON.stringify(root));
+  const source = nodeProjectSupervisor.slice(start, end);
   return runInNewContext(
-    `(async (readdir,lstat,a)=>{${source};return checkCache();})`,
-  )(read, stat, {
-    command: { projectPreparation: { resourceProfile: profile } },
-  }) as Promise<void>;
+    `(async (readdir,lstat,a,cacheRoot)=>{${source};return checkCache();})`,
+  )(
+    read,
+    stat,
+    {
+      command: { projectPreparation: { resourceProfile: profile } },
+    },
+    root,
+  ) as Promise<void>;
 }
 async function fixture(test: (root: string) => Promise<void>) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-cache-monitor-'));

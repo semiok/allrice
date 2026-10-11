@@ -1515,6 +1515,7 @@ export class CloudRunnerBackend {
           command,
           config: prepared.config,
           afterStart: async (id) => {
+            await prepared.releaseServiceCacheFence();
             for (const bytes of prepared.archives)
               await this.putArchive(id, bytes, prepared.signal);
             if (!(await prepared.maintainLease()))

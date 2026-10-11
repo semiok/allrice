@@ -7,12 +7,14 @@ const ports = vi.hoisted(() => ({
   select: vi.fn(),
   preflight: vi.fn(),
   create: vi.fn(),
+  budget: vi.fn(),
 }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   selectProjectExecution: ports.select,
   cloudExecutionEnabled: () => true,
   createCloudProjectOperation: ports.create,
+  readProjectWorkflowBudget: ports.budget,
   executionResourceObserver: () => ({ observe: vi.fn() }),
 }));
 vi.mock('../../cloud-runner/backend.js', () => ({
@@ -24,6 +26,12 @@ import { runProjectWorkspace } from './project.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ports.budget.mockResolvedValue({
+    executions: 8,
+    edits: 3,
+    used: { executions: 1, edits: 0 },
+    remaining: { executions: 7, edits: 3 },
+  });
   ports.select.mockResolvedValue({
     choice: {
       location: 'none',
@@ -103,6 +111,7 @@ it.each([
     expect(JSON.parse(result.modelContent)).toMatchObject({
       executed: false,
       status: 'environment_unavailable',
+      workflowBudget: { used: { executions: 1 }, remaining: { executions: 7 } },
     });
   },
 );
