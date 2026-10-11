@@ -3,6 +3,10 @@ import { EmailSchema, PasswordSchema, UsernameSchema } from './identity.ts';
 import { UuidSchema } from './common.ts';
 import type { AdminTenantEmployee } from './tenant-employees.ts';
 
+export function organizationInitialPassword(username: string) {
+  return `${UsernameSchema.parse(username)}@123`;
+}
+
 export const OrganizationInputSchema = z
   .object({
     name: z.string().trim().min(1).max(160),
@@ -19,7 +23,7 @@ export const OrganizationPersonInputSchema = z
     jobTitle: z.string().trim().max(160).default(''),
     responsibilities: z.string().trim().max(8000).default(''),
     email: EmailSchema.optional(),
-    password: PasswordSchema.default('admin@321'),
+    password: PasswordSchema.optional(),
   })
   .strict();
 export const OrganizationImportSchema = z
@@ -50,7 +54,7 @@ export const OrganizationAccountStatusSchema = z
   })
   .strict();
 export const OrganizationPasswordResetSchema = z
-  .object({ password: PasswordSchema.default('admin@321') })
+  .object({ password: PasswordSchema.optional() })
   .strict();
 
 export interface ManagedOrganization {

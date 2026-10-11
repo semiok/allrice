@@ -14,7 +14,7 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
-import { hashPassword } from './identity.ts';
+import { hashOrganizationInitialPassword, hashPassword } from './identity.ts';
 import { isPlatformAdmin } from './platform-authority.ts';
 import {
   listAdminTenants,
@@ -240,7 +240,9 @@ export async function importOrganizationPeople(
     prepared.push({
       ...p,
       id: randomUUID(),
-      hash: await hashPassword(p.password),
+      hash: p.password
+        ? await hashPassword(p.password)
+        : await hashOrganizationInitialPassword(p.username),
     });
   return uniqueAccount(() =>
     db.begin(async (tx) => {
@@ -345,9 +347,13 @@ export async function resetOrganizationPassword(
     userId = UuidSchema.parse(userInput),
     value = OrganizationPasswordResetSchema.parse(input);
   await requireTenantAdministrationAuthority(context, getDatabase());
-  const hash = await hashPassword(value.password);
   await getDatabase().begin(async (tx) => {
-    await lockPerson(tx, context, id, userId);
+    const row = await lockPerson(tx, context, id, userId);
+    if (!value.password && !row.username)
+      throw new OrganizationAdministrationError('account_conflict');
+    const hash = value.password
+      ? await hashPassword(value.password)
+      : await hashOrganizationInitialPassword(String(row.username));
     await tx`update allrice_users set password_hash=${hash},updated_at=now() where id=${userId}`;
     await tx`update allrice_sessions set revoked_at=now() where user_id=${userId} and revoked_at is null`;
     await audit(

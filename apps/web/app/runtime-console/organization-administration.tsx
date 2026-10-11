@@ -10,6 +10,8 @@ import {
 } from 'react';
 import {
   OrganizationImportSchema,
+  UsernameSchema,
+  organizationInitialPassword,
   type ManagedOrganization,
   type OrganizationPerson,
   type OrganizationAiTarget,
@@ -458,7 +460,12 @@ export function OrganizationPeople({
   const [editor, setEditor] = useState<
     'new' | 'bulk' | OrganizationPerson | null
   >(null);
-  const [reset, setReset] = useState<OrganizationPerson | null>(null);
+  const [initialUsername, setInitialUsername] = useState('');
+  const [customPassword, setCustomPassword] = useState<string | null>(null);
+  const parsedUsername = UsernameSchema.safeParse(initialUsername);
+  const initialPassword = parsedUsername.success
+    ? organizationInitialPassword(parsedUsername.data)
+    : '';
   const [searchText, setSearchText] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
   const [selectedPeople, setSelectedPeople] = useState<string[]>([]);
@@ -466,7 +473,7 @@ export function OrganizationPeople({
     target: OrganizationAiTarget;
     title: string;
   } | null>(null);
-  const editing = !!editor || !!reset || !!aiTarget;
+  const editing = !!editor || !!aiTarget;
   const controller = useRef<AbortController | null>(null);
   const base = `/api/v1/admin/organizations/${organization.id}/people`;
   const load = useCallback(
@@ -519,7 +526,6 @@ export function OrganizationPeople({
     try {
       await organizationApi(url, method, input);
       setEditor(null);
-      setReset(null);
       setNotice(message);
       await load();
       onChanged();
@@ -550,7 +556,13 @@ export function OrganizationPeople({
         ? { ...input, expectedVersion: edited.version }
         : {
             people: [
-              { ...input, password: data.get('password') || 'admin@321' },
+              {
+                ...input,
+                ...(data.get('password') &&
+                data.get('password') !== initialPassword
+                  ? { password: data.get('password') }
+                  : {}),
+              },
             ],
           },
       edited ? '员工资料已保存。' : '员工账号已创建，可直接登录统一工作台。',
@@ -580,7 +592,11 @@ export function OrganizationPeople({
             variant="primary"
             icon="plus"
             disabled={busy || editing}
-            onClick={() => setEditor('new')}
+            onClick={() => {
+              setInitialUsername('');
+              setCustomPassword(null);
+              setEditor('new');
+            }}
           >
             添加员工
           </AdminButton>
@@ -785,6 +801,9 @@ export function OrganizationPeople({
                       maxLength={64}
                       autoComplete="off"
                       defaultValue={edited?.username ?? ''}
+                      onChange={(event) =>
+                        setInitialUsername(event.target.value)
+                      }
                     />
                   </label>
                 </div>
@@ -811,15 +830,43 @@ export function OrganizationPeople({
                       name="password"
                       type="password"
                       autoComplete="new-password"
-                      minLength={8}
+                      minLength={
+                        (customPassword ?? initialPassword) === initialPassword
+                          ? 1
+                          : 8
+                      }
                       maxLength={256}
-                      defaultValue="admin@321"
-                      required
+                      value={customPassword ?? initialPassword}
+                      onChange={(event) =>
+                        setCustomPassword(event.target.value || null)
+                      }
+                      placeholder="填写英文账号后自动生成"
                     />
                     <span className={styles.meta}>
-                      可指定初始密码，员工登录后可以修改。
+                      默认为英文账号 + @123，例如
+                      snow@123；也可指定密码，员工登录后可以修改。
                     </span>
                   </label>
+                )}
+                {edited && (
+                  <div>
+                    <AdminButton
+                      disabled={!edited.username}
+                      onClick={() =>
+                        void mutate(
+                          `${base}/${edited.userId}/password`,
+                          'POST',
+                          {},
+                          `${edited.displayName} 的密码已重置为初始密码（英文账号 + @123），旧登录已退出。`,
+                        )
+                      }
+                    >
+                      重置密码
+                    </AdminButton>
+                    <p className={styles.meta}>
+                      重置为英文账号 + @123，员工需要重新登录。
+                    </p>
+                  </div>
                 )}
                 {error && (
                   <p className={styles.error} role="alert">
@@ -843,62 +890,6 @@ export function OrganizationPeople({
             </form>
           </AdminDialog>
         )
-      )}
-      {reset && (
-        <AdminDialog
-          title={`重置 ${reset.displayName} 的密码`}
-          busy={busy}
-          onClose={() => {
-            setReset(null);
-            setError('');
-          }}
-        >
-          <form
-            className={styles.form}
-            onSubmit={(event) => {
-              event.preventDefault();
-              void mutate(
-                `${base}/${reset.userId}/password`,
-                'POST',
-                { password: new FormData(event.currentTarget).get('password') },
-                '密码已重置，旧登录已退出。',
-              );
-            }}
-          >
-            <fieldset disabled={busy}>
-              <label>
-                新密码
-                <input
-                  name="password"
-                  type="password"
-                  minLength={8}
-                  maxLength={256}
-                  required
-                  autoComplete="new-password"
-                  defaultValue="admin@321"
-                />
-              </label>
-              {error && (
-                <p className={styles.error} role="alert">
-                  {error}
-                </p>
-              )}
-              <div className={styles.dialogFooter}>
-                <AdminButton
-                  onClick={() => {
-                    setReset(null);
-                    setError('');
-                  }}
-                >
-                  取消
-                </AdminButton>
-                <AdminButton type="submit" variant="primary">
-                  {busy ? '重置中…' : '重置密码'}
-                </AdminButton>
-              </div>
-            </fieldset>
-          </form>
-        </AdminDialog>
       )}
       <table className={styles.peopleTable}>
         <colgroup>
@@ -1024,8 +1015,15 @@ export function OrganizationPeople({
                     </AdminButton>
                     <AdminButton
                       variant="quiet"
-                      disabled={busy || editing}
-                      onClick={() => setReset(person)}
+                      disabled={busy || editing || !person.username}
+                      onClick={() =>
+                        void mutate(
+                          `${base}/${person.userId}/password`,
+                          'POST',
+                          {},
+                          `${person.displayName} 的密码已重置为初始密码（英文账号 + @123），旧登录已退出。`,
+                        )
+                      }
                     >
                       重置密码
                     </AdminButton>
@@ -1096,7 +1094,7 @@ function BulkPeopleImport({
       displayName: string;
       jobTitle: string;
       responsibilities: string;
-      password: string;
+      password?: string;
     }[],
   ) => void;
 }) {
@@ -1151,7 +1149,8 @@ function BulkPeopleImport({
           )
         )}
         <p className={styles.meta}>
-          初始密码统一为 admin@321。账号重名时整批不写入，已有员工密码不会改变。
+          初始密码为各自的英文账号 + @123，例如
+          snow@123。账号重名时整批不写入，已有员工密码不会改变。
         </p>
         <div className={styles.dialogFooter}>
           <AdminButton onClick={onCancel}>取消</AdminButton>

@@ -79,7 +79,7 @@ export function LoginForm(props: {
             type={showPassword ? 'text' : 'password'}
             placeholder="输入密码"
             autoComplete="current-password"
-            minLength={8}
+            minLength={1}
             required
           />
           <button

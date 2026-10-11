@@ -1059,13 +1059,16 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       expect(await page.getByLabel('管理工作区').count()).toBe(0);
       await page.getByRole('button', { name: '添加员工', exact: true }).click();
       await page.getByLabel('英文账号', { exact: true }).fill(username);
+      expect(
+        await page.getByLabel('初始密码', { exact: false }).inputValue(),
+      ).toBe(`${username}@123`);
       await page.getByLabel('姓名', { exact: true }).fill('小雪');
       await page.getByLabel('岗位', { exact: true }).fill('财务');
       await page.getByLabel('职能', { exact: true }).fill('供应商对账');
       await page.getByRole('button', { name: '保存员工', exact: true }).click();
       const row = page.getByRole('row').filter({ hasText: username });
       await row.waitFor();
-      const signed = await login({ username, password: 'admin@321' });
+      const signed = await login({ username, password: `${username}@123` });
       expect(
         (await authenticateSession(signed.session.token))?.organizationId,
       ).toBe(organizationId);
@@ -1077,6 +1080,12 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         .getByRole('button', { name: '创建这些员工', exact: true })
         .click();
       await page.getByRole('row').filter({ hasText: '小陈' }).waitFor();
+      expect(
+        (await login({ username: 'lin', password: 'lin@123' })).user.username,
+      ).toBe('lin');
+      expect(
+        (await login({ username: 'chen', password: 'chen@123' })).user.username,
+      ).toBe('chen');
       await row.locator('summary').click();
       await row.getByRole('button', { name: '编辑', exact: true }).click();
       await page.getByLabel('姓名', { exact: true }).fill('林小雪');
@@ -1085,27 +1094,22 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await expect.poll(() => row.textContent()).toContain('财务经理');
       await row.locator('summary').click();
       await row.getByRole('button', { name: '重置密码', exact: true }).click();
-      const reset = page.getByRole('dialog', {
-        name: '重置 林小雪 的密码',
-      });
-      await reset
-        .getByLabel('新密码', { exact: true })
-        .fill('browser-new-password');
-      await reset
-        .getByRole('button', { name: '重置密码', exact: true })
-        .click();
       await page
-        .getByText('密码已重置，旧登录已退出。', { exact: true })
+        .getByText(
+          '林小雪 的密码已重置为初始密码（英文账号 + @123），旧登录已退出。',
+          { exact: true },
+        )
         .waitFor();
+      expect(await page.getByRole('dialog').count()).toBe(0);
       expect(await authenticateSession(signed.session.token)).toBeNull();
       expect(
-        (await login({ username, password: 'browser-new-password' })).user.id,
+        (await login({ username, password: `${username}@123` })).user.id,
       ).toBe(signed.user.id);
       await row.locator('summary').click();
       await row.getByRole('button', { name: '停用账号', exact: true }).click();
       await row.getByText('已停用', { exact: true }).waitFor();
       await expect(
-        login({ username, password: 'browser-new-password' }),
+        login({ username, password: `${username}@123` }),
       ).rejects.toMatchObject({ code: 'authentication_failed' });
       await row.locator('summary').click();
       await row.getByRole('button', { name: '启用账号', exact: true }).click();
@@ -1134,7 +1138,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         });
       const ordinary = await login({
         username,
-        password: 'browser-new-password',
+        password: `${username}@123`,
       });
       const denied = await page.request.get(
         `${origin}/api/v1/admin/organizations`,
@@ -1210,12 +1214,20 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         .waitFor();
       await expect.poll(() => ai.textContent()).toContain('1 / 1 人当前可用');
       const a = (await authenticateSession(
-        (await login({ username: 'assignment-snow', password: 'admin@321' }))
-          .session.token,
+        (
+          await login({
+            username: 'assignment-snow',
+            password: 'assignment-snow@123',
+          })
+        ).session.token,
       ))!;
       const b = (await authenticateSession(
-        (await login({ username: 'assignment-drink', password: 'admin@321' }))
-          .session.token,
+        (
+          await login({
+            username: 'assignment-drink',
+            password: 'assignment-drink@123',
+          })
+        ).session.token,
       ))!;
       expect(
         (await getEmployeeWorkspace(a, c.defaultWorkspaceId)).employees,
