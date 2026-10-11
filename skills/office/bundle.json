@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "version": "1.7.2",
-  "contentChecksum": "sha256:7527e357fc2376051ccc27185f49546d3fb024f8f805f9e6a046a78d5c209a80",
-  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=7527e357fc2376051ccc27185f49546d3fb024f8f805f9e6a046a78d5c209a80",
+  "contentChecksum": "sha256:6b7987447b9412092c7b2f40a8a06d13945d3c11184de98cf9c86a8a78f3e0e7",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/office?content-sha256=6b7987447b9412092c7b2f40a8a06d13945d3c11184de98cf9c86a8a78f3e0e7",
   "license": "Apache-2.0 AND MIT",
   "reviewedBy": "MET-166 writable Office output and in-memory intermediate charts",
   "resources": [
@@ -65,5 +65,5 @@
       "name": "python.execute"
     }
   ],
-  "checksum": "sha256:823156d6442f6afb9878fe16a016e793df7ee37be9d41e86f4560e2e925ed4ab"
+  "checksum": "sha256:89b162c383cf95c15c946263e46a35d440e5009a4ca04fca2cf30c34ef82ca0e"
 }
