@@ -4,12 +4,14 @@ Use this recipe with `python_execute` and actual computed labels and values. It 
 
 Long categories work well on the vertical axis. `bar_label` positions positive and negative labels outside their bars; padding, axis margins and constrained layout keep them away from the category labels and figure edges. Still inspect the real PNG, particularly with more categories or unusually large values. A missing value must be handled in the analysis before plotting, not replaced by zero.
 
+The managed environment sets `savefig.dpi` to 120 independently of the figure DPI. Pass the chosen DPI to both creation and saving, as below. Check the actual saved PNG. Only require exact pixels when the task specifies them; do not invent a pixel-size acceptance condition from `figsize * dpi` (cropping and rounding can change it). If a self-imposed check fails, inspect the actual file and correct that check without changing the analysis or regenerating unrelated deliverables.
+
 ```python
 import matplotlib.pyplot as plt
 from matplotlib import font_manager, ft2font
 
 
-def plot_cjk_bars(labels, values, *, title, unit, output_path):
+def plot_cjk_bars(labels, values, *, title, unit, output_path, dpi=120):
     font_path = font_manager.findfont(
         font_manager.FontProperties(), fallback_to_default=False
     )
@@ -19,14 +21,14 @@ def plot_cjk_bars(labels, values, *, title, unit, output_path):
                       and not font.get_char_index(ord(char))})
     if missing:
         raise ValueError("Configured chart font lacks glyphs: " + "".join(missing))
-    fig, ax = plt.subplots(figsize=(8, 4), dpi=120, layout="constrained")
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=dpi, layout="constrained")
     bars = ax.barh(labels, values)
     ax.bar_label(bars, padding=4, fmt="%g")
     ax.margins(x=0.18, y=0.15)
     ax.axvline(0, color="gray", linewidth=0.6)
     ax.set_title(title)
     ax.set_xlabel(unit)
-    fig.savefig(output_path, metadata={"Title": title})
+    fig.savefig(output_path, dpi=dpi, metadata={"Title": title})
     return fig, ax, font_path
 ```
 

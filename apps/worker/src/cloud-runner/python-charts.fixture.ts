@@ -38,9 +38,18 @@ with Image.open('output/chart.png') as image:
     image.load()
     assert image.size == (960, 480)
     assert image.info['Title'] == '中文费用图表'
+# An explicit output contract must work even when savefig's default differs.
+assert matplotlib.rcParams['savefig.dpi'] == 120
+fig2, _, _ = plot_cjk_bars(['导出分辨率'], [1], title='显式DPI', unit='数量',
+    output_path='dpi-check.png', dpi=160)
+plt.close(fig2)
+with Image.open('dpi-check.png') as image:
+    image.load()
+    assert image.size == (1280, 640)
 facts = {'rows':len(data), 'plotted':len(valid), 'missing':int(amounts.isna().sum()),
     'values':valid['金额'].tolist(), 'sum':int(valid['金额'].sum()),
     'backend':matplotlib.get_backend(), 'font':font_path, 'labels_overlap':False,
+    'explicit_dpi_size':[1280, 640],
     'font_checksum':'sha256:'+hashlib.sha256(open(font_path,'rb').read()).hexdigest()}
 open('output/data-quality.json','w').write(json.dumps(facts, ensure_ascii=False))
 print(json.dumps(facts, ensure_ascii=False))

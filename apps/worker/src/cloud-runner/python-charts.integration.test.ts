@@ -139,6 +139,7 @@ suite('fixed Python Chinese charts in the actual gVisor cloud sandbox', () => {
       sum: -15,
       backend: 'Agg',
       labels_overlap: false,
+      explicit_dpi_size: [1280, 640],
     });
     expect(data.font).toContain('NotoSansCJK');
     expect(data.font_checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
