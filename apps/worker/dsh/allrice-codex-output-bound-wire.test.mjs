@@ -7,6 +7,7 @@ import { createProvider } from '@earendil-works/pi-ai';
 import { openAICodexResponsesApi } from '@earendil-works/pi-ai/api/openai-codex-responses.lazy';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it } from 'vitest';
+import { WebSocketServer } from 'ws';
 import { runCodexSubscriptionCapProbe } from './allrice-codex-subscription-cap-probe.mjs';
 
 // This unsigned, deliberately synthetic value is generated here, not read from
@@ -39,6 +40,7 @@ async function runWire({
   incomplete = false,
   stall = false,
   failureMessage,
+  websocket,
 } = {}) {
   const calls = [];
   const server = createServer((request, response) => {
@@ -151,6 +153,62 @@ async function runWire({
       response.writeHead(500).end();
     });
   });
+  const wsServer = websocket ? new WebSocketServer({ server }) : undefined;
+  wsServer?.on('connection', (socket, request) => {
+    socket.once('message', (raw) => {
+      calls.push({
+        method: 'WS',
+        path: request.url,
+        body: JSON.parse(raw.toString()),
+      });
+      if (websocket === 'cancel') return;
+      socket.send(
+        JSON.stringify({
+          type: 'response.output_item.added',
+          output_index: 0,
+          item: { type: 'message', id: 'synthetic-ws-message', content: [] },
+        }),
+      );
+      socket.send(
+        JSON.stringify({
+          type: 'response.output_text.delta',
+          output_index: 0,
+          delta: 'Synthetic WebSocket output.',
+        }),
+      );
+      if (websocket === 'invalid-json') socket.send('{invalid');
+      if (websocket === 'complete') {
+        const item = {
+          type: 'message',
+          id: 'synthetic-ws-message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            { type: 'output_text', text: 'Synthetic WebSocket output.' },
+          ],
+        };
+        socket.send(
+          JSON.stringify({
+            type: 'response.output_item.done',
+            output_index: 0,
+            item,
+          }),
+        );
+        socket.send(
+          JSON.stringify({
+            type: 'response.completed',
+            response: {
+              id: 'synthetic-ws-response',
+              status: 'completed',
+              output: [item],
+              usage: { input_tokens: 4, output_tokens: 5, total_tokens: 9 },
+            },
+          }),
+        );
+      }
+      socket.close(1000);
+    });
+  });
   try {
     server.listen(0, '127.0.0.1');
     await once(server, 'listening');
@@ -199,7 +257,7 @@ async function runWire({
         // Enforce the test's network boundary before invoking real transport.
         expect(selectedModel.baseUrl).toBe(endpoint);
         expect(options.apiKey).toBe(syntheticToken);
-        expect(options.transport).toBe('sse');
+        expect(options.transport).toBe(websocket ? 'websocket' : 'sse');
         forwarded.push(options);
         return provider.streamSimple(selectedModel, context, {
           ...options,
@@ -225,7 +283,7 @@ async function runWire({
           configuredMaxTokens: new Map(),
           modelErrors: new Map(),
           reasoning: 'low',
-          transport: 'sse',
+          transport: websocket ? 'websocket' : 'sse',
           timeoutMs: 2000,
           streamIdleTimeoutMs: 3000,
           maxRequestImageBytes: 1_000_000,
@@ -277,7 +335,7 @@ async function runWire({
       messages: [
         { role: 'user', content: [{ type: 'text', text: 'Synthetic test.' }] },
       ],
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(websocket === 'cancel' ? 200 : 4000),
       // This is deliberately unsupported DSH input: the regression verifies
       // that copying pi-ai's option onto a DSH request does NOT forward it.
       onPayload() {
@@ -288,6 +346,10 @@ async function runWire({
     }
     return { calls, chunks, forwarded, payloadHookCalls };
   } finally {
+    if (wsServer) {
+      for (const client of wsServer.clients) client.terminate();
+      await new Promise((resolve) => wsServer.close(resolve));
+    }
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
@@ -297,11 +359,50 @@ describe.sequential(
   'pinned Codex output-bound wire evidence (offline only)',
   () => {
     it.each([
+      ['premature', 'TRANSPORT'],
+      ['invalid-json', 'PI_AI_ERROR'],
+      ['cancel', 'ABORTED'],
+    ])(
+      'handles actual WebSocket %s without treating every close as retryable',
+      async (websocket, code) => {
+        const { calls, chunks } = await runWire({ websocket });
+        expect(calls).toHaveLength(1);
+        expect(calls[0].method).toBe('WS');
+        expect(chunks.at(-1)).toMatchObject({
+          type: 'finish',
+          reason: {
+            kind: websocket === 'cancel' ? 'aborted' : 'error',
+            failure: { code },
+          },
+        });
+      },
+    );
+
+    it('accepts close 1000 after the actual WebSocket response terminal event', async () => {
+      const { calls, chunks } = await runWire({ websocket: 'complete' });
+      expect(calls).toHaveLength(1);
+      expect(chunks.at(-1)).toMatchObject({
+        type: 'finish',
+        reason: { kind: 'stop' },
+      });
+      expect(chunks).toContainEqual({
+        type: 'usage',
+        usage: { inputTokens: 4, outputTokens: 5, totalTokens: 9 },
+      });
+    });
+
+    it.each([
       ['WebSocket closed 1006', 'TRANSPORT'],
       ['WebSocket closed 1006 synthetic-close', 'TRANSPORT'],
+      ['WebSocket closed 1000', 'TRANSPORT'],
+      ['WebSocket closed 1000 policy restriction', 'PI_AI_ERROR'],
+      ['WebSocket closed 10000', 'PI_AI_ERROR'],
       ['403 Forbidden', 'AUTH'],
       ['400 invalid request', 'INVALID_REQUEST'],
       ['WebSocket closed 1008', 'PI_AI_ERROR'],
+      ['WebSocket closed 1009', 'PI_AI_ERROR'],
+      ['WebSocket closed 4321', 'PI_AI_ERROR'],
+      ['429 rate limit', 'RATE_LIMIT'],
     ])(
       'classifies %s through real pinned pi-ai and DSH without broad retries',
       async (failureMessage, code) => {
