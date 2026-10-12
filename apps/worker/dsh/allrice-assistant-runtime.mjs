@@ -871,11 +871,21 @@ export function createGovernedAssistantNativeRuntime(
     bind(p) {
       if (bindings.has(p.nativeSessionId))
         throw Error('assistant_native_already_bound');
-      bindings.set(p.nativeSessionId, { ...p, messages: new Map() });
+      // Asking the user is native root control flow, not a tenant work tool.
+      // Keep it available alongside the frozen work-tool scope. Children must
+      // still use their explicitly delegated tools and report to the parent.
+      const wireTools =
+        p.wireTools && !p.parentNativeSessionId
+          ? [...new Set([...p.wireTools, 'ask_user_question'])]
+          : p.wireTools;
+      bindings.set(p.nativeSessionId, {
+        ...p,
+        wireTools,
+        messages: new Map(),
+      });
       const agent = ctx.agents.get(p.nativeSessionId);
       if (agent) guardSettlement(agent);
-      if (agent && p.wireTools)
-        agent.ctx.tools.restrict({ allow: p.wireTools });
+      if (agent && wireTools) agent.ctx.tools.restrict({ allow: wireTools });
       if (agent) refreshCoordinationTools(agent);
       if (p.parentNativeSessionId && ctx.agents.get(p.parentNativeSessionId))
         refreshCoordinationTools(ctx.agents.get(p.parentNativeSessionId));
