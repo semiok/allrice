@@ -482,7 +482,9 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     const source = await acceptedHistoryFixture(3),
       oldLogin = admin.sessionId!,
       newLogin = randomUUID();
-    await fixture.db`update allrice_sessions set expires_at=clock_timestamp()-interval '1 second' where id=${oldLogin}`;
+    // Keep this synthetic login expired even when the suite reaches this point
+    // within its first second, while preserving expires_at > created_at.
+    await fixture.db`update allrice_sessions set created_at=clock_timestamp()-interval '2 seconds',expires_at=clock_timestamp()-interval '1 second' where id=${oldLogin}`;
     await fixture.db`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${newLogin},${admin.actor.id},${repositoryDigest(newLogin).slice(7)},clock_timestamp()+interval '1 hour')`;
     admin = { ...admin, sessionId: newLogin };
     const request = {
