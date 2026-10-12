@@ -1119,7 +1119,8 @@
   margin-block: 0 6px;
 }
 .turn .dialogueReading table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   max-width: none;
   margin-block: 8px;
   border-collapse: collapse;
@@ -1127,9 +1128,13 @@
 }
 .turn .dialogueReading :is(th, td) {
   min-width: 0;
-  max-width: none;
+  max-width: 320px;
   padding: 4px 7px;
   border-bottom: 1px solid var(--admin-border);
+}
+.dialogueReading :global(.md-table-wide) {
+  overflow-x: auto;
+  padding-bottom: 0;
 }
 .dialogueReading th {
   color: var(--admin-muted);
