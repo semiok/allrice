@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { officeMediaTypes } from '@allrice/contracts';
 import type * as Database from '@allrice/database';
 import type * as OfficeExport from '../../office/export.js';
+import type * as Deliverable from '../../deliverable-generator.js';
 import type { RiceToolExecutionInput } from '../types.js';
 
 const mocks = vi.hoisted(() => ({
@@ -415,6 +416,75 @@ describe('Office-to-PDF in the existing export publisher', () => {
       }),
     ).rejects.toBe(reason);
     expect(mocks.preview).toHaveBeenCalledOnce();
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('Plain content through the existing export publisher', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it.each(['text', 'markdown', 'html'])(
+    'preserves exact %s content bytes, including indentation and final newlines',
+    async (format) => {
+      const { input } = setup();
+      const content = '\n  indented first line\r\n\tlast line  \n\n';
+      const generator = await vi.importActual<typeof Deliverable>(
+        '../../deliverable-generator.js',
+      );
+      mocks.content.mockImplementation(generator.generateDeliverable);
+      await createWorkspaceExport({
+        input,
+        arguments: { format, content, fileName: 'whitespace' },
+      });
+      expect(mocks.publish).toHaveBeenCalledWith(
+        expect.objectContaining({ format, bytes: Buffer.from(content) }),
+        expect.anything(),
+      );
+    },
+  );
+
+  it.each([undefined, null, 42, '', ' \r\n\t '])(
+    'rejects empty or non-string content before generation (%s)',
+    async (content) => {
+      const { input } = setup();
+      await expect(
+        createWorkspaceExport({
+          input,
+          arguments: { format: 'text', content },
+        }),
+      ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
+      expect(mocks.content).not.toHaveBeenCalled();
+      expect(mocks.publish).not.toHaveBeenCalled();
+    },
+  );
+
+  it('counts preserved whitespace toward the existing content size limit', async () => {
+    const { input } = setup();
+    const generator = await vi.importActual<typeof Deliverable>(
+      '../../deliverable-generator.js',
+    );
+    mocks.content.mockImplementation(generator.generateDeliverable);
+    const content = 'x' + ' '.repeat(199_999);
+    await createWorkspaceExport({
+      input,
+      arguments: { format: 'text', content, fileName: 'limit' },
+    });
+    expect(mocks.publish.mock.calls[0]![0].bytes.byteLength).toBe(200_000);
+    mocks.content.mockClear();
+    mocks.publish.mockClear();
+    await expect(
+      createWorkspaceExport({
+        input,
+        arguments: {
+          format: 'text',
+          content: content + '\n',
+          fileName: 'limit',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
+    expect(mocks.content).not.toHaveBeenCalled();
     expect(mocks.publish).not.toHaveBeenCalled();
   });
 });

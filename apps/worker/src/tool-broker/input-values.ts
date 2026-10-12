@@ -8,10 +8,15 @@ export function objectValue(value: unknown): Record<string, unknown> {
 }
 
 export function stringValue(value: unknown, name: string) {
+  return textValue(value, name).trim();
+}
+
+// File contents can have significant indentation and trailing newlines.
+export function textValue(value: unknown, name: string) {
   if (typeof value !== 'string' || !value.trim()) {
     throw new HandlerError('TOOL_INPUT_INVALID', `${name} 不能为空`, false);
   }
-  return value.trim();
+  return value;
 }
 
 export function limitValue(value: unknown, fallback: number, maximum: number) {
