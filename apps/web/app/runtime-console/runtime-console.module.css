@@ -614,9 +614,13 @@
 }
 
 .detail {
+  --admin-font-body: 12px;
+  --admin-font-meta: 12px;
   min-width: 0;
-  padding: 26px clamp(20px, 3vw, 40px);
+  padding: 20px clamp(16px, 3vw, 32px);
   background: var(--admin-canvas);
+  font-size: 12px;
+  line-height: 1.5;
 }
 .detailHeader {
   display: flex;
@@ -631,8 +635,7 @@
 }
 .detailHeader h1 {
   margin: 0;
-  font-size: clamp(22px, 2.5vw, 32px);
-  letter-spacing: -0.03em;
+  font-size: var(--admin-font-body);
 }
 .detailHeader div > span {
   display: block;
@@ -660,7 +663,7 @@
 }
 
 .grid {
-  margin-top: 34px;
+  margin-top: 20px;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
@@ -668,13 +671,13 @@
 .grid article,
 .lifecycle,
 .timeline {
-  padding: 20px;
+  padding: 14px;
   border: 1px solid var(--admin-border);
   border-radius: 8px;
   background: var(--admin-canvas);
 }
 .grid article > p {
-  margin: 0 0 18px;
+  margin: 0 0 10px;
   color: var(--admin-text);
   font-size: var(--admin-font-body);
   font-weight: 500;
@@ -683,7 +686,7 @@
 .lifecycle dl {
   margin: 0;
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 .grid dl div,
 .lifecycle dl div {
@@ -702,11 +705,8 @@
   margin: 0;
   overflow: hidden;
   color: var(--admin-text);
-  font:
-    12px ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -717,7 +717,7 @@
   display: flex;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
 }
 .lifecycle header strong {
   font-size: var(--admin-font-body);
@@ -758,7 +758,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  padding-bottom: 18px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--admin-border);
 }
 .timeline > header div {
@@ -794,16 +794,16 @@
   --event-color: var(--admin-muted);
   position: relative;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-columns: 20px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
-  padding: 5px 0;
+  gap: 10px;
+  padding: 0;
 }
 .eventList > li:not(:last-child)::after {
   position: absolute;
-  top: 43px;
+  top: 25px;
   bottom: -5px;
-  left: 15.5px;
+  left: 9.5px;
   width: 1px;
   background: var(--admin-border);
   content: '';
@@ -826,15 +826,18 @@
   --event-color: var(--admin-warning);
 }
 .eventNode {
-  width: 32px;
-  height: 32px;
-  margin-top: 8px;
+  width: 20px;
+  height: 20px;
+  margin-top: 5px;
   display: grid;
   place-items: center;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--event-color) 16%, var(--admin-sidebar));
-  color: var(--event-color);
+  background: var(--admin-sidebar);
+  color: var(--admin-muted);
   font-style: normal;
+}
+.eventNode > svg {
+  width: 15px;
+  height: 15px;
 }
 .eventBody {
   min-width: 0;
@@ -845,9 +848,9 @@
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  min-height: 48px;
-  padding: 12px;
-  gap: 8px 12px;
+  min-height: 30px;
+  padding: 4px 0;
+  gap: 4px 12px;
 }
 .eventPrimary {
   display: flex;
@@ -875,13 +878,12 @@
   align-items: center;
   flex: none;
   gap: 4px;
-  padding: 1px 6px;
-  border-radius: 4px;
+  padding: 0;
   font-size: var(--admin-font-meta);
-  line-height: 19px;
+  line-height: 18px;
   white-space: nowrap;
   color: var(--admin-muted);
-  background: var(--admin-border);
+  background: transparent;
 }
 .eventStatus > svg {
   width: 12px;
@@ -889,23 +891,19 @@
 }
 .eventStatus[data-tone='success'] {
   color: var(--admin-success);
-  background: color-mix(in srgb, var(--admin-success) 16%, var(--admin-canvas));
+  background: transparent;
 }
 .eventStatus[data-tone='active'] {
   color: var(--admin-link);
-  background: color-mix(in srgb, var(--admin-link) 16%, var(--admin-canvas));
+  background: transparent;
 }
 .eventStatus[data-tone='updated'] {
   color: var(--admin-process-context);
-  background: color-mix(
-    in srgb,
-    var(--admin-process-context) 16%,
-    var(--admin-canvas)
-  );
+  background: transparent;
 }
 .eventStatus[data-tone='danger'] {
   color: var(--admin-danger);
-  background: color-mix(in srgb, var(--admin-danger) 16%, var(--admin-canvas));
+  background: transparent;
 }
 .eventChevron,
 .eventChevronSpace {
@@ -918,11 +916,11 @@
 .eventList > li p {
   max-height: 220px;
   margin: 0;
-  padding: 0 12px 12px;
+  padding: 2px 0 7px;
   overflow: auto;
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
-  line-height: 1.65;
+  line-height: 1.5;
   white-space: pre-wrap;
 }
 .eventList time {
@@ -934,10 +932,11 @@
 }
 .turnList {
   display: grid;
-  gap: 14px;
-  padding-top: 16px;
+  gap: 12px;
+  padding-top: 12px;
 }
 .turn {
+  font: inherit;
   overflow: hidden;
   border: 1px solid var(--admin-border);
   border-radius: 8px;
@@ -947,8 +946,8 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px 16px;
-  padding: 10px 14px;
+  gap: 4px 20px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--admin-border);
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
@@ -961,6 +960,52 @@
   font-size: var(--admin-font-meta);
   color: var(--admin-muted);
 }
+.turnMetrics {
+  padding: 9px 14px 8px;
+  border-bottom: 1px solid var(--admin-border);
+}
+.turnMetrics .turnUsage {
+  padding: 0;
+  border: 0;
+}
+.turnMetrics .turnUsage + .turnUsage {
+  margin-top: 6px;
+}
+.turnStatistics {
+  margin-top: 7px;
+  color: var(--admin-muted);
+}
+.turnStatistics > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  list-style: none;
+  cursor: pointer;
+}
+.turnStatistics > summary::-webkit-details-marker {
+  display: none;
+}
+.turnStatistics > summary > svg {
+  width: 12px;
+  height: 12px;
+}
+.turnStatistics > div {
+  display: grid;
+  gap: 4px;
+  padding-top: 8px;
+}
+.turnStatistics small {
+  font: inherit;
+}
+.turnTechnical {
+  padding: 6px 14px;
+  border-top: 1px solid var(--admin-border);
+}
+.turnTechnical button,
+.dialogueMessage > button {
+  min-height: 26px;
+  padding: 2px 0;
+}
 .turnHeader::-webkit-details-marker {
   display: none;
 }
@@ -968,12 +1013,12 @@
   list-style: none;
   cursor: pointer;
   flex-wrap: wrap;
-  min-height: 48px;
-  padding: 0 14px;
+  min-height: 36px;
+  padding: 9px 14px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: 6px 16px;
   border-bottom: 1px solid var(--admin-border);
   background: var(--admin-raised);
 }
@@ -1014,11 +1059,8 @@
   color: var(--admin-danger);
 }
 .dialogueMessage {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 12px;
-  padding: 16px;
+  min-width: 0;
+  padding: 10px 14px;
   border-bottom: 1px solid var(--admin-border);
 }
 .dialogueMessage[data-role='assistant'] {
@@ -1026,30 +1068,94 @@
   border-bottom: 0;
   background: var(--admin-canvas);
 }
-.dialogueMessage > span {
+.dialogueMessage > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 5px;
+}
+.dialogueMessage > header > span {
   color: var(--admin-link);
   font-size: var(--admin-font-meta);
   font-weight: 500;
 }
-.dialogueMessage[data-role='assistant'] > span {
+.dialogueMessage[data-role='assistant'] > header > span {
   color: var(--admin-success);
 }
-.dialogueMessage p {
-  max-height: 360px;
+.dialogueText,
+.dialogueOriginal {
   margin: 0;
-  overflow: auto;
   color: var(--admin-text);
-  font-size: var(--admin-font-body);
-  line-height: 1.7;
+  font: inherit;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+.dialogueReading {
+  --dsw-alias-label-primary: var(--admin-text);
+  --dsw-alias-label-secondary: var(--admin-muted);
+  --dsw-alias-label-tertiary: var(--admin-muted);
+  --dsw-alias-link: var(--admin-link);
+  --dsw-alias-bg-base: var(--admin-canvas);
+  --dsw-alias-markdown-inline-code: var(--admin-raised);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.dialogueReading > * {
+  font: inherit;
+  color: inherit;
+}
+.dialogueReading * {
+  font-family: inherit;
+  /* DSH inline code has an important relative size; this view is all 12px. */
+  font-size: 12px !important;
+  line-height: 1.5;
+}
+.turn .dialogueReading :is(h1, h2, h3, h4, h5, h6, strong, th) {
+  font-weight: 500;
+}
+.turn .dialogueReading :is(h1, h2, h3, h4, h5, h6, p, ul, ol, blockquote, pre) {
+  margin-block: 0 6px;
+}
+.turn .dialogueReading table {
+  width: max-content;
+  min-width: 100%;
+  max-width: none;
+  margin-block: 8px;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+.turn .dialogueReading :is(th, td) {
+  min-width: 0;
+  max-width: 320px;
+  padding: 4px 7px;
+  border-bottom: 1px solid var(--admin-border);
+}
+.dialogueReading :global(.md-table-wide) {
+  overflow-x: auto;
+  padding-bottom: 0;
+}
+.dialogueReading th {
+  color: var(--admin-muted);
+}
+.dialogueReading pre {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dialogueReading :is(a, button) {
+  color: var(--admin-link);
+}
+.dialogueMessage > button {
+  margin-top: 7px;
 }
 .dialogueMessage time {
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
 .turn > .eventList {
-  padding: 12px 16px;
+  padding: 6px 14px;
   background: var(--admin-sidebar);
 }
 .eventGroup[data-kind='compaction'] > .eventBody {
@@ -1084,7 +1190,7 @@
 }
 .eventGroupList {
   margin: 0;
-  padding: 0 12px 12px;
+  padding: 0 0 7px;
   display: grid;
   list-style: none;
 }
@@ -1094,15 +1200,15 @@
   display: grid;
   grid-template-columns: 8px minmax(0, 1fr);
   align-items: start;
-  gap: 12px;
-  padding: 10px 0;
+  gap: 8px;
+  padding: 5px 0;
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
 .eventGroupList > li:not(:last-child)::after {
   position: absolute;
-  top: 22px;
-  bottom: -9px;
+  top: 20px;
+  bottom: -4px;
   left: 2.5px;
   width: 1px;
   background: var(--admin-control-border);
@@ -1131,27 +1237,22 @@
   padding: 8px 0 0;
 }
 @media (max-width: 650px) {
-  .dialogueMessage {
-    grid-template-columns: auto minmax(0, 1fr);
-    gap: 8px;
-  }
-  .dialogueMessage time {
-    grid-column: 2;
-  }
   .turnHeader > div {
     flex-wrap: wrap;
   }
   .eventRow {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+    gap: 4px 8px;
   }
   .eventEnd {
     justify-content: space-between;
   }
 }
 @media (pointer: coarse) {
-  .eventGroup summary {
+  .eventGroup summary,
+  .turnHeader,
+  .turnStatistics > summary,
+  .turnTechnical button,
+  .dialogueMessage > button {
     min-height: 44px;
   }
 }

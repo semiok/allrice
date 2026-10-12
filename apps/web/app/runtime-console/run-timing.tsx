@@ -12,8 +12,10 @@ const scopes: Record<string, string> = {
 };
 export function RunTimingSummary({
   timing,
+  showNotes = true,
 }: {
   timing?: TaskRuntimeTiming | null;
+  showNotes?: boolean;
 }) {
   if (!timing) return null; // Historical Run: no invented elapsed/call data.
   return (
@@ -23,6 +25,30 @@ export function RunTimingSummary({
       <span>等待：{duration(timing.waitingMs)}</span>
       <span>总历时：{duration(timing.wallMs)}</span>
       {timing.phase === 'waiting' && <small>等待中，活跃计时暂停</small>}
+      {timing.calls ? (
+        <>
+          <span>原生模型请求尝试：{timing.calls.modelRequests}</span>
+          <span>工具调用：{timing.calls.toolCalls}</span>
+          {!!timing.calls.pending && (
+            <small>待完成回执：{timing.calls.pending}（不代表 0 消耗）</small>
+          )}
+        </>
+      ) : (
+        <small>原生调用统计尚无记录</small>
+      )}
+      {showNotes && <RunTimingNotes timing={timing} />}
+    </div>
+  );
+}
+
+export function RunTimingNotes({
+  timing,
+}: {
+  timing?: TaskRuntimeTiming | null;
+}) {
+  if (!timing) return null;
+  return (
+    <>
       <small>
         策略来源：
         {timing.sources.length
@@ -31,18 +57,7 @@ export function RunTimingSummary({
               .join('、')
           : '平台默认 1 小时'}
       </small>
-      {timing.calls ? (
-        <>
-          <span>原生模型请求尝试：{timing.calls.modelRequests}</span>
-          <span>工具调用：{timing.calls.toolCalls}</span>
-          {!!timing.calls.pending && (
-            <small>待完成回执：{timing.calls.pending}（不代表 0 消耗）</small>
-          )}
-          <small>调用次数仅统计；不是 Codex 官方订阅额度</small>
-        </>
-      ) : (
-        <small>原生调用统计尚无记录</small>
-      )}
-    </div>
+      {timing.calls && <small>调用次数仅统计；不是 Codex 官方订阅额度</small>}
+    </>
   );
 }

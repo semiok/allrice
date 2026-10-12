@@ -7,9 +7,11 @@ const format = (value: number | null) =>
 export function RunUsageSummary({
   usage,
   runStatus,
+  showNotes = true,
 }: {
   usage?: RuntimeRunUsage | null;
   runStatus: string;
+  showNotes?: boolean;
 }) {
   const active = ['queued', 'running', 'waiting_approval'].includes(runStatus);
   if (!usage || usage.receiptCount === 0) {
@@ -43,11 +45,20 @@ export function RunUsageSummary({
           {active ? '运行中，用量待结算' : '用量未完整，以上仅为已确认部分'}
         </small>
       )}
-      {!usage.cacheUsageKnown && <small>缓存明细未完整</small>}
+      {showNotes && <RunUsageNotes usage={usage} />}
+    </div>
+  );
+}
+
+export function RunUsageNotes({ usage }: { usage?: RuntimeRunUsage | null }) {
+  if (!usage || usage.receiptCount === 0) return null;
+  return (
+    <>
+      {!usage.cacheUsageKnown && <small>缓存明细未完整，未知不代表 0</small>}
       {usage.attemptCount > 1 && (
         <small>含 {usage.attemptCount} 次执行尝试</small>
       )}
       <small>总量＝输入＋输出；缓存已包含在输入中</small>
-    </div>
+    </>
   );
 }

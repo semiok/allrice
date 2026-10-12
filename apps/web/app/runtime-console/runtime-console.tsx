@@ -20,8 +20,9 @@ import { OrganizationAdministration } from './organization-administration';
 import { OrganizationActivity } from './organization-activity';
 import { TenantFeedback } from './tenant-feedback';
 import { TechnicalAssistant } from './technical-assistant';
-import { RunUsageSummary } from './run-usage';
-import { RunTimingSummary } from './run-timing';
+import { RunUsageSummary, RunUsageNotes } from './run-usage';
+import { RunTimingSummary, RunTimingNotes } from './run-timing';
+import { AssistantMarkdown } from '../chatflow/assistant-markdown';
 import {
   runtimeCapabilityCatalog,
   type RuntimeCapabilityCatalogGroup,
@@ -1023,24 +1024,35 @@ function RuntimeTurn(props: {
         </div>
       </summary>
 
-      <AdminButton
-        icon="wrench"
-        variant="quiet"
-        onClick={props.onOpenTechnicalSource}
-      >
-        查看技术问题
-      </AdminButton>
-
-      <RunUsageSummary
-        usage={props.turn.usage}
-        runStatus={props.turn.run.status}
-      />
-      <RunTimingSummary timing={props.turn.timing} />
+      <div className={styles.turnMetrics}>
+        <RunUsageSummary
+          usage={props.turn.usage}
+          runStatus={props.turn.run.status}
+          showNotes={false}
+        />
+        <RunTimingSummary timing={props.turn.timing} showNotes={false} />
+        {props.turn.usage?.receiptCount || props.turn.timing ? (
+          <details className={styles.turnStatistics}>
+            <summary>
+              <AdminIcon name="info" />
+              统计口径
+            </summary>
+            <div>
+              <RunUsageNotes usage={props.turn.usage} />
+              <RunTimingNotes timing={props.turn.timing} />
+            </div>
+          </details>
+        ) : null}
+      </div>
 
       <div className={styles.dialogueMessage} data-role="user">
-        <span>租户</span>
-        <p>{props.turn.userMessage.text ?? '（没有可展示的文本）'}</p>
-        <time>{time(props.turn.userMessage.occurredAt)}</time>
+        <header>
+          <span>租户</span>
+          <time>{time(props.turn.userMessage.occurredAt)}</time>
+        </header>
+        <p className={styles.dialogueText}>
+          {props.turn.userMessage.text ?? '（没有可展示的文本）'}
+        </p>
       </div>
 
       {props.turn.items.length ? (
@@ -1052,11 +1064,47 @@ function RuntimeTurn(props: {
       ) : null}
 
       <div className={styles.dialogueMessage} data-role="assistant">
-        <span>Rice</span>
-        <p>{props.turn.answerText ?? '（本轮还没有回复文本）'}</p>
-        <time>{time(props.turn.assistantMessage.occurredAt)}</time>
+        <header>
+          <span>Rice</span>
+          <time>{time(props.turn.assistantMessage.occurredAt)}</time>
+        </header>
+        <RuntimeAnswer text={props.turn.answerText} />
+      </div>
+      <div className={styles.turnTechnical}>
+        <AdminButton
+          icon="wrench"
+          variant="quiet"
+          onClick={props.onOpenTechnicalSource}
+        >
+          查看技术问题
+        </AdminButton>
       </div>
     </details>
+  );
+}
+
+function RuntimeAnswer({ text }: { text: string | null }) {
+  const [original, setOriginal] = useState(false);
+  if (text === null) {
+    return <p className={styles.dialogueText}>（本轮还没有回复文本）</p>;
+  }
+  return (
+    <>
+      {original ? (
+        <pre className={styles.dialogueOriginal}>{text}</pre>
+      ) : (
+        <div className={styles.dialogueReading}>
+          <AssistantMarkdown text={text} allowRemoteImages={false} />
+        </div>
+      )}
+      <AdminButton
+        variant="quiet"
+        aria-pressed={original}
+        onClick={() => setOriginal(!original)}
+      >
+        {original ? '返回阅读' : '查看原文'}
+      </AdminButton>
+    </>
   );
 }
 
