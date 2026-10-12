@@ -160,6 +160,7 @@ type CollectCommand =
   Pick<CloudCommand, 'arguments'> | CloudProjectCommand | StaticBrowserCommand;
 type Container = {
   Id: string;
+  Name?: string;
   Config: {
     Image?: string;
     Labels: Record<string, string>;
@@ -650,6 +651,8 @@ export class CloudRunnerBackend {
       !(await this.withdrawFencedReservation(c, attemptId))
     )
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
+    if (c.State.Status === 'exited')
+      await this.withdrawExitedReservations(c, attemptId);
     await this.call('DELETE', `/containers/${c.Id}?v=true`);
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_CLEANUP_UNCONFIRMED');
@@ -1244,6 +1247,65 @@ export class CloudRunnerBackend {
     // Every reclaimer (including attempt cleanup) must withdraw this ID before
     // removing the name fence. An uncertain delete keeps the fence intact.
     return this.deleteStoppedContainer(id);
+  }
+
+  private async withdrawExitedReservations(exited: Container, owner: string) {
+    if (!/^[a-f0-9]{64}$/.test(exited.Id))
+      throw new CloudRunnerError('CLOUD_CONTAINER_IDENTITY_CHANGED');
+    // A cold recovery has no in-memory release closure. Keep the completed
+    // attempt's name occupied until every owned reservation is withdrawn;
+    // created/missing attempts still use the existing expiry/name fence.
+    const filters = encodeURIComponent(
+      JSON.stringify({ label: [`${slotOwnerLabel}=${owner}`] }),
+    );
+    const reservations = await this.json<{ Id: string }[]>(
+      'GET',
+      `/containers/json?all=true&filters=${filters}`,
+    );
+    for (const { Id: id } of reservations) {
+      if (!/^[a-f0-9]{64}$/.test(id))
+        throw new CloudRunnerError('CLOUD_SLOT_FENCE_CHANGED');
+      let reservation: Container;
+      try {
+        reservation = await this.json<Container>(
+          'GET',
+          `/containers/${id}/json`,
+        );
+      } catch (error) {
+        if (
+          error instanceof CloudRunnerError &&
+          error.message === 'CLOUD_DAEMON_404'
+        )
+          continue;
+        throw error;
+      }
+      if (
+        reservation.Id !== id ||
+        !/^\/allrice-cloud-slot-\d+$/.test(reservation.Name ?? '') ||
+        reservation.Config.Labels[slotOwnerLabel] !== owner ||
+        reservation.State.Running ||
+        reservation.State.Status !== 'created'
+      )
+        throw new CloudRunnerError('CLOUD_SLOT_FENCE_CHANGED');
+      // Immutable IDs prevent deleting a new owner that reused the slot name.
+      // On an uncertain acknowledgement retain the attempt and let recovery
+      // read back the original ID before it can confirm cleanup.
+      if (!(await this.deleteStoppedContainer(id)))
+        throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
+      try {
+        await this.json<Container>('GET', `/containers/${id}/json`);
+        throw new CloudRunnerError('CLOUD_CLEANUP_UNCONFIRMED');
+      } catch (error) {
+        if (
+          !(error instanceof CloudRunnerError) ||
+          error.message !== 'CLOUD_DAEMON_404'
+        )
+          throw error;
+      }
+    }
+    const current = await this.inspect(owner);
+    if (current?.Id !== exited.Id || current.State.Status !== 'exited')
+      throw new CloudRunnerError('CLOUD_CLEANUP_UNCONFIRMED');
   }
 
   private async acquireSlot(
