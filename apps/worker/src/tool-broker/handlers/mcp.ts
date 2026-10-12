@@ -3,9 +3,11 @@ import {
   createMcpStore,
   managedMcpRunContext,
   requestManagedMcpLogin,
+  RuntimePolicyError,
 } from '@allrice/database';
-import { McpManagedActionSchema } from '@allrice/contracts';
+import { McpError, McpManagedActionSchema } from '@allrice/contracts';
 import { setTimeout } from 'node:timers/promises';
+import { HandlerError } from '../../errors.js';
 import { validateMcpEndpoint } from '../../mcp/egress.js';
 import { runMcpRuntimeOperation } from '../../mcp/executor.js';
 import { mcpPermissionGuidance } from '../../mcp/result.js';
@@ -108,6 +110,19 @@ export const executeMcpTool: RiceToolHandler = async ({
     context: input.context,
     arguments: args,
     callId: input.call.id,
+  }).catch((cause: unknown) => {
+    if (
+      (cause instanceof RuntimePolicyError &&
+        cause.code === 'mcp_frozen_tool_not_allowed') ||
+      (cause instanceof McpError && cause.code === 'MCP_DENIED')
+    ) {
+      throw new HandlerError(
+        'MCP_TOOL_UNAVAILABLE',
+        '当前应用工具不可用，连接可能已断开或权限已变化。请让用户在“已连接应用”中检查连接和授权，不得自动重连或绕过权限；此前结果未知的写入仍须回读确认，不得自动重试。',
+        false,
+      );
+    }
+    throw cause;
   });
   const result = await runMcpRuntimeOperation(created, {
     ...(input.signal ? { signal: input.signal } : {}),
