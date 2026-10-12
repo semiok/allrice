@@ -23,7 +23,7 @@ import { generateOfficePdfExport } from '../../office/pdf.js';
 import { checkOfficeExport } from '../../office/quality.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
-import { stringValue } from '../input-values.js';
+import { stringValue, textValue } from '../input-values.js';
 import type { RiceToolHandler } from '../types.js';
 
 function requiresOfficeQuality(request: string | undefined, format: string) {
@@ -87,7 +87,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   const content =
     hasOffice || hasPython || hasOfficePdf
       ? ''
-      : stringValue(args.content, 'content');
+      : textValue(args.content, 'content');
   if (hasOfficePdf && format !== 'pdf')
     throw new HandlerError(
       'TOOL_INPUT_INVALID',
