@@ -430,6 +430,39 @@ describe('P22 local controller with durable outbox and strict authority port', (
     expect(f.controller.hasActiveWork).toBe(false);
     expect(f.controller.hasActiveBrowser).toBe(false);
   });
+  it('cancels pending driver initialization before joining native cleanup on stop', async () => {
+    const f = await fixture();
+    let started!: () => void;
+    const entering = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    f.startDriver.mockImplementation(async (input) => {
+      signal = input.signal;
+      started();
+      return new Promise((_resolve, reject) => {
+        signal!.addEventListener(
+          'abort',
+          () => reject(Error('LOCAL_BROWSER_UNAVAILABLE')),
+          { once: true },
+        );
+      });
+    });
+    const polling = f.controller.pollOnce().catch(() => undefined);
+    await entering;
+    await f.controller.stop();
+    await polling;
+    expect(signal?.aborted).toBe(true);
+    expect(f.controller.hasActiveBrowser).toBe(false);
+    expect(f.authority.acknowledge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'stopped',
+        confirmed: true,
+        errorCode: null,
+      }),
+    );
+    expect(f.driver.perform).not.toHaveBeenCalled();
+  });
   it('startup with unconfirmed process cleanup never acknowledges a clean stop or starts another instance', async () => {
     const f = await fixture();
     f.startDriver.mockRejectedValue(Error('LOCAL_BROWSER_CLEANUP_PENDING'));

@@ -20,6 +20,7 @@ import { bridgeVersion } from './version.js';
 import type { ManagedPythonSandbox } from './managed-python-sandbox.js';
 import { fileGuardianReady } from './file-guardian-resources.js';
 import { BridgeClientError } from './client.js';
+import { awaitLocalBrowserStartup } from './local-browser-startup.js';
 
 /** Keep the physical preflight and the authenticated profile report explicit.
  * The report never changes the server's bounded freshness or grant checks. */
@@ -128,6 +129,7 @@ export async function probeLocalBrowser(
   // closing, so cancellation cannot interrupt the launcher's stop receipt.
   const assertAlive = async () => {};
   const driver = await startLocalBrowserDriver({
+    signal,
     binding: {
       version: 1,
       scope: {
@@ -162,7 +164,7 @@ export async function probeLocalBrowser(
   });
   try {
     signal.throwIfAborted();
-    await driver.observe(1);
+    await awaitLocalBrowserStartup(() => driver.observe(1), signal);
     return driver.version;
   } finally {
     await driver.close('completed');
