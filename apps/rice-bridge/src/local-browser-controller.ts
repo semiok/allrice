@@ -32,6 +32,7 @@ type Active = {
   deadline: number;
   driver?: LocalBrowserDriver;
   starting?: Promise<LocalBrowserDriver>;
+  startupAbort: AbortController;
   closing?: Promise<void>;
   operation: LocalBrowserOperation | null;
   operationLeaseToken: string | null;
@@ -186,6 +187,7 @@ export class LocalBrowserController {
   }
   private async stopActive(active: Active, revoked = false) {
     if (active.closing) return active.closing;
+    active.startupAbort.abort(lost());
     active.closing = (async () => {
       let confirmed = true;
       try {
@@ -550,6 +552,7 @@ export class LocalBrowserController {
       pendingRequests: 0,
       networkEffect: false,
       uncertain: false,
+      startupAbort: new AbortController(),
     };
     this.active = active;
     try {
@@ -568,6 +571,7 @@ export class LocalBrowserController {
         throw Error('LOCAL_BROWSER_STATIC_TARGET_CHANGED');
       await this.assertCurrent(active);
       active.starting = (this.input.startDriver ?? startLocalBrowserDriver)({
+        signal: active.startupAbort.signal,
         binding: localBrowserProfileBinding(workspace),
         profiles: this.input.profiles,
         assertAlive: () => this.assertAlive(active),

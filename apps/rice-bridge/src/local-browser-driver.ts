@@ -21,6 +21,7 @@ import {
 import { LocalPreviewRelay } from './local-preview-relay.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import type { LocalBrowserProfiles } from './local-browser-profiles.js';
+import { awaitLocalBrowserStartup } from './local-browser-startup.js';
 import {
   localBrowserUrlAllowed,
   startLocalBrowserProxy,
@@ -106,6 +107,7 @@ export type LocalBrowserDriver = Omit<BrowserDriver, 'close'> & {
 };
 
 export async function startLocalBrowserDriver(input: {
+  signal?: AbortSignal;
   options: Omit<BrowserDriverOptions, 'authorizeUrl' | 'localPreviewRelay'>;
   binding: LocalBrowserProfileBinding;
   profiles: LocalBrowserProfiles;
@@ -194,6 +196,7 @@ export async function startLocalBrowserDriver(input: {
     return closing;
   };
   try {
+    input.signal?.throwIfAborted();
     const preview = input.preview
       ? LocalPreviewLeaseSchema.parse(await input.preview.current())
       : null;
@@ -263,6 +266,7 @@ export async function startLocalBrowserDriver(input: {
       assertAlive: input.assertAlive,
       expiresAt: input.leaseExpiresAt,
     });
+    input.signal?.throwIfAborted();
     launchAttempted = true;
     const shellContext = await chromium.launchPersistentContext(
       join(directory, 'profile'),
@@ -296,38 +300,53 @@ export async function startLocalBrowserDriver(input: {
     );
     browser = shellContext.browser() ?? undefined;
     if (!browser) throw Error('LOCAL_BROWSER_UNAVAILABLE');
-    context = await browser.newContext({
-      viewport: { width: 1280, height: 720 },
-      serviceWorkers: 'block',
-      acceptDownloads: input.options.profile.allowDownloads,
-      storageState: state,
-      permissions: [],
-      ignoreHTTPSErrors: false,
-    });
-    await input.options.assertCurrent();
-    renderer = await createControlledBrowserRenderer(
-      context,
-      browser,
-      {
-        ...input.options,
-        authorizeUrl: (url) =>
-          input.options.staticDocument
-            ? url ===
-              staticBrowserDocumentUrl(input.options.staticDocument.target)
-            : preview
-              ? localPreviewUrlAllowed(preview.target, url)
-              : localBrowserUrlAllowed(url, input.options.profile),
-        localPreviewRelay:
-          preview && relay
-            ? async (request) =>
-                relay.fetch(preview.target, request, {
-                  assertCurrent: assertPreview,
-                  signal: previewAbort.signal,
-                })
-            : undefined,
-      },
-      proxy.close,
-    );
+    const ownedBrowser = browser;
+    renderer = await awaitLocalBrowserStartup(async (signal) => {
+      signal.throwIfAborted();
+      context = await ownedBrowser.newContext({
+        viewport: { width: 1280, height: 720 },
+        serviceWorkers: 'block',
+        acceptDownloads: input.options.profile.allowDownloads,
+        storageState: state,
+        permissions: [],
+        ignoreHTTPSErrors: false,
+      });
+      // A late context response cannot resume page creation after cleanup.
+      if (signal.aborted) {
+        void context.close().catch(() => undefined);
+        signal.throwIfAborted();
+      }
+      await input.options.assertCurrent();
+      signal.throwIfAborted();
+      const created = await createControlledBrowserRenderer(
+        context,
+        ownedBrowser,
+        {
+          ...input.options,
+          authorizeUrl: (url) =>
+            input.options.staticDocument
+              ? url ===
+                staticBrowserDocumentUrl(input.options.staticDocument.target)
+              : preview
+                ? localPreviewUrlAllowed(preview.target, url)
+                : localBrowserUrlAllowed(url, input.options.profile),
+          localPreviewRelay:
+            preview && relay
+              ? async (request) =>
+                  relay.fetch(preview.target, request, {
+                    assertCurrent: assertPreview,
+                    signal: previewAbort.signal,
+                  })
+              : undefined,
+        },
+        proxy!.close,
+      );
+      if (signal.aborted) {
+        void created.close().catch(() => undefined);
+        signal.throwIfAborted();
+      }
+      return created;
+    }, input.signal);
     return {
       version: browser.version(),
       observe: renderer.observe,
