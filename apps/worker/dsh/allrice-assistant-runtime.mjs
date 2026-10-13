@@ -871,12 +871,19 @@ export function createGovernedAssistantNativeRuntime(
     bind(p) {
       if (bindings.has(p.nativeSessionId))
         throw Error('assistant_native_already_bound');
-      // Asking the user is native root control flow, not a tenant work tool.
-      // Keep it available alongside the frozen work-tool scope. Children must
-      // still use their explicitly delegated tools and report to the parent.
+      // Root control flow also reads the frozen, eligible Skill provider.
+      // Its native loader grants no work tools; availability comes only from
+      // successful runtime initialization, never from the binding request.
+      // Children retain their explicitly delegated scope.
       const wireTools =
         p.wireTools && !p.parentNativeSessionId
-          ? [...new Set([...p.wireTools, 'ask_user_question'])]
+          ? [
+              ...new Set([
+                ...p.wireTools,
+                'ask_user_question',
+                ...(optionsForRuntime.nativeSkillsAvailable ? ['skill'] : []),
+              ]),
+            ]
           : p.wireTools;
       bindings.set(p.nativeSessionId, {
         ...p,

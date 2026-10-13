@@ -3,7 +3,7 @@ import { createGovernedAssistantNativeRuntime } from '../../dsh/allrice-assistan
 
 // Scoped authorization checks only; actual question/answer and cancellation
 // remain native DSH behavior and are verified through ordinary-employee QA.
-function fixture() {
+function fixture(nativeSkillsAvailable = true) {
   const agents = new Map();
   const listeners = new Map();
   let guard;
@@ -20,6 +20,7 @@ function fixture() {
       },
     },
     vi.fn(),
+    { nativeSkillsAvailable },
   );
   const agent = (id) => {
     const value = {
@@ -48,9 +49,10 @@ describe('governed root native user questions', () => {
     const wireTools = Object.freeze(['workspace_document_read']);
     f.runtime.bind({ nativeSessionId: root.id, wireTools });
     expect(root.ctx.tools.restrict).toHaveBeenCalledWith({
-      allow: ['workspace_document_read', 'ask_user_question'],
+      allow: ['workspace_document_read', 'ask_user_question', 'skill'],
     });
     expect(f.authorize(root, 'ask_user_question')).toBeUndefined();
+    expect(f.authorize(root, 'skill')).toBeUndefined();
     expect(f.authorize(root, 'workspace_document_read')).toBeUndefined();
     expect(f.authorize(root, 'local_process_execute')).toBe(
       'assistant_tool_not_allowed',
@@ -78,6 +80,7 @@ describe('governed root native user questions', () => {
     expect(f.authorize(child, 'ask_user_question')).toBe(
       'assistant_tool_not_allowed',
     );
+    expect(f.authorize(child, 'skill')).toBe('assistant_tool_not_allowed');
     expect(f.authorize(child, 'workspace_document_read')).toBe(
       'assistant_tool_not_allowed',
     );
@@ -92,24 +95,39 @@ describe('governed root native user questions', () => {
     const root = f.agent('root');
     f.listeners.get('agent/created')({ agent: root });
     expect(root.ctx.tools.restrict).toHaveBeenCalledWith({
-      allow: ['workspace_document_read', 'ask_user_question'],
+      allow: ['workspace_document_read', 'ask_user_question', 'skill'],
     });
     expect(f.authorize(root, 'ask_user_question')).toBeUndefined();
+    expect(f.authorize(root, 'skill')).toBeUndefined();
     expect(f.authorize(root, 'workspace_document_read')).toBeUndefined();
     expect(f.authorize(root, 'local_process_execute')).toBe(
       'assistant_tool_not_allowed',
     );
   });
 
-  it('does not duplicate a question tool already in the root scope', () => {
+  it('does not duplicate native tools already in the root scope', () => {
     const f = fixture();
     const root = f.agent('root');
     f.runtime.bind({
       nativeSessionId: root.id,
-      wireTools: ['ask_user_question'],
+      wireTools: ['ask_user_question', 'skill'],
+    });
+    expect(root.ctx.tools.restrict).toHaveBeenCalledWith({
+      allow: ['ask_user_question', 'skill'],
+    });
+  });
+
+  it('does not enable a missing catalog from a binding request', () => {
+    const f = fixture(false);
+    const root = f.agent('root');
+    f.runtime.bind({
+      nativeSessionId: root.id,
+      wireTools: [],
+      nativeSkillsAvailable: true,
     });
     expect(root.ctx.tools.restrict).toHaveBeenCalledWith({
       allow: ['ask_user_question'],
     });
+    expect(f.authorize(root, 'skill')).toBe('assistant_tool_not_allowed');
   });
 });
