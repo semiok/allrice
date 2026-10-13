@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { z } from 'zod';
 import {
   ReferenceRevisionSchema,
+  ReferenceLibraryOptionsSchema,
   type ReferenceRevision,
   type ReferenceUploadInput,
 } from '@allrice/contracts';
@@ -19,14 +20,7 @@ import css from './reference-library.module.css';
 
 const responseSchema = z.object({
   references: z.array(ReferenceRevisionSchema),
-  options: z.object({
-    workspaceId: z.string(),
-    platformMaintainer: z.boolean(),
-    maintenanceLevel: z.enum(['personal', 'department', 'company']),
-    writable: z.boolean(),
-    departmentId: z.string().nullable(),
-    departments: z.array(z.object({ id: z.string(), name: z.string() })),
-  }),
+  options: ReferenceLibraryOptionsSchema,
 });
 const scopes = {
   personal: '个人',
@@ -382,6 +376,11 @@ export function ReferenceLibrary({
                 {r.status === 'archived' ? '已停用' : states[r.processing]}
               </span>
               <p>{r.purpose}</p>
+              {r.origin && (
+                <p className={css.hint}>
+                  来自成果 {r.origin.fileName} · v{r.origin.version}
+                </p>
+              )}
               {r.failure && <p className={css.hint}>{r.failure}</p>}
               {r.canMaintain && (
                 <div className={css.actions}>

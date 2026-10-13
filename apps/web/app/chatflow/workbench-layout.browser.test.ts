@@ -2417,6 +2417,87 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it.each([390, 1440])(
+    'saves the selected artifact through the full workbench and survives parent refresh at %ipx',
+    async (width) => {
+      const f = await fixture({ width, artifacts: true });
+      try {
+        const saved: unknown[] = [];
+        await f.page.route('**/api/v1/references/artifacts*', async (route) => {
+          const posting = route.request().method() === 'POST';
+          if (posting) saved.push(route.request().postDataJSON());
+          await route.fulfill({
+            contentType: 'application/json',
+            status: posting ? 201 : 200,
+            body: JSON.stringify(
+              posting
+                ? { sourceId: id(800), revisionId: id(801) }
+                : {
+                    workspaceId: workspace,
+                    platformMaintainer: false,
+                    maintenanceLevel: 'personal',
+                    writable: true,
+                    departmentId: null,
+                    departments: [],
+                  },
+            ),
+          });
+        });
+        await f.entry.click();
+        await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+        const save = f.panel.getByRole('button', {
+          name: '保存为参考资料',
+          exact: true,
+        });
+        expect(
+          await f.panel
+            .getByRole('button', { name: /共享为公司范本|登记采用与投入/ })
+            .count(),
+        ).toBe(0);
+        await save.click();
+        const dialog = f.page.getByRole('dialog', {
+          name: '保存为参考资料',
+          exact: true,
+        });
+        await expect
+          .poll(() =>
+            dialog
+              .getByRole('button', { name: '保存', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+        expect(
+          await dialog
+            .getByLabel('保存范围')
+            .locator('option')
+            .allTextContents(),
+        ).toEqual(['个人 · 仅自己']);
+        await Promise.all([
+          f.page.waitForResponse('**/api/v1/workspace/monthly-quota?*'),
+          f.page.evaluate(() => window.dispatchEvent(new Event('focus'))),
+        ]);
+        expect(await dialog.count()).toBe(1);
+        await dialog.getByRole('button', { name: '保存', exact: true }).click();
+        await dialog.getByRole('status').waitFor();
+        expect(saved).toEqual([
+          expect.objectContaining({
+            workspaceId: workspace,
+            artifactVersionId: f.state.items[0]!.id,
+            scope: 'personal',
+            purpose: '',
+          }),
+        ]);
+        await dialog.getByRole('button', { name: '完成', exact: true }).click();
+        await expect.poll(() => dialog.count()).toBe(0);
+        await save.click();
+        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        await expect.poll(() => dialog.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  it.each([390, 1440])(
     'keeps one reference dialog across parent refreshes and fully closes it at %ipx',
     async (width) => {
       const f = await fixture({ width });
