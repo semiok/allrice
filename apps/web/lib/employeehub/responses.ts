@@ -3,6 +3,7 @@ import {
   DataAccessError,
   EmployeeHubError,
   EmployeeInstanceError,
+  EmployeeContentError,
 } from '@allrice/database';
 
 import {
@@ -12,6 +13,23 @@ import {
 } from '../api-error-response';
 
 export function employeeHubErrorResponse(error: unknown) {
+  if (error instanceof EmployeeContentError)
+    return apiProblem({
+      status: 409,
+      code:
+        error.code === 'version_conflict' || error.code === 'request_conflict'
+          ? 'VERSION_CONFLICT'
+          : 'CONFLICT',
+      message:
+        error.code === 'validation_required'
+          ? '请先校验当前草稿，再启用。'
+          : error.code === 'validation_failed'
+            ? '草稿存在不可用来源或冲突，请查看校验结果。'
+            : error.code === 'source_changed'
+              ? '内容来源或继承版本已变化，请重新校验。'
+              : '内容版本或请求标识已变化，请读取最新版本后重试。',
+      retryable: false,
+    });
   if (error instanceof EmployeeInstanceError)
     return apiProblem({
       status: 409,

@@ -173,7 +173,7 @@ async function rows(
         'derivedRuns',count(*)filter(where exists(select 1 from allrice_company_asset_derivations d where d.run_id=f.run_id and d.asset_id=f.asset_id)))
        from allrice_company_run_assets f where f.organization_id=a.organization_id and f.asset_id=a.id) as usage
     from allrice_company_assets a join allrice_users u on u.id=a.owner_id join allrice_company_asset_revisions r on r.id=case when ${administration} or a.owner_id=${viewer} then a.latest_revision_id else a.published_revision_id end and r.asset_id=a.id
-    where a.organization_id=${org} and (${id}::uuid is null or a.id=${id}) and (${after}::uuid is null or a.id>${after})
+    where a.organization_id=${org} and a.kind in ('rule','template') and (${id}::uuid is null or a.id=${id}) and (${after}::uuid is null or a.id>${after})
       and (${administration} or (a.owner_id=${viewer} and a.kind='template') or a.state='published' or (${maintainer} and a.published_revision_id is not null)) order by a.id limit 51`;
 }
 export async function listCompanyAssets(
@@ -323,7 +323,7 @@ export async function getCompanyAssetFile(
   >`select r.content,r.digest,r.file_metadata,o.object_key,o.workspace_id,o.owner_id,o.media_type,o.size_bytes,o.checksum
     from allrice_company_assets a join allrice_company_asset_revisions r on r.asset_id=a.id and r.id=${revisionId} join allrice_company_asset_publications p on p.asset_id=a.id and p.revision_id=r.id
     join allrice_storage_objects o on o.id=r.snapshot_object_id and o.organization_id=a.organization_id and o.state='ready' and o.deleted_at is null and o.retention_until is null
-    where a.id=${id} and a.organization_id=${org} and a.state='published'`;
+    where a.id=${id} and a.organization_id=${org} and a.kind='template' and a.state='published'`;
   if (!row) throw new CompanyAssetError('asset_unavailable');
   const file = row.file_metadata,
     object = StorageObjectSchema.parse({
@@ -458,6 +458,8 @@ export async function mutateCompanyAsset(
   const existing = await db<
     MutableAsset[]
   >`select owner_id,kind,latest_revision_id,published_revision_id,state from allrice_company_assets where id=${input.assetId} and organization_id=${org}`;
+  if (existing[0] && !['rule', 'template'].includes(existing[0].kind))
+    throw new DataAccessError('not_found');
   requireAssetMutation(
     context,
     org,
@@ -517,6 +519,8 @@ export async function mutateCompanyAsset(
           state: string;
         }[]
       >`select * from allrice_company_assets where id=${input.assetId} and organization_id=${org} for update`;
+      if (current && !['rule', 'template'].includes(current.kind))
+        throw new DataAccessError('not_found');
       requireAssetMutation(
         context,
         org,
