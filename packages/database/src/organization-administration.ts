@@ -22,6 +22,7 @@ import {
   requireTenantAdministrationTarget,
 } from './tenant-administration.ts';
 import { synchronizeTenantMembershipAccess } from './tenant-employee-access.ts';
+import { requireActiveOrganizationDepartment } from './organization-departments.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 export class OrganizationAdministrationError extends Error {
@@ -180,8 +181,10 @@ async function peopleRows(
   return db`select u.id as user_id,u.username,u.email,u.status,
     coalesce(p.display_name,u.display_name) as display_name,coalesce(p.job_title,'') as job_title,coalesce(p.responsibilities,'') as responsibilities,
     exists(select 1 from allrice_memberships m where m.organization_id=${organizationId} and m.user_id=u.id and m.active) as membership_active,
+    p.department_id,d.name as department_name,
     md5(coalesce(to_jsonb(p)::text,'{}') || coalesce(u.username,'') || u.status) as version
     from allrice_users u left join allrice_organization_people p on p.user_id=u.id and p.organization_id=${organizationId}
+    left join allrice_departments d on d.organization_id=p.organization_id and d.id=p.department_id
     where exists(select 1 from allrice_memberships m where m.user_id=u.id and m.organization_id=${organizationId})
       and (${options.userId ?? null}::uuid is null or u.id=${options.userId ?? null})
       and (${options.after ?? null}::uuid is null or u.id>${options.after ?? null})
@@ -200,6 +203,8 @@ function person(row: Record<string, unknown>): OrganizationPerson {
       : String(row.email),
     status: row.status as OrganizationPerson['status'],
     membershipActive: Boolean(row.membership_active),
+    departmentId: row.department_id as string | null,
+    departmentName: row.department_name as string | null,
     version: String(row.version),
   };
 }
@@ -252,11 +257,13 @@ export async function importOrganizationPeople(
         await tx`select id from allrice_organizations where id=${id} and archived_at is null for no key update`;
       if (!organization) throw new DataAccessError('not_found');
       for (const p of prepared) {
+        if (p.departmentId)
+          await requireActiveOrganizationDepartment(tx, id, p.departmentId);
         await tx`insert into allrice_users(id,username,email,display_name,password_hash,status)
         values(${p.id},${p.username},${p.email ?? `account-${p.id}@users.allrice.invalid`},${p.displayName},${p.hash},'active')`;
         await tx`insert into allrice_memberships(organization_id,user_id,role,active) values(${id},${p.id},'member',true)`;
-        await tx`insert into allrice_organization_people(organization_id,user_id,display_name,job_title,responsibilities)
-        values(${id},${p.id},${p.displayName},${p.jobTitle},${p.responsibilities})`;
+        await tx`insert into allrice_organization_people(organization_id,user_id,display_name,job_title,responsibilities,department_id)
+        values(${id},${p.id},${p.displayName},${p.jobTitle},${p.responsibilities},${p.departmentId ?? null})`;
         await audit(tx, context, id, 'organization.employee.created', p.id);
       }
       await synchronizeTenantMembershipAccess(tx, {
@@ -305,11 +312,23 @@ export async function updateOrganizationPerson(
   checkUsername(value.username);
   return uniqueAccount(() =>
     getDatabase().begin(async (tx) => {
-      await lockPerson(tx, context, id, userId, value.expectedVersion);
+      const previous = await lockPerson(
+        tx,
+        context,
+        id,
+        userId,
+        value.expectedVersion,
+      );
+      const departmentId =
+        value.departmentId === undefined
+          ? (previous.department_id as string | null)
+          : value.departmentId;
+      if (departmentId && departmentId !== previous.department_id)
+        await requireActiveOrganizationDepartment(tx, id, departmentId);
       await tx`update allrice_users set username=${value.username},updated_at=now() where id=${userId}`;
-      await tx`insert into allrice_organization_people(organization_id,user_id,display_name,job_title,responsibilities)
-      values(${id},${userId},${value.displayName},${value.jobTitle},${value.responsibilities})
-      on conflict(organization_id,user_id) do update set display_name=excluded.display_name,job_title=excluded.job_title,responsibilities=excluded.responsibilities,updated_at=clock_timestamp()`;
+      await tx`insert into allrice_organization_people(organization_id,user_id,display_name,job_title,responsibilities,department_id)
+      values(${id},${userId},${value.displayName},${value.jobTitle},${value.responsibilities},${departmentId})
+      on conflict(organization_id,user_id) do update set display_name=excluded.display_name,job_title=excluded.job_title,responsibilities=excluded.responsibilities,department_id=excluded.department_id,updated_at=clock_timestamp()`;
       await audit(tx, context, id, 'organization.employee.updated', userId);
       return { person: person((await peopleRows(tx, id, { userId }))[0]!) };
     }),

@@ -22,6 +22,7 @@ export const OrganizationPersonInputSchema = z
     displayName: z.string().trim().min(1).max(120),
     jobTitle: z.string().trim().max(160).default(''),
     responsibilities: z.string().trim().max(8000).default(''),
+    departmentId: UuidSchema.nullable().optional(),
     email: EmailSchema.optional(),
     password: PasswordSchema.optional(),
   })
@@ -76,7 +77,31 @@ export interface OrganizationPerson {
   email: string | null;
   status: 'active' | 'invited' | 'disabled';
   membershipActive: boolean;
+  departmentId: string | null;
+  departmentName: string | null;
   version: string;
+}
+
+export const OrganizationDepartmentCreateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    requestId: UuidSchema,
+  })
+  .strict();
+export const OrganizationDepartmentUpdateSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120),
+    active: z.boolean(),
+    expectedRevision: z.number().int().positive(),
+  })
+  .strict();
+export interface OrganizationDepartment {
+  id: string;
+  organizationId: string;
+  name: string;
+  revision: number;
+  active: boolean;
+  peopleCount: number;
 }
 
 export const OrganizationAiTargetSchema = z.discriminatedUnion('type', [
