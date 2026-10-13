@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
+import * as accessCancellation from './employee-access-cancellation.ts';
 import { updateEmployeeRelease } from './employee-quality.ts';
 import * as folderTriggers from '../folder-triggers.ts';
 import {
@@ -28,6 +29,7 @@ import {
 import {
   createAssignedChatSession,
   createChatSession,
+  createTraceableMemory,
   getEmployeeWorkspace,
   listChatSessions,
   sendChatMessage,
@@ -321,6 +323,158 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         await fixture.db`select cancel_requested_at from allrice_jobs where run_id=${next.run.id}`
       )[0]!.cancel_requested_at,
     ).toBeNull();
+  });
+  async function messageSideEffects(sessionId: string) {
+    const [row] = await fixture.db`select
+      (select count(*)::int from allrice_messages where session_id=${sessionId}) messages,
+      (select count(*)::int from allrice_chat_input_requests where session_id=${sessionId}) receipts,
+      (select count(*)::int from allrice_employee_runs where session_id=${sessionId}) runs,
+      (select count(*)::int from allrice_audit_events where resource_id=${sessionId} and action='session.employee.version.refresh') version_audits,
+      s.employee_version_id,s.updated_at
+      from allrice_chat_sessions s where id=${sessionId}`;
+    return row;
+  }
+  it.each(['general', 'custom'] as const)(
+    'rejects writes to archived %s instances before messages, receipts or Session changes',
+    async (kind) => {
+      const f = await setup();
+      const instanceId =
+        kind === 'general'
+          ? f.assignment.id
+          : (await f.custom('Archived input')).id;
+      const s = await f.session(instanceId);
+      const input = {
+        text: 'Preserve original input and verify every amount.',
+        clientMessageId: randomUUID(),
+      };
+      const memory = await createTraceableMemory(f.a.context, {
+        workspaceId: f.a.workspaceId,
+        content: input.text,
+        sourceType: 'user',
+      });
+      const memoryState = () =>
+        fixture.db`select recall_count,last_recalled_at from allrice_memories where id=${memory.id}`;
+      const memoryBefore = await memoryState();
+      const saved = await savePlatformEmployeeDraft(f.source.employeeId, {
+        definition: {
+          ...f.source.definition,
+          description: 'Updated before archived input',
+        },
+        expectedRevisionId: f.source.revisionId,
+      });
+      await f.source.preview();
+      expect(
+        (
+          await publishPlatformEmployee(f.source.employeeId, {
+            scope: 'assigned',
+            expectedRevisionId: saved!.currentDraft!.id,
+          })
+        ).valid,
+      ).toBe(true);
+      const updatedVersion = (
+        await getEmployeeInstance(f.a.context, instanceId)
+      ).source.employeeVersionId;
+      expect(updatedVersion).not.toBe(s.employeeVersionId);
+      // Publication eagerly refreshes existing Sessions. Exercise the supported
+      // stale-Session path explicitly in this isolated fixture.
+      await fixture.db`update allrice_chat_sessions set employee_version_id=${s.employeeVersionId} where id=${s.id}`;
+      await changeEmployeeInstanceLifecycle(f.a.context, instanceId, {
+        workspaceId: f.a.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        operation: 'archive',
+      });
+      const before = await messageSideEffects(s.id);
+      for (const deliveryMode of ['immediate', 'follow_up', 'steer'] as const) {
+        await expect(
+          sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+            ...input,
+            clientMessageId:
+              deliveryMode === 'immediate'
+                ? input.clientMessageId
+                : randomUUID(),
+            ...(deliveryMode === 'immediate' ? {} : { deliveryMode }),
+            ...(deliveryMode === 'steer'
+              ? { expectedTurnId: randomUUID(), expectedGeneration: 1 }
+              : {}),
+          }),
+        ).rejects.toMatchObject({ code: 'instance_archived' });
+        expect(await messageSideEffects(s.id)).toEqual(before);
+        expect(await memoryState()).toEqual(memoryBefore);
+      }
+      await changeEmployeeInstanceLifecycle(f.a.context, instanceId, {
+        workspaceId: f.a.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 2,
+        operation: 'restore',
+        sourceRevision: 1,
+      });
+      const sent = await sendChatMessage(
+        f.a.context,
+        f.a.workspaceId,
+        s.id,
+        input,
+      );
+      expect(
+        (await sendChatMessage(f.a.context, f.a.workspaceId, s.id, input)).run
+          .id,
+      ).toBe(sent.run.id);
+      expect(await messageSideEffects(s.id)).toMatchObject({
+        messages: 2,
+        receipts: 1,
+        runs: 1,
+        employee_version_id: updatedVersion,
+        version_audits: 1,
+      });
+      expect((await memoryState())[0]!.recall_count).toBe(1);
+    },
+  );
+  it('waits for a concurrent archive before persisting a message from a stale Session read', async () => {
+    const f = await setup(),
+      i = await f.custom('Concurrent archive'),
+      s = await f.session(i.id);
+    const before = await messageSideEffects(s.id),
+      locked = gate(),
+      proceed = gate();
+    let archiverPid = 0;
+    const original = accessCancellation.cancelEmployeeAccessRuns;
+    const spy = vi
+      .spyOn(accessCancellation, 'cancelEmployeeAccessRuns')
+      .mockImplementationOnce(async (...args) => {
+        archiverPid = (await args[0]`select pg_backend_pid() pid`)[0]!.pid;
+        locked.resolve();
+        await proceed.promise;
+        return original(...args);
+      });
+    const archival = changeEmployeeInstanceLifecycle(f.a.context, i.id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      operation: 'archive',
+    });
+    void archival.catch(() => undefined);
+    await locked.promise;
+    const sending = sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+      text: 'Stale input',
+      clientMessageId: randomUUID(),
+    });
+    void sending.catch(() => undefined);
+    try {
+      await vi.waitFor(
+        async () => {
+          const blocked =
+            await fixture.db`select pid from pg_stat_activity where ${archiverPid} = any(pg_blocking_pids(pid))`;
+          expect(blocked.length).toBeGreaterThan(0);
+        },
+        { timeout: 5000, interval: 10 },
+      );
+    } finally {
+      proceed.resolve();
+      spy.mockRestore();
+    }
+    await archival;
+    await expect(sending).rejects.toMatchObject({ code: 'instance_archived' });
+    expect(await messageSideEffects(s.id)).toEqual(before);
   });
   it('keeps withdrawn instances discoverable without reviving archived instances on reassignment', async () => {
     const f = await setup(),
