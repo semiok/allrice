@@ -62,7 +62,7 @@ export function safeDshSourcePayload(event: Record<string, unknown>) {
     ...(turn === undefined ? {} : { turn }),
     ...(step === undefined ? {} : { step }),
   };
-  if (type === 'assistant/chunk') {
+  if (type === 'assistant/chunk' || type === 'assistant/live-chunk') {
     const chunk = record(data.chunk) ?? {};
     return {
       ...common,
