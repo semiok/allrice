@@ -4,6 +4,7 @@ import {
   EmployeeHubError,
   EmployeeInstanceError,
   EmployeeContentError,
+  EmployeeRuntimeContentError,
 } from '@allrice/database';
 
 import {
@@ -13,6 +14,13 @@ import {
 } from '../api-error-response';
 
 export function employeeHubErrorResponse(error: unknown) {
+  if (error instanceof EmployeeRuntimeContentError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: error.message,
+      retryable: false,
+    });
   if (error instanceof EmployeeContentError)
     return apiProblem({
       status: 409,

@@ -80,6 +80,7 @@ export async function executeDurableWorkflow(input: {
   leaseToken: string;
   leaseMs: number;
   storageRoot: string;
+  checkContent?: () => Promise<void>;
   evaluation?: {
     routingAccurate?: boolean;
     citationsAccurate?: boolean;
@@ -93,6 +94,7 @@ export async function executeDurableWorkflow(input: {
 }) {
   const startedAt = Date.now();
   while (true) {
+    await input.checkContent?.();
     const run = await getWorkflowExecution({
       organizationId: input.execution.context.organizationId,
       workspaceId: input.execution.context.workspaceId!,

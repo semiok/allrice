@@ -788,6 +788,15 @@ async function enqueueRunCore(
         transaction,
         instanceIdentity,
       );
+      if (options.employeeBinding.executionSnapshot.content) {
+        const { assertEmployeeContentAdmission } =
+          await import('../employees/employee-runtime-content.ts');
+        await assertEmployeeContentAdmission(
+          transaction,
+          instanceIdentity,
+          options.employeeBinding.executionSnapshot.content,
+        );
+      }
     }
     if (options.folderEventId) {
       const { assertFolderTriggerMessage } =

@@ -1,8 +1,70 @@
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 
 import type { ContextCheckpoint } from '@allrice/contracts';
 
-import { bootstrapConversationForCheckpoint } from './employee-kernel.js';
+import {
+  assembleEmployeeKernel,
+  bootstrapConversationForCheckpoint,
+} from './employee-kernel.js';
+
+it('assembles each frozen common rule once and rejects conflicting implicit versions before a model call', () => {
+  const assetId = randomUUID(),
+    revisionId = randomUUID(),
+    digest = `sha256:${'a'.repeat(64)}`;
+  const input = {
+    employeeAssignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    sessionId: randomUUID(),
+    userMessageId: randomUUID(),
+    assistantMessageId: randomUUID(),
+    commonContent: [
+      {
+        reference: {
+          sourceKind: 'company_rule',
+          contentId: assetId,
+          revisionId,
+          digest,
+        },
+        available: true,
+        title: 'Common',
+        body: 'RULE_BODY_42',
+      },
+    ],
+    resolved: {
+      promptSnapshot: {
+        systemPrompt: 'Platform',
+        userRequest: 'Request',
+        conversation: [],
+        memories: [],
+        companyAssets: {
+          templates: [],
+          rules: [
+            {
+              assetId,
+              revision: {
+                id: revisionId,
+                digest,
+                content: { title: 'Common', body: 'RULE_BODY_42' },
+              },
+            },
+          ],
+        },
+      },
+      executionSnapshot: null,
+      grantedCapabilities: ['model:invoke'],
+      nativeSkills: [],
+    },
+  } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
+  expect(
+    assembleEmployeeKernel(input).systemInstructions.match(/RULE_BODY_42/g),
+  ).toHaveLength(1);
+  input.resolved.promptSnapshot.companyAssets!.rules[0]!.revision.id =
+    randomUUID();
+  expect(() => assembleEmployeeKernel(input)).toThrow(
+    '共同要求与本次引用的规则版本不一致',
+  );
+});
 
 describe('Employee Kernel checkpoint recovery', () => {
   it('injects a verified checkpoint and only the uncovered message window', () => {

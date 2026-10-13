@@ -1429,8 +1429,19 @@ integration(
       });
       expect(() => assertQuotaAvailable(quota)).not.toThrow();
       const nextRunId = randomUUID();
+      const nextUserMessageId = randomUUID();
+      const nextAssistantMessageId = randomUUID();
       await database.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
         values(${nextRunId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
+      // A second employee Run needs its own persisted conversation binding,
+      // even when this accounting fixture uses a legacy content-free snapshot.
+      await database.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${nextUserMessageId},${f.org},${f.workspace},${f.session},${f.user},'user','{"text":"next synthetic request","citations":[]}'),
+          (${nextAssistantMessageId},${f.org},${f.workspace},${f.session},${f.user},'assistant','{"text":"","citations":[]}')`;
+      await database.db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot)
+        select ${nextRunId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
+          ${nextUserMessageId},${nextAssistantMessageId},provider_snapshot,prompt_snapshot,native_skills,execution_snapshot
+        from allrice_employee_runs where run_id=${f.rootRunId}`;
       const next = {
         ...job,
         execution: {
@@ -1440,6 +1451,8 @@ integration(
             ...job.execution.payload,
             input: {
               ...(job.execution.payload.input as Record<string, unknown>),
+              userMessageId: nextUserMessageId,
+              assistantMessageId: nextAssistantMessageId,
               assistantConfiguration: { ...f.config, allowAssistants: false },
             },
           },

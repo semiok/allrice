@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { readyWorkflowSteps, workflowStepInput } from './workflow-engine.js';
+import {
+  executeDurableWorkflow,
+  readyWorkflowSteps,
+  workflowStepInput,
+} from './workflow-engine.js';
+import { HandlerError } from './errors.js';
 
 const definition = {
   schemaVersion: 1 as const,
@@ -63,6 +68,27 @@ function step(key: string, status: 'pending' | 'succeeded') {
 }
 
 describe('durable workflow planner', () => {
+  it('rejects withdrawn context on resume before touching a remaining direct tool step', async () => {
+    const executeStep = vi.fn();
+    // The gate runs before loading or mutating Workflow rows, so existing
+    // succeeded steps and their receipts are untouched on a refused resume.
+    await expect(
+      executeDurableWorkflow({
+        checkContent: async () => {
+          throw new HandlerError(
+            'EMPLOYEE_CONTENT_UNAVAILABLE',
+            'withdrawn',
+            false,
+          );
+        },
+        executeStep,
+      } as unknown as Parameters<typeof executeDurableWorkflow>[0]),
+    ).rejects.toMatchObject({
+      code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      retryable: false,
+    });
+    expect(executeStep).not.toHaveBeenCalled();
+  });
   it('releases only steps whose dependencies are durably complete', () => {
     expect(
       readyWorkflowSteps(definition, [

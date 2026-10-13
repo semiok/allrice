@@ -34,6 +34,9 @@ import {
   ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
+  prepareEmployeeContentContext,
+  assertEmployeeContentContext,
+  EmployeeRuntimeContentError,
   ModelGovernanceError,
   assertReviewRunCurrent,
   assertAssistantAuthority,
@@ -187,7 +190,7 @@ export async function executeEmployeeRun({
     );
   }
   const userMessageId = input.userMessageId;
-  const resolved = await resolveEmployeeExecution({
+  let resolved = await resolveEmployeeExecution({
     organizationId: execution.context.organizationId,
     workspaceId: execution.context.workspaceId!,
     ownerId: execution.job.ownerId,
@@ -260,6 +263,67 @@ export async function executeEmployeeRun({
       false,
     );
   }
+  const contentScope = {
+    organizationId: execution.context.organizationId,
+    workspaceId: execution.context.workspaceId!,
+    ownerId: execution.job.ownerId,
+    sessionId: input.sessionId,
+    runId: execution.context.runId,
+  };
+  let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
+  try {
+    contentRuntime = await prepareEmployeeContentContext(contentScope);
+  } catch (error) {
+    if (error instanceof EmployeeRuntimeContentError)
+      throw new HandlerError(error.code, error.message, false);
+    throw error;
+  }
+  if (contentRuntime?.allowedMessageIds) {
+    const allowed = new Set(contentRuntime.allowedMessageIds);
+    resolved = {
+      ...resolved,
+      promptSnapshot: {
+        ...resolved.promptSnapshot,
+        conversation: resolved.promptSnapshot.conversation.filter(
+          (m) => m.id && allowed.has(m.id),
+        ),
+      },
+    };
+  }
+  let contentEvidence: Promise<unknown> | undefined;
+  const contentGuard = contentRuntime
+    ? {
+        generationId: contentRuntime.generationId,
+        check: async () => {
+          try {
+            await assertEmployeeContentContext(
+              contentScope,
+              contentRuntime!.generationId,
+              workflowLease,
+            );
+            contentEvidence ??= appendJobEvent({
+              ...workflowLease,
+              type: 'harness.native',
+              payload: {
+                source: 'dsh',
+                nativeType: 'allrice/content-authorized',
+                nativePayload: {
+                  generationId: contentRuntime!.generationId,
+                  checksum: contentRuntime!.snapshot.checksum,
+                  references: contentRuntime!.sources.map((s) => s.reference),
+                  historyReset: !!contentRuntime!.historyFromMessageId,
+                },
+              },
+            });
+            await contentEvidence;
+          } catch (error) {
+            if (error instanceof EmployeeRuntimeContentError)
+              throw new HandlerError(error.code, error.message, false);
+            throw error;
+          }
+        },
+      }
+    : undefined;
   const companyMaterials = resolved.promptSnapshot.companyAssets
     ? await prepareCompanyRunMaterials(
         execution.context,
@@ -282,6 +346,12 @@ export async function executeEmployeeRun({
     .update(
       JSON.stringify({
         employeeVersionId: input.employeeVersionId,
+        ...(contentRuntime
+          ? {
+              contentGenerationId: contentRuntime.generationId,
+              contentChecksum: contentRuntime.snapshot.checksum,
+            }
+          : {}),
         ...(repairTask
           ? { repairFingerprint: repairTask.frozen.fingerprint }
           : {}),
@@ -352,6 +422,7 @@ export async function executeEmployeeRun({
     userMessageId: input.userMessageId,
     assistantMessageId: input.assistantMessageId,
     resolved,
+    commonContent: contentRuntime?.sources,
     companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };
@@ -1194,6 +1265,7 @@ export async function executeEmployeeRun({
               outputTokens: 0,
             };
             const durable = await executeDurableWorkflow({
+              checkContent: contentGuard?.check,
               execution,
               ...workflowLease,
               storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
@@ -1206,6 +1278,7 @@ export async function executeEmployeeRun({
                   ),
               },
               executeStep: async ({ step, value, idempotencyKey }) => {
+                await contentGuard?.check();
                 if (step.kind === 'knowledge') {
                   const allowed = new Set(
                     capabilitySnapshot.knowledge
@@ -1334,6 +1407,7 @@ export async function executeEmployeeRun({
                   skillVersionIds: skillIds,
                 });
                 const stepResult = await adapter.execute({
+                  contentGuard,
                   progress: taskProgress,
                   kernel: stepKernel,
                   nativeSkills: resolved.nativeSkills,
@@ -1411,6 +1485,7 @@ export async function executeEmployeeRun({
           })()
         : await adapter
             .execute({
+              contentGuard,
               progress: taskProgress,
               questionWait,
               assistants,
@@ -1644,6 +1719,9 @@ export async function executeEmployeeRun({
           : [],
     );
     runtime = await finalizeEmployeeConversationContext({
+      contentGenerationId: contentRuntime?.generationId,
+      allowedMessageIds: contentRuntime?.allowedMessageIds ?? undefined,
+      checkContent: contentGuard?.check,
       ownership,
       ownerId: execution.job.ownerId,
       executionContext: execution.context,

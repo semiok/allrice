@@ -243,6 +243,7 @@ export class DshRuntimePool {
             : {}),
           systemInstructions: input.systemInstructions,
           taskProgress: !!input.input.progress,
+          contentGuard: !!input.input.contentGuard,
           durableQuestions: !!input.input.questionWait,
           // Run authority is rebound by the adapter and released by finish.
           // Only process configuration belongs in the session reuse key.
@@ -379,6 +380,7 @@ export class DshRuntimePool {
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         requireTaskProgress: !!input.input.progress,
         requireDurableQuestions: !!input.input.questionWait,
+        requireContentGuard: !!input.input.contentGuard,
       });
       this.runtimes.set(input.threadId, runtime);
       return { runtime, fresh: true };

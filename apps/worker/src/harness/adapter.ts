@@ -114,6 +114,9 @@ export interface HarnessExecutionInput {
   storageObjects: StorageObject[];
   images?: readonly HarnessImageInput[];
   nativeSkills?: DshNativeSkillSnapshot[];
+  /** Server-bound authorization for all model sends, native retries and
+   * compaction. No model-supplied dependency list is accepted. */
+  contentGuard?: { generationId: string; check: () => Promise<void> };
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
   signal: AbortSignal;

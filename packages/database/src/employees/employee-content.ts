@@ -5,6 +5,7 @@ import {
   EmployeeContentReceiptSchema,
   EmployeeContentSetSchema,
   EmployeeEffectiveContentSchema,
+  EmployeeRuntimeContentSchema,
   PlatformEmployeeDefinitionSchema,
   UuidSchema,
   employeeContentLimits,
@@ -23,6 +24,7 @@ import {
   getContentAccess,
   readContentPrincipal,
   requireContentMaintenance,
+  type ContentIdentity,
 } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import {
@@ -181,7 +183,7 @@ async function resolveTarget(
 }
 
 async function platformContent(
-  context: RequestContext,
+  context: ContentIdentity,
   target: ResolvedTarget,
   sql: ContentSql,
 ) {
@@ -216,7 +218,7 @@ async function platformContent(
 }
 
 async function inheritedRows(
-  context: RequestContext,
+  context: ContentIdentity,
   target: ResolvedTarget,
   scope: ContentScope,
   sql: ContentSql,
@@ -519,6 +521,17 @@ export async function mutateEmployeeContent(
           throw new EmployeeContentError('validation_failed');
         if (row.validation.dependencyDigest !== validation.dependencyDigest)
           throw new EmployeeContentError('source_changed');
+        if (input.invalidatePrevious && active && active.id !== candidate.id)
+          await tx`update allrice_employee_content_publications set invalidated_at=clock_timestamp()
+            where set_id=${row.id} and revision_id=${active.id} and invalidated_at is null`;
+        // A revoked publication cannot be resurrected by re-activating the
+        // same revision. A corrected version needs its own immutable revision.
+        const [revoked] =
+          await tx`select revision_id from allrice_employee_content_publications
+          where set_id=${row.id} and revision_id=${candidate.id} and invalidated_at is not null`;
+        if (revoked) throw new EmployeeContentError('source_changed');
+        await tx`insert into allrice_employee_content_publications(set_id,revision_id)
+          values(${row.id},${candidate.id}) on conflict do nothing`;
         for (const source of result.resolved)
           if (source.publish) {
             await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by)
@@ -543,6 +556,58 @@ export async function mutateEmployeeContent(
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
       values(${context.organizationId},${context.workspaceId},${context.actor.id},${`employee.content.${input.operation}`},'employee_content_set',${row.id},'allowed','current_scope_authority',${context.requestId})`;
     return response;
+  });
+}
+
+/** Freeze only active indexes at the Run's exact employee version. Scene
+ * bodies stay unloaded; an unrelated stale scene cannot block an ordinary task. */
+export async function freezeEmployeeRuntimeContent(
+  context: ContentIdentity,
+  input: { instanceId: string; employeeId: string; employeeVersionId: string },
+  sql: ContentSql = getDatabase(),
+) {
+  const instance = await getEmployeeInstance(context, input.instanceId, sql);
+  const [assignment] =
+    await sql`select employee_id from allrice_employee_assignments
+    where id=${instance.assignmentId} and employee_id=${input.employeeId}`;
+  if (!assignment) throw new DataAccessError('authorization_denied');
+  const target = {
+    employeeId: input.employeeId,
+    versionId: input.employeeVersionId,
+    instanceId: input.instanceId,
+  };
+  const platform = await platformContent(context, target, sql);
+  const rows = await inheritedRows(
+    context,
+    target,
+    {
+      scope: 'personal',
+      organizationId: context.organizationId,
+      ownerId: context.actor.id,
+    },
+    sql,
+  );
+  const layers = [];
+  for (const row of rows) {
+    const revision = await readRevision(sql, row.active_revision_id);
+    if (!revision) continue;
+    layers.push({
+      setId: row.id,
+      revisionId: revision.id,
+      digest: revision.digest,
+      ownership: contentOwnership(row),
+      common: revision.manifest.common,
+    });
+  }
+  const index = {
+    schemaVersion: 1 as const,
+    ...input,
+    platform: { revisionId: platform.revisionId, digest: platform.digest },
+    layers,
+  };
+  return EmployeeRuntimeContentSchema.parse({
+    ...index,
+    checksum: runtimePolicyDigest(index),
   });
 }
 

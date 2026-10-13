@@ -7,6 +7,7 @@ import {
   type Visibility,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { assertEmployeeContentReferenceMessages } from '../employees/employee-runtime-content.ts';
 
 type Reader = ReturnType<typeof getDatabase> | TransactionSql;
 type Principal = {
@@ -128,6 +129,12 @@ export async function captureSessionReferences(
       });
     }
     messages.reverse();
+    await assertEmployeeContentReferenceMessages(
+      context,
+      id,
+      messages.map((m) => m.id),
+      db,
+    );
     const originalMessages = Number(rows[0]!.original_count);
     const body = {
       sessionId: id,
@@ -159,6 +166,16 @@ export async function assertSessionReferencesReadable(
         visibilityRank[source.visibility] < visibilityRank[snapshot.visibility]
       )
         throw new SessionReferenceError('unavailable');
+      await assertEmployeeContentReferenceMessages(
+        {
+          actor: { type: 'user', id: scope.ownerId },
+          organizationId: scope.organizationId,
+          workspaceId: scope.workspaceId,
+        },
+        snapshot.sessionId,
+        snapshot.messages.map((m) => m.id),
+        db,
+      );
     }
   });
 }

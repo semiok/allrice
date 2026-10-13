@@ -6,9 +6,11 @@ import {
   type EmployeeContentReference,
   type EmployeeResolvedContent,
   type EmployeeContentIssue,
-  type RequestContext,
 } from '@allrice/contracts';
-import { getContentAccess } from '../content-maintenance.ts';
+import {
+  getContentAccess,
+  type ContentIdentity,
+} from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { resolveEffectiveKnowledgeAcl } from '../capabilities/capability-registry.ts';
 import {
@@ -43,13 +45,14 @@ function unavailable(
   };
 }
 type ResolveInput = {
-  context: RequestContext;
+  context: ContentIdentity;
   employeeId: string;
   ownership: ContentScope;
   ref: EmployeeContentReference;
   sql: ContentSql;
   lock: boolean;
   allowDraft: boolean;
+  frozenPublication?: boolean;
 };
 
 /** Exact source revisions are reused; neither a scene nor a content set grants
@@ -114,6 +117,7 @@ export async function resolveEmployeeContentSource(
     if (row.digest !== ref.digest) return unavailable(ref, 'source_changed');
     if (
       ref.sourceKind === 'company_rule' &&
+      !input.frozenPublication &&
       row.published_revision_id !== ref.revisionId
     )
       return unavailable(ref, 'source_changed');
