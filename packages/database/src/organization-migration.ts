@@ -33,6 +33,14 @@ export async function migrateLegacyOrganizationAccounts(
     throw Error('duplicate_migration_account');
   return db.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext('met161-account-migration'))`;
+    // Content writes and personnel administration lock organization before
+    // user. Lock the whole batch in that order, including legacy memberships
+    // whose profiles/roles below may also change.
+    await tx`select o.id from allrice_organizations o
+      where o.slug in ${tx(values.map((value) => value.organizationSlug))}
+        or exists(select 1 from allrice_memberships m join allrice_users u on u.id=m.user_id
+          where m.organization_id=o.id and lower(u.email) in ${tx(values.map((value) => value.email))})
+      order by o.id for no key update of o`;
     const receipts: {
       userId: string;
       organizationId: string;

@@ -158,6 +158,25 @@ describe('company publication HTTP authority and exact bytes', () => {
       "frame-ancestors 'none'",
     );
   });
+  it('explains why a shared archive cannot close an author private draft', async () => {
+    p.mutate.mockRejectedValueOnce(
+      new CompanyAssetError('private_draft_in_progress'),
+    );
+    const result = await companyAssetsHttp(
+      request('', 'POST', {
+        operation: 'archive',
+        assetId: id,
+        expectedRevision: 3,
+      }),
+    );
+    expect(result.status).toBe(409);
+    expect(await result.json()).toMatchObject({
+      error: {
+        code: 'private_draft_in_progress',
+        message: '作者还有未发布草稿，可先暂停或撤回共享。',
+      },
+    });
+  });
   it('returns no bytes if withdrawn, member access revoked or exact snapshot changed during IO', async () => {
     for (const failure of [
       new CompanyAssetError('asset_unavailable'),

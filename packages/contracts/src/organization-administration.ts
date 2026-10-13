@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { EmailSchema, PasswordSchema, UsernameSchema } from './identity.ts';
 import { UuidSchema } from './common.ts';
 import type { AdminTenantEmployee } from './tenant-employees.ts';
+import {
+  ContentMaintenanceLevelSchema,
+  type ContentMaintenanceLevel,
+} from './content-maintenance.ts';
 
 export function organizationInitialPassword(username: string) {
   return `${UsernameSchema.parse(username)}@123`;
@@ -23,6 +27,7 @@ export const OrganizationPersonInputSchema = z
     jobTitle: z.string().trim().max(160).default(''),
     responsibilities: z.string().trim().max(8000).default(''),
     departmentId: UuidSchema.nullable().optional(),
+    contentMaintenanceLevel: ContentMaintenanceLevelSchema.optional(),
     email: EmailSchema.optional(),
     password: PasswordSchema.optional(),
   })
@@ -79,6 +84,7 @@ export interface OrganizationPerson {
   membershipActive: boolean;
   departmentId: string | null;
   departmentName: string | null;
+  contentMaintenanceLevel: ContentMaintenanceLevel;
   version: string;
 }
 

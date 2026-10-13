@@ -148,6 +148,11 @@ export const CompanyAssetSchema = z
     publishedRevisionId: UuidSchema.nullable(),
     latest: CompanyAssetRevisionSchema,
     canEdit: z.boolean(),
+    // Editing a private draft and maintaining a company publication are distinct.
+    // Old serialized records fail closed for the new shared mutation controls.
+    canPublish: z.boolean().default(false),
+    canMaintainPublication: z.boolean().default(false),
+    canArchive: z.boolean().default(false),
     pinned: z.boolean().optional(),
     usage: CompanyAssetUsageSchema.optional(),
   })

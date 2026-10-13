@@ -307,6 +307,11 @@
   -webkit-line-clamp: 2;
   overflow: hidden;
 }
+.maintenanceLevel {
+  display: block;
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
 .rowActions {
   justify-content: flex-end;
   gap: 4px;

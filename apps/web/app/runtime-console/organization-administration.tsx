@@ -12,6 +12,7 @@ import {
   OrganizationImportSchema,
   UsernameSchema,
   organizationInitialPassword,
+  contentMaintenanceLabels,
   type ManagedOrganization,
   type OrganizationPerson,
   type OrganizationAiTarget,
@@ -529,6 +530,7 @@ export function OrganizationPeople({
       jobTitle: data.get('jobTitle'),
       responsibilities: data.get('responsibilities'),
       departmentId: data.get('departmentId') || null,
+      contentMaintenanceLevel: data.get('contentMaintenanceLevel'),
     };
     const edited = typeof editor === 'object' ? editor : null;
     void mutate(
@@ -837,6 +839,21 @@ export function OrganizationPeople({
                   </select>
                 </label>
                 <label>
+                  内容维护级别
+                  <select
+                    aria-label="内容维护级别"
+                    name="contentMaintenanceLevel"
+                    defaultValue={edited?.contentMaintenanceLevel ?? 'personal'}
+                  >
+                    <option value="personal">个人</option>
+                    <option value="department">部门</option>
+                    <option value="company">公司</option>
+                  </select>
+                  <small>
+                    部门包含自己的个人内容；公司再包含本公司及各部门共享内容。不会获得他人私人内容或账号管理权限。
+                  </small>
+                </label>
+                <label>
                   岗位
                   <input
                     name="jobTitle"
@@ -1003,7 +1020,17 @@ export function OrganizationPeople({
                   {person.responsibilities}
                 </small>
               </td>
-              <td>{person.departmentName ?? '未分部门'}</td>
+              <td>
+                <span>{person.departmentName ?? '未分部门'}</span>
+                <small className={styles.maintenanceLevel}>
+                  可维护：
+                  {
+                    contentMaintenanceLabels[
+                      person.contentMaintenanceLevel ?? 'personal'
+                    ]
+                  }
+                </small>
+              </td>
               <td>
                 <AdminStatus
                   tone={

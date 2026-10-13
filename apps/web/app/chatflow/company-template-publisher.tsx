@@ -141,20 +141,25 @@ export function useCompanyAssetDirectory(
 
 type StateOperation = Exclude<CompanyAssetMutation['operation'], 'save'>;
 export function companyAssetActions(asset: CompanyAsset): StateOperation[] {
-  if (!asset.canEdit || asset.state === 'archived') return [];
+  if (asset.state === 'archived') return [];
   const actions: StateOperation[] = [];
-  if (asset.latest.id !== asset.publishedRevisionId || asset.state === 'draft')
-    actions.push('publish');
-  if (asset.state === 'published') actions.push('pause', 'withdraw');
-  if (asset.state === 'published' && asset.kind === 'template')
-    actions.push(asset.pinned ? 'unpin' : 'pin');
   if (
-    (asset.state === 'paused' || asset.state === 'withdrawn') &&
-    asset.publishedRevisionId
+    asset.canPublish &&
+    (asset.latest.id !== asset.publishedRevisionId || asset.state === 'draft')
   )
-    actions.push('resume');
-  if (asset.state === 'paused') actions.push('withdraw');
-  actions.push('archive');
+    actions.push('publish');
+  if (asset.canMaintainPublication) {
+    if (asset.state === 'published') actions.push('pause', 'withdraw');
+    if (asset.state === 'published' && asset.kind === 'template')
+      actions.push(asset.pinned ? 'unpin' : 'pin');
+    if (
+      (asset.state === 'paused' || asset.state === 'withdrawn') &&
+      asset.publishedRevisionId
+    )
+      actions.push('resume');
+    if (asset.state === 'paused') actions.push('withdraw');
+  }
+  if (asset.canArchive) actions.push('archive');
   return actions;
 }
 const operationLabels: Record<StateOperation, string> = {
@@ -240,9 +245,12 @@ export function CompanyAssetStateActions({
     }
   }
   const actions = companyAssetActions(asset);
-  if (!actions.length) return null;
+  if (!actions.length && !asset.canEdit) return null;
   return (
     <div className={styles.actions}>
+      {asset.canEdit && !asset.canPublish && (
+        <p>可保存自己的草稿；共享给公司需要公司级维护权限。</p>
+      )}
       {actions.map((action) => (
         <Button
           key={action}

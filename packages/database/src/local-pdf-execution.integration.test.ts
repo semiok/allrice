@@ -548,6 +548,7 @@ suite('MET166 independent read-only PDF original-call authority', () => {
       ...(await authenticateSession((await createSession(f.owner)).token))!,
       workspaceId: f.workspace,
     };
+    await db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${f.org},${f.owner},'Company publisher','company') on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
     let asset = await mutateCompanyAsset(
       owner,
       f.org,
