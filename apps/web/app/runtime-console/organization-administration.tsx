@@ -15,7 +15,17 @@ import {
   type ManagedOrganization,
   type OrganizationPerson,
   type OrganizationAiTarget,
+  type OrganizationDepartment,
 } from '@allrice/contracts';
+import {
+  organizationApi,
+  organizationErrorMessage as errorMessage,
+} from './organization-api';
+export { organizationApi } from './organization-api';
+import {
+  OrganizationDepartments,
+  loadOrganizationDepartmentOptions,
+} from './organization-departments';
 import { OrganizationAiAssignments } from './organization-ai-assignments';
 import { TenantResourceEditor } from './tenant-resource-editor';
 import {
@@ -35,42 +45,6 @@ const companyTabs: { id: OrganizationView; label: string }[] = [
   { id: 'environments', label: '应用与电脑' },
   { id: 'quotas', label: '用量' },
 ];
-
-const messages: Record<string, string> = {
-  AUTHENTICATION_REQUIRED: '登录已过期，请重新登录。',
-  AUTHORIZATION_DENIED: '需要平台管理员账号。',
-  NOT_FOUND: '公司或员工已不存在，请刷新。',
-  INVALID_REQUEST: '请检查姓名、英文账号格式和密码长度。',
-  account_conflict: '员工信息已被其他操作修改，请刷新后重试。',
-  organization_conflict: '公司信息已更新，请刷新后重试。',
-  username_taken: '英文账号已被使用，请换一个昵称；现有账号的密码不会被覆盖。',
-  email_taken: '邮箱已关联其他账号。',
-  reserved_username: '这个账号名称用于平台管理，请换一个英文昵称。',
-};
-export async function organizationApi<T>(
-  url: string,
-  method = 'GET',
-  input?: unknown,
-  signal?: AbortSignal,
-): Promise<T> {
-  const response = await fetch(url, {
-    method,
-    cache: 'no-store',
-    signal,
-    ...(input
-      ? {
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(input),
-        }
-      : {}),
-  });
-  const body = await response.json();
-  if (!response.ok)
-    throw Error(messages[body.code] ?? '请求未完成，请刷新核对后重试。');
-  return body as T;
-}
-const errorMessage = (e: unknown) =>
-  e instanceof Error ? e.message : '暂时无法连接，请重试。';
 
 export function OrganizationAdministration({
   onNavigationStateChange,
@@ -451,6 +425,9 @@ export function OrganizationPeople({
   onChanged: () => void;
 }) {
   const [people, setPeople] = useState<OrganizationPerson[]>([]);
+  const [departments, setDepartments] = useState<OrganizationDepartment[]>([]);
+  const [managingDepartments, setManagingDepartments] = useState(false);
+  const [departmentBusy, setDepartmentBusy] = useState(false);
   const [next, setNext] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false),
@@ -473,7 +450,7 @@ export function OrganizationPeople({
     target: OrganizationAiTarget;
     title: string;
   } | null>(null);
-  const editing = !!editor || !!aiTarget;
+  const editing = !!editor || !!aiTarget || managingDepartments;
   const controller = useRef<AbortController | null>(null);
   const base = `/api/v1/admin/organizations/${organization.id}/people`;
   const load = useCallback(
@@ -486,11 +463,15 @@ export function OrganizationPeople({
       const params = new URLSearchParams({ search: query });
       if (after) params.set('after', after);
       try {
-        const result = await organizationApi<{
-          people: OrganizationPerson[];
-          nextCursor: string | null;
-        }>(`${base}?${params}`, 'GET', undefined, request.signal);
+        const [result, departmentOptions] = await Promise.all([
+          organizationApi<{
+            people: OrganizationPerson[];
+            nextCursor: string | null;
+          }>(`${base}?${params}`, 'GET', undefined, request.signal),
+          loadOrganizationDepartmentOptions(organization.id, request.signal),
+        ]);
         if (request.signal.aborted) return;
+        setDepartments(departmentOptions);
         setPeople((old) =>
           after
             ? [
@@ -508,7 +489,7 @@ export function OrganizationPeople({
         if (!request.signal.aborted) setLoading(false);
       }
     },
-    [base, query],
+    [base, query, organization.id],
   );
   useEffect(() => {
     void load();
@@ -547,6 +528,7 @@ export function OrganizationPeople({
       displayName: data.get('displayName'),
       jobTitle: data.get('jobTitle'),
       responsibilities: data.get('responsibilities'),
+      departmentId: data.get('departmentId') || null,
     };
     const edited = typeof editor === 'object' ? editor : null;
     void mutate(
@@ -581,6 +563,12 @@ export function OrganizationPeople({
           </span>
         </div>
         <div className={styles.actions}>
+          <AdminButton
+            disabled={busy || editing}
+            onClick={() => setManagingDepartments(true)}
+          >
+            部门管理
+          </AdminButton>
           <AdminButton
             icon="upload"
             disabled={busy || editing}
@@ -735,6 +723,21 @@ export function OrganizationPeople({
           />
         </AdminDialog>
       )}
+      {managingDepartments && (
+        <AdminDialog
+          title="部门管理"
+          busy={departmentBusy}
+          onClose={() => {
+            setManagingDepartments(false);
+            void load();
+          }}
+        >
+          <OrganizationDepartments
+            organizationId={organization.id}
+            onBusy={setDepartmentBusy}
+          />
+        </AdminDialog>
+      )}
       {editor === 'bulk' ? (
         <AdminDialog
           title="批量导入员工"
@@ -807,6 +810,32 @@ export function OrganizationPeople({
                     />
                   </label>
                 </div>
+                <label>
+                  主部门
+                  <select
+                    aria-label="主部门"
+                    name="departmentId"
+                    defaultValue={edited?.departmentId ?? ''}
+                  >
+                    <option value="">未分部门</option>
+                    {departments
+                      .filter((item) => item.active)
+                      .map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name}
+                        </option>
+                      ))}
+                    {edited?.departmentId &&
+                      !departments.some(
+                        (item) =>
+                          item.id === edited.departmentId && item.active,
+                      ) && (
+                        <option value={edited.departmentId}>
+                          {edited.departmentName ?? '原部门'}（已停用）
+                        </option>
+                      )}
+                  </select>
+                </label>
                 <label>
                   岗位
                   <input
@@ -896,6 +925,7 @@ export function OrganizationPeople({
           <col className={styles.checkColumn} />
           <col className={styles.personColumn} />
           <col />
+          <col />
           <col className={styles.statusColumn} />
           <col className={styles.actionsColumn} />
         </colgroup>
@@ -923,6 +953,7 @@ export function OrganizationPeople({
             </th>
             <th>员工</th>
             <th>岗位与职能</th>
+            <th>主部门</th>
             <th>账号状态</th>
             <th className={styles.alignEnd}>操作</th>
           </tr>
@@ -972,6 +1003,7 @@ export function OrganizationPeople({
                   {person.responsibilities}
                 </small>
               </td>
+              <td>{person.departmentName ?? '未分部门'}</td>
               <td>
                 <AdminStatus
                   tone={

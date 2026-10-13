@@ -2,6 +2,10 @@ import {
   DataAccessError,
   IdentityError,
   OrganizationAdministrationError,
+  OrganizationDepartmentError,
+  listOrganizationDepartments,
+  createOrganizationDepartment,
+  updateOrganizationDepartment,
   listManagedOrganizations,
   getManagedOrganization,
   createManagedOrganization,
@@ -25,7 +29,7 @@ export async function organizationAdministrationHttp(
   request: Request,
   organizationId?: string,
   userId?: string,
-  action?: 'people' | 'status' | 'password',
+  action?: 'people' | 'status' | 'password' | 'departments',
 ) {
   try {
     const context = await requirePlatformAdminContext(request);
@@ -33,14 +37,16 @@ export async function organizationAdministrationHttp(
     if (request.method === 'GET') {
       const after = url.searchParams.get('after') ?? undefined;
       return Response.json(
-        organizationId && action !== 'people'
-          ? await getManagedOrganization(context, organizationId)
-          : organizationId
-            ? await listOrganizationPeople(context, organizationId, {
-                after,
-                search: url.searchParams.get('search') ?? undefined,
-              })
-            : await listManagedOrganizations(context, after),
+        organizationId && action === 'departments'
+          ? await listOrganizationDepartments(context, organizationId, after)
+          : organizationId && action !== 'people'
+            ? await getManagedOrganization(context, organizationId)
+            : organizationId
+              ? await listOrganizationPeople(context, organizationId, {
+                  after,
+                  search: url.searchParams.get('search') ?? undefined,
+                })
+              : await listManagedOrganizations(context, after),
         { headers },
       );
     }
@@ -50,35 +56,50 @@ export async function organizationAdministrationHttp(
       request,
       action === 'people' ? 1_048_576 : 32_768,
     );
-    const result = !organizationId
-      ? await createManagedOrganization(context, input)
-      : !userId
-        ? action === 'people'
-          ? await importOrganizationPeople(context, organizationId, input)
-          : await updateManagedOrganization(context, organizationId, input)
-        : action === 'password'
-          ? await resetOrganizationPassword(
+    const result =
+      organizationId && action === 'departments'
+        ? userId
+          ? await updateOrganizationDepartment(
               context,
               organizationId,
               userId,
               input,
             )
-          : action === 'status'
-            ? await setOrganizationAccountStatus(
-                context,
-                organizationId,
-                userId,
-                input,
-              )
-            : await updateOrganizationPerson(
-                context,
-                organizationId,
-                userId,
-                input,
-              );
+          : await createOrganizationDepartment(context, organizationId, input)
+        : !organizationId
+          ? await createManagedOrganization(context, input)
+          : !userId
+            ? action === 'people'
+              ? await importOrganizationPeople(context, organizationId, input)
+              : await updateManagedOrganization(context, organizationId, input)
+            : action === 'password'
+              ? await resetOrganizationPassword(
+                  context,
+                  organizationId,
+                  userId,
+                  input,
+                )
+              : action === 'status'
+                ? await setOrganizationAccountStatus(
+                    context,
+                    organizationId,
+                    userId,
+                    input,
+                  )
+                : await updateOrganizationPerson(
+                    context,
+                    organizationId,
+                    userId,
+                    input,
+                  );
     return Response.json(result, {
       headers,
-      status: !organizationId || action === 'people' ? 201 : 200,
+      status:
+        !organizationId ||
+        action === 'people' ||
+        (action === 'departments' && !userId)
+          ? 201
+          : 200,
     });
   } catch (error) {
     let status = 503,
@@ -99,7 +120,10 @@ export async function organizationAdministrationHttp(
     } else if (error instanceof IdentityError) {
       status = 403;
       code = 'AUTHORIZATION_DENIED';
-    } else if (error instanceof OrganizationAdministrationError) {
+    } else if (
+      error instanceof OrganizationAdministrationError ||
+      error instanceof OrganizationDepartmentError
+    ) {
       status = 409;
       code = error.code;
     } else if (

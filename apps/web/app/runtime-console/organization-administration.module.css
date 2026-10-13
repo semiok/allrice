@@ -212,6 +212,22 @@
 .statusColumn {
   width: 108px;
 }
+.departmentTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+.departmentTable th,
+.departmentTable td {
+  padding: 12px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--admin-border);
+  overflow-wrap: anywhere;
+}
+.departmentTable th {
+  color: var(--admin-muted);
+  font-weight: 400;
+  font-size: var(--admin-font-meta);
+}
 .actionsColumn {
   width: 124px;
 }
@@ -350,6 +366,7 @@
   font-size: var(--admin-font-meta);
 }
 .form input,
+.form select,
 .form textarea,
 .workspaceSelector select {
   width: 100%;
@@ -606,11 +623,17 @@
     grid-row: 2;
   }
   .peopleTable td:nth-child(4) {
+    grid-column: 2;
+    grid-row: 3;
+    color: var(--admin-muted);
+    font-size: var(--admin-font-meta);
+  }
+  .peopleTable td:nth-child(5) {
     grid-column: 3;
     grid-row: 1;
     align-self: center;
   }
-  .peopleTable td:nth-child(5) {
+  .peopleTable td:nth-child(6) {
     grid-column: 3;
     grid-row: 2;
   }
@@ -662,6 +685,7 @@
 @media (pointer: coarse) {
   .search input,
   .form input,
+  .form select,
   .form textarea,
   .workspaceSelector select {
     font-size: 16px;

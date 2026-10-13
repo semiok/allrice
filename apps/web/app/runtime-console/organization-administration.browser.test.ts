@@ -120,13 +120,15 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           });
           const parts = url.pathname.split('/'),
             action =
-              parts[8] === 'status'
-                ? 'status'
-                : parts[8] === 'password'
-                  ? 'password'
-                  : parts[6] === 'people' && !parts[7]
-                    ? 'people'
-                    : undefined;
+              parts[6] === 'departments'
+                ? 'departments'
+                : parts[8] === 'status'
+                  ? 'status'
+                  : parts[8] === 'password'
+                    ? 'password'
+                    : parts[6] === 'people' && !parts[7]
+                      ? 'people'
+                      : undefined;
           const response =
             parts[3] === 'investment'
               ? await investmentHttp(request)
@@ -1033,6 +1035,128 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       }
     },
     30_000,
+  );
+
+  it.each([1360, 390])(
+    'manages departments and moves a person through the real UI and database (%i)',
+    async (width) => {
+      const context = await browser.newContext({
+        viewport: { width, height: 1000 },
+      });
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage(),
+        errors: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      try {
+        await page.goto(origin);
+        await page
+          .getByRole('button', { name: '新建公司', exact: true })
+          .click();
+        await page
+          .getByLabel('公司名称', { exact: true })
+          .fill(`部门公司${width}`);
+        await page
+          .getByRole('button', { name: '保存公司', exact: true })
+          .click();
+        await page
+          .getByRole('heading', { name: `部门公司${width}`, exact: true })
+          .waitFor();
+        const organizationId = await page.getByLabel('管理公司').inputValue();
+        await page
+          .getByRole('button', { name: '部门管理', exact: true })
+          .click();
+        const dialog = page.getByRole('dialog', {
+          name: '部门管理',
+          exact: true,
+        });
+        for (const name of ['财务部', '运营部']) {
+          await dialog
+            .getByRole('button', { name: '新增部门', exact: true })
+            .click();
+          await dialog.getByLabel('部门名称', { exact: true }).fill(name);
+          await dialog
+            .getByRole('button', { name: '保存部门', exact: true })
+            .click();
+          await dialog.getByRole('row').filter({ hasText: name }).waitFor();
+        }
+        await dialog
+          .getByRole('button', { name: '关闭部门管理', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '添加员工', exact: true })
+          .click();
+        const username = `dept-ui-${width}`;
+        await page.getByLabel('英文账号', { exact: true }).fill(username);
+        await page.getByLabel('姓名', { exact: true }).fill('部门小雪');
+        const departmentRows =
+          await fixture.db`select id,name from allrice_departments where organization_id=${organizationId} order by name`;
+        const departments: Record<string, string> = Object.fromEntries(
+          departmentRows.map((item) => [String(item.name), String(item.id)]),
+        );
+        await page
+          .getByLabel('主部门', { exact: true })
+          .selectOption(departments['财务部']!);
+        await page
+          .getByRole('button', { name: '保存员工', exact: true })
+          .click();
+        const row = page.getByRole('row').filter({ hasText: username });
+        await row.getByText('财务部', { exact: true }).waitFor();
+        await page
+          .getByRole('button', { name: '部门管理', exact: true })
+          .click();
+        await dialog
+          .getByRole('row')
+          .filter({ hasText: '财务部' })
+          .getByRole('button', { name: '停用部门', exact: true })
+          .click();
+        await dialog
+          .getByRole('alert')
+          .filter({ hasText: '请先调整员工的主部门' })
+          .waitFor();
+        await dialog
+          .getByRole('button', { name: '关闭部门管理', exact: true })
+          .click();
+        await row
+          .getByRole('button', { name: '部门小雪', exact: true })
+          .click();
+        await page
+          .getByLabel('主部门', { exact: true })
+          .selectOption(departments['运营部']!);
+        await page
+          .getByRole('button', { name: '保存员工', exact: true })
+          .click();
+        await row.getByText('运营部', { exact: true }).waitFor();
+        const [person] =
+          await fixture.db`select p.department_id,u.username from allrice_organization_people p join allrice_users u on u.id=p.user_id where p.organization_id=${organizationId} and u.username=${username}`;
+        expect(person!.department_id).toBe(departments['运营部']);
+        await page
+          .getByRole('button', { name: '部门管理', exact: true })
+          .click();
+        const financeRow = dialog
+          .getByRole('row')
+          .filter({ hasText: '财务部' });
+        await financeRow
+          .getByRole('button', { name: '停用部门', exact: true })
+          .click();
+        await financeRow.getByText('已停用', { exact: true }).waitFor();
+        await dialog
+          .getByRole('button', { name: '关闭部门管理', exact: true })
+          .click();
+        await page.reload();
+        await page.getByLabel('管理公司').selectOption(organizationId);
+        await page
+          .getByRole('row')
+          .filter({ hasText: username })
+          .getByText('运营部', { exact: true })
+          .waitFor();
+        expect(errors).toEqual([]);
+      } finally {
+        await context.close();
+      }
+    },
+    60000,
   );
 
   it('creates a company and employees, imports a spreadsheet, edits profiles, resets passwords and disables access', async () => {
