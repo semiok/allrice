@@ -1873,6 +1873,34 @@ export function createRuntimeOperationLedger(options: {
                 type: 'operation.cancel_requested',
                 requestId: randomUUID(),
               });
+            else {
+              // A Worker can physically stop a finite command before a user
+              // cancel reaches the ledger. Reconcile only this attempt's
+              // durable stop fact; never cancel the root or its replacement Job.
+              const [journal] = await tx<
+                {
+                  container_id: string | null;
+                  outcome: {
+                    containerId?: unknown;
+                    stopped?: unknown;
+                    reason?: unknown;
+                  } | null;
+                }[]
+              >`select container_id,outcome from allrice_cloud_execution_attempts
+                where operation_id=${row.id} and lease_token=${input.leaseToken}`;
+              if (
+                content.signal.effects !== 'none' ||
+                !journal?.container_id ||
+                journal.outcome?.containerId !== journal.container_id ||
+                journal.outcome.stopped !== true ||
+                journal.outcome.reason !== 'canceled'
+              )
+                throw new RuntimeLedgerError('invalid_state');
+              await append(tx, row, {
+                type: 'operation.cancel_requested',
+                requestId: input.receiptId,
+              });
+            }
           }
           // A finite service may be stopped locally (Bridge shutdown/lease
           // loss) before the server saw a stop request. Preserve the targeted
