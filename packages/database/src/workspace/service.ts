@@ -1289,46 +1289,6 @@ export async function sendChatMessage(
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
-  const employeeRows = await sql<
-    { employee_id: string; employee_version_id: string }[]
-  >`
-    select employee_id, employee_version_id from allrice_employee_assignments
-    where id = ${session.employee_assignment_id}
-      and organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and active
-  `;
-  const currentAssignment = employeeRows[0];
-  if (!currentAssignment) throw new DataAccessError('not_found');
-  // A published employee revision applies to the next turn of an existing
-  // Session. Already-enqueued Runs keep their immutable execution snapshot,
-  // while the tenant gets new Skills and policy without opening a new chat.
-  const effectiveEmployeeVersionId = currentAssignment.employee_version_id;
-  if (session.employee_version_id !== effectiveEmployeeVersionId) {
-    await sql`
-      update allrice_chat_sessions
-      set employee_version_id = ${effectiveEmployeeVersionId}
-      where id = ${session.id}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and employee_assignment_id = ${session.employee_assignment_id}
-        and employee_version_id = ${session.employee_version_id}
-    `;
-    await audit({
-      context,
-      workspaceId,
-      action: 'session.employee.version.refresh',
-      resourceType: 'chat_session',
-      resourceId: session.id,
-      reason: 'active_assignment_version_applied_on_next_turn',
-    });
-  }
-  const memories = await recallForReply(
-    context,
-    workspaceId,
-    currentAssignment.employee_id,
-    message.text,
-  );
   const result = await sql.begin(async (transaction) => {
     if (options.folderEventId) {
       const { assertFolderTriggerMessage } =
@@ -1347,12 +1307,86 @@ export async function sendChatMessage(
         hashtextextended(${`${session.id}:${message.clientMessageId}`}, 50)
       )
     `;
+    const { resolveEmployeeSessionInstance } =
+      await import('../employees/employee-instances.ts');
+    try {
+      await resolveEmployeeSessionInstance(
+        // Shared with scheduled/folder work: its sessionId can be a device or
+        // correlation ID, not a browser login. Current owner authority is checked.
+        {
+          actor: context.actor,
+          organizationId: context.organizationId,
+          workspaceId,
+        },
+        session.employee_assignment_id,
+        session.employee_instance_id ?? undefined,
+        transaction,
+      );
+    } catch (error) {
+      if (
+        error instanceof DataAccessError &&
+        error.code === 'authorization_denied'
+      ) {
+        // Preserve the existing missing-assignment / read-only-workbench errors.
+        // This is still a rejection; no alternate path can admit the input.
+        const [available] =
+          await transaction`select id from allrice_employee_assignments
+          where id=${session.employee_assignment_id} and organization_id=${context.organizationId}
+            and workspace_id=${workspaceId} and active`;
+        if (!available) throw new DataAccessError('not_found');
+        await assertWorkbenchSession(
+          transaction,
+          { ...context, workspaceId },
+          session.id,
+          true,
+        );
+      }
+      throw error;
+    }
     await assertWorkbenchSession(
       transaction,
       { ...context, workspaceId },
       session.id,
       true,
     );
+    const employeeRows = await transaction<
+      { employee_id: string; employee_version_id: string }[]
+    >`
+      select employee_id, employee_version_id from allrice_employee_assignments
+      where id = ${session.employee_assignment_id}
+        and organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and active
+    `;
+    const currentAssignment = employeeRows[0];
+    if (!currentAssignment) throw new DataAccessError('not_found');
+    // A published employee revision applies to the next turn of an existing
+    // Session. Already-enqueued Runs keep their immutable execution snapshot,
+    // while the tenant gets new Skills and policy without opening a new chat.
+    const effectiveEmployeeVersionId = currentAssignment.employee_version_id;
+    if (session.employee_version_id !== effectiveEmployeeVersionId) {
+      await transaction`
+        update allrice_chat_sessions
+        set employee_version_id = ${effectiveEmployeeVersionId}
+        where id = ${session.id}
+          and organization_id = ${context.organizationId}
+          and workspace_id = ${workspaceId}
+          and employee_assignment_id = ${session.employee_assignment_id}
+          and employee_version_id = ${session.employee_version_id}
+      `;
+      await audit(
+        {
+          context,
+          workspaceId,
+          action: 'session.employee.version.refresh',
+          resourceType: 'chat_session',
+          resourceId: session.id,
+          reason: 'active_assignment_version_applied_on_next_turn',
+        },
+        transaction,
+      );
+    }
+
     const existing = await transaction<MessageRow[]>`
       select * from allrice_messages
       where session_id = ${session.id}
@@ -1544,8 +1578,10 @@ export async function sendChatMessage(
       update allrice_chat_sessions set updated_at = now()
       where id = ${session.id}
     `;
-    return { userMessage, assistantMessage };
+    return { userMessage, assistantMessage, currentAssignment };
   });
+  const effectiveEmployeeVersionId =
+    result.currentAssignment.employee_version_id;
   await audit({
     context,
     workspaceId,
@@ -1652,6 +1688,12 @@ export async function sendChatMessage(
         .join(', ')}`
     : message.text;
   try {
+    const memories = await recallForReply(
+      context,
+      workspaceId,
+      result.currentAssignment.employee_id,
+      message.text,
+    );
     const { prepareEmployeeRunBinding } =
       await import('../employees/employeehub.ts');
     const binding = await prepareEmployeeRunBinding({

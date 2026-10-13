@@ -441,8 +441,9 @@ export async function changeEmployeeInstanceLifecycle(
   });
 }
 
-/** Caller provides a transaction covering authorization, mapping and Session
- * creation. A Session can never switch instances after creation. */
+/** Caller covers authorization and Session/message persistence in one
+ * transaction. Identity → assignment → instance precede any Session lock;
+ * archival cannot pass this check while a new Session or message is saved. */
 export async function resolveEmployeeSessionInstance(
   context: Identity,
   assignmentId: string,
@@ -452,6 +453,7 @@ export async function resolveEmployeeSessionInstance(
   await authority(context, tx, true);
   await assignment(context, assignmentId, tx, true);
   if (!instanceId) await ensureGeneralEmployeeInstance(tx, assignmentId);
+  await tx`select id from allrice_employee_instances where id=${instanceId ?? assignmentId} for share`;
   const instance = await getEmployeeInstance(
     context,
     instanceId ?? assignmentId,
