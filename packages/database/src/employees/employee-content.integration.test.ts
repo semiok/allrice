@@ -944,7 +944,7 @@ suite(
       await f.db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by)
       values(${workflowId},${s.company.organizationId},${s.company.workspaceId},${`flow-${workflowId}`},'Existing workflow','Already managed by the capability registry',${s.a.actor.id})`;
       await f.db`insert into allrice_workflow_revisions(id,organization_id,workspace_id,workflow_id,revision,name,description,definition,checksum,created_by,published_at)
-      values(${workflowRevisionId},${s.company.organizationId},${s.company.workspaceId},${workflowId},1,'Existing workflow','Reviewed steps',${f.db.json(workflowDefinition)},${workflowDigest},${s.a.actor.id},now())`;
+      values(${workflowRevisionId},${s.company.organizationId},${s.company.workspaceId},${workflowId},1,'Existing workflow','Reviewed steps',${f.db.json(JSON.parse(JSON.stringify(workflowDefinition)))},${workflowDigest},${s.a.actor.id},now())`;
       await f.db`insert into allrice_employee_workflow_bindings(organization_id,workspace_id,employee_id,workflow_revision_id,bound_by)
       values(${s.company.organizationId},${s.company.workspaceId},${s.employeeId},${workflowRevisionId},${s.a.actor.id})`;
       const body = 'Use the original data dictionary.';
