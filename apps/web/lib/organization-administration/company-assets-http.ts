@@ -177,6 +177,8 @@ export async function companyAssetsHttp(
                 asset_unavailable: '此公司范本已暂停、撤回或不可读取。',
                 source_required: '请选择要共享的具体成果版本。',
                 kind_conflict: '内容类别不可改变。',
+                private_draft_in_progress:
+                  '作者还有未发布草稿，可先暂停或撤回共享。',
               } as const
             )[error.code],
           },

@@ -26,6 +26,9 @@ function asset(): CompanyAsset {
     revision: 2,
     publishedRevisionId: revisionId,
     canEdit: true,
+    canPublish: true,
+    canMaintainPublication: true,
+    canArchive: true,
     latest: {
       id: revisionId,
       number: 1,
@@ -98,7 +101,15 @@ describe('company template UI publication and fixed revision boundaries', () => 
   });
   it('never exposes editing operations for another member and preserves resume versus publish semantics', () => {
     const row = asset();
-    expect(companyAssetActions({ ...row, canEdit: false })).toEqual([]);
+    expect(
+      companyAssetActions({
+        ...row,
+        canEdit: false,
+        canPublish: false,
+        canMaintainPublication: false,
+        canArchive: false,
+      }),
+    ).toEqual([]);
     expect(companyAssetActions({ ...row, state: 'archived' })).toEqual([]);
     expect(companyAssetActions(row)).toEqual([
       'pause',
@@ -134,6 +145,49 @@ describe('company template UI publication and fixed revision boundaries', () => 
       'resume',
       'archive',
     ]);
+  });
+  it('offers shared lifecycle controls without opening another author draft, and closes publication after downgrade', () => {
+    const row = asset();
+    expect(
+      companyAssetActions({
+        ...row,
+        canEdit: false,
+        canPublish: false,
+        canMaintainPublication: true,
+      }),
+    ).toEqual(['pause', 'withdraw', 'pin', 'archive']);
+    expect(
+      companyAssetActions({
+        ...row,
+        canPublish: false,
+        canMaintainPublication: false,
+        canArchive: false,
+      }),
+    ).toEqual([]);
+    expect(
+      companyAssetActions({
+        ...row,
+        state: 'draft',
+        publishedRevisionId: null,
+        canPublish: false,
+        canMaintainPublication: false,
+      }),
+    ).toEqual(['archive']);
+    expect(
+      companyAssetActions({
+        ...row,
+        canEdit: false,
+        canPublish: false,
+        canArchive: false,
+      }),
+    ).toEqual(['pause', 'withdraw', 'pin']);
+    const legacy = {
+      ...row,
+      canPublish: undefined,
+      canMaintainPublication: undefined,
+      canArchive: undefined,
+    };
+    expect(companyAssetActions(CompanyAssetSchema.parse(legacy))).toEqual([]);
   });
   it('shows slot labels instead of technical keys, separates save from publication and makes no read/write during render', () => {
     const row = asset();

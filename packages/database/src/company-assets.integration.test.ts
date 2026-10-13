@@ -20,6 +20,7 @@ import {
 import { getStoredFile } from './data.ts';
 import { readArtifactBytes } from './artifact-review.ts';
 import {
+  getCompanyAsset,
   getCompanyAssetFile,
   listCompanyAssets,
   listCompanyTemplateRecommendations,
@@ -79,6 +80,7 @@ suite(
       ))!;
       a = await tenantValidationFixture(f.db);
       foreign = await tenantValidationFixture(f.db);
+      await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${a.context.organizationId},${a.context.actor.id},'Company publisher','company') on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
       owner = {
         ...(await authenticateSession(
           (await createSession(a.context.actor.id)).token,
@@ -614,6 +616,183 @@ suite(
           expectedRevision: final!.revision,
         }),
       ).rejects.toThrow('authorization_denied');
+    });
+    it('company maintenance manages shared snapshots without reading or publishing another author draft, and downgrade closes direct mutations', async () => {
+      const newId = randomUUID();
+      let current = await mutate(owner, {
+        operation: 'save',
+        assetId: newId,
+        expectedRevision: 0,
+        content: content('template', {
+          sourceVersionId: a.artifact.artifactId,
+        }),
+      });
+      current = await mutate(owner, {
+        operation: 'publish',
+        assetId: newId,
+        expectedRevision: current.revision,
+      });
+      const publishedId = current.latest.id;
+      current = await mutate(owner, {
+        operation: 'save',
+        assetId: newId,
+        expectedRevision: current.revision,
+        content: content('template', {
+          title: 'Private unpublished draft',
+          sourceVersionId: a.artifact.artifactId,
+        }),
+      });
+      const draftId = current.latest.id;
+      await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level)
+        values(${a.context.organizationId},${member.actor.id},'Company maintainer','company')
+        on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
+      try {
+        const history = await listCompanyAssetRevisions(
+          member,
+          a.context.organizationId,
+          newId,
+          false,
+          f.db,
+        );
+        expect(history.asset).toMatchObject({
+          canEdit: false,
+          canPublish: false,
+          canMaintainPublication: true,
+          canArchive: false,
+          latest: { id: publishedId },
+        });
+        expect(history.revisions.map((r) => r.id)).toEqual([publishedId]);
+        expect(history.revisions.some((r) => r.id === draftId)).toBe(false);
+        await expect(
+          mutate(member, {
+            operation: 'archive',
+            assetId: newId,
+            expectedRevision: current.revision,
+          }),
+        ).rejects.toThrow('private_draft_in_progress');
+        await expect(
+          mutate(member, {
+            operation: 'publish',
+            assetId: newId,
+            expectedRevision: current.revision,
+          }),
+        ).rejects.toThrow('authorization_denied');
+        await expect(
+          mutate(member, {
+            operation: 'save',
+            assetId: newId,
+            expectedRevision: current.revision,
+            content: current.latest.content,
+          }),
+        ).rejects.toThrow('authorization_denied');
+        await expect(
+          listCompanyRuleSources(member, a.context.organizationId, f.db),
+        ).rejects.toThrow('authorization_denied');
+        const [original] =
+          await f.db`select object_id from allrice_deliverable_versions where id=${a.artifact.artifactId}`;
+        await expect(
+          getStoredFile(member, String(original!.object_id), f.db),
+        ).rejects.toThrow();
+        const file = await getCompanyAssetFile(
+          member,
+          a.context.organizationId,
+          newId,
+          publishedId,
+          false,
+          f.db,
+        );
+        expect(
+          (
+            await readArtifactBytes(
+              assistantFixtureStorage(f.db),
+              file.object,
+              100000,
+            )
+          ).length,
+        ).toBeGreaterThan(0);
+        current = await mutate(member, {
+          operation: 'pause',
+          assetId: newId,
+          expectedRevision: current.revision,
+        });
+        expect(
+          (
+            await listCompanyAssets(member, a.context.organizationId, {}, f.db)
+          ).assets.find((v) => v.id === newId)?.state,
+        ).toBe('paused');
+        await expect(
+          getCompanyAssetFile(
+            member,
+            a.context.organizationId,
+            newId,
+            publishedId,
+            false,
+            f.db,
+          ),
+        ).rejects.toThrow('asset_unavailable');
+        current = await mutate(member, {
+          operation: 'resume',
+          assetId: newId,
+          expectedRevision: current.revision,
+        });
+        expect(current.publishedRevisionId).toBe(publishedId);
+        expect(current.latest.id).toBe(publishedId);
+        const [stored] =
+          await f.db`select latest_revision_id from allrice_company_assets where id=${newId}`;
+        expect(stored!.latest_revision_id).toBe(draftId);
+        expect(
+          await getCompanyAsset(
+            owner,
+            a.context.organizationId,
+            newId,
+            false,
+            f.db,
+          ),
+        ).toMatchObject({ canEdit: true, latest: { id: draftId } });
+        await f.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${a.context.organizationId} and user_id in (${owner.actor.id},${member.actor.id})`;
+        for (const ctx of [owner, member]) {
+          await expect(
+            mutate(ctx, {
+              operation: 'pause',
+              assetId: newId,
+              expectedRevision: current.revision,
+            }),
+          ).rejects.toThrow('authorization_denied');
+        }
+        await expect(
+          mutate(owner, {
+            operation: 'publish',
+            assetId: newId,
+            expectedRevision: current.revision,
+          }),
+        ).rejects.toThrow('authorization_denied');
+        current = await mutate(owner, {
+          operation: 'save',
+          assetId: newId,
+          expectedRevision: current.revision,
+          content: {
+            ...current.latest.content,
+            title: 'Own personal draft remains editable',
+          },
+        });
+        expect(current).toMatchObject({
+          canEdit: true,
+          canPublish: false,
+          canMaintainPublication: false,
+        });
+        const published = (
+          await listCompanyAssets(member, a.context.organizationId, {}, f.db)
+        ).assets.find((v) => v.id === newId)!;
+        expect(published).toMatchObject({
+          canEdit: false,
+          canPublish: false,
+          canMaintainPublication: false,
+          latest: { id: publishedId },
+        });
+      } finally {
+        await f.db`update allrice_organization_people set content_maintenance_level='company' where organization_id=${a.context.organizationId} and user_id=${owner.actor.id}`;
+        await f.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${a.context.organizationId} and user_id=${member.actor.id}`;
+      }
     });
     it('rolls back failed snapshot copies and removes only the uncommitted object', async () => {
       let allocated: StorageObject | undefined;

@@ -12,6 +12,7 @@ import {
   migrateLegacyOrganizationAccounts,
   type LegacyAccountMigration,
 } from './organization-migration.ts';
+import { requireContentMaintenance } from './content-maintenance.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -166,6 +167,55 @@ suite(
           await f.db`select username from allrice_users where id=${a.user.id}`
         )[0]?.username,
       ).toBeNull();
+    });
+    it('serializes legacy migration behind a content write without locking its user first', async () => {
+      const p = await principal('concurrent');
+      // Already-initialized login: this migration must preserve the session.
+      await f.db`update allrice_users set username='concurrent' where id=${p.user.id}`;
+      const signed = await createSession(p.user.id);
+      const context = (await authenticateSession(signed.token))!;
+      let migration:
+        ReturnType<typeof migrateLegacyOrganizationAccounts> | undefined;
+      try {
+        await f.db.begin(async (tx) => {
+          await tx`set local statement_timeout='3s'`;
+          await tx`select id from allrice_organizations where id=${p.organizationId} for share`;
+          const [connection] = await tx`select pg_backend_pid() as pid`;
+          migration = migrateLegacyOrganizationAccounts(
+            [manifest('concurrent')],
+            true,
+          );
+          // Ensure the migration has actually reached the conflicting lock.
+          // The write can then acquire its user lock, rather than deadlock.
+          await vi.waitFor(
+            async () => {
+              const blocked =
+                await f.db`select pid from pg_stat_activity where ${connection!.pid}::int=any(pg_blocking_pids(pid))`;
+              expect(blocked.length).toBeGreaterThan(0);
+            },
+            { timeout: 3000, interval: 20 },
+          );
+          await expect(
+            requireContentMaintenance(
+              context,
+              {
+                scope: 'personal',
+                organizationId: p.organizationId,
+                ownerId: p.user.id,
+              },
+              tx,
+            ),
+          ).resolves.toMatchObject({ canMaintain: true });
+        });
+      } finally {
+        if (migration) await migration;
+      }
+      expect(await authenticateSession(signed.token)).not.toBeNull();
+      expect(
+        (
+          await f.db`select managed_employee_roster from allrice_organizations where id=${p.organizationId}`
+        )[0]?.managed_employee_roster,
+      ).toBe(true);
     });
   },
 );

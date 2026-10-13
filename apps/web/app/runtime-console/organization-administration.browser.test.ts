@@ -1098,11 +1098,18 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page
           .getByLabel('主部门', { exact: true })
           .selectOption(departments['财务部']!);
+        expect(
+          await page.getByLabel('内容维护级别', { exact: true }).inputValue(),
+        ).toBe('personal');
+        await page
+          .getByLabel('内容维护级别', { exact: true })
+          .selectOption('company');
         await page
           .getByRole('button', { name: '保存员工', exact: true })
           .click();
         const row = page.getByRole('row').filter({ hasText: username });
         await row.getByText('财务部', { exact: true }).waitFor();
+        await row.getByText('可维护：公司', { exact: true }).waitFor();
         await page
           .getByRole('button', { name: '部门管理', exact: true })
           .click();
@@ -1124,13 +1131,21 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page
           .getByLabel('主部门', { exact: true })
           .selectOption(departments['运营部']!);
+        expect(
+          await page.getByLabel('内容维护级别', { exact: true }).inputValue(),
+        ).toBe('company');
+        await page
+          .getByLabel('内容维护级别', { exact: true })
+          .selectOption('department');
         await page
           .getByRole('button', { name: '保存员工', exact: true })
           .click();
         await row.getByText('运营部', { exact: true }).waitFor();
         const [person] =
-          await fixture.db`select p.department_id,u.username from allrice_organization_people p join allrice_users u on u.id=p.user_id where p.organization_id=${organizationId} and u.username=${username}`;
+          await fixture.db`select p.department_id,p.content_maintenance_level,u.username from allrice_organization_people p join allrice_users u on u.id=p.user_id where p.organization_id=${organizationId} and u.username=${username}`;
         expect(person!.department_id).toBe(departments['运营部']);
+        expect(person!.content_maintenance_level).toBe('department');
+        await row.getByText('可维护：部门', { exact: true }).waitFor();
         await page
           .getByRole('button', { name: '部门管理', exact: true })
           .click();

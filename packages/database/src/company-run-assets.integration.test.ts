@@ -86,6 +86,7 @@ suite(
       f = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       a = await tenantValidationFixture(f.db);
+      await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${a.context.organizationId},${a.context.actor.id},'Company publisher','company') on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
       const p = await ensureBootstrapPortalPrincipal(
         {
           organizationSlug: 'allrice-platform',

@@ -8,6 +8,8 @@ import {
   UuidSchema,
   makeObjectKey,
   runtimeContractEqual,
+  evaluateContentAccess,
+  type ContentPrincipal,
   type CompanyAsset,
   type CompanyAssetContent,
   type CompanyAssetRevision,
@@ -16,6 +18,7 @@ import {
   type StoragePort,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { readContentPrincipal } from './content-maintenance.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { DataAccessError } from './data.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
@@ -60,6 +63,7 @@ export class CompanyAssetError extends Error {
       | 'source_changed'
       | 'asset_unavailable'
       | 'source_required'
+      | 'private_draft_in_progress'
       | 'kind_conflict',
   ) {
     super(code);
@@ -83,13 +87,9 @@ export async function requireCompanyAssetReader(
     return;
   }
   if (context.organizationId !== org) throw new DataAccessError('not_found');
-  const [allowed] =
-    await sql`select u.id from allrice_users u join allrice_organizations o on o.id=${org} and o.archived_at is null
-    where u.id=${context.actor.id} and u.status='active'
-      and exists(select 1 from allrice_memberships m where m.organization_id=o.id and m.user_id=u.id and m.active and (m.workspace_id is null or m.workspace_id=${context.workspaceId}))
-      and (${context.workspaceId}::uuid is null or exists(select 1 from allrice_workspaces w where w.id=${context.workspaceId} and w.organization_id=o.id and w.archived_at is null))
-      and (${context.sessionId ?? null}::uuid is null or exists(select 1 from allrice_sessions s where s.id=${context.sessionId ?? null} and s.user_id=u.id and s.revoked_at is null and s.expires_at>clock_timestamp()))`;
-  if (!allowed) throw new DataAccessError('authorization_denied');
+  const principal = await readContentPrincipal(context, sql);
+  if (!principal) throw new DataAccessError('authorization_denied');
+  return principal;
 }
 function revision(row: Row): CompanyAssetRevision {
   return CompanyAssetRevisionSchema.parse({
@@ -105,6 +105,7 @@ function asset(
   row: Row,
   context: RequestContext,
   administration: boolean,
+  principal: ContentPrincipal | null = null,
 ): CompanyAsset {
   return CompanyAssetSchema.parse({
     id: row.id,
@@ -119,9 +120,40 @@ function asset(
     usage: row.usage,
     pinned: row.pinned,
     canEdit:
-      administration ||
-      (row.kind === 'template' && row.owner_id === context.actor.id),
+      row.state !== 'archived' &&
+      (administration ||
+        (row.kind === 'template' &&
+          row.owner_id === context.actor.id &&
+          !!principal?.writable)),
+    canPublish:
+      row.state !== 'archived' &&
+      (administration ||
+        (row.kind === 'template' &&
+          row.owner_id === context.actor.id &&
+          companyMaintenance(principal, row.organization_id))),
+    canMaintainPublication:
+      row.state !== 'archived' &&
+      !!row.published_revision_id &&
+      (administration || companyMaintenance(principal, row.organization_id)),
+    canArchive:
+      row.state !== 'archived' &&
+      (administration ||
+        (row.owner_id === context.actor.id &&
+          row.kind === 'template' &&
+          !!principal?.writable &&
+          !row.published_revision_id) ||
+        (!!row.published_revision_id &&
+          companyMaintenance(principal, row.organization_id) &&
+          (row.owner_id === context.actor.id ||
+            row.latest_revision_id === row.published_revision_id))),
   });
+}
+function companyMaintenance(
+  principal: ContentPrincipal | null,
+  organizationId: string,
+) {
+  return evaluateContentAccess(principal, { scope: 'company', organizationId })
+    .canMaintain;
 }
 async function rows(
   sql: Sql,
@@ -130,6 +162,7 @@ async function rows(
   administration: boolean,
   id: string | null = null,
   after: string | null = null,
+  maintainer = false,
 ) {
   return sql<
     Row[]
@@ -141,7 +174,7 @@ async function rows(
        from allrice_company_run_assets f where f.organization_id=a.organization_id and f.asset_id=a.id) as usage
     from allrice_company_assets a join allrice_users u on u.id=a.owner_id join allrice_company_asset_revisions r on r.id=case when ${administration} or a.owner_id=${viewer} then a.latest_revision_id else a.published_revision_id end and r.asset_id=a.id
     where a.organization_id=${org} and (${id}::uuid is null or a.id=${id}) and (${after}::uuid is null or a.id>${after})
-      and (${administration} or (a.owner_id=${viewer} and a.kind='template') or a.state='published') order by a.id limit 51`;
+      and (${administration} or (a.owner_id=${viewer} and a.kind='template') or a.state='published' or (${maintainer} and a.published_revision_id is not null)) order by a.id limit 51`;
 }
 export async function listCompanyAssets(
   context: RequestContext,
@@ -151,7 +184,13 @@ export async function listCompanyAssets(
 ) {
   if (options.after) UuidSchema.parse(options.after);
   return db.begin('isolation level repeatable read read only', async (tx) => {
-    await requireCompanyAssetReader(context, org, tx, options.administration);
+    const principal =
+      (await requireCompanyAssetReader(
+        context,
+        org,
+        tx,
+        options.administration,
+      )) ?? null;
     const result = await rows(
       tx,
       org,
@@ -159,6 +198,7 @@ export async function listCompanyAssets(
       !!options.administration,
       null,
       options.after ?? null,
+      companyMaintenance(principal, org),
     );
     const [budget] = await tx<
       { bytes: number }[]
@@ -166,7 +206,7 @@ export async function listCompanyAssets(
     return {
       assets: result
         .slice(0, 50)
-        .map((row) => asset(row, context, !!options.administration)),
+        .map((row) => asset(row, context, !!options.administration, principal)),
       nextCursor: result.length > 50 ? result[49]!.id : null,
       ruleBudget: { ...companyRuleBudget, publishedBytes: budget?.bytes ?? 0 },
     };
@@ -184,7 +224,8 @@ export async function listCompanyTemplateRecommendations(
   const employeeId = UuidSchema.parse(employeeInput),
     task = taskInput.slice(0, 512);
   return db.begin('isolation level repeatable read read only', async (tx) => {
-    await requireCompanyAssetReader(context, org, tx);
+    const principal =
+      (await requireCompanyAssetReader(context, org, tx)) ?? null;
     const result = await tx<Row[]>`
       select a.*,u.display_name as owner_name,r.id as revision_id,r.number,r.content,r.digest,r.file_metadata,r.created_at
       from allrice_company_assets a join allrice_users u on u.id=a.owner_id
@@ -206,7 +247,7 @@ export async function listCompanyTemplateRecommendations(
       from allrice_company_assets a join allrice_company_asset_revisions r on r.id=a.published_revision_id
       where a.organization_id=${org} and a.kind='rule' and a.state='published'`;
     return {
-      assets: result.map((row) => asset(row, context, false)),
+      assets: result.map((row) => asset(row, context, false, principal)),
       nextCursor: null,
       ruleBudget: { ...companyRuleBudget, publishedBytes: budget?.bytes ?? 0 },
     };
@@ -220,10 +261,19 @@ export async function getCompanyAsset(
   db: Db = getDatabase(),
 ) {
   UuidSchema.parse(id);
-  await requireCompanyAssetReader(context, org, db, administration);
-  const [row] = await rows(db, org, context.actor.id, administration, id);
+  const principal =
+    (await requireCompanyAssetReader(context, org, db, administration)) ?? null;
+  const [row] = await rows(
+    db,
+    org,
+    context.actor.id,
+    administration,
+    id,
+    null,
+    companyMaintenance(principal, org),
+  );
   if (!row) throw new DataAccessError('not_found');
-  return asset(row, context, administration);
+  return asset(row, context, administration, principal);
 }
 export async function listCompanyAssetRevisions(
   context: RequestContext,
@@ -236,7 +286,7 @@ export async function listCompanyAssetRevisions(
   const revisions = await db<
     Row[]
   >`select r.*,r.id as revision_id from allrice_company_asset_revisions r where r.asset_id=${current.id} and r.organization_id=${org}
-    and (${current.canEdit} or exists(select 1 from allrice_company_asset_publications p where p.asset_id=r.asset_id and p.revision_id=r.id)) order by r.number desc limit 50`;
+    and (${administration || current.ownerId === context.actor.id} or exists(select 1 from allrice_company_asset_publications p where p.asset_id=r.asset_id and p.revision_id=r.id)) order by r.number desc limit 50`;
   await requireCompanyAssetReader(context, org, db, administration);
   const publications = await db<
     { revision_id: string }[]
@@ -342,6 +392,56 @@ async function audit(
   await tx`insert into allrice_audit_events(organization_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata) values(${org},${context.actor.id},${'company.asset.' + operation},'company_asset',${id},'recorded','explicit_company_publication',${context.requestId},${tx.json({ revisionId })})`;
 }
 
+type MutableAsset = {
+  owner_id: string;
+  kind: string;
+  latest_revision_id: string | null;
+  published_revision_id: string | null;
+  state: string;
+};
+function requireAssetMutation(
+  context: RequestContext,
+  org: string,
+  input: ReturnType<typeof CompanyAssetMutationSchema.parse>,
+  current: MutableAsset | undefined,
+  administration: boolean,
+  principal: ContentPrincipal | null,
+) {
+  if (current?.state === 'archived' && input.operation !== 'archive')
+    throw new CompanyAssetError('asset_unavailable');
+  if (administration) return;
+  // The old draft editor belongs to its author. Higher maintenance authority
+  // never unlocks someone else's draft, original files or source memories.
+  if (
+    input.operation === 'save' ||
+    input.operation === 'publish' ||
+    (input.operation === 'archive' && !current?.published_revision_id)
+  ) {
+    if (
+      !principal?.writable ||
+      (current &&
+        (current.owner_id !== context.actor.id ||
+          current.kind !== 'template')) ||
+      (input.operation === 'save' && input.content.kind !== 'template')
+    ) {
+      throw new DataAccessError('authorization_denied');
+    }
+    if (input.operation === 'publish' && !companyMaintenance(principal, org))
+      throw new DataAccessError('authorization_denied');
+    return;
+  }
+  if (!current?.published_revision_id || !companyMaintenance(principal, org))
+    throw new DataAccessError('authorization_denied');
+  // Archive closes the whole asset. Shared maintenance must not also disable
+  // an author's unpublished draft; pause/withdraw affect only publication.
+  if (
+    input.operation === 'archive' &&
+    current.owner_id !== context.actor.id &&
+    current.latest_revision_id !== current.published_revision_id
+  )
+    throw new CompanyAssetError('private_draft_in_progress');
+}
+
 /** Snapshot bytes are copied only from the selected authorized version. A new
  * company revision never points at private originals or modifies old evidence. */
 export async function mutateCompanyAsset(
@@ -353,23 +453,19 @@ export async function mutateCompanyAsset(
   db: Db = getDatabase(),
 ) {
   const input = CompanyAssetMutationSchema.parse(raw);
-  await requireCompanyAssetReader(context, org, db, administration);
+  const principal =
+    (await requireCompanyAssetReader(context, org, db, administration)) ?? null;
   const existing = await db<
-    { owner_id: string; kind: string; latest_revision_id: string }[]
-  >`select owner_id,kind,latest_revision_id from allrice_company_assets where id=${input.assetId} and organization_id=${org}`;
-  if (
-    existing[0] &&
-    !administration &&
-    (existing[0].owner_id !== context.actor.id ||
-      existing[0].kind !== 'template')
-  )
-    throw new DataAccessError('authorization_denied');
-  if (
-    !administration &&
-    input.operation === 'save' &&
-    input.content.kind !== 'template'
-  )
-    throw new DataAccessError('authorization_denied');
+    MutableAsset[]
+  >`select owner_id,kind,latest_revision_id,published_revision_id,state from allrice_company_assets where id=${input.assetId} and organization_id=${org}`;
+  requireAssetMutation(
+    context,
+    org,
+    input,
+    existing[0],
+    administration,
+    principal,
+  );
   const previous = existing[0]
     ? await db<
         {
@@ -407,6 +503,9 @@ export async function mutateCompanyAsset(
     await db.begin(async (tx) => {
       await lockWorkspaceStorageQuota(tx, org, quotaWorkspace);
       await requireCompanyAssetReader(context, org, tx, administration);
+      const currentPrincipal = administration
+        ? null
+        : await readContentPrincipal(context, tx, true);
       const [current] = await tx<
         {
           owner_id: string;
@@ -418,12 +517,19 @@ export async function mutateCompanyAsset(
           state: string;
         }[]
       >`select * from allrice_company_assets where id=${input.assetId} and organization_id=${org} for update`;
+      requireAssetMutation(
+        context,
+        org,
+        input,
+        current,
+        administration,
+        currentPrincipal,
+      );
       if (
-        current &&
-        !administration &&
-        (current.owner_id !== context.actor.id || current.kind !== 'template')
+        current?.state === 'archived' &&
+        input.expectedRevision !== current.revision - 1
       )
-        throw new DataAccessError('authorization_denied');
+        throw new CompanyAssetError('asset_unavailable');
       if (!current && input.expectedRevision !== 0)
         throw new DataAccessError('not_found');
       if (current && current.revision !== input.expectedRevision) {
