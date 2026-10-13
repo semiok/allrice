@@ -11,6 +11,9 @@ createRoot(document.getElementById('root')!).render(
   location.search.includes('feedback-inbox') ? (
     <TenantFeedback />
   ) : (
-    <ChatFlowClient workbenchEnabled={!location.search.includes('disabled')} />
+    <ChatFlowClient
+      workbenchEnabled={!location.search.includes('disabled')}
+      taskSuggestionsEnabled={location.search.includes('task-suggestions')}
+    />
   ),
 );

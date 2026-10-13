@@ -2554,10 +2554,13 @@ suite(
           height: el.getBoundingClientRect().height,
         }));
         expect(styles).toEqual({ size: '15px', height: 44 });
-        for (const selector of [
-          '[data-compact=mode]',
-          '[data-compact=visibility]',
-        ]) {
+        expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+          '引用会话',
+          '从工作区添加',
+          '从本地上传',
+        ]);
+        expect(await f.page.locator('[data-compact=mode]').count()).toBe(0);
+        for (const selector of ['[data-compact=visibility]']) {
           expect(
             await f.page.locator(selector).evaluate((el) => ({
               size: getComputedStyle(el).fontSize,
@@ -2949,105 +2952,6 @@ suite(
         await f.close();
       }
     }, 15_000);
-    it('native Bridge upload sends the existing object once and keeps a late upload out of another Session', async () => {
-      const f = await fixture({ bridgeFiles: true });
-      try {
-        await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
-          .click();
-        await f.waitPending(1);
-        expect(f.pending[0]!.body).toMatchObject({
-          action: 'select',
-          sessionId: A,
-          deviceId: runId,
-          folderGrantId: childId,
-        });
-        await f.respond(0);
-        await f.page
-          .getByText('Bridge 原始资料.xlsx', { exact: true })
-          .waitFor();
-        await f.send('Use uploaded original');
-        await f.waitPending(2);
-        expect(f.pending[1]!.body.attachmentIds).toEqual([C]);
-        await f.respond(1);
-        expect(f.writes).toEqual([
-          '/api/v1/bridge/files',
-          `/api/v1/sessions/${A}/messages`,
-        ]);
-        await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
-          .click();
-        await f.waitPending(3);
-        await f.choose(B);
-        await f.page
-          .getByRole('textbox', { name: '给 Rice 的消息' })
-          .fill('Session B draft');
-        await f.respond(2);
-        expect(
-          await f.page
-            .getByText('Bridge 原始资料.xlsx', { exact: true })
-            .count(),
-        ).toBe(0);
-        expect(
-          await f.page
-            .getByRole('textbox', { name: '给 Rice 的消息' })
-            .inputValue(),
-        ).toBe('Session B draft');
-        expect(
-          await f.page
-            .getByRole('textbox', { name: '给 Rice 的消息' })
-            .isDisabled(),
-        ).toBe(false);
-        expect(f.errors).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    }, 20000);
-    it('native Bridge import preserves the idempotency key through created Session and a lost response', async () => {
-      const f = await fixture({ bridgeFiles: true });
-      try {
-        await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
-          .click();
-        await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
-          .click();
-        await f.waitPending(1);
-        expect(f.pending[0]!.path).toBe('/api/v1/sessions');
-        await f.respond(0);
-        await f.waitPending(2);
-        expect(f.pending[1]!.body.sessionId).toBe(C);
-        const key = f.pending[1]!.body.idempotencyKey;
-        await f.respond(1, false);
-        await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '通过我的电脑选择文件', exact: true })
-          .click();
-        await f.waitPending(3);
-        expect(f.pending[2]!.body.idempotencyKey).toBe(key);
-        expect(f.writes.filter((p) => p === '/api/v1/sessions')).toHaveLength(
-          1,
-        );
-        await f.respond(2);
-        await f.page
-          .getByText('Bridge 原始资料.xlsx', { exact: true })
-          .waitFor();
-        expect(f.errors).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    }, 20000);
     it('a normally-created session adopts the sending owner and submits its first attachment/message once', async () => {
       const f = await fixture();
       try {
