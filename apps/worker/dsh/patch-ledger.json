@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-progressive-scene-provider-v1",
+      "issue": "MET-179",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-scene-provider.mjs",
+      "reason": "Public native Skill Provider freezes metadata only, reads exact scene content through Worker ACL/lease and persists dependencies before returning bytes. Successful native tool results register adoption before dispatch. No core patch, new agent loop, or permission grant."
+    },
+    {
       "id": "allrice-employee-content-authorization-v1",
       "issue": "MET-179",
       "upstreamVersion": "0.1.5-rc.3",

@@ -57,6 +57,7 @@ import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtim
 import { installTaskProgress } from './allrice-task-progress.mjs';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
+import { installSceneProvider } from './allrice-scene-provider.mjs';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 import {
   checkpointNativeQuestion,
@@ -955,6 +956,18 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];
     this.registerNativeSkills(requestedSkills);
+    const scenes = Array.isArray(params?.contentScenes)
+      ? params.contentScenes
+      : [];
+    if (scenes.length) {
+      if (!params.requireContentGuard || !this.sceneBridge)
+        throw Error('employee_scene_guard_required');
+      this.sceneProvider = installSceneProvider(
+        this.ctx,
+        scenes,
+        this.sceneBridge,
+      );
+    }
     // Human/progress waits happen before content authorization and accounting.
     if (this.progressBridge && !this.taskProgress)
       this.taskProgress = installTaskProgress(this.ctx, this.progressBridge, {
@@ -966,16 +979,22 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     // also rechecks at model-prepare/model-dispatch after any native waits.
     if (params?.requireContentGuard && !this.contentGuard) {
       if (!this.contentBridge) throw Error('employee_content_bridge_required');
-      this.contentGuard = installContentGuard(this.ctx, this.contentBridge);
+      this.contentGuard = installContentGuard(
+        this.ctx,
+        async (params, signal) => {
+          await this.sceneProvider?.beforeDispatch(params.nativeSessionId);
+          return this.contentBridge(params, signal);
+        },
+      );
     }
     if (this.assistantBridge) {
       this.governedAssistants = createGovernedAssistantNativeRuntime(
         this.ctx,
         this.assistantBridge,
         {
-          nativeSkillsAvailable: requestedSkills.some(
-            (skill) => skill.invocation.modelInvocable,
-          ),
+          nativeSkillsAvailable:
+            scenes.length > 0 ||
+            requestedSkills.some((skill) => skill.invocation.modelInvocable),
           onModelWait: (state) => this.modelWaitNotify(state),
           controlTools: requestedTools.filter((name) =>
             name.startsWith('assistant.'),
@@ -997,6 +1016,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         durableQuestions: true,
         taskProgress: !!this.taskProgress,
         contentGuard: !!this.contentGuard,
+        contentScenes: !!this.sceneProvider,
         interrupt: true,
         steer: true,
         compact: true,
@@ -1795,6 +1815,8 @@ server.toolBrokerRequest = (params, signal) =>
   transport.request('allrice/tool-call', params, signal);
 server.contentBridge = (params, signal) =>
   transport.request('allrice/content-check', params, signal);
+server.sceneBridge = (action, params, signal) =>
+  transport.request(`allrice/content-scene-${action}`, params, signal);
 if (process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1')
   server.progressBridge = (params, signal) =>
     transport.request('allrice/progress', params, signal);

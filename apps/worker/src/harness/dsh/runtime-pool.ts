@@ -244,6 +244,14 @@ export class DshRuntimePool {
           systemInstructions: input.systemInstructions,
           taskProgress: !!input.input.progress,
           contentGuard: !!input.input.contentGuard,
+          ...(input.input.contentGuard?.nativeContextKey &&
+          input.input.contentGuard.nativeContextKey !==
+            input.input.contentGuard.generationId
+            ? {
+                contentScenes: input.input.contentGuard.scenes,
+                nativeContentContext: input.input.contentGuard.nativeContextKey,
+              }
+            : {}),
           durableQuestions: !!input.input.questionWait,
           // Run authority is rebound by the adapter and released by finish.
           // Only process configuration belongs in the session reuse key.
@@ -376,6 +384,7 @@ export class DshRuntimePool {
         model: input.snapshot.model,
         nativeTools,
         nativeSkills: input.nativeSkills,
+        contentScenes: input.input.contentGuard?.scenes,
         maxTokens,
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         requireTaskProgress: !!input.input.progress,

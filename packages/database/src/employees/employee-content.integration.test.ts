@@ -47,10 +47,15 @@ import {
 } from '../company-assets.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { listContextCheckpointEvidence } from '../conversation/conversation-checkpoint.ts';
-import { acquireConversationRuntime } from '../conversation/conversation-runtime.ts';
+import {
+  acquireConversationRuntime,
+  releaseConversationRuntime,
+} from '../conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from './employeehub.ts';
 import {
   prepareEmployeeContentContext,
+  loadEmployeeRuntimeScene,
+  adoptEmployeeRuntimeScene,
   assertEmployeeContentContext,
   readEmployeeRuntimeContent,
   assertEmployeeContentReferenceMessages,
@@ -352,6 +357,326 @@ suite(
       };
       return { scope, sent, resolved, runtime: runtime!, finish };
     }
+
+    async function sceneLease(run: Awaited<ReturnType<typeof runtimeRun>>) {
+      const worker = {
+        workerId: randomUUID(),
+        jobId: '',
+        leaseToken: randomUUID(),
+      };
+      const [job] =
+        await f.db`update allrice_jobs set status='running',worker_id=${worker.workerId},lease_token=${worker.leaseToken},claimed_at=now(),heartbeat_at=now(),lease_expires_at=now()+interval '10 minutes' where run_id=${run.scope.runId} returning id`;
+      worker.jobId = job!.id;
+      await acquireConversationRuntime({
+        ...run.scope,
+        workerId: worker.workerId,
+        configChecksum: `sha256:${'c'.repeat(64)}`,
+        compactThresholdTokens: 40000,
+      });
+      return worker;
+    }
+    async function sceneSetup(overlap = false) {
+      const s = await setup(),
+        week = text('WEEK_ONLY_47'),
+        month = text('MONTH_ONLY_86');
+      const ids = [randomUUID(), randomUUID()];
+      await enable(
+        s,
+        s.draft({
+          textEdits: [week, month],
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [week, month].map((t, i) => ({
+              id: ids[i]!,
+              name: '经营复盘',
+              appliesWhen: i ? '月度' : '每周',
+              references: [
+                { sourceKind: 'draft_text' as const, contentId: t.contentId },
+                ...(overlap && i === 1
+                  ? [
+                      {
+                        sourceKind: 'draft_text' as const,
+                        contentId: week.contentId,
+                      },
+                    ]
+                  : []),
+              ],
+            })),
+          },
+        }),
+      );
+      return { s, ids };
+    }
+    it('loads one exact scene lazily; repeated gets preserve a receipt; following Runs choose independently and old leases cannot read', async () => {
+      const { s, ids } = await sceneSetup(),
+        run = await runtimeRun(s),
+        worker = await sceneLease(run);
+      expect(run.runtime.sources).toEqual([]);
+      expect(new Set(run.runtime.scenes.map((x) => x.nativeName)).size).toBe(2);
+      expect(JSON.stringify(run.runtime.snapshot)).not.toContain(
+        'WEEK_ONLY_47',
+      );
+      const scene = run.runtime.scenes.find((x) => x.id === ids[0])!,
+        selection = { sceneId: scene.id, sceneDigest: scene.digest };
+      const first = await loadEmployeeRuntimeScene(
+        run.scope,
+        run.runtime.generationId,
+        selection,
+        worker,
+      );
+      expect(first.sources.map((x) => x.body)).toEqual(['WEEK_ONLY_47']);
+      expect(
+        (
+          await loadEmployeeRuntimeScene(
+            run.scope,
+            run.runtime.generationId,
+            selection,
+            worker,
+          )
+        ).receipt,
+      ).toEqual(first.receipt);
+      const [read] =
+        await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+      expect(read!.content_scene_state).toEqual({ reads: [first.receipt] });
+      const adopted = await adoptEmployeeRuntimeScene(
+        run.scope,
+        run.runtime.generationId,
+        {
+          ...first.receipt,
+          nativeSessionId: 'isolated-root',
+          callId: 'native-call-1',
+        },
+        worker,
+      );
+      expect(adopted).toMatchObject(first.receipt);
+      await expect(
+        loadEmployeeRuntimeScene(
+          { ...run.scope, ownerId: s.b.actor.id },
+          run.runtime.generationId,
+          selection,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await releaseConversationRuntime({
+        ...run.scope,
+        workerId: worker.workerId,
+        outcome: 'idle',
+      });
+      await run.finish();
+      const next = await runtimeRun(s, run.scope.sessionId),
+        nextWorker = await sceneLease(next);
+      expect(next.runtime.generationId).toBe(run.runtime.generationId);
+      expect(next.runtime.nativeContextKey).not.toBe(
+        run.runtime.nativeContextKey,
+      );
+      await expect(
+        loadEmployeeRuntimeScene(
+          run.scope,
+          run.runtime.generationId,
+          selection,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const monthly = next.runtime.scenes.find((x) => x.id === ids[1])!;
+      expect(
+        (
+          await loadEmployeeRuntimeScene(
+            next.scope,
+            next.runtime.generationId,
+            { sceneId: monthly.id, sceneDigest: monthly.digest },
+            nextWorker,
+          )
+        ).sources.map((x) => x.body),
+      ).toEqual(['MONTH_ONLY_86']);
+      await releaseConversationRuntime({
+        ...next.scope,
+        workerId: nextWorker.workerId,
+        outcome: 'idle',
+      });
+      await next.finish();
+      // A task with no scene adoption also has a distinct native context.
+      const ordinary = await runtimeRun(s, run.scope.sessionId);
+      expect(ordinary.runtime.nativeContextKey).not.toBe(
+        next.runtime.nativeContextKey,
+      );
+      const [record] =
+        await f.db`select content_scene_state from allrice_employee_runs where run_id=${ordinary.scope.runId}`;
+      expect(record!.content_scene_state).toBeNull();
+    }, 120000);
+    it('does not return scene content or append a receipt after the execution lease expires while waiting for a source lock', async () => {
+      const { s } = await sceneSetup(),
+        run = await runtimeRun(s),
+        worker = await sceneLease(run),
+        scene = run.runtime.scenes[0]!;
+      const ready = contentGate<number>(),
+        release = contentGate<void>();
+      const holder = f.db.begin(async (tx) => {
+        const [pid] = await tx`select pg_backend_pid() as id`;
+        await tx`select revision_id from allrice_employee_content_publications where set_id=${s.base.setId} for update`;
+        ready.resolve(pid!.id);
+        await release.promise;
+      });
+      const pid = await ready.promise;
+      const reading = loadEmployeeRuntimeScene(
+        run.scope,
+        run.runtime.generationId,
+        { sceneId: scene.id, sceneDigest: scene.digest },
+        worker,
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      try {
+        await expect
+          .poll(
+            async () => {
+              const [x] =
+                await f.db`select count(*)::int as n from pg_stat_activity where ${pid}::int=any(pg_blocking_pids(pid))`;
+              return x!.n;
+            },
+            { timeout: 5000 },
+          )
+          .toBeGreaterThan(0);
+        await f.db`update allrice_jobs set lease_expires_at=now()-interval '1 second' where id=${worker.jobId}`;
+      } finally {
+        release.resolve();
+      }
+      await holder;
+      expect(await reading).toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      const [saved] =
+        await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+      expect(saved!.content_scene_state).toBeNull();
+    }, 120000);
+    it('keeps a scene body canonical when another conservative read has overlapping sources', async () => {
+      const { s, ids } = await sceneSetup(true),
+        run = await runtimeRun(s),
+        worker = await sceneLease(run);
+      const load = (id: string) => {
+        const scene = run.runtime.scenes.find((s) => s.id === id)!;
+        return loadEmployeeRuntimeScene(
+          run.scope,
+          run.runtime.generationId,
+          { sceneId: scene.id, sceneDigest: scene.digest },
+          worker,
+        );
+      };
+      const first = await load(ids[1]!);
+      await load(ids[0]!);
+      const again = await load(ids[1]!);
+      expect(again.receipt).toEqual(first.receipt);
+      expect(JSON.stringify(again.sources)).toBe(JSON.stringify(first.sources));
+    }, 120000);
+    it('persists two conservative probe reads but rejects conflicting native adoption before further dispatch or recovery', async () => {
+      const { s } = await sceneSetup(),
+        run = await runtimeRun(s),
+        worker = await sceneLease(run);
+      const loaded = await Promise.all(
+        run.runtime.scenes.map((scene) =>
+          loadEmployeeRuntimeScene(
+            run.scope,
+            run.runtime.generationId,
+            { sceneId: scene.id, sceneDigest: scene.digest },
+            worker,
+          ),
+        ),
+      );
+      const adopted = await Promise.allSettled(
+        loaded.map((r, i) =>
+          adoptEmployeeRuntimeScene(
+            run.scope,
+            run.runtime.generationId,
+            {
+              ...r.receipt,
+              nativeSessionId: `child-${i}`,
+              callId: `call-${i}`,
+            },
+            worker,
+          ),
+        ),
+      );
+      expect(adopted.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+      await expect(
+        assertEmployeeContentContext(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        prepareEmployeeContentContext(run.scope),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const [saved] =
+        await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`;
+      expect(saved!.content_scene_state.reads).toHaveLength(2);
+    }, 120000);
+    it('rechecks scene-only sources after a read and denies revoked imported answers without loading unrelated bodies', async () => {
+      const s = await setup(),
+        k = await knowledge(s, 'Scene-only source'),
+        sceneId = randomUUID();
+      await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: sceneId,
+                name: '资料报告',
+                appliesWhen: '需要资料时',
+                references: [k.ref],
+              },
+            ],
+          },
+        }),
+      );
+      const run = await runtimeRun(s),
+        worker = await sceneLease(run),
+        scene = run.runtime.scenes[0]!;
+      await loadEmployeeRuntimeScene(
+        run.scope,
+        run.runtime.generationId,
+        { sceneId, sceneDigest: scene.digest },
+        worker,
+      );
+      await f.db`update allrice_employee_knowledge_bindings set enabled=false where id=${k.bindingId}`;
+      await expect(
+        assertEmployeeContentContext(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        loadEmployeeRuntimeScene(
+          run.scope,
+          run.runtime.generationId,
+          { sceneId, sceneDigest: scene.digest },
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        assertEmployeeContentReferenceMessages(s.a, run.scope.sessionId, [
+          run.sent.userMessage.id,
+        ]),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await releaseConversationRuntime({
+        ...run.scope,
+        workerId: worker.workerId,
+        outcome: 'idle',
+      });
+      await run.finish();
+      const ordinary = await runtimeRun(s, run.scope.sessionId);
+      expect(ordinary.runtime.sources).toEqual([]);
+      expect(ordinary.runtime.historyFromMessageId).toBe(
+        ordinary.sent.userMessage.id,
+      );
+    }, 120000);
     it('freezes common references for both kinds, keeps personal content private and does not load an unrelated broken scene', async () => {
       const s = await setup(),
         shared = text('COMPANY_COMMON_42'),

@@ -59,6 +59,7 @@ export function assembleEmployeeKernel(input: {
     checksum: string;
   }[];
   commonContent?: EmployeeResolvedContent[];
+  hasContentScenes?: boolean;
 }): EmployeeKernelRequest {
   for (const source of input.commonContent ?? []) {
     const rule = input.resolved.promptSnapshot.companyAssets?.rules.find(
@@ -123,6 +124,11 @@ export function assembleEmployeeKernel(input: {
     assistantMessageId: input.assistantMessageId,
     systemInstructions: [
       input.resolved.promptSnapshot.systemPrompt,
+      ...(input.hasContentScenes
+        ? [
+            "Published work scenes appear in the native Skill directory under allrice-scene- names. Select at most one scene for this Run. Prioritize the user's explicit choice; load its exact native name through skill before following its scene-specific requirements. If multiple scenes plausibly match or a display name is ambiguous, ask the user using the existing ask_user_question tool before loading one. An ordinary task may use no scene. Do not preload scenes, combine unrelated scenes, or carry scene rules from previous Runs. The common working requirements always apply. Scene descriptions and file/workflow references are not proof of task execution or successful delivery.",
+          ]
+        : []),
       ...(input.commonContent?.length
         ? [
             'Frozen common working requirements for this Run, assembled from authorized company, department and personal publications. Apply these together with platform requirements. References do not grant tools or data permissions. A knowledge/workflow description below is a reference directory, not evidence of reading its files or executing its workflow.',

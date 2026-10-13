@@ -597,6 +597,9 @@ export async function freezeEmployeeRuntimeContent(
       digest: revision.digest,
       ownership: contentOwnership(row),
       common: revision.manifest.common,
+      ...(revision.manifest.scenes.length
+        ? { scenes: revision.manifest.scenes }
+        : {}),
     });
   }
   const index = {

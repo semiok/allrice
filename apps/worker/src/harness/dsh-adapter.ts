@@ -6,6 +6,8 @@ import {
   UserQuestionRequestSchema,
   NativeQuestionCheckpointSchema,
   RuntimeNativeInputProofSchema,
+  EmployeeSceneReadSchema,
+  EmployeeSceneStateSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
 import { AssistantRuntimeError } from '@allrice/database';
@@ -117,7 +119,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
     }
     const snapshot = input.providerSnapshot;
-    const expectedThreadId = `dsh-${input.kernel.sessionId}${input.contentGuard ? `-${input.contentGuard.generationId}` : ''}`;
+    const expectedThreadId = `dsh-${input.kernel.sessionId}${input.contentGuard ? `-${input.contentGuard.nativeContextKey ?? input.contentGuard.generationId}` : ''}`;
     const threadId =
       input.threadId?.startsWith('dsh-') &&
       (!input.contentGuard || input.threadId === expectedThreadId)
@@ -195,6 +197,44 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
     };
     runtime.client.setRequestHandler(async (method, params) => {
+      if (
+        method === 'allrice/content-scene-load' ||
+        method === 'allrice/content-scene-adopt'
+      ) {
+        try {
+          await checkContent();
+          if (method === 'allrice/content-scene-load') {
+            const selection = EmployeeSceneReadSchema.omit({
+              receiptId: true,
+            }).parse(params);
+            if (!input.contentGuard?.loadScene)
+              throw Error('employee_scene_unbound');
+            return await input.contentGuard.loadScene(selection);
+          }
+          const evidence = EmployeeSceneStateSchema.shape.adopted
+            .unwrap()
+            .parse(params);
+          if (evidence.nativeSessionId !== threadId) {
+            if (!assistant) throw Error('employee_scene_native_scope');
+            await assistant.handle('progress-identity', {
+              nativeSessionId: evidence.nativeSessionId,
+            });
+          }
+          if (!input.contentGuard?.adoptScene)
+            throw Error('employee_scene_unbound');
+          return await input.contentGuard.adoptScene(evidence);
+        } catch (error) {
+          contentAuthorizationFailure ??=
+            error instanceof HandlerError
+              ? error
+              : new HandlerError(
+                  'EMPLOYEE_CONTENT_UNAVAILABLE',
+                  '当前工作场景无法继续使用，请确认场景和资料后重新发起任务。',
+                  false,
+                );
+          throw contentAuthorizationFailure;
+        }
+      }
       if (method === 'allrice/content-check') {
         if (!input.contentGuard) throw Error('employee_content_guard_unbound');
         if (params.nativeSessionId !== threadId) {
@@ -482,6 +522,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
               const governance = input.baseSkillCatalog?.skills.find(
                 (s) => s.id === skill?.id,
               );
+              const scene = input.contentGuard?.scenes?.find(
+                (s) => s.nativeName === name,
+              );
+              if (scene)
+                event = {
+                  ...event,
+                  label: `工作场景 · ${scene.name}`,
+                  sourcePayload: {
+                    ...event.sourcePayload,
+                    sceneId: scene.id,
+                    sceneDigest: scene.digest,
+                    sceneName: scene.name,
+                  },
+                };
               if (skill)
                 event = {
                   ...event,

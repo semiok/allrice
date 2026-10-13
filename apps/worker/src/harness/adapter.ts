@@ -2,6 +2,7 @@ import type {
   EmployeeKernelRequest,
   DshNativeSkillSnapshot,
   EmployeeBaseSkillCatalog,
+  EmployeeRuntimeScene,
   HarnessExecutionSnapshot,
   HarnessCapabilities,
   HarnessEvent,
@@ -116,7 +117,23 @@ export interface HarnessExecutionInput {
   nativeSkills?: DshNativeSkillSnapshot[];
   /** Server-bound authorization for all model sends, native retries and
    * compaction. No model-supplied dependency list is accepted. */
-  contentGuard?: { generationId: string; check: () => Promise<void> };
+  contentGuard?: {
+    generationId: string;
+    nativeContextKey?: string;
+    check: () => Promise<void>;
+    scenes?: EmployeeRuntimeScene[];
+    loadScene?: (selection: {
+      sceneId: string;
+      sceneDigest: string;
+    }) => Promise<Record<string, unknown>>;
+    adoptScene?: (evidence: {
+      sceneId: string;
+      sceneDigest: string;
+      receiptId: string;
+      nativeSessionId: string;
+      callId: string;
+    }) => Promise<Record<string, unknown>>;
+  };
   workDirectory: string;
   executionEnvironment: Readonly<Record<string, string>>;
   signal: AbortSignal;
