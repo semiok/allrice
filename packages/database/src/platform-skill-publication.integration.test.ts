@@ -30,6 +30,7 @@ import { skillBundleChecksum, skillBytesChecksum } from './skill-bundles.ts';
 import { loadPlatformContentCatalog } from './platform-content/catalog.ts';
 import { synchronizePlatformContent } from './platform-content/sync.ts';
 import { freezeSessionModelSnapshot } from './providers/model-pool.ts';
+import { authenticateSession, createSession } from './identity.ts';
 import {
   getEmployeeWorkspace,
   ensureDefaultEmployee,
@@ -257,24 +258,12 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
   });
   it('inherits platform models despite employee publication and repairs legacy session caches', async () => {
     const f = await fixture();
-    const context = {
-      actor: { type: 'user' as const, id: f.ownerId },
+    const login = await createSession(f.ownerId);
+    const context = await authenticateSession(login.token, {
       organizationId: f.organizationId,
       workspaceId: f.workspaceId,
-      requestId: randomUUID(),
-      sessionId: randomUUID(),
-      authenticatedAt: new Date().toISOString(),
-      memberships: [
-        {
-          id: randomUUID(),
-          organizationId: f.organizationId,
-          workspaceId: f.workspaceId,
-          userId: f.ownerId,
-          role: 'admin' as const,
-          active: true,
-        },
-      ],
-    };
+    });
+    if (!context) throw Error('Synthetic publication login failed');
     // Preserve an explicitly pre-existing legacy employee; managed workspaces no longer create one on read.
     await ensureDefaultEmployee(context, f.workspaceId);
     await f.preview();
