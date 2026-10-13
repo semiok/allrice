@@ -460,3 +460,35 @@ WebUI 账本 `message-image-send` 记录三份原生文件及一个原生函数�
 ### `dsh-pi-ai-premature-websocket-close-v2`
 
 Run 917f3a15 exposed a pinned pi-ai classification gap: `WebSocket closed 1006` fell through to `PI_AI_ERROR`. Run 4299ba50 also exposed premature close `1000`: pinned pi-ai emits this error only before receiving a response terminal event. The dependency patch maps these observed closes to `TRANSPORT` (1000 must have no reason suffix), reusing DSH’s provider policy (at most two request retries) and existing assistant settlement checks. It does not retry authentication/policy failures, replay tool calls, or restart the whole prompt. After native recovery ends, Worker persists the original failure code as terminal and keeps existing results visible. Remove this patch when the pinned upstream includes equivalent classification.
+
+## Codex 明确过载的错误归类（2026-10-13）
+
+责任登记：`allrice-codex-overload-normalization-v1`（AllRice 协议扩展）。
+
+Run `95cc7925` 的原生错误为 `PI_AI_ERROR`，原文为
+`Codex error: Our servers are currently overloaded. Please try again later.`。
+当前固定的 DSH `0.1.5-rc.3` / pi-ai `0.85.1` 将这种无数字 HTTP 状态的
+错误归为通用错误，未触发已有的正常请求重试。另一个 Run `22664651`
+只有一般性的 processing error，缺少原始 HTTP 状态和结构化错误码，不能据此
+断言是过载或 DSH 内核故障。
+
+AllRice 的 [model-errors 扩展](../../apps/worker/dsh/allrice-model-errors.mjs)
+仅在 `openai-codex`、终止类型 `error`、原始代码 `PI_AI_ERROR`、完整消息
+精确匹配上述过载原文、请求未取消时，将代码归为 `SERVER`；保留消息和已有
+字段，不补造 HTTP 状态或 request ID。安装在公开的 `llm/stream` 接口，位于
+结算与进度观察器内部，使记账和原生 loop 观察到相同终止事实。
+
+继续使用原生 `agent/request-error` 的正常策略（最多两次重试和可取消退避），
+每次新模型调用仍需独立授权与结算。没有整轮重跑、第二套调度器或工具重放。
+明确的订阅终止回执仅在原有结算 ACK 策略允许时继续，未知 token 用量仍为
+未知；缺失 ACK、无终止回执、取消、认证/配额/请求错误和未识别的通用错误
+均不因此扩大重试权限。尤其不将 Run `22664651` 的一般处理异常加入白名单。
+
+验证使用生产 JSON-RPC 入口、固定原生 DSH loop/retry、真实 pi-ai 和本地
+SSE 测试端点，覆盖已有工具结果保留且工具只执行一次、恢复成功、连续失败
+到达两次上限、结算未确认以及退避期间取消。测试 grant 和结构化 wire code
+均为合成值，不冒充历史请求原始数据，不调用收费模型。上游包源码、版本、
+物理 patches 和锁文件保持不变。
+
+将来上游原生分类正确保留这类暂时性错误，且同组 wire/loop/结算回归通过后，
+删除本扩展和入口注册；不把普通版本升级或函数级探针当作完整修复证据。
