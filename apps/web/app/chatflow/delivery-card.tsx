@@ -9,7 +9,6 @@ import type { WorkbenchArtifact } from '@allrice/contracts';
 import { artifactKindLabel } from '../../lib/chatflow/workbench-model';
 import { PresentedFileCard } from './dsh-upstream/deliverables/PresentedFileCard';
 import styles from './workbench.module.css';
-import imageStyles from './image-delivery.module.css';
 import { LocalArtifactFileDialog } from './local-file-actions';
 
 /** Native DSH presentation; file access remains the existing authenticated API. */
@@ -23,10 +22,6 @@ export function DeliveryCard({
   const [open, setOpen] = useState(false);
   const [localDialog, setLocalDialog] = useState(false);
   const name = artifact.version.fileName;
-  const [failed, setFailed] = useState(false);
-  const isImage = ['image/png', 'image/jpeg', 'image/webp'].includes(
-    artifact.object.mediaType,
-  );
   const card = (
     <PresentedFileCard
       file={{
@@ -84,34 +79,9 @@ export function DeliveryCard({
       }
     />
   );
-  const view = !isImage ? (
-    card
-  ) : (
-    <div className={imageStyles.root}>
-      <button
-        type="button"
-        className={imageStyles.preview}
-        aria-label={`查看图片 ${name}`}
-        onClick={() => onOpen(artifact.id)}
-      >
-        {failed ? (
-          <span>图片预览暂不可用，点击打开</span>
-        ) : (
-          <img
-            src={`/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(name)}`}
-            alt={name}
-            loading="lazy"
-            decoding="async"
-            onError={() => setFailed(true)}
-          />
-        )}
-      </button>
-      {card}
-    </div>
-  );
   return (
     <>
-      {view}
+      {card}
       {localDialog && (
         <LocalArtifactFileDialog
           artifact={artifact}

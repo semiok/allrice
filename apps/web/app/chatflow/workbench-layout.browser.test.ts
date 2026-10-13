@@ -5789,7 +5789,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     [390, false],
     [390, true],
   ] as const)(
-    'MET-163 image delivery at %ipx streaming=%s survives reload, previews and downloads',
+    'mixed native image and document delivery at %ipx streaming=%s stays compact, previews and downloads after reload',
     async (width, streamingOutput) => {
       const f = await fixture({
         width,
@@ -5800,18 +5800,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       try {
         const png = await f.page.evaluate(() => {
           const c = document.createElement('canvas');
-          c.width = 800;
-          c.height = 800;
+          c.width = 1200;
+          c.height = 300;
           const ctx = c.getContext('2d')!;
           ctx.fillStyle = 'white';
-          ctx.fillRect(0, 0, 800, 800);
+          ctx.fillRect(0, 0, 1200, 300);
           ctx.fillStyle = '#ff8a00';
           ctx.beginPath();
-          ctx.arc(400, 400, 250, 0, Math.PI * 2);
+          ctx.arc(600, 150, 100, 0, Math.PI * 2);
           ctx.fill();
-          // Deterministic texture makes this a realistic multi-MB PNG rather
+          // Deterministic texture makes this a realistic large PNG rather
           // than a tiny solid-color image that misses the old preview limit.
-          const pixels = ctx.getImageData(0, 0, 800, 800);
+          const pixels = ctx.getImageData(0, 0, 1200, 300);
           let seed = 163;
           for (let i = 0; i < pixels.data.length; i++) {
             if (i % 4 === 3) continue;
@@ -5828,6 +5828,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         img.object.mediaType = 'image/png';
         img.object.sizeBytes = Buffer.from(png, 'base64').length;
         img.version.version = 2;
+        const slides = artifact(11);
+        slides.version.fileName = '企业介绍.pptx';
+        slides.version.format = 'pptx';
+        slides.object.mediaType =
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+        const otherImage = artifact(12);
+        otherImage.version.fileName = '浅色Logo.png';
+        otherImage.version.format = 'png';
+        otherImage.object.mediaType = 'image/png';
+        otherImage.object.sizeBytes = img.object.sizeBytes;
         f.state.officePreview = {
           kind: 'image',
           mediaType: 'image/png',
@@ -5847,24 +5857,58 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.reply = '已把蓝色圆形修改为橙色，并保留原图版本。';
         f.state.workMethods = ['cloud_images'];
         f.finishRun();
-        f.state.items = [img];
+        f.state.items = [slides, img, otherImage];
+        const message = f.page.locator('#message-' + id(20));
+        const cards = message.locator('[data-presented-file]');
         const picture = f.page
-          .getByRole('button', { name: '查看图片 圆形海报.png', exact: true })
+          .getByRole('button', {
+            name: '侧栏预览 圆形海报.png',
+            exact: true,
+          })
           .first();
         await picture.waitFor();
-        await expect
-          .poll(() =>
-            picture
-              .locator('img')
-              .evaluate(
-                (i: HTMLImageElement) => i.complete && i.naturalWidth > 0,
-              ),
-          )
-          .toBe(true);
+        const closePanel = f.panel.getByRole('button', {
+          name: '关闭工作台',
+          exact: true,
+        });
+        if (await closePanel.isVisible()) await closePanel.click();
+        await expect.poll(() => cards.count()).toBe(3);
+        const checkLayout = async () => {
+          // Closing the dock animates the conversation width. Wait for its
+          // native container breakpoint before measuring the settled rows.
+          await expect
+            .poll(async () => {
+              const first = await cards.nth(0).boundingBox();
+              const second = await cards.nth(1).boundingBox();
+              return !!first && !!second && second.x > first.x;
+            })
+            .toBe(width === 1440);
+          const boxes = await cards.evaluateAll((elements) =>
+            elements.map((element) => {
+              const box = element.getBoundingClientRect();
+              return { x: box.x, y: box.y, height: box.height };
+            }),
+          );
+          expect(boxes).toHaveLength(3);
+          for (const box of boxes) expect(box.height).toBeCloseTo(60, 0);
+          expect(boxes[2]!.x).toBeCloseTo(boxes[0]!.x, 0);
+          if (width === 1440) {
+            expect(boxes[1]!.y).toBeCloseTo(boxes[0]!.y, 0);
+            expect(boxes[1]!.x).toBeGreaterThan(boxes[0]!.x);
+            expect(boxes[2]!.y - boxes[0]!.y).toBeCloseTo(70, 0);
+          } else {
+            expect(boxes[1]!.x).toBeCloseTo(boxes[0]!.x, 0);
+            expect(boxes[1]!.y - boxes[0]!.y).toBeCloseTo(70, 0);
+            expect(boxes[2]!.y - boxes[1]!.y).toBeCloseTo(70, 0);
+          }
+        };
+        await checkLayout();
         expect(
-          await f.page
-            .locator('#message-' + id(20))
-            .getByRole('button', { name: '查看图片 圆形海报.png', exact: true })
+          await message
+            .getByRole('button', {
+              name: '侧栏预览 圆形海报.png',
+              exact: true,
+            })
             .count(),
         ).toBe(1);
         await f.page.locator('#message-' + id(20)).hover();
@@ -5879,9 +5923,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .evaluate((el) => el.scrollWidth <= innerWidth),
         ).toBe(true);
         await picture.click();
-        const preview = f.panel.locator('[data-image-preview] img');
+        const preview = f.panel.locator('[data-image-preview] img:visible');
         await preview.waitFor();
-        const zoomFrame = f.panel.locator('[data-document-zoom-frame]');
+        await expect
+          .poll(() =>
+            preview.evaluate((element: HTMLImageElement) => ({
+              width: element.naturalWidth,
+              height: element.naturalHeight,
+            })),
+          )
+          .toEqual({ width: 1200, height: 300 });
+        const zoomFrame = f.panel.locator('[data-document-zoom-frame]:visible');
         await zoomFrame.scrollIntoViewIfNeeded();
         const bounds = (await zoomFrame.boundingBox())!;
         await f.page.mouse.move(
@@ -5892,16 +5944,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '放大', exact: true })
           .click();
         expect(
-          await f.panel.locator('[data-document-zoom-scrollport]').count(),
+          await f.panel
+            .locator('[data-document-zoom-scrollport]:visible')
+            .count(),
         ).toBe(1);
         await f.panel
           .getByRole('button', { name: '关闭工作台', exact: true })
           .click();
         await f.page.reload();
         await picture.waitFor();
+        await checkLayout();
         await picture.scrollIntoViewIfNeeded();
         await f.page.screenshot({
-          path: `/tmp/met163-images-${width}-${streamingOutput}.png`,
+          path: `/tmp/allrice-native-delivery-${width}-${streamingOutput}.png`,
         });
         const card = f.page
           .locator('[data-presented-file]')
@@ -5914,7 +5969,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .getByRole('menuitem', { name: '下载文件', exact: true })
           .click();
-        expect((await downloaded).suggestedFilename()).toBe('圆形海报.png');
+        const download = await downloaded;
+        expect(download.suggestedFilename()).toBe('圆形海报.png');
+        expect(new URL(download.url()).pathname).toBe(
+          `/api/v1/files/${img.object.id}/download`,
+        );
+        expect(new URL(download.url()).searchParams.get('name')).toBe(
+          img.version.fileName,
+        );
+        await picture.click();
+        await preview.waitFor();
       } finally {
         await f.close();
       }
