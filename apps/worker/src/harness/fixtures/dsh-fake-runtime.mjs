@@ -4,6 +4,7 @@ import { setImmediate } from 'node:timers';
 
 let seq = 0;
 let initializedProvider = '';
+let initializedSkills = [];
 const turns = new Map();
 const pendingToolRequests = new Map();
 
@@ -144,6 +145,7 @@ lines.on('line', (line) => {
   }
   if (frame.method === 'initialize') {
     initializedProvider = frame.params.provider;
+    initializedSkills = frame.params.nativeSkills ?? [];
     respond(frame.id, {
       serverInfo: {
         name: 'deepseek-harness-sdk-runtime',
@@ -386,7 +388,15 @@ lines.on('line', (line) => {
   }
   if (prompt.includes('hang forever')) return;
   let text;
-  if (prompt.includes('inspect-images')) {
+  if (prompt.includes('inspect-skill-directory')) {
+    text = JSON.stringify(
+      initializedSkills.map((s) => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+      })),
+    );
+  } else if (prompt.includes('inspect-images')) {
     text = JSON.stringify({
       count: images.length,
       names: images.map((image) => image.name),
@@ -431,6 +441,29 @@ lines.on('line', (line) => {
   } else if (prompt.includes('think-first')) {
     reasoning(sessionId, turn, 0);
     text = 'visible answer';
+  } else if (prompt.includes('native-skill-receipt')) {
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId: 'skill-1',
+      name: 'skill',
+      arguments: JSON.stringify({ name: 'synthetic-skill' }),
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 1,
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'skill-1',
+            isError: prompt.includes('failed'),
+            content: [{ type: 'text', text: 'private skill text' }],
+          },
+        ],
+      },
+    });
+    text = 'skill task complete';
   } else if (prompt.includes('native-result-outcome:')) {
     const outcome = prompt.match(/native-result-outcome:([a-z-]+)/)?.[1];
     reasoning(sessionId, turn, 0);

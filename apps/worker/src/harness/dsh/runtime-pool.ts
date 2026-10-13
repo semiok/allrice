@@ -235,6 +235,12 @@ export class DshRuntimePool {
           snapshot: input.snapshot,
           codexSubscriptionHome: dshPlatformHome,
           runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
+          ...(input.input.baseSkillCatalog
+            ? {
+                baseSkillCatalogChecksum:
+                  input.input.baseSkillCatalog.snapshotChecksum,
+              }
+            : {}),
           systemInstructions: input.systemInstructions,
           taskProgress: !!input.input.progress,
           durableQuestions: !!input.input.questionWait,

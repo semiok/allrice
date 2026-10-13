@@ -1,6 +1,7 @@
 import type {
   EmployeeKernelRequest,
   DshNativeSkillSnapshot,
+  EmployeeBaseSkillCatalog,
   HarnessExecutionSnapshot,
   HarnessCapabilities,
   HarnessEvent,
@@ -36,6 +37,8 @@ export interface HarnessImageInput {
 }
 
 export interface HarnessExecutionInput {
+  /** Frozen governance evidence; never grants a native or Broker tool. */
+  baseSkillCatalog?: EmployeeBaseSkillCatalog;
   questionWait?: {
     resume?: {
       sessionId: string;
