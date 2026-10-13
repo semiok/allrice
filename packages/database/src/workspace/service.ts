@@ -13,6 +13,7 @@ import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
 export { SessionReferenceError } from './session-references.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
+import { readSessionSteering } from './steering-history.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { captureCompanyRunAssets } from '../company-run-assets.ts';
@@ -896,6 +897,18 @@ export async function getChatSessionHistory(
 ) {
   const row = await sessionRow(context, workspaceId, sessionId);
   const sql = getDatabase();
+  const steering = await readSessionSteering(
+    context.organizationId,
+    workspaceId,
+    row.id,
+    sql,
+  );
+  const steeringByMessage = new Map(
+    steering.map((item) => [item.messageId, item.steering]),
+  );
+  const steeringReceipts = new Set(
+    steering.flatMap((item) => (item.receiptId ? [item.receiptId] : [])),
+  );
   const applicationFailures = await readSessionMcpFailures(
     context.organizationId,
     workspaceId,
@@ -1038,7 +1051,12 @@ export async function getChatSessionHistory(
         };
       }),
     messages: messages
-      .filter((m) => !m.queued_run_id && !m.hide_from_transcript)
+      .filter(
+        (m) =>
+          !m.queued_run_id &&
+          !m.hide_from_transcript &&
+          !steeringReceipts.has(m.id),
+      )
       .map((message) => {
         const mapped = mapMessage(
           context,
@@ -1057,6 +1075,9 @@ export async function getChatSessionHistory(
           };
         return {
           ...mapped,
+          ...(steeringByMessage.has(message.id)
+            ? { steering: steeringByMessage.get(message.id)! }
+            : {}),
           ...(message.role === 'assistant' && message.run_id
             ? {
                 workMethods: workMethods.get(message.run_id) ?? [],
