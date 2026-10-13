@@ -83,6 +83,13 @@ export interface Workspace {
 }
 
 export interface Message {
+  steering?: {
+    runId: string | null;
+    turnId: string;
+    generation: number;
+    status: 'pending' | 'adopted' | 'rejected' | 'unknown';
+    sequence: number | null;
+  };
   applicationFailure?: McpFailureKind;
   workMethods?: WorkMethod[];
   id: string;

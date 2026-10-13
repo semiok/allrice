@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useMemo, createContext, useContext } from 'react';
 import {
   MarkdownDelegateProvider,
   MarkdownText,
@@ -7,6 +7,10 @@ import {
 import type { WorkbenchArtifact } from '@allrice/contracts';
 import { markdownDeliveryText } from '../../lib/chatflow/markdown-delivery';
 import { artifactForDownloadLink } from '../../lib/chatflow/artifact-download-link';
+
+export const ArtifactLinkResolver = createContext<
+  ((href: string) => Promise<boolean>) | undefined
+>(undefined);
 
 const labels: MarkdownLabels = {
   code: {
@@ -38,6 +42,7 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
   accessibleFiles?: readonly { id: string; fileName: string }[];
   onOpenArtifact?: (id: string) => void;
 }) {
+  const resolveLink = useContext(ArtifactLinkResolver);
   const origin = typeof location === 'undefined' ? undefined : location.origin;
   const rendered = useMemo(
     () =>
@@ -56,9 +61,15 @@ export const AssistantMarkdown = memo(function AssistantMarkdown({
     (href: string) => {
       const artifact = artifactForDownloadLink(href, artifacts);
       if (artifact && onOpenArtifact) onOpenArtifact(artifact.id);
+      else if (resolveLink && /\/api\/v1\/files\/[a-f0-9-]{36}/.test(href))
+        void resolveLink(href)
+          .then((opened) => {
+            if (!opened) window.open(href, '_blank', 'noopener,noreferrer');
+          })
+          .catch(() => {});
       else window.open(href, '_blank', 'noopener,noreferrer');
     },
-    [artifacts, onOpenArtifact],
+    [artifacts, onOpenArtifact, resolveLink],
   );
   return (
     <MarkdownDelegateProvider

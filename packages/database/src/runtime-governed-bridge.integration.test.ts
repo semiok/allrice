@@ -2572,6 +2572,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const workerId = f.execution.worker.id;
     const turnId = `native-${f.sessionId}:turn:1`;
     await database`update allrice_conversation_runtimes set worker_id=${workerId},active_turn_id=${turnId} where session_id=${f.sessionId}`;
+    await database`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+      select ${f.context.organizationId},${f.context.workspaceId!},${f.run},coalesce(max(sequence),-1)+1,'turn.started',
+        ${database.json({ turnId, generation: 3 })} from allrice_run_events where run_id=${f.run}`;
     const input = {
       clientMessageId: randomUUID(),
       text: 'Use corrected numbers.',
@@ -2586,6 +2589,19 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       input,
     );
     expect(sent.delivery).toBe('steer_pending');
+    const pendingHistory = await getChatSessionHistory(
+      f.context,
+      f.context.workspaceId!,
+      f.sessionId,
+    );
+    expect(
+      pendingHistory.messages.find((m) => m.content.text === input.text)
+        ?.steering,
+    ).toMatchObject({
+      runId: f.run,
+      status: 'pending',
+      sequence: null,
+    });
     expect(
       (
         await sendChatMessage(
@@ -2649,6 +2665,29 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       status: 'adopted',
       evidence: { sequence: 17, checkpoint: 'step_user_message' },
     });
+    const adoptedHistory = await getChatSessionHistory(
+      f.context,
+      f.context.workspaceId!,
+      f.sessionId,
+    );
+    expect(
+      adoptedHistory.messages.find((m) => m.content.text === input.text)
+        ?.steering,
+    ).toEqual({
+      runId: f.run,
+      status: 'adopted',
+      sequence: 17,
+      generation: 3,
+      turnId,
+    });
+    expect(
+      adoptedHistory.messages.some((m) => m.runId === sent.fallbackRunId),
+    ).toBe(false);
+    expect(
+      adoptedHistory.messages.some(
+        (m) => m.content.text === '已补充给正在工作的 Rice。',
+      ),
+    ).toBe(false);
     const unanswered = {
       ...input,
       clientMessageId: randomUUID(),

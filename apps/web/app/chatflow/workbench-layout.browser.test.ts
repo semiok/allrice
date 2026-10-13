@@ -371,6 +371,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeName: 'Rice',
       runTimings: [] as NonNullable<InteractionStatus['runTimings']>,
       timingError: false,
+      inputs: [] as InteractionStatus['inputs'],
       delay: null as null | Promise<void>,
     };
     const archivedHistory = Array.from(
@@ -1016,7 +1017,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 }
               : null,
             pendingActions: [],
-            inputs: [],
+            inputs: state.inputs,
             runTimings: path.includes(A) ? state.runTimings : [],
           },
           state.timingError ? 503 : 200,
@@ -6862,6 +6863,283 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([
+    [1440, true],
+    [390, true],
+    [1440, false],
+    [390, false],
+  ] as const)(
+    'steering timeline places continued work and late PPT delivery below two inputs at %ipx streaming=%s',
+    async (width, streamingOutput) => {
+      const f = await fixture({
+        width,
+        streamingOutput,
+        running: true,
+        controlledStream: true,
+      });
+      const event = (
+        sequence: number,
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+        native = sequence,
+      ): ChatFlowEventEnvelope => ({
+        schemaVersion: 3,
+        eventId: id(9400 + sequence),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 3,
+        cursor: `${run}:${sequence}`,
+        sequence,
+        harness: 'dsh',
+        type,
+        occurredAt: now,
+        sourceEvent: {
+          id: `dsh:${native}`,
+          type: 'user/message',
+          occurredAt: now,
+          payload: {},
+        },
+        payload: { generation: 3, turnId: 'native-turn:1', ...payload },
+      });
+      const emit = async (events: ChatFlowEventEnvelope[]) => {
+        for (const e of events)
+          await f.page.evaluate(
+            (value) =>
+              window.dispatchEvent(
+                new CustomEvent('allrice-test-stream', {
+                  detail: `data: ${JSON.stringify(value)}\n\n`,
+                }),
+              ),
+            e,
+          );
+      };
+      try {
+        const input1: Message = {
+          id: id(9501),
+          role: 'user',
+          runId: null,
+          status: 'completed',
+          content: { text: '要突出经验沉淀这个点' },
+          createdAt: now,
+          steering: {
+            runId: run,
+            turnId: 'native-turn:1',
+            generation: 3,
+            status: 'pending',
+            sequence: null,
+          },
+        };
+        const input2: Message = {
+          ...input1,
+          id: id(9502),
+          content: { text: '在干活了吗' },
+          steering: { ...input1.steering! },
+        };
+        f.state.messages = [
+          {
+            id: id(9500),
+            role: 'assistant',
+            runId: run,
+            status: 'pending',
+            content: { text: '' },
+            createdAt: now,
+          },
+          input1,
+          input2,
+        ];
+        f.state.inputs = [input1, input2].map((m, n) => ({
+          inputId: id(9600 + n),
+          kind: 'steer_current',
+          status: 'pending',
+          runId: id(9700 + n),
+          messageId: m.id,
+          artifactId: null,
+          createdAt: now,
+          turnId: 'native-turn:1',
+          generation: 3,
+          evidence: null,
+        }));
+        await f.page.reload();
+        await f.page.getByText('在干活了吗', { exact: true }).waitFor();
+        await expect
+          .poll(() =>
+            f.page.getByText('等待当前任务采纳', { exact: true }).count(),
+          )
+          .toBe(2);
+        await expect
+          .poll(() => f.page.locator('html').getAttribute('data-stream-ready'))
+          .toBe('true');
+        f.state.events = [
+          event(1, 'tool.completed', {
+            toolCallId: 'before',
+            name: 'read',
+            summary: '阅读原始资料',
+          }),
+          event(2, 'harness.native', {}, 132),
+          event(3, 'tool.completed', {
+            toolCallId: 'middle',
+            name: 'read',
+            summary: '整理经验沉淀',
+          }),
+          event(4, 'harness.native', {}, 139),
+          event(5, 'tool.started', {
+            toolCallId: 'after',
+            name: 'write',
+            summary: '制作员工版演示稿',
+          }),
+        ];
+        input1.steering = {
+          ...input1.steering!,
+          status: 'adopted',
+          sequence: 132,
+        };
+        input2.steering = {
+          ...input2.steering!,
+          status: 'adopted',
+          sequence: 139,
+        };
+        f.state.inputs.forEach((input, n) => {
+          input.status = 'adopted';
+          input.evidence = {
+            sequence: n ? 139 : 132,
+            checkpoint: 'step_user_message',
+          };
+        });
+        await emit(f.state.events);
+        await expect
+          .poll(
+            () => f.page.getByText('已补充到当前任务', { exact: true }).count(),
+            { timeout: 10000 },
+          )
+          .toBe(2);
+        const segments = f.page.locator('[data-steering-segment]');
+        await expect.poll(() => segments.count()).toBe(3);
+        expect(await segments.nth(2).getAttribute('data-working')).toBe('true');
+        expect(await segments.nth(0).getAttribute('data-working')).toBeNull();
+        expect(await segments.nth(1).getAttribute('data-working')).toBeNull();
+        expect(
+          await f.page
+            .getByText('已补充给正在工作的 Rice。', { exact: true })
+            .count(),
+        ).toBe(0);
+        const beforeReads = f.state.artifactReads;
+        const ppt = artifact(11);
+        ppt.version.fileName = '员工版经验沉淀.pptx';
+        ppt.version.format = 'pptx';
+        ppt.object.mediaType =
+          'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+        f.state.items = [ppt];
+        f.state.officePreview = {
+          kind: 'office',
+          format: 'pptx',
+          checksum: ppt.object.checksum,
+          pageCount: 1,
+          pages: [
+            {
+              number: 1,
+              base64:
+                'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII=',
+            },
+          ],
+          formulaCount: 0,
+          formulaErrorCount: 0,
+          formulas: [],
+        };
+        const text = `员工版已完成。\n\n[下载员工版 PPT](/api/v1/files/${ppt.object.id}/download?name=${encodeURIComponent(ppt.version.fileName)})`;
+        f.state.messages[0] = {
+          ...f.state.messages[0]!,
+          status: 'completed',
+          content: { text },
+        };
+        f.state.events.push(
+          event(6, 'tool.completed', { toolCallId: 'after', name: 'write' }),
+          event(7, 'assistant.text.completed', { text }),
+          event(8, 'run.succeeded', {}),
+        );
+        await emit(f.state.events.slice(-3));
+        const link = f.page
+          .locator('[data-chat-scroll]')
+          .getByRole('link', { name: '下载员工版 PPT', exact: true });
+        await link.waitFor();
+        await expect.poll(() => f.state.artifactReads > beforeReads).toBe(true);
+        expect(
+          await f.page.evaluate(
+            ([messageId]) => {
+              const user = document.getElementById(`message-${messageId}`)!;
+              const link = [
+                ...document.querySelectorAll('[data-chat-scroll] a'),
+              ].find((el) => el.textContent === '下载员工版 PPT')!;
+              return Boolean(
+                user.compareDocumentPosition(link) &
+                Node.DOCUMENT_POSITION_FOLLOWING,
+              );
+            },
+            [input2.id],
+          ),
+        ).toBe(true);
+        await link.click();
+        await f.panel
+          .getByRole('img', { name: 'Office 文档第 1 页' })
+          .waitFor();
+        expect(f.context.pages()).toHaveLength(1);
+        await f.page.reload();
+        await f.page
+          .locator(`[data-steering-segment="${input2.id}"]`)
+          .waitFor();
+        await link.waitFor();
+        expect(
+          await f.page.getByText('已补充到当前任务', { exact: true }).count(),
+        ).toBe(2);
+        expect(
+          await f.page
+            .getByText('已补充给正在工作的 Rice。', { exact: true })
+            .count(),
+        ).toBe(0);
+        if (process.env.ALLRICE_STEERING_SCREENSHOTS)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_STEERING_SCREENSHOTS}-${width}-${streamingOutput}.png`,
+          });
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  it('reconciles an uncatalogued delivery on click without leaving the current conversation', async () => {
+    const f = await fixture();
+    try {
+      const a = artifact(11);
+      f.state.reply = `[下载补发报告](/api/v1/files/${a.object.id}/download)`;
+      f.state.files = [
+        {
+          id: a.object.id,
+          fileName: a.version.fileName,
+          mediaType: a.object.mediaType,
+          sizeBytes: a.object.sizeBytes,
+          visibility: 'private',
+          ownedByMe: true,
+          category: 'exports',
+          deliverableVersion: 1,
+        },
+      ];
+      await f.page.reload();
+      const link = f.page
+        .locator('[data-chat-scroll]')
+        .getByRole('link', { name: '下载补发报告', exact: true });
+      await link.waitFor();
+      f.state.items = [a];
+      await link.click();
+      await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
+      expect(f.context.pages()).toHaveLength(1);
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
   it('slides the native dock with the conversation track, restores cached catalogs and respects reduced motion', async () => {
     const f = await fixture({ artifacts: true });
     let release = () => {};

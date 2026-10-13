@@ -9,7 +9,6 @@ import {
   type WorkbenchArtifact,
   type InteractionStatus,
 } from '@allrice/contracts';
-import { SessionReferenceChips } from './session-reference-picker';
 import type { AssistantTreeView } from '@allrice/database';
 
 import {
@@ -17,9 +16,8 @@ import {
   projectWorkProgress,
 } from '../../lib/chatflow/work-progress';
 
-import { AssistantMarkdown } from './assistant-markdown';
+import { AssistantMarkdown, ArtifactLinkResolver } from './assistant-markdown';
 import type { MessageImageSource } from './message-image-cache';
-import { MessageImageGallery } from './attachment-components';
 import type {
   Message,
   RunTrace,
@@ -31,22 +29,19 @@ import { hasBrowserWorkspaceEvents } from '../../lib/chatflow/managed-browser-ta
 import { assistantDelta } from './chatflow-utils';
 import assistantUi from './dsh-upstream/AssistantMarkdown.module.css';
 import chatUi from './dsh-upstream/ChatView.module.css';
-import messageUi from './dsh-upstream/MessageItem.module.css';
 import styles from './dsh-saas.module.css';
 import {
   hasManagedBrowserEvents,
   ManagedBrowserTaskPanel,
 } from './managed-browser-task-panel';
-import { UserQuestionReceipt } from './user-question-receipt';
 import { LocalCommandPanel } from './local-command-panel';
 import { LocalMcpPanel } from './local-mcp-panel';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
-import { WorkProcess } from './work-process';
+import { SteeredWorkProcess } from './steered-work-process';
+import { TranscriptUserMessage } from './transcript-user-message';
 import { AssistantMessageActions } from './message-feedback';
-import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
-import { feedbackTranslate } from './feedback-labels';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
 
@@ -72,6 +67,7 @@ interface ChatTranscriptProps {
   onScrollToBottom: () => void;
   artifacts?: WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
+  onResolveArtifactLink?: (href: string, runId: string) => Promise<boolean>;
 }
 
 export function ChatTranscript({
@@ -96,6 +92,7 @@ export function ChatTranscript({
   onScrollToBottom,
   artifacts = [],
   onOpenArtifact,
+  onResolveArtifactLink,
 }: ChatTranscriptProps) {
   const [downloadFiles, setDownloadFiles] = useState<{
     workspaceId: string;
@@ -150,16 +147,31 @@ export function ChatTranscript({
   const timingByRun = new Map(
     runTimings.map((entry) => [entry.runId, entry.timing]),
   );
+  const assistantRuns = new Set(
+    messages.filter((m) => m.role === 'assistant').map((m) => m.runId),
+  );
+  const adopted = messages.filter(
+    (m) =>
+      m.role === 'user' &&
+      m.steering?.status === 'adopted' &&
+      m.steering.runId &&
+      assistantRuns.has(m.steering.runId),
+  );
+  const embedded = new Set(adopted.map((m) => m.id));
   return (
     <div className={chatUi.root}>
       <div className={chatUi.scroll} data-chat-scroll>
         <div className={chatUi.column} ref={transcriptColumn}>
           {messages
+            .filter((message) => !embedded.has(message.id))
             .filter(
               (message) =>
                 message.role !== 'assistant' ||
                 message.status !== 'completed' ||
                 message.content.text.length > 0 ||
+                adopted.some(
+                  (input) => input.steering?.runId === message.runId,
+                ) ||
                 !!(
                   message.runId &&
                   assistantTrees[message.runId]?.instances.some(
@@ -238,240 +250,167 @@ export function ChatTranscript({
                   key={message.id}
                   id={`message-${message.id}`}
                 >
-                  {message.role === 'user' &&
-                  message.content.interaction?.type ===
-                    'user_question_answer' ? (
-                    <UserQuestionReceipt
-                      answer={message.content.interaction.answer}
-                      createdAt={message.createdAt}
-                      text={message.content.text}
+                  {message.role === 'user' ? (
+                    <TranscriptUserMessage
+                      message={message}
+                      messageImages={messageImages}
                     />
-                  ) : message.role === 'user' &&
-                    message.content.interaction?.type ===
-                      'changeset_request' ? (
-                    <div className={styles.messageMeta}>
-                      <strong>
-                        文件
-                        {message.content.interaction.action.restoreOf
-                          ? '恢复'
-                          : '应用'}
-                        请求 · 尚未授权执行
-                      </strong>
-                      <details>
-                        <summary>查看请求</summary>
-                        <p>{message.content.text}</p>
-                      </details>
-                    </div>
-                  ) : message.role === 'user' &&
-                    message.content.interaction?.type === 'review_response' ? (
-                    <div className={styles.messageMeta}>
-                      <strong>
-                        {message.content.interaction.review.kind ===
-                        'plan_review'
-                          ? '计划已认可 · 不代表动作批准'
-                          : '版本修订请求'}
-                      </strong>
-                      <span>
-                        版本{' '}
-                        {message.content.interaction.review.artifactId.slice(
-                          0,
-                          8,
-                        )}
-                      </span>
-                      <details>
-                        <summary>查看提交内容</summary>
-                        <p>{message.content.text}</p>
-                      </details>
-                    </div>
-                  ) : message.role === 'user' ? (
-                    <div
-                      className={messageUi.userRow}
-                      data-actions-reveal="hover"
-                    >
-                      <div className={messageUi.userStack}>
-                        <SessionReferenceChips
-                          references={message.content.sessionReferences ?? []}
-                        />
-                        {message.content.companyAssets &&
-                          (message.content.companyAssets.rules.length > 0 ||
-                            message.content.companyAssets.templates.length >
-                              0) && (
-                            <details aria-label="本次采用的公司资料">
-                              <summary>
-                                本次公司资料 ·{' '}
-                                {message.content.companyAssets.rules.length}{' '}
-                                条规矩 ·{' '}
-                                {message.content.companyAssets.templates.length}{' '}
-                                项范本
-                              </summary>
-                              {message.content.companyAssets.rules.map(
-                                (ref) => (
-                                  <p key={ref.assetId}>
-                                    规矩：{ref.revision.content.title} · v
-                                    {ref.revision.number}
-                                  </p>
-                                ),
-                              )}
-                              {message.content.companyAssets.templates.map(
-                                (ref) => (
-                                  <div key={ref.assetId}>
-                                    <p>
-                                      范本：{ref.revision.content.title} · v
-                                      {ref.revision.number}
-                                    </p>
-                                    {ref.revision.content.slots.map((slot) => (
-                                      <p key={slot.key}>
-                                        {slot.label}：
-                                        {ref.parameters[slot.key] || '未填写'}
-                                      </p>
-                                    ))}
-                                  </div>
-                                ),
-                              )}
-                            </details>
-                          )}
-                        {messageImages && message.attachments?.length ? (
-                          <MessageImageGallery
-                            attachments={message.attachments}
-                            source={messageImages}
-                          />
-                        ) : null}
-                        <div
-                          className={`${messageUi.bubble} ${styles.userBubble}`}
-                        >
-                          {message.content.text}
-                        </div>
-                      </div>
-                      <MessageIconActions
-                        text={message.content.text}
-                        time={Date.parse(message.createdAt)}
-                        clock="start"
-                        t={feedbackTranslate}
-                      />
-                    </div>
                   ) : (
-                    <div
-                      className={assistantUi.root}
-                      data-actions-reveal="hover"
-                      data-working={
-                        (messageIsRunning &&
-                          (!timing || timing.phase === 'active')) ||
-                        undefined
+                    <ArtifactLinkResolver.Provider
+                      value={
+                        onResolveArtifactLink && message.runId
+                          ? (href) =>
+                              onResolveArtifactLink(href, message.runId!)
+                          : undefined
                       }
                     >
-                      <div className={styles.assistantIdentity}>
-                        <i aria-hidden="true" />
-                        <span>{employeeName}</span>
-                      </div>
-                      <CloudOperationPanel
-                        runId={message.runId ?? ''}
-                        workspaceId={workspaceId}
-                        tenantHeaders={tenantHeaders}
-                        runActive={messageIsRunning}
+                      <div
+                        className={assistantUi.root}
+                        data-actions-reveal="hover"
+                        data-working={
+                          (messageIsRunning &&
+                            !adopted.some(
+                              (m) => m.steering?.runId === message.runId,
+                            ) &&
+                            (!timing || timing.phase === 'active')) ||
+                          undefined
+                        }
                       >
-                        {({ operations, renderOperation, feedback }) => {
-                          const timeline = projectWorkProgress(
-                            traceEvents,
-                            fallbackText,
-                            messageIsRunning,
-                            streamingOutput,
-                            operations,
-                          );
-                          // History text arrives before the native event trace.
-                          // Keep a settled streaming reply in the same process
-                          // frame while its steps and timing are being restored.
-                          const processParts =
-                            timeline.parts ??
-                            (streamingOutput &&
-                            !messageIsRunning &&
-                            message.status === 'completed' &&
-                            message.runId &&
-                            responseText
-                              ? [
-                                  {
-                                    kind: 'reply' as const,
-                                    id: 'history-reply',
-                                    sequence: 0,
-                                    text: responseText,
-                                  },
-                                ]
-                              : undefined);
-                          return (
-                            <>
-                              {feedback}
-                              <WorkProcess
-                                accessibleFiles={accessibleFiles}
-                                items={timeline.items}
-                                parts={processParts}
-                                renderOperation={renderOperation}
-                                artifacts={linkedArtifacts}
-                                onOpenArtifact={onOpenArtifact}
-                                timing={timing}
-                                running={messageIsRunning}
-                                streaming={
-                                  streamingOutput &&
-                                  messageIsRunning &&
-                                  isReplyStreaming(traceEvents)
-                                }
-                                failed={
-                                  message.status === 'failed' ||
-                                  messageRun?.status === 'failed'
-                                }
-                                failureTitle={
-                                  message.applicationFailure ===
-                                  'result_unknown'
-                                    ? '结果待确认'
-                                    : applicationFailure?.title
-                                }
-                                canceled={messageRun?.status === 'canceled'}
-                                traceStatus={trace?.status}
-                                onRetry={() => {
-                                  if (message.runId)
-                                    void onLoadRunTrace(message.runId);
-                                }}
-                                assistantCount={
-                                  assistantState?.children.length ?? 0
-                                }
-                                assistantAttention={
-                                  assistantState?.attention.length ?? 0
-                                }
-                              >
-                                {assistantTree &&
-                                assistantState?.children.length &&
-                                onAssistantChanged &&
-                                onOpenArtifact ? (
-                                  <AssistantRunPanel
-                                    key={`${workspaceId}/${message.runId}`}
-                                    tree={assistantTree}
+                        <div className={styles.assistantIdentity}>
+                          <i aria-hidden="true" />
+                          <span>{employeeName}</span>
+                        </div>
+                        <CloudOperationPanel
+                          runId={message.runId ?? ''}
+                          workspaceId={workspaceId}
+                          tenantHeaders={tenantHeaders}
+                          runActive={messageIsRunning}
+                        >
+                          {({ operations, renderOperation, feedback }) => {
+                            const timeline = projectWorkProgress(
+                              traceEvents,
+                              fallbackText,
+                              messageIsRunning,
+                              streamingOutput,
+                              operations,
+                            );
+                            // History text arrives before the native event trace.
+                            // Keep a settled streaming reply in the same process
+                            // frame while its steps and timing are being restored.
+                            const processParts =
+                              timeline.parts ??
+                              (streamingOutput &&
+                              !messageIsRunning &&
+                              message.status === 'completed' &&
+                              message.runId &&
+                              responseText
+                                ? [
+                                    {
+                                      kind: 'reply' as const,
+                                      id: 'history-reply',
+                                      sequence: 0,
+                                      text: responseText,
+                                    },
+                                  ]
+                                : undefined);
+                            return (
+                              <>
+                                {feedback}
+                                <SteeredWorkProcess
+                                  events={traceEvents}
+                                  messages={adopted.filter(
+                                    (m) => m.steering?.runId === message.runId,
+                                  )}
+                                  messageImages={messageImages}
+                                  employeeName={employeeName}
+                                  accessibleFiles={accessibleFiles}
+                                  items={timeline.items}
+                                  parts={processParts}
+                                  renderOperation={renderOperation}
+                                  artifacts={linkedArtifacts}
+                                  onOpenArtifact={onOpenArtifact}
+                                  timing={timing}
+                                  running={messageIsRunning}
+                                  streaming={
+                                    streamingOutput &&
+                                    messageIsRunning &&
+                                    isReplyStreaming(traceEvents)
+                                  }
+                                  failed={
+                                    message.status === 'failed' ||
+                                    messageRun?.status === 'failed'
+                                  }
+                                  failureTitle={
+                                    message.applicationFailure ===
+                                    'result_unknown'
+                                      ? '结果待确认'
+                                      : applicationFailure?.title
+                                  }
+                                  canceled={messageRun?.status === 'canceled'}
+                                  traceStatus={trace?.status}
+                                  onRetry={() => {
+                                    if (message.runId)
+                                      void onLoadRunTrace(message.runId);
+                                  }}
+                                  assistantCount={
+                                    assistantState?.children.length ?? 0
+                                  }
+                                  assistantAttention={
+                                    assistantState?.attention.length ?? 0
+                                  }
+                                >
+                                  {assistantTree &&
+                                  assistantState?.children.length &&
+                                  onAssistantChanged &&
+                                  onOpenArtifact ? (
+                                    <AssistantRunPanel
+                                      key={`${workspaceId}/${message.runId}`}
+                                      tree={assistantTree}
+                                      workspaceId={workspaceId}
+                                      headers={tenantHeaders}
+                                      onArtifact={onOpenArtifact}
+                                      onChanged={onAssistantChanged}
+                                    />
+                                  ) : null}
+                                </SteeredWorkProcess>
+                                {applicationFailure && (
+                                  <p
+                                    className={styles.failedMessage}
+                                    role="status"
+                                  >
+                                    本轮已结束。{applicationFailure.detail}
+                                  </p>
+                                )}
+                                {message.runId &&
+                                hasManagedBrowserEvents(traceEvents) ? (
+                                  <ManagedBrowserTaskPanel
+                                    runActive={messageIsRunning}
+                                    runId={message.runId}
+                                    tenantHeaders={tenantHeaders}
                                     workspaceId={workspaceId}
-                                    headers={tenantHeaders}
-                                    onArtifact={onOpenArtifact}
-                                    onChanged={onAssistantChanged}
                                   />
                                 ) : null}
-                              </WorkProcess>
-                              {applicationFailure && (
-                                <p
-                                  className={styles.failedMessage}
-                                  role="status"
-                                >
-                                  本轮已结束。{applicationFailure.detail}
-                                </p>
-                              )}
-                              {message.runId &&
-                              hasManagedBrowserEvents(traceEvents) ? (
-                                <ManagedBrowserTaskPanel
-                                  runActive={messageIsRunning}
-                                  runId={message.runId}
-                                  tenantHeaders={tenantHeaders}
-                                  workspaceId={workspaceId}
-                                />
-                              ) : null}
-                              {message.runId &&
-                                hasBrowserWorkspaceEvents(traceEvents) && (
-                                  <BrowserWorkspacePanel
-                                    refreshKey={
-                                      browserRevisions[message.runId] ?? 0
+                                {message.runId &&
+                                  hasBrowserWorkspaceEvents(traceEvents) && (
+                                    <BrowserWorkspacePanel
+                                      refreshKey={
+                                        browserRevisions[message.runId] ?? 0
+                                      }
+                                      runId={message.runId}
+                                      workspaceId={workspaceId}
+                                      tenantHeaders={tenantHeaders}
+                                      runActive={messageIsRunning}
+                                    />
+                                  )}
+
+                                {localCommandsEnabled && message.runId && (
+                                  <LocalCommandPanel
+                                    onServiceChanged={() =>
+                                      setBrowserRevisions((previous) => ({
+                                        ...previous,
+                                        [message.runId!]:
+                                          (previous[message.runId!] ?? 0) + 1,
+                                      }))
                                     }
                                     runId={message.runId}
                                     workspaceId={workspaceId}
@@ -479,85 +418,70 @@ export function ChatTranscript({
                                     runActive={messageIsRunning}
                                   />
                                 )}
-
-                              {localCommandsEnabled && message.runId && (
-                                <LocalCommandPanel
-                                  onServiceChanged={() =>
-                                    setBrowserRevisions((previous) => ({
-                                      ...previous,
-                                      [message.runId!]:
-                                        (previous[message.runId!] ?? 0) + 1,
-                                    }))
-                                  }
-                                  runId={message.runId}
-                                  workspaceId={workspaceId}
-                                  tenantHeaders={tenantHeaders}
-                                  runActive={messageIsRunning}
-                                />
-                              )}
-                              {localMcpEnabled && message.runId && (
-                                <LocalMcpPanel
-                                  runId={message.runId}
-                                  workspaceId={workspaceId}
-                                  tenantHeaders={tenantHeaders}
-                                  runActive={messageIsRunning}
-                                />
-                              )}
-                              {responseText && !processParts ? (
-                                <div
-                                  className={`${assistantUi.body} ${styles.assistantCopy}`}
-                                  data-streaming={
-                                    (messageIsRunning && !!streamedText) ||
-                                    undefined
-                                  }
-                                >
-                                  <AssistantMarkdown
-                                    accessibleFiles={accessibleFiles}
-                                    text={responseText}
-                                    streaming={
-                                      streamingOutput && messageIsRunning
-                                    }
-                                    artifacts={linkedArtifacts}
-                                    onOpenArtifact={onOpenArtifact}
+                                {localMcpEnabled && message.runId && (
+                                  <LocalMcpPanel
+                                    runId={message.runId}
+                                    workspaceId={workspaceId}
+                                    tenantHeaders={tenantHeaders}
+                                    runActive={messageIsRunning}
                                   />
-                                </div>
-                              ) : null}
-                              {message.content.budgetWarning &&
-                              message.status === 'failed' ? (
-                                <small role="status">
-                                  答案已保留。本次任务超过平台内部预期 Token
-                                  预算；真实用量已记录，这不代表 Codex
-                                  周额度耗尽。
-                                </small>
-                              ) : message.status === 'failed' &&
-                                !applicationFailure &&
-                                responseText !== nativeFailure ? (
-                                <small className={styles.failedMessage}>
-                                  {message.errorCode ===
-                                  'ASSISTANT_EXECUTION_UNRESOLVED'
-                                    ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
-                                    : (nativeFailure ?? '这次没有完成。')}
-                                </small>
-                              ) : null}
-                              {onOpenArtifact && message.runId ? (
-                                <ArtifactSummaryCards
-                                  artifacts={linkedArtifacts}
-                                  onOpen={onOpenArtifact}
-                                />
-                              ) : null}
-                            </>
-                          );
-                        }}
-                      </CloudOperationPanel>
-                      {!messageIsRunning && responseText && message.runId ? (
-                        <AssistantMessageActions
-                          messageId={message.id}
-                          text={responseText}
-                          createdAt={message.createdAt}
-                          workMethods={message.workMethods}
-                        />
-                      ) : null}
-                    </div>
+                                )}
+                                {responseText && !processParts ? (
+                                  <div
+                                    className={`${assistantUi.body} ${styles.assistantCopy}`}
+                                    data-streaming={
+                                      (messageIsRunning && !!streamedText) ||
+                                      undefined
+                                    }
+                                  >
+                                    <AssistantMarkdown
+                                      accessibleFiles={accessibleFiles}
+                                      text={responseText}
+                                      streaming={
+                                        streamingOutput && messageIsRunning
+                                      }
+                                      artifacts={linkedArtifacts}
+                                      onOpenArtifact={onOpenArtifact}
+                                    />
+                                  </div>
+                                ) : null}
+                                {message.content.budgetWarning &&
+                                message.status === 'failed' ? (
+                                  <small role="status">
+                                    答案已保留。本次任务超过平台内部预期 Token
+                                    预算；真实用量已记录，这不代表 Codex
+                                    周额度耗尽。
+                                  </small>
+                                ) : message.status === 'failed' &&
+                                  !applicationFailure &&
+                                  responseText !== nativeFailure ? (
+                                  <small className={styles.failedMessage}>
+                                    {message.errorCode ===
+                                    'ASSISTANT_EXECUTION_UNRESOLVED'
+                                      ? '本轮已结束，部分操作的结果仍待核实；不会自动重试。'
+                                      : (nativeFailure ?? '这次没有完成。')}
+                                  </small>
+                                ) : null}
+                                {onOpenArtifact && message.runId ? (
+                                  <ArtifactSummaryCards
+                                    artifacts={linkedArtifacts}
+                                    onOpen={onOpenArtifact}
+                                  />
+                                ) : null}
+                              </>
+                            );
+                          }}
+                        </CloudOperationPanel>
+                        {!messageIsRunning && responseText && message.runId ? (
+                          <AssistantMessageActions
+                            messageId={message.id}
+                            text={responseText}
+                            createdAt={message.createdAt}
+                            workMethods={message.workMethods}
+                          />
+                        ) : null}
+                      </div>
+                    </ArtifactLinkResolver.Provider>
                   )}
                 </div>
               );

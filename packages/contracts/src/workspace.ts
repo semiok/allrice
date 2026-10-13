@@ -115,6 +115,16 @@ export const ChatMessageContentSchema = z
 
 export const ChatMessageSchema = z
   .object({
+    steering: z
+      .object({
+        runId: UuidSchema.nullable(),
+        turnId: z.string(),
+        generation: z.number().int().nonnegative(),
+        status: z.enum(['pending', 'adopted', 'rejected', 'unknown']),
+        sequence: z.number().int().nonnegative().nullable(),
+      })
+      .strict()
+      .optional(),
     workMethods: z.array(WorkMethodSchema).max(11).optional(),
     applicationFailure: McpFailureKindSchema.optional(),
     id: UuidSchema,

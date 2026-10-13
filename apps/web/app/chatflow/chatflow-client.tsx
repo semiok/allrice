@@ -366,14 +366,19 @@ export function ChatFlowClient({
   );
   // New completed turns can add artifacts; opening the panel does not execute tools.
   const artifactHistoryRevision = useRef({ scope: '', revision: '' });
-  useEffect(() => {
-    const revision = history
-      ? `${history.messages.length}/${history.messages.at(-1)?.status}`
+  const artifactRevision =
+    history?.session.id === activeId
+      ? history.messages
+          .filter((message) => message.role === 'assistant')
+          .map((message) => `${message.id}:${message.status}`)
+          .join('|') || 'empty'
       : '';
+  useEffect(() => {
+    const revision = artifactRevision;
     const previous = artifactHistoryRevision.current;
     artifactHistoryRevision.current = { scope: workbench.scope, revision };
-    // The hook already reads on selection. Don't restart that request when
-    // the initial transcript arrives; refresh only subsequent turn changes.
+    // Any assistant can finish while later steering messages are at the tail.
+    // The workbench already reads the initial selection; clicks can reconcile a late file.
     if (
       workbenchEnabled &&
       previous.scope === workbench.scope &&
@@ -382,13 +387,7 @@ export function ChatFlowClient({
       previous.revision !== revision
     )
       void workbench.reload();
-  }, [
-    workbenchEnabled,
-    history?.messages.length,
-    history?.messages.at(-1)?.status,
-    workbench.reload,
-    workbench.scope,
-  ]);
+  }, [workbenchEnabled, artifactRevision, workbench.reload, workbench.scope]);
 
   const {
     loadRunTrace,
@@ -1743,6 +1742,7 @@ export function ChatFlowClient({
                     localCommandsEnabled={localCommandsEnabled}
                     localMcpEnabled={localMcpEnabled}
                     assistantTrees={assistants.trees}
+                    onResolveArtifactLink={workbench.resolveDownloadLink}
                     runTimings={interactions.data?.runTimings}
                     onAssistantChanged={assistants.reload}
                     messages={transcriptMessages}
