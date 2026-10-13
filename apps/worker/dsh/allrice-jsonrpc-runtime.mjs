@@ -950,11 +950,18 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       ? params.nativeTools.filter((name) => typeof name === 'string')
       : [];
     this.nativeTools = new Set(requestedTools);
+    const requestedSkills = Array.isArray(params?.nativeSkills)
+      ? params.nativeSkills.map(nativeSkillSnapshot)
+      : [];
+    this.registerNativeSkills(requestedSkills);
     if (this.assistantBridge) {
       this.governedAssistants = createGovernedAssistantNativeRuntime(
         this.ctx,
         this.assistantBridge,
         {
+          nativeSkillsAvailable: requestedSkills.some(
+            (skill) => skill.invocation.modelInvocable,
+          ),
           onModelWait: (state) => this.modelWaitNotify(state),
           controlTools: requestedTools.filter((name) =>
             name.startsWith('assistant.'),
@@ -968,10 +975,6 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           ? Number(process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS)
           : undefined,
       });
-    const requestedSkills = Array.isArray(params?.nativeSkills)
-      ? params.nativeSkills.map(nativeSkillSnapshot)
-      : [];
-    this.registerNativeSkills(requestedSkills);
     this.registerNativeTools();
     await super.initialize(forwardedParams);
     if (!this.modelErrorNormalization)

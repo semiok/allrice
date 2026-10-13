@@ -1,5 +1,5 @@
 /* global Buffer, process */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -14,6 +14,7 @@ const overload =
   'Our servers are currently overloaded. Please try again later.';
 const generic =
   'An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.';
+const skillContent = '# Synthetic method\nFROZEN_NATIVE_SKILL_BODY_42';
 // Generated test grant; never read ambient credentials or call a remote model.
 const syntheticToken = [
   Buffer.from('{"alg":"none"}').toString('base64url'),
@@ -32,6 +33,8 @@ const syntheticToken = [
 async function scenario({
   failures = [overload],
   toolFirst = false,
+  skillFirst = false,
+  rebind = false,
   settle = true,
   cancel = false,
 } = {}) {
@@ -55,28 +58,31 @@ async function scenario({
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
       const index = requests.length - 1;
+      const firstTool = toolFirst || skillFirst;
       if (
-        !(toolFirst && index === 0) &&
-        failures[index - (toolFirst ? 1 : 0)]
+        !(firstTool && index === 0) &&
+        failures[index - (firstTool ? 1 : 0)]
       ) {
         // This structured wire code is synthetic, not recovered from the
         // historical incidents. pi-ai loses it before the AllRice seam.
         send({
           type: 'error',
           code: 'server_error',
-          message: failures[index - (toolFirst ? 1 : 0)],
+          message: failures[index - (firstTool ? 1 : 0)],
         });
         res.end();
         return;
       }
       const item =
-        toolFirst && index === 0
+        (firstTool && index === 0) || (skillFirst && rebind && index === 2)
           ? {
               type: 'function_call',
-              id: 'fc_synthetic',
-              call_id: 'call_synthetic',
-              name: 'local_fs_list',
-              arguments: JSON.stringify({ path: '.' }),
+              id: `fc_synthetic_${index}`,
+              call_id: `call_synthetic_${index}`,
+              name: skillFirst ? 'skill' : 'local_fs_list',
+              arguments: JSON.stringify(
+                skillFirst ? { name: 'synthetic-method' } : { path: '.' },
+              ),
               status: 'completed',
             }
           : {
@@ -213,6 +219,20 @@ async function scenario({
       model: 'gpt-5.6-luna',
       maxTokens: 64,
       nativeTools: ['local.fs.list'],
+      nativeSkills: skillFirst
+        ? [
+            {
+              id: 'synthetic-method-id',
+              name: 'synthetic-method',
+              description:
+                'Frozen synthetic method for the native loader regression.',
+              content: skillContent,
+              checksum: `sha256:${createHash('sha256').update(skillContent).digest('hex')}`,
+              invocation: { modelInvocable: true, userInvocable: true },
+              requiredToolRefs: ['local.fs.list'],
+            },
+          ]
+        : [],
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
     });
     const sessionId = `synthetic-recovery-${randomUUID()}`;
@@ -239,6 +259,19 @@ async function scenario({
         timeout: 15000,
       })
       .toBe(true);
+    if (rebind) {
+      await client.assistant('finish', { nativeSessionId: sessionId });
+      await client.assistant('bind', {
+        nativeSessionId: sessionId,
+        wireTools: ['local_fs_list'],
+      });
+      await client.prompt(sessionId, 'Load the same frozen method once again.');
+      await expect
+        .poll(() => events().filter((e) => e.type === 'turn/end').length, {
+          timeout: 15000,
+        })
+        .toBe(2);
+    }
     if (serverError) throw serverError;
     return {
       requests,
@@ -256,6 +289,47 @@ async function scenario({
     await rm(root, { recursive: true, force: true });
   }
 }
+
+describe('governed root uses the actual native Skill loader', () => {
+  it('exposes and loads the frozen method before creation and after finish/rebind', async () => {
+    const result = await scenario({
+      skillFirst: true,
+      rebind: true,
+      failures: [],
+    });
+    expect(result.requests).toHaveLength(4);
+    for (const index of [0, 2]) {
+      const tools = result.requests[index].tools.map((tool) => tool.name);
+      expect(tools).toContain('skill');
+      expect(tools).not.toContain('local_process_execute');
+      expect(JSON.stringify(result.requests[index])).toContain(
+        'synthetic-method',
+      );
+      expect(JSON.stringify(result.requests[index + 1])).toContain(
+        'FROZEN_NATIVE_SKILL_BODY_42',
+      );
+    }
+    expect(JSON.stringify(result.requests[0])).not.toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+    const loaded = result.events.filter((e) => e.type === 'tool/result');
+    expect(loaded).toHaveLength(2);
+    for (const event of loaded) {
+      expect(event.data.message.content[0].isError).toBe(false);
+      expect(JSON.stringify(event.data)).toContain(
+        'FROZEN_NATIVE_SKILL_BODY_42',
+      );
+    }
+    expect(result.toolCalls).toHaveLength(0);
+  }, 30000);
+
+  it('keeps an empty native catalog out of the governed root scope', async () => {
+    const result = await scenario({ failures: [] });
+    expect(result.requests[0].tools.map((tool) => tool.name)).not.toContain(
+      'skill',
+    );
+  }, 30000);
+});
 
 describe('AllRice overload recovery through the actual native loop', () => {
   it('retries a model step, retains its prior tool result and never repeats that tool', async () => {
