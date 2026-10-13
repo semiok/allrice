@@ -135,6 +135,13 @@ export const EmployeeContentMutationSchema = z
     z
       .object({
         ...mutationFields,
+        operation: z.literal('restore_draft'),
+        sourceRevisionId: UuidSchema,
+      })
+      .strict(),
+    z
+      .object({
+        ...mutationFields,
         operation: z.enum(['validate', 'activate']),
         candidateRevisionId: UuidSchema,
         candidateDigest: ChecksumSchema,
@@ -258,6 +265,7 @@ export const EmployeeContentRevisionSchema = z
     digest: ChecksumSchema,
     manifest: EmployeeContentManifestSchema,
     changeSummary: z.string(),
+    restoredFromRevisionId: UuidSchema.nullable().optional(),
     createdAt: z.string(),
   })
   .strict();

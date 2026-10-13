@@ -1,6 +1,7 @@
 import { CodexSubscriptionError } from '@allrice/database';
 import {
   DataAccessError,
+  EmployeeAccessBusyError,
   EmployeeHubError,
   EmployeeInstanceError,
   EmployeeContentError,
@@ -14,6 +15,13 @@ import {
 } from '../api-error-response';
 
 export function employeeHubErrorResponse(error: unknown) {
+  if (error instanceof EmployeeAccessBusyError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: '任务正在更新执行状态，本次修改未生效。请稍后重试。',
+      retryable: true,
+    });
   if (error instanceof EmployeeRuntimeContentError)
     return apiProblem({
       status: 409,
@@ -41,9 +49,12 @@ export function employeeHubErrorResponse(error: unknown) {
   if (error instanceof EmployeeInstanceError)
     return apiProblem({
       status: 409,
-      code: 'VERSION_CONFLICT',
+      code:
+        error.code === 'instance_archived' ? 'CONFLICT' : 'VERSION_CONFLICT',
       message:
-        '员工配置已变化，或请求标识被用于不同修改。请读取最新版本后重试。',
+        error.code === 'instance_archived'
+          ? 'AI 员工已归档，可以查看历史；恢复后才能继续工作。'
+          : '员工配置已变化，或请求标识被用于不同修改。请读取最新版本后重试。',
       retryable: false,
     });
   if (error instanceof CodexSubscriptionError)

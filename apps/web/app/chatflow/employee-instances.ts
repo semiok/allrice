@@ -15,7 +15,7 @@ export const sessionEmployeeKey = (
  * instance; older responses still expose one choice per assignment. */
 export function employeeChoices(workspace: Workspace): Employee[] {
   return workspace.employees.flatMap((employee) =>
-    employee.instances?.length
+    employee.instances !== undefined
       ? employee.instances.map((instance) => ({
           ...employee,
           instanceId: instance.id,

@@ -20,6 +20,11 @@ import {
   enqueueRun,
 } from './execution/queue.ts';
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
+import {
+  ensureGeneralEmployeeInstance,
+  changeEmployeeInstanceLifecycle,
+} from './employees/employee-instances.ts';
+import { authenticateSession, createSession } from './identity.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -230,5 +235,38 @@ suite('MET153 durable native waits and queue authority', () => {
     expect(
       (await f.db.begin((tx) => readTaskClock(tx, f.rootRunId)))!.phase,
     ).toBe('terminal');
+  });
+  it('cannot revive a native parked question by restoring its archived employee instance', async () => {
+    const { f, checkpoint, owner } = await setup();
+    await ensureGeneralEmployeeInstance(f.db, f.assignment);
+    const context = await authenticateSession(
+      (await createSession(f.user)).token,
+      { organizationId: f.org, workspaceId: f.workspace },
+    );
+    if (!context) throw Error('fixture_login');
+    await parkNativeQuestion({ ...owner, checkpoint });
+    await changeEmployeeInstanceLifecycle(context, f.assignment, {
+      workspaceId: f.workspace,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      operation: 'archive',
+    });
+    await changeEmployeeInstanceLifecycle(context, f.assignment, {
+      workspaceId: f.workspace,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      operation: 'restore',
+      sourceRevision: 1,
+    });
+    const [job] =
+      await f.db`select cancel_requested_at from allrice_jobs where run_id=${f.rootRunId}`;
+    expect(job!.cancel_requested_at).not.toBeNull();
+    await maintainQueue();
+    expect(
+      (
+        await f.db`select status from allrice_jobs where id=${f.worker.jobId}`
+      )[0]!.status,
+    ).toBe('canceled');
+    expect(await claimNextJob(randomUUID(), 30000)).toBeNull();
   });
 });

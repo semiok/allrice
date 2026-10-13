@@ -2,6 +2,7 @@ import {
   DataAccessError,
   createEmployeeInstance,
   listEmployeeHub,
+  listHistoricalEmployeeInstances,
 } from '@allrice/database';
 import { getRequestContext } from '../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../lib/identity/request-origin';
@@ -14,6 +15,15 @@ export async function GET(request: Request) {
     if (!context) throw new DataAccessError('authentication_required');
     const workspaceId =
       new URL(request.url).searchParams.get('workspaceId') ?? undefined;
+    const query = new URL(request.url).searchParams;
+    if (query.get('view') === 'history')
+      return Response.json(
+        await listHistoricalEmployeeInstances(
+          context,
+          workspaceId ?? context.workspaceId ?? '',
+          query.get('beforeId') ?? undefined,
+        ),
+      );
     const hub = await listEmployeeHub(context, workspaceId);
     return Response.json({
       instances: hub.assignments.flatMap((a) => a.instances ?? []),

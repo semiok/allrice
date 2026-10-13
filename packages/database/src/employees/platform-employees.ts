@@ -1,3 +1,7 @@
+import {
+  cancelEmployeeAccessRuns,
+  employeeAccessTransaction,
+} from './employee-access-cancellation.ts';
 import { acquireDevAdmission, devAdmissionOpen } from '../dev-maintenance.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import {
@@ -1062,7 +1066,7 @@ export async function disablePlatformEmployee(
   const employeeId = UuidSchema.parse(employeeIdInput);
   const { reason } = DisablePlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
+  const result = await employeeAccessTransaction(sql, async (transaction) => {
     const employees = await transaction<{ id: string }[]>`
       select id from allrice_platform_employees
       where id = ${employeeId} and status <> 'archived'
@@ -1090,6 +1094,16 @@ export async function disablePlatformEmployee(
           and workspace_id = ${assignment.workspace_id}
           and employee_id = ${assignment.tenant_employee_id}
       `;
+      await cancelEmployeeAccessRuns(
+        transaction,
+        {
+          organizationId: assignment.organization_id,
+          workspaceId: assignment.workspace_id,
+          employeeId: assignment.tenant_employee_id,
+        },
+        reason,
+        { platformActorLabel: actorLabel },
+      );
       await transaction`
         update allrice_employees
         set status = 'archived', updated_at = now()
@@ -1186,6 +1200,11 @@ export async function savePlatformEmployeeDraft(
       employees[0].current_draft_revision_id !== expectedRevisionId
     )
       throw new Error('platform_employee_publish_snapshot_changed');
+    await assertStableMaterializedEmployeeKey(
+      transaction,
+      employeeId,
+      definition.key,
+    );
     const nextRows = await transaction<{ revision: number }[]>`
       select coalesce(max(revision), 0)::integer + 1 as revision
       from allrice_platform_employee_revisions
@@ -1429,12 +1448,16 @@ export async function compilePlatformEmployee(
   });
 }
 
+function materializedEmployeeKey(platformKey: string) {
+  return platformKey === 'rice' ? 'default-assistant' : platformKey;
+}
+
 function tenantManifest(
   definition: PlatformEmployeeDefinition,
   runtimePackage: ReturnType<typeof buildEmployeeRuntimePackage>,
 ) {
   return employeeManifest({
-    key: definition.key === 'rice' ? 'default-assistant' : definition.key,
+    key: materializedEmployeeKey(definition.key),
     name: definition.name,
     description: definition.description,
     role: definition.identity.role,
@@ -1485,6 +1508,30 @@ function tenantManifest(
   });
 }
 
+async function assertStableMaterializedEmployeeKey(
+  tx: postgres.TransactionSql,
+  employeeId: string,
+  key: string,
+) {
+  const rows =
+    await tx`select e.employee_key, r.definition->>'key' as platform_key
+    from allrice_platform_employee_tenant_assignments d
+    join allrice_platform_employee_revisions r on r.employee_id=d.employee_id and r.id=d.revision_id
+    join allrice_employees e on e.id=d.tenant_employee_id
+      and e.organization_id=d.organization_id and e.workspace_id=d.workspace_id
+    where d.employee_id=${employeeId}`;
+  // Rice retains its tenant alias. Use the deployed immutable definition, not
+  // the current draft: drafts may have changed before the first deployment.
+  if (
+    rows.some(
+      (row) =>
+        row.platform_key !== key ||
+        row.employee_key !== materializedEmployeeKey(key),
+    )
+  )
+    throw new Error('platform_employee_materialized_key_immutable');
+}
+
 export async function materializePlatformEmployeeRevision(
   transaction: postgres.TransactionSql,
   input: {
@@ -1497,6 +1544,11 @@ export async function materializePlatformEmployeeRevision(
     preserveCurrentPolicy?: boolean;
   },
 ) {
+  await assertStableMaterializedEmployeeKey(
+    transaction,
+    input.employeeId,
+    input.definition.key,
+  );
   const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse(
     input.revision.runtime_profile,
   );
@@ -1589,10 +1641,7 @@ export async function materializePlatformEmployeeRevision(
         });
       }
     }
-    const tenantKey =
-      input.definition.key === 'rice'
-        ? 'default-assistant'
-        : input.definition.key;
+    const tenantKey = materializedEmployeeKey(input.definition.key);
     const employees = await transaction<{ id: string }[]>`
       insert into allrice_employees (
         organization_id, workspace_id, employee_key, name, status

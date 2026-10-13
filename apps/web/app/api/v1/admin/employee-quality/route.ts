@@ -2,6 +2,7 @@ import { EmployeeQualityActionInputSchema } from '@allrice/contracts';
 import {
   DataAccessError,
   EmployeeQualityError,
+  EmployeeAccessBusyError,
   createEmployeeEvalSuite,
   getEmployeeQualityDashboard,
   recordEmployeeEvalRun,
@@ -18,6 +19,13 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 function errorResponse(error: unknown) {
+  if (error instanceof EmployeeAccessBusyError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: '任务正在更新执行状态，本次修改未生效。请稍后重试。',
+      retryable: true,
+    });
   if (error instanceof DataAccessError) {
     const status = error.code === 'authentication_required' ? 401 : 403;
     return apiProblem({

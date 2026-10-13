@@ -173,12 +173,18 @@ export async function cancelAssistantRootTransaction(
   rootRunId: string,
   requestId: string,
   reason: 'user_request' | 'budget_exhausted' = 'user_request',
+  nonBlocking = false,
 ) {
   uuid.parse(rootRunId);
   uuid.parse(requestId);
   const [root] =
-    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${rootRunId} for update`;
+    await tx`select root_run_id from allrice_runtime_roots where root_run_id=${rootRunId} for update ${nonBlocking ? tx`nowait` : tx``}`;
   if (!root) return;
+  // Canceling an operation refreshes the task clock, which also updates its
+  // job. Acquire NOWAIT before that indirect write, not only in queue.ts after
+  // descendants have already been canceled.
+  if (nonBlocking)
+    await tx`select id from allrice_jobs where run_id=${rootRunId} for update nowait`;
   await tx`update allrice_runtime_roots set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_reason=coalesce(cancel_reason,${reason}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()) where root_run_id=${rootRunId}`;
   await tx`update allrice_assistant_instances set cancel_request_id=coalesce(cancel_request_id,${requestId}),cancel_requested_at=coalesce(cancel_requested_at,clock_timestamp()),status=case when status in ('completed','partial','failed','canceled') then status else 'cancel_requested' end where root_run_id=${rootRunId}`;
   await tx`update allrice_assistant_messages set status='canceled' where root_run_id=${rootRunId} and status='pending'`;

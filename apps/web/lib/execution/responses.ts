@@ -1,6 +1,7 @@
 import { CodexSubscriptionError } from '@allrice/database';
 import {
   DataAccessError,
+  EmployeeAccessBusyError,
   DevMaintenanceError,
   IdentityError,
   QueueError,
@@ -15,6 +16,8 @@ import {
 } from '../api-error-response';
 
 const publicationConflicts: Readonly<Record<string, string>> = {
+  platform_employee_materialized_key_immutable:
+    '员工已配发，不能更改员工 Key。名称和简介仍可更新。',
   cloud_runner_unavailable:
     '该租户尚无可用的云端计算环境，暂未发布。连接并验证云端沙箱后重试，所选工具会自动配置使用授权。',
   platform_employee_published_revision_immutable:
@@ -33,6 +36,13 @@ const publicationConflicts: Readonly<Record<string, string>> = {
 };
 
 export function executionErrorResponse(error: unknown) {
+  if (error instanceof EmployeeAccessBusyError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message: '任务正在更新执行状态，本次修改未生效。请稍后重试。',
+      retryable: true,
+    });
   if (error instanceof DevMaintenanceError)
     return apiProblem({
       status: 503,

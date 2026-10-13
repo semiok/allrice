@@ -1,3 +1,7 @@
+import {
+  savePlatformEmployeeDraft,
+  publishPlatformEmployee,
+} from './platform-employees.ts';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WorkflowDefinitionSchema } from '@allrice/contracts';
@@ -37,6 +41,7 @@ import { createEmployeeInstance } from './employee-instances.ts';
 import {
   getEffectiveEmployeeContent,
   getEmployeeContentSet,
+  getEmployeeContentHistory,
   mutateEmployeeContent,
 } from './employee-content.ts';
 import {
@@ -409,6 +414,161 @@ suite(
       );
       return { s, ids };
     }
+    it('restores an immutable historical manifest as a new candidate, with current validation and unchanged frozen Runs', async () => {
+      const s = await setup(),
+        t = text('HISTORICAL_REQUIREMENT_73');
+      const first = s.draft({
+        textEdits: [t],
+        manifest: {
+          schemaVersion: 1,
+          common: [{ sourceKind: 'draft_text', contentId: t.contentId }],
+          scenes: [],
+          declaredConflicts: [],
+        },
+      });
+      const original = await enable(s, first),
+        run = await runtimeRun(s);
+      const frozen =
+        await f.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${run.sent.run.id}`;
+      const changed = await enable(
+        s,
+        s.draft({ expectedRevision: original.revision }),
+      );
+      const input = {
+        ...s.base,
+        operation: 'restore_draft' as const,
+        requestId: randomUUID(),
+        expectedRevision: changed.revision,
+        sourceRevisionId: original.candidate.id,
+      };
+      const restored = await mutateEmployeeContent(s.a, input);
+      expect(restored.candidate.id).not.toBe(original.candidate.id);
+      expect(restored.candidate.digest).toBe(original.candidate.digest);
+      expect(restored.active).toEqual(changed.active);
+      expect(restored.validation).toBeNull();
+      expect(await mutateEmployeeContent(s.a, input)).toEqual(restored);
+      await expect(
+        mutateEmployeeContent(s.a, action(input, restored, 'activate')),
+      ).rejects.toMatchObject({ code: 'validation_required' });
+      const validated = await mutateEmployeeContent(
+        s.a,
+        action(input, restored, 'validate'),
+      );
+      expect(validated.validation?.valid).toBe(true);
+      const active = await mutateEmployeeContent(
+        s.a,
+        action(input, validated, 'activate'),
+      );
+      expect(active.active).toEqual(restored.candidate);
+      expect(
+        (await getEmployeeContentSet(s.a, s.base.setId)).set.active
+          ?.restoredFromRevisionId,
+      ).toBe(original.candidate.id);
+      const history = await getEmployeeContentHistory(s.a, s.base.setId);
+      expect(history.revisions.map((r) => r.id)).toEqual([
+        restored.candidate.id,
+        changed.candidate.id,
+        original.candidate.id,
+      ]);
+      expect(
+        (
+          await getEmployeeContentHistory(
+            s.a,
+            s.base.setId,
+            history.revisions[1]!.number,
+          )
+        ).revisions.map((r) => r.id),
+      ).toEqual([original.candidate.id]);
+      await expect(
+        getEmployeeContentHistory(s.b, s.base.setId),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(
+        await f.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${run.sent.run.id}`,
+      ).toEqual(frozen);
+      await assertEmployeeContentContext(run.scope, run.runtime.generationId);
+      await run.finish();
+    });
+    it('refuses restore from another set or an explicitly invalidated publication', async () => {
+      const s = await setup(),
+        other = await setup(),
+        original = await enable(s, s.draft()),
+        foreign = await enable(other, other.draft());
+      const saved = await mutateEmployeeContent(
+        s.a,
+        s.draft({ expectedRevision: original.revision }),
+      );
+      const validated = await mutateEmployeeContent(
+        s.a,
+        action(s.draft(), saved, 'validate'),
+      );
+      const current = await mutateEmployeeContent(s.a, {
+        ...action(s.draft(), validated, 'activate'),
+        invalidatePrevious: true,
+      });
+      const input = {
+        ...s.base,
+        operation: 'restore_draft',
+        requestId: randomUUID(),
+        expectedRevision: current.revision,
+        sourceRevisionId: original.candidate.id,
+      };
+      await expect(mutateEmployeeContent(s.a, input)).rejects.toMatchObject({
+        code: 'source_changed',
+      });
+      await expect(
+        mutateEmployeeContent(s.a, {
+          ...input,
+          sourceRevisionId: foreign.candidate.id,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(
+        (await getEmployeeContentHistory(s.a, s.base.setId)).revisions.find(
+          (r) => r.id === original.candidate.id,
+        )?.invalidatedAt,
+      ).toEqual(expect.any(String));
+      expect(
+        (await getEmployeeContentSet(s.a, s.base.setId)).set.revision,
+      ).toBe(current.revision);
+    });
+    it('does not regain source access by restoring a formerly valid manifest after its binding is withdrawn', async () => {
+      const s = await setup(),
+        k = await knowledge(s, 'Historical knowledge');
+      const original = await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [k.ref],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const latest = await enable(
+        s,
+        s.draft({ expectedRevision: original.revision }),
+      );
+      await f.db`update allrice_employee_knowledge_bindings set enabled=false where id=${k.bindingId}`;
+      const input = {
+        ...s.base,
+        operation: 'restore_draft' as const,
+        requestId: randomUUID(),
+        expectedRevision: latest.revision,
+        sourceRevisionId: original.candidate.id,
+      };
+      const restored = await mutateEmployeeContent(s.a, input);
+      const validated = await mutateEmployeeContent(
+        s.a,
+        action(input, restored, 'validate'),
+      );
+      expect(validated.validation?.valid).toBe(false);
+      expect(
+        (await getEmployeeContentSet(s.a, s.base.setId)).sources[0],
+      ).toMatchObject({ available: false });
+      await expect(
+        mutateEmployeeContent(s.a, action(input, validated, 'activate')),
+      ).rejects.toMatchObject({ code: 'validation_required' });
+    });
     it('loads one exact scene lazily; repeated gets preserve a receipt; following Runs choose independently and old leases cannot read', async () => {
       const { s, ids } = await sceneSetup(),
         run = await runtimeRun(s),
@@ -1868,6 +2028,67 @@ suite(
           (x) => x.reference.contentId === procedure.contentId,
         )?.body,
       ).toBe(procedure.body);
+    });
+    it('preserves company, department and personal bindings across a template upgrade while frozen Runs retain their old version', async () => {
+      const s = await setup(),
+        sets = [];
+      for (const scope of ['company', 'department', 'personal'] as const) {
+        const ownership =
+          scope === 'personal'
+            ? s.base.ownership
+            : scope === 'department'
+              ? {
+                  scope,
+                  organizationId: s.company.organizationId,
+                  departmentId: s.dept.id,
+                }
+              : { scope, organizationId: s.company.organizationId };
+        const target =
+          scope === 'personal'
+            ? s.base.target
+            : { kind: 'employee' as const, employeeId: s.employeeId };
+        const input = s.draft({ setId: randomUUID(), ownership, target });
+        const receipt = await enable(s, input);
+        sets.push(receipt.setId);
+      }
+      const original = await runtimeRun(s),
+        before =
+          await f.db`select execution_snapshot::text,prompt_snapshot::text from allrice_employee_runs where run_id=${original.sent.run.id}`;
+      const draft = await savePlatformEmployeeDraft(publication.employeeId, {
+        definition: {
+          ...publication.definition,
+          description: 'Synthetic template V2',
+        },
+        expectedRevisionId: publication.revisionId,
+      });
+      await publication.preview();
+      expect(
+        (
+          await publishPlatformEmployee(publication.employeeId, {
+            scope: 'assigned',
+            expectedRevisionId: draft!.currentDraft!.id,
+          })
+        ).valid,
+      ).toBe(true);
+      const effective = await getEffectiveEmployeeContent(s.a, s.instance.id);
+      expect(effective.employeeId).toBe(s.employeeId);
+      expect(effective.layers.map((x) => x.id).sort()).toEqual(sets.sort());
+      await assertEmployeeContentContext(
+        original.scope,
+        original.runtime.generationId,
+      );
+      await original.finish();
+      const next = await runtimeRun(s, original.scope.sessionId);
+      const snapshot = next.resolved.executionSnapshot;
+      if (snapshot?.schemaVersion !== 2) throw Error('Expected v2 snapshot');
+      expect(snapshot.instance?.id).toBe(s.instance.id);
+      expect(snapshot.instance?.source.employeeVersionId).not.toBe(
+        s.instance.source.employeeVersionId,
+      );
+      expect(
+        await f.db`select execution_snapshot::text,prompt_snapshot::text from allrice_employee_runs where run_id=${original.sent.run.id}`,
+      ).toEqual(before);
+      await next.finish();
     });
   },
 );

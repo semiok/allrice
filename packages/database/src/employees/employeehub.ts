@@ -1,3 +1,7 @@
+import {
+  cancelEmployeeAccessRuns,
+  employeeAccessTransaction,
+} from './employee-access-cancellation.ts';
 import { assertSessionReferencesReadable } from '../workspace/session-references.ts';
 import { readEmployeeOrganizationContext } from './organization-context.ts';
 import { projectEmployeeTaskSuggestions } from './task-suggestions.ts';
@@ -801,7 +805,7 @@ export async function manageEmployeeAssignments(
   const actorId = await requireEmployeeAdmin(context, workspaceId);
   const userIds = [...new Set(update.userIds)].sort();
   const sql = getDatabase();
-  await sql.begin(async (transaction) => {
+  await employeeAccessTransaction(sql, async (transaction) => {
     await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${context.organizationId}:${workspaceId}`},0))`;
     const employees = await transaction<
       {
@@ -863,6 +867,17 @@ export async function manageEmployeeAssignments(
               and user_id not in ${transaction(userIds)}
             returning user_id
           `;
+    await cancelEmployeeAccessRuns(
+      transaction,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        employeeId: employee.id,
+        inactiveAssignmentsOnly: true,
+      },
+      '管理员已移除本人的 AI 员工',
+      context,
+    );
     for (const assignedUserId of userIds) {
       await transaction`
         insert into allrice_employee_assignments (
@@ -939,7 +954,7 @@ export async function updateEmployeeStatus(
   const actorId = await requireEmployeeAdmin(context, workspaceId);
   const employeeId = UuidSchema.parse(employeeIdInput);
   const sql = getDatabase();
-  await sql.begin(async (transaction) => {
+  await employeeAccessTransaction(sql, async (transaction) => {
     await transaction`select pg_advisory_xact_lock(hashtextextended(${`employee-deployments:${context.organizationId}:${workspaceId}`},0))`;
     const employees = await transaction<{ id: string; employee_key: string }[]>`
       select id, employee_key from allrice_employees
@@ -978,6 +993,17 @@ export async function updateEmployeeStatus(
         returning user_id
       `
         : [];
+    if (update.status === 'archived')
+      await cancelEmployeeAccessRuns(
+        transaction,
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          employeeId: employee.id,
+        },
+        '管理员已停用 AI 员工',
+        context,
+      );
     for (const assignment of removed) {
       await transaction`
         update allrice_employee_assignments rice

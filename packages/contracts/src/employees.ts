@@ -151,6 +151,8 @@ export type EmployeeInstanceSnapshot = z.infer<
 export const EmployeeInstanceSchema = EmployeeInstanceSnapshotSchema.extend({
   createdAt: TimestampSchema,
   updatedAt: TimestampSchema,
+  // Lifecycle belongs to the current instance, not an old Run's frozen profile.
+  archivedAt: TimestampSchema.nullable().optional(),
 }).strict();
 export type EmployeeInstance = z.infer<typeof EmployeeInstanceSchema>;
 
@@ -169,6 +171,37 @@ export const UpdateEmployeeInstanceInputSchema = z
     expectedRevision: z.number().int().positive(),
     requestId: UuidSchema,
     profile: EmployeeInstanceProfileSchema,
+  })
+  .strict();
+
+const instanceLifecycleFields = {
+  workspaceId: UuidSchema,
+  expectedRevision: z.number().int().positive(),
+  requestId: UuidSchema,
+};
+export const EmployeeInstanceLifecycleInputSchema = z.discriminatedUnion(
+  'operation',
+  [
+    z
+      .object({ ...instanceLifecycleFields, operation: z.literal('archive') })
+      .strict(),
+    z
+      .object({
+        ...instanceLifecycleFields,
+        operation: z.literal('restore'),
+        sourceRevision: z.number().int().positive(),
+      })
+      .strict(),
+  ],
+);
+export const EmployeeInstanceRevisionSchema = z
+  .object({
+    revision: z.number().int().positive(),
+    operation: z.enum(['create', 'update', 'archive', 'restore']),
+    profile: EmployeeInstanceProfileSchema,
+    archivedAt: TimestampSchema.nullable(),
+    restoredFromRevision: z.number().int().positive().nullable(),
+    createdAt: TimestampSchema,
   })
   .strict();
 

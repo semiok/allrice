@@ -73,6 +73,7 @@ function revisionDto(row: ContentRevisionRow) {
     digest: row.digest,
     manifest: row.manifest,
     changeSummary: row.change_summary,
+    restoredFromRevisionId: row.restored_from_revision_id,
     createdAt: row.created_at.toISOString(),
   };
 }
@@ -486,15 +487,31 @@ export async function mutateEmployeeContent(
     let candidate: ContentRevisionRow,
       validation: EmployeeContentValidation | null = null;
     let active = await readRevision(tx, row.active_revision_id);
-    if (input.operation === 'save_draft') {
-      const manifest = await saveTextEdits(context, input, tx);
+    if (
+      input.operation === 'save_draft' ||
+      input.operation === 'restore_draft'
+    ) {
+      let manifest: EmployeeContentManifest;
+      if (input.operation === 'save_draft')
+        manifest = await saveTextEdits(context, input, tx);
+      else {
+        const source = await readRevision(tx, input.sourceRevisionId);
+        if (!source || source.set_id !== row.id)
+          throw new DataAccessError('not_found');
+        const [invalidated] =
+          await tx`select revision_id from allrice_employee_content_publications
+          where set_id=${row.id} and revision_id=${source.id} and invalidated_at is not null`;
+        if (invalidated) throw new EmployeeContentError('source_changed');
+        manifest = source.manifest;
+      }
       const id = randomUUID(),
         digest = runtimePolicyDigest(manifest);
       const [revision] = await tx<
         ContentRevisionRow[]
       >`insert into allrice_employee_content_revisions
-        (id,set_id,number,manifest,digest,change_summary,created_by)
-        values(${id},${row.id},${next},${tx.json(manifest)},${digest},${input.changeSummary},${context.actor.id}) returning *`;
+        (id,set_id,number,manifest,digest,change_summary,created_by,restored_from_revision_id)
+        values(${id},${row.id},${next},${tx.json(manifest)},${digest},${input.changeSummary},${context.actor.id},
+          ${input.operation === 'restore_draft' ? input.sourceRevisionId : null}) returning *`;
       candidate = revision!;
     } else {
       const saved = await readRevision(tx, row.candidate_revision_id);
@@ -647,6 +664,50 @@ export async function getEmployeeContentSet(
       );
     return { set, sources: sources.map((s) => s.dto) };
   });
+}
+
+/** Maintainer history contains immutable reference indexes, never source bodies.
+ * Reading a source or enabling a restored candidate still requires current ACL. */
+export async function getEmployeeContentHistory(
+  context: RequestContext,
+  idInput: string,
+  beforeRevision?: number,
+) {
+  const id = UuidSchema.parse(idInput);
+  if (
+    beforeRevision !== undefined &&
+    (!Number.isSafeInteger(beforeRevision) || beforeRevision < 1)
+  )
+    throw new EmployeeContentError('version_conflict');
+  return getDatabase().begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      const [row] = await tx<
+        ContentSetRow[]
+      >`select * from allrice_employee_content_sets
+      where id=${id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
+      if (!row) throw new DataAccessError('not_found');
+      const access = await getContentAccess(context, contentOwnership(row), tx);
+      if (!access.canMaintain) throw new DataAccessError('not_found');
+      await resolveTarget(context, contentTarget(row), tx, false);
+      const rows = await tx<
+        (ContentRevisionRow & { invalidated_at: Date | null })[]
+      >`
+      select r.*,p.invalidated_at from allrice_employee_content_revisions r
+      left join allrice_employee_content_publications p on p.set_id=r.set_id and p.revision_id=r.id
+      where r.set_id=${id} ${beforeRevision === undefined ? tx`` : tx`and r.number<${beforeRevision}`}
+      order by r.number desc limit 101`;
+      return {
+        setId: id,
+        revision: row.revision,
+        revisions: rows.slice(0, 100).map((r) => ({
+          ...revisionDto(r),
+          invalidatedAt: r.invalidated_at?.toISOString() ?? null,
+        })),
+        nextBeforeRevision: rows.length > 100 ? rows[99]!.number : null,
+      };
+    },
+  );
 }
 
 export async function getEffectiveEmployeeContent(

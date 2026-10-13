@@ -2,6 +2,7 @@ import {
   DataAccessError,
   IdentityError,
   TenantEmployeeError,
+  EmployeeAccessBusyError,
   listOrganizationAiAssignments,
   changeOrganizationAiAssignments,
 } from '@allrice/database';
@@ -67,6 +68,9 @@ export async function organizationAssignmentsHttp(
     } else if (error instanceof IdentityError) {
       status = 403;
       code = 'AUTHORIZATION_DENIED';
+    } else if (error instanceof EmployeeAccessBusyError) {
+      status = 409;
+      code = 'employee_access_busy';
     } else if (error instanceof TenantEmployeeError) {
       status = 409;
       code = error.code;

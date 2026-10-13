@@ -3,5 +3,6 @@ export * from './employee-config.ts';
 export * from './employee-quality.ts';
 export * from './employeehub.ts';
 export * from './employee-instances.ts';
+export { EmployeeAccessBusyError } from './employee-access-cancellation.ts';
 export * from './platform-employees.ts';
 export { EmployeePublicationTargetError } from './publication-targets.ts';
