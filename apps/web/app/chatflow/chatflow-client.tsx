@@ -1,4 +1,10 @@
 'use client';
+
+import {
+  employeeChoices,
+  employeeChoiceId,
+  employeeChoiceProfile,
+} from './employee-instances';
 import { useSessionArchive } from './use-session-archive';
 import archiveCss from './session-archive.module.css';
 
@@ -997,7 +1003,10 @@ export function ChatFlowClient({
   }
   function startEmployeeSession(assignmentId: string) {
     if (
-      !workspace?.employees.some((employee) => employee.id === assignmentId)
+      !workspace ||
+      !employeeChoices(workspace).some(
+        (employee) => employeeChoiceId(employee) === assignmentId,
+      )
     ) {
       setError('这位员工已不在当前工作区，请重新选择。');
       return;
@@ -1031,10 +1040,15 @@ export function ChatFlowClient({
   const activeEmployee = activeSession
     ? employeeForSession(workspace, activeSession)
     : newSessionEmployee;
-  const activeEmployeeProfile = workspace.employeeProfiles.find(
-    (profile) => profile.assignmentId === activeEmployee?.id,
+  const activeEmployeeProfile = employeeChoiceProfile(
+    workspace,
+    activeEmployee ? employeeChoiceId(activeEmployee) : undefined,
   );
   const activeEmployeeName =
+    (activeEmployee?.instanceId
+      ? (activeEmployeeProfile?.name ??
+        activeEmployee.currentVersion.manifest.name)
+      : undefined) ??
     activeEmployee?.versions.find(
       (version) => version.id === activeSession?.employeeVersionId,
     )?.manifest.name ??
@@ -1469,9 +1483,12 @@ export function ChatFlowClient({
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;
           if (assignmentId) startEmployeeSession(assignmentId);
-          else if (workspace.employees.length === 1)
-            startEmployeeSession(workspace.employees[0]!.id);
-          else if (workspace.employees.length > 1) setEmployeePickerOpen(true);
+          else if (employeeChoices(workspace).length === 1)
+            startEmployeeSession(
+              employeeChoiceId(employeeChoices(workspace)[0]!),
+            );
+          else if (employeeChoices(workspace).length > 1)
+            setEmployeePickerOpen(true);
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
@@ -1537,7 +1554,9 @@ export function ChatFlowClient({
                         onClick={() => {
                           if (!confirmSessionNavigation()) return;
                           if (activeEmployee)
-                            startEmployeeSession(activeEmployee.id);
+                            startEmployeeSession(
+                              employeeChoiceId(activeEmployee),
+                            );
                         }}
                         type="button"
                       >
@@ -1888,9 +1907,7 @@ export function ChatFlowClient({
         onClose={() => setEmployeeDetailsOpen(false)}
         open={employeeDetailsOpen}
         profile={
-          workspace.employeeProfiles.find(
-            (profile) => profile.assignmentId === detailsAssignmentId,
-          ) ??
+          employeeChoiceProfile(workspace, detailsAssignmentId ?? undefined) ??
           activeEmployeeProfile ??
           null
         }

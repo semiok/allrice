@@ -152,6 +152,7 @@ export const ChatSessionSchema = z
     employeeAssignmentId: UuidSchema,
     employeeVersionId: UuidSchema,
     title: z.string().min(1).max(160),
+    employeeInstanceId: UuidSchema.optional(),
     visibility: VisibilitySchema,
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
@@ -164,6 +165,7 @@ export const CreateChatSessionInputSchema = z
     workspaceId: UuidSchema,
     employeeAssignmentId: UuidSchema.optional(),
     employeeVersionId: UuidSchema.optional(),
+    employeeInstanceId: UuidSchema.optional(),
     title: z.string().trim().min(1).max(160).default('New session'),
   })
   .strict();

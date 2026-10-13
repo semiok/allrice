@@ -5,6 +5,12 @@ import {
   employeeSessionPreview,
 } from './employee-navigation';
 import type { Session, Workspace } from './chatflow-types';
+import { EmployeeInstanceSchema } from '@allrice/contracts';
+import {
+  employeeChoice,
+  employeeChoiceId,
+  employeeChoices,
+} from './employee-instances';
 
 const employee = (id: string) => ({
   id,
@@ -34,6 +40,73 @@ const session = (id: string, assignmentId: string): Session => ({
 });
 
 describe('Allrice employee projection into the native DSH tree', () => {
+  it('keeps multiple instances of the same assignment separate in selection, counts and session history', () => {
+    const assignmentId = '00000000-0000-4000-8000-000000000001';
+    const customId = '00000000-0000-4000-8000-000000000002';
+    const source = {
+      kind: 'tenant_version',
+      employeeVersionId: '00000000-0000-4000-8000-000000000003',
+    };
+    const instances = [assignmentId, customId].map((id, n) =>
+      EmployeeInstanceSchema.parse({
+        id,
+        assignmentId,
+        organizationId: assignmentId,
+        workspaceId: assignmentId,
+        ownerId: assignmentId,
+        kind: n ? 'custom' : 'general',
+        revision: 1,
+        profile: n ? { name: 'Weekly reviewer' } : {},
+        creationSource: source,
+        source,
+        createdAt: '2026-10-13T00:00:00Z',
+        updatedAt: '2026-10-13T00:00:00Z',
+      }),
+    );
+    const view: Workspace = {
+      ...workspace,
+      employees: [{ ...employee(assignmentId), isDefault: true, instances }],
+    };
+    expect(
+      employeeChoices(view).map((e) => [
+        employeeChoiceId(e),
+        e.id,
+        e.isDefault,
+      ]),
+    ).toEqual([
+      [assignmentId, assignmentId, true],
+      [customId, assignmentId, false],
+    ]);
+    expect(employeeChoice(view, customId)?.currentVersion.manifest.name).toBe(
+      'Weekly reviewer',
+    );
+    const original = session('general-session', assignmentId);
+    const custom = {
+      ...session('custom-session', assignmentId),
+      employeeInstanceId: customId,
+    };
+    const groups = employeeGroups(
+      view,
+      [original, custom],
+      custom.id,
+      {},
+      'default',
+      [
+        {
+          employeeAssignmentId: assignmentId,
+          employeeInstanceId: customId,
+          employeeName: 'Weekly reviewer',
+          count: 9,
+        },
+      ],
+    );
+    expect(groups.map((g) => [g.key, g.sessionCount])).toEqual([
+      [assignmentId, 1],
+      [customId, 9],
+    ]);
+    expect(groups[1]?.sessions.map((s) => s.id)).toEqual(['custom-session']);
+    expect(groups[1]?.label).toBe('Weekly reviewer');
+  });
   it('keeps revoked history with its actual assignment and frozen identity', () => {
     const groups = employeeGroups(
       workspace,

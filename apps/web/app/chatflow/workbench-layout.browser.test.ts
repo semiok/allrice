@@ -720,7 +720,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             (filter === 'only' ? !!item.archivedAt : !item.archivedAt),
         );
         const offset = Number(url.searchParams.get('cursor') ?? 0);
-        const employeeId = url.searchParams.get('employeeAssignmentId');
+        const employeeId =
+          url.searchParams.get('employeeInstanceId') ??
+          url.searchParams.get('employeeAssignmentId');
         if (!employeeId) {
           state.sessionListRequests++;
           if (state.sessionListDelay) await state.sessionListDelay;
@@ -741,21 +743,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .filter(
             ({ item, index }) =>
               index >= offset &&
-              (!employeeId || item.employeeAssignmentId === employeeId),
+              (!employeeId ||
+                (item.employeeInstanceId ?? item.employeeAssignmentId) ===
+                  employeeId),
           );
         const visible = eligible.slice(0, 30);
         const groups = new Map<
           string,
-          { employeeAssignmentId: string; employeeName: string; count: number }
+          {
+            employeeAssignmentId: string;
+            employeeInstanceId: string;
+            employeeName: string;
+            count: number;
+          }
         >();
         for (const item of records) {
-          const group = groups.get(item.employeeAssignmentId) ?? {
+          const key = item.employeeInstanceId ?? item.employeeAssignmentId;
+          const group = groups.get(key) ?? {
             employeeAssignmentId: item.employeeAssignmentId,
+            employeeInstanceId: key,
             employeeName: item.employeeName ?? 'Rice',
             count: 0,
           };
           group.count++;
-          groups.set(item.employeeAssignmentId, group);
+          groups.set(key, group);
         }
         return answer({
           sessions: visible.map(({ item }) => item),

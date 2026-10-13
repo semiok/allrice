@@ -97,6 +97,26 @@ export async function assertWorkbenchSession(
   UuidSchema.parse(sessionId);
   if (context.actor.type !== 'user' || !context.workspaceId)
     fail('identity_denied');
+  // Identity precedes Session locks, matching task admission and maintenance
+  // writes. Taking Session first can deadlock with an enqueue that has locked
+  // the user to allocate its policy version.
+  const organizations =
+    await db`select id from allrice_organizations where id=${context.organizationId} and archived_at is null for share`;
+  const workspaces =
+    await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null for share`;
+  const users =
+    await db`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
+  const memberships = await db<
+    { role: string }[]
+  >`select role from allrice_memberships where organization_id=${context.organizationId} and user_id=${context.actor.id}
+    and active and (workspace_id is null or workspace_id=${context.workspaceId}) order by id for share`;
+  if (
+    !users.length ||
+    !organizations.length ||
+    !workspaces.length ||
+    !memberships.some((m) => !write || ['admin', 'member'].includes(m.role))
+  )
+    fail('identity_denied');
   const [session] =
     lock === 'share'
       ? await db<{ id: string }[]>`select id from allrice_chat_sessions
@@ -106,23 +126,6 @@ export async function assertWorkbenchSession(
     where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and owner_id=${context.actor.id} and (${!write} or archived_at is null) for update`;
   if (!session) fail('artifact_not_found');
-  const users =
-    await db`select id from allrice_users where id=${context.actor.id} and status='active' for share`;
-  const organizations =
-    await db`select id from allrice_organizations where id=${context.organizationId} and archived_at is null for share`;
-  const workspaces =
-    await db`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} and archived_at is null for share`;
-  const memberships = await db<
-    { role: string }[]
-  >`select role from allrice_memberships where organization_id=${context.organizationId} and user_id=${context.actor.id}
-    and active and (workspace_id is null or workspace_id=${context.workspaceId}) for share`;
-  if (
-    !users.length ||
-    !organizations.length ||
-    !workspaces.length ||
-    !memberships.some((m) => !write || ['admin', 'member'].includes(m.role))
-  )
-    fail('identity_denied');
 }
 
 interface ArtifactRow {

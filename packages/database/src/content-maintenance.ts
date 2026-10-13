@@ -12,22 +12,32 @@ import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
+type ContentIdentity = Pick<
+  RequestContext,
+  'actor' | 'organizationId' | 'workspaceId'
+> &
+  Partial<Pick<RequestContext, 'sessionId'>>;
 
 /** Never cache this principal in a Session/Run or trust context.memberships.
  * A new read resolves current membership, department and maintenance level.
  * Writes call this inside their transaction, after any storage-quota gate and
  * before locking content. SHARE locks serialize with revocation/profile edits. */
 export async function readContentPrincipal(
-  context: RequestContext,
+  context: ContentIdentity,
   sql: Sql = getDatabase(),
-  lockForWrite = false,
+  lockForWrite: boolean | 'update_user' = false,
 ): Promise<ContentPrincipal | null> {
   if (context.actor.type !== 'user') return null;
   if (lockForWrite) {
     await sql`select id from allrice_organizations where id=${context.organizationId} for share`;
     if (context.workspaceId)
       await sql`select id from allrice_workspaces where id=${context.workspaceId} and organization_id=${context.organizationId} for share`;
-    await sql`select id from allrice_users where id=${context.actor.id} for share`;
+    if (lockForWrite === 'update_user')
+      // Serialize policy version allocation while allowing FK KEY SHARE from
+      // publication. No user key is changed by admission.
+      await sql`select id from allrice_users where id=${context.actor.id} for no key update`;
+    else
+      await sql`select id from allrice_users where id=${context.actor.id} for share`;
     if (context.sessionId)
       await sql`select id from allrice_sessions where id=${context.sessionId} and user_id=${context.actor.id} for share`;
     await sql`select id from allrice_memberships where organization_id=${context.organizationId} and user_id=${context.actor.id} and active and (workspace_id is null or workspace_id=${context.workspaceId}) order by id for share`;

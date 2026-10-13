@@ -9,6 +9,11 @@ import {
 } from './employee-navigation';
 import css from './employee-sidebar.module.css';
 import dialog from './compact-dialog.module.css';
+import {
+  employeeChoices,
+  employeeChoiceId,
+  employeeChoiceProfile,
+} from './employee-instances';
 
 export function EmployeePickerDialog({
   workspace,
@@ -30,16 +35,17 @@ export function EmployeePickerDialog({
       initialFocusSelector="[data-default-employee='true']"
     >
       <div className={css.picker}>
-        {workspace.employees.map((employee, index) => {
-          const profile = workspace.employeeProfiles.find(
-            (item) => item.assignmentId === employee.id,
+        {employeeChoices(workspace).map((employee, index) => {
+          const profile = employeeChoiceProfile(
+            workspace,
+            employeeChoiceId(employee),
           );
           const manifest = employee.currentVersion.manifest;
           const description = employeeIntroduction(employee, profile);
           return (
             <button
               type="button"
-              key={employee.id}
+              key={employeeChoiceId(employee)}
               className={css.pickerCard}
               data-accent={employeeAccent(
                 manifest.name,
@@ -51,10 +57,10 @@ export function EmployeePickerDialog({
               )}
               data-default-employee={
                 employee.isDefault ||
-                (!workspace.employees.some((item) => item.isDefault) &&
+                (!employeeChoices(workspace).some((item) => item.isDefault) &&
                   index === 0)
               }
-              onClick={() => onSelect(employee.id)}
+              onClick={() => onSelect(employeeChoiceId(employee))}
             >
               <span className={css.pickerInitial} aria-hidden="true">
                 {manifest.name.slice(0, 1)}
