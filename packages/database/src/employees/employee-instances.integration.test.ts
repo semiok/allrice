@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
+import * as folderTriggers from '../folder-triggers.ts';
+import {
+  createAutomation,
+  claimDueAutomations,
+} from '../execution/automation.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { assertWorkbenchSession } from '../artifact-review.ts';
@@ -467,6 +472,41 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       createEmployeeInstance(f.a.context, f.input('Revoked login')),
     ).rejects.toMatchObject({ code: 'authorization_denied' });
   });
+  it('keeps scheduled work independent of browser logins while rechecking current membership', async () => {
+    const f = await setup();
+    const rule = await createAutomation(f.a.context, {
+      workspaceId: f.a.workspaceId,
+      employeeAssignmentId: f.assignment.id,
+      name: 'Synthetic daily task',
+      prompt: 'Return the synthetic count',
+      schedule: { frequency: 'daily', time: '09:00', timezone: 'UTC' },
+    });
+    await revokeSession(f.a.login.token);
+    await expect(
+      createEmployeeInstance(f.a.context, f.input('Expired')),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const tick = async () => {
+      await fixture.db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${rule.id}`;
+      await claimDueAutomations();
+      return fixture.db`select r.run_id,r.status,e.execution_snapshot from allrice_automation_runs r left join allrice_employee_runs e on e.run_id=r.run_id where r.automation_id=${rule.id} order by r.created_at`;
+    };
+    const first = await tick();
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      status: 'queued',
+      execution_snapshot: {
+        instance: { id: f.assignment.id, ownerId: f.a.user.id },
+      },
+    });
+    await fixture.db`update allrice_memberships set active=false where user_id=${f.a.user.id} and organization_id=${f.a.organizationId}`;
+    const afterRevocation = await tick();
+    expect(afterRevocation).toHaveLength(2);
+    expect(afterRevocation[0]!.run_id).toBe(first[0]!.run_id);
+    expect(afterRevocation[1]).toMatchObject({
+      status: 'failed',
+      run_id: null,
+    });
+  });
   it('serializes simultaneous actual task admissions for one user across two instances without a lock upgrade deadlock', async () => {
     const f = await setup(),
       a = await f.session((await f.custom('A')).id),
@@ -487,6 +527,52 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       [a.employeeInstanceId, b.employeeInstanceId].sort(),
     );
   }, 30000);
+  it('serializes task admission before downstream folder authority takes user SHARE', async () => {
+    const f = await setup(),
+      a = await f.session((await f.custom('Folder A')).id),
+      b = await f.session((await f.custom('Folder B')).id);
+    const calls = new Map<string, number>();
+    // Isolate the folder-authority port's lock behaviour. Actual folder grant,
+    // import and lost-ACK checks remain in folder-triggers.integration.test.ts.
+    const spy = vi
+      .spyOn(folderTriggers, 'assertFolderTriggerMessage')
+      .mockImplementation(async (tx, eventId, context) => {
+        await tx`select id from allrice_users where id=${context.actor.id} for share`;
+        const n = (calls.get(eventId) ?? 0) + 1;
+        calls.set(eventId, n);
+        if (n === 2) {
+          // At queue admission another event must be unable to acquire SHARE.
+          // Otherwise both events could subsequently wait on a lock upgrade.
+          await expect(
+            fixture.db.begin(async (probe) => {
+              await probe`select id from allrice_users where id=${context.actor.id} for share nowait`;
+            }),
+          ).rejects.toMatchObject({ code: '55P03' });
+        }
+      });
+    try {
+      const result = await Promise.all(
+        [a, b].map((s) => {
+          const eventId = randomUUID();
+          return sendChatMessage(
+            f.a.context,
+            f.a.workspaceId,
+            s.id,
+            {
+              text: 'Folder task',
+              clientMessageId: eventId,
+              deliveryMode: 'follow_up',
+            },
+            { folderEventId: eventId },
+          );
+        }),
+      );
+      expect(new Set(result.map((r) => r.run.id)).size).toBe(2);
+      expect([...calls.values()]).toEqual([2, 2]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
   const gate = () => {
     let resolve!: () => void;
     const promise = new Promise<void>((r) => {

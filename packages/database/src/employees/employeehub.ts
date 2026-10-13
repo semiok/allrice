@@ -1144,7 +1144,11 @@ export async function prepareEmployeeRunBinding(input: {
   const { prepareEmployeeInstanceSnapshot } =
     await import('./employee-instances.ts');
   const instance = await prepareEmployeeInstanceSnapshot(
-    { ...input.context, workspaceId: input.workspaceId },
+    {
+      actor: input.context.actor,
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+    },
     input.sessionId,
     input.assignmentId,
     input.employeeVersionId,

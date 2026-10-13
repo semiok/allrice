@@ -654,6 +654,14 @@ async function enqueueRunCore(
   const ownerId = requireUser(context);
   const workspaceId = await resolveWorkspaceId(context, submission.workspaceId);
   await requireExecutionMembership(context, workspaceId);
+  // Resource authority is shared with scheduled/folder work, whose context
+  // uses correlation IDs rather than a browser login. Re-read its current
+  // owner/membership/assignment; browser authentication stays at its entry.
+  const instanceIdentity = {
+    actor: context.actor,
+    organizationId: context.organizationId,
+    workspaceId,
+  };
   let availableAt = submission.availableAt
     ? new Date(submission.availableAt)
     : new Date();
@@ -672,10 +680,10 @@ async function enqueueRunCore(
       if (options.employeeBinding?.executionSnapshot.instance) {
         const { lockEmployeeInstanceAdmissionIdentity } =
           await import('../employees/employee-instances.ts');
-        await lockEmployeeInstanceAdmissionIdentity(transaction, {
-          ...context,
-          workspaceId,
-        });
+        await lockEmployeeInstanceAdmissionIdentity(
+          transaction,
+          instanceIdentity,
+        );
       }
       await transaction`select id from allrice_users where id=${ownerId} for no key update`;
     }
@@ -771,6 +779,16 @@ async function enqueueRunCore(
       };
     }
 
+    // Folder event authority takes user SHARE. Acquire the final user lock
+    // before that branch so concurrent events cannot both upgrade SHARE.
+    if (options.employeeBinding?.executionSnapshot.instance) {
+      const { lockEmployeeInstanceAdmissionIdentity } =
+        await import('../employees/employee-instances.ts');
+      await lockEmployeeInstanceAdmissionIdentity(
+        transaction,
+        instanceIdentity,
+      );
+    }
     if (options.folderEventId) {
       const { assertFolderTriggerMessage } =
         await import('../folder-triggers.ts');
@@ -803,7 +821,7 @@ async function enqueueRunCore(
           throw new QueueError('policy_denied');
         await assertEmployeeInstanceAdmission(
           transaction,
-          { ...context, workspaceId },
+          instanceIdentity,
           options.employeeBinding.sessionId,
           snapshot,
         );

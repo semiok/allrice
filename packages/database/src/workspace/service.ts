@@ -552,7 +552,13 @@ export async function createAssignedChatSession(
   const { resolveEmployeeSessionInstance } =
     await import('../employees/employee-instances.ts');
   const instance = await resolveEmployeeSessionInstance(
-    { ...context, workspaceId },
+    // This core also serves authorized scheduled/folder work. Its principal
+    // describes the resource owner; a device/correlation ID is not a login.
+    {
+      actor: context.actor,
+      organizationId: context.organizationId,
+      workspaceId,
+    },
     parsed.employeeAssignmentId,
     parsed.employeeInstanceId,
     transaction,
