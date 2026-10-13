@@ -37,6 +37,32 @@ type InstanceRow = {
   updated_at: Date;
 };
 
+/** Resolve an immutable tenant version, never the deployment's mutable pointer. */
+export async function readEmployeeVersionPublication(
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    versionId: string;
+  },
+  sql: Sql = getDatabase(),
+) {
+  const [publication] = await sql<
+    { revision_id: string; checksum: string; definition: unknown }[]
+  >`
+    select r.id as revision_id, r.checksum, r.definition
+    from allrice_employee_version_sources p
+    join allrice_platform_employee_revisions r
+      on r.id = p.platform_revision_id and r.employee_id = p.platform_employee_id
+    where p.organization_id = ${scope.organizationId}
+      and p.workspace_id = ${scope.workspaceId}
+      and p.employee_id = ${scope.employeeId}
+      and p.employee_version_id = ${scope.versionId}
+      and r.status = 'published'
+  `;
+  return publication;
+}
+
 export class EmployeeInstanceError extends Error {
   constructor(public readonly code: 'instance_conflict') {
     super(code);

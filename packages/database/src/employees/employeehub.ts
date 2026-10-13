@@ -1141,7 +1141,7 @@ export async function prepareEmployeeRunBinding(input: {
   `;
   const assignment = rows[0];
   if (!assignment) throw new EmployeeHubError('not_found');
-  const { prepareEmployeeInstanceSnapshot } =
+  const { prepareEmployeeInstanceSnapshot, readEmployeeVersionPublication } =
     await import('./employee-instances.ts');
   const instance = await prepareEmployeeInstanceSnapshot(
     {
@@ -1231,19 +1231,15 @@ export async function prepareEmployeeRunBinding(input: {
   // Tenant assignment pointers change on publication. Freeze the exact revision
   // now so dispatch can verify its immutable checksum without following a newer
   // draft, assignment, or revision when this Run resumes.
-  const [publication] = await sql<
-    { revision_id: string; checksum: string; definition: unknown }[]
-  >`
-    select r.id as revision_id, r.checksum, r.definition
-    from allrice_employee_version_sources p
-    join allrice_platform_employee_revisions r
-      on r.id = p.platform_revision_id and r.employee_id = p.platform_employee_id
-    where p.organization_id = ${input.context.organizationId}
-      and p.workspace_id = ${input.workspaceId}
-      and p.employee_id = ${assignment.employee_id}
-      and p.employee_version_id = ${assignment.id}
-      and r.status = 'published'
-  `;
+  const publication = await readEmployeeVersionPublication(
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      employeeId: assignment.employee_id,
+      versionId: assignment.id,
+    },
+    sql,
+  );
   const managedPython = freezeManagedPythonBinding({
     manifest: manifest.data,
     grantedCapabilities,
