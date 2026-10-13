@@ -2555,6 +2555,7 @@ suite(
         }));
         expect(styles).toEqual({ size: '15px', height: 44 });
         expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+          '参考资料',
           '引用会话',
           '从工作区添加',
           '从本地上传',
