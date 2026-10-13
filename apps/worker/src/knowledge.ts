@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   indexKnowledgeDocumentForExecution,
   listKnowledgeSourceFilesForExecution,
@@ -10,9 +11,10 @@ const maximumKnowledgeFileBytes = 2_000_000;
 const chunkCharacters = 2_400;
 const chunkOverlap = 240;
 
-async function readText(
+export async function readKnowledgeText(
   storage: LocalStorageAdapter,
   object: Parameters<LocalStorageAdapter['get']>[0],
+  verifyChecksum = false,
 ) {
   if (object.sizeBytes > maximumKnowledgeFileBytes) {
     throw new Error('knowledge source file exceeds the indexing limit');
@@ -31,10 +33,23 @@ async function readText(
       }
       chunks.push(chunk.value);
     }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
   } finally {
     reader.releaseLock();
   }
-  const content = Buffer.concat(chunks).toString('utf8');
+  const data = Buffer.concat(chunks);
+  if (
+    verifyChecksum &&
+    (data.length !== object.sizeBytes ||
+      'sha256:' + createHash('sha256').update(data).digest('hex') !==
+        object.checksum)
+  )
+    throw new Error('资料文件校验失败');
+  const content = verifyChecksum
+    ? new TextDecoder('utf-8', { fatal: true }).decode(data)
+    : data.toString('utf8');
   if (object.mediaType !== 'application/json') return content;
   try {
     return JSON.stringify(JSON.parse(content), null, 2);
@@ -74,7 +89,7 @@ export async function buildAuthorizedKnowledgeContext(input: {
   const files = await listKnowledgeSourceFilesForExecution(input);
   const storage = new LocalStorageAdapter(input.storageRoot);
   for (const file of files.filter((candidate) => candidate.needsIndex)) {
-    const text = await readText(storage, file.object);
+    const text = await readKnowledgeText(storage, file.object);
     const chunks = chunkKnowledgeText(text);
     if (chunks.length === 0) continue;
     await indexKnowledgeDocumentForExecution({

@@ -1,3 +1,4 @@
+import type postgres from 'postgres';
 import { createHash } from 'node:crypto';
 
 import {
@@ -96,7 +97,7 @@ export async function listKnowledgeSourceFilesForExecution(input: {
       max(d.visibility) as indexed_visibility,
       max(d.owner_id::text) as indexed_owner_id
     from allrice_knowledge_revisions r
-    join allrice_knowledge_sources s on s.id = r.knowledge_source_id
+    join allrice_knowledge_sources s on s.id = r.knowledge_source_id and s.ownership is null
     join allrice_employee_knowledge_bindings b
       on b.knowledge_revision_id = r.id
      and b.organization_id = r.organization_id
@@ -106,6 +107,7 @@ export async function listKnowledgeSourceFilesForExecution(input: {
       on o.organization_id = r.organization_id
      and o.workspace_id = r.workspace_id
      and o.category = 'uploads' and o.state = 'ready'
+     and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
      and (
        r.definition->>'resourceRef' = 'workspace' or
        replace(r.definition->>'resourceRef', 'file:', '') = o.id::text
@@ -173,7 +175,7 @@ export async function indexKnowledgeDocumentForExecution(input: {
     const authorized = await transaction<{ id: string }[]>`
       select r.id
       from allrice_knowledge_revisions r
-      join allrice_knowledge_sources s on s.id = r.knowledge_source_id
+      join allrice_knowledge_sources s on s.id = r.knowledge_source_id and s.ownership is null
       join allrice_employee_knowledge_bindings b
         on b.knowledge_revision_id = r.id and b.employee_id = ${input.employeeId}
        and b.organization_id = r.organization_id
@@ -204,55 +206,18 @@ export async function indexKnowledgeDocumentForExecution(input: {
           and owner_id = ${document.ownerId}
           and visibility = ${document.visibility}
           and checksum = ${document.checksum} and state = 'ready'
+          and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
           and (owner_id = ${actorId(input.context)} or visibility <> 'private')
       `;
       if (!objects[0])
         throw new Error('knowledge source object is not authorized');
     }
-    const rows = await transaction<{ id: string; checksum: string }[]>`
-      insert into allrice_knowledge_documents (
-        organization_id, workspace_id, knowledge_revision_id, source_ref,
-        storage_object_id, owner_id, visibility, title, media_type, checksum,
-        source_updated_at, indexed_at, active
-      ) values (
-        ${input.context.organizationId}, ${input.context.workspaceId},
-        ${document.knowledgeRevisionId}, ${document.sourceRef},
-        ${document.storageObjectId}, ${document.ownerId}, ${document.visibility},
-        ${document.title}, ${document.mediaType}, ${document.checksum},
-        ${new Date(document.updatedAt)}, now(), true
-      ) on conflict (knowledge_revision_id, source_ref) do update set
-        storage_object_id = excluded.storage_object_id,
-        owner_id = excluded.owner_id, visibility = excluded.visibility,
-        title = excluded.title, media_type = excluded.media_type,
-        checksum = excluded.checksum,
-        source_updated_at = excluded.source_updated_at,
-        indexed_at = now(), active = true
-      returning id, checksum
-    `;
-    const stored = rows[0];
-    if (!stored) throw new Error('knowledge document indexing failed');
-    await transaction`
-      delete from allrice_knowledge_chunks where document_id = ${stored.id}
-    `;
-    for (const [ordinal, chunk] of document.chunks.entries()) {
-      const embedding = vectorLiteral(embedKnowledgeText(chunk.content));
-      await transaction`
-        insert into allrice_knowledge_chunks (
-          organization_id, workspace_id, document_id, ordinal, content,
-          embedding, locator, token_count, owner_id, visibility
-        ) values (
-          ${input.context.organizationId}, ${input.context.workspaceId},
-          ${stored.id}, ${ordinal}, ${chunk.content}, ${embedding}::vector,
-          ${transaction.json({
-            sourceRef: document.sourceRef,
-            chunk: ordinal,
-            start: chunk.start,
-            end: chunk.end,
-          })}, ${Math.max(1, Math.ceil(chunk.content.length / 4))},
-          ${document.ownerId}, ${document.visibility}
-        )
-      `;
-    }
+    const stored = await writeKnowledgeDocument(
+      transaction,
+      input.context.organizationId,
+      input.context.workspaceId!,
+      document,
+    );
     await transaction`
       insert into allrice_audit_events (
         organization_id, workspace_id, actor_id, action, resource_type,
@@ -320,7 +285,7 @@ export async function retrieveKnowledgeForExecution(input: {
     join allrice_knowledge_revisions r
       on r.id = d.knowledge_revision_id and r.status = 'published'
     join allrice_knowledge_sources s
-      on s.id = r.knowledge_source_id and s.status = 'active'
+      on s.id = r.knowledge_source_id and s.status = 'active' and s.ownership is null
     join allrice_employee_knowledge_bindings b
       on b.knowledge_revision_id = r.id and b.employee_id = ${input.employeeId}
      and b.organization_id = r.organization_id
@@ -348,6 +313,7 @@ export async function retrieveKnowledgeForExecution(input: {
       and (
         d.storage_object_id is null or (
           o.state = 'ready' and
+          not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id) and
           (o.owner_id = ${actorId(input.context)} or o.visibility <> 'private')
         )
       )
@@ -378,4 +344,58 @@ export async function retrieveKnowledgeForExecution(input: {
       },
     }),
   );
+}
+
+/** Internal core: callers must authorize the exact source/file and own this transaction. */
+export async function writeKnowledgeDocument(
+  transaction: postgres.TransactionSql,
+  organizationId: string,
+  workspaceId: string,
+  document: KnowledgeIndexDocument,
+) {
+  const rows = await transaction<{ id: string; checksum: string }[]>`
+      insert into allrice_knowledge_documents (
+        organization_id, workspace_id, knowledge_revision_id, source_ref,
+        storage_object_id, owner_id, visibility, title, media_type, checksum,
+        source_updated_at, indexed_at, active
+      ) values (
+        ${organizationId}, ${workspaceId},
+        ${document.knowledgeRevisionId}, ${document.sourceRef},
+        ${document.storageObjectId}, ${document.ownerId}, ${document.visibility},
+        ${document.title}, ${document.mediaType}, ${document.checksum},
+        ${new Date(document.updatedAt)}, now(), true
+      ) on conflict (knowledge_revision_id, source_ref) do update set
+        storage_object_id = excluded.storage_object_id,
+        owner_id = excluded.owner_id, visibility = excluded.visibility,
+        title = excluded.title, media_type = excluded.media_type,
+        checksum = excluded.checksum,
+        source_updated_at = excluded.source_updated_at,
+        indexed_at = now(), active = true
+      returning id, checksum
+    `;
+  const stored = rows[0];
+  if (!stored) throw new Error('knowledge document indexing failed');
+  await transaction`
+      delete from allrice_knowledge_chunks where document_id = ${stored.id}
+    `;
+  for (const [ordinal, chunk] of document.chunks.entries()) {
+    const embedding = vectorLiteral(embedKnowledgeText(chunk.content));
+    await transaction`
+        insert into allrice_knowledge_chunks (
+          organization_id, workspace_id, document_id, ordinal, content,
+          embedding, locator, token_count, owner_id, visibility
+        ) values (
+          ${organizationId}, ${workspaceId},
+          ${stored.id}, ${ordinal}, ${chunk.content}, ${embedding}::vector,
+          ${transaction.json({
+            sourceRef: document.sourceRef,
+            chunk: ordinal,
+            start: chunk.start,
+            end: chunk.end,
+          })}, ${Math.max(1, Math.ceil(chunk.content.length / 4))},
+          ${document.ownerId}, ${document.visibility}
+        )
+      `;
+  }
+  return stored;
 }

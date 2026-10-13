@@ -120,6 +120,7 @@ export async function listToolBrokerFiles(
       and o.workspace_id = ${context.workspaceId}
       and o.category in ('uploads', 'exports') and o.state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
       and (o.owner_id = ${context.policySnapshot.subjectId}
@@ -225,6 +226,7 @@ export async function getToolBrokerFile(
       and o.organization_id = ${context.organizationId}
       and o.workspace_id = ${context.workspaceId} and o.state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials m where m.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets r where r.material_object_id=o.id)
     group by o.id, deliverable.id, deliverable.version, deliverable.file_name
@@ -273,6 +275,7 @@ export async function assertToolBrokerSourceFile(
     where id=${source.objectId} and organization_id=${context.organizationId}
       and workspace_id=${context.workspaceId ?? null} and state='ready'
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=allrice_storage_objects.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
     for share
   `;
   if (!row) throw new DataAccessError('not_found');

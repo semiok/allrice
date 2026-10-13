@@ -1,4 +1,5 @@
 'use client';
+import { ReferenceLibrary } from './reference-library';
 
 import {
   employeeChoices,
@@ -153,6 +154,7 @@ export function ChatFlowClient({
     SessionReference[]
   >([]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
   const [companyTemplatesScope, setCompanyTemplatesScope] = useState<
     string | null
   >(null);
@@ -1297,6 +1299,7 @@ export function ChatFlowClient({
       }
       sessionReferences={sessionReferences}
       onOpenSessionReferences={() => setReferencePickerOpen(true)}
+      onOpenReferenceLibrary={() => setReferenceLibraryOpen(true)}
       onRemoveSessionReference={(id) =>
         setSessionReferences((current) =>
           current.filter((item) => item.sessionId !== id),
@@ -1406,6 +1409,14 @@ export function ChatFlowClient({
         />
       )}
       {archive.overlays}
+      {referenceLibraryOpen && workspace && (
+        <ReferenceLibrary
+          key={settingsScope}
+          workspaceId={workspace.workspaceId}
+          headers={tenantHeaders}
+          onClose={() => setReferenceLibraryOpen(false)}
+        />
+      )}
       <CompanyTemplateBrowser
         key={settingsScope}
         open={companyTemplatesScope === settingsScope}
