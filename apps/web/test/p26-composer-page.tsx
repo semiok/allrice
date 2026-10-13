@@ -10,6 +10,12 @@ import '@allrice/ui/styles.css';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <ChatFlowClient workbenchEnabled assistantsEnabled experienceEnabled />
+    {/* Retain integration coverage for the temporarily hidden task entry. */}
+    <ChatFlowClient
+      workbenchEnabled
+      assistantsEnabled
+      experienceEnabled
+      taskSuggestionsEnabled
+    />
   </StrictMode>,
 );

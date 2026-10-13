@@ -16,7 +16,7 @@ import { TaskSuggestions } from './task-suggestions';
 import type { PreparedComposerDraft } from '../../lib/chatflow/composer-draft';
 import { SessionReferenceChips } from './session-reference-picker';
 
-import type { MutableRefObject, RefObject, ReactNode } from 'react';
+import type { MutableRefObject, RefObject } from 'react';
 import {
   IconPlusOutlineRegular,
   IconGlobeOutlineRegular,
@@ -60,7 +60,6 @@ interface ChatComposerProps {
   employeeName: string;
   attachmentMenuOpen: boolean;
   busy: boolean;
-  assistantModeControl?: ReactNode;
   composerInput: RefObject<HTMLTextAreaElement | null>;
   composing: MutableRefObject<boolean>;
   draft: string;
@@ -86,7 +85,6 @@ interface ChatComposerProps {
   onRetryAttachment: (attachment: PendingAttachment) => void;
   onSendMessage: () => void | Promise<void>;
   onUploadAttachments: (files: FileList | File[]) => void;
-  onUploadFromBridge?: () => void | Promise<void>;
   onCancelBridgeUpload?: () => void | Promise<void>;
   bridgeUploadStatus?: string | null;
   onUploadVisibilityChange: (visibility: Visibility) => void;
@@ -111,7 +109,6 @@ export function ChatComposer({
   employeeName,
   attachmentMenuOpen,
   busy,
-  assistantModeControl,
   composerInput,
   composing,
   draft,
@@ -137,7 +134,6 @@ export function ChatComposer({
   onRetryAttachment,
   onSendMessage,
   onUploadAttachments,
-  onUploadFromBridge,
   onCancelBridgeUpload,
   bridgeUploadStatus,
   onUploadVisibilityChange,
@@ -273,15 +269,6 @@ export function ChatComposer({
                     label: '从工作区添加',
                     icon: <IconFolderOpenOutlineRegular size={20} />,
                   },
-                  ...(onUploadFromBridge
-                    ? [
-                        {
-                          id: 'bridge-file',
-                          label: '通过我的电脑选择文件',
-                          icon: <IconFolderOpenOutlineRegular size={20} />,
-                        },
-                      ]
-                    : []),
                   {
                     id: 'upload',
                     label: '从本地上传',
@@ -306,7 +293,6 @@ export function ChatComposer({
                   onAttachmentMenuOpenChange(false);
                   if (id === 'reference') onOpenSessionReferences?.();
                   else if (id === 'workspace') void onOpenWorkspaceFiles();
-                  else if (id === 'bridge-file') void onUploadFromBridge?.();
                   else if (id === 'upload') fileInput.current?.click();
                 }}
               />
@@ -323,7 +309,6 @@ export function ChatComposer({
                 type="file"
               />
             </div>
-            {assistantModeControl}
             <ComposerSelect
               aria-label="上传文件可见范围"
               compact="visibility"
