@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
@@ -4909,6 +4909,119 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+
+  it.each([1440, 1024, 390])(
+    'keeps the pending reply above the composer immediately after sending at %ipx',
+    async (width) => {
+      const f = await fixture({ width, controlledStream: true });
+      let admit!: () => void;
+      const admission = new Promise<void>((resolve) => {
+        admit = resolve;
+      });
+      try {
+        if (width === 1024)
+          await f.page.setViewportSize({ width, height: 600 });
+        f.state.messages = [];
+        await f.page.reload();
+        await f.page.route(
+          '**/api/v1/sessions/*/messages?**',
+          async (route) => {
+            if (route.request().method() !== 'POST') return route.fallback();
+            await admission;
+            const body = route.request().postDataJSON();
+            f.state.messages = [
+              {
+                id: id(300),
+                role: 'user',
+                content: { text: body.text },
+                status: 'completed',
+                runId: run,
+                createdAt: now,
+              },
+              {
+                id: id(500),
+                role: 'assistant',
+                content: { text: '' },
+                status: 'pending',
+                runId: run,
+                createdAt: now,
+              },
+            ];
+            f.state.historyRunning = true;
+            return route.fallback();
+          },
+        );
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        await input.fill(
+          '我准备写一个 AllRice 的对外介绍，请给我一个 10 页左右的 PPT 大纲。\n' +
+            Array.from(
+              { length: 12 },
+              (_, n) => `第 ${n + 1} 项：说明产品、使用场景和交付方式。`,
+            ).join('\n'),
+        );
+        await input.press('Enter');
+        const pending = f.page.locator('[id^="message-optimistic-assistant:"]');
+        await pending.waitFor();
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => resolve()),
+              ),
+            ),
+        );
+        const geometry = await f.page.evaluate(() => {
+          const scroll = document.querySelector('[data-conversation-scroll]')!;
+          const reply = document.querySelector(
+            '[id^="message-optimistic-assistant:"]',
+          )!;
+          const composer = document.querySelector('[data-composer-seat]')!;
+          return {
+            distance:
+              scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop,
+            replyTop: reply.getBoundingClientRect().top,
+            replyBottom: reply.getBoundingClientRect().bottom,
+            composerTop: composer.getBoundingClientRect().top,
+          };
+        });
+        const evidence = process.env.ALLRICE_SCROLL_QA_EVIDENCE_DIR;
+        if (evidence) {
+          await f.page.screenshot({ path: `${evidence}/pending-${width}.png` });
+          await writeFile(
+            `${evidence}/pending-${width}.json`,
+            JSON.stringify(geometry, null, 2),
+          );
+        }
+        expect(geometry.distance).toBeLessThan(2);
+        expect(geometry.replyBottom).toBeLessThanOrEqual(
+          geometry.composerTop + 1,
+        );
+        admit();
+        const accepted = f.page.locator(`#message-${id(500)}`);
+        await accepted.waitFor();
+        await f.page.waitForFunction(
+          () => document.documentElement.dataset.streamReady === 'true',
+        );
+        await expect
+          .poll(async () => {
+            const reply = (await accepted.boundingBox())!;
+            const seat = (await f.page
+              .locator('[data-composer-seat]')
+              .boundingBox())!;
+            return reply.y + reply.height - seat.y;
+          })
+          .toBeLessThanOrEqual(1);
+        if (evidence)
+          await f.page.screenshot({
+            path: `${evidence}/accepted-${width}.png`,
+          });
+      } finally {
+        admit();
+        await f.close();
+      }
+    },
+    30_000,
+  );
 
   it('native streaming preserves settled paragraphs and reading position across deltas and completion', async () => {
     const f = await fixture({
