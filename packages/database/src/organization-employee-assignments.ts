@@ -20,7 +20,10 @@ import {
 } from './tenant-employees.ts';
 import { materializePlatformEmployeeRevision } from './employees/platform-employees.ts';
 import { synchronizeTenantEmployeeAccess } from './tenant-employee-access.ts';
-import { requestRunCancellationTransaction } from './execution/queue.ts';
+import {
+  cancelEmployeeAccessRuns,
+  employeeAccessTransaction,
+} from './employees/employee-access-cancellation.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 type Revision = Parameters<
@@ -103,7 +106,7 @@ export async function changeOrganizationAiAssignments(
 ) {
   const organizationId = UuidSchema.parse(organizationInput),
     change = OrganizationAiChangeSchema.parse(input);
-  return getDatabase().begin(async (tx) => {
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
     await requireTenantAdministrationAuthority(context, tx);
     await requireTenantAdministrationTarget(
       tx,
@@ -199,30 +202,24 @@ export async function changeOrganizationAiAssignments(
       organizationId,
       workspaceId: change.workspaceId,
     });
-    const runs = await tx<
-      { run_id: string }[]
-    >`select er.run_id from allrice_employee_runs er
-      join allrice_employee_assignments a on a.id=er.employee_assignment_id
-      join allrice_jobs j on j.run_id=er.run_id
-      where a.organization_id=${organizationId} and a.workspace_id=${change.workspaceId}
-        and a.employee_id=${deployment.tenant_employee_id} and not a.active
-        and j.status not in ('succeeded','failed','dead_letter','canceled')
-        and j.cancel_requested_at is null order by er.run_id`;
-    for (const run of runs)
-      await requestRunCancellationTransaction(
-        tx,
-        context,
-        run.run_id,
-        '管理员已移除本人的 AI 员工',
-        true,
-      );
+    const cancellationRequestedCount = await cancelEmployeeAccessRuns(
+      tx,
+      {
+        organizationId,
+        workspaceId: change.workspaceId,
+        employeeId: deployment.tenant_employee_id,
+        inactiveAssignmentsOnly: true,
+      },
+      '管理员已移除本人的 AI 员工',
+      context,
+    );
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
       values(${organizationId},${change.workspaceId},${context.actor.id},'organization.ai_assignment.updated','platform_employee',${change.employeeId},'recorded',${change.action},${context.requestId},
-        ${tx.json({ action: change.action, defaultEnabled: change.defaultEnabled ?? null, targetCount: people.length, changedCount, cancellationRequestedCount: runs.length, userIds: people })})`;
+        ${tx.json({ action: change.action, defaultEnabled: change.defaultEnabled ?? null, targetCount: people.length, changedCount, cancellationRequestedCount, userIds: people })})`;
     return {
       targetCount: people.length,
       changedCount,
-      cancellationRequestedCount: runs.length,
+      cancellationRequestedCount,
     };
   });
 }

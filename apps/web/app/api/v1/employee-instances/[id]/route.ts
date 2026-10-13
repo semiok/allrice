@@ -1,6 +1,6 @@
 import {
   DataAccessError,
-  getEmployeeInstance,
+  getEmployeeInstanceForHistory,
   updateEmployeeInstance,
 } from '@allrice/database';
 import { getRequestContext } from '../../../../../lib/identity/session';
@@ -19,7 +19,7 @@ export async function GET(
       new URL(request.url).searchParams.get('workspaceId') ??
       context.workspaceId;
     return Response.json({
-      instance: await getEmployeeInstance(
+      instance: await getEmployeeInstanceForHistory(
         { ...context, workspaceId },
         (await params).id,
       ),

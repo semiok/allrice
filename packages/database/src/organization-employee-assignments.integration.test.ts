@@ -302,6 +302,11 @@ integration('MET-161 personal AI assignment and frozen company persona', () => {
     expect((await resolve()).promptSnapshot.organizationContext).toEqual(
       first.promptSnapshot.organizationContext,
     );
+    await f.change('include', selected(a.userId));
+    const canceled =
+      await fixture.db`select cancel_requested_at from allrice_jobs where run_id in ${fixture.db([sent.run.id, next.run.id])}`;
+    expect(canceled).toHaveLength(2);
+    expect(canceled.every((row) => row.cancel_requested_at)).toBe(true);
   });
   it('rejects foreign people, ordinary users and stale concurrent changes', async () => {
     const f = await setup(),

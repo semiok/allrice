@@ -1,3 +1,7 @@
+import {
+  cancelEmployeeAccessRuns,
+  employeeAccessTransaction,
+} from './employee-access-cancellation.ts';
 import { randomUUID } from 'node:crypto';
 
 import {
@@ -394,7 +398,7 @@ export async function updateEmployeeRelease(
       : stage === 'production'
         ? 100
         : 0;
-  await sql.begin(async (transaction) => {
+  await employeeAccessTransaction(sql, async (transaction) => {
     const validVersions = await transaction<{ id: string }[]>`
       select id from allrice_employee_versions
       where id in ${transaction(
@@ -433,8 +437,8 @@ export async function updateEmployeeRelease(
         set employee_version_id = case
           when ${stage} = 'canary'
             and mod(abs(hashtext(user_id::text)), 100) < ${trafficPercentage}
-            then ${candidateVersionId}
-          else ${stableVersionId}
+            then ${candidateVersionId}::uuid
+          else ${stableVersionId}::uuid
         end,
         active = true, updated_at = now()
         where organization_id = ${context.organizationId}
@@ -462,6 +466,16 @@ export async function updateEmployeeRelease(
           and workspace_id = ${workspaceId}
           and employee_id = ${update.employeeId}
       `;
+      await cancelEmployeeAccessRuns(
+        transaction,
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          employeeId: update.employeeId,
+        },
+        '管理员已停用 AI 员工版本',
+        context,
+      );
     }
     await transaction`
       insert into allrice_audit_events (

@@ -1,3 +1,7 @@
+import {
+  cancelEmployeeAccessRuns,
+  employeeAccessTransaction,
+} from './employee-access-cancellation.ts';
 import { acquireDevAdmission, devAdmissionOpen } from '../dev-maintenance.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import {
@@ -1062,7 +1066,7 @@ export async function disablePlatformEmployee(
   const employeeId = UuidSchema.parse(employeeIdInput);
   const { reason } = DisablePlatformEmployeeInputSchema.parse(input);
   const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
+  const result = await employeeAccessTransaction(sql, async (transaction) => {
     const employees = await transaction<{ id: string }[]>`
       select id from allrice_platform_employees
       where id = ${employeeId} and status <> 'archived'
@@ -1090,6 +1094,16 @@ export async function disablePlatformEmployee(
           and workspace_id = ${assignment.workspace_id}
           and employee_id = ${assignment.tenant_employee_id}
       `;
+      await cancelEmployeeAccessRuns(
+        transaction,
+        {
+          organizationId: assignment.organization_id,
+          workspaceId: assignment.workspace_id,
+          employeeId: assignment.tenant_employee_id,
+        },
+        reason,
+        { platformActorLabel: actorLabel },
+      );
       await transaction`
         update allrice_employees
         set status = 'archived', updated_at = now()
@@ -1186,6 +1200,11 @@ export async function savePlatformEmployeeDraft(
       employees[0].current_draft_revision_id !== expectedRevisionId
     )
       throw new Error('platform_employee_publish_snapshot_changed');
+    await assertStableMaterializedEmployeeKey(
+      transaction,
+      employeeId,
+      definition.key,
+    );
     const nextRows = await transaction<{ revision: number }[]>`
       select coalesce(max(revision), 0)::integer + 1 as revision
       from allrice_platform_employee_revisions
@@ -1485,6 +1504,20 @@ function tenantManifest(
   });
 }
 
+async function assertStableMaterializedEmployeeKey(
+  tx: postgres.TransactionSql,
+  employeeId: string,
+  key: string,
+) {
+  const rows =
+    await tx`select e.employee_key from allrice_platform_employee_tenant_assignments d
+    join allrice_employees e on e.id=d.tenant_employee_id
+      and e.organization_id=d.organization_id and e.workspace_id=d.workspace_id
+    where d.employee_id=${employeeId}`;
+  if (rows.some((row) => row.employee_key !== key))
+    throw new Error('platform_employee_materialized_key_immutable');
+}
+
 export async function materializePlatformEmployeeRevision(
   transaction: postgres.TransactionSql,
   input: {
@@ -1497,6 +1530,11 @@ export async function materializePlatformEmployeeRevision(
     preserveCurrentPolicy?: boolean;
   },
 ) {
+  await assertStableMaterializedEmployeeKey(
+    transaction,
+    input.employeeId,
+    input.definition.key,
+  );
   const runtimeProfile = PlatformEmployeeRuntimeProfileSchema.parse(
     input.revision.runtime_profile,
   );

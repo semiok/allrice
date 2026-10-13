@@ -2,6 +2,7 @@ import {
   DataAccessError,
   IdentityError,
   TenantEmployeeError,
+  EmployeeAccessBusyError,
   listAdminTenantEmployees,
   changeAdminTenantEmployee,
 } from '@allrice/database';
@@ -57,6 +58,9 @@ export async function tenantEmployeesHttp(
     } else if (error instanceof IdentityError) {
       status = 403;
       code = 'AUTHORIZATION_DENIED';
+    } else if (error instanceof EmployeeAccessBusyError) {
+      status = 409;
+      code = 'employee_access_busy';
     } else if (error instanceof TenantEmployeeError) {
       status = 409;
       code = error.code;

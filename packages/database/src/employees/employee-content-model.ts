@@ -33,6 +33,7 @@ export type ContentRevisionRow = {
   manifest: EmployeeContentManifest;
   digest: string;
   change_summary: string;
+  restored_from_revision_id: string | null;
   created_at: Date;
 };
 export class EmployeeContentError extends Error {

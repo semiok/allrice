@@ -40,6 +40,19 @@ const session = (id: string, assignmentId: string): Session => ({
 });
 
 describe('Allrice employee projection into the native DSH tree', () => {
+  it('does not resurrect an archived default instance through the legacy fallback', () => {
+    const archived = {
+      ...workspace,
+      employees: [{ ...employee('a'), instances: [] }],
+    };
+    expect(employeeChoices(archived)).toEqual([]);
+    expect(employeeChoice(archived, 'a')).toBeUndefined();
+    expect(
+      employeeGroups(archived, [session('old', 'a')], 'old', {})[0]?.sessions[0]
+        ?.id,
+    ).toBe('old');
+    expect(employeeChoices(workspace)).toHaveLength(2);
+  });
   it('keeps multiple instances of the same assignment separate in selection, counts and session history', () => {
     const assignmentId = '00000000-0000-4000-8000-000000000001';
     const customId = '00000000-0000-4000-8000-000000000002';

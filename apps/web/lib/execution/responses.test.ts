@@ -6,6 +6,7 @@ import { executionErrorResponse } from './responses';
 
 it.each([
   ['platform_employee_published_revision_immutable', '先保存为新草稿'],
+  ['platform_employee_materialized_key_immutable', '名称和简介仍可更新'],
   ['platform_employee_draft_unavailable', '保存新草稿'],
   ['platform_employee_publish_snapshot_changed', '重新试用'],
   ['platform_employee_publish_policy_changed', '重新预检并确认发布范围'],

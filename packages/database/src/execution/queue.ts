@@ -1393,11 +1393,63 @@ export async function requestRunCancellationTransaction(
   reason: string,
   ignoreTerminal = false,
 ) {
+  return requestCancellationTransaction(
+    transaction,
+    runId,
+    reason,
+    {
+      actorId: requireUser(context),
+      requestId: context.requestId,
+    },
+    ignoreTerminal,
+  );
+}
+
+/** Internal platform operation, after its caller has authorized the affected
+ * employee/deployment. Never impersonate a tenant user in the cancellation audit. */
+export async function requestEmployeeAccessCancellationTransaction(
+  transaction: TransactionSql,
+  runId: string,
+  reason: string,
+  actor: {
+    actorId: string | null;
+    requestId: string | null;
+    actorLabel?: string;
+  },
+) {
+  return requestCancellationTransaction(
+    transaction,
+    runId,
+    reason,
+    actor,
+    true,
+    true,
+  );
+}
+
+async function requestCancellationTransaction(
+  transaction: TransactionSql,
+  runId: string,
+  reason: string,
+  actor: {
+    actorId: string | null;
+    requestId: string | null;
+    actorLabel?: string;
+  },
+  ignoreTerminal: boolean,
+  nonBlocking = false,
+) {
   // Persistent tree cutoff precedes job cancellation and native drain. No root
   // row means an unchanged legacy single-agent Run.
-  await cancelAssistantRootTransaction(transaction, runId, randomUUID());
+  await cancelAssistantRootTransaction(
+    transaction,
+    runId,
+    randomUUID(),
+    'user_request',
+    nonBlocking,
+  );
   const rows = await transaction<JobRow[]>`
-      select * from allrice_jobs where run_id = ${runId} for update
+      select * from allrice_jobs where run_id = ${runId} for update ${nonBlocking ? transaction`nowait` : transaction``}
     `;
   const job = rows[0];
   if (!job) throw new QueueError('not_found');
@@ -1415,14 +1467,18 @@ export async function requestRunCancellationTransaction(
   await audit(transaction, {
     organizationId: job.organization_id,
     workspaceId: job.workspace_id,
-    actorId: requireUser(context),
+    actorId: actor.actorId,
     action: 'run.cancel.request',
     resourceType: 'run',
     resourceId: runId,
     decision: 'allowed',
     reason: reason,
-    requestId: context.requestId,
-    metadata: { jobId: job.id, status: job.status },
+    requestId: actor.requestId,
+    metadata: {
+      jobId: job.id,
+      status: job.status,
+      ...(actor.actorLabel ? { actorLabel: actor.actorLabel } : {}),
+    },
   });
 }
 

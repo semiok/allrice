@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
+import * as queue from '../execution/queue.ts';
+import { updateEmployeeRelease } from './employee-quality.ts';
 import * as folderTriggers from '../folder-triggers.ts';
 import {
   createAutomation,
@@ -11,6 +13,8 @@ import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts'
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import { assertWorkbenchSession } from '../artifact-review.ts';
 import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
+import { createAssistantLocalCommandFixture } from '../local-command-assistant.fixture.ts';
+import { resolveTaskRuntimePolicy } from '../task-runtime-policy.ts';
 import {
   authenticateSession,
   createSession,
@@ -31,6 +35,7 @@ import {
 import {
   publishPlatformEmployee,
   savePlatformEmployeeDraft,
+  disablePlatformEmployee,
 } from './platform-employees.ts';
 import {
   assertEmployeeInstanceAdmission,
@@ -41,7 +46,15 @@ import {
   lockEmployeeInstanceAdmissionIdentity,
   prepareEmployeeInstanceSnapshot,
   updateEmployeeInstance,
+  changeEmployeeInstanceLifecycle,
+  getEmployeeInstanceForHistory,
+  getEmployeeInstanceHistory,
+  listHistoricalEmployeeInstances,
 } from './employee-instances.ts';
+import {
+  manageEmployeeAssignments,
+  updateEmployeeStatus,
+} from './employeehub.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -172,6 +185,437 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await expect(
       createEmployeeInstance(f.admin.context, f.input('Wrong company')),
     ).rejects.toMatchObject({ code: 'authorization_denied' });
+  });
+  it('archives only the selected instance and restores a source profile into a new immutable revision', async () => {
+    const f = await setup(),
+      i = await f.custom('Original'),
+      other = await f.custom('Other');
+    const original =
+      await fixture.db`select * from allrice_employee_instance_revisions where instance_id=${i.id}`;
+    await updateEmployeeInstance(f.a.context, i.id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      profile: { name: 'Changed' },
+    });
+    const s = await f.session(i.id),
+      sent = await sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+        text: 'Synthetic pending task',
+        clientMessageId: randomUUID(),
+      });
+    const frozen =
+      await fixture.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+    const archive = {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      operation: 'archive',
+    };
+    const archived = await changeEmployeeInstanceLifecycle(
+      f.a.context,
+      i.id,
+      archive,
+    );
+    expect(archived).toMatchObject({
+      revision: 3,
+      profile: { name: 'Changed' },
+      archivedAt: expect.any(String),
+    });
+    expect(
+      await changeEmployeeInstanceLifecycle(f.a.context, i.id, archive),
+    ).toEqual(archived);
+    await expect(getEmployeeInstance(f.a.context, i.id)).rejects.toMatchObject({
+      code: 'instance_archived',
+    });
+    await expect(f.session(i.id)).rejects.toThrow();
+    expect(
+      (await listEmployeeInstances(f.a.context, f.a.workspaceId)).map(
+        (x) => x.id,
+      ),
+    ).not.toContain(i.id);
+    expect(
+      (
+        await listHistoricalEmployeeInstances(f.a.context, f.a.workspaceId)
+      ).instances.map((x) => x.id),
+    ).toContain(i.id);
+    expect((await getEmployeeInstance(f.a.context, other.id)).id).toBe(
+      other.id,
+    );
+    await expect(
+      getEmployeeInstanceForHistory(f.b.context, i.id),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    await expect(
+      changeEmployeeInstanceLifecycle(f.b.context, i.id, {
+        ...archive,
+        expectedRevision: 3,
+        operation: 'restore',
+        sourceRevision: 1,
+      }),
+    ).rejects.toThrow();
+    const restored = await changeEmployeeInstanceLifecycle(f.a.context, i.id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 3,
+      operation: 'restore',
+      sourceRevision: 1,
+    });
+    expect(restored).toMatchObject({
+      id: i.id,
+      revision: 4,
+      profile: i.profile,
+      archivedAt: null,
+      creationSource: i.creationSource,
+    });
+    const history = await getEmployeeInstanceHistory(f.a.context, i.id);
+    expect(
+      history.revisions.map((r) => [
+        r.revision,
+        r.operation,
+        r.restoredFromRevision,
+      ]),
+    ).toEqual([
+      [4, 'restore', 1],
+      [3, 'archive', null],
+      [2, 'update', null],
+      [1, 'create', null],
+    ]);
+    expect(
+      (await getEmployeeInstanceHistory(f.a.context, i.id, 3)).revisions.map(
+        (r) => r.revision,
+      ),
+    ).toEqual([2, 1]);
+    await expect(
+      changeEmployeeInstanceLifecycle(f.a.context, i.id, {
+        ...archive,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+    await expect(
+      changeEmployeeInstanceLifecycle(f.a.context, i.id, {
+        ...archive,
+        expectedRevision: 4,
+      }),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+    await expect(
+      fixture.db`update allrice_employee_instance_revisions set profile='{}'::jsonb where instance_id=${i.id} and revision=1`,
+    ).rejects.toThrow('employee_instance_revision_immutable');
+    expect(
+      await fixture.db`select * from allrice_employee_instance_revisions where instance_id=${i.id} and revision=1`,
+    ).toEqual(original);
+    expect(
+      await fixture.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`,
+    ).toEqual(frozen);
+    expect(
+      (
+        await fixture.db`select cancel_requested_at from allrice_jobs where run_id=${sent.run.id}`
+      )[0]!.cancel_requested_at,
+    ).not.toBeNull();
+    const next = await sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+      text: 'New task after restore',
+      clientMessageId: randomUUID(),
+      deliveryMode: 'follow_up',
+    });
+    expect(
+      (
+        await fixture.db`select cancel_requested_at from allrice_jobs where run_id=${next.run.id}`
+      )[0]!.cancel_requested_at,
+    ).toBeNull();
+  });
+  it('keeps withdrawn instances discoverable without reviving archived instances on reassignment', async () => {
+    const f = await setup(),
+      i = await f.custom('Historical');
+    await changeEmployeeInstanceLifecycle(f.a.context, i.id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      operation: 'archive',
+    });
+    await f.change('withdraw');
+    expect((await getEmployeeInstanceForHistory(f.a.context, i.id)).id).toBe(
+      i.id,
+    );
+    expect(
+      (
+        await listHistoricalEmployeeInstances(f.a.context, f.a.workspaceId)
+      ).instances.map((x) => x.id),
+    ).toContain(i.id);
+    await expect(
+      changeEmployeeInstanceLifecycle(f.a.context, i.id, {
+        workspaceId: f.a.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 2,
+        operation: 'restore',
+        sourceRevision: 1,
+      }),
+    ).rejects.toThrow();
+    await f.change('assign');
+    expect(
+      (await getEmployeeInstanceForHistory(f.a.context, i.id)).archivedAt,
+    ).not.toBeNull();
+    expect(
+      (await listEmployeeInstances(f.a.context, f.a.workspaceId)).map(
+        (x) => x.id,
+      ),
+    ).not.toContain(i.id);
+  });
+  it('rejects materialized template key changes without detaching instance or content identities', async () => {
+    const f = await setup(),
+      i = await f.custom('Stable');
+    await expect(
+      savePlatformEmployeeDraft(f.source.employeeId, {
+        definition: { ...f.source.definition, key: 'different-key' },
+        expectedRevisionId: f.source.revisionId,
+      }),
+    ).rejects.toThrow('platform_employee_materialized_key_immutable');
+    expect(await getEmployeeInstance(f.a.context, i.id)).toEqual(i);
+  });
+  it.each([
+    'tenant',
+    'platform',
+    'legacy_assignments',
+    'legacy_status',
+    'quality_release',
+  ] as const)(
+    'persistently cancels queued/running/parked jobs on %s withdrawal even after immediate reassignment',
+    async (path) => {
+      const f = await setup(),
+        i = await f.custom('Revocation');
+      const runs = [];
+      for (const status of ['queued', 'running', 'waiting_approval']) {
+        const s = await f.session(i.id),
+          sent = await sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+            text: 'Synthetic task',
+            clientMessageId: randomUUID(),
+          });
+        await fixture.db`update allrice_jobs set status=${status} where run_id=${sent.run.id}`;
+        runs.push(sent.run.id);
+      }
+      vi.stubEnv(
+        'ALLRICE_PLATFORM_ADMIN_EMAILS',
+        `${f.admin.user.email},${f.a.user.email}`,
+      );
+      const [a] =
+        await fixture.db`select employee_id from allrice_employee_assignments where id=${f.assignment.id}`;
+      if (path === 'tenant') {
+        await f.change('withdraw');
+        await f.change('assign');
+      } else if (path === 'platform') {
+        await disablePlatformEmployee(
+          f.source.employeeId,
+          { reason: 'Synthetic revocation' },
+          'synthetic-platform',
+        );
+        const saved = await savePlatformEmployeeDraft(f.source.employeeId, {
+          definition: f.source.definition,
+          expectedRevisionId: f.source.revisionId,
+        });
+        await f.source.preview();
+        await publishPlatformEmployee(f.source.employeeId, {
+          scope: 'assigned',
+          expectedRevisionId: saved!.currentDraft!.id,
+        });
+        await f.change('assign');
+      } else if (path === 'legacy_assignments') {
+        await manageEmployeeAssignments(f.a.context, {
+          workspaceId: f.a.workspaceId,
+          employeeId: a!.employee_id,
+          userIds: [f.b.user.id],
+        });
+        await manageEmployeeAssignments(f.a.context, {
+          workspaceId: f.a.workspaceId,
+          employeeId: a!.employee_id,
+          userIds: [f.a.user.id, f.b.user.id],
+        });
+      } else if (path === 'quality_release') {
+        await updateEmployeeRelease(f.a.context, {
+          workspaceId: f.a.workspaceId,
+          employeeId: a!.employee_id,
+          action: 'disable',
+        });
+        await updateEmployeeRelease(f.a.context, {
+          workspaceId: f.a.workspaceId,
+          employeeId: a!.employee_id,
+          action: 'rollback',
+        });
+      } else {
+        await updateEmployeeStatus(f.a.context, a!.employee_id, {
+          workspaceId: f.a.workspaceId,
+          status: 'archived',
+        });
+        await f.change('assign');
+      }
+      expect((await getEmployeeInstance(f.a.context, i.id)).id).toBe(i.id);
+      const jobs =
+        await fixture.db`select cancel_requested_at from allrice_jobs where run_id in ${fixture.db(runs)}`;
+      expect(jobs).toHaveLength(3);
+      expect(jobs.every((j) => j.cancel_requested_at)).toBe(true);
+    },
+  );
+  it('retries the entire withdrawal without waiting in reverse order on a worker job SHARE lock', async () => {
+    const f = await setup(),
+      i = await f.custom('Concurrent'),
+      s = await f.session(i.id);
+    const sent = await sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+      text: 'Synthetic task',
+      clientMessageId: randomUUID(),
+    });
+    vi.stubEnv(
+      'ALLRICE_PLATFORM_ADMIN_EMAILS',
+      `${f.admin.user.email},${f.a.user.email}`,
+    );
+    const [a] =
+      await fixture.db`select employee_id from allrice_employee_assignments where id=${f.assignment.id}`;
+    const holding = gate(),
+      attempting = gate();
+    let attempts = 0;
+    const original = queue.requestEmployeeAccessCancellationTransaction;
+    const spy = vi
+      .spyOn(queue, 'requestEmployeeAccessCancellationTransaction')
+      .mockImplementation(async (...args) => {
+        attempts++;
+        attempting.resolve();
+        return original(...args);
+      });
+    const worker = fixture.db.begin(async (tx) => {
+      await tx`select id from allrice_jobs where run_id=${sent.run.id} for share`;
+      holding.resolve();
+      await attempting.promise;
+      await tx`set local lock_timeout='1500ms'`;
+      await tx`select id from allrice_employees where id=${a!.employee_id} for share`;
+    });
+    try {
+      await holding.promise;
+      const withdrawal = updateEmployeeStatus(f.a.context, a!.employee_id, {
+        workspaceId: f.a.workspaceId,
+        status: 'archived',
+      });
+      await expect(Promise.all([worker, withdrawal])).resolves.toBeDefined();
+      expect(attempts).toBeGreaterThan(1);
+      expect(
+        (
+          await fixture.db`select cancel_requested_at from allrice_jobs where run_id=${sent.run.id}`
+        )[0]!.cancel_requested_at,
+      ).not.toBeNull();
+    } finally {
+      attempting.resolve();
+      spy.mockRestore();
+      await worker;
+    }
+  });
+  it('acquires job NOWAIT before canceling native operations that refresh the task clock', async () => {
+    for (const flag of [
+      'ALLRICE_ASSISTANTS_ENABLED',
+      'ALLRICE_LOCAL_COMMAND_ENABLED',
+      'ALLRICE_RUNTIME_POLICY_ENABLED',
+      'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
+    ])
+      vi.stubEnv(flag, '1');
+    const f = await createAssistantLocalCommandFixture(fixture.db);
+    const operation = await f.create();
+    const operationId = operation.snapshot.binding.attempt.operationId;
+    await f.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      values(${f.rootRunId},${f.org},${f.workspace},${f.db.json({ ...resolveTaskRuntimePolicy([]) })})`;
+    const [user] =
+      await f.db`select email from allrice_users where id=${f.user}`;
+    vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user!.email);
+    const context = await authenticateSession(
+      (await createSession(f.user)).token,
+      {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+      },
+    );
+    if (!context) throw Error('fixture_login');
+    const holding = gate(),
+      attempting = gate();
+    let attempts = 0;
+    const original = queue.requestEmployeeAccessCancellationTransaction;
+    const spy = vi
+      .spyOn(queue, 'requestEmployeeAccessCancellationTransaction')
+      .mockImplementation(async (...args) => {
+        attempts++;
+        attempting.resolve();
+        return original(...args);
+      });
+    // Browser authority owns job SHARE before reading employee authority, and
+    // has no runtime root lock. Cancellation must release its employee lock
+    // before waiting for this transaction, even when ledger.append updates the
+    // task clock (and therefore the job) inside root cancellation.
+    const browser = f.db.begin(async (tx) => {
+      await tx`select id from allrice_jobs where run_id=${f.rootRunId} for share`;
+      holding.resolve();
+      await attempting.promise;
+      await tx`set local lock_timeout='1500ms'`;
+      await tx`select id from allrice_employees where id=${f.employee} for share`;
+    });
+    void browser.catch(() => undefined);
+    try {
+      await holding.promise;
+      const withdrawal = updateEmployeeStatus(context, f.employee, {
+        workspaceId: f.workspace,
+        status: 'archived',
+      });
+      const result = await Promise.allSettled([browser, withdrawal]);
+      expect(result.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+      expect(attempts).toBeGreaterThan(1);
+      const [job] =
+        await f.db`select cancel_requested_at from allrice_jobs where run_id=${f.rootRunId}`;
+      const [root] =
+        await f.db`select cancel_requested_at from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+      const [op] =
+        await f.db`select snapshot->>'status' as status from allrice_runtime_operations where id=${operationId}`;
+      expect(job!.cancel_requested_at).not.toBeNull();
+      expect(root!.cancel_requested_at).not.toBeNull();
+      expect(['canceled', 'cancel_requested']).toContain(op!.status);
+    } finally {
+      attempting.resolve();
+      spy.mockRestore();
+      await browser.catch(() => undefined);
+    }
+  });
+  it('reports contention with no partial archive, then accepts the same request after the worker releases its lock', async () => {
+    const f = await setup(),
+      i = await f.custom('Atomic'),
+      s = await f.session(i.id);
+    const sent = await sendChatMessage(f.a.context, f.a.workspaceId, s.id, {
+      text: 'Synthetic task',
+      clientMessageId: randomUUID(),
+    });
+    const held = gate(),
+      release = gate();
+    const worker = fixture.db.begin(async (tx) => {
+      await tx`select id from allrice_jobs where run_id=${sent.run.id} for share`;
+      held.resolve();
+      await release.promise;
+    });
+    const input = {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      operation: 'archive',
+    };
+    try {
+      await held.promise;
+      await expect(
+        changeEmployeeInstanceLifecycle(f.a.context, i.id, input),
+      ).rejects.toThrow('employee_access_busy');
+      expect(await getEmployeeInstance(f.a.context, i.id)).toEqual(i);
+      expect(
+        (await getEmployeeInstanceHistory(f.a.context, i.id)).revisions,
+      ).toHaveLength(1);
+      expect(
+        (
+          await fixture.db`select cancel_requested_at from allrice_jobs where run_id=${sent.run.id}`
+        )[0]!.cancel_requested_at,
+      ).toBeNull();
+    } finally {
+      release.resolve();
+      await worker;
+    }
+    expect(
+      (await changeEmployeeInstanceLifecycle(f.a.context, i.id, input))
+        .revision,
+    ).toBe(2);
   });
   it('serializes duplicate creation and default mapping; retry returns the original creation after rename', async () => {
     const f = await setup(),
@@ -701,6 +1145,47 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         await fixture.db`select execution_snapshot::text snapshot,prompt_snapshot::text prompt from allrice_employee_runs where run_id=${f.rootRunId}`
       )[0],
     ).toEqual(before);
+  });
+  it('keeps an existing native assistant root canceled after the archived instance is restored', async () => {
+    vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+    const f = await createAssistantAuthorityFixture(fixture.db, {
+      memberRole: 'member',
+    });
+    await ensureGeneralEmployeeInstance(fixture.db, f.assignment);
+    const context = await authenticateSession(
+      (await createSession(f.user)).token,
+      { organizationId: f.org, workspaceId: f.workspace },
+    );
+    if (!context) throw Error('fixture_login');
+    const input = {
+      workspaceId: f.workspace,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      operation: 'archive',
+    };
+    await changeEmployeeInstanceLifecycle(context, f.assignment, input);
+    const [cutoff] =
+      await fixture.db`select cancel_request_id,cancel_requested_at from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+    expect(cutoff!.cancel_request_id).not.toBeNull();
+    await changeEmployeeInstanceLifecycle(context, f.assignment, {
+      ...input,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      operation: 'restore',
+      sourceRevision: 1,
+    });
+    expect(
+      (
+        await fixture.db`select cancel_request_id,cancel_requested_at from allrice_runtime_roots where root_run_id=${f.rootRunId}`
+      )[0],
+    ).toEqual(cutoff);
+    expect(
+      await f.runtime.assertCurrentAuthority({
+        scope: f.task.scope,
+        rootRunId: f.rootRunId,
+        worker: f.worker,
+      }),
+    ).toEqual({ cancelRequested: true });
   });
   it('maps legacy Sessions to their original default, labels unprovable provenance honestly, and leaves old Run JSON intact', async () => {
     const f = await setup();

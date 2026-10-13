@@ -1,4 +1,8 @@
 import {
+  cancelEmployeeAccessRuns,
+  employeeAccessTransaction,
+} from './employees/employee-access-cancellation.ts';
+import {
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   TenantEmployeeChangeSchema,
@@ -118,7 +122,7 @@ export async function changeAdminTenantEmployee(
   const organizationId = UuidSchema.parse(organizationInput),
     change = TenantEmployeeChangeSchema.parse(input),
     sql = getDatabase();
-  return sql.begin(async (tx) => {
+  return employeeAccessTransaction(sql, async (tx) => {
     await requireTenantAdministrationAuthority(context, tx);
     await requireTenantAdministrationTarget(
       tx,
@@ -175,6 +179,16 @@ export async function changeAdminTenantEmployee(
         await tx`update allrice_platform_employee_tenant_assignments set active=false,is_default=false,updated_at=clock_timestamp() where id=${existing.id}`;
         await tx`update allrice_employee_assignments set active=false,is_default=false,updated_at=clock_timestamp()
           where organization_id=${organizationId} and workspace_id=${change.workspaceId} and employee_id=${existing.tenant_employee_id}`;
+        await cancelEmployeeAccessRuns(
+          tx,
+          {
+            organizationId,
+            workspaceId: change.workspaceId,
+            employeeId: existing.tenant_employee_id,
+          },
+          '管理员已撤销公司 AI 员工配发',
+          context,
+        );
         await tx`update allrice_employees set status='archived',updated_at=clock_timestamp() where organization_id=${organizationId} and workspace_id=${change.workspaceId} and id=${existing.tenant_employee_id}`;
       }
     }
