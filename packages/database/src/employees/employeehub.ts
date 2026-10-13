@@ -42,6 +42,10 @@ import {
 
 import { DataAccessError } from '../data.ts';
 import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
+import {
+  freezeEmployeeBaseSkills,
+  assertFrozenBaseSkillCatalog,
+} from './employee-base-skills.ts';
 import { createEmployeeMcpBindingStore } from '../mcp-employee-bindings.ts';
 import {
   createLocalMcpStore,
@@ -1381,7 +1385,7 @@ export async function prepareEmployeeRunBinding(input: {
     timeoutMs:
       taskRuntimePolicy?.timeoutMs ?? modelSnapshot.runLimits.timeoutMs,
   });
-  const nativeSkills = nativeSkillRows.map((skill) =>
+  const originalNativeSkills = nativeSkillRows.map((skill) =>
     validateFrozenSkill({
       id: skill.id,
       name: skill.name,
@@ -1396,6 +1400,8 @@ export async function prepareEmployeeRunBinding(input: {
       ...(skill.bundle ? { bundle: skill.bundle } : {}),
     }),
   );
+  const { nativeSkills, catalog: baseSkillCatalog } =
+    await freezeEmployeeBaseSkills(originalNativeSkills);
   const mcpEnabled =
     runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
     manifest.data.schemaVersion === 2 &&
@@ -1447,6 +1453,7 @@ export async function prepareEmployeeRunBinding(input: {
     executionSnapshot: {
       schemaVersion: 2,
       instance,
+      ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
       ...(mcpEnabled ? { mcpTools } : {}),
       ...(localMcp.connections.length ? { localMcp } : {}),
       employee: {
@@ -1546,6 +1553,24 @@ export async function resolveEmployeeExecution(input: {
   const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
     row.execution_snapshot,
   );
+  // A damaged new catalog cannot fall back to a legacy manifest and derive
+  // broader grants from its augmented Skills.
+  if (
+    row.execution_snapshot &&
+    typeof row.execution_snapshot === 'object' &&
+    'baseSkillCatalog' in row.execution_snapshot
+  ) {
+    if (
+      !executionSnapshot.success ||
+      executionSnapshot.data.schemaVersion !== 2 ||
+      !executionSnapshot.data.baseSkillCatalog
+    )
+      throw Error('base_skill_snapshot_invalid');
+    assertFrozenBaseSkillCatalog(
+      executionSnapshot.data.baseSkillCatalog,
+      nativeSkills,
+    );
+  }
   const manifest = EmployeeManifestSchema.parse(
     executionSnapshot.success
       ? executionSnapshot.data.employee.definition

@@ -308,6 +308,13 @@ export async function executeEmployeeRun({
               `${skill.id}:${skill.checksum}${skill.bundle ? `:${skill.bundle.checksum}` : ''}`,
           )
           .sort(),
+        ...(resolved.executionSnapshot?.schemaVersion === 2 &&
+        resolved.executionSnapshot.baseSkillCatalog
+          ? {
+              baseSkillCatalog:
+                resolved.executionSnapshot.baseSkillCatalog.snapshotChecksum,
+            }
+          : {}),
         capabilities: [...resolved.grantedCapabilities].sort(),
         ...(resolved.executionSnapshot?.schemaVersion === 2 &&
         resolved.executionSnapshot.localMcp
@@ -1330,6 +1337,10 @@ export async function executeEmployeeRun({
                   progress: taskProgress,
                   kernel: stepKernel,
                   nativeSkills: resolved.nativeSkills,
+                  baseSkillCatalog:
+                    executionSnapshot.schemaVersion === 2
+                      ? executionSnapshot.baseSkillCatalog
+                      : undefined,
                   storageObjects: [],
                   images: [],
                   workDirectory: isolation.workDirectory,
@@ -1406,6 +1417,12 @@ export async function executeEmployeeRun({
               kernel: routedKernel,
               nativeSkills:
                 repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
+              baseSkillCatalog:
+                repairTask ||
+                repositoryReviewTask ||
+                executionSnapshot.schemaVersion !== 2
+                  ? undefined
+                  : executionSnapshot.baseSkillCatalog,
               storageObjects: selectedStorageObjects,
               images: harnessImages,
               workDirectory: isolation.workDirectory,

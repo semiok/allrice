@@ -755,9 +755,9 @@ describe('DshHarnessAdapter', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'native.event',
-          label: 'Skill 已加载',
+          label: 'Skill 已就绪',
           summary: 'web-research',
-          sourcePayload: expect.objectContaining({ status: 'loaded' }),
+          sourcePayload: expect.objectContaining({ status: 'registered' }),
         }),
         expect.objectContaining({
           type: 'native.event',
@@ -808,11 +808,144 @@ describe('DshHarnessAdapter', () => {
     expect(events).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: 'Skill 已加载',
+          label: 'Skill 已就绪',
           summary: 'workflow-automation',
         }),
       ]),
     );
+  });
+
+  it.each([false, true])(
+    'records actual native Skill load with its frozen version (failed=%s)',
+    async (failed) => {
+      const adapter = createAdapter(),
+        events: HarnessEvent[] = [];
+      const input = executionInput({
+        prompt: 'native-skill-receipt' + (failed ? '-failed' : ''),
+        events,
+      });
+      const id = randomUUID(),
+        checksum = `sha256:${'a'.repeat(64)}`;
+      input.nativeSkills = [
+        {
+          id,
+          name: 'synthetic-skill',
+          description: 'Synthetic method.',
+          content: '# Synthetic',
+          checksum,
+          invocation: { modelInvocable: true, userInvocable: true },
+          requiredToolRefs: [],
+        },
+      ];
+      input.baseSkillCatalog = {
+        schemaVersion: 1,
+        authority: 'skills/catalog.json',
+        catalogChecksum: checksum,
+        snapshotChecksum: checksum,
+        skills: [
+          {
+            id,
+            name: 'synthetic-skill',
+            version: '1.2.3',
+            checksum,
+            source: 'allrice',
+            sourceRef: 'https://example.test/skill',
+            license: 'MIT',
+            reviewedByLabel: 'Fixture',
+          },
+        ],
+      };
+      await adapter.execute(input);
+      expect(events.find((e) => e.type === 'native.event')).toMatchObject({
+        label: 'Skill 已就绪',
+        sourcePayload: { status: 'registered' },
+      });
+      expect(
+        events.find(
+          (e) => e.type === (failed ? 'tool.failed' : 'tool.completed'),
+        ),
+      ).toMatchObject({
+        name: 'skill',
+        sourcePayload: {
+          skillId: id,
+          skillName: 'synthetic-skill',
+          skillChecksum: checksum,
+          skillVersion: '1.2.3',
+          skillCatalogChecksum: checksum,
+          skillStatus: failed ? 'failed' : 'loaded',
+        },
+      });
+      expect(JSON.stringify(events)).not.toContain('private skill text');
+    },
+  );
+
+  it('keeps unauthorized default methods out of the actual DSH directory without reporting a failed action', async () => {
+    const adapter = createAdapter(),
+      events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'inspect-skill-directory', events });
+    const id = randomUUID(),
+      checksum = `sha256:${'b'.repeat(64)}`;
+    input.nativeSkills = [
+      {
+        id,
+        name: 'synthetic-skill',
+        description: 'Requires write.',
+        content: '# Write',
+        checksum,
+        invocation: { modelInvocable: true, userInvocable: true },
+        requiredToolRefs: ['cloud.process.execute'],
+      },
+    ];
+    input.baseSkillCatalog = {
+      schemaVersion: 1,
+      authority: 'skills/catalog.json',
+      catalogChecksum: checksum,
+      snapshotChecksum: checksum,
+      skills: [
+        {
+          id,
+          name: 'synthetic-skill',
+          version: '1.0.0',
+          checksum,
+          source: 'allrice',
+          sourceRef: 'https://example.test/skill',
+          license: 'MIT',
+          reviewedByLabel: 'Fixture',
+        },
+      ],
+    };
+    const denied = await adapter.execute(input);
+    expect(JSON.parse(denied.answer)).toEqual([]);
+    expect(
+      events.filter(
+        (e) => e.type === 'native.event' && e.sourcePayload?.skillId === id,
+      ),
+    ).toEqual([]);
+    input.threadId = denied.threadId;
+    input.tools = [
+      ...input.tools,
+      {
+        name: 'cloud.process.execute',
+        description: 'Explicit test authorization',
+        inputSchema: {},
+      },
+    ];
+    const allowed = await adapter.execute(input);
+    expect(JSON.parse(allowed.answer)).toEqual([
+      { id, name: 'synthetic-skill', description: 'Requires write.' },
+    ]);
+    input.threadId = allowed.threadId;
+    input.nativeSkills[0]!.description = 'Updated directory description.';
+    input.baseSkillCatalog.snapshotChecksum = `sha256:${'c'.repeat(64)}`;
+    input.baseSkillCatalog.skills[0]!.version = '1.0.1';
+    const revised = await adapter.execute(input);
+    expect(JSON.parse(revised.answer)).toEqual([
+      {
+        id,
+        name: 'synthetic-skill',
+        description: 'Updated directory description.',
+      },
+    ]);
   });
 
   it('announces Skills only on cold load, including a changed Skill version', async () => {
@@ -833,7 +966,7 @@ describe('DshHarnessAdapter', () => {
     const loaded = () =>
       events.filter(
         (event) =>
-          event.type === 'native.event' && event.label === 'Skill 已加载',
+          event.type === 'native.event' && event.label === 'Skill 已就绪',
       );
     const first = await adapter.execute(input);
     expect(loaded()).toHaveLength(1);
@@ -883,9 +1016,9 @@ describe('DshHarnessAdapter', () => {
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: 'Skill 已加载',
+          label: 'Skill 已就绪',
           summary: 'workflow-automation',
-          sourcePayload: expect.objectContaining({ status: 'loaded' }),
+          sourcePayload: expect.objectContaining({ status: 'registered' }),
         }),
       ]),
     );

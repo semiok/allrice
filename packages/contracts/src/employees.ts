@@ -606,11 +606,43 @@ export const EmployeeExecutionSnapshotV1Schema = z
   })
   .strict();
 
+/** New Runs freeze the reviewed platform catalog separately from the immutable
+ * employee publication. Historical snapshots must not gain default fields. */
+export const EmployeeBaseSkillCatalogSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    catalogChecksum: ChecksumSchema,
+    snapshotChecksum: ChecksumSchema,
+    authority: z.literal('skills/catalog.json'),
+    skills: z
+      .array(
+        z
+          .object({
+            id: UuidSchema,
+            name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+            version: z.string().regex(/^\d+\.\d+\.\d+$/),
+            checksum: ChecksumSchema,
+            bundleChecksum: ChecksumSchema.optional(),
+            source: z.enum(['allrice', 'dsh-migrated']),
+            sourceRef: z.url(),
+            license: z.string().min(1),
+            reviewedByLabel: z.string().min(1),
+          })
+          .strict(),
+      )
+      .max(64),
+  })
+  .strict();
+export type EmployeeBaseSkillCatalog = z.infer<
+  typeof EmployeeBaseSkillCatalogSchema
+>;
+
 export const EmployeeExecutionSnapshotV2Schema =
   EmployeeExecutionSnapshotV1Schema.extend({
     schemaVersion: z.literal(2),
     // No default: old Run JSON remains unchanged.
     instance: EmployeeInstanceSnapshotSchema.optional(),
+    baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
     modelSnapshot: SessionModelSnapshotSchema.optional(),
     taskRuntimePolicy: z
       .object({

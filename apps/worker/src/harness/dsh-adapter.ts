@@ -315,16 +315,21 @@ export class DshHarnessAdapter implements HarnessAdapter {
           type: 'native.event',
           presentation: 'context',
           status: 'completed',
-          label: 'Skill 已加载',
+          label: 'Skill 已就绪',
           summary: entry.skill.name,
           sourcePayload: {
             skillId: entry.skill.id,
             skillName: entry.skill.name,
             skillChecksum: entry.skill.checksum,
-            status: 'loaded',
+            status: 'registered',
           },
         });
-      } else if (entry.missingTools.length > 0) {
+      } else if (
+        entry.missingTools.length > 0 &&
+        !input.baseSkillCatalog?.skills.some((s) => s.id === entry.skill.id)
+      ) {
+        // Foundation methods are supplied by default, but may require tools
+        // this employee is not authorized to use. That is not a failed action.
         await emit({
           type: 'native.event',
           presentation: 'lifecycle',
@@ -420,7 +425,42 @@ export class DshHarnessAdapter implements HarnessAdapter {
               replyId,
               textMode,
             }),
-          onNative: async (event) => emit(event),
+          onNative: async (event) => {
+            // Directory registration is not adoption. Attach exact frozen
+            // identity only to an actual native Skill call/result.
+            if (
+              (event.type === 'tool.started' ||
+                event.type === 'tool.completed' ||
+                event.type === 'tool.failed') &&
+              event.name === 'skill'
+            ) {
+              const name = event.sourcePayload?.skillName;
+              const skill = nativeSkills.find((s) => s.name === name);
+              const governance = input.baseSkillCatalog?.skills.find(
+                (s) => s.id === skill?.id,
+              );
+              if (skill)
+                event = {
+                  ...event,
+                  sourcePayload: {
+                    ...event.sourcePayload,
+                    skillId: skill.id,
+                    skillChecksum: skill.checksum,
+                    ...(governance
+                      ? {
+                          skillVersion: governance.version,
+                          skillCatalogChecksum:
+                            input.baseSkillCatalog!.catalogChecksum,
+                        }
+                      : {}),
+                    ...(skill.bundle
+                      ? { skillBundleChecksum: skill.bundle.checksum }
+                      : {}),
+                  },
+                };
+            }
+            await emit(event);
+          },
         });
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;

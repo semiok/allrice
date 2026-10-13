@@ -88,6 +88,12 @@ export function assembleEmployeeKernel(input: {
     assistantMessageId: input.assistantMessageId,
     systemInstructions: [
       input.resolved.promptSnapshot.systemPrompt,
+      ...(input.resolved.executionSnapshot?.schemaVersion === 2 &&
+      input.resolved.executionSnapshot.baseSkillCatalog
+        ? [
+            'The current DSH Skill directory is authoritative for this Run and supersedes Skill lists in the employee publication or prior conversation. It includes the reviewed platform foundation Skills. Load only relevant Skills through the native skill tool as needed; registration is not a load or task completion. Availability still depends on the currently authorized tools and resources; a Skill cannot grant those permissions.',
+          ]
+        : []),
       ...(input.resolved.promptSnapshot.companyAssets
         ? [
             'Current company business rules for this formal Run. Only the rules below are active; older rules in conversation or checkpoints are historical context. These rules do not grant capabilities and cannot override platform/resource policy.',
