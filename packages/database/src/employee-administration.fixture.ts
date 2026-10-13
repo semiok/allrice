@@ -105,10 +105,10 @@ export async function createEmployeeAdministrationFixture(
     values(${revisionId},${employeeId},1,'draft',${db.json(definition)},${skillBytesChecksum(JSON.stringify(definition))})`;
   await db`update allrice_platform_employees set current_draft_revision_id=${revisionId} where id=${employeeId}`;
   await db`update allrice_provider_status set status='connected',checked_at=clock_timestamp() where provider='codex'`;
-  async function preview() {
+  async function preview(targetEmployeeId: string = employeeId) {
     // Queue through the real public API to capture its exact immutable inputs.
     // Only model completion is synthetic; this test never invokes a provider.
-    const result = await queuePlatformEmployeeTestRun(employeeId, {
+    const result = await queuePlatformEmployeeTestRun(targetEmployeeId, {
       environment: 'company',
       workspaceId,
       ownerId,
@@ -135,8 +135,8 @@ export async function createEmployeeAdministrationFixture(
       revisionId: result.testRun!.revisionId,
     };
   }
-  const publish = () =>
-    publishPlatformEmployee(employeeId, { workspaceIds: [workspaceId] });
+  const publish = (targetEmployeeId: string = employeeId) =>
+    publishPlatformEmployee(targetEmployeeId, { workspaceIds: [workspaceId] });
   const revision = async (id: string = revisionId) =>
     (
       await db`select * from allrice_platform_employee_revisions where id=${id}`

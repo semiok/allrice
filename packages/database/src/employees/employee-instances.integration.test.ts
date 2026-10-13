@@ -36,6 +36,7 @@ import {
   publishPlatformEmployee,
   savePlatformEmployeeDraft,
   disablePlatformEmployee,
+  assignPublishedPlatformEmployeeToWorkspace,
 } from './platform-employees.ts';
 import {
   assertEmployeeInstanceAdmission,
@@ -357,6 +358,67 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         (x) => x.id,
       ),
     ).not.toContain(i.id);
+  });
+  it('upgrades Rice through its established tenant alias without allowing the alias to rename the platform identity', async () => {
+    const source = await createEmployeeAdministrationFixture(fixture.db);
+    const [rice] =
+      await fixture.db`select id from allrice_platform_employees where employee_key='rice'`;
+    const employeeId = rice!.id as string;
+    const definition = { ...source.definition, key: 'rice' };
+    await savePlatformEmployeeDraft(employeeId, { definition });
+    await source.preview(employeeId);
+    expect((await source.publish(employeeId)).valid).toBe(true);
+    const assigned = async () => fixture.db`
+      select e.id, e.employee_key, e.name from allrice_employees e
+      join allrice_platform_employee_tenant_assignments d on d.tenant_employee_id=e.id
+      where d.employee_id=${employeeId} and d.workspace_id=${source.workspaceId}`;
+    const before = await assigned();
+    expect(before).toHaveLength(1);
+    expect(before[0]!.employee_key).toBe('default-assistant');
+    await savePlatformEmployeeDraft(employeeId, {
+      definition: { ...definition, name: 'Updated Rice' },
+    });
+    await source.preview(employeeId);
+    expect((await source.publish(employeeId)).valid).toBe(true);
+    expect(await assigned()).toEqual([{ ...before[0], name: 'Updated Rice' }]);
+    await expect(
+      savePlatformEmployeeDraft(employeeId, {
+        definition: { ...definition, key: 'default-assistant' },
+      }),
+    ).rejects.toThrow('platform_employee_materialized_key_immutable');
+  });
+  it('keeps an unpublished draft rename from blocking repeated deployment of the published identity', async () => {
+    const source = await createEmployeeAdministrationFixture(fixture.db);
+    await source.preview();
+    expect(
+      (await publishPlatformEmployee(source.employeeId, { scope: 'assigned' }))
+        .valid,
+    ).toBe(true);
+    const draftKey = `draft-${randomUUID()}`;
+    await savePlatformEmployeeDraft(source.employeeId, {
+      definition: { ...source.definition, key: draftKey },
+    });
+    await assignPublishedPlatformEmployeeToWorkspace(
+      draftKey,
+      source.workspaceId,
+    );
+    const another = await principal();
+    await assignPublishedPlatformEmployeeToWorkspace(
+      draftKey,
+      another.workspaceId,
+    );
+    const deployed =
+      await fixture.db`select e.employee_key from allrice_platform_employee_tenant_assignments d
+      join allrice_employees e on e.id=d.tenant_employee_id where d.employee_id=${source.employeeId}`;
+    expect(deployed).toHaveLength(2);
+    expect(
+      deployed.every((x) => x.employee_key === source.definition.key),
+    ).toBe(true);
+    await expect(
+      savePlatformEmployeeDraft(source.employeeId, {
+        definition: source.definition,
+      }),
+    ).resolves.toBeDefined();
   });
   it('rejects materialized template key changes without detaching instance or content identities', async () => {
     const f = await setup(),
