@@ -1,3 +1,4 @@
+import { employeeChoice, sessionEmployeeKey } from './employee-instances';
 import { assistantStreamText } from '../../lib/execution/assistant-stream';
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
@@ -44,9 +45,7 @@ export async function fileToBase64(file: File) {
 }
 
 export function employeeForSession(workspace: Workspace, session: Session) {
-  return workspace.employees.find(
-    (employee) => employee.id === session.employeeAssignmentId,
-  );
+  return employeeChoice(workspace, sessionEmployeeKey(session));
 }
 
 export function providerForEmployee(employee?: Employee) {

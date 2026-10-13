@@ -1,4 +1,6 @@
 'use client';
+
+import { sessionEmployeeKey } from './employee-instances';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   EmployeeSessionGroup,
@@ -115,17 +117,17 @@ export function useSessionArchive({
           : await Promise.all(
               Object.keys(previous?.employees ?? {}).map(async (employeeId) => {
                 const before = previous!.sessions.filter(
-                  (s) => s.employeeAssignmentId === employeeId,
+                  (s) => sessionEmployeeKey(s) === employeeId,
                 );
                 const total = result.employeeGroups?.find(
-                  (g) => g.employeeAssignmentId === employeeId,
+                  (g) => sessionEmployeeKey(g) === employeeId,
                 )?.count;
                 if (result.employeeGroups && !total) return null;
                 const sessions: Session[] = [];
                 let nextCursor: string | null = null;
                 do {
                   const employeeQuery = new URLSearchParams(query);
-                  employeeQuery.set('employeeAssignmentId', employeeId);
+                  employeeQuery.set('employeeInstanceId', employeeId);
                   if (nextCursor) employeeQuery.set('cursor', nextCursor);
                   const next = await fetch(
                     `/api/v1/sessions?${employeeQuery}`,
@@ -135,7 +137,7 @@ export function useSessionArchive({
                   if (
                     !Array.isArray(next.sessions) ||
                     next.sessions.some(
-                      (s) => s.employeeAssignmentId !== employeeId,
+                      (s) => sessionEmployeeKey(s) !== employeeId,
                     ) ||
                     (next.nextCursor && next.nextCursor === nextCursor)
                   )
@@ -177,7 +179,7 @@ export function useSessionArchive({
                   ...result.sessions.filter(
                     (s) =>
                       !refreshed.some(
-                        (item) => item?.employeeId === s.employeeAssignmentId,
+                        (item) => item?.employeeId === sessionEmployeeKey(s),
                       ),
                   ),
                   ...refreshed.flatMap((item) => item?.sessions ?? []),
@@ -251,11 +253,11 @@ export function useSessionArchive({
     if (employeePage) return employeePage.nextCursor;
     const total = currentPage?.employeeGroups
       ? (currentPage.employeeGroups.find(
-          (g) => g.employeeAssignmentId === employeeId,
+          (g) => sessionEmployeeKey(g) === employeeId,
         )?.count ?? 0)
       : undefined;
     const loaded =
-      currentPage?.sessions.filter((s) => s.employeeAssignmentId === employeeId)
+      currentPage?.sessions.filter((s) => sessionEmployeeKey(s) === employeeId)
         .length ?? 0;
     return total !== undefined && total <= loaded
       ? null
@@ -300,7 +302,7 @@ export function useSessionArchive({
     try {
       const query = new URLSearchParams({
         workspaceId,
-        employeeAssignmentId: employeeId,
+        employeeInstanceId: employeeId,
         archived: filter === 'only' ? 'only' : String(filter === 'show'),
       });
       if (cursor) query.set('cursor', cursor);
@@ -310,7 +312,7 @@ export function useSessionArchive({
       }).then(readJson<Page>);
       if (
         !Array.isArray(result.sessions) ||
-        result.sessions.some((s) => s.employeeAssignmentId !== employeeId)
+        result.sessions.some((s) => sessionEmployeeKey(s) !== employeeId)
       )
         throw new Error('工作记录响应无效，请重试');
       update(

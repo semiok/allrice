@@ -383,6 +383,11 @@ export async function listEmployeeHub(
     order by a.is_default desc, e.name, a.id
   `;
   const employeeIds = [...new Set(assignments.map((row) => row.employee_id))];
+  const { ensureGeneralEmployeeInstance, listEmployeeInstances } =
+    await import('./employee-instances.ts');
+  for (const row of assignments)
+    await ensureGeneralEmployeeInstance(sql, row.assignment_id);
+  const instances = await listEmployeeInstances(context, workspaceId, sql);
   const versions =
     employeeIds.length === 0
       ? []
@@ -477,6 +482,9 @@ export async function listEmployeeHub(
           assignedBy: assignment.assigned_by,
           assignedAt: assignment.assigned_at.toISOString(),
           memoryCount: memoryCountByEmployee.get(assignment.employee_id) ?? 0,
+          instances: instances.filter(
+            (instance) => instance.assignmentId === assignment.assignment_id,
+          ),
           currentVersion: publicVersionSnapshot(assignment),
           versions: versions
             .filter((version) => version.employee_id === assignment.employee_id)
@@ -1133,6 +1141,18 @@ export async function prepareEmployeeRunBinding(input: {
   `;
   const assignment = rows[0];
   if (!assignment) throw new EmployeeHubError('not_found');
+  const { prepareEmployeeInstanceSnapshot, readEmployeeVersionPublication } =
+    await import('./employee-instances.ts');
+  const instance = await prepareEmployeeInstanceSnapshot(
+    {
+      actor: input.context.actor,
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+    },
+    input.sessionId,
+    input.assignmentId,
+    input.employeeVersionId,
+  );
   const manifest = EmployeeManifestSchema.safeParse(assignment.manifest);
   if (
     !manifest.success ||
@@ -1211,19 +1231,15 @@ export async function prepareEmployeeRunBinding(input: {
   // Tenant assignment pointers change on publication. Freeze the exact revision
   // now so dispatch can verify its immutable checksum without following a newer
   // draft, assignment, or revision when this Run resumes.
-  const [publication] = await sql<
-    { revision_id: string; checksum: string; definition: unknown }[]
-  >`
-    select r.id as revision_id, r.checksum, r.definition
-    from allrice_platform_employee_tenant_assignments p
-    join allrice_platform_employee_revisions r
-      on r.id = p.revision_id and r.employee_id = p.employee_id
-    where p.organization_id = ${input.context.organizationId}
-      and p.workspace_id = ${input.workspaceId}
-      and p.tenant_employee_id = ${assignment.employee_id}
-      and p.tenant_employee_version_id = ${assignment.id}
-      and p.active and r.status = 'published'
-  `;
+  const publication = await readEmployeeVersionPublication(
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      employeeId: assignment.employee_id,
+      versionId: assignment.id,
+    },
+    sql,
+  );
   const managedPython = freezeManagedPythonBinding({
     manifest: manifest.data,
     grantedCapabilities,
@@ -1430,6 +1446,7 @@ export async function prepareEmployeeRunBinding(input: {
     nativeSkills,
     executionSnapshot: {
       schemaVersion: 2,
+      instance,
       ...(mcpEnabled ? { mcpTools } : {}),
       ...(localMcp.connections.length ? { localMcp } : {}),
       employee: {

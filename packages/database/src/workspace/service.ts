@@ -122,6 +122,7 @@ interface SessionRow {
   workspace_id: string;
   owner_id: string;
   employee_assignment_id: string;
+  employee_instance_id?: string | null;
   employee_version_id: string;
   title: string;
   visibility: Visibility;
@@ -435,6 +436,7 @@ function mapSession(row: SessionRow): ChatSession {
     workspaceId: row.workspace_id,
     ownerId: row.owner_id,
     employeeAssignmentId: row.employee_assignment_id,
+    employeeInstanceId: row.employee_instance_id ?? row.employee_assignment_id,
     employeeVersionId: row.employee_version_id,
     title: row.title,
     visibility: row.visibility,
@@ -498,6 +500,20 @@ export async function createChatSession(
   options: { sessionId?: string } = {},
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
+  if (parsed.employeeInstanceId) {
+    const { getEmployeeInstance } =
+      await import('../employees/employee-instances.ts');
+    const instance = await getEmployeeInstance(
+      { ...context, workspaceId: parsed.workspaceId },
+      parsed.employeeInstanceId,
+    );
+    if (
+      parsed.employeeAssignmentId &&
+      parsed.employeeAssignmentId !== instance.assignmentId
+    )
+      throw new DataAccessError('authorization_denied');
+    parsed.employeeAssignmentId = instance.assignmentId;
+  }
   const assignment = parsed.employeeAssignmentId
     ? null
     : await ensureDefaultEmployee(context, parsed.workspaceId);
@@ -519,7 +535,11 @@ export async function createAssignedChatSession(
   input: unknown,
   options: { sessionId?: string } = {},
   transaction?: TransactionSql,
-) {
+): Promise<z.infer<typeof ChatSessionSchema>> {
+  if (!transaction)
+    return getDatabase().begin((tx) =>
+      createAssignedChatSession(context, input, options, tx),
+    );
   const parsed = CreateChatSessionInputSchema.parse(input);
   if (!parsed.employeeAssignmentId)
     throw new DataAccessError('authorization_denied');
@@ -528,6 +548,20 @@ export async function createAssignedChatSession(
     context,
     parsed.workspaceId,
     sql,
+  );
+  const { resolveEmployeeSessionInstance } =
+    await import('../employees/employee-instances.ts');
+  const instance = await resolveEmployeeSessionInstance(
+    // This core also serves authorized scheduled/folder work. Its principal
+    // describes the resource owner; a device/correlation ID is not a login.
+    {
+      actor: context.actor,
+      organizationId: context.organizationId,
+      workspaceId,
+    },
+    parsed.employeeAssignmentId,
+    parsed.employeeInstanceId,
+    transaction,
   );
   let assignment: EmployeeAssignment | null = null;
   if (parsed.employeeAssignmentId) {
@@ -569,10 +603,10 @@ export async function createAssignedChatSession(
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (
       id, organization_id, workspace_id, owner_id, employee_assignment_id,
-      employee_version_id, title, visibility
+      employee_instance_id, employee_version_id, title, visibility
     ) values (
       ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
-      ${assignment.id}, ${employeeVersionId}, ${parsed.title}, 'private'
+      ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private'
     )
     on conflict(id) do nothing
     returning *
@@ -590,6 +624,7 @@ export async function createAssignedChatSession(
     row.workspace_id !== workspaceId ||
     row.owner_id !== requireUser(context) ||
     row.employee_assignment_id !== assignment.id ||
+    (row.employee_instance_id ?? row.employee_assignment_id) !== instance.id ||
     row.archived_at ||
     row.visibility !== 'private'
   )
@@ -631,6 +666,7 @@ export async function listChatSessions(
     includeArchived?: boolean;
     archivedOnly?: boolean;
     employeeAssignmentId?: string;
+    employeeInstanceId?: string;
     includeEmployeeGroups?: boolean;
     query?: string;
   } = {},
@@ -640,6 +676,9 @@ export async function listChatSessions(
   const employeeAssignmentId = options.employeeAssignmentId
     ? UuidSchema.parse(options.employeeAssignmentId)
     : null;
+  const employeeInstanceId = options.employeeInstanceId
+    ? UuidSchema.parse(options.employeeInstanceId)
+    : null;
   const limit = Math.min(Math.max(options.limit ?? 30, 1), 100);
   const sql = getDatabase();
   // Bind cursor timestamps as text so postgres.js does not serialize them
@@ -648,10 +687,13 @@ export async function listChatSessions(
     (SessionRow & { employee_name: string; cursor_updated_at: string })[]
   >`
     select *, to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_updated_at,
-      (select v.name from allrice_employee_versions v where v.id=allrice_chat_sessions.employee_version_id) as employee_name from allrice_chat_sessions
+      coalesce(case when owner_id=${requireUser(context)} then
+        (select i.profile->>'name' from allrice_employee_instances i where i.id=coalesce(allrice_chat_sessions.employee_instance_id,allrice_chat_sessions.employee_assignment_id)) end,
+        (select v.name from allrice_employee_versions v where v.id=allrice_chat_sessions.employee_version_id)) as employee_name from allrice_chat_sessions
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
       and (${employeeAssignmentId}::uuid is null or employee_assignment_id = ${employeeAssignmentId}::uuid)
+      and (${employeeInstanceId}::uuid is null or coalesce(employee_instance_id,employee_assignment_id)=${employeeInstanceId}::uuid)
       and (${options.includeArchived ?? false} or ${options.archivedOnly ?? false} or archived_at is null)
       and (not ${options.archivedOnly ?? false} or archived_at is not null)
       and (${options.query ?? ''} = '' or position(lower(${options.query ?? ''}) in lower(title)) > 0)
@@ -670,20 +712,27 @@ export async function listChatSessions(
   // employees remain discoverable even when their work is older than page one.
   const employeeGroups = options.includeEmployeeGroups
     ? await sql<
-        { employeeAssignmentId: string; employeeName: string; count: number }[]
+        {
+          employeeAssignmentId: string;
+          employeeInstanceId: string;
+          employeeName: string;
+          count: number;
+        }[]
       >`
         select s.employee_assignment_id as "employeeAssignmentId",
-          (array_agg(v.name order by s.updated_at desc, s.id desc))[1] as "employeeName",
+          coalesce(s.employee_instance_id,s.employee_assignment_id) as "employeeInstanceId",
+          (array_agg(coalesce(case when s.owner_id=${requireUser(context)} then i.profile->>'name' end,v.name) order by s.updated_at desc, s.id desc))[1] as "employeeName",
           count(*)::integer as count
         from allrice_chat_sessions s
         join allrice_employee_versions v on v.id = s.employee_version_id
+        left join allrice_employee_instances i on i.id=coalesce(s.employee_instance_id,s.employee_assignment_id)
         where s.organization_id = ${context.organizationId}
           and s.workspace_id = ${workspaceId}
           and (${options.includeArchived ?? false} or ${options.archivedOnly ?? false} or s.archived_at is null)
           and (not ${options.archivedOnly ?? false} or s.archived_at is not null)
           and (${options.query ?? ''} = '' or position(lower(${options.query ?? ''}) in lower(s.title)) > 0)
           and (s.owner_id = ${requireUser(context)} or s.visibility <> 'private')
-        group by s.employee_assignment_id
+        group by s.employee_assignment_id,coalesce(s.employee_instance_id,s.employee_assignment_id)
       `
     : undefined;
   return {

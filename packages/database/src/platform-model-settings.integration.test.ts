@@ -11,6 +11,7 @@ import {
 } from './providers/platform-model-settings.ts';
 import { freezeSessionModelSnapshot } from './providers/model-pool.ts';
 import { getEmployeeWorkspace } from './workspace/service.ts';
+import { authenticateSession, createSession } from './identity.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -27,7 +28,14 @@ integration('platform-wide model inheritance', () => {
         'Synthetic model display regression; no model call.',
       );
       const original = task.binding.executionSnapshot.modelSnapshot!;
-      const before = await getEmployeeWorkspace(f.context, f.workspaceId);
+      // Workbench reads use a real login, not the Worker's correlation ID.
+      const login = await createSession(f.ownerId);
+      const context = await authenticateSession(login.token, {
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+      });
+      assert.ok(context);
+      const before = await getEmployeeWorkspace(context, f.workspaceId);
       expect(before.employeeProfiles.length).toBeGreaterThan(0);
       expect(
         before.employeeProfiles.every(
@@ -36,7 +44,7 @@ integration('platform-wide model inheritance', () => {
       ).toBe(true);
       const settings = await readPlatformModelSettings();
       await withFixturePlatformAdministrator(f.ownerId, async () => {
-        await updatePlatformModelSettings(f.context, {
+        await updatePlatformModelSettings(context, {
           expectedRevision: settings.revision,
           configuration: {
             ...settings.configuration,
@@ -45,7 +53,7 @@ integration('platform-wide model inheritance', () => {
           },
         });
       });
-      const after = await getEmployeeWorkspace(f.context, f.workspaceId);
+      const after = await getEmployeeWorkspace(context, f.workspaceId);
       expect(after.employeeProfiles.map((profile) => profile.model)).toEqual(
         before.employeeProfiles.map(() => ({
           harness: 'dsh',

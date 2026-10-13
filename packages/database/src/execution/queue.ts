@@ -654,6 +654,14 @@ async function enqueueRunCore(
   const ownerId = requireUser(context);
   const workspaceId = await resolveWorkspaceId(context, submission.workspaceId);
   await requireExecutionMembership(context, workspaceId);
+  // Resource authority is shared with scheduled/folder work, whose context
+  // uses correlation IDs rather than a browser login. Re-read its current
+  // owner/membership/assignment; browser authentication stays at its entry.
+  const instanceIdentity = {
+    actor: context.actor,
+    organizationId: context.organizationId,
+    workspaceId,
+  };
   let availableAt = submission.availableAt
     ? new Date(submission.availableAt)
     : new Date();
@@ -669,7 +677,15 @@ async function enqueueRunCore(
       // Serialize before taking issuer/grant/attempt locks. In particular a
       // second start must never hold issuer SHARE while awaiting this mutex.
       await transaction`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
-      await transaction`select id from allrice_users where id=${ownerId} for update`;
+      if (options.employeeBinding?.executionSnapshot.instance) {
+        const { lockEmployeeInstanceAdmissionIdentity } =
+          await import('../employees/employee-instances.ts');
+        await lockEmployeeInstanceAdmissionIdentity(
+          transaction,
+          instanceIdentity,
+        );
+      }
+      await transaction`select id from allrice_users where id=${ownerId} for no key update`;
     }
     await acquireDevAdmission(transaction);
     if (admission.kind === 'maintenance_repository') {
@@ -763,6 +779,16 @@ async function enqueueRunCore(
       };
     }
 
+    // Folder event authority takes user SHARE. Acquire the final user lock
+    // before that branch so concurrent events cannot both upgrade SHARE.
+    if (options.employeeBinding?.executionSnapshot.instance) {
+      const { lockEmployeeInstanceAdmissionIdentity } =
+        await import('../employees/employee-instances.ts');
+      await lockEmployeeInstanceAdmissionIdentity(
+        transaction,
+        instanceIdentity,
+      );
+    }
     if (options.folderEventId) {
       const { assertFolderTriggerMessage } =
         await import('../folder-triggers.ts');
@@ -782,6 +808,24 @@ async function enqueueRunCore(
       );
     }
     if (options.employeeBinding) {
+      if (options.employeeBinding.executionSnapshot.instance) {
+        const { assertEmployeeInstanceAdmission } =
+          await import('../employees/employee-instances.ts');
+        const snapshot = options.employeeBinding.executionSnapshot.instance;
+        if (
+          snapshot.assignmentId !==
+            options.employeeBinding.employeeAssignmentId ||
+          snapshot.source.employeeVersionId !==
+            options.employeeBinding.employeeVersionId
+        )
+          throw new QueueError('policy_denied');
+        await assertEmployeeInstanceAdmission(
+          transaction,
+          instanceIdentity,
+          options.employeeBinding.sessionId,
+          snapshot,
+        );
+      }
       if (admission.kind === 'maintenance_repair') {
         if (
           !options.repairBinding ||
@@ -932,7 +976,7 @@ async function enqueueRunCore(
         24 * 60 * 60 * 1000,
     );
 
-    await transaction`select id from allrice_users where id = ${ownerId} for update`;
+    await transaction`select id from allrice_users where id = ${ownerId} for no key update`;
     const versions = await transaction<{ version: number }[]>`
       select coalesce(max(version), 0)::integer + 1 as version
       from allrice_policy_snapshots

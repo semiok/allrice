@@ -90,6 +90,87 @@ export const EmployeeIdentitySchema = z
   .strict();
 export type EmployeeIdentity = z.infer<typeof EmployeeIdentitySchema>;
 
+/** Personal employee identity, separate from both the shared publication and
+ * the human collaborator profile. None of these fields grant capabilities. */
+export const EmployeeInstanceProfileSchema = z
+  .object({
+    name: z.string().trim().min(1).max(120).optional(),
+    description: z.string().trim().min(1).max(1_000).optional(),
+    appearance: EmployeeAppearanceSchema.optional(),
+    role: z.string().trim().min(1).max(120).optional(),
+    mission: z.string().trim().min(1).max(500).optional(),
+    workStyle: z.string().trim().min(1).max(1_000).optional(),
+    expressionStyle: z
+      .enum(['concise', 'structured', 'exploratory'])
+      .optional(),
+  })
+  .strict();
+export type EmployeeInstanceProfile = z.infer<
+  typeof EmployeeInstanceProfileSchema
+>;
+
+export const EmployeeVersionSourceSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('platform'),
+      employeeVersionId: UuidSchema,
+      templateId: UuidSchema,
+      templateRevisionId: UuidSchema,
+      templateRevision: z.number().int().positive(),
+      templateChecksum: ChecksumSchema,
+    })
+    .strict(),
+  z
+    .object({
+      // Historical source is unknown unless an immutable mapping proves it.
+      kind: z.literal('tenant_version'),
+      employeeVersionId: UuidSchema,
+    })
+    .strict(),
+]);
+
+export const EmployeeInstanceSnapshotSchema = z
+  .object({
+    id: UuidSchema,
+    assignmentId: UuidSchema,
+    organizationId: UuidSchema,
+    workspaceId: UuidSchema,
+    ownerId: UuidSchema,
+    kind: z.enum(['general', 'custom']),
+    revision: z.number().int().positive(),
+    profile: EmployeeInstanceProfileSchema,
+    creationSource: EmployeeVersionSourceSchema,
+    source: EmployeeVersionSourceSchema,
+  })
+  .strict();
+export type EmployeeInstanceSnapshot = z.infer<
+  typeof EmployeeInstanceSnapshotSchema
+>;
+
+export const EmployeeInstanceSchema = EmployeeInstanceSnapshotSchema.extend({
+  createdAt: TimestampSchema,
+  updatedAt: TimestampSchema,
+}).strict();
+export type EmployeeInstance = z.infer<typeof EmployeeInstanceSchema>;
+
+export const CreateEmployeeInstanceInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    assignmentId: UuidSchema,
+    requestId: UuidSchema,
+    profile: EmployeeInstanceProfileSchema,
+  })
+  .strict();
+
+export const UpdateEmployeeInstanceInputSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    expectedRevision: z.number().int().positive(),
+    requestId: UuidSchema,
+    profile: EmployeeInstanceProfileSchema,
+  })
+  .strict();
+
 export const EmployeeRuntimePolicySchema = z
   .object({
     harness: z.enum(['codex', 'dsh']),
@@ -374,6 +455,7 @@ export const EmployeeHubAssignmentSchema = z
     assignedBy: UuidSchema.nullable(),
     assignedAt: TimestampSchema,
     memoryCount: z.number().int().nonnegative().default(0),
+    instances: z.array(EmployeeInstanceSchema).optional(),
     currentVersion: EmployeeVersionSnapshotSchema,
     versions: z.array(EmployeeVersionSnapshotSchema),
   })
@@ -527,6 +609,8 @@ export const EmployeeExecutionSnapshotV1Schema = z
 export const EmployeeExecutionSnapshotV2Schema =
   EmployeeExecutionSnapshotV1Schema.extend({
     schemaVersion: z.literal(2),
+    // No default: old Run JSON remains unchanged.
+    instance: EmployeeInstanceSnapshotSchema.optional(),
     modelSnapshot: SessionModelSnapshotSchema.optional(),
     taskRuntimePolicy: z
       .object({

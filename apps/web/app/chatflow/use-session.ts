@@ -13,6 +13,7 @@ import type { SaasCapabilityManifest } from '@allrice/contracts';
 
 import type { History, Session, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
+import { employeeChoice, employeeChoices } from './employee-instances';
 import { createSessionSelection } from './session-selection';
 import { rememberSessionLocation } from './session-location';
 
@@ -348,12 +349,12 @@ export function useSession({ setError }: UseSessionOptions) {
       const explicitAssignment =
         targetEmployeeAssignmentId ?? pendingEmployeeAssignmentId;
       const employee = explicitAssignment
-        ? workspace.employees.find((item) => item.id === explicitAssignment)
+        ? employeeChoice(workspace, explicitAssignment)
         : requestedEmployee
           ? workspace.employees.find(
               (item) => item.employeeId === requestedEmployee,
             )
-          : (workspace.employees.find((item) => item.isDefault) ??
+          : (employeeChoices(workspace).find((item) => item.isDefault) ??
             workspace.employees[0]);
       if (!employee)
         throw new Error('当前账号未分配此员工，请检查登录账号和发布目标');
@@ -364,6 +365,9 @@ export function useSession({ setError }: UseSessionOptions) {
           body: JSON.stringify({
             workspaceId: workspace.workspaceId,
             employeeAssignmentId: employee.id,
+            ...(employee.instanceId
+              ? { employeeInstanceId: employee.instanceId }
+              : {}),
             title: title.trim().slice(0, 60) || '新的工作',
           }),
         }),
@@ -465,9 +469,9 @@ export function useSession({ setError }: UseSessionOptions) {
       ? null
       : new URLSearchParams(window.location.search).get('employee');
   const newSessionEmployee = pendingEmployeeAssignmentId
-    ? workspace?.employees.find(
-        (item) => item.id === pendingEmployeeAssignmentId,
-      )
+    ? workspace
+      ? employeeChoice(workspace, pendingEmployeeAssignmentId)
+      : undefined
     : requestedEmployee
       ? workspace?.employees.find(
           (item) => item.employeeId === requestedEmployee,

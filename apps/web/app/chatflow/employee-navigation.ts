@@ -7,6 +7,11 @@ import type {
 } from './chatflow-types';
 import type { CSSProperties } from 'react';
 import {
+  employeeChoices,
+  employeeChoiceId,
+  sessionEmployeeKey,
+} from './employee-instances';
+import {
   employeeColorPalette,
   employeeColorForeground,
   resolveEmployeeAccent,
@@ -144,17 +149,20 @@ export function employeeGroups(
   summaries: EmployeeSessionGroup[] = [],
 ) {
   const assignments = new Map(
-    workspace.employees.map((employee) => [employee.id, employee]),
+    employeeChoices(workspace).map((employee) => [
+      employeeChoiceId(employee),
+      employee,
+    ]),
   );
-  const counts = new Map(summaries.map((g) => [g.employeeAssignmentId, g]));
+  const counts = new Map(summaries.map((g) => [sessionEmployeeKey(g), g]));
   const ids = [...new Set([...assignments.keys(), ...counts.keys()])];
   for (const session of sessions)
-    if (!ids.includes(session.employeeAssignmentId))
-      ids.push(session.employeeAssignmentId);
+    if (!ids.includes(sessionEmployeeKey(session)))
+      ids.push(sessionEmployeeKey(session));
   const nativeGroups: WorkspaceView[] = ids.map((id) => {
     const employee = assignments.get(id);
     const history = sessions.filter(
-      (session) => session.employeeAssignmentId === id,
+      (session) => sessionEmployeeKey(session) === id,
     );
     return {
       workspaceId: id,
@@ -195,12 +203,16 @@ export function employeeGroups(
       },
     ]),
   );
-  const defaultId =
-    workspace.employees.find((employee) => employee.isDefault)?.id ??
-    workspace.employees[0]?.id;
-  const activeGroup = sessions.find(
-    (session) => session.id === activeId,
-  )?.employeeAssignmentId;
+  const defaultEmployee =
+    employeeChoices(workspace).find((employee) => employee.isDefault) ??
+    employeeChoices(workspace)[0];
+  const defaultId = defaultEmployee
+    ? employeeChoiceId(defaultEmployee)
+    : undefined;
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const activeGroup = activeSession
+    ? sessionEmployeeKey(activeSession)
+    : undefined;
   return deriveGroups(
     list,
     nativeGroups,

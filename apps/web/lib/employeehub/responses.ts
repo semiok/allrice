@@ -1,5 +1,9 @@
 import { CodexSubscriptionError } from '@allrice/database';
-import { DataAccessError, EmployeeHubError } from '@allrice/database';
+import {
+  DataAccessError,
+  EmployeeHubError,
+  EmployeeInstanceError,
+} from '@allrice/database';
 
 import {
   apiProblem,
@@ -8,6 +12,14 @@ import {
 } from '../api-error-response';
 
 export function employeeHubErrorResponse(error: unknown) {
+  if (error instanceof EmployeeInstanceError)
+    return apiProblem({
+      status: 409,
+      code: 'VERSION_CONFLICT',
+      message:
+        '员工配置已变化，或请求标识被用于不同修改。请读取最新版本后重试。',
+      retryable: false,
+    });
   if (error instanceof CodexSubscriptionError)
     return apiProblem({
       status: 409,

@@ -20,7 +20,10 @@ export async function GET(request: Request) {
       await listChatSessions(context, workspaceId, {
         cursor: query.get('cursor') ?? undefined,
         employeeAssignmentId: query.get('employeeAssignmentId') ?? undefined,
-        includeEmployeeGroups: !query.has('employeeAssignmentId'),
+        employeeInstanceId: query.get('employeeInstanceId') ?? undefined,
+        includeEmployeeGroups:
+          !query.has('employeeAssignmentId') &&
+          !query.has('employeeInstanceId'),
         query: (query.get('q') ?? '').slice(0, 240),
         includeArchived: query.get('archived') === 'true',
         archivedOnly: query.get('archived') === 'only',

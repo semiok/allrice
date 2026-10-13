@@ -1627,6 +1627,9 @@ export async function materializePlatformEmployeeRevision(
     `;
     const tenantVersionId = versions[0]?.id;
     if (!tenantVersionId) throw new Error('tenant_employee_version_failed');
+    await transaction`insert into allrice_employee_version_sources
+      (employee_version_id,organization_id,workspace_id,employee_id,platform_employee_id,platform_revision_id)
+      values(${tenantVersionId},${workspace.organization_id},${workspace.id},${tenantEmployeeId},${input.employeeId},${input.revision.id})`;
     await transaction`
       insert into allrice_platform_employee_tenant_assignments (
         employee_id, revision_id, organization_id, workspace_id,

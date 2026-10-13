@@ -18,6 +18,11 @@ import {
   readEmployeeExpansion,
 } from './employee-navigation';
 import css from './employee-sidebar.module.css';
+import {
+  employeeChoice,
+  employeeChoiceProfile,
+  sessionEmployeeKey,
+} from './employee-instances';
 
 export function EmployeeSidebar({
   workspace,
@@ -42,9 +47,10 @@ export function EmployeeSidebar({
   const [expansion, setExpansion] = useState(() => readEmployeeExpansion(key));
   const [all, setAll] = useState<Record<string, boolean>>({});
   const [rail, setRail] = useState<string | null>(null);
-  const activeGroup = sessions.find(
-    (session) => session.id === activeId,
-  )?.employeeAssignmentId;
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const activeGroup = activeSession
+    ? sessionEmployeeKey(activeSession)
+    : undefined;
   useEffect(() => {
     if (activeGroup)
       setExpansion((current) => ({ ...current, [activeGroup]: true }));
@@ -111,18 +117,14 @@ export function EmployeeSidebar({
       }}
     >
       {groups.map((group) => {
-        const employee = workspace.employees.find(
-          (item) => item.id === group.key,
-        );
-        const profile = workspace.employeeProfiles.find(
-          (item) => item.assignmentId === group.key,
-        );
+        const employee = employeeChoice(workspace, group.key);
+        const profile = employeeChoiceProfile(workspace, group.key);
         const role = profile?.identity.role;
         const color = employee?.currentVersion.manifest.appearance?.accentColor;
         const accent = employeeAccent(group.label, color);
         const history = sessions.filter(
           (session) =>
-            session.employeeAssignmentId === group.key &&
+            sessionEmployeeKey(session) === group.key &&
             (archive?.filter === 'show' ||
               (archive?.filter === 'only'
                 ? !!session.archivedAt

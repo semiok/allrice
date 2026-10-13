@@ -1,5 +1,6 @@
 import * as platformModels from './providers/platform-model-settings.ts';
 import * as organizationContext from './employees/organization-context.ts';
+import * as employeeInstances from './employees/employee-instances.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
@@ -161,6 +162,17 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacyContext = vi
       .spyOn(organizationContext, 'readEmployeeOrganizationContext')
       .mockResolvedValueOnce(undefined);
+    // A 0096-era Run predates instances. Omit only that future optional field
+    // during historical seeding; never add current tables to this checkpoint
+    // or relax production instance admission on an incompletely migrated DB.
+    const legacyInstance = vi
+      .spyOn(employeeInstances, 'prepareEmployeeInstanceSnapshot')
+      .mockResolvedValueOnce(undefined as never);
+    // This synthetic tenant manifest has no platform publication. Its historical
+    // seed must not consult the later immutable version-source registry either.
+    const legacyPublication = vi
+      .spyOn(employeeInstances, 'readEmployeeVersionPublication')
+      .mockResolvedValueOnce(undefined);
     // Seed a 0096-era Run without adding the later platform-settings table.
     // Only this historical fixture uses a synthetic configuration read.
     const legacyModels = vi
@@ -179,8 +191,15 @@ integration('subscription incremental migration and cold SQL readers', () => {
       });
     try {
       task = await fixture.prepareOrdinaryTask('Migration fixture. No model.');
+      expect(
+        JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
+      ).not.toHaveProperty('instance');
+      expect(legacyInstance).toHaveBeenCalledTimes(1);
+      expect(legacyPublication).toHaveBeenCalledTimes(1);
     } finally {
       legacyContext.mockRestore();
+      legacyInstance.mockRestore();
+      legacyPublication.mockRestore();
       legacyModels.mockRestore();
     }
     const frozen = task.binding.executionSnapshot.modelSnapshot!;

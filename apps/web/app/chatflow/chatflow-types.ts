@@ -1,4 +1,4 @@
-import type { McpFailureKind } from '@allrice/contracts';
+import type { McpFailureKind, EmployeeInstance } from '@allrice/contracts';
 import type {
   ChatFlowEventEnvelope,
   SaasCapabilityManifest,
@@ -24,6 +24,7 @@ export interface Session {
   id: string;
   title: string;
   employeeAssignmentId: string;
+  employeeInstanceId?: string;
   employeeVersionId: string;
   visibility: Visibility;
   updatedAt: string;
@@ -52,6 +53,8 @@ export interface EmployeeVersion {
 
 export interface Employee {
   id: string;
+  instanceId?: string;
+  instances?: EmployeeInstance[];
   employeeId: string;
   isDefault: boolean;
   currentVersion: EmployeeVersion;
@@ -215,6 +218,7 @@ export interface CapabilityResponse {
 
 export type EmployeeSessionGroup = {
   employeeAssignmentId: string;
+  employeeInstanceId?: string;
   employeeName: string;
   count: number;
 };
