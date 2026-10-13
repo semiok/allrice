@@ -1411,7 +1411,7 @@ export function ChatFlowClient({
       {archive.overlays}
       {referenceLibraryOpen && workspace && (
         <ReferenceLibrary
-          key={settingsScope}
+          key={`references/${settingsScope}`}
           workspaceId={workspace.workspaceId}
           headers={tenantHeaders}
           onClose={() => setReferenceLibraryOpen(false)}

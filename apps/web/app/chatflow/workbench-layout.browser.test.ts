@@ -2416,6 +2416,69 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each([390, 1440])(
+    'keeps one reference dialog across parent refreshes and fully closes it at %ipx',
+    async (width) => {
+      const f = await fixture({ width });
+      try {
+        await f.page.route('**/api/v1/references?*', (route) =>
+          route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({
+              references: [],
+              options: {
+                workspaceId: workspace,
+                platformMaintainer: false,
+                maintenanceLevel: 'personal',
+                writable: true,
+                departmentId: null,
+                departments: [],
+              },
+            }),
+          }),
+        );
+        const dialog = f.page.getByRole('dialog', {
+          name: '参考资料',
+          exact: true,
+        });
+        for (let cycle = 0; cycle < 2; cycle++) {
+          await f.page
+            .getByRole('button', { name: '添加文件', exact: true })
+            .click();
+          await f.page
+            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .click();
+          await dialog.getByText('上传参考资料', { exact: true }).waitFor();
+          // The regular quota refresh rerenders ChatFlowClient while its
+          // reference portal and the company-template sibling stay mounted.
+          for (let refresh = 0; refresh < 3; refresh++) {
+            await Promise.all([
+              f.page.waitForResponse('**/api/v1/workspace/monthly-quota?*'),
+              f.page.evaluate(() => window.dispatchEvent(new Event('focus'))),
+            ]);
+            await f.page.evaluate(
+              () =>
+                new Promise((done) =>
+                  requestAnimationFrame(() => requestAnimationFrame(done)),
+                ),
+            );
+            expect(await dialog.count()).toBe(1);
+          }
+          await dialog
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await expect.poll(() => dialog.count()).toBe(0);
+          expect(
+            await f.page.evaluate(() => document.body.style.overflow),
+          ).not.toBe('hidden');
+        }
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it.each([
     { width: 1440, recommended: false },
     { width: 640, recommended: false },
