@@ -426,15 +426,17 @@ export function ChatFlowClient({
     scrollRegion.addEventListener('scroll', handleScroll, { passive: true });
     handleScroll();
     return () => scrollRegion.removeEventListener('scroll', handleScroll);
-  }, [activeId, history?.messages.length, publishTranscriptBottom]);
+  }, [activeId, transcriptMessages.length, publishTranscriptBottom]);
 
+  // The first local send mounts the transcript before server history changes.
+  // Follow and observe those visible rows as soon as they replace the hero.
   useLayoutEffect(() => {
     if (followTranscript.current) scrollToTranscriptBottom();
-  }, [history, runViews, scrollToTranscriptBottom]);
+  }, [transcriptMessages, runViews, scrollToTranscriptBottom]);
 
   useLayoutEffect(() => {
     resizeComposerTextarea(composerInput.current);
-  }, [activeId, draft, history?.messages.length, sidebarCollapsed, workspace]);
+  }, [activeId, draft, transcriptMessages.length, sidebarCollapsed, workspace]);
 
   useEffect(() => {
     const textarea = composerInput.current;
@@ -449,7 +451,7 @@ export function ChatFlowClient({
     });
     observer.observe(textarea);
     return () => observer.disconnect();
-  }, [activeId, history?.messages.length, workspace]);
+  }, [activeId, transcriptMessages.length, workspace]);
 
   useEffect(() => {
     const column = transcriptColumn.current;
@@ -466,7 +468,7 @@ export function ChatFlowClient({
     observer.observe(column);
     if (composer) observer.observe(composer);
     return () => observer.disconnect();
-  }, [activeId, history?.messages.length, scrollToTranscriptBottom]);
+  }, [activeId, transcriptMessages.length, scrollToTranscriptBottom]);
 
   const {
     addTaskReferences,
