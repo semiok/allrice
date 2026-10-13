@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-codex-overload-normalization-v1",
+      "issue": "Run 95cc7925; Run 22664651",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-model-errors.mjs",
+      "reason": "Normalize only the exact openai-codex PI_AI_ERROR overload receipt to SERVER at the public llm/stream seam, before accounting observers. Reuse native bounded request retries; preserve unknown usage, settlement ACK gates and completed tools. Generic processing errors remain unchanged. No DSH source, dependency, policy or whole-Run replay changes. Retirement criteria and wire evidence are recorded in the reuse decisions."
+    },
+    {
       "id": "allrice-office-native-v1",
       "issue": "MET-157",
       "upstreamVersion": "0.1.5-rc.3",

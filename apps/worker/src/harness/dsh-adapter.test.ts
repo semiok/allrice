@@ -292,7 +292,7 @@ describe('DshHarnessAdapter', () => {
     },
     45_000,
   );
-  it.each(['TRANSPORT', 'TIMEOUT', 'PI_AI_ERROR', 'AUTH'])(
+  it.each(['TRANSPORT', 'TIMEOUT', 'SERVER', 'PI_AI_ERROR', 'AUTH'])(
     'keeps terminal native %s failure without retrying the whole prompt',
     async (code) => {
       const events: HarnessEvent[] = [];
