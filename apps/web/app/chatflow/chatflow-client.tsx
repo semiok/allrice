@@ -46,7 +46,6 @@ import { AssistantHistoryButton } from './assistant-history-button';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
-import { AssistantModeControl } from './assistant-mode-control';
 import {
   assistantEligibility,
   assistantPreferenceForTask,
@@ -123,12 +122,14 @@ export function ChatFlowClient({
   localMcpEnabled = false,
   experienceEnabled = false,
   assistantsEnabled = false,
+  taskSuggestionsEnabled = false,
 }: {
   workbenchEnabled?: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
   experienceEnabled?: boolean;
   assistantsEnabled?: boolean;
+  taskSuggestionsEnabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const [companyReferences, setCompanyReferences] = useState<
@@ -494,7 +495,6 @@ export function ChatFlowClient({
     setUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
-    uploadFromBridge,
     cancelBridgeUpload,
     bridgeUploadStatus,
     uploadVisibility,
@@ -1251,7 +1251,11 @@ export function ChatFlowClient({
 
   const renderComposer = (hero = false) => (
     <ChatComposer
-      taskSuggestions={suggestionVersion?.taskSuggestions ?? []}
+      taskSuggestions={
+        taskSuggestionsEnabled
+          ? (suggestionVersion?.taskSuggestions ?? [])
+          : undefined
+      }
       taskScope={taskScope}
       taskNextSteps={nextSteps.data}
       onOpenTasks={() => {
@@ -1301,15 +1305,6 @@ export function ChatFlowClient({
       employeeName={activeEmployeeName}
       attachmentMenuOpen={attachmentMenuOpen}
       busy={busy}
-      assistantModeControl={
-        workbenchEnabled ? (
-          <AssistantModeControl
-            busy={busy}
-            isRunning={isRunning}
-            steering={false}
-          />
-        ) : undefined
-      }
       composerInput={composerInput}
       composing={composing}
       draft={draft}
@@ -1344,7 +1339,6 @@ export function ChatFlowClient({
       }}
       onSendMessage={sendMessage}
       onUploadAttachments={uploadAttachments}
-      onUploadFromBridge={uploadFromBridge}
       onCancelBridgeUpload={cancelBridgeUpload}
       bridgeUploadStatus={bridgeUploadStatus}
       onUploadVisibilityChange={setUploadVisibility}

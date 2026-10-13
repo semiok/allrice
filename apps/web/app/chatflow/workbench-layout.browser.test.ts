@@ -226,6 +226,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       width?: number;
       artifacts?: boolean;
       disabled?: boolean;
+      taskSuggestions?: boolean;
       noSession?: boolean;
       noStorage?: boolean;
       startup?: 'failed' | 'slow';
@@ -1206,7 +1207,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       return answer({}, 404);
     });
     await page.goto(
-      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
+      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
     );
     await (
       options.startup
@@ -2423,7 +2424,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   ])(
     'prepares exact company template parameters without submitting, then preserves them in the original send at $width px (recommended=$recommended)',
     async ({ width, recommended }) => {
-      const f = await fixture({ width });
+      const f = await fixture({ width, taskSuggestions: recommended });
       const revisionId = id(8401),
         assetId = id(8402);
       const asset = CompanyAssetSchema.parse({
@@ -3643,7 +3644,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   it.each([320, 390, 1440])(
-    'places the daily mode pill between attachment and visibility controls and aligns send with the final tool row at width %i',
+    'keeps the simplified composer aligned without mode or common tasks at width %i',
     async (width) => {
       const f = await fixture({ width, touch: width < 760 });
       try {
@@ -3652,11 +3653,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           name: '工作模式',
           exact: true,
         });
-        await mode.waitFor();
-        expect(await mode.inputValue()).toBe('daily');
-        expect(await mode.locator('option:disabled').allTextContents()).toEqual(
-          ['🎯 深入攻关 · 规划中', '👥 团队协作 · 规划中'],
-        );
+        expect(await mode.count()).toBe(0);
+        expect(
+          await f.page
+            .getByRole('button', { name: '常用任务', exact: true })
+            .count(),
+        ).toBe(0);
         expect(
           await f.page.getByText('本次不使用助手', { exact: true }).count(),
         ).toBe(0);
@@ -3667,33 +3669,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const add = await f.page
           .getByRole('button', { name: '添加文件', exact: true })
           .boundingBox();
-        const pill = await mode.boundingBox();
         const visibility = await f.page
           .getByRole('combobox', { name: '上传文件可见范围' })
           .boundingBox();
         const textarea = await input.boundingBox();
-        expect(add!.x + add!.width).toBeLessThan(pill!.x);
-        expect(pill!.x + pill!.width).toBeLessThan(visibility!.x);
-        expect(Math.abs(add!.y - pill!.y)).toBeLessThan(2);
-        expect(Math.abs(visibility!.y - pill!.y)).toBeLessThan(2);
+        expect(add!.x + add!.width).toBeLessThan(visibility!.x);
+        expect(Math.abs(add!.y - visibility!.y)).toBeLessThan(2);
         const send = await f.page
           .getByRole('button', { name: '发送', exact: true })
           .boundingBox();
-        const tasks = await f.page
-          .getByRole('button', { name: '常用任务', exact: true })
-          .boundingBox();
         expect(
-          Math.abs(send!.y + send!.height / 2 - tasks!.y - tasks!.height / 2),
+          Math.abs(
+            send!.y + send!.height / 2 - visibility!.y - visibility!.height / 2,
+          ),
         ).toBeLessThan(2);
-        expect(tasks!.x + tasks!.width).toBeLessThan(send!.x);
-        if (width < 760) expect(tasks!.y).toBeGreaterThan(pill!.y);
-        else expect(Math.abs(tasks!.y - pill!.y)).toBeLessThan(2);
         expect(visibility!.x + visibility!.width).toBeLessThan(send!.x);
-        expect(pill!.y).toBeGreaterThanOrEqual(textarea!.y + textarea!.height);
+        expect(visibility!.y).toBeGreaterThanOrEqual(
+          textarea!.y + textarea!.height,
+        );
         await input.fill('保留问题和键盘操作');
-        await mode.focus();
-        await f.page.keyboard.press('ArrowDown');
-        expect(await mode.inputValue()).toBe('daily');
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        await f.page.keyboard.press('Escape');
         expect(await input.inputValue()).toBe('保留问题和键盘操作');
         expect(
           await f.page.evaluate(
@@ -7535,7 +7533,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const center = (await f.page.locator('main > section').boundingBox())!;
       for (const control of [
         f.page.getByRole('button', { name: '添加文件', exact: true }),
-        f.page.getByRole('combobox', { name: '工作模式', exact: true }),
         f.page.getByRole('combobox', { name: '上传文件可见范围' }),
         f.page.getByRole('button', { name: '发送', exact: true }),
       ]) {

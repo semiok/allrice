@@ -1,5 +1,7 @@
 import type * as SubscriptionHome from '../codex-subscription-home.js';
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { createServer, type ServerResponse } from 'node:http';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
@@ -11,6 +13,7 @@ import type { HarnessExecutionInput } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError } from '../errors.js';
+import { HarnessEventBatcher } from './delta-batcher.js';
 import { getAssistantFailureUsage } from './dsh/assistant-outcome.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import {
@@ -139,6 +142,156 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it.each(['complete', 'cancel'] as const)(
+    'streams through the actual pinned native process and batcher before provider completion (%s)',
+    async (outcome) => {
+      const root = await mkdtemp(resolve(tmpdir(), 'allrice-live-stream-'));
+      const responses: ServerResponse[] = [];
+      const server = createServer((req, res) => {
+        req.resume();
+        req.on('end', () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.flushHeaders();
+          responses.push(res);
+        });
+      });
+      server.listen(0, '127.0.0.1');
+      await once(server, 'listening');
+      const port = (server.address() as { port: number }).port;
+      const adapter = new DshHarnessAdapter({
+        credentialResolver: {
+          resolve: async () => ({ apiKey: 'synthetic-only' }),
+        },
+        runtimeRoot: root,
+        requestTimeoutMs: 15_000,
+      });
+      adapters.push(adapter);
+      const events: HarnessEvent[] = [];
+      const batcher = new HarnessEventBatcher(async (event) => {
+        events.push(event);
+      });
+      const controller = new AbortController();
+      const input = executionInput({
+        prompt: 'Reply using the synthetic stream.',
+        provider: {
+          ...snapshot('openai-compatible'),
+          model: 'native-stream-contract',
+          baseUrl: `http://127.0.0.1:${port}/v1`,
+        },
+        signal: controller.signal,
+      });
+      input.workDirectory = root;
+      input.tools = [];
+      input.onEvent = (event) => batcher.accept(event);
+      const appendText = () =>
+        events
+          .filter(
+            (e): e is Extract<HarnessEvent, { type: 'assistant.delta' }> =>
+              e.type === 'assistant.delta' && e.textMode !== 'replace',
+          )
+          .map((e) => e.text)
+          .join('');
+      const send = (
+        res: ServerResponse,
+        delta: Record<string, unknown>,
+        finish: string | null = null,
+      ) =>
+        res.write(
+          `data: ${JSON.stringify({ id: 'native-stream', object: 'chat.completion.chunk', created: 1, model: 'native-stream-contract', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
+        );
+      let settled = false;
+      const running = adapter.execute(input).then(
+        (result) => {
+          settled = true;
+          return { result };
+        },
+        (error) => {
+          settled = true;
+          return { error };
+        },
+      );
+      try {
+        await expect.poll(() => responses.length, { timeout: 15_000 }).toBe(1);
+        send(responses[0]!, {
+          role: 'assistant',
+          reasoning_content: 'private model reasoning',
+        });
+        send(responses[0]!, { content: 'First paragraph. ' });
+        await expect
+          .poll(appendText, { timeout: 5000 })
+          .toBe('First paragraph. ');
+        expect(settled).toBe(false);
+        send(responses[0]!, { content: 'Second paragraph.' });
+        await expect
+          .poll(appendText, { timeout: 5000 })
+          .toBe('First paragraph. Second paragraph.');
+        expect(settled).toBe(false);
+        expect(
+          events.filter(
+            (e) => e.type === 'assistant.delta' && e.textMode !== 'replace',
+          ).length,
+        ).toBeGreaterThanOrEqual(2);
+        expect(
+          events.some((e) => e.sourceEventType === 'assistant/live-chunk'),
+        ).toBe(true);
+        expect(JSON.stringify(events)).not.toContain('private model reasoning');
+        if (outcome === 'cancel') {
+          controller.abort();
+          const canceled = await running;
+          expect(canceled).toHaveProperty('error');
+          await batcher.close();
+          const count = events.length;
+          send(responses[0]!, {
+            content: 'must not append after cancellation',
+          });
+          responses[0]!.end();
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          expect(events.length).toBe(count);
+          expect(events.some((e) => e.type === 'assistant.completed')).toBe(
+            false,
+          );
+          return;
+        }
+        send(responses[0]!, {}, 'stop');
+        responses[0]!.end('data: [DONE]\n\n');
+        const first = await running;
+        expect(first).not.toHaveProperty('error');
+        await batcher.close();
+        expect(
+          events.filter((e) => e.type === 'assistant.completed'),
+        ).toMatchObject([{ text: 'First paragraph. Second paragraph.' }]);
+        expect(
+          events.filter(
+            (e) => e.type === 'assistant.delta' && e.textMode === 'replace',
+          ),
+        ).toMatchObject([{ text: 'First paragraph. Second paragraph.' }]);
+        // Reuse the live Agent: its frame revision is already nonzero.
+        input.threadId = 'result' in first ? first.result.threadId : undefined;
+        input.kernel.userMessageId = randomUUID();
+        input.kernel.assistantMessageId = randomUUID();
+        events.length = 0;
+        const continued = adapter.execute(input).then(
+          (result) => ({ result }),
+          (error) => ({ error }),
+        );
+        await expect.poll(() => responses.length, { timeout: 15_000 }).toBe(2);
+        send(responses[1]!, { role: 'assistant', content: 'Continuation.' });
+        await expect.poll(appendText, { timeout: 5000 }).toBe('Continuation.');
+        send(responses[1]!, {}, 'stop');
+        responses[1]!.end('data: [DONE]\n\n');
+        expect(await continued).not.toHaveProperty('error');
+      } finally {
+        controller.abort();
+        for (const res of responses) res.destroy();
+        server.closeAllConnections();
+        await adapter.close();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await batcher.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+    45_000,
+  );
   it.each(['TRANSPORT', 'TIMEOUT', 'PI_AI_ERROR', 'AUTH'])(
     'keeps terminal native %s failure without retrying the whole prompt',
     async (code) => {
@@ -204,6 +357,27 @@ describe('DshHarnessAdapter', () => {
       },
     ]);
     expect(waiting).toHaveLength(2);
+  });
+
+  it('clears retired live attempts in place and ignores duplicates and late chunks', async () => {
+    const events: HarnessEvent[] = [];
+    const result = await createAdapter().execute(
+      executionInput({ prompt: 'live-attempt-retirement', events }),
+    );
+    expect(result.answer).toBe('最终回复');
+    const deltas = events.filter((e) => e.type === 'assistant.delta');
+    expect(deltas.map((e) => [e.textMode ?? 'append', e.text])).toEqual([
+      ['append', '失败的半段'],
+      ['replace', ''],
+      ['append', '已放弃的半段'],
+      ['replace', ''],
+      ['append', '最终回复'],
+      ['replace', '最终回复'],
+    ]);
+    expect(new Set(deltas.map((e) => e.replyId)).size).toBe(1);
+    expect(events.filter((e) => e.type === 'assistant.completed')).toHaveLength(
+      1,
+    );
   });
 
   it('preserves native message boundaries, retry replacements and message-only replies before tools', async () => {

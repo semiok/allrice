@@ -236,6 +236,65 @@ lines.on('line', (line) => {
     notify('allrice.modelWait', { sessionId, callId, status: 'started' });
     notify('allrice.modelWait', { sessionId, callId, status: 'completed' });
   }
+  if (prompt.includes('live-attempt-retirement')) {
+    let revision = 0;
+    const live = (attempt, frame) => {
+      const params = {
+        sessionId,
+        frame: {
+          attemptId: `${sessionId}:${attempt}`,
+          revision: ++revision,
+          ...frame,
+        },
+      };
+      notify('session.assistant-stream', params);
+      // Duplicate delivery must not append twice.
+      if (frame.type === 'chunk') notify('session.assistant-stream', params);
+    };
+    for (const [attempt, text] of [
+      [1, '失败的半段'],
+      [2, '已放弃的半段'],
+      [3, '最终回复'],
+    ]) {
+      live(attempt, { type: 'start', turn, step: 0 });
+      live(attempt, {
+        type: 'chunk',
+        index: 0,
+        time: Date.now(),
+        chunk: { type: 'text-delta', index: 0, text },
+      });
+      if (attempt === 3) {
+        event(sessionId, 'assistant/message', {
+          turn,
+          step: 0,
+          message: { role: 'assistant', content: [{ type: 'text', text }] },
+          usage: { inputTokens: 11, cacheReadTokens: 3, outputTokens: 5 },
+        });
+      }
+      live(attempt, {
+        type: 'end',
+        index: 1,
+        outcome:
+          attempt === 2
+            ? { kind: 'abandoned' }
+            : {
+                kind: 'committed',
+                eventType:
+                  attempt === 1 ? 'assistant/attempt' : 'assistant/message',
+                seq,
+              },
+      });
+      live(attempt, {
+        type: 'chunk',
+        index: 1,
+        time: Date.now(),
+        chunk: { type: 'text-delta', index: 0, text: '不应出现的迟到片段' },
+      });
+    }
+    event(sessionId, 'turn/end', { turn, reason: { kind: 'completed' } });
+    notify('session.status', { sessionId, status: 'idle' });
+    return;
+  }
   if (prompt.includes('interleaved-progress')) {
     const delta = (step, text) =>
       event(sessionId, 'assistant/chunk', {
