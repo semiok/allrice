@@ -1,0 +1,92 @@
+.body {
+  background: #fff;
+  color: #20242c;
+  width: min(920px, 100%);
+}
+.hint {
+  color: #68717c;
+  font-size: 14px;
+  line-height: 1.6;
+}
+.toolbar,
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.toolbar input {
+  flex: 1;
+  min-width: 100px;
+}
+.body input,
+.body select {
+  border: 1px solid #dce0e6;
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: #fff;
+  color: inherit;
+  max-width: 100%;
+}
+.upload {
+  margin: 20px 0;
+  border: 1px solid #e3e6eb;
+  border-radius: 12px;
+  padding: 16px;
+  display: grid;
+  gap: 12px;
+}
+.upload label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.upload label input {
+  flex: 1;
+  min-width: 0;
+}
+.list {
+  display: grid;
+  gap: 12px;
+}
+.item {
+  padding: 16px 0;
+  border-bottom: 1px solid #e5e7eb;
+}
+.name {
+  display: block;
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #1f4f9d;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.item > span {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  color: #68717c;
+}
+.item p {
+  margin: 8px 0;
+}
+.error {
+  color: #b42318;
+}
+.preview {
+  min-height: 260px;
+  margin-top: 18px;
+  overflow: hidden;
+  border: 1px solid #e3e6eb;
+  border-radius: 10px;
+}
+@media (max-width: 600px) {
+  .upload label {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

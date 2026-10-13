@@ -192,3 +192,6 @@ export {
   controlMaintenanceGrant,
   runMaintenanceExecutionTick,
 } from './platform-maintenance-execution.ts';
+
+export * from './reference-library.ts';
+export * from './reference-processing.ts';

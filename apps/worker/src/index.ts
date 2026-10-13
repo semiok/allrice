@@ -1,3 +1,4 @@
+import { processNextReference } from './reference-processing.js';
 import { startCloudProjectPreviewTransport } from './cloud-runner/project-preview-transport.js';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { startExecutionPressureLog } from './execution-pressure.js';
@@ -376,6 +377,9 @@ async function automationTick() {
   automationTickRunning = true;
   try {
     await runProducer('automation', async () => {
+      await processNextReference(
+        process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+      );
       await syncAutomationRuns();
       await processFolderTriggerEvents(Math.max(1, concurrency));
       const claimed = await claimDueAutomations(Math.max(1, concurrency));

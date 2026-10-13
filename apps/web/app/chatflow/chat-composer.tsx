@@ -56,6 +56,7 @@ interface ChatComposerProps {
   onRemoveCompanyReference?: (id: string) => void;
   sessionReferences?: SessionReference[];
   onOpenSessionReferences?: () => void;
+  onOpenReferenceLibrary?: () => void;
   onRemoveSessionReference?: (id: string) => void;
   employeeName: string;
   attachmentMenuOpen: boolean;
@@ -105,6 +106,7 @@ export function ChatComposer({
   onRemoveCompanyReference,
   sessionReferences = [],
   onOpenSessionReferences,
+  onOpenReferenceLibrary,
   onRemoveSessionReference,
   employeeName,
   attachmentMenuOpen,
@@ -255,6 +257,15 @@ export function ChatComposer({
                 }
                 items={[
                   { type: 'label', id: 'heading', text: '添加到本轮' },
+                  ...(onOpenReferenceLibrary
+                    ? [
+                        {
+                          id: 'reference-library',
+                          label: '参考资料',
+                          icon: <IconFolderOpenOutlineRegular size={20} />,
+                        },
+                      ]
+                    : []),
                   ...(onOpenSessionReferences
                     ? [
                         {
@@ -291,7 +302,8 @@ export function ChatComposer({
                 ]}
                 onSelect={(id) => {
                   onAttachmentMenuOpenChange(false);
-                  if (id === 'reference') onOpenSessionReferences?.();
+                  if (id === 'reference-library') onOpenReferenceLibrary?.();
+                  else if (id === 'reference') onOpenSessionReferences?.();
                   else if (id === 'workspace') void onOpenWorkspaceFiles();
                   else if (id === 'upload') fileInput.current?.click();
                 }}

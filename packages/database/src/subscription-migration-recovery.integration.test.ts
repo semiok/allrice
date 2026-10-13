@@ -1,3 +1,4 @@
+import * as capabilityRegistry from './capabilities/capability-registry.ts';
 import * as platformModels from './providers/platform-model-settings.ts';
 import * as organizationContext from './employees/organization-context.ts';
 import * as employeeInstances from './employees/employee-instances.ts';
@@ -179,6 +180,27 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacyPublication = vi
       .spyOn(employeeInstances, 'readEmployeeVersionPublication')
       .mockResolvedValueOnce(undefined);
+    // This historical employee has no Workflow/Knowledge bindings. The 0096
+    // directory therefore resolves empty, before scoped reference ownership
+    // existed. Do not add future columns or production old-schema fallbacks.
+    expect(
+      (
+        await fixture.db`select count(*)::int n from allrice_employee_knowledge_bindings where employee_id=${fixture.employeeId}`
+      )[0]!.n,
+    ).toBe(0);
+    expect(
+      (
+        await fixture.db`select count(*)::int n from allrice_employee_workflow_bindings where employee_id=${fixture.employeeId}`
+      )[0]!.n,
+    ).toBe(0);
+    const legacyCapabilities = vi
+      .spyOn(capabilityRegistry, 'resolveEmployeeCapabilitiesForRun')
+      .mockResolvedValueOnce({
+        employeeId: fixture.employeeId,
+        agentSkills: [],
+        workflows: [],
+        knowledge: [],
+      });
     // Seed a 0096-era Run without adding the later platform-settings table.
     // Only this historical fixture uses a synthetic configuration read.
     const legacyModels = vi
@@ -201,6 +223,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('instance');
       expect(legacyInstance).toHaveBeenCalledTimes(1);
+      expect(legacyCapabilities).toHaveBeenCalledTimes(1);
       expect(legacyContent).toHaveBeenCalledTimes(1);
       expect(legacyPublication).toHaveBeenCalledTimes(1);
     } finally {
@@ -209,6 +232,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       legacyContent.mockRestore();
       legacyPublication.mockRestore();
       legacyModels.mockRestore();
+      legacyCapabilities.mockRestore();
     }
     const frozen = task.binding.executionSnapshot.modelSnapshot!;
     decision = RouteDecisionSchema.parse({

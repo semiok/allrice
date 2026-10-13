@@ -377,7 +377,7 @@ async function loadEmployeeCapabilityDirectory(input: {
         a.principal_type, a.principal_id, a.permission
       from allrice_employee_knowledge_bindings b
       join allrice_knowledge_revisions r on r.id = b.knowledge_revision_id
-      join allrice_knowledge_sources s on s.id = r.knowledge_source_id
+      join allrice_knowledge_sources s on s.id = r.knowledge_source_id and s.ownership is null
       left join allrice_knowledge_acl_entries a
         on a.knowledge_revision_id = r.id
       where b.organization_id = ${input.organizationId}
@@ -434,7 +434,7 @@ export async function listCapabilityCatalog(
           r.name, r.description, r.revision, r.status, r.checksum,
           r.definition, r.published_at
         from allrice_knowledge_sources s
-        join allrice_knowledge_revisions r on r.knowledge_source_id = s.id
+        join allrice_knowledge_revisions r on r.knowledge_source_id = s.id and s.ownership is null
         where s.organization_id = ${context.organizationId}
           and s.workspace_id = ${workspaceId}
           and s.status = 'active' and r.status = 'published'
@@ -485,7 +485,7 @@ export async function updateCapabilityStatus(
         : await transaction<{ id: string }[]>`
             update allrice_knowledge_sources set status = ${update.status},
               updated_at = now()
-            where id = ${capabilityId}
+            where id = ${capabilityId} and ownership is null
               and organization_id = ${context.organizationId}
               and workspace_id = ${workspaceId}
             returning id
@@ -530,7 +530,7 @@ export async function updateCapabilityRevisionStatus(
             `
         : await transaction<{ id: string }[]>`
               update allrice_knowledge_revisions set status = ${update.status}
-              where id = ${revisionId}
+              where id = ${revisionId} and file_object_id is null
                 and organization_id = ${context.organizationId}
                 and workspace_id = ${workspaceId}
                 and status in ('published', 'deprecated')
@@ -844,7 +844,7 @@ export async function publishKnowledgeRevision(
       { id: string; slug: string; name: string; description: string }[]
     >`
       select id, slug, name, description from allrice_knowledge_sources
-      where id = ${sourceId}
+      where ownership is null and id = ${sourceId}
         and organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId} and status = 'active'
       for update
@@ -982,7 +982,7 @@ export async function manageEmployeeCapabilities(
     if (knowledgeRevisionIds.length > 0) {
       const rows = await transaction<{ id: string }[]>`
         select r.id from allrice_knowledge_revisions r
-        join allrice_knowledge_sources s on s.id = r.knowledge_source_id
+        join allrice_knowledge_sources s on s.id = r.knowledge_source_id and s.ownership is null
         where r.organization_id = ${context.organizationId}
           and r.workspace_id = ${workspaceId}
           and r.id in ${transaction(knowledgeRevisionIds)}

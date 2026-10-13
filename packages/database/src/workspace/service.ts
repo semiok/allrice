@@ -1442,6 +1442,7 @@ export async function sendChatMessage(
             and o.workspace_id = ${workspaceId}
             and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
       and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
             and o.state = 'ready'
@@ -1855,6 +1856,7 @@ export async function linkFileToSession(input: {
       and o.owner_id = ${requireUser(input.context)}
       and o.state = 'ready'
       and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
     on conflict (object_id, session_id) do nothing
@@ -1907,6 +1909,7 @@ export async function listWorkspaceFiles(
       and o.category in ('uploads', 'exports') and o.state = 'ready'
       and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
       and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
     group by o.id, deliverable.file_name, deliverable.version
@@ -1951,6 +1954,7 @@ export async function linkWorkspaceFileToSession(input: {
       and o.state = 'ready'
       and (o.owner_id = ${requireUser(input.context)} or o.visibility <> 'private')
       and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
       and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
     group by o.id

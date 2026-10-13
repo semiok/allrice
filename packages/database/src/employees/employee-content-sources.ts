@@ -183,6 +183,7 @@ export async function resolveEmployeeContentSource(
       join ${sql(bindingTable)} b on b.${sql(bindingColumn)}=r.id and b.employee_id=${input.employeeId}
       where s.id=${ref.contentId} and r.id=${ref.revisionId} and s.organization_id=${context.organizationId}
         and s.workspace_id=${context.workspaceId} and s.status='active' and r.status='published' and b.enabled
+        ${knowledge ? sql`and s.ownership is null` : sql``}
       ${lock ? sql`for share of s,r,b` : sql``}`;
     if (!row) return unavailable(ref);
     if (row.checksum !== ref.digest) return unavailable(ref, 'source_changed');

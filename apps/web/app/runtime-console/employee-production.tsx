@@ -26,6 +26,7 @@ import {
   AdminStatus,
 } from '../../components/admin/admin-ui';
 import { EmployeeSkills } from './employee-skills';
+import { PlatformReferenceLibrary } from './platform-reference-library';
 import { EmployeeTaskSuggestions } from './employee-task-suggestions';
 
 type Employee = PlatformEmployeeSummary;
@@ -1258,12 +1259,7 @@ export function EmployeeProduction({
       </p>
     );
   } else if (tab === 'knowledge') {
-    panel = (
-      <p className={styles.notice}>
-        Knowledge 是独立的受权限知识能力，不伪装成 Skill。平台级 Knowledge
-        发布目录尚未启用，因此当前草稿不能引用租户 Knowledge。
-      </p>
-    );
+    panel = <PlatformReferenceLibrary />;
   } else if (tab === 'model') {
     panel = (
       <div className={styles.notice}>
