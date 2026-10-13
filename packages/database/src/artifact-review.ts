@@ -110,13 +110,6 @@ export async function assertWorkbenchSession(
     { role: string }[]
   >`select role from allrice_memberships where organization_id=${context.organizationId} and user_id=${context.actor.id}
     and active and (workspace_id is null or workspace_id=${context.workspaceId}) order by id for share`;
-  if (
-    !users.length ||
-    !organizations.length ||
-    !workspaces.length ||
-    !memberships.some((m) => !write || ['admin', 'member'].includes(m.role))
-  )
-    fail('identity_denied');
   const [session] =
     lock === 'share'
       ? await db<{ id: string }[]>`select id from allrice_chat_sessions
@@ -126,6 +119,15 @@ export async function assertWorkbenchSession(
     where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and owner_id=${context.actor.id} and (${!write} or archived_at is null) for update`;
   if (!session) fail('artifact_not_found');
+  // Preserve the existing not-found boundary for a foreign Session/owner.
+  // Only the lock acquisition order changed; identity checks still gate access.
+  if (
+    !users.length ||
+    !organizations.length ||
+    !workspaces.length ||
+    !memberships.some((m) => !write || ['admin', 'member'].includes(m.role))
+  )
+    fail('identity_denied');
 }
 
 interface ArtifactRow {
