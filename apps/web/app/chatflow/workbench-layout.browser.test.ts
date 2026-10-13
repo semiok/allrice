@@ -3399,6 +3399,83 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   }, 20_000);
 
   it.each([390, 1440])(
+    'running composer offers queue-send for a draft and stop for empty input at width %i',
+    async (width) => {
+      const f = await fixture({ running: true, queue: true, width });
+      try {
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        const stop = f.page.getByRole('button', {
+          name: '停止生成',
+          exact: true,
+        });
+        const send = f.page.getByRole('button', {
+          name: '排队发送',
+          exact: true,
+        });
+        await expect.poll(() => f.state.streamRequests).toBe(1);
+        expect(await stop.isVisible()).toBe(true);
+
+        await input.fill('新的任务');
+        await send.waitFor({ timeout: 5000 });
+        expect(await stop.count()).toBe(0);
+        expect(await send.getAttribute('title')).toBe('当前任务结束后发送');
+        if (process.env.ALLRICE_QUEUE_SEND_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_QUEUE_SEND_SCREENSHOT}-${width}-draft.png`,
+          });
+        await send.click();
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.messageInputs[0]).toMatchObject({
+          text: '新的任务',
+          deliveryMode: 'follow_up',
+        });
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        await f.page
+          .locator('[data-queue-dock]')
+          .getByText('新的任务')
+          .waitFor();
+        expect(await stop.isVisible()).toBe(true);
+
+        await input.fill('   ');
+        expect(await stop.isVisible()).toBe(true);
+        expect(await send.count()).toBe(0);
+        await input.fill('再补充一项');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(2);
+        expect(f.state.queue.map((m) => m.text)).toEqual([
+          '新的任务',
+          '再补充一项',
+        ]);
+        expect(f.state.streamRequests).toBe(1);
+        expect(
+          f.writes.filter((request) => request.includes('/cancel')),
+        ).toEqual([]);
+        if (process.env.ALLRICE_QUEUE_SEND_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_QUEUE_SEND_SCREENSHOT}-${width}-queued.png`,
+          });
+        const cancellations: unknown[] = [];
+        await f.page.route(
+          (url) => url.pathname === `/api/v1/runs/${run}/cancel`,
+          async (route) => {
+            expect(route.request().method()).toBe('POST');
+            cancellations.push(route.request().postDataJSON());
+            await route.fulfill({ json: { ok: true }, status: 202 });
+          },
+        );
+        await stop.click();
+        await expect.poll(() => cancellations.length).toBe(1);
+        expect(cancellations).toEqual([{ reason: 'user_requested' }]);
+        expect(
+          await f.page.getByRole('button', { name: '正在停止' }).isDisabled(),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  it.each([390, 1440])(
     'QueueDock persists two sends outside transcript, edits with attachments and revokes on the server at width %i',
     async (width) => {
       const f = await fixture({ running: true, queue: true, width });

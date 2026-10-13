@@ -142,6 +142,8 @@ export function ChatComposer({
   bridgeUploadStatus,
   onUploadVisibilityChange,
 }: ChatComposerProps) {
+  const hasDraft = Boolean(draft.trim());
+  const showStop = isRunning && !hasDraft;
   const bridgeStatus = bridgeComposerStatus(
     bridgeConnectionState,
     localWorkspaceOnline,
@@ -391,21 +393,31 @@ export function ChatComposer({
           <div className={`${inputUi.trailing} ${styles.composerTrailing}`}>
             <button
               aria-label={
-                isRunning ? (cancelPending ? '正在停止' : '停止生成') : '发送'
+                showStop
+                  ? cancelPending
+                    ? '正在停止'
+                    : '停止生成'
+                  : isRunning
+                    ? '排队发送'
+                    : '发送'
               }
               title={
-                isRunning
+                showStop
                   ? cancelPending
                     ? '正在等待任务停止'
                     : '停止本轮任务'
-                  : '发送消息'
+                  : isRunning
+                    ? '当前任务结束后发送'
+                    : '发送消息'
               }
-              className={`${inputUi.primary} ${isRunning ? styles.employeeStop : styles.employeeSend}`}
-              disabled={isRunning ? cancelPending : busy || !draft.trim()}
-              onClick={() => void (isRunning ? onCancelRun() : onSendMessage())}
+              className={`${inputUi.primary} ${showStop ? styles.employeeStop : styles.employeeSend}`}
+              disabled={
+                showStop ? cancelPending : busy || cancelPending || !hasDraft
+              }
+              onClick={() => void (showStop ? onCancelRun() : onSendMessage())}
               type="button"
             >
-              {isRunning ? (
+              {showStop ? (
                 <svg
                   aria-hidden="true"
                   width="16"
