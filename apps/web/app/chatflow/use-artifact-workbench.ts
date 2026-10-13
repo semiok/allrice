@@ -1,4 +1,5 @@
 'use client';
+import { artifactForDownloadLink } from '../../lib/chatflow/artifact-download-link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorkbenchArtifact } from '@allrice/contracts';
 import {
@@ -131,6 +132,7 @@ export function useArtifactWorkbench({
           };
         });
         setStatus({ scope, error: '', loading: false });
+        return page.artifacts;
       } catch (cause) {
         if (token === generation.current && !request.signal.aborted) {
           if (
@@ -193,6 +195,43 @@ export function useArtifactWorkbench({
     },
     [scope, onOpen],
   );
+  const resolveDownloadLink = useCallback(
+    async (href: string, runId: string) => {
+      let url: URL;
+      try {
+        url = new URL(
+          href.replace(/\\+\//g, '/'),
+          'https://artifact-link.invalid',
+        );
+      } catch {
+        return false;
+      }
+      if (
+        !['https:', 'http:'].includes(url.protocol) ||
+        url.username ||
+        url.password ||
+        !/^\/api\/v1\/files\/[a-f0-9-]{36}(?:\/download)?$/.test(url.pathname)
+      )
+        return false;
+      const page = await reload();
+      // An aborted/superseded or denied read must not navigate from another scope.
+      if (!page) return true;
+      const artifact = artifactForDownloadLink(
+        href,
+        page.filter((item) => item.provenance.runId === runId),
+      );
+      if (!artifact) return false;
+      show(artifact.id);
+      return true;
+    },
+    [reload, show],
+  );
+  const refresh = useCallback(
+    async (before?: ArtifactCursor) => {
+      await reload(before);
+    },
+    [reload],
+  );
   const current =
     data.scope === scope
       ? data
@@ -207,7 +246,8 @@ export function useArtifactWorkbench({
     noticeId: current.noticeId,
     error: status.scope === scope ? status.error : '',
     loading: status.scope === scope && status.loading,
-    reload,
+    reload: refresh,
+    resolveDownloadLink,
     show,
     close: onClose,
   };
