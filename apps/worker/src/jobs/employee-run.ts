@@ -36,6 +36,8 @@ import {
   resolveEmployeeExecution,
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
+  loadEmployeeRuntimeScene,
+  adoptEmployeeRuntimeScene,
   EmployeeRuntimeContentError,
   ModelGovernanceError,
   assertReviewRunCurrent,
@@ -294,6 +296,65 @@ export async function executeEmployeeRun({
   const contentGuard = contentRuntime
     ? {
         generationId: contentRuntime.generationId,
+        nativeContextKey: contentRuntime.nativeContextKey,
+        scenes: contentRuntime.scenes,
+        loadScene: async (selection: {
+          sceneId: string;
+          sceneDigest: string;
+        }) => {
+          const loaded = await loadEmployeeRuntimeScene(
+            contentScope,
+            contentRuntime!.generationId,
+            selection,
+            workflowLease,
+          );
+          return {
+            receipt: loaded.receipt,
+            content: [
+              `工作场景：${loaded.scene.name}。适用：${loaded.scene.appliesWhen}`,
+              '本次任务采用以下已发布要求，与共同要求一同执行。引用不授予新工具或资料权限；Knowledge/Workflow 描述不代表已经读取或执行。其他场景和往次任务的场景要求不自动适用于本次任务。',
+              JSON.stringify(
+                loaded.sources.map(({ reference, ownership, title, body }) => ({
+                  reference,
+                  scope: ownership?.scope,
+                  title,
+                  body,
+                })),
+              ),
+            ].join('\n'),
+          };
+        },
+        adoptScene: async (evidence: {
+          sceneId: string;
+          sceneDigest: string;
+          receiptId: string;
+          nativeSessionId: string;
+          callId: string;
+        }) => {
+          const adopted = await adoptEmployeeRuntimeScene(
+            contentScope,
+            contentRuntime!.generationId,
+            evidence,
+            workflowLease,
+          );
+          await appendJobEvent({
+            ...workflowLease,
+            type: 'harness.native',
+            payload: {
+              source: 'dsh',
+              nativeType: 'allrice/scene-adopted',
+              nativePayload: {
+                ...adopted,
+                generationId: contentRuntime!.generationId,
+                sceneName: contentRuntime!.scenes.find(
+                  (s) => s.id === adopted.sceneId,
+                )?.name,
+                evidenceKind: 'successful-native-skill-load',
+              },
+            },
+          });
+          return { adopted };
+        },
         check: async () => {
           try {
             await assertEmployeeContentContext(
@@ -349,6 +410,10 @@ export async function executeEmployeeRun({
         ...(contentRuntime
           ? {
               contentGenerationId: contentRuntime.generationId,
+              ...(contentRuntime.nativeContextKey !==
+              contentRuntime.generationId
+                ? { nativeContentContext: contentRuntime.nativeContextKey }
+                : {}),
               contentChecksum: contentRuntime.snapshot.checksum,
             }
           : {}),
@@ -423,6 +488,7 @@ export async function executeEmployeeRun({
     assistantMessageId: input.assistantMessageId,
     resolved,
     commonContent: contentRuntime?.sources,
+    hasContentScenes: !!contentRuntime?.scenes.length,
     companyMaterials: companyInputBindings,
     workAutomation: workAutomation.settings,
   };

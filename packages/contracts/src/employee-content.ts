@@ -352,6 +352,8 @@ export const EmployeeRuntimeContentSchema = z
             common: z
               .array(EmployeeContentReferenceSchema)
               .max(employeeContentLimits.references),
+            // Optional, without a default: historical snapshot hashes stay exact.
+            scenes: EmployeeContentManifestSchema.shape.scenes.optional(),
           })
           .strict(),
       )
@@ -362,3 +364,29 @@ export const EmployeeRuntimeContentSchema = z
 export type EmployeeRuntimeContent = z.infer<
   typeof EmployeeRuntimeContentSchema
 >;
+
+/** A progressive native directory, never a second store for source bodies. */
+export const EmployeeRuntimeSceneSchema = z
+  .object({
+    ...sceneFields,
+    nativeName: z.string().regex(/^allrice-scene-[0-9a-f-]{36}$/),
+    digest: ChecksumSchema,
+  })
+  .strict();
+export type EmployeeRuntimeScene = z.infer<typeof EmployeeRuntimeSceneSchema>;
+export const EmployeeSceneReadSchema = z
+  .object({
+    sceneId: UuidSchema,
+    sceneDigest: ChecksumSchema,
+    receiptId: UuidSchema,
+  })
+  .strict();
+export const EmployeeSceneStateSchema = z
+  .object({
+    reads: z.array(EmployeeSceneReadSchema).max(employeeContentLimits.scenes),
+    adopted: EmployeeSceneReadSchema.extend({
+      nativeSessionId: z.string().min(1).max(240),
+      callId: z.string().min(1).max(240),
+    }).optional(),
+  })
+  .strict();

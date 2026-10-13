@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import {
   EmployeeContentManifestSchema,
   EmployeeRuntimeContentSchema,
+  EmployeeSceneReadSchema,
+  EmployeeSceneStateSchema,
   type EmployeeRuntimeContent,
   type EmployeeResolvedContent,
   type EmployeeInstanceSnapshot,
@@ -27,6 +29,7 @@ import {
   type ContentTx,
 } from './employee-content-model.ts';
 import { freezeEmployeeRuntimeContent } from './employee-content.ts';
+import { employeeRuntimeScenes } from './employee-runtime-scenes.ts';
 
 export class EmployeeRuntimeContentError extends Error {
   readonly code = 'EMPLOYEE_CONTENT_UNAVAILABLE';
@@ -67,12 +70,21 @@ export async function readEmployeeRuntimeContent(
   sql: ContentSql = getDatabase(),
   instanceOwnerId?: string,
   lock = false,
+  selectedSceneIds: readonly string[] = [],
 ) {
   const parsed = EmployeeRuntimeContentSchema.safeParse(raw);
   if (!parsed.success) return unavailable();
   const snapshot = parsed.data;
   const { checksum, ...index } = snapshot;
   if (runtimePolicyDigest(index) !== checksum) return unavailable();
+  let scenes;
+  try {
+    scenes = employeeRuntimeScenes(snapshot);
+  } catch {
+    return unavailable();
+  }
+  if (selectedSceneIds.some((id) => !scenes.some((s) => s.id === id)))
+    return unavailable();
   try {
     const instance = await getEmployeeInstance(
       instanceOwnerId
@@ -133,18 +145,25 @@ export async function readEmployeeRuntimeContent(
       )
         return unavailable();
       const manifest = EmployeeContentManifestSchema.parse(row.manifest);
+      const selected = [
+        ...layer.common,
+        ...(layer.scenes ?? [])
+          .filter((s) => selectedSceneIds.includes(s.id))
+          .flatMap((s) => s.references),
+      ];
       if (
         runtimePolicyDigest(manifest) !== row.digest ||
         runtimePolicyDigest(manifest.common) !==
           runtimePolicyDigest(layer.common) ||
+        (layer.scenes !== undefined &&
+          runtimePolicyDigest(manifest.scenes) !==
+            runtimePolicyDigest(layer.scenes)) ||
         manifest.declaredConflicts.some((c) =>
-          c.contentIds.some((id) =>
-            layer.common.some((r) => r.contentId === id),
-          ),
+          c.contentIds.some((id) => selected.some((r) => r.contentId === id)),
         )
       )
         return unavailable();
-      for (const ref of layer.common) {
+      for (const ref of selected) {
         const key = employeeContentReferenceKey(ref),
           identity = `${ref.sourceKind}:${ref.contentId}`;
         if (identities.has(identity) && identities.get(identity) !== key)
@@ -174,7 +193,7 @@ export async function readEmployeeRuntimeContent(
       ) > 32_000
     )
       return unavailable();
-    return { snapshot, sources: [...sources.values()] };
+    return { snapshot, scenes, sources: [...sources.values()] };
   } catch (error) {
     if (error instanceof EmployeeRuntimeContentError) throw error;
     if (error instanceof DataAccessError || error instanceof ZodError)
@@ -220,6 +239,7 @@ type ContentContextRow = {
 };
 type RunRow = {
   content: unknown;
+  content_scene_state: unknown;
   content_generation_id: string | null;
   user_message_id: string;
   session_references:
@@ -236,7 +256,7 @@ async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
   >`select er.execution_snapshot->'content' as content,
-      er.content_generation_id,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references
+      er.content_generation_id,er.content_scene_state,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
       and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId} and er.owner_id=${scope.ownerId}
@@ -286,8 +306,10 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
     if (!context) return unavailable();
     owners.add(context.owner_id);
     sessions.add(context.session_id);
-    const rows = await sql<Pick<RunRow, 'content' | 'session_references'>[]>`
-      select distinct execution_snapshot->'content' as content,prompt_snapshot->'sessionReferences' as session_references
+    const rows = await sql<
+      Pick<RunRow, 'content' | 'content_scene_state' | 'session_references'>[]
+    >`
+      select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED' limit 129`;
     if (rows.length > 128) return unavailable();
@@ -381,11 +403,12 @@ async function generationIsReadable(
   const rows = await sql<
     {
       content: unknown;
+      content_scene_state: unknown;
       session_references:
         { sessionId: string; messages: { id: string }[] }[] | null;
     }[]
   >`
-    select distinct execution_snapshot->'content' as content,prompt_snapshot->'sessionReferences' as session_references
+    select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED' limit 129`;
@@ -394,14 +417,29 @@ async function generationIsReadable(
   if (rows.length > 128) return false;
   for (const row of rows) {
     try {
-      if (row.content)
+      if (row.content) {
+        const state = parseSceneState(row.content_scene_state);
+        const scenes = employeeRuntimeScenes(
+          EmployeeRuntimeContentSchema.parse(row.content),
+        );
+        if (
+          state.reads.some(
+            (r) =>
+              !scenes.some(
+                (s) => s.id === r.sceneId && s.digest === r.sceneDigest,
+              ),
+          )
+        )
+          return false;
         await readEmployeeRuntimeContent(
           reader,
           row.content,
           sql,
           scope.ownerId,
           locked,
+          state.reads.map((r) => r.sceneId),
         );
+      }
       for (const ref of row.session_references ?? [])
         await assertEmployeeContentReferenceMessages(
           reader,
@@ -412,7 +450,11 @@ async function generationIsReadable(
           locked,
         );
     } catch (error) {
-      if (error instanceof EmployeeRuntimeContentError) return false;
+      if (
+        error instanceof EmployeeRuntimeContentError ||
+        error instanceof ZodError
+      )
+        return false;
       throw error;
     }
   }
@@ -539,9 +581,17 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
                 and (er.user_message_id=m.id or er.assistant_message_id=m.id))
               )`
       : null;
+    // A new task must not inherit previous scene tool results or native
+    // summaries. Ordinary visible messages retain their provenance above.
+    const [priorScene] =
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and content_scene_state is not null limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,
+      nativeContextKey:
+        current.scenes.length || priorScene
+          ? `${context!.generation_id}-${scope.runId}`
+          : context!.generation_id,
       historyFromMessageId: context!.history_from_message_id,
       allowedMessageIds: allowedMessages?.map((m) => m.id) ?? null,
     };
@@ -552,6 +602,42 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
   return result;
 }
 
+type ContentWorker = { workerId: string; jobId: string; leaseToken: string };
+function parseSceneState(raw: unknown) {
+  const parsed = EmployeeSceneStateSchema.safeParse(raw ?? { reads: [] });
+  if (
+    !parsed.success ||
+    new Set(parsed.data.reads.map((r) => r.sceneId)).size !==
+      parsed.data.reads.length
+  )
+    return unavailable();
+  if (
+    parsed.data.adopted &&
+    !parsed.data.reads.some(
+      (r) =>
+        r.receiptId === parsed.data.adopted!.receiptId &&
+        r.sceneId === parsed.data.adopted!.sceneId &&
+        r.sceneDigest === parsed.data.adopted!.sceneDigest,
+    )
+  )
+    return unavailable();
+  return parsed.data;
+}
+async function validContentLease(
+  scope: RunScope,
+  worker: ContentWorker | undefined,
+  tx: ContentSql,
+) {
+  if (!worker) return true;
+  const [lease] =
+    await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
+        join allrice_conversation_runtimes cr on cr.session_id=${scope.sessionId} and cr.active_run_id=r.id and cr.worker_id=j.worker_id and cr.state='running'
+        where j.id=${worker.jobId} and j.run_id=${scope.runId} and j.worker_id=${worker.workerId} and j.lease_token=${worker.leaseToken}
+          and j.status='running' and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null
+          and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId} and r.owner_id=${scope.ownerId}`;
+  return !!lease;
+}
+
 /** Every real model dispatch, including native compaction, uses this same gate.
  * Ordinary method publication does not invalidate a valid frozen revision. */
 export async function assertEmployeeContentContext(
@@ -560,17 +646,7 @@ export async function assertEmployeeContentContext(
   worker?: { workerId: string; jobId: string; leaseToken: string },
 ) {
   const accepted = await withContentLocks(scope, async (tx) => {
-    const validLease = async () => {
-      if (!worker) return true;
-      const [lease] =
-        await tx`select j.id from allrice_jobs j join allrice_runs r on r.id=j.run_id
-        join allrice_conversation_runtimes cr on cr.session_id=${scope.sessionId} and cr.active_run_id=r.id and cr.worker_id=j.worker_id and cr.state='running'
-        where j.id=${worker.jobId} and j.run_id=${scope.runId} and j.worker_id=${worker.workerId} and j.lease_token=${worker.leaseToken}
-          and j.status='running' and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null
-          and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId} and r.owner_id=${scope.ownerId}`;
-      return !!lease;
-    };
-    if (!(await validLease())) return false;
+    if (!(await validContentLease(scope, worker, tx))) return false;
     const run = await ownedRun(scope, tx);
     const [context] = await tx<
       ContentContextRow[]
@@ -591,10 +667,163 @@ export async function assertEmployeeContentContext(
       true,
     );
     // Row/source locks may have waited; a lease read before that wait is stale.
-    if (!(await validLease())) return false;
+    if (!(await validContentLease(scope, worker, tx))) return false;
     if (readable) return true;
     await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp(),updated_at=clock_timestamp() where generation_id=${generationId}`;
     return false;
   });
   if (!accepted) return unavailable();
+}
+
+/** Conservative read receipt is committed before a byte is returned to DSH.
+ * Provider probes are reads, not adoption; retries recheck authority first. */
+export async function loadEmployeeRuntimeScene(
+  scope: RunScope,
+  generationId: string,
+  selection: { sceneId: string; sceneDigest: string },
+  worker: ContentWorker,
+) {
+  const result = await withContentLocks(scope, async (tx) => {
+    const run = await ownedRun(scope, tx);
+    if (
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx))
+    )
+      return unavailable();
+    if (
+      !(await generationIsReadable(
+        scope,
+        generationId,
+        tx,
+        identity(scope),
+        new Set(),
+        true,
+      ))
+    ) {
+      await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp() where generation_id=${generationId}`;
+      return { rejected: true as const };
+    }
+    const snapshot = EmployeeRuntimeContentSchema.parse(run.content);
+    const scene = employeeRuntimeScenes(snapshot).find(
+      (s) => s.id === selection.sceneId && s.digest === selection.sceneDigest,
+    );
+    if (!scene) return unavailable();
+    const state = parseSceneState(run.content_scene_state);
+    if (state.adopted && state.adopted.sceneId !== scene.id)
+      return unavailable();
+    // Include every actual read for conflict and total-body limits. A failed
+    // additional read never erases dependencies already exposed to the model.
+    const selected = [
+      ...new Set([...state.reads.map((r) => r.sceneId), scene.id]),
+    ];
+    const current = await readEmployeeRuntimeContent(
+      identity(scope),
+      snapshot,
+      tx,
+      undefined,
+      true,
+      selected,
+    );
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
+    let receipt = state.reads.find((r) => r.sceneId === scene.id);
+    if (!receipt) {
+      receipt = EmployeeSceneReadSchema.parse({
+        sceneId: scene.id,
+        sceneDigest: scene.digest,
+        receiptId: randomUUID(),
+      });
+      state.reads.push(receipt);
+      await tx`update allrice_employee_runs set content_scene_state=${tx.json(state)} where run_id=${scope.runId}`;
+    }
+    const common = new Set(
+      snapshot.layers.flatMap((l) => l.common).map(employeeContentReferenceKey),
+    );
+    const refs = new Set(
+      snapshot.layers
+        .flatMap((l) =>
+          (l.scenes ?? [])
+            .filter((s) => s.id === scene.id)
+            .flatMap((s) => s.references),
+        )
+        .map(employeeContentReferenceKey),
+    );
+    return {
+      scene,
+      receipt,
+      sources: current.sources
+        .filter(
+          (s) =>
+            refs.has(employeeContentReferenceKey(s.reference)) &&
+            !common.has(employeeContentReferenceKey(s.reference)),
+        )
+        .sort((a, b) =>
+          employeeContentReferenceKey(a.reference).localeCompare(
+            employeeContentReferenceKey(b.reference),
+          ),
+        ),
+    };
+  });
+  if ('rejected' in result) return unavailable();
+  return result;
+}
+
+/** Called only after a matched successful native Skill tool result, before
+ * another model dispatch. Different simultaneous adoptions poison that Run's
+ * context; rollback must not accidentally permit its polluted native history. */
+export async function adoptEmployeeRuntimeScene(
+  scope: RunScope,
+  generationId: string,
+  evidence: {
+    sceneId: string;
+    sceneDigest: string;
+    receiptId: string;
+    nativeSessionId: string;
+    callId: string;
+  },
+  worker: ContentWorker,
+) {
+  const adopted = EmployeeSceneStateSchema.shape.adopted
+    .unwrap()
+    .parse(evidence);
+  const result = await withContentLocks(scope, async (tx) => {
+    const run = await ownedRun(scope, tx);
+    if (
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx))
+    )
+      return unavailable();
+    const state = parseSceneState(run.content_scene_state);
+    if (
+      !state.reads.some(
+        (r) =>
+          r.sceneId === adopted.sceneId &&
+          r.sceneDigest === adopted.sceneDigest &&
+          r.receiptId === adopted.receiptId,
+      )
+    )
+      return unavailable();
+    const readable = await generationIsReadable(
+      scope,
+      generationId,
+      tx,
+      identity(scope),
+      new Set(),
+      true,
+    );
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
+    if (
+      !readable ||
+      (state.adopted && state.adopted.sceneId !== adopted.sceneId)
+    ) {
+      await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp() where generation_id=${generationId}`;
+      return { rejected: true as const };
+    }
+    if (!state.adopted) {
+      state.adopted = adopted;
+      await tx`update allrice_employee_runs set content_scene_state=${tx.json(state)} where run_id=${scope.runId}`;
+    }
+    return { adopted: state.adopted };
+  });
+  if ('rejected' in result) return unavailable();
+  return result.adopted;
 }

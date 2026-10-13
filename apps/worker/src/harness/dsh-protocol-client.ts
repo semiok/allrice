@@ -2,7 +2,10 @@ import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
 
-import type { DshNativeSkillSnapshot } from '@allrice/contracts';
+import type {
+  DshNativeSkillSnapshot,
+  EmployeeRuntimeScene,
+} from '@allrice/contracts';
 import type { HarnessImageInput } from './adapter.js';
 
 import { HandlerError } from '../errors.js';
@@ -115,6 +118,7 @@ export class DshProtocolClient {
     model: string;
     nativeTools?: string[];
     nativeSkills?: DshNativeSkillSnapshot[];
+    contentScenes?: EmployeeRuntimeScene[];
     maxTokens?: number;
     expectedVersion?: string;
     requireTaskProgress?: boolean;
@@ -133,6 +137,15 @@ export class DshProtocolClient {
       ...(requireContentGuard ? { requireContentGuard: true } : {}),
     });
     const serverInfo = record(result.serverInfo);
+    if (
+      input.contentScenes?.length &&
+      record(result.capabilities)?.contentScenes !== true
+    )
+      throw new HandlerError(
+        'DSH_SCENE_PROVIDER_UNAVAILABLE',
+        'DSH did not activate the scene provider',
+        false,
+      );
     if (
       serverInfo?.name !== 'deepseek-harness-sdk-runtime' ||
       typeof serverInfo.version !== 'string'

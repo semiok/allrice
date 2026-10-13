@@ -502,3 +502,7 @@ SSE 测试端点，覆盖已有工具结果保留且工具只执行一次、恢�
 AllRice 通过公开的 `llm/stream` middleware 请求 Worker 校验，覆盖原生重试和 compaction，并保留原生循环、摘要器与模型传输。工具执行前复用相同校验。`allrice/content-authorized` 仅证明本次授权检查与引用装配，不代表模型已完成任务或 Knowledge 文件已读取。Skills 注册、加载与共同要求的装配仍分别留证。
 
 本切片未增加 DSH 核心补丁。若上游提供可绑定平台租户权限与持久化来源依赖的等价 dispatch gate，并通过普通更新、撤回、压缩、恢复及跨会话引用回归，可迁移并撤销此适配层。场景按需加载在后续 PR3b2 实施。
+
+### MET179 PR3b2：工作场景原生渐进加载
+
+`allrice-progressive-scene-provider-v1` 使用固定 DSH 的公开 Skill Provider list/get 和 session/event、llm/stream。目录不带正文；Worker 按冻结引用与当前权限、lease 提交读取回执后才返回内容。原生 get（包括不可调用 slash 的探查）只算读取；匹配的成功 tool/result 才登记采用，下一派发等待采用事务。场景读取接入既有 content generation，撤权后压缩、恢复和跨会话引用同样失效。跨 Run 使用独立原生线程，保留已授权的普通历史，避免上一场景的工具结果或 summary 自动沿用。可删除条件：上游提供同等租户来源读取/采用持久化接口后替换适配；没有改动 DSH 核心或另造 Skill/Agent 循环。

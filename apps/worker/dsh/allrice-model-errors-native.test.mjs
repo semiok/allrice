@@ -15,6 +15,14 @@ const overload =
 const generic =
   'An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.';
 const skillContent = '# Synthetic method\nFROZEN_NATIVE_SKILL_BODY_42';
+const sceneId = '189c8b5b-72cb-4f41-89c2-f3034c5ec0e4';
+const sceneName = `allrice-scene-${sceneId}`;
+const sceneDigest = `sha256:${'a'.repeat(64)}`;
+const sceneReceipt = {
+  sceneId,
+  sceneDigest,
+  receiptId: '62f49e1d-9f1a-4bb0-9c26-decb3d732180',
+};
 // Generated test grant; never read ambient credentials or call a remote model.
 const syntheticToken = [
   Buffer.from('{"alg":"none"}').toString('base64url'),
@@ -34,6 +42,10 @@ async function scenario({
   failures = [overload],
   toolFirst = false,
   skillFirst = false,
+  sceneFirst = false,
+  sceneProbe = false,
+  rejectSceneAdoption = false,
+  recoverScene = false,
   rebind = false,
   settle = true,
   cancel = false,
@@ -48,6 +60,7 @@ async function scenario({
     bridgeCalls = [],
     toolCalls = [];
   let serverError;
+  let adoptionAttempts = 0;
   let contentCalls = 0,
     compactionRejected = false,
     progressChecks = 0,
@@ -66,7 +79,7 @@ async function scenario({
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
       const index = requests.length - 1;
-      const firstTool = toolFirst || skillFirst;
+      const firstTool = toolFirst || skillFirst || sceneFirst;
       if (
         !(firstTool && index === 0) &&
         failures[index - (firstTool ? 1 : 0)]
@@ -87,9 +100,13 @@ async function scenario({
               type: 'function_call',
               id: `fc_synthetic_${index}`,
               call_id: `call_synthetic_${index}`,
-              name: skillFirst ? 'skill' : 'local_fs_list',
+              name: skillFirst || sceneFirst ? 'skill' : 'local_fs_list',
               arguments: JSON.stringify(
-                skillFirst ? { name: 'synthetic-method' } : { path: '.' },
+                sceneFirst
+                  ? { name: sceneName }
+                  : skillFirst
+                    ? { name: 'synthetic-method' }
+                    : { path: '.' },
               ),
               status: 'completed',
             }
@@ -186,82 +203,110 @@ async function scenario({
       }),
       { mode: 0o600 },
     );
-    client = new DshProtocolClient({
-      command: process.execPath,
-      args: [resolve(import.meta.dirname, 'allrice-jsonrpc-runtime.mjs')],
-      cwd: root,
-      requestTimeoutMs: 15000,
-      environment: {
-        PATH: process.env.PATH ?? '/usr/bin:/bin',
-        ...(assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
-        ...(progressPause ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
-        DSH_CORDIS_CONFIG: join(root, 'profile.yml'),
-        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
-        DSH_SESSION_ROOT: join(root, 'sessions'),
-        DSH_CREDENTIALS_PATH: join(root, 'credentials.yaml'),
-        DSH_HOME: root,
-        DSH_CWD: root,
-        DSH_CODEX_MODEL: 'gpt-5.6-luna',
-        DSH_SYSTEM_PROMPT:
-          'Synthetic recovery fixture. Use only supplied test tools.',
-      },
-    });
-    client.subscribe((notice) => notices.push(notice));
-    client.setRequestHandler(async (method, p) => {
-      bridgeCalls.push({ method, ...p });
-      if (method === 'allrice/progress') {
-        if (p.action === 'check') progressChecks++;
-        if (p.action === 'decide') progressContinued = true;
-        return {
-          paused: progressChecks >= 2 && !progressContinued,
-          pauseId: 'synthetic-pause',
-          reason: 'repeated_failure',
-          recent: [],
-        };
-      }
-      if (method === 'allrice/content-check') {
-        contentCalls += 1;
-        if (contentCalls > contentCallsAllowed)
-          throw Error('employee_content_revoked');
-        return { allowed: true };
-      }
-      if (method === 'allrice/assistant/model-prepare')
-        return { prepared: true, outputTokens: p.outputTokens };
-      if (method === 'allrice/assistant/model-dispatch')
-        return { reserved: true, outputTokens: p.outputTokens };
-      if (method === 'allrice/assistant/model-settle')
-        return { settled: settle, tokenUsageObservational: true };
-      if (method === 'allrice/assistant/checkpoint') return { saved: true };
-      if (method === 'allrice/assistant/tool') {
-        toolCalls.push(p);
-        return { modelContent: 'SAVED_TOOL_RESULT_42' };
-      }
-      throw Error(`unexpected_fixture_bridge:${method}`);
-    });
-    await client.initialize({
-      cwd: root,
-      provider: 'openai-codex',
-      model: 'gpt-5.6-luna',
-      maxTokens: 64,
-      nativeTools: ['local.fs.list'],
-      nativeSkills: skillFirst
-        ? [
-            {
-              id: 'synthetic-method-id',
-              name: 'synthetic-method',
-              description:
-                'Frozen synthetic method for the native loader regression.',
-              content: skillContent,
-              checksum: `sha256:${createHash('sha256').update(skillContent).digest('hex')}`,
-              invocation: { modelInvocable: true, userInvocable: true },
-              requiredToolRefs: ['local.fs.list'],
-            },
-          ]
-        : [],
-      expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
-      requireContentGuard: contentCallsAllowed !== undefined,
-      requireTaskProgress: progressPause,
-    });
+    async function launch() {
+      client = new DshProtocolClient({
+        command: process.execPath,
+        args: [resolve(import.meta.dirname, 'allrice-jsonrpc-runtime.mjs')],
+        cwd: root,
+        requestTimeoutMs: 15000,
+        environment: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          ...(assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
+          ...(progressPause ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
+          DSH_CORDIS_CONFIG: join(root, 'profile.yml'),
+          DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+          DSH_SESSION_ROOT: join(root, 'sessions'),
+          DSH_CREDENTIALS_PATH: join(root, 'credentials.yaml'),
+          DSH_HOME: root,
+          DSH_CWD: root,
+          DSH_CODEX_MODEL: 'gpt-5.6-luna',
+          DSH_SYSTEM_PROMPT:
+            'Synthetic recovery fixture. Use only supplied test tools.',
+        },
+      });
+      client.subscribe((notice) => notices.push(notice));
+      client.setRequestHandler(async (method, p) => {
+        bridgeCalls.push({ method, ...p });
+        if (method === 'allrice/progress') {
+          if (p.action === 'check') progressChecks++;
+          if (p.action === 'decide') progressContinued = true;
+          return {
+            paused: progressChecks >= 2 && !progressContinued,
+            pauseId: 'synthetic-pause',
+            reason: 'repeated_failure',
+            recent: [],
+          };
+        }
+        if (method === 'allrice/content-scene-load') {
+          expect(p).toEqual({ sceneId, sceneDigest });
+          return { receipt: sceneReceipt, content: 'SCENE_WEEKLY_ONLY_85' };
+        }
+        if (method === 'allrice/content-scene-adopt') {
+          expect(p).toMatchObject(sceneReceipt);
+          expect(requests).toHaveLength(1);
+          adoptionAttempts++;
+          if ((recoverScene && adoptionAttempts === 1) || rejectSceneAdoption)
+            throw Error('employee_scene_adoption_denied');
+          return { adopted: p };
+        }
+        if (method === 'allrice/content-check') {
+          contentCalls += 1;
+          if (contentCalls > contentCallsAllowed)
+            throw Error('employee_content_revoked');
+          return { allowed: true };
+        }
+        if (method === 'allrice/assistant/model-prepare')
+          return { prepared: true, outputTokens: p.outputTokens };
+        if (method === 'allrice/assistant/model-dispatch')
+          return { reserved: true, outputTokens: p.outputTokens };
+        if (method === 'allrice/assistant/model-settle')
+          return { settled: settle, tokenUsageObservational: true };
+        if (method === 'allrice/assistant/checkpoint') return { saved: true };
+        if (method === 'allrice/assistant/tool') {
+          toolCalls.push(p);
+          return { modelContent: 'SAVED_TOOL_RESULT_42' };
+        }
+        throw Error(`unexpected_fixture_bridge:${method}`);
+      });
+      await client.initialize({
+        cwd: root,
+        provider: 'openai-codex',
+        model: 'gpt-5.6-luna',
+        maxTokens: 64,
+        nativeTools: ['local.fs.list'],
+        nativeSkills: skillFirst
+          ? [
+              {
+                id: 'synthetic-method-id',
+                name: 'synthetic-method',
+                description:
+                  'Frozen synthetic method for the native loader regression.',
+                content: skillContent,
+                checksum: `sha256:${createHash('sha256').update(skillContent).digest('hex')}`,
+                invocation: { modelInvocable: true, userInvocable: true },
+                requiredToolRefs: ['local.fs.list'],
+              },
+            ]
+          : [],
+        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        contentScenes:
+          sceneFirst || sceneProbe
+            ? [
+                {
+                  id: sceneId,
+                  nativeName: sceneName,
+                  digest: sceneDigest,
+                  name: '周报',
+                  appliesWhen: '每周经营复盘',
+                },
+              ]
+            : [],
+        requireContentGuard:
+          contentCallsAllowed !== undefined || sceneFirst || sceneProbe,
+        requireTaskProgress: progressPause,
+      });
+    }
+    await launch();
     const sessionId = `synthetic-recovery-${randomUUID()}`;
     if (assistants)
       await client.assistant('bind', {
@@ -272,7 +317,12 @@ async function scenario({
       notices
         .filter((n) => n.method === 'session.event')
         .map((n) => n.params.event);
-    await client.prompt(sessionId, 'Synthetic request: list once then answer.');
+    await client.prompt(
+      sessionId,
+      sceneProbe
+        ? `/${sceneName} Synthetic request`
+        : 'Synthetic request: list once then answer.',
+    );
     if (progressPause) {
       await expect
         .poll(() => notices.some((n) => n.method === 'session.user-question'), {
@@ -297,6 +347,25 @@ async function scenario({
         timeout: 15000,
       })
       .toBe(true);
+    if (recoverScene) {
+      expect(requests).toHaveLength(1);
+      await client.close();
+      await launch();
+      if (assistants)
+        await client.assistant('bind', {
+          nativeSessionId: sessionId,
+          wireTools: ['local_fs_list'],
+        });
+      await client.prompt(
+        sessionId,
+        'Continue the same task using the loaded scene.',
+      );
+      await expect
+        .poll(() => events().filter((e) => e.type === 'turn/end').length, {
+          timeout: 15000,
+        })
+        .toBe(2);
+    }
     if (rebind) {
       await client.assistant('finish', { nativeSessionId: sessionId });
       await client.assistant('bind', {
@@ -531,3 +600,65 @@ describe('AllRice overload recovery through the actual native loop', () => {
     ).toBe('aborted');
   }, 30000);
 });
+
+describe('progressive native work scenes', () => {
+  it.each([false, true])(
+    'loads through the real native provider and commits adoption before dispatch (assistants=%s)',
+    async (assistants) => {
+      const r = await scenario({ failures: [], sceneFirst: true, assistants });
+      expect(r.requests).toHaveLength(2);
+      expect(JSON.stringify(r.requests[0])).toContain(sceneName);
+      expect(JSON.stringify(r.requests[0])).not.toContain(
+        'SCENE_WEEKLY_ONLY_85',
+      );
+      expect(JSON.stringify(r.requests[1])).toContain('SCENE_WEEKLY_ONLY_85');
+      const calls = r.bridgeCalls.map((c) => c.method);
+      expect(
+        calls.filter((c) => c === 'allrice/content-scene-load'),
+      ).toHaveLength(1);
+      expect(
+        calls.filter((c) => c === 'allrice/content-scene-adopt'),
+      ).toHaveLength(1);
+      expect(calls.indexOf('allrice/content-scene-adopt')).toBeLessThan(
+        calls.lastIndexOf('allrice/content-check'),
+      );
+    },
+    45000,
+  );
+  it('slash get is a conservative read, not a successful native adoption', async () => {
+    const r = await scenario({ failures: [], sceneProbe: true });
+    expect(
+      r.bridgeCalls.some((c) => c.method === 'allrice/content-scene-load'),
+    ).toBe(true);
+    expect(
+      r.bridgeCalls.some((c) => c.method === 'allrice/content-scene-adopt'),
+    ).toBe(false);
+    expect(JSON.stringify(r.requests)).not.toContain('SCENE_WEEKLY_ONLY_85');
+  }, 45000);
+  it('a rejected adoption prevents the next provider dispatch and native compaction', async () => {
+    const r = await scenario({
+      failures: [],
+      sceneFirst: true,
+      rejectSceneAdoption: true,
+      compact: true,
+    });
+    expect(r.requests).toHaveLength(1);
+    expect(
+      r.bridgeCalls.some((c) => c.method === 'allrice/content-scene-adopt'),
+    ).toBe(true);
+    expect(r.compactionRejected).toBe(true);
+  }, 45000);
+});
+
+it('cold native recovery reconciles the saved successful scene result before the next request', async () => {
+  const r = await scenario({
+    failures: [],
+    sceneFirst: true,
+    recoverScene: true,
+  });
+  expect(r.requests).toHaveLength(2);
+  expect(
+    r.bridgeCalls.filter((c) => c.method === 'allrice/content-scene-adopt'),
+  ).toHaveLength(2);
+  expect(JSON.stringify(r.requests[1])).toContain('SCENE_WEEKLY_ONLY_85');
+}, 45000);
