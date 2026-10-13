@@ -11,6 +11,7 @@ export * from './tenant-administration.ts';
 export * from './organization-administration.ts';
 export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
+export * from './employees/employee-runtime-content.ts';
 export * from './organization-departments.ts';
 export * from './organization-employee-assignments.ts';
 export * from './employee-administration.ts';

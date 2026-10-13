@@ -56,6 +56,7 @@ import {
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
+import { installContentGuard } from './allrice-content-guard.mjs';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 import {
   checkpointNativeQuestion,
@@ -954,6 +955,19 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];
     this.registerNativeSkills(requestedSkills);
+    // Human/progress waits happen before content authorization and accounting.
+    if (this.progressBridge && !this.taskProgress)
+      this.taskProgress = installTaskProgress(this.ctx, this.progressBridge, {
+        maintenanceOutputTokens: process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
+          ? Number(process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS)
+          : undefined,
+      });
+    // Content denial must precede assistant dispatch accounting. The Worker
+    // also rechecks at model-prepare/model-dispatch after any native waits.
+    if (params?.requireContentGuard && !this.contentGuard) {
+      if (!this.contentBridge) throw Error('employee_content_bridge_required');
+      this.contentGuard = installContentGuard(this.ctx, this.contentBridge);
+    }
     if (this.assistantBridge) {
       this.governedAssistants = createGovernedAssistantNativeRuntime(
         this.ctx,
@@ -969,12 +983,6 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         },
       );
     }
-    if (this.progressBridge && !this.taskProgress)
-      this.taskProgress = installTaskProgress(this.ctx, this.progressBridge, {
-        maintenanceOutputTokens: process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS
-          ? Number(process.env.ALLRICE_MAINTENANCE_OUTPUT_TOKENS)
-          : undefined,
-      });
     this.registerNativeTools();
     await super.initialize(forwardedParams);
     if (!this.modelErrorNormalization)
@@ -988,6 +996,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       capabilities: {
         durableQuestions: true,
         taskProgress: !!this.taskProgress,
+        contentGuard: !!this.contentGuard,
         interrupt: true,
         steer: true,
         compact: true,
@@ -1784,6 +1793,8 @@ if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
     transport.request(`allrice/assistant/${method}`, params, signal);
 server.toolBrokerRequest = (params, signal) =>
   transport.request('allrice/tool-call', params, signal);
+server.contentBridge = (params, signal) =>
+  transport.request('allrice/content-check', params, signal);
 if (process.env.ALLRICE_PROGRESS_GUARD_ENABLED === '1')
   server.progressBridge = (params, signal) =>
     transport.request('allrice/progress', params, signal);

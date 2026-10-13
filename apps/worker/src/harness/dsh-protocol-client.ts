@@ -119,14 +119,19 @@ export class DshProtocolClient {
     expectedVersion?: string;
     requireTaskProgress?: boolean;
     requireDurableQuestions?: boolean;
+    requireContentGuard?: boolean;
   }) {
     const {
       expectedVersion,
       requireTaskProgress,
       requireDurableQuestions,
+      requireContentGuard,
       ...params
     } = input;
-    const result = await this.request('initialize', params);
+    const result = await this.request('initialize', {
+      ...params,
+      ...(requireContentGuard ? { requireContentGuard: true } : {}),
+    });
     const serverInfo = record(result.serverInfo);
     if (
       serverInfo?.name !== 'deepseek-harness-sdk-runtime' ||
@@ -149,6 +154,15 @@ export class DshProtocolClient {
         false,
       );
     }
+    if (
+      requireContentGuard &&
+      record(result.capabilities)?.contentGuard !== true
+    )
+      throw new HandlerError(
+        'DSH_CONTENT_GUARD_UNAVAILABLE',
+        'DSH did not activate current content authorization',
+        false,
+      );
     if (
       requireTaskProgress &&
       record(result.capabilities)?.taskProgress !== true

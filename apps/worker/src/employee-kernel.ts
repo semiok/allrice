@@ -3,8 +3,10 @@ import {
   type ContextCheckpoint,
   type EmployeeKernelRequest,
   type WorkAutomation,
+  type EmployeeResolvedContent,
 } from '@allrice/contracts';
 import type { resolveEmployeeExecution } from '@allrice/database';
+import { HandlerError } from './errors.js';
 
 type ResolvedEmployeeExecution = Awaited<
   ReturnType<typeof resolveEmployeeExecution>
@@ -56,12 +58,45 @@ export function assembleEmployeeKernel(input: {
     fileName: string;
     checksum: string;
   }[];
+  commonContent?: EmployeeResolvedContent[];
 }): EmployeeKernelRequest {
+  for (const source of input.commonContent ?? []) {
+    const rule = input.resolved.promptSnapshot.companyAssets?.rules.find(
+      (r) =>
+        source.reference.sourceKind === 'company_rule' &&
+        r.assetId === source.reference.contentId,
+    );
+    const memory = input.resolved.promptSnapshot.memories.find(
+      (m) =>
+        source.reference.sourceKind === 'experience' &&
+        m.id === source.reference.contentId,
+    );
+    if (
+      (rule &&
+        (rule.revision.id !== source.reference.revisionId ||
+          rule.revision.digest !== source.reference.digest)) ||
+      (memory && memory.content !== source.body)
+    )
+      throw new HandlerError(
+        'EMPLOYEE_CONTENT_UNAVAILABLE',
+        '共同要求与本次引用的规则版本不一致，请更新引用后重新发起任务。',
+        false,
+      );
+  }
   const bootstrapConversation = bootstrapConversationForCheckpoint(
     input.resolved.promptSnapshot.conversation,
     input.checkpoint,
   );
   const memories = input.resolved.promptSnapshot.memories
+    .filter(
+      (memory) =>
+        !input.commonContent?.some(
+          (source) =>
+            source.reference.sourceKind === 'experience' &&
+            source.reference.contentId === memory.id &&
+            source.body === memory.content,
+        ),
+    )
     .map(
       (memory) =>
         `- [${memory.id}${memory.revision === undefined ? '' : ` · revision ${memory.revision}`}] ${memory.content}`,
@@ -88,6 +123,21 @@ export function assembleEmployeeKernel(input: {
     assistantMessageId: input.assistantMessageId,
     systemInstructions: [
       input.resolved.promptSnapshot.systemPrompt,
+      ...(input.commonContent?.length
+        ? [
+            'Frozen common working requirements for this Run, assembled from authorized company, department and personal publications. Apply these together with platform requirements. References do not grant tools or data permissions. A knowledge/workflow description below is a reference directory, not evidence of reading its files or executing its workflow.',
+            JSON.stringify(
+              input.commonContent.map(
+                ({ reference, ownership, title, body }) => ({
+                  reference,
+                  scope: ownership?.scope ?? 'authorized_reference',
+                  title,
+                  body,
+                }),
+              ),
+            ),
+          ]
+        : []),
       ...(input.resolved.executionSnapshot?.schemaVersion === 2 &&
       input.resolved.executionSnapshot.baseSkillCatalog
         ? [
@@ -98,15 +148,24 @@ export function assembleEmployeeKernel(input: {
         ? [
             'Current company business rules for this formal Run. Only the rules below are active; older rules in conversation or checkpoints are historical context. These rules do not grant capabilities and cannot override platform/resource policy.',
             JSON.stringify(
-              input.resolved.promptSnapshot.companyAssets.rules.map(
-                ({ assetId, revision }) => ({
+              input.resolved.promptSnapshot.companyAssets.rules
+                .filter(
+                  ({ assetId, revision }) =>
+                    !input.commonContent?.some(
+                      (source) =>
+                        source.reference.sourceKind === 'company_rule' &&
+                        source.reference.contentId === assetId &&
+                        source.reference.revisionId === revision.id &&
+                        source.reference.digest === revision.digest,
+                    ),
+                )
+                .map(({ assetId, revision }) => ({
                   assetId,
                   revisionId: revision.id,
                   digest: revision.digest,
                   title: revision.content.title,
                   body: revision.content.body,
-                }),
-              ),
+                })),
             ),
           ]
         : []),

@@ -1157,6 +1157,18 @@ export async function prepareEmployeeRunBinding(input: {
     input.assignmentId,
     input.employeeVersionId,
   );
+  const { prepareEmployeeRuntimeContent } =
+    await import('./employee-runtime-content.ts');
+  const contentIdentity = {
+    actor: input.context.actor,
+    organizationId: input.context.organizationId,
+    workspaceId: input.workspaceId,
+  };
+  const content = await prepareEmployeeRuntimeContent(contentIdentity, {
+    instance,
+    employeeId: assignment.employee_id,
+    employeeVersionId: assignment.id,
+  });
   const manifest = EmployeeManifestSchema.safeParse(assignment.manifest);
   if (
     !manifest.success ||
@@ -1453,6 +1465,7 @@ export async function prepareEmployeeRunBinding(input: {
     executionSnapshot: {
       schemaVersion: 2,
       instance,
+      content,
       ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
       ...(mcpEnabled ? { mcpTools } : {}),
       ...(localMcp.connections.length ? { localMcp } : {}),
@@ -1553,6 +1566,15 @@ export async function resolveEmployeeExecution(input: {
   const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
     row.execution_snapshot,
   );
+  if (
+    row.execution_snapshot &&
+    typeof row.execution_snapshot === 'object' &&
+    'content' in row.execution_snapshot &&
+    (!executionSnapshot.success ||
+      executionSnapshot.data.schemaVersion !== 2 ||
+      !executionSnapshot.data.content)
+  )
+    throw Error('employee_content_snapshot_invalid');
   // A damaged new catalog cannot fall back to a legacy manifest and derive
   // broader grants from its augmented Skills.
   if (

@@ -117,10 +117,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
       throw new TypeError('DSH harness requires a DSH provider snapshot');
     }
     const snapshot = input.providerSnapshot;
-    const expectedThreadId = `dsh-${input.kernel.sessionId}`;
-    const threadId = input.threadId?.startsWith('dsh-')
-      ? input.threadId
-      : expectedThreadId;
+    const expectedThreadId = `dsh-${input.kernel.sessionId}${input.contentGuard ? `-${input.contentGuard.generationId}` : ''}`;
+    const threadId =
+      input.threadId?.startsWith('dsh-') &&
+      (!input.contentGuard || input.threadId === expectedThreadId)
+        ? input.threadId
+        : expectedThreadId;
     const existing = this.runtimePool.get(threadId);
     const callableToolNames = new Set(input.tools.map((tool) => tool.name));
     const authorizedToolNames = new Set(
@@ -175,8 +177,49 @@ export class DshHarnessAdapter implements HarnessAdapter {
       });
     const ordinaryHandler = dshInboundToolHandler(input);
     let assistantAdmissionFailure: HandlerError | undefined;
+    let contentAuthorizationFailure: HandlerError | undefined;
+    const checkContent = async () => {
+      if (!input.contentGuard) return;
+      try {
+        await input.contentGuard.check();
+      } catch (error) {
+        contentAuthorizationFailure ??=
+          error instanceof HandlerError
+            ? error
+            : new HandlerError(
+                'EMPLOYEE_CONTENT_UNAVAILABLE',
+                '当前工作要求或历史资料无法继续使用，请确认后重新发起任务。',
+                false,
+              );
+        throw contentAuthorizationFailure;
+      }
+    };
     runtime.client.setRequestHandler(async (method, params) => {
+      if (method === 'allrice/content-check') {
+        if (!input.contentGuard) throw Error('employee_content_guard_unbound');
+        if (params.nativeSessionId !== threadId) {
+          if (!assistant) throw Error('employee_content_native_scope');
+          await assistant.handle('progress-identity', {
+            nativeSessionId: params.nativeSessionId,
+          });
+        }
+        await checkContent();
+        return { allowed: true };
+      }
+      if (
+        method === 'allrice/tool-call' ||
+        method === 'allrice/assistant/model-prepare' ||
+        method === 'allrice/assistant/model-dispatch' ||
+        method === 'allrice/assistant/tool' ||
+        method === 'allrice/assistant/proposal'
+      )
+        await checkContent();
       if (method === 'allrice/progress') {
+        if (
+          params.action === 'model_prepare' ||
+          (params.action === 'start' && params.kind === 'model')
+        )
+          await checkContent();
         if (!input.progress) throw Error('task_progress_disabled');
         if (params.nativeSessionId !== threadId) {
           if (!assistant) throw Error('task_progress_native_scope');
@@ -468,6 +511,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         usageComplete &&= result.usageComplete;
         cacheUsageKnown &&= result.cacheUsageKnown;
         const toolCall = parseDshToolCall(result.answer);
+        await checkContent();
         if (!toolCall) {
           if (assistantAdmissionFailure) throw assistantAdmissionFailure;
           const joined = assistant
@@ -685,6 +729,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       // Preserve a trusted local admission denial rather than the native RPC's
       // generic retryable wrapper. Never classify from model-supplied text.
       const error =
+        contentAuthorizationFailure ??
         assistantAdmissionFailure ??
         (input.questionWait?.resume &&
         caught instanceof HandlerError &&

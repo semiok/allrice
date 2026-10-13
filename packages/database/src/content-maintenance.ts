@@ -12,7 +12,7 @@ import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
-type ContentIdentity = Pick<
+export type ContentIdentity = Pick<
   RequestContext,
   'actor' | 'organizationId' | 'workspaceId'
 > &
@@ -75,7 +75,7 @@ export async function readContentPrincipal(
  * scope. For new content the caller checks the requested target before insert.
  * Platform writes keep using their separate, existing administration boundary. */
 export async function getContentAccess(
-  context: RequestContext,
+  context: ContentIdentity,
   ownershipInput: ContentOwnership,
   sql: Sql = getDatabase(),
   lockForWrite = false,

@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-employee-content-authorization-v1",
+      "issue": "MET-179",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-content-guard.mjs",
+      "reason": "Recheck Worker-owned frozen content provenance at the public llm/stream seam, including native retry and compaction with assistants enabled or disabled. A revoked generation cannot dispatch or replay its old native log. No DSH core edit, alternative loop or model-supplied permission is introduced."
+    },
+    {
       "id": "allrice-codex-overload-normalization-v1",
       "issue": "Run 95cc7925; Run 22664651",
       "upstreamVersion": "0.1.5-rc.3",

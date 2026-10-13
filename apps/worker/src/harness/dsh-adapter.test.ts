@@ -142,6 +142,108 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('uses a new native persisted thread after revocation and preserves a denied guard across RPC errors', async () => {
+    const root = await mkdtemp(
+      resolve(tmpdir(), 'allrice-content-generation-'),
+    );
+    const requests: unknown[] = [];
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () => {
+        requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const send = (delta: Record<string, unknown>, finish: string | null) =>
+          res.write(
+            `data: ${JSON.stringify({ id: 'content-check', object: 'chat.completion.chunk', created: 1, model: 'content-check', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`,
+          );
+        send(
+          {
+            role: 'assistant',
+            content:
+              requests.length === 1
+                ? 'OLD_DERIVED_ANSWER_42'
+                : 'CURRENT_ANSWER_73',
+          },
+          null,
+        );
+        send({}, 'stop');
+        res.end('data: [DONE]\n\n');
+      });
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const makeAdapter = () => {
+      const adapter = new DshHarnessAdapter({
+        credentialResolver: {
+          resolve: async () => ({ apiKey: 'synthetic-only' }),
+        },
+        runtimeRoot: root,
+        requestTimeoutMs: 15_000,
+      });
+      adapters.push(adapter);
+      return adapter;
+    };
+    let adapter = makeAdapter();
+    const input = executionInput({
+      prompt: 'OLD_PRIVATE_REQUEST_42',
+      provider: {
+        ...snapshot('openai-compatible'),
+        model: 'content-check',
+        baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+      },
+    });
+    input.workDirectory = root;
+    input.tools = [];
+    input.kernel.systemInstructions = 'OLD_COMMON_REQUIREMENT_42';
+    input.contentGuard = { generationId: randomUUID(), check: async () => {} };
+    try {
+      const first = await adapter.execute(input);
+      expect(first.threadId).toBe(
+        `dsh-${input.kernel.sessionId}-${input.contentGuard.generationId}`,
+      );
+      expect(requests).toHaveLength(1);
+      await adapter.close();
+      adapter = makeAdapter(); // Same on-disk DSH root, new Worker process.
+      input.threadId = first.threadId; // Deliberately supply the stale runtime record.
+      input.contentGuard = {
+        generationId: randomUUID(),
+        check: async () => {},
+      };
+      input.kernel.systemInstructions = 'CURRENT_COMMON_REQUIREMENT_73';
+      input.kernel.userRequest = 'CURRENT_REQUEST_73';
+      input.kernel.userMessageId = randomUUID();
+      input.kernel.assistantMessageId = randomUUID();
+      const second = await adapter.execute(input);
+      expect(second.threadId).not.toBe(first.threadId);
+      expect(requests).toHaveLength(2);
+      const sent = JSON.stringify(requests[1]);
+      expect(sent).toContain('CURRENT_COMMON_REQUIREMENT_73');
+      expect(sent).toContain('CURRENT_REQUEST_73');
+      expect(sent).not.toContain('OLD_COMMON_REQUIREMENT_42');
+      expect(sent).not.toContain('OLD_PRIVATE_REQUEST_42');
+      expect(sent).not.toContain('OLD_DERIVED_ANSWER_42');
+      input.threadId = second.threadId;
+      input.contentGuard.check = async () => {
+        throw new HandlerError(
+          'EMPLOYEE_CONTENT_UNAVAILABLE',
+          'revoked',
+          false,
+        );
+      };
+      await expect(adapter.execute(input)).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+        retryable: false,
+      });
+      expect(requests).toHaveLength(2); // No provider retry or plaintext fallback.
+    } finally {
+      server.closeAllConnections();
+      await adapter.close();
+      await new Promise<void>((done) => server.close(() => done()));
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
+
   it.each(['complete', 'cancel'] as const)(
     'streams through the actual pinned native process and batcher before provider completion (%s)',
     async (outcome) => {

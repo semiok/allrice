@@ -155,6 +155,8 @@ export async function listContextCheckpointEvidence(input: {
   workspaceId: string;
   sessionId: string;
   ownerId: string;
+  contentGenerationId?: string;
+  allowedMessageIds?: string[];
 }) {
   const sql = getDatabase();
   const values = {
@@ -172,6 +174,7 @@ export async function listContextCheckpointEvidence(input: {
       and er.workspace_id = ${values.workspaceId}
       and er.session_id = ${values.sessionId}
       and er.owner_id = ${values.ownerId}
+      ${input.contentGenerationId ? sql`and er.content_generation_id=${UuidSchema.parse(input.contentGenerationId)}` : sql``}
       and e.event_type = 'tool.completed'
     order by e.occurred_at desc
     limit 40
@@ -190,6 +193,7 @@ export async function listContextCheckpointEvidence(input: {
       and m.workspace_id = ${values.workspaceId}
       and m.session_id = ${values.sessionId}
       and m.owner_id = ${values.ownerId}
+      ${input.allowedMessageIds ? (input.allowedMessageIds.length ? sql`and m.id in ${sql(input.allowedMessageIds)}` : sql`and false`) : sql``}
     order by m.created_at desc
     limit 40
   `;
@@ -239,9 +243,15 @@ export async function saveContextCheckpoint(input: {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const runtimes = await transaction<
-      { state: string; active_turn_id: string | null }[]
+      {
+        state: string;
+        active_turn_id: string | null;
+        thread_id: string | null;
+        thread_generation: number;
+        config_checksum: string;
+      }[]
     >`
-      select state, active_turn_id from allrice_conversation_runtimes
+      select state, active_turn_id, thread_id, thread_generation, config_checksum from allrice_conversation_runtimes
       where organization_id = ${UuidSchema.parse(input.organizationId)}
         and workspace_id = ${UuidSchema.parse(input.workspaceId)}
         and session_id = ${values.sessionId}
@@ -250,7 +260,13 @@ export async function saveContextCheckpoint(input: {
         and worker_id = ${UuidSchema.parse(input.workerId)}
       for update
     `;
-    if (runtimes[0]?.state !== 'running' || runtimes[0].active_turn_id) {
+    if (
+      runtimes[0]?.state !== 'running' ||
+      runtimes[0].active_turn_id ||
+      runtimes[0].thread_id !== values.threadId ||
+      runtimes[0].thread_generation !== values.generation ||
+      runtimes[0].config_checksum !== values.configChecksum
+    ) {
       throw new Error('context_checkpoint_unsafe_boundary');
     }
     const rows = await transaction<CheckpointRow[]>`

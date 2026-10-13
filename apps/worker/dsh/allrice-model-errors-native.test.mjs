@@ -37,6 +37,10 @@ async function scenario({
   rebind = false,
   settle = true,
   cancel = false,
+  assistants = true,
+  contentCallsAllowed,
+  compact = false,
+  progressPause = false,
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-model-recovery-'));
   const requests = [],
@@ -44,6 +48,10 @@ async function scenario({
     bridgeCalls = [],
     toolCalls = [];
   let serverError;
+  let contentCalls = 0,
+    compactionRejected = false,
+    progressChecks = 0,
+    progressContinued = false;
   const server = createServer((req, res) => {
     void (async () => {
       const chunks = [];
@@ -185,7 +193,8 @@ async function scenario({
       requestTimeoutMs: 15000,
       environment: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
-        ALLRICE_ASSISTANTS_ENABLED: '1',
+        ...(assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
+        ...(progressPause ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
         DSH_CORDIS_CONFIG: join(root, 'profile.yml'),
         DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
         DSH_SESSION_ROOT: join(root, 'sessions'),
@@ -200,6 +209,22 @@ async function scenario({
     client.subscribe((notice) => notices.push(notice));
     client.setRequestHandler(async (method, p) => {
       bridgeCalls.push({ method, ...p });
+      if (method === 'allrice/progress') {
+        if (p.action === 'check') progressChecks++;
+        if (p.action === 'decide') progressContinued = true;
+        return {
+          paused: progressChecks >= 2 && !progressContinued,
+          pauseId: 'synthetic-pause',
+          reason: 'repeated_failure',
+          recent: [],
+        };
+      }
+      if (method === 'allrice/content-check') {
+        contentCalls += 1;
+        if (contentCalls > contentCallsAllowed)
+          throw Error('employee_content_revoked');
+        return { allowed: true };
+      }
       if (method === 'allrice/assistant/model-prepare')
         return { prepared: true, outputTokens: p.outputTokens };
       if (method === 'allrice/assistant/model-dispatch')
@@ -234,17 +259,30 @@ async function scenario({
           ]
         : [],
       expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+      requireContentGuard: contentCallsAllowed !== undefined,
+      requireTaskProgress: progressPause,
     });
     const sessionId = `synthetic-recovery-${randomUUID()}`;
-    await client.assistant('bind', {
-      nativeSessionId: sessionId,
-      wireTools: ['local_fs_list'],
-    });
+    if (assistants)
+      await client.assistant('bind', {
+        nativeSessionId: sessionId,
+        wireTools: ['local_fs_list'],
+      });
     const events = () =>
       notices
         .filter((n) => n.method === 'session.event')
         .map((n) => n.params.event);
     await client.prompt(sessionId, 'Synthetic request: list once then answer.');
+    if (progressPause) {
+      await expect
+        .poll(() => notices.some((n) => n.method === 'session.user-question'), {
+          timeout: 12000,
+        })
+        .toBe(true);
+      expect(requests).toHaveLength(0);
+      contentCallsAllowed = 0; // Explicit correction while waiting for the user.
+      await client.steer(sessionId, '重新检查后继续');
+    }
     if (cancel) {
       await expect
         .poll(() => events().some((e) => e.type === 'llm/retry'), {
@@ -272,15 +310,26 @@ async function scenario({
         })
         .toBe(2);
     }
+    if (compact) {
+      try {
+        await client.compact(sessionId);
+      } catch {
+        compactionRejected = true;
+      }
+    }
     if (serverError) throw serverError;
     return {
       requests,
       events: events(),
       bridgeCalls,
       toolCalls,
-      diagnostics: await client.assistant('diagnostics', {
-        nativeSessionId: sessionId,
-      }),
+      contentCalls,
+      compactionRejected,
+      diagnostics: assistants
+        ? await client.assistant('diagnostics', {
+            nativeSessionId: sessionId,
+          })
+        : null,
     };
   } finally {
     await client?.close();
@@ -289,6 +338,80 @@ async function scenario({
     await rm(root, { recursive: true, force: true });
   }
 }
+
+describe('content authorization uses actual DSH dispatch and compaction', () => {
+  for (const assistants of [true, false]) {
+    it(`rechecks content after a native progress pause and before dispatch accounting (assistants=${assistants})`, async () => {
+      const result = await scenario({
+        assistants,
+        contentCallsAllowed: 10,
+        failures: [],
+        progressPause: true,
+      });
+      expect(result.requests).toHaveLength(0);
+      expect(result.contentCalls).toBeGreaterThan(0);
+      expect(
+        result.bridgeCalls.some(
+          (c) => c.method === 'allrice/assistant/model-dispatch',
+        ),
+      ).toBe(false);
+      expect(
+        result.bridgeCalls.some(
+          (c) => c.method === 'allrice/assistant/model-settle',
+        ),
+      ).toBe(false);
+    });
+    it(`blocks the provider before the first request (assistants=${assistants})`, async () => {
+      const result = await scenario({
+        assistants,
+        contentCallsAllowed: 0,
+        failures: [],
+      });
+      expect(result.requests).toHaveLength(0);
+      expect(result.contentCalls).toBeGreaterThan(0);
+      expect(
+        result.bridgeCalls.some(
+          (c) => c.method === 'allrice/assistant/model-dispatch',
+        ),
+      ).toBe(false);
+      expect(
+        result.bridgeCalls.some(
+          (c) => c.method === 'allrice/assistant/model-settle',
+        ),
+      ).toBe(false);
+      expect(result.events.some((e) => e.type === 'turn/end')).toBe(true);
+    });
+    it(`rechecks before native compaction (assistants=${assistants})`, async () => {
+      const result = await scenario({
+        assistants,
+        contentCallsAllowed: 1,
+        failures: [],
+        compact: true,
+      });
+      expect(result.requests).toHaveLength(1);
+      expect(result.contentCalls).toBeGreaterThan(1);
+      expect(result.compactionRejected).toBe(true);
+    });
+  }
+  it('does not resend to the provider after revocation during a native retry', async () => {
+    const result = await scenario({
+      contentCallsAllowed: 1,
+      failures: [overload],
+    });
+    expect(result.requests).toHaveLength(1);
+    expect(result.contentCalls).toBeGreaterThan(1);
+  });
+  it('keeps a completed tool while preventing the next model request', async () => {
+    const result = await scenario({
+      toolFirst: true,
+      failures: [],
+      contentCallsAllowed: 1,
+    });
+    expect(result.requests).toHaveLength(1);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.contentCalls).toBeGreaterThan(1);
+  });
+});
 
 describe('governed root uses the actual native Skill loader', () => {
   it('exposes and loads the frozen method before creation and after finish/rebind', async () => {

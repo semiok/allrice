@@ -28,7 +28,11 @@ import {
   listAdminTenantEmployees,
   changeAdminTenantEmployee,
 } from '../tenant-employees.ts';
-import { getEmployeeWorkspace } from '../workspace/service.ts';
+import {
+  getEmployeeWorkspace,
+  createChatSession,
+  sendChatMessage,
+} from '../workspace/service.ts';
 import { createEmployeeInstance } from './employee-instances.ts';
 import {
   getEffectiveEmployeeContent,
@@ -42,7 +46,23 @@ import {
   mutateCompanyAsset,
 } from '../company-assets.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { listContextCheckpointEvidence } from '../conversation/conversation-checkpoint.ts';
+import { acquireConversationRuntime } from '../conversation/conversation-runtime.ts';
+import { resolveEmployeeExecution } from './employeehub.ts';
+import {
+  prepareEmployeeContentContext,
+  assertEmployeeContentContext,
+  readEmployeeRuntimeContent,
+  assertEmployeeContentReferenceMessages,
+} from './employee-runtime-content.ts';
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
+function contentGate<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
   getRequestContext: async () => browser.context,
 }));
@@ -289,6 +309,516 @@ suite(
       expect(check.validation?.valid).toBe(true);
       return mutateEmployeeContent(s.a, action(input, check, 'activate'));
     }
+    async function runtimeRun(
+      s: Setup,
+      sessionId?: string,
+      custom = true,
+      sessionReferenceIds: string[] = [],
+    ) {
+      const session = sessionId
+        ? { id: sessionId }
+        : await createChatSession(s.a, {
+            workspaceId: s.company.workspaceId,
+            title: 'Isolated runtime content',
+            ...(custom
+              ? { employeeInstanceId: s.instance.id }
+              : { employeeAssignmentId: s.assigned.id }),
+          });
+      const sent = await sendChatMessage(
+        s.a,
+        s.company.workspaceId,
+        session.id,
+        {
+          text: 'Use current requirements',
+          clientMessageId: randomUUID(),
+          sessionReferenceIds,
+          ...(sessionReferenceIds.length ? { deliveryMode: 'follow_up' } : {}),
+        },
+      );
+      const scope = {
+        organizationId: s.company.organizationId,
+        workspaceId: s.company.workspaceId,
+        ownerId: s.a.actor.id,
+        sessionId: session.id,
+        runId: sent.run.id,
+      };
+      const resolved = await resolveEmployeeExecution(scope);
+      const runtime = await prepareEmployeeContentContext(scope);
+      expect(runtime).not.toBeNull();
+      const finish = async () => {
+        await f.db`update allrice_jobs set status='canceled',completed_at=now() where run_id=${sent.run.id}`;
+        await f.db`update allrice_runs set state='canceled',completed_at=now() where id=${sent.run.id}`;
+        await f.db`update allrice_employee_runs set status='canceled',completed_at=now() where run_id=${sent.run.id}`;
+      };
+      return { scope, sent, resolved, runtime: runtime!, finish };
+    }
+    it('freezes common references for both kinds, keeps personal content private and does not load an unrelated broken scene', async () => {
+      const s = await setup(),
+        shared = text('COMPANY_COMMON_42'),
+        privateText = text('PRIVATE_COMMON_73'),
+        k = await knowledge(s, 'Unrelated scene');
+      await enable(
+        s,
+        s.draft({
+          setId: randomUUID(),
+          ownership: {
+            scope: 'company',
+            organizationId: s.company.organizationId,
+          },
+          target: { kind: 'employee', employeeId: s.employeeId },
+          textEdits: [shared],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: shared.contentId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      await enable(
+        s,
+        s.draft({
+          textEdits: [privateText],
+          manifest: {
+            schemaVersion: 1,
+            common: [
+              { sourceKind: 'draft_text', contentId: privateText.contentId },
+            ],
+            scenes: [
+              {
+                id: randomUUID(),
+                name: 'Unrelated',
+                appliesWhen: 'Only when selected',
+                references: [k.ref],
+              },
+            ],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      await f.db`update allrice_employee_knowledge_bindings set enabled=false where id=${k.bindingId}`;
+      const general = await runtimeRun(s, undefined, false),
+        custom = await runtimeRun(s);
+      expect(general.runtime.sources.map((x) => x.body)).toEqual([
+        'COMPANY_COMMON_42',
+      ]);
+      expect(custom.runtime.sources.map((x) => x.body)).toEqual([
+        'COMPANY_COMMON_42',
+        'PRIVATE_COMMON_73',
+      ]);
+      expect(JSON.stringify(custom.runtime.snapshot)).not.toContain(
+        'PRIVATE_COMMON_73',
+      );
+      expect(custom.runtime.snapshot.employeeVersionId).toBe(
+        s.assigned.currentVersion.id,
+      );
+      expect(
+        custom.runtime.snapshot.layers.some((l) =>
+          l.common.some((r) => r.contentId === k.ref.contentId),
+        ),
+      ).toBe(false);
+      await expect(
+        readEmployeeRuntimeContent(s.b, custom.runtime.snapshot),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        assertEmployeeContentContext(
+          { ...custom.scope, ownerId: s.b.actor.id },
+          custom.runtime.generationId,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    }, 120000);
+    it('keeps ordinary updates frozen, commits correction invalidation, rejects same-Run recovery and rotates new history', async () => {
+      const s = await setup();
+      async function publish(
+        body: string,
+        expectedRevision = 0,
+        correction = false,
+      ) {
+        const t = text(body),
+          input = s.draft({
+            expectedRevision,
+            textEdits: [t],
+            manifest: {
+              schemaVersion: 1,
+              common: [{ sourceKind: 'draft_text', contentId: t.contentId }],
+              scenes: [],
+              declaredConflicts: [],
+            },
+          });
+        const saved = await mutateEmployeeContent(s.a, input),
+          checked = await mutateEmployeeContent(
+            s.a,
+            action(input, saved, 'validate'),
+          );
+        return mutateEmployeeContent(s.a, {
+          ...action(input, checked, 'activate'),
+          invalidatePrevious: correction,
+        });
+      }
+      const v1 = await publish('VERSION_ONE');
+      const first = await runtimeRun(s);
+      await f.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        values(${s.company.organizationId},${s.company.workspaceId},${first.scope.runId},1000,'tool.completed',${f.db.json({ name: 'synthetic', summary: 'OLD_TOOL_DERIVED_CONTENT' })})`;
+      await first.finish();
+      const v2 = await publish('VERSION_TWO', v1.revision);
+      await expect(
+        assertEmployeeContentContext(first.scope, first.runtime.generationId),
+      ).resolves.toBeUndefined();
+      expect(
+        (await readEmployeeRuntimeContent(s.a, first.runtime.snapshot))
+          .sources[0]!.body,
+      ).toBe('VERSION_ONE');
+      const second = await runtimeRun(s, first.scope.sessionId);
+      expect(second.runtime.generationId).toBe(first.runtime.generationId);
+      expect(second.runtime.sources[0]!.body).toBe('VERSION_TWO');
+      await second.finish();
+      await publish('VERSION_THREE_CORRECTED', v2.revision, true);
+      await expect(
+        assertEmployeeContentContext(first.scope, first.runtime.generationId),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const [invalid] =
+        await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${first.runtime.generationId}`;
+      expect(invalid!.invalidated_at).not.toBeNull();
+      await expect(
+        prepareEmployeeContentContext(second.scope),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const next = await runtimeRun(s, first.scope.sessionId);
+      expect(next.runtime.generationId).not.toBe(first.runtime.generationId);
+      expect(next.runtime.historyFromMessageId).toBe(next.sent.userMessage.id);
+      expect(next.runtime.allowedMessageIds).not.toContain(
+        first.sent.userMessage.id,
+      );
+      expect(next.runtime.allowedMessageIds).not.toContain(
+        second.sent.assistantMessage.id,
+      );
+      expect(
+        JSON.stringify(await listContextCheckpointEvidence(first.scope)),
+      ).toContain('OLD_TOOL_DERIVED_CONTENT');
+      expect(
+        JSON.stringify(
+          await listContextCheckpointEvidence({
+            ...next.scope,
+            contentGenerationId: next.runtime.generationId,
+            allowedMessageIds: next.runtime.allowedMessageIds!,
+          }),
+        ),
+      ).not.toContain('OLD_TOOL_DERIVED_CONTENT');
+      await expect(
+        assertEmployeeContentReferenceMessages(s.a, first.scope.sessionId, [
+          second.sent.assistantMessage.id,
+        ]),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        f.db`update allrice_employee_runs set content_generation_id=${next.runtime.generationId} where run_id=${first.scope.runId}`,
+      ).rejects.toThrow('immutable');
+    }, 120000);
+    it('retains imported answer dependencies across sessions and revokes the importer before dispatch', async () => {
+      const s = await setup(),
+        t = text('PRIVATE_SOURCE_42');
+      await enable(
+        s,
+        s.draft({
+          textEdits: [t],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: t.contentId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const source = await runtimeRun(s);
+      await source.finish();
+      await f.db`update allrice_messages set status='completed',content=${f.db.json({ text: 'DERIVED_SOURCE_ANSWER_42', citations: [] })} where id=${source.sent.assistantMessage.id}`;
+      const imported = await runtimeRun(s, undefined, false, [
+        source.scope.sessionId,
+      ]);
+      expect(imported.runtime.sources).toEqual([]); // No direct private common requirement.
+      expect(
+        JSON.stringify(imported.resolved.promptSnapshot.sessionReferences),
+      ).toContain('DERIVED_SOURCE_ANSWER_42');
+      await expect(
+        assertEmployeeContentContext(
+          imported.scope,
+          imported.runtime.generationId,
+        ),
+      ).resolves.toBeUndefined();
+      await f.db`update allrice_employee_content_publications set invalidated_at=now() where set_id=${s.base.setId}`;
+      await expect(
+        assertEmployeeContentContext(
+          imported.scope,
+          imported.runtime.generationId,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const [row] =
+        await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${imported.runtime.generationId}`;
+      expect(row!.invalidated_at).not.toBeNull();
+      await expect(
+        prepareEmployeeContentContext(imported.scope),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    }, 120000);
+    it.each([false, true])(
+      'holds imported Session visibility while later authorization waits (legacy=%s)',
+      async (legacy) => {
+        const s = await setup(),
+          t = text('IMPORTED_AUTHORITY');
+        await enable(
+          s,
+          s.draft({
+            textEdits: [t],
+            manifest: {
+              schemaVersion: 1,
+              common: [{ sourceKind: 'draft_text', contentId: t.contentId }],
+              scenes: [],
+              declaredConflicts: [],
+            },
+          }),
+        );
+        let sourceSessionId: string;
+        if (legacy) {
+          const session = await createChatSession(s.a, {
+            workspaceId: s.company.workspaceId,
+            employeeAssignmentId: s.assigned.id,
+            title: 'Historical source without a content generation',
+          });
+          const sent = await sendChatMessage(
+            s.a,
+            s.company.workspaceId,
+            session.id,
+            {
+              text: 'Historical input',
+              clientMessageId: randomUUID(),
+            },
+          );
+          await f.db`update allrice_jobs set status='canceled',completed_at=now() where run_id=${sent.run.id}`;
+          await f.db`update allrice_runs set state='canceled',completed_at=now() where id=${sent.run.id}`;
+          await f.db`update allrice_employee_runs set status='canceled',completed_at=now() where run_id=${sent.run.id}`;
+          sourceSessionId = session.id;
+        } else {
+          const source = await runtimeRun(s);
+          await source.finish();
+          sourceSessionId = source.scope.sessionId;
+        }
+        await f.db`update allrice_messages set status='completed',content=${f.db.json({ text: 'IMPORTED_ANSWER', citations: [] })} where session_id=${sourceSessionId} and role='assistant'`;
+        const imported = await runtimeRun(s, undefined, false, [
+          sourceSessionId,
+        ]);
+        const ready = contentGate<number>(),
+          release = contentGate<void>();
+        const holder = f.db.begin(async (tx) => {
+          const [pid] = await tx`select pg_backend_pid() as id`;
+          if (legacy)
+            await tx`select generation_id from allrice_employee_content_contexts where generation_id=${imported.runtime.generationId} for update`;
+          else
+            await tx`select revision_id from allrice_employee_content_publications where set_id=${s.base.setId} for update`;
+          ready.resolve(pid!.id);
+          await release.promise;
+        });
+        const holderPid = await ready.promise;
+        const guard = assertEmployeeContentContext(
+          imported.scope,
+          imported.runtime.generationId,
+        ).then(
+          () => null,
+          (e: unknown) => e,
+        );
+        let writer: Promise<unknown> | undefined;
+        try {
+          let guardPid = 0;
+          await expect
+            .poll(
+              async () => {
+                const [row] =
+                  await f.db`select pid from pg_stat_activity where ${holderPid}::int=any(pg_blocking_pids(pid))`;
+                guardPid = row?.pid ?? 0;
+                return guardPid;
+              },
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+          const writerReady = contentGate<number>();
+          // This is the Session-first lock order used by updateChatSession.
+          writer = f.db.begin(async (tx) => {
+            const [pid] = await tx`select pg_backend_pid() as id`;
+            writerReady.resolve(pid!.id);
+            await tx`update allrice_chat_sessions set archived_at=now() where id=${sourceSessionId}`;
+          });
+          void writer.catch(() => undefined);
+          const writerPid = await writerReady.promise;
+          await expect
+            .poll(
+              async () => {
+                const [row] =
+                  await f.db`select ${guardPid}::int=any(pg_blocking_pids(${writerPid})) as blocked`;
+                return row!.blocked;
+              },
+              { timeout: 5000 },
+            )
+            .toBe(true);
+        } finally {
+          release.resolve();
+          await holder;
+          await writer;
+        }
+        expect(await guard).toBeNull(); // Serializes before the revocation commit.
+        await expect(
+          assertEmployeeContentContext(
+            imported.scope,
+            imported.runtime.generationId,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      },
+      120000,
+    );
+    it('serializes a final guard with correction and rechecks a lease after waiting for the context', async () => {
+      const s = await setup(),
+        t = text('CONCURRENT_SOURCE');
+      await enable(
+        s,
+        s.draft({
+          textEdits: [t],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: t.contentId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const run = await runtimeRun(s);
+      const ready = contentGate<number>(),
+        release = contentGate<void>();
+      const correction = f.db.begin(async (tx) => {
+        const [pid] = await tx`select pg_backend_pid() as id`;
+        await tx`update allrice_employee_content_publications set invalidated_at=now() where set_id=${s.base.setId}`;
+        ready.resolve(pid!.id);
+        await release.promise;
+      });
+      const pid = await ready.promise;
+      const guard = assertEmployeeContentContext(
+        run.scope,
+        run.runtime.generationId,
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      try {
+        await expect
+          .poll(
+            async () => {
+              const [row] =
+                await f.db`select count(*)::int as n from pg_stat_activity where ${pid}::int=any(pg_blocking_pids(pid))`;
+              return row!.n;
+            },
+            { timeout: 5000 },
+          )
+          .toBeGreaterThan(0);
+      } finally {
+        release.resolve();
+      }
+      await correction;
+      expect(await guard).toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+
+      const empty = await setup(),
+        current = await runtimeRun(empty);
+      const worker = {
+        workerId: randomUUID(),
+        jobId: '',
+        leaseToken: randomUUID(),
+      };
+      const [job] =
+        await f.db`update allrice_jobs set status='running',worker_id=${worker.workerId},lease_token=${worker.leaseToken},claimed_at=now(),heartbeat_at=now(),lease_expires_at=now()+interval '10 minutes' where run_id=${current.scope.runId} returning id`;
+      worker.jobId = job!.id;
+      await acquireConversationRuntime({
+        ...current.scope,
+        workerId: worker.workerId,
+        configChecksum: `sha256:${'c'.repeat(64)}`,
+        compactThresholdTokens: 40000,
+      });
+      await expect(
+        assertEmployeeContentContext(
+          current.scope,
+          current.runtime.generationId,
+          worker,
+        ),
+      ).resolves.toBeUndefined();
+      const contextReady = contentGate<number>(),
+        contextRelease = contentGate<void>();
+      const holder = f.db.begin(async (tx) => {
+        const [pid] = await tx`select pg_backend_pid() as id`;
+        await tx`select generation_id from allrice_employee_content_contexts where generation_id=${current.runtime.generationId} for update`;
+        contextReady.resolve(pid!.id);
+        await contextRelease.promise;
+      });
+      const holderPid = await contextReady.promise;
+      const waiting = assertEmployeeContentContext(
+        current.scope,
+        current.runtime.generationId,
+        worker,
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      try {
+        await expect
+          .poll(
+            async () => {
+              const [row] =
+                await f.db`select count(*)::int as n from pg_stat_activity where ${holderPid}::int=any(pg_blocking_pids(pid))`;
+              return row!.n;
+            },
+            { timeout: 5000 },
+          )
+          .toBeGreaterThan(0);
+        await f.db`update allrice_jobs set lease_expires_at=now()-interval '1 second' where id=${worker.jobId}`;
+      } finally {
+        contextRelease.resolve();
+      }
+      await holder;
+      expect(await waiting).toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      const [context] =
+        await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${current.runtime.generationId}`;
+      expect(context!.invalidated_at).toBeNull(); // Lease loss is not source revocation.
+    }, 120000);
+    it('checks the owning department even for a publicly readable source and does not reuse revoked context', async () => {
+      const s = await setup(),
+        t = text('DEPARTMENT_ONLY');
+      await enable(
+        s,
+        s.draft({
+          setId: randomUUID(),
+          target: { kind: 'employee', employeeId: s.employeeId },
+          ownership: {
+            scope: 'department',
+            organizationId: s.company.organizationId,
+            departmentId: s.dept.id,
+          },
+          textEdits: [t],
+          manifest: {
+            schemaVersion: 1,
+            common: [{ sourceKind: 'draft_text', contentId: t.contentId }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const first = await runtimeRun(s);
+      await first.finish();
+      await f.db`update allrice_organization_people set department_id=${s.otherDept.id},content_maintenance_level='personal' where organization_id=${s.company.organizationId} and user_id=${s.a.actor.id}`;
+      await expect(
+        assertEmployeeContentContext(first.scope, first.runtime.generationId),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const next = await runtimeRun(s, first.scope.sessionId);
+      expect(next.runtime.sources).toEqual([]);
+      expect(next.runtime.generationId).not.toBe(first.runtime.generationId);
+      expect(next.runtime.allowedMessageIds).not.toContain(
+        first.sent.assistantMessage.id,
+      );
+    }, 120000);
     it('saves two scenes with a shared rule and distinct native Knowledge; activates the exact immutable candidate', async () => {
       const s = await setup(),
         k1 = await knowledge(s, 'Weekly sources'),

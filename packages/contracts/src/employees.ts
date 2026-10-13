@@ -1,5 +1,6 @@
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
+import { EmployeeRuntimeContentSchema } from './employee-content.ts';
 import { z } from 'zod';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 import {
@@ -643,6 +644,7 @@ export const EmployeeExecutionSnapshotV2Schema =
     // No default: old Run JSON remains unchanged.
     instance: EmployeeInstanceSnapshotSchema.optional(),
     baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
+    content: EmployeeRuntimeContentSchema.optional(),
     modelSnapshot: SessionModelSnapshotSchema.optional(),
     taskRuntimePolicy: z
       .object({

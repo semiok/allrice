@@ -138,10 +138,18 @@ export const EmployeeContentMutationSchema = z
         operation: z.enum(['validate', 'activate']),
         candidateRevisionId: UuidSchema,
         candidateDigest: ChecksumSchema,
+        // Explicit correction revokes the previous publication for existing
+        // contexts. An ordinary new version leaves valid frozen Runs intact.
+        invalidatePrevious: z.boolean().optional(),
       })
       .strict(),
   ])
   .superRefine((input, ctx) => {
+    if (input.operation === 'validate' && input.invalidatePrevious)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Only activation can correct a publication.',
+      });
     if (
       (input.ownership.scope === 'personal') !==
       (input.target.kind === 'instance')
@@ -320,4 +328,37 @@ export type EmployeeResolvedContent = z.infer<
 >;
 export type EmployeeEffectiveContent = z.infer<
   typeof EmployeeEffectiveContentSchema
+>;
+
+/** Runtime references contain no draft, source body or maintenance privilege.
+ * Both instance kinds use this index; live readers must recheck each source. */
+export const EmployeeRuntimeContentSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    instanceId: UuidSchema,
+    employeeId: UuidSchema,
+    employeeVersionId: UuidSchema,
+    platform: z
+      .object({ revisionId: UuidSchema.nullable(), digest: ChecksumSchema })
+      .strict(),
+    layers: z
+      .array(
+        z
+          .object({
+            setId: UuidSchema,
+            revisionId: UuidSchema,
+            digest: ChecksumSchema,
+            ownership: EmployeeContentOwnershipSchema,
+            common: z
+              .array(EmployeeContentReferenceSchema)
+              .max(employeeContentLimits.references),
+          })
+          .strict(),
+      )
+      .max(3),
+    checksum: ChecksumSchema,
+  })
+  .strict();
+export type EmployeeRuntimeContent = z.infer<
+  typeof EmployeeRuntimeContentSchema
 >;

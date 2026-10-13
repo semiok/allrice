@@ -92,7 +92,7 @@ describe('physical DSH patch governance', () => {
         lock,
         upstreamVersion: upstream.version,
       }),
-    ).resolves.toEqual({ physicalPatchCount: 5, ledgerEntryCount: 16 });
+    ).resolves.toEqual({ physicalPatchCount: 5, ledgerEntryCount: 17 });
   });
   it('supports the paired migration owner without counting unrelated patches or adapters', async () => {
     await expect(verifyDshPhysicalPatches(await fixture())).resolves.toEqual({

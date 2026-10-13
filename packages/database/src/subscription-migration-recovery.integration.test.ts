@@ -1,6 +1,7 @@
 import * as platformModels from './providers/platform-model-settings.ts';
 import * as organizationContext from './employees/organization-context.ts';
 import * as employeeInstances from './employees/employee-instances.ts';
+import * as employeeRuntimeContent from './employees/employee-runtime-content.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
@@ -168,6 +169,11 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacyInstance = vi
       .spyOn(employeeInstances, 'prepareEmployeeInstanceSnapshot')
       .mockResolvedValueOnce(undefined as never);
+    // Likewise the 0096 binary did not create a layered content binding. Keep
+    // the historical seed exact without teaching production to skip admission.
+    const legacyContent = vi
+      .spyOn(employeeRuntimeContent, 'prepareEmployeeRuntimeContent')
+      .mockResolvedValueOnce(undefined as never);
     // This synthetic tenant manifest has no platform publication. Its historical
     // seed must not consult the later immutable version-source registry either.
     const legacyPublication = vi
@@ -195,10 +201,12 @@ integration('subscription incremental migration and cold SQL readers', () => {
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('instance');
       expect(legacyInstance).toHaveBeenCalledTimes(1);
+      expect(legacyContent).toHaveBeenCalledTimes(1);
       expect(legacyPublication).toHaveBeenCalledTimes(1);
     } finally {
       legacyContext.mockRestore();
       legacyInstance.mockRestore();
+      legacyContent.mockRestore();
       legacyPublication.mockRestore();
       legacyModels.mockRestore();
     }

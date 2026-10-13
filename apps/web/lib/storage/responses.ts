@@ -1,6 +1,7 @@
 import {
   DataAccessError,
   EmployeeInstanceError,
+  EmployeeRuntimeContentError,
   IdentityError,
 } from '@allrice/database';
 import { SignedAccessError } from '@allrice/storage';
@@ -14,7 +15,10 @@ import { executionErrorResponse } from '../execution/responses';
 import { employeeHubErrorResponse } from '../employeehub/responses';
 
 export function storageErrorResponse(error: unknown) {
-  if (error instanceof EmployeeInstanceError)
+  if (
+    error instanceof EmployeeInstanceError ||
+    error instanceof EmployeeRuntimeContentError
+  )
     return employeeHubErrorResponse(error);
   if (error instanceof IdentityError) return executionErrorResponse(error);
   let status = 400;

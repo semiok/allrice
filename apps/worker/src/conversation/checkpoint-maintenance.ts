@@ -55,6 +55,9 @@ export async function finalizeEmployeeConversationContext(input: {
   checkpoint: ContextCheckpoint | null;
   checkpointMessages: CheckpointMessage[];
   configChecksum: string;
+  contentGenerationId?: string;
+  allowedMessageIds?: string[];
+  checkContent?: () => Promise<void>;
   workflowLease: {
     workerId: string;
     jobId: string;
@@ -106,6 +109,7 @@ export async function finalizeEmployeeConversationContext(input: {
     })
   ) {
     try {
+      await input.checkContent?.();
       if (input.adapter.contextStrategy === 'chatflow-managed') {
         if (!input.adapter.compact) {
           throw new Error(
@@ -129,6 +133,8 @@ export async function finalizeEmployeeConversationContext(input: {
         workspaceId: input.executionContext.workspaceId!,
         sessionId: input.ownership.sessionId,
         ownerId: input.ownerId,
+        contentGenerationId: input.contentGenerationId,
+        allowedMessageIds: input.allowedMessageIds,
       });
       const summary = buildExtractiveContextSummary({
         previousSummary: input.checkpoint?.summary,

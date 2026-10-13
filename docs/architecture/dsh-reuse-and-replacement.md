@@ -492,3 +492,13 @@ SSE 测试端点，覆盖已有工具结果保留且工具只执行一次、恢�
 
 将来上游原生分类正确保留这类暂时性错误，且同组 wire/loop/结算回归通过后，
 删除本扩展和入口注册；不把普通版本升级或函数级探针当作完整修复证据。
+
+### MET179：分层共同要求与上下文失效
+
+登记 ID：`allrice-employee-content-authorization-v1`；使用现有 DSH `0.1.5-rc.3` 的公开 middleware，不增加物理补丁。
+
+共同要求沿用 employee-content 的不可变来源与发布记录，Run 只冻结已启用引用；部门、个人权限及明确纠错在实际使用时复查。内容授权代独立于 native thread 的配置与进程生命周期，依赖由已绑定 Run 引用推导，不复制正文。失效后同 Run 不换代重放；新 Run 使用新的 native session ID、受限消息白名单和对应 checkpoint。
+
+AllRice 通过公开的 `llm/stream` middleware 请求 Worker 校验，覆盖原生重试和 compaction，并保留原生循环、摘要器与模型传输。工具执行前复用相同校验。`allrice/content-authorized` 仅证明本次授权检查与引用装配，不代表模型已完成任务或 Knowledge 文件已读取。Skills 注册、加载与共同要求的装配仍分别留证。
+
+本切片未增加 DSH 核心补丁。若上游提供可绑定平台租户权限与持久化来源依赖的等价 dispatch gate，并通过普通更新、撤回、压缩、恢复及跨会话引用回归，可迁移并撤销此适配层。场景按需加载在后续 PR3b2 实施。

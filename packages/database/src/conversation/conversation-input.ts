@@ -237,7 +237,12 @@ export async function consumeConversationSteer(input: {
       update allrice_employee_runs
       set status = 'canceled', error_code = 'STEER_CONSUMED',
           error_message = 'Input was consumed by the active turn',
-          completed_at = now()
+          completed_at = now(),
+          content_generation_id=coalesce(content_generation_id,(
+            select active.content_generation_id from allrice_conversation_runtimes cr
+            join allrice_employee_runs active on active.run_id=cr.active_run_id
+            where cr.session_id=allrice_employee_runs.session_id and cr.worker_id=${values.workerId}
+          ))
       where run_id = ${command.followup_run_id} and status = 'queued'
     `;
     await transaction`
