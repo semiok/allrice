@@ -55,6 +55,7 @@ import {
 } from './allrice-project-native-tools.mjs';
 import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
+import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 import {
   checkpointNativeQuestion,
@@ -973,6 +974,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     this.registerNativeSkills(requestedSkills);
     this.registerNativeTools();
     await super.initialize(forwardedParams);
+    if (!this.modelErrorNormalization)
+      this.modelErrorNormalization = installModelErrorNormalization(this.ctx);
     return {
       serverInfo: {
         name: 'deepseek-harness-sdk-runtime',

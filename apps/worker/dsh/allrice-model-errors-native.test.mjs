@@ -1,0 +1,336 @@
+/* global Buffer, process */
+import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { zstdDecompressSync } from 'node:zlib';
+import { describe, expect, it } from 'vitest';
+import { DshProtocolClient } from '../src/harness/dsh-protocol-client.ts';
+import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../src/harness/dsh-distribution.ts';
+
+const overload =
+  'Our servers are currently overloaded. Please try again later.';
+const generic =
+  'An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.';
+// Generated test grant; never read ambient credentials or call a remote model.
+const syntheticToken = [
+  Buffer.from('{"alg":"none"}').toString('base64url'),
+  Buffer.from(
+    JSON.stringify({
+      'https://api.openai.com/auth': {
+        chatgpt_account_id: 'synthetic-loopback',
+      },
+    }),
+  ).toString('base64url'),
+  'synthetic-signature',
+].join('.');
+
+/** Production AllRice JSON-RPC host + pinned DSH loop/retry + pi-ai, over real
+ * loopback SSE. Only the provider responses and platform ACKs are synthetic. */
+async function scenario({
+  failures = [overload],
+  toolFirst = false,
+  settle = true,
+  cancel = false,
+} = {}) {
+  const root = await mkdtemp(join(tmpdir(), 'allrice-model-recovery-'));
+  const requests = [],
+    notices = [],
+    bridgeCalls = [],
+    toolCalls = [];
+  let serverError;
+  const server = createServer((req, res) => {
+    void (async () => {
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const raw = Buffer.concat(chunks);
+      const decoded =
+        req.headers['content-encoding'] === 'zstd'
+          ? zstdDecompressSync(raw)
+          : raw;
+      requests.push(JSON.parse(decoded.toString()));
+      expect(req.headers.authorization).toBe(`Bearer ${syntheticToken}`);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+      const index = requests.length - 1;
+      if (
+        !(toolFirst && index === 0) &&
+        failures[index - (toolFirst ? 1 : 0)]
+      ) {
+        // This structured wire code is synthetic, not recovered from the
+        // historical incidents. pi-ai loses it before the AllRice seam.
+        send({
+          type: 'error',
+          code: 'server_error',
+          message: failures[index - (toolFirst ? 1 : 0)],
+        });
+        res.end();
+        return;
+      }
+      const item =
+        toolFirst && index === 0
+          ? {
+              type: 'function_call',
+              id: 'fc_synthetic',
+              call_id: 'call_synthetic',
+              name: 'local_fs_list',
+              arguments: JSON.stringify({ path: '.' }),
+              status: 'completed',
+            }
+          : {
+              type: 'message',
+              id: 'msg_synthetic',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                {
+                  type: 'output_text',
+                  text: 'Recovered using the saved result.',
+                  annotations: [],
+                },
+              ],
+            };
+      send({
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: {
+          ...item,
+          ...(item.type === 'message' ? { content: [] } : { arguments: '' }),
+        },
+      });
+      if (item.type === 'message')
+        send({
+          type: 'response.output_text.delta',
+          output_index: 0,
+          delta: 'Recovered using the saved result.',
+        });
+      else
+        send({
+          type: 'response.function_call_arguments.delta',
+          output_index: 0,
+          delta: item.arguments,
+        });
+      send({ type: 'response.output_item.done', output_index: 0, item });
+      send({
+        type: 'response.completed',
+        response: {
+          id: `resp_${index}`,
+          status: 'completed',
+          output: [item],
+          usage: {
+            input_tokens: 20,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: 7,
+            total_tokens: 27,
+          },
+        },
+      });
+      res.end();
+    })().catch((error) => {
+      serverError = error;
+      res.destroy();
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const baseURL = `http://127.0.0.1:${server.address().port}`;
+  let client;
+  try {
+    await symlink(
+      resolve(import.meta.dirname, '../node_modules'),
+      join(root, 'node_modules'),
+      'dir',
+    );
+    const source = await readFile(
+      resolve(import.meta.dirname, 'allrice-restricted.cordis.yml'),
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'profile.yml'),
+      source.replace(
+        '      openai-codex:\n',
+        `      openai-codex:\n        baseURL: ${baseURL}\n        transport: sse\n`,
+      ),
+    );
+    await writeFile(
+      join(root, 'credentials.yaml'),
+      JSON.stringify({
+        version: 1,
+        records: {
+          'llm-pi-ai/openai-codex': {
+            kind: 'grant',
+            payload: {
+              type: 'oauth',
+              access: syntheticToken,
+              refresh: 'never-used',
+              expires: Date.now() + 3600000,
+            },
+          },
+        },
+      }),
+      { mode: 0o600 },
+    );
+    client = new DshProtocolClient({
+      command: process.execPath,
+      args: [resolve(import.meta.dirname, 'allrice-jsonrpc-runtime.mjs')],
+      cwd: root,
+      requestTimeoutMs: 15000,
+      environment: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        ALLRICE_ASSISTANTS_ENABLED: '1',
+        DSH_CORDIS_CONFIG: join(root, 'profile.yml'),
+        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+        DSH_SESSION_ROOT: join(root, 'sessions'),
+        DSH_CREDENTIALS_PATH: join(root, 'credentials.yaml'),
+        DSH_HOME: root,
+        DSH_CWD: root,
+        DSH_CODEX_MODEL: 'gpt-5.6-luna',
+        DSH_SYSTEM_PROMPT:
+          'Synthetic recovery fixture. Use only supplied test tools.',
+      },
+    });
+    client.subscribe((notice) => notices.push(notice));
+    client.setRequestHandler(async (method, p) => {
+      bridgeCalls.push({ method, ...p });
+      if (method === 'allrice/assistant/model-prepare')
+        return { prepared: true, outputTokens: p.outputTokens };
+      if (method === 'allrice/assistant/model-dispatch')
+        return { reserved: true, outputTokens: p.outputTokens };
+      if (method === 'allrice/assistant/model-settle')
+        return { settled: settle, tokenUsageObservational: true };
+      if (method === 'allrice/assistant/checkpoint') return { saved: true };
+      if (method === 'allrice/assistant/tool') {
+        toolCalls.push(p);
+        return { modelContent: 'SAVED_TOOL_RESULT_42' };
+      }
+      throw Error(`unexpected_fixture_bridge:${method}`);
+    });
+    await client.initialize({
+      cwd: root,
+      provider: 'openai-codex',
+      model: 'gpt-5.6-luna',
+      maxTokens: 64,
+      nativeTools: ['local.fs.list'],
+      expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+    });
+    const sessionId = `synthetic-recovery-${randomUUID()}`;
+    await client.assistant('bind', {
+      nativeSessionId: sessionId,
+      wireTools: ['local_fs_list'],
+    });
+    const events = () =>
+      notices
+        .filter((n) => n.method === 'session.event')
+        .map((n) => n.params.event);
+    await client.prompt(sessionId, 'Synthetic request: list once then answer.');
+    if (cancel) {
+      await expect
+        .poll(() => events().some((e) => e.type === 'llm/retry'), {
+          timeout: 12000,
+          interval: 10,
+        })
+        .toBe(true);
+      await client.interrupt(sessionId);
+    }
+    await expect
+      .poll(() => events().some((e) => e.type === 'turn/end'), {
+        timeout: 15000,
+      })
+      .toBe(true);
+    if (serverError) throw serverError;
+    return {
+      requests,
+      events: events(),
+      bridgeCalls,
+      toolCalls,
+      diagnostics: await client.assistant('diagnostics', {
+        nativeSessionId: sessionId,
+      }),
+    };
+  } finally {
+    await client?.close();
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+describe('AllRice overload recovery through the actual native loop', () => {
+  it('retries a model step, retains its prior tool result and never repeats that tool', async () => {
+    const result = await scenario({ toolFirst: true });
+    expect(result.requests).toHaveLength(3);
+    expect(
+      result.toolCalls,
+      JSON.stringify({
+        events: result.events.filter((e) => e.type === 'tool/result'),
+        bridge: result.bridgeCalls.map((p) => p.method),
+      }),
+    ).toHaveLength(1);
+    expect(JSON.stringify(result.requests[2])).toContain(
+      'SAVED_TOOL_RESULT_42',
+    );
+    expect(result.events.filter((e) => e.type === 'turn/start')).toHaveLength(
+      1,
+    );
+    expect(result.events.filter((e) => e.type === 'llm/retry')).toHaveLength(1);
+    expect(
+      result.events.find((e) => e.type === 'llm/retry').data,
+    ).toMatchObject({
+      retry: 1,
+      maxRetries: 2,
+      failure: { code: 'SERVER', message: `Codex error: ${overload}` },
+    });
+    expect(
+      result.events.find((e) => e.type === 'turn/end').data.reason.kind,
+    ).toBe('completed');
+    const settled = result.bridgeCalls.filter(
+      (p) => p.method === 'allrice/assistant/model-settle',
+    );
+    expect(settled).toHaveLength(3);
+    expect(new Set(settled.map((p) => p.callId)).size).toBe(3);
+    expect(settled[1]).not.toHaveProperty('inputTokens');
+    expect(settled[1]).not.toHaveProperty('outputTokens');
+  }, 30000);
+
+  it('stops after the existing two native retries, without re-enqueuing a turn', async () => {
+    const result = await scenario({ failures: [overload, overload, overload] });
+    expect(result.requests).toHaveLength(3);
+    expect(result.events.filter((e) => e.type === 'llm/retry')).toHaveLength(2);
+    expect(result.events.filter((e) => e.type === 'turn/start')).toHaveLength(
+      1,
+    );
+    expect(result.events.find((e) => e.type === 'turn/end').data).toMatchObject(
+      { reason: { kind: 'error' } },
+    );
+  }, 30000);
+
+  it('leaves the historical generic processing error unclassified instead of retrying blindly', async () => {
+    const result = await scenario({ failures: [generic] });
+    expect(result.requests).toHaveLength(1);
+    expect(result.events.filter((e) => e.type === 'llm/retry')).toHaveLength(0);
+    expect(JSON.stringify(result.events)).toContain('PI_AI_ERROR');
+  }, 30000);
+
+  it('does not dispatch again without an accounting acknowledgement', async () => {
+    const result = await scenario({ settle: false });
+    expect(result.requests).toHaveLength(1);
+    expect(
+      result.events.find((e) => e.type === 'turn/end').data.reason.kind,
+    ).toBe('error');
+    expect(
+      result.bridgeCalls.filter(
+        (p) => p.method === 'allrice/assistant/model-dispatch',
+      ),
+    ).toHaveLength(1);
+  }, 30000);
+
+  it('cancels the native backoff without another model dispatch', async () => {
+    const result = await scenario({ cancel: true });
+    expect(result.requests).toHaveLength(1);
+    expect(
+      result.events.find((e) => e.type === 'turn/end').data.reason.kind,
+    ).toBe('aborted');
+  }, 30000);
+});
