@@ -25,6 +25,7 @@ import {
 } from './dsh/assistant-diagnostics.js';
 import { assertAssistantProviderOutputBound } from './dsh/assistant-provider.js';
 import { projectNativeUsage } from './dsh/native-usage.js';
+import { DshAssistantStream } from './dsh/assistant-stream.js';
 import { toolActivityDetail } from './dsh/tool-activity.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import type {
@@ -871,12 +872,18 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let messageReceipts = 0;
     let observedModelOutput = false;
     const activeReasoningBlocks = new Set<number>();
+    const assistantStream = new DshAssistantStream();
     const activeNativeTools = new Map<
       string,
       { name: string; query?: string }
     >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
+      if (
+        input.signal.aborted &&
+        notification.method === 'session.assistant-stream'
+      )
+        return;
       if (notification.method === 'allrice.modelWait') {
         const { callId, status } = notification.params;
         if (
@@ -1013,8 +1020,12 @@ export class DshHarnessAdapter implements HarnessAdapter {
         settle();
         return;
       }
-      if (notification.method !== 'session.event') return;
-      const event = record(notification.params.event);
+      const event =
+        notification.method === 'session.assistant-stream'
+          ? assistantStream.accept(notification.params.frame)
+          : notification.method === 'session.event'
+            ? record(notification.params.event)
+            : null;
       const data = record(event?.data);
       if (!event || !data) return;
       // Native compaction replaces context history, not execution activity.
@@ -1141,7 +1152,32 @@ export class DshHarnessAdapter implements HarnessAdapter {
         await input.onTurn(`${input.runtime.sessionId}:turn:${turn}`);
         return;
       }
-      if (event.type === 'assistant/chunk') {
+      if (event.type === 'assistant/live-start') {
+        const nextReplyId = `${input.runtime.sessionId}:${String(data.turn ?? '')}:${String(data.step ?? '')}`;
+        if (replyId === nextReplyId && (rawAnswer || deltaBuffer))
+          await input.onDelta('', source, replyId, 'replace');
+        resetReply();
+        replyId = nextReplyId;
+        return;
+      }
+      if (event.type === 'assistant/live-end') {
+        const outcome = record(data.outcome);
+        // Failed attempts retire their transient text. A committed message has
+        // already reconciled the final/retained partial reply via session.event.
+        if (
+          outcome?.kind === 'abandoned' ||
+          outcome?.eventType === 'assistant/attempt'
+        ) {
+          await input.onDelta('', source, replyId, 'replace');
+          resetReply();
+        }
+        activeReasoningBlocks.clear();
+        return;
+      }
+      if (
+        event.type === 'assistant/chunk' ||
+        event.type === 'assistant/live-chunk'
+      ) {
         const nextReplyId = `${input.runtime.sessionId}:${String(data.turn ?? '')}:${String(data.step ?? '')}`;
         if (replyId !== nextReplyId) {
           resetReply();
