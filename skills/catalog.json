@@ -329,13 +329,13 @@
       "id": "bf08fedb-c962-466f-a42f-36a397174cec",
       "name": "employee-customization",
       "contentFile": "skills/employee-customization/SKILL.md",
-      "version": "1.1.2",
-      "checksum": "sha256:a9f807eb9e95fd96498e853ec6900bb0c88b92e027e3641295a0753dc63d77c3",
+      "version": "1.2.0",
+      "checksum": "sha256:5816f5717f74335e8a77ff77746c6619b09fcd8a86976d38531ad67344fe37a0",
       "source": "allrice",
-      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=a9f807eb9e95fd96498e853ec6900bb0c88b92e027e3641295a0753dc63d77c3",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=5816f5717f74335e8a77ff77746c6619b09fcd8a86976d38531ad67344fe37a0",
       "license": "Apache-2.0",
       "reviewStatus": "reviewed",
-      "reviewedByLabel": "MET-181 fixed synthetic file validation",
+      "reviewedByLabel": "MET-181 exact user-confirmed personal activation",
       "createdByLabel": "MET-181 PR2",
       "modelInvocable": true,
       "userInvocable": true,
@@ -343,7 +343,9 @@
         "workspace.employee.method.inspect",
         "workspace.employee.method.save_candidate",
         "workspace.employee.method.test",
-        "workspace.employee.method.test_status"
+        "workspace.employee.method.test_status",
+        "workspace.employee.method.prepare_activation",
+        "workspace.employee.method.activate"
       ],
       "enabled": true
     }

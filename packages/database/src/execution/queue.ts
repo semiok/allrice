@@ -2107,8 +2107,16 @@ export async function appendJobEvent(input: {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
-    if (input.type === 'harness.native')
+    if (input.type === 'harness.native') {
+      const { recordEmployeeMethodActivationQuestion } =
+        await import('../employees/employee-method-activation-question.ts');
+      await recordEmployeeMethodActivationQuestion(
+        transaction,
+        job,
+        input.payload,
+      );
       await recordTaskQuestion(transaction, job.run_id, input.payload);
+    }
     return appendEvent(transaction, {
       organizationId: job.organization_id,
       workspaceId: job.workspace_id,

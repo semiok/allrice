@@ -1,5 +1,8 @@
 import {
   inspectEmployeeMethodFromChat,
+  prepareEmployeeMethodActivationFromChat,
+  activateEmployeeMethodFromChat,
+  EmployeeMethodActivationError,
   saveEmployeeMethodFromChat,
   startEmployeeMethodTestFromChat,
   inspectEmployeeMethodTestFromChat,
@@ -14,7 +17,13 @@ import { confirmToolFailure, HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
 
 function methodHandler(
-  action: 'inspect' | 'save' | 'test' | 'test_status',
+  action:
+    | 'inspect'
+    | 'save'
+    | 'test'
+    | 'test_status'
+    | 'prepare_activation'
+    | 'activate',
 ): RiceToolHandler {
   return async ({ input, arguments: args }) => {
     const rejected = (code: string, message: string) => {
@@ -39,6 +48,8 @@ function methodHandler(
       );
     try {
       const handler = {
+        prepare_activation: prepareEmployeeMethodActivationFromChat,
+        activate: activateEmployeeMethodFromChat,
         inspect: inspectEmployeeMethodFromChat,
         save: saveEmployeeMethodFromChat,
         test: startEmployeeMethodTestFromChat,
@@ -70,11 +81,29 @@ function methodHandler(
         summary: {
           save: '已保存工作场景候选，尚未启用',
           inspect: '已读取工作场景内容',
+          prepare_activation: '已准备准确版本的启用确认，尚未启用',
+          activate: '已读取工作方法启用回执',
           test: '已提交固定样例测试，尚未启用',
           test_status: '已读取专项测试结果',
         }[action],
       };
     } catch (error) {
+      if (error instanceof EmployeeMethodActivationError)
+        throw rejected(
+          'EMPLOYEE_METHOD_ACTIVATION_DENIED',
+          {
+            activation_question_invalid:
+              '确认题与准确候选不匹配。请原样展示服务端题目，不得改写。',
+            activation_answer_pending:
+              '当前回答尚未被原生会话确证。本次未启用；等待同一题目的采用回执，不另建候选或测试。',
+            activation_declined:
+              '用户没有明确确认该题，或者确认后又发送了新要求。本次未启用。',
+            activation_expired:
+              '本次启用确认已过期，需重新读取候选、检查原测试并展示确认题。',
+            activation_test_coverage:
+              '专项测试尚未覆盖本次启用涉及的全部新增或改变的场景。通用要求改变需验证所有当前场景；空场景的通用要求暂不能通过此入口启用。',
+          }[error.code],
+        );
       if (error instanceof EmployeeContentError)
         throw rejected(
           'EMPLOYEE_METHOD_CONFLICT',
@@ -93,7 +122,9 @@ function methodHandler(
                 ? '只有执行失败且尚未完成验证的测试可重试。排队或运行中请查看原结果；断言未通过需先调整候选，不得重复尝试碰运气。'
                 : error.code === 'test_retry_model_changed'
                   ? '当前模型配置与原测试不同，未创建重试。重试必须沿用原冻结模型；更换模型需要单独测试。'
-                  : '当前任务上下文不可维护，请在新任务中继续。',
+                  : error.code === 'method_text_target_required'
+                    ? '当前文字来自已有来源，未追加冲突流程。请读取候选，用 replaceTextReferences 指明要替换的准确执行要求或流程引用，并提供新文字；其余内容和原始历史保留。'
+                    : '当前任务上下文不可维护，请在新任务中继续。',
         );
       if (
         error instanceof EmployeeInstanceError ||
@@ -115,3 +146,7 @@ export const inspectEmployeeMethod = methodHandler('inspect');
 export const saveEmployeeMethod = methodHandler('save');
 export const testEmployeeMethod = methodHandler('test');
 export const inspectEmployeeMethodTest = methodHandler('test_status');
+
+export const prepareEmployeeMethodActivation =
+  methodHandler('prepare_activation');
+export const activateEmployeeMethod = methodHandler('activate');

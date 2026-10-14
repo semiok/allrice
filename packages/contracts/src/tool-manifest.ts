@@ -33,6 +33,11 @@ export const employeeCustomizationTools = [
   },
   { name: 'workspace.employee.method.test', capability: 'storage:write' },
   { name: 'workspace.employee.method.test_status', capability: 'storage:read' },
+  {
+    name: 'workspace.employee.method.prepare_activation',
+    capability: 'storage:write',
+  },
+  { name: 'workspace.employee.method.activate', capability: 'storage:write' },
 ] as const;
 
 /**
@@ -78,6 +83,20 @@ export const allRiceToolManifest = [
     risk: 'read_only',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_employee_method_test_status',
+  },
+  {
+    canonicalName: 'workspace.employee.method.prepare_activation',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_employee_method_prepare_activation',
+  },
+  {
+    canonicalName: 'workspace.employee.method.activate',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_employee_method_activate',
   },
   ...(['delegate', 'message', 'report', 'stop'] as const).map((action) => ({
     canonicalName: `assistant.${action}` as const,

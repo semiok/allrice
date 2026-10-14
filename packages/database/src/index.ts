@@ -12,6 +12,11 @@ export * from './organization-administration.ts';
 export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
 export {
+  prepareEmployeeMethodActivationFromChat,
+  activateEmployeeMethodFromChat,
+} from './employees/employee-method-activation.ts';
+export { EmployeeMethodActivationError } from './employees/employee-method-activation-question.ts';
+export {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
   EmployeeMethodChatError,

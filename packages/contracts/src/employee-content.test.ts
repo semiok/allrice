@@ -28,6 +28,34 @@ function input() {
   };
 }
 describe('employee content input boundaries', () => {
+  it('requires new text and exact, distinct replacement pins, without source re-addition', () => {
+    const ref = {
+      sourceKind: 'procedure',
+      contentId: randomUUID(),
+      revisionId: randomUUID(),
+      digest: `sha256:${'a'.repeat(64)}`,
+    };
+    const valid = {
+      expectedRevision: 1,
+      section: 'scene',
+      scene: { id: randomUUID() },
+      procedure: '新版流程',
+      replaceTextReferences: [ref],
+      changeSummary: '替换旧流程',
+    };
+    expect(EmployeeMethodSaveSchema.safeParse(valid).success).toBe(true);
+    for (const invalid of [
+      { ...valid, procedure: undefined },
+      { ...valid, replaceTextReferences: [ref, ref] },
+      { ...valid, references: [ref] },
+      {
+        ...valid,
+        replaceTextReferences: [{ ...ref, sourceKind: 'knowledge' }],
+      },
+      { ...valid, operation: 'remove_scene' },
+    ])
+      expect(EmployeeMethodSaveSchema.safeParse(invalid).success).toBe(false);
+  });
   it('accepts bounded existing-scene edits and rejects ambiguous removal payloads', () => {
     const base = {
       expectedRevision: 2,

@@ -1138,7 +1138,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           }),
         });
         const summary = normalized.success
-          ? normalized.data.questions[0]?.question
+          ? shortText(normalized.data.questions[0]?.question, 1000)
           : shortText(record(questions[0])?.question, 500);
         await input.onNative({
           type: 'native.event',

@@ -2,6 +2,8 @@ import { expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   EmployeeMethodInspectSchema,
+  EmployeeMethodPrepareActivationSchema,
+  EmployeeMethodActivateSchema,
   EmployeeMethodFileStepSchema,
   EmployeeMethodSaveSchema,
   EmployeeMethodTestStartSchema,
@@ -10,6 +12,23 @@ import {
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 it.each([
+  {
+    canonicalName: 'workspace.employee.method.prepare_activation',
+    wireName: 'workspace_employee_method_prepare_activation',
+    schema: EmployeeMethodPrepareActivationSchema,
+    args: {
+      expectedRevision: 3,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      testIds: ['00000000-0000-4000-8000-000000000002'],
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.activate',
+    wireName: 'workspace_employee_method_activate',
+    schema: EmployeeMethodActivateSchema,
+    args: { receiptId: '00000000-0000-4000-8000-000000000003' },
+  },
   {
     canonicalName: 'platform.employee.method.step',
     wireName: 'platform_employee_method_step',
@@ -133,6 +152,14 @@ it('roundtrips nested scene edits and pinned source references with no activatio
     requirements: '核对期间',
     procedure: '先校验输入',
     changeSummary: '增加检查',
+    replaceTextReferences: [
+      {
+        sourceKind: 'procedure',
+        contentId: '00000000-0000-4000-8000-000000000004',
+        revisionId: '00000000-0000-4000-8000-000000000005',
+        digest: `sha256:${'b'.repeat(64)}`,
+      },
+    ],
     references: [
       {
         sourceKind: 'knowledge',
@@ -155,6 +182,7 @@ it('roundtrips nested scene edits and pinned source references with no activatio
         'procedure',
         'references',
         'removeReferences',
+        'replaceTextReferences',
         'requirements',
         'scene',
         'section',

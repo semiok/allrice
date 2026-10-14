@@ -9,6 +9,8 @@ import {
   ProjectWorkspaceToolInputSchema,
   EmployeeProfileChatInputSchema,
   EmployeeMethodInspectSchema,
+  EmployeeMethodPrepareActivationSchema,
+  EmployeeMethodActivateSchema,
   EmployeeMethodSaveSchema,
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
@@ -62,7 +64,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '查看当前小白的已启用内容或个人工作场景候选。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。effective 只返回已启用内容，不含上游维护草稿。',
+      '查看当前小白的已启用内容或个人工作场景候选。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
@@ -82,6 +84,18 @@ export const riceToolDefinitions = [
     description:
       '读取当前小白的专项测试结果。区分执行状态、业务断言和结果是否仍适用；固定样例通过不代表所有业务通过。不自动启用候选。仍排队时告知测试 ID 并结束当前回复，后续读取同一 ID，避免占用并发名额反复轮询。',
     inputSchema: z.toJSONSchema(EmployeeMethodTestInspectSchema),
+  },
+  {
+    name: 'workspace.employee.method.prepare_activation',
+    description:
+      '读取准确候选与原专项测试，生成服务端启用确认题。将返回的 askUserQuestion 参数对象原样交给 ask_user_question；尚未启用。测试必须覆盖全部新增/改变的场景，通用要求改变需覆盖所有当前场景。',
+    inputSchema: z.toJSONSchema(EmployeeMethodPrepareActivationSchema),
+  },
+  {
+    name: 'workspace.employee.method.activate',
+    description:
+      '仅在原样展示的服务端确认题收到用户明确确认并持久采用后启用。只传 receiptId；服务端核对真实回答、当前权限、候选及测试。未知结果回读同一回执，不创建另一发布。后续独立任务采用新版本，当前任务快照保留。',
+    inputSchema: z.toJSONSchema(EmployeeMethodActivateSchema),
   },
   ...(['delegate', 'message', 'report', 'stop', 'development'] as const).map(
     (action) => ({

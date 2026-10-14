@@ -3,6 +3,7 @@ export * from './static-browser.ts';
 export type ServiceName = 'web' | 'worker';
 export * from './message-feedback.ts';
 export * from './work-methods.ts';
+export * from './employee-method-activation.ts';
 export * from './user-preferences.ts';
 export type HealthStatus = 'live' | 'ready' | 'not_ready';
 

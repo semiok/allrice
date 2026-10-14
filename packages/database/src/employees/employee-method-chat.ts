@@ -38,6 +38,7 @@ export class EmployeeMethodChatError extends Error {
       | 'explicit_test_retry_required'
       | 'test_retry_not_allowed'
       | 'test_retry_model_changed'
+      | 'method_text_target_required'
       | 'method_context_unavailable',
   ) {
     super(code);
@@ -543,6 +544,32 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
             kind,
           );
           const previous = previousRefs.find((r) => r.contentId === contentId);
+          const replacements = (args.replaceTextReferences ?? []).filter(
+            (ref) => ref.sourceKind === kind,
+          );
+          // Old API/migration-authored text has its own identity. Do not
+          // silently append a conflicting chat procedure beside it. The model
+          // must identify the exact existing text it is replacing in this
+          // candidate; source assets and historical revisions stay untouched.
+          if (
+            !previous &&
+            !replacements.length &&
+            previousRefs.some((ref) => ref.sourceKind === kind)
+          )
+            throw new EmployeeMethodChatError('method_text_target_required');
+          for (const ref of replacements) {
+            if (
+              !previousRefs.some(
+                (old) => referenceKey(old) === referenceKey(ref),
+              )
+            )
+              throw new EmployeeContentError('version_conflict');
+            updatedRefs = updatedRefs.filter(
+              (old) =>
+                old.sourceKind === 'draft_text' ||
+                referenceKey(old) !== referenceKey(ref),
+            );
+          }
           const [asset] = await tx<
             { revision: number; latest_revision_id: string }[]
           >`

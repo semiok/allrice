@@ -1,3 +1,7 @@
+import {
+  HarnessEventSchema,
+  UserQuestionRequestSchema,
+} from '@allrice/contracts';
 import type * as SubscriptionHome from '../codex-subscription-home.js';
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -142,6 +146,23 @@ function executionInput(input: {
 }
 
 describe('DshHarnessAdapter', () => {
+  it('bounds a long native question event summary while preserving its exact confirmation payload', async () => {
+    const events: HarnessEvent[] = [];
+    await createAdapter().execute(
+      executionInput({ prompt: 'long-method-confirmation-question', events }),
+    );
+    const event = events.find(
+      (e) =>
+        e.type === 'native.event' &&
+        e.sourceEventType === 'session/user-question',
+    );
+    expect(event).toBeDefined();
+    expect(HarnessEventSchema.safeParse(event).success).toBe(true);
+    if (event?.type !== 'native.event') throw Error('missing question');
+    expect(event.summary!.length).toBeLessThanOrEqual(1000);
+    const request = UserQuestionRequestSchema.parse(event.sourcePayload);
+    expect(request.questions[0]!.question).toBe('完整确认内容'.repeat(300));
+  });
   it('uses a new native persisted thread after revocation and preserves a denied guard across RPC errors', async () => {
     const root = await mkdtemp(
       resolve(tmpdir(), 'allrice-content-generation-'),
