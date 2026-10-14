@@ -703,7 +703,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const run = await methodRun(
       f,
       instance.id,
-      '请更新我的工作场景候选：将每周对账改名为每周回款。请移除每月对账场景。只保存候选，不启用。',
+      '上次连接失败后尚未保存修改，请继续未完成的移除操作。请更新我的工作场景候选：请移除每月对账场景。将每周对账改名为每周回款。只保存候选，不启用。',
     );
     const renameArgs = {
         expectedRevision: active.revision,
@@ -771,6 +771,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     for (const text of [
       '请更新我的工作场景候选：删除每周回款场景中的重复步骤。',
       '请更新我的工作场景候选：删除重复步骤，保留每周回款场景。',
+      '请翻译下文：\n第一段是背景。\n\n请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
+      '客户的原话是：\n请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
+      '请翻译下面这段话。\n请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
+      '上次网络中断。请更新我的工作场景候选：请移除每周回款场景。不要保存，只是讨论。',
+      '上次连接失败。\n    请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
+      'The previous request failed.\n\tPlease update my workflow candidate: remove this scene.',
     ]) {
       const contentEdit = await methodRun(f, instance.id, text);
       await expect(
@@ -930,7 +936,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const unlink = await methodRun(
       f,
       instance.id,
-      '请更新我的工作场景候选。请解除旧资料引用。',
+      '上次连接失败后尚未保存修改。请更新我的工作场景候选：请解除旧资料引用。',
     );
     const unlinked = await saveEmployeeMethodFromChat({
       ...unlink,

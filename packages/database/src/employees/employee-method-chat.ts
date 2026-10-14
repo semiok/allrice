@@ -84,8 +84,31 @@ function methodOperationClauses(text: string) {
     .map((clause) => clause.trim());
 }
 
-/** The operation targets the employee's method, not an article about methods.
- * A colon starts candidate content; its business constraints aren't commands. */
+/** Only skip a bounded prior-transport outcome, never arbitrary prose that
+ * could introduce instructions from a document, example or another person. */
+function withoutMethodRetryPreface(text: string) {
+  return text.replace(
+    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后)?(?:尚未|还未|没有)(?:保存|完成)(?:修改|操作|任务)?)?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
+    '',
+  );
+}
+
+/** A colon separates the authoring request from candidate content. */
+function methodAuthoringHeader(clause: string) {
+  const request = clause.replace(/^(?:[ \t]*\r?\n)+/, '');
+  if (/^(?: {4}|\t)/u.test(request)) return false;
+  const first = request.split(/[。；;！!\n：:]/, 1)[0]!.trim();
+  return (
+    /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:[^《》“”"'「」『』`。；;！!\n：:]{0,80})(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?$/u.test(
+      first,
+    ) ||
+    /^(?:please )?(?:save|update|edit|create|add|customize|rename|remove|delete|disable)\s+(?:(?:my|this)\s+)?(?:work )?(?:method|scene|workflow)(?: (?:candidate|draft))?$/i.test(
+      first,
+    )
+  );
+}
+
+/** Require the leading request, allowing only a known retry preface. */
 export function explicitEmployeeMethodIntent(text: string) {
   if (!text.trim() || text.length > 32000) return false;
   const clauses = methodOperationClauses(text);
@@ -97,15 +120,7 @@ export function explicitEmployeeMethodIntent(text: string) {
     )
   )
     return false;
-  const first = text.trim().split(/[。；;！!\n：:]/, 1)[0]!;
-  return (
-    /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:[^《》“”"'「」『』`。；;！!\n：:]{0,80})(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?$/u.test(
-      first,
-    ) ||
-    /^(?:please )?(?:save|update|edit|create|add|customize|rename|remove|delete|disable)\s+(?:(?:my|this)\s+)?(?:work )?(?:method|scene|workflow)(?: (?:candidate|draft))?$/i.test(
-      first,
-    )
-  );
+  return methodAuthoringHeader(withoutMethodRetryPreface(text));
 }
 
 export function explicitEmployeeMethodReferenceIntent(text: string) {
@@ -139,16 +154,15 @@ export function explicitEmployeeMethodRemovalIntent(
   text: string,
   kind: 'scene' | 'reference',
 ) {
-  const clauses = methodOperationClauses(text).map((s, index) => {
-    const colon = s.search(/[：:]/);
-    // Only unwrap the user's leading authoring request, never "example:" or
-    // a document's command later in the message.
-    return index === 0 &&
-      colon >= 0 &&
-      explicitEmployeeMethodIntent(s.slice(0, colon))
-      ? s.slice(colon + 1).trim()
-      : s;
-  });
+  const clauses = methodOperationClauses(withoutMethodRetryPreface(text))
+    .filter(Boolean)
+    .map((s, index) => {
+      const colon = s.search(/[：:]/);
+      // Unwrap only the leading request after the bounded retry preface.
+      return index === 0 && colon >= 0 && methodAuthoringHeader(s)
+        ? s.slice(colon + 1).trim()
+        : s;
+    });
   const target =
     kind === 'scene'
       ? /场景|\bscene\b/iu
