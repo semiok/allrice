@@ -848,7 +848,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       next = await methodRun(
         f,
         instance.id,
-        '请更新我的工作场景候选。请替换旧资料引用。请长期引用本次选择的资料新版。',
+        '请更新我的工作场景候选。请替换旧资料引用。请将本次选择的资料新版长期引用到周度，替代原来的同一资料 v1。',
         undefined,
         [v2.revisionId],
       );

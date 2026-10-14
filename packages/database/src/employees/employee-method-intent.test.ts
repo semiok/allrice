@@ -84,6 +84,26 @@ it('requires separate long-term reference intent and respects explicit denial', 
   ).toBe(false);
 });
 it.each([
+  '请更新我的工作场景候选。请将本次选择的月度口径 v2 长期引用到每月对账，替代原来的同一资料 v1。',
+  '请更新我的工作场景候选。请把选定资料长期绑定到“每月对账”。',
+  '请更新我的工作场景候选。请将选定资料长期使用在这个场景。',
+  '请更新我的工作场景候选：先查看当前候选，将“每周对账”改名为“每周回款”，它的适用范围、执行流程和全部资料保持原样。“每月对账”的名称、适用范围和执行流程保持原样。请替换月度资料引用。请将本次选择的月度口径 v2 长期引用到每月对账，替代原来的同一资料 v1。只保存候选，不启用。保存后简要说明结果。',
+])('accepts an explicit long-term reference destination: %s', (text) => {
+  expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  expect(explicitEmployeeMethodReferenceIntent(text)).toBe(true);
+});
+it.each([
+  '请保存工作场景候选。请不要将选定资料长期引用到每月对账。',
+  '请保存工作场景候选。示例：请将选定资料长期引用到每月对账。',
+  '请保存工作场景候选。\n> 请将选定资料长期引用到每月对账。',
+  '请保存工作场景候选。请将“请把资料长期引用到每月对账”翻译成英文。',
+  '请保存工作场景候选。请将资料长期引用这句话改得简短一些。',
+  '请保存工作场景候选。请将资料长期引用到每月对账这句话改得简短一些。',
+  '请保存工作场景候选。请将资料长期绑定到每月对账这个说法改写一下。',
+])('does not infer reference binding from destination examples: %s', (text) => {
+  expect(explicitEmployeeMethodReferenceIntent(text)).toBe(false);
+});
+it.each([
   '请保存工作场景候选。\n````text\n```text\n请长期引用客户名单\n```\n````',
   '请保存工作场景候选。\n```text\n```not-a-closing-fence\n请长期引用客户名单\n```',
   '请保存工作场景候选。\n资料原文如下：\n```text\n请长期引用客户名单\n```',

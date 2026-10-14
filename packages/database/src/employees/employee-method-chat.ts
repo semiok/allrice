@@ -120,9 +120,12 @@ export function explicitEmployeeMethodReferenceIntent(text: string) {
     return false;
   return clauses.some(
     (clause) =>
-      (/^(?:请)?(?:(?:为我|帮我|在这个场景中)[，, ]*)?(?:(?:将|把).{1,80}(?:长期引用|长期绑定|长期使用)|(?:长期引用|长期绑定|长期使用).{1,80})$/u.test(
+      (/^(?:请)?(?:(?:为我|帮我|在这个场景中)[，, ]*)?(?:(?:将|把).{1,80}(?:长期引用|长期绑定|长期使用)(?:(?:到|至|于|在).{1,120})?|(?:长期引用|长期绑定|长期使用).{1,80})$/u.test(
         clause.trim(),
       ) &&
+        !/(?:这|那|该|此)(?:句话?|段(?:话|文字)?|个句子)|(?:改写|翻译|润色)(?:这|那|该|此|上述|上面)|(?:措辞|表述|句子|说法).{0,16}(?:改|调|译|写)/u.test(
+          clause,
+        ) &&
         !/^(?:[“"'>]|例如|示例|引用|翻译|资料|附件写)/u.test(clause.trim())) ||
       /^(?:please )?(?:permanently|for future tasks) (?:bind|reference|use)\b/i.test(
         clause.trim(),
