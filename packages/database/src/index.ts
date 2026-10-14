@@ -19,6 +19,7 @@ export { EmployeeMethodActivationError } from './employees/employee-method-activ
 export {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
+  restoreEmployeeMethodFromChat,
   EmployeeMethodChatError,
   isEmployeeMethodAuthoringRun,
   filterEmployeeMethodMemories,

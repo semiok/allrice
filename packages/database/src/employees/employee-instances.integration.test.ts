@@ -30,6 +30,7 @@ import { getStoredFile } from '../data.ts';
 import {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
+  restoreEmployeeMethodFromChat,
   filterEmployeeMethodMemories,
 } from './employee-method-chat.ts';
 import {
@@ -582,6 +583,324 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       activate,
     };
   }
+
+  it('restores exact chat history into a new candidate and repeatedly forks old text without altering active sources', async () => {
+    const x = await activationFixture();
+    await x.show();
+    await x.answer();
+    await x.activate();
+    await x.run.finish();
+    const initial = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
+    const original = initial.set.candidate!;
+    const scene = original.manifest.scenes[0]!;
+    const oldPin = scene.references[0]!;
+    const edit = await methodRun(x.f, x.instance.id);
+    const newer = await saveEmployeeMethodFromChat({
+      ...edit,
+      arguments: {
+        expectedRevision: initial.set.revision,
+        section: 'scene',
+        scene: { id: scene.id },
+        procedure: '错误地额外加100分',
+        changeSummary: 'Known wrong candidate',
+      },
+    });
+    await edit.finish();
+    const sourceBefore =
+      await fixture.db`select * from allrice_company_assets where id=${oldPin.contentId}`;
+    expect(sourceBefore[0]!.latest_revision_id).not.toBe(oldPin.revisionId);
+    const restore = await methodRun(
+      x.f,
+      x.instance.id,
+      `请恢复我的整份工作方法到第${original.number}版，只保存候选。`,
+    );
+    const history = await inspectEmployeeMethodFromChat({
+      ...restore,
+      arguments: { view: 'history' },
+    });
+    if (!('revisions' in history)) throw Error('History response missing');
+    expect(history.revisions.map((r) => r.id)).toContain(original.id);
+    expect(JSON.stringify(history)).not.toContain('错误地额外加100分');
+    expect(history.activeRevisionId).toBe(original.id);
+    expect(
+      (
+        await fixture.db`select retired_at from allrice_employee_content_contexts where generation_id=${restore.runtime.generationId}`
+      )[0]?.retired_at,
+    ).not.toBeNull();
+    const args = {
+      expectedRevision: newer.revision,
+      sourceRevisionId: original.id,
+      changeSummary: '恢复已启用的历史版本',
+    };
+    const call = { ...restore, arguments: args };
+    const restored = await restoreEmployeeMethodFromChat(call);
+    expect(await restoreEmployeeMethodFromChat(call)).toEqual(restored);
+    await expect(
+      restoreEmployeeMethodFromChat({
+        ...call,
+        arguments: { ...args, changeSummary: 'Different input' },
+      }),
+    ).rejects.toMatchObject({ code: 'request_conflict' });
+    await expect(
+      restoreEmployeeMethodFromChat({ ...call, callId: randomUUID() }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const read = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
+    expect(read.set.active!.id).toBe(original.id);
+    expect(read.set.candidate).toMatchObject({
+      restoredFromRevisionId: original.id,
+      manifest: original.manifest,
+    });
+    expect(read.set.candidate!.id).not.toBe(original.id);
+    expect(read.set.validation).toBeNull();
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...restore,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: restored.revision,
+          candidateRevisionId: restored.candidate.id,
+          candidateDigest: restored.candidate.digest,
+          testIds: [x.test.id],
+        },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...restore,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: restored.revision,
+          candidateRevisionId: restored.candidate.id,
+          candidateDigest: restored.candidate.digest,
+          testIds: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'activation_test_coverage' });
+    await restore.finish();
+    let previous = restored;
+    let pin = oldPin;
+    const correction = await methodRun(
+      x.f,
+      x.instance.id,
+      '请更新我的工作场景候选：核对金额再汇总。',
+    );
+    const noOp = await saveEmployeeMethodFromChat({
+      ...correction,
+      callId: randomUUID(),
+      arguments: {
+        expectedRevision: previous.revision,
+        section: 'scene',
+        scene: { id: scene.id, name: scene.name },
+        changeSummary: 'Unchanged scene name',
+      },
+    });
+    expect(
+      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.candidate!
+        .restoredFromRevisionId,
+    ).toBe(original.id);
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...correction,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: noOp.revision,
+          candidateRevisionId: noOp.candidate.id,
+          candidateDigest: noOp.candidate.digest,
+          testIds: [],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'activation_test_coverage' });
+    previous = noOp;
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...correction,
+        arguments: {
+          expectedRevision: previous.revision,
+          section: 'scene',
+          scene: { id: scene.id },
+          procedure: '新的文字',
+          changeSummary: 'Must name historical pin',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'source_changed' });
+    for (const body of ['先检查整数分再相加', '核对输入后只将整数分相加']) {
+      previous = await saveEmployeeMethodFromChat({
+        ...correction,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: previous.revision,
+          section: 'scene',
+          scene: { id: scene.id },
+          procedure: body,
+          replaceTextReferences: [pin],
+          changeSummary: 'Explicit private replacement',
+        },
+      });
+      const current = await getEmployeeContentSet(x.f.a.context, x.saved.setId);
+      const next = current.set.candidate!.manifest.scenes[0]!.references[0]!;
+      expect(next.contentId).not.toBe(pin.contentId);
+      expect(
+        current.sources.find((v) => v.reference.contentId === next.contentId)
+          ?.body,
+      ).toBe(body);
+      pin = next;
+    }
+    expect(
+      await fixture.db`select * from allrice_company_assets where id=${oldPin.contentId}`,
+    ).toEqual(sourceBefore);
+    expect(
+      (
+        await getEmployeeContentHistory(x.f.a.context, x.saved.setId)
+      ).revisions.find((r) => r.id === original.id),
+    ).toMatchObject(original);
+    await correction.finish();
+    const testRun = await methodRun(
+      x.f,
+      x.instance.id,
+      '请测试我的工作场景候选',
+    );
+    const freshTest = await startEmployeeMethodTestFromChat({
+      ...testRun,
+      arguments: {
+        expectedRevision: previous.revision,
+        candidateRevisionId: previous.candidate.id,
+        candidateDigest: previous.candidate.digest,
+        sceneId: scene.id,
+        caseId: 'cny-total-v1',
+      },
+    });
+    expect(freshTest.id).not.toBe(x.test.id);
+    await testRun.finish();
+    await passActivationTest(x.f, freshTest);
+    expect(
+      (await getEmployeeMethodTest(x.f.a.context, freshTest.id))
+        .validationStatus,
+    ).toBe('passed');
+    expect(
+      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active!
+        .id,
+    ).toBe(original.id);
+  }, 60000);
+
+  it('keeps old unpublished pins unavailable and rechecks restore target, intent and current authority', async () => {
+    const f = await setup(true),
+      instance = await f.custom('历史边界');
+    const editing = await methodRun(f, instance.id);
+    const first = await saveEmployeeMethodFromChat({
+      ...editing,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '金额', appliesWhen: '合成样例' },
+        procedure: '原未发布文字',
+        changeSummary: 'Unpublished history',
+      },
+    });
+    const before = await getEmployeeContentSet(f.a.context, first.setId);
+    const scene = before.set.candidate!.manifest.scenes[0]!;
+    const second = await saveEmployeeMethodFromChat({
+      ...editing,
+      callId: randomUUID(),
+      arguments: {
+        expectedRevision: first.revision,
+        section: 'scene',
+        scene: { id: scene.id },
+        procedure: '新草稿',
+        changeSummary: 'New draft',
+      },
+    });
+    await editing.finish();
+    const args = {
+      expectedRevision: second.revision,
+      sourceRevisionId: first.candidate.id,
+      changeSummary: 'Restore history',
+    };
+    const unrelated = await f.custom('另一个小白');
+    const other = await methodRun(
+      f,
+      unrelated.id,
+      '请恢复我的整份工作方法到第1版',
+    );
+    await expect(
+      restoreEmployeeMethodFromChat({ ...other, arguments: args }),
+    ).rejects.toThrow();
+    await other.finish();
+    for (const text of [
+      '请恢复我的每周场景到第1版',
+      '请恢复我的整份工作方法到第2版',
+      '> 请恢复我的整份工作方法到第1版',
+      '请恢复我的整份工作方法到第1版：不要保存，只展示差异。',
+      '请恢复我的工作方法到第1版，只恢复周度场景，月度场景保持不变。',
+    ]) {
+      const denied = await methodRun(f, instance.id, text);
+      await expect(
+        restoreEmployeeMethodFromChat({ ...denied, arguments: args }),
+      ).rejects.toMatchObject({ code: 'explicit_method_restore_required' });
+      await denied.finish();
+    }
+    expect(
+      (await getEmployeeContentSet(f.a.context, first.setId)).set.candidate!.id,
+    ).toBe(second.candidate.id);
+    const restore = await methodRun(
+      f,
+      instance.id,
+      '请恢复我的整份工作方法到第1版',
+    );
+    await expect(
+      restoreEmployeeMethodFromChat({
+        ...restore,
+        arguments: { ...args, sourceRevisionId: randomUUID() },
+      }),
+    ).rejects.toThrow();
+    const restored = await restoreEmployeeMethodFromChat({
+      ...restore,
+      arguments: args,
+    });
+    const content = await getEmployeeContentSet(f.a.context, first.setId);
+    expect(content.sources.some((s) => !s.available)).toBe(true);
+    await restore.finish();
+    const correcting = await methodRun(f, instance.id);
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...correcting,
+        arguments: {
+          expectedRevision: restored.revision,
+          section: 'scene',
+          scene: { id: scene.id },
+          procedure: 'copy unavailable old text',
+          replaceTextReferences: scene.references,
+          changeSummary: 'Denied copy',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'source_changed' });
+    await correcting.finish();
+    const stale = await methodRun(
+      f,
+      instance.id,
+      '请恢复我的整份工作方法到第1版',
+    );
+    await fixture.db`update allrice_jobs set cancel_requested_at=now() where id=${stale.context.jobId}`;
+    await expect(
+      restoreEmployeeMethodFromChat({
+        ...stale,
+        arguments: { ...args, expectedRevision: restored.revision },
+      }),
+    ).rejects.toThrow();
+    await stale.finish();
+    const revoked = await methodRun(
+      f,
+      instance.id,
+      '请恢复我的整份工作方法到第1版',
+    );
+    await f.change('withdraw');
+    await expect(
+      restoreEmployeeMethodFromChat({
+        ...revoked,
+        arguments: { ...args, expectedRevision: restored.revision },
+      }),
+    ).rejects.toThrow();
+    await revoked.finish();
+  }, 60000);
 
   it('replaces exact legacy text in one scene without contradicting or rewriting old sources', async () => {
     const f = await setup(true),

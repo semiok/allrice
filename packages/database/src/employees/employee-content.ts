@@ -534,12 +534,21 @@ export async function mutateEmployeeContentInTransaction(
     }
     const id = randomUUID(),
       digest = runtimePolicyDigest(manifest);
+    // Unpublished edits continue the restored candidate's lineage. Otherwise a
+    // no-op save could erase the fresh-test requirement before activation.
+    const restoredFrom =
+      input.operation === 'restore_draft'
+        ? input.sourceRevisionId
+        : row.candidate_revision_id !== row.active_revision_id
+          ? ((await readRevision(tx, row.candidate_revision_id))
+              ?.restored_from_revision_id ?? null)
+          : null;
     const [revision] = await tx<
       ContentRevisionRow[]
     >`insert into allrice_employee_content_revisions
         (id,set_id,number,manifest,digest,change_summary,created_by,restored_from_revision_id)
         values(${id},${row.id},${next},${tx.json(manifest)},${digest},${input.changeSummary},${context.actor.id},
-          ${input.operation === 'restore_draft' ? input.sourceRevisionId : null}) returning *`;
+        ${restoredFrom}) returning *`;
     candidate = revision!;
   } else {
     const saved = await readRevision(tx, row.candidate_revision_id);
@@ -700,41 +709,56 @@ export async function getEmployeeContentHistory(
   idInput: string,
   beforeRevision?: number,
 ) {
+  return getDatabase().begin(
+    'isolation level repeatable read read only',
+    (tx) =>
+      getEmployeeContentHistoryInTransaction(
+        context,
+        idInput,
+        beforeRevision,
+        tx,
+      ),
+  );
+}
+
+export async function getEmployeeContentHistoryInTransaction(
+  context: EmployeeContentContext,
+  idInput: string,
+  beforeRevision: number | undefined,
+  tx: ContentTx,
+) {
   const id = UuidSchema.parse(idInput);
   if (
     beforeRevision !== undefined &&
     (!Number.isSafeInteger(beforeRevision) || beforeRevision < 1)
   )
     throw new EmployeeContentError('version_conflict');
-  return getDatabase().begin(
-    'isolation level repeatable read read only',
-    async (tx) => {
-      const [row] = await tx<
-        ContentSetRow[]
-      >`select * from allrice_employee_content_sets
+  const [row] = await tx<
+    ContentSetRow[]
+  >`select * from allrice_employee_content_sets
       where id=${id} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
-      if (!row) throw new DataAccessError('not_found');
-      const access = await getContentAccess(context, contentOwnership(row), tx);
-      if (!access.canMaintain) throw new DataAccessError('not_found');
-      await resolveTarget(context, contentTarget(row), tx, false);
-      const rows = await tx<
-        (ContentRevisionRow & { invalidated_at: Date | null })[]
-      >`
+  if (!row) throw new DataAccessError('not_found');
+  const access = await getContentAccess(context, contentOwnership(row), tx);
+  if (!access.canMaintain) throw new DataAccessError('not_found');
+  await resolveTarget(context, contentTarget(row), tx, false);
+  const rows = await tx<
+    (ContentRevisionRow & { invalidated_at: Date | null })[]
+  >`
       select r.*,p.invalidated_at from allrice_employee_content_revisions r
       left join allrice_employee_content_publications p on p.set_id=r.set_id and p.revision_id=r.id
       where r.set_id=${id} ${beforeRevision === undefined ? tx`` : tx`and r.number<${beforeRevision}`}
       order by r.number desc limit 101`;
-      return {
-        setId: id,
-        revision: row.revision,
-        revisions: rows.slice(0, 100).map((r) => ({
-          ...revisionDto(r),
-          invalidatedAt: r.invalidated_at?.toISOString() ?? null,
-        })),
-        nextBeforeRevision: rows.length > 100 ? rows[99]!.number : null,
-      };
-    },
-  );
+  return {
+    setId: id,
+    revision: row.revision,
+    activeRevisionId: row.active_revision_id,
+    candidateRevisionId: row.candidate_revision_id,
+    revisions: rows.slice(0, 100).map((r) => ({
+      ...revisionDto(r),
+      invalidatedAt: r.invalidated_at?.toISOString() ?? null,
+    })),
+    nextBeforeRevision: rows.length > 100 ? rows[99]!.number : null,
+  };
 }
 
 export async function getEffectiveEmployeeContent(
@@ -933,6 +957,7 @@ export async function freezeEmployeeMethodActivationCandidate(
     employeeId: target.employeeId,
     employeeVersionId: target.versionId,
     activeRevisionId: active?.id ?? null,
+    restoredFromRevisionId: revision.restored_from_revision_id,
     activeManifest: active?.manifest ?? emptyManifest,
     manifest: revision.manifest,
     sources: result.resolved.map((s) => s.dto),

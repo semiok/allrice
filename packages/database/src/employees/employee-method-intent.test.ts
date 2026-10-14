@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import {
   explicitEmployeeMethodIntent,
+  explicitEmployeeMethodRestoreIntent,
   explicitEmployeeMethodReferenceIntent,
   explicitEmployeeMethodRemovalIntent,
   explicitEmployeeMethodTestIntent,
@@ -284,3 +285,42 @@ it('does not infer a paid test from the method body of an authoring request', ()
   expect(explicitEmployeeMethodIntent(text)).toBe(true);
   expect(explicitEmployeeMethodTestIntent(text)).toBe(false);
 });
+
+const historySource = { id: retryId, number: 1 };
+it.each([
+  '请恢复我的整份工作方法到第1版。只保存候选，不启用。',
+  '请还原个人工作方法至第 1 版',
+  '请帮我回退我的工作方法候选到r1',
+  '网络中断了。请恢复我的整份工作方法到第1版。',
+  `请恢复我的工作方法到版本 ${retryId}`,
+  'Please restore my entire work method to version 1.',
+])('requires the selected whole-method version: %s', (text) => {
+  expect(explicitEmployeeMethodRestoreIntent(text, historySource)).toBe(true);
+  expect(
+    explicitEmployeeMethodRestoreIntent(text, { id: 'other', number: 2 }),
+  ).toBe(false);
+});
+it.each([
+  '请恢复我的每周场景到第1版',
+  '请恢复到第1版',
+  '请恢复我的整份工作方法到第2版',
+  '请恢复我的整份工作方法到第1版或第2版',
+  '请恢复我的整份工作方法到第1版。不要恢复，只讨论。',
+  '请恢复我的整份工作方法到第1版，不要执行。',
+  '请恢复我的整份工作方法到第1版：不要保存，只展示差异。',
+  '请恢复我的工作方法到第1版，只恢复周度场景，月度场景保持不变。',
+  '请翻译：请恢复我的整份工作方法到第1版',
+  '资料原文如下：\n请恢复我的整份工作方法到第1版',
+  '> 请恢复我的整份工作方法到第1版',
+  '“请恢复我的整份工作方法到第1版”',
+  '    请恢复我的整份工作方法到第1版',
+  '```\n请恢复我的整份工作方法到第1版\n```',
+  'Please restore my work method to version 1. Do not restore it.',
+])(
+  'does not infer whole-method restore from an ambiguous or quoted request: %s',
+  (text) => {
+    expect(explicitEmployeeMethodRestoreIntent(text, historySource)).toBe(
+      false,
+    );
+  },
+);

@@ -1,6 +1,7 @@
 import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodRestoreSchema,
   EmployeeContentManifestSchema,
   ReferenceSelectionsSchema,
   type EmployeeContentMutation,
@@ -23,6 +24,7 @@ import {
 } from './employee-chat-authority.ts';
 import {
   inspectEmployeeMethodContent,
+  getEmployeeContentHistoryInTransaction,
   mutateEmployeeContentInTransaction,
 } from './employee-content.ts';
 import {
@@ -35,6 +37,7 @@ export class EmployeeMethodChatError extends Error {
   constructor(
     readonly code:
       | 'explicit_method_request_required'
+      | 'explicit_method_restore_required'
       | 'explicit_test_retry_required'
       | 'test_retry_not_allowed'
       | 'test_retry_model_changed'
@@ -151,6 +154,56 @@ export function explicitEmployeeMethodIntent(text: string) {
   )
     return false;
   return methodAuthoringHeader(withoutMethodRetryPreface(text));
+}
+
+/** Whole-method restore must name the selected immutable version in the user's
+ * own leading request. A scene-only request cannot replace the whole manifest. */
+export function explicitEmployeeMethodRestoreIntent(
+  text: string,
+  source: { id: string; number: number },
+) {
+  if (!text.trim() || text.length > 32000) return false;
+  const request = withoutMethodRetryPreface(text).replace(
+    /^(?:[ \t]*\r?\n)+/u,
+    '',
+  );
+  if (/^(?: {4}|\t)/u.test(request)) return false;
+  if (
+    methodOperationClauses(request)
+      .flatMap((c) => c.split(/[，,：:]/u))
+      .some((c) =>
+        /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:恢复|还原|回退|保存|执行)|^(?:please )?(?:do not|don't|never)\s+(?:restore|revert|save|execute)/iu.test(
+          c.trim(),
+        ),
+      )
+  )
+    return false;
+  if (
+    methodOperationClauses(request)
+      .flatMap((c) => c.split(/[，,：:]/u))
+      .some((c) =>
+        /(?:只|仅)(?:恢复|还原|回退)(?!我的整份工作方法|个人整份工作方法|整份工作方法)|(?:场景|执行要求|执行流程).{0,12}(?:保持不变|保留原样|不要修改)|only\s+(?:restore|revert)\s+(?!my entire work method)|(?:keep|leave).{0,60}(?:scene|procedure|requirement).{0,20}unchanged/iu.test(
+          c.trim(),
+        ),
+      )
+  )
+    return false;
+  const header = request.split(/[。；;！!\n，,：:]/u, 1)[0]!.trim();
+  const match =
+    header.match(
+      /^(?:请)?(?:为我|帮我)?(?:恢复|还原|回退)(?:我的|个人)(?:整份)?工作方法(?:候选)?(?:到|至|为)(?:第\s*([1-9]\d*)\s*版|[rv]([1-9]\d*)|版本\s+([a-f0-9-]{36}))$/iu,
+    ) ??
+    header
+      .replace(/\.$/u, '')
+      .match(
+        /^(?:please )?(?:restore|revert) my (?:entire )?work method(?: candidate)? to (?:(?:revision|version) ([1-9]\d*)|[rv]([1-9]\d*)|version-id ([a-f0-9-]{36}))$/iu,
+      );
+  return (
+    !!match &&
+    (match[3]
+      ? match[3].toLowerCase() === source.id.toLowerCase()
+      : Number(match[1] ?? match[2]) === source.number)
+  );
 }
 
 export function explicitEmployeeMethodTestIntent(text: string) {
@@ -368,7 +421,7 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
   const { scope } = employeeChatIdentity(input);
   // Candidate body resolution can fail independently; the first transaction's
   // retirement must survive that failure as well.
-  if (args.view === 'candidate')
+  if (args.view !== 'effective')
     await enterMethodChat(
       input,
       'workspace.employee.method.inspect',
@@ -380,6 +433,34 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
     'workspace.employee.method.inspect',
     false,
     async (tx, instance) => {
+      if (args.view === 'history') {
+        const [set] = await tx<
+          { id: string }[]
+        >`select id from allrice_employee_content_sets
+          where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+            and instance_id=${instance.id} and scope='personal' and owner_id=${scope.actor.id}`;
+        const history = set
+          ? await getEmployeeContentHistoryInTransaction(
+              scope,
+              set.id,
+              args.beforeRevision,
+              tx,
+            )
+          : {
+              setId: null,
+              revision: 0,
+              activeRevisionId: null,
+              candidateRevisionId: null,
+              revisions: [],
+              nextBeforeRevision: null,
+            };
+        return {
+          ...history,
+          view: 'history' as const,
+          instanceId: instance.id,
+          selectedReferences: [],
+        };
+      }
       const content = await inspectEmployeeMethodContent(
         scope,
         instance.id,
@@ -430,6 +511,73 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
       // Saving still requires the user's separate long-term reference intent.
       return { ...content, selectedReferences };
     },
+  );
+}
+
+export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
+  const args = EmployeeMethodRestoreSchema.parse(input.arguments);
+  const { scope, requestId } = employeeChatIdentity(input);
+  const tool = 'workspace.employee.method.restore_candidate';
+  const { instance, setId } = await enterMethodChat(
+    input,
+    tool,
+    true,
+    async (tx, instance) => {
+      const [set] = await tx<
+        { id: string }[]
+      >`select id from allrice_employee_content_sets
+      where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and instance_id=${instance.id} and scope='personal' and owner_id=${scope.actor.id}`;
+      if (!set) throw new DataAccessError('not_found');
+      return { instance, setId: set.id };
+    },
+  );
+  return employeeAccessTransaction(getDatabase(), (tx) =>
+    mutateEmployeeContentInTransaction(
+      scope,
+      {
+        operation: 'restore_draft',
+        workspaceId: scope.workspaceId,
+        setId,
+        requestId,
+        ownership: {
+          scope: 'personal',
+          organizationId: scope.organizationId,
+          ownerId: scope.actor.id,
+        },
+        target: { kind: 'instance', instanceId: instance.id },
+        expectedRevision: args.expectedRevision,
+        sourceRevisionId: args.sourceRevisionId,
+        changeSummary: args.changeSummary,
+      },
+      tx,
+      {
+        inputDigest: runtimePolicyDigest({
+          instanceId: instance.id,
+          runId: input.context.runId,
+          userMessageId: input.userMessageId,
+          arguments: args,
+        }),
+        authorize: async () => {
+          const current = await getEmployeeInstance(scope, instance.id, tx);
+          const original = await assertEmployeeChatRun(
+            tx,
+            input,
+            current,
+            tool,
+          );
+          const [source] = await tx<
+            { id: string; number: number }[]
+          >`select id,number from allrice_employee_content_revisions
+          where id=${args.sourceRevisionId} and set_id=${setId}`;
+          if (!source) throw new DataAccessError('not_found');
+          if (!explicitEmployeeMethodRestoreIntent(original, source))
+            throw new EmployeeMethodChatError(
+              'explicit_method_restore_required',
+            );
+        },
+      },
+    ),
   );
 }
 
@@ -554,13 +702,15 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
         ] as const) {
           const body = args[field];
           if (body === undefined) continue;
-          const contentId = employeeChatUuid(
+          const stableContentId = employeeChatUuid(
             'employee-method-text',
             instance.id,
             sceneId ?? 'common',
             kind,
           );
-          const previous = previousRefs.find((r) => r.contentId === contentId);
+          const previous = previousRefs.find(
+            (r) => r.contentId === stableContentId,
+          );
           const replacements = (args.replaceTextReferences ?? []).filter(
             (ref) => ref.sourceKind === kind,
           );
@@ -581,17 +731,47 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
               )
             )
               throw new EmployeeContentError('version_conflict');
+            const [assignment] = await tx<
+              { employee_id: string }[]
+            >`select employee_id from allrice_employee_assignments where id=${instance.assignmentId}`;
+            const source = await resolveEmployeeContentSource({
+              context: scope,
+              employeeId: assignment!.employee_id,
+              ownership: base.ownership,
+              ref,
+              sql: tx,
+              lock: true,
+              allowDraft: true,
+            });
+            if (!source.dto.available)
+              throw new EmployeeContentError('source_changed');
             updatedRefs = updatedRefs.filter(
               (old) =>
                 old.sourceKind === 'draft_text' ||
                 referenceKey(old) !== referenceKey(ref),
             );
           }
+          // An explicit replacement forks only the selected pins, including an
+          // older published pin restored from history. Never overwrite its asset
+          // or move its latest pointer. Further edits can replace this fork too.
+          const contentId = replacements.length
+            ? employeeChatUuid(
+                'employee-method-text-replacement',
+                requestId,
+                instance.id,
+                sceneId ?? 'common',
+                kind,
+              )
+            : stableContentId;
           const [asset] = await tx<
             { revision: number; latest_revision_id: string }[]
           >`
           select revision,latest_revision_id from allrice_company_assets where id=${contentId}`;
-          if (asset && asset.latest_revision_id !== previous?.revisionId)
+          if (
+            asset &&
+            (replacements.length ||
+              asset.latest_revision_id !== previous?.revisionId)
+          )
             throw new EmployeeContentError('source_changed');
           textEdits.push({
             contentId,

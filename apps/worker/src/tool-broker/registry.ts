@@ -3,6 +3,7 @@ import {
   prepareEmployeeMethodActivation,
   activateEmployeeMethod,
   saveEmployeeMethod,
+  restoreEmployeeMethod,
   testEmployeeMethod,
   inspectEmployeeMethodTest,
 } from './handlers/employee-method.js';
@@ -81,6 +82,10 @@ export const riceToolHandlerRegistry = Object.freeze({
   'workspace.employee.method.activate': registration(
     'workspace',
     activateEmployeeMethod,
+  ),
+  'workspace.employee.method.restore_candidate': registration(
+    'workspace',
+    restoreEmployeeMethod,
   ),
   'workspace.employee.method.test': registration(
     'workspace',
