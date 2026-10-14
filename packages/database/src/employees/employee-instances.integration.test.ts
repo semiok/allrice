@@ -10,6 +10,15 @@ import {
 } from './employee-runtime-content.ts';
 import { getEmployeeContentSet } from './employee-content.ts';
 import { randomUUID } from 'node:crypto';
+import {
+  prepareReferenceUpload,
+  completeReferenceUpload,
+  changeReference,
+} from '../reference-library.ts';
+import {
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+} from '../reference-processing.ts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
@@ -187,13 +196,21 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     instanceId: string,
     text: string,
     sessionId?: string,
+    referenceRevisionIds?: string[],
   ) {
     const session = sessionId ? { id: sessionId } : await f.session(instanceId);
     const sent = await sendChatMessage(
       f.a.context,
       f.a.workspaceId,
       session.id,
-      { text, clientMessageId: randomUUID() },
+      {
+        text,
+        clientMessageId: randomUUID(),
+        referenceRevisionIds,
+        ...(referenceRevisionIds?.length
+          ? { deliveryMode: 'follow_up' as const }
+          : {}),
+      },
     );
     const workerId = randomUUID(),
       leaseToken = randomUUID();
@@ -223,8 +240,15 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     instanceId: string,
     text = '请保存我的工作场景候选：每周对账和每月对账，保留原始数据。',
     sessionId?: string,
+    referenceRevisionIds?: string[],
   ) {
-    const input = await profileRun(f, instanceId, text, sessionId);
+    const input = await profileRun(
+      f,
+      instanceId,
+      text,
+      sessionId,
+      referenceRevisionIds,
+    );
     const scope = {
       organizationId: f.a.organizationId,
       workspaceId: f.a.workspaceId,
@@ -241,6 +265,75 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
+  it('exposes exact selected reference pins for explicit long-term binding and rechecks withdrawal', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const file = await prepareReferenceUpload(f.a.context, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      scope: 'personal',
+      fileName: '周度口径.txt',
+      purpose: '只读周对账样本',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.from('按实际回款核对').toString('base64'),
+    });
+    await completeReferenceUpload(
+      f.a.context,
+      f.a.workspaceId,
+      file.revisionId,
+    );
+    const claim = await claimReferenceProcessing();
+    expect(claim?.revisionId).toBe(file.revisionId);
+    await finishReferenceProcessing(claim!, [
+      { content: '按实际回款核对', start: 0, end: 7 },
+    ]);
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景候选：按回款核对。请长期引用本次选择的周度口径资料。',
+      undefined,
+      [file.revisionId],
+    );
+    const inspected = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate' },
+    });
+    expect(inspected.selectedReferences).toHaveLength(1);
+    const pin = inspected.selectedReferences[0]!.reference;
+    expect(pin).toMatchObject({
+      sourceKind: 'knowledge',
+      contentId: file.sourceId,
+      revisionId: file.revisionId,
+    });
+    const saved = await saveEmployeeMethodFromChat({
+      ...run,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '每周对账', appliesWhen: '每周' },
+        procedure: '核对回款',
+        references: [pin],
+        changeSummary: '保存周度场景及资料',
+      },
+    });
+    const snapshot = await getEmployeeContentSet(f.a.context, saved.setId);
+    expect(
+      snapshot.set.candidate!.manifest.scenes[0]!.references,
+    ).toContainEqual(pin);
+    await changeReference(f.a.context, file.sourceId, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      action: 'archive',
+    });
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+      }),
+    ).rejects.toMatchObject({ code: 'source_changed' });
+  }, 60000);
+
   it('saves several personal scene candidates, replays exact receipts before merging, and continues across sessions without activation', async () => {
     const f = await setup(true),
       instance = await f.custom('小白');

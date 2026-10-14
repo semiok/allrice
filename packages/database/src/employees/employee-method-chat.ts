@@ -2,6 +2,7 @@ import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
   EmployeeContentManifestSchema,
+  ReferenceSelectionsSchema,
   type EmployeeContentMutation,
   type EmployeeContentReference,
 } from '@allrice/contracts';
@@ -197,8 +198,57 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
     input,
     'workspace.employee.method.inspect',
     false,
-    (tx, instance) =>
-      inspectEmployeeMethodContent(scope, instance.id, args.view, tx),
+    async (tx, instance) => {
+      const content = await inspectEmployeeMethodContent(
+        scope,
+        instance.id,
+        args.view,
+        tx,
+      );
+      const [run] = await tx<
+        {
+          employee_id: string;
+          prompt_snapshot: { referenceSelections?: unknown };
+        }[]
+      >`
+        select v.employee_id,er.prompt_snapshot from allrice_employee_runs er
+        join allrice_employee_versions v on v.id=er.employee_version_id
+        where er.run_id=${input.context.runId}`;
+      const selectedReferences = [];
+      for (const selected of ReferenceSelectionsSchema.parse(
+        run?.prompt_snapshot.referenceSelections ?? [],
+      )) {
+        const reference = {
+          sourceKind: 'knowledge' as const,
+          contentId: selected.sourceId,
+          revisionId: selected.revisionId,
+          digest: selected.digest,
+        };
+        const current = await resolveEmployeeContentSource({
+          context: scope,
+          employeeId: run!.employee_id,
+          ownership: {
+            scope: 'personal',
+            organizationId: scope.organizationId,
+            ownerId: scope.actor.id,
+          },
+          ref: reference,
+          sql: tx,
+          lock: true,
+          allowDraft: false,
+        });
+        if (!current.dto.available)
+          throw new EmployeeContentError('source_changed');
+        selectedReferences.push({
+          reference,
+          fileName: selected.fileName,
+          purpose: selected.purpose,
+        });
+      }
+      // Explicitly selected current-Run pins are data, not permission to bind.
+      // Saving still requires the user's separate long-term reference intent.
+      return { ...content, selectedReferences };
+    },
   );
 }
 
