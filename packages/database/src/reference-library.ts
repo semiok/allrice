@@ -31,6 +31,10 @@ import {
   readContentPrincipal,
   type ContentIdentity,
 } from './content-maintenance.ts';
+import {
+  legacyReferenceAuthority,
+  assertLegacyReferenceRevision,
+} from './reference-company-templates.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 export class ReferenceLibraryError extends Error {
@@ -51,6 +55,7 @@ interface SourceRow {
   workspace_id: string;
   ownership: ContentOwnership;
   status: 'active' | 'archived';
+  legacy_company_asset_id: string | null;
 }
 interface FileRow {
   id: string;
@@ -139,11 +144,21 @@ export async function referenceSourceAccess(
   sql: Sql = getDatabase(),
   maintain = false,
   lockRead = false,
+  allowLegacyProcessing = false,
 ) {
   if (maintain || lockRead) await readContentPrincipal(context, sql, true);
+  const legacy = await legacyReferenceAuthority(
+    sql,
+    UuidSchema.parse(sourceId),
+    maintain || lockRead,
+  );
+  // Publication controls (including private-draft protection) remain in the
+  // existing company asset API, never a second set of Knowledge mutations.
+  if (legacy && maintain && !allowLegacyProcessing)
+    throw new DataAccessError('not_found');
   const [s] = await sql<
     SourceRow[]
-  >`select id,organization_id,workspace_id,ownership,status
+  >`select id,organization_id,workspace_id,ownership,status,legacy_company_asset_id
     from allrice_knowledge_sources where id=${UuidSchema.parse(sourceId)} and ownership is not null
     ${maintain ? sql`for update` : lockRead ? sql`for share` : sql``}`;
   if (!s) throw new DataAccessError('not_found');
@@ -157,7 +172,12 @@ export async function referenceSourceAccess(
   );
   if (!access.canRead || (maintain && !access.canMaintain))
     throw new DataAccessError('not_found');
-  return { source: s, ownership, access };
+  return {
+    source: s,
+    ownership,
+    access: legacy ? { ...access, canMaintain: false } : access,
+    legacy,
+  };
 }
 
 export async function listReferenceRevisions(
@@ -171,9 +191,11 @@ export async function listReferenceRevisions(
     throw new DataAccessError('authorization_denied');
   const sources = await sql<
     SourceRow[]
-  >`select id,organization_id,workspace_id,ownership,status from allrice_knowledge_sources
-    where ownership is not null and (organization_id=${context.organizationId} or ownership->>'scope'='platform')
-    and (${sourceId ?? null}::uuid is null or id=${sourceId ?? null}) order by updated_at desc,id`;
+  >`select s.id,s.organization_id,s.workspace_id,s.ownership,s.status,s.legacy_company_asset_id from allrice_knowledge_sources s
+    left join allrice_company_assets a on a.id=s.legacy_company_asset_id
+    where s.ownership is not null and (s.organization_id=${context.organizationId} or s.ownership->>'scope'='platform')
+    and (s.legacy_company_asset_id is null or a.state='published')
+    and (${sourceId ?? null}::uuid is null or s.id=${sourceId ?? null}) order by s.updated_at desc,s.id`;
   const result: ReferenceRevision[] = [];
   for (const s of sources) {
     const ownership = ContentOwnershipSchema.parse(s.ownership),
@@ -182,8 +204,15 @@ export async function listReferenceRevisions(
       continue;
     const rows =
       await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,r.checksum as manifest_digest,o.checksum,o.size_bytes,o.media_type,
+      r.legacy_company_revision_id,cr.digest as company_digest,
       p.state,p.failure,o.state as file_state from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id
-      join allrice_knowledge_processing p on p.revision_id=r.id where r.knowledge_source_id=${s.id} and r.status='published'
+      join allrice_knowledge_processing p on p.revision_id=r.id
+      left join allrice_company_assets a on a.id=r.legacy_company_asset_id
+      left join allrice_company_asset_publications cp on cp.asset_id=a.id and cp.revision_id=r.legacy_company_revision_id
+      left join allrice_company_asset_revisions cr on cr.id=cp.revision_id
+      where r.knowledge_source_id=${s.id} and r.status='published'
+      and (r.legacy_company_revision_id is null or (a.state='published' and cp.revision_id is not null
+        and (${!!sourceId} or cp.revision_id=a.published_revision_id)))
       order by r.revision desc ${sourceId ? sql`` : sql`limit 1`}`;
     for (const r of rows)
       result.push(
@@ -201,8 +230,18 @@ export async function listReferenceRevisions(
           status: s.status,
           processing: r.file_state === 'pending' ? 'uploading' : r.state,
           failure: r.failure,
-          canMaintain: access.canMaintain,
+          canMaintain: !s.legacy_company_asset_id && access.canMaintain,
+          canRetryProcessing: access.canMaintain,
           createdAt: r.created_at.toISOString(),
+          ...(s.legacy_company_asset_id
+            ? {
+                companyTemplate: {
+                  assetId: s.legacy_company_asset_id,
+                  revisionId: r.legacy_company_revision_id,
+                  digest: r.company_digest,
+                },
+              }
+            : {}),
           origin: r.artifact_snapshot
             ? {
                 fileName: r.artifact_snapshot.fileName,
@@ -228,12 +267,13 @@ export async function getReferenceFile(
   >`select knowledge_source_id,file_name,file_object_id
     from allrice_knowledge_revisions where id=${UuidSchema.parse(revisionId)} and file_object_id is not null and status='published'`;
   if (!r) throw new DataAccessError('not_found');
-  const { source } = await referenceSourceAccess(
+  const { source, legacy } = await referenceSourceAccess(
     context,
     r.knowledge_source_id,
     sql,
   );
   if (source.status !== 'active') throw new DataAccessError('not_found');
+  if (legacy) await assertLegacyReferenceRevision(sql, revisionId, legacy.id);
   const [o] = await sql<
     FileRow[]
   >`select * from allrice_storage_objects where id=${r.file_object_id} and state='ready' and deleted_at is null`;
@@ -714,7 +754,14 @@ export async function changeReference(
   const v = ReferenceActionSchema.parse(input),
     context = scoped(contextInput, v.workspaceId);
   return getDatabase().begin(async (tx) => {
-    const { source } = await referenceSourceAccess(context, sourceId, tx, true);
+    const { source, legacy } = await referenceSourceAccess(
+      context,
+      sourceId,
+      tx,
+      true,
+      false,
+      v.action === 'retry',
+    );
     const [prior] =
       await tx`select input from allrice_knowledge_reference_actions where source_id=${source.id} and actor_id=${context.actor.id} and request_id=${v.requestId}`;
     if (prior) {
@@ -723,11 +770,13 @@ export async function changeReference(
       return { sourceId: source.id };
     }
     const [r] =
-      await tx`select id,revision from allrice_knowledge_revisions where knowledge_source_id=${source.id} order by revision desc limit 1`;
+      await tx`select id,revision from allrice_knowledge_revisions where knowledge_source_id=${source.id}
+      and (${!legacy} or revision=${v.expectedRevision}) order by revision desc limit 1`;
     if (!r || r.revision !== v.expectedRevision)
       throw new ReferenceLibraryError('version_conflict');
     if (v.action === 'retry') {
       if (source.status !== 'active') throw new DataAccessError('not_found');
+      if (legacy) await assertLegacyReferenceRevision(tx, r.id, legacy.id);
       const rows =
         await tx`update allrice_knowledge_processing set state='saved',attempts=0,failure=null,updated_at=clock_timestamp()
         where revision_id=${r.id} and state='failed' returning revision_id`;

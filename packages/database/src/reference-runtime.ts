@@ -15,6 +15,7 @@ import {
   readContentPrincipal,
 } from './content-maintenance.ts';
 import { referenceSourceAccess } from './reference-library.ts';
+import { assertLegacyReferenceRevision } from './reference-company-templates.ts';
 import { embedKnowledgeText } from './memory/knowledge-retrieval.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
@@ -38,7 +39,7 @@ export async function readReferenceSelection(
       await sql`select knowledge_source_id from allrice_knowledge_revisions
       where id=${UuidSchema.parse(revisionId)} and file_object_id is not null and status='published'`;
     if (!locator) throw new ReferenceRuntimeError();
-    const { source, ownership } = await referenceSourceAccess(
+    const { source, ownership, legacy } = await referenceSourceAccess(
       context,
       locator.knowledge_source_id,
       sql,
@@ -46,6 +47,7 @@ export async function readReferenceSelection(
       lock,
     );
     if (source.status !== 'active') throw new ReferenceRuntimeError();
+    if (legacy) await assertLegacyReferenceRevision(sql, revisionId, legacy.id);
     const [r] =
       await sql`select * from allrice_knowledge_revisions where id=${revisionId}
       and knowledge_source_id=${source.id} and status='published' ${lock ? sql`for share` : sql``}`;

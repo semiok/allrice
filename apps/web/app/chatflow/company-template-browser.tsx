@@ -56,18 +56,20 @@ export function CompanyAssetRevisionView({
   headers,
   onChange,
   onPrepare,
+  initialRevisionId,
 }: {
   initial: CompanyAsset;
   base: string;
   headers: Record<string, string>;
   onChange?: (asset: CompanyAsset) => void;
   onPrepare?: (ref: CompanyDraftReference) => Promise<void>;
+  initialRevisionId?: string;
 }) {
   const [history, setHistory] = useState<z.infer<typeof historySchema> | null>(
     null,
   );
   const [selectedId, setSelectedId] = useState(
-    initial.publishedRevisionId ?? initial.latest.id,
+    initialRevisionId ?? initial.publishedRevisionId ?? initial.latest.id,
   );
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
   const [error, setError] = useState('');
@@ -96,7 +98,11 @@ export function CompanyAssetRevisionView({
     try {
       const result = historySchema.parse(
         await companyAssetJson(
-          companyAssetUrl(base, { assetId: initial.id, history: '1' }),
+          companyAssetUrl(base, {
+            assetId: initial.id,
+            history: '1',
+            revisionId: selectedId,
+          }),
           headers,
           { signal: controller.signal },
         ),
@@ -362,6 +368,7 @@ export function CompanyTemplateBrowser(props: {
   recommended?: boolean;
   employeeId?: string;
   taskText?: string;
+  title?: string;
 }) {
   if (!props.open) return null;
   return (
@@ -379,6 +386,7 @@ function Browser({
   recommended = false,
   employeeId,
   taskText = '',
+  title = '公司范本',
 }: Parameters<typeof CompanyTemplateBrowser>[0]) {
   const [view, setView] = useState(
     recommended && employeeId ? 'recommended' : 'all',
@@ -416,8 +424,8 @@ function Browser({
   }
   return (
     <DshDialog
-      ariaLabel="公司范本"
-      title="公司范本"
+      ariaLabel={title}
+      title={title}
       onClose={onClose}
       className={styles.dialog}
       bodyClassName={styles.body}

@@ -6,6 +6,31 @@ import { ReferenceLibrary } from '../app/chatflow/reference-library';
 import { SaveArtifactReference } from '../app/chatflow/save-artifact-reference';
 import { PlatformReferenceLibrary } from '../app/runtime-console/platform-reference-library';
 const params = new URLSearchParams(window.location.search);
+const fixtureHeaders = {};
+function ReferenceFixture() {
+  const [prepared, setPrepared] = useState('');
+  return (
+    <>
+      <output aria-label="已填写的范本引用">{prepared}</output>
+      <ReferenceLibrary
+        workspaceId={params.get('workspaceId')!}
+        headers={fixtureHeaders}
+        onClose={() => {}}
+        onPrepareTemplate={async (ref) =>
+          setPrepared(JSON.stringify(ref.selection))
+        }
+        initialReference={
+          params.has('sourceId')
+            ? {
+                sourceId: params.get('sourceId')!,
+                revisionId: params.get('revisionId')!,
+              }
+            : null
+        }
+      />
+    </>
+  );
+}
 function ArtifactFixture() {
   const [library, setLibrary] = useState(false);
   const workspaceId = params.get('workspaceId')!;
@@ -36,10 +61,6 @@ createRoot(document.getElementById('root')!).render(
   ) : params.get('platform') === '1' ? (
     <PlatformReferenceLibrary />
   ) : (
-    <ReferenceLibrary
-      workspaceId={params.get('workspaceId')!}
-      headers={{}}
-      onClose={() => {}}
-    />
+    <ReferenceFixture />
   ),
 );

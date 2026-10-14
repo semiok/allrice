@@ -2572,7 +2572,7 @@ suite(
         ).toBe(3);
         expect(
           await f.page
-            .getByRole('menuitem', { name: '公司范本', exact: true })
+            .getByRole('menuitem', { name: '参考资料', exact: true })
             .count(),
         ).toBe(1);
         expect(

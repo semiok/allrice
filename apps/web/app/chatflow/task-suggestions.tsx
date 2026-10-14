@@ -256,7 +256,7 @@ export function TaskSuggestions({
   }
   const footer: MenuEntry[] = [
     ...(onOpenCompanyTemplates
-      ? [{ id: 'company:templates', label: '公司范本' }]
+      ? [{ id: 'company:templates', label: '参考资料' }]
       : []),
     ...((snapshot?.length ?? 0) > commonTaskCount
       ? [
@@ -476,7 +476,7 @@ export function TaskSuggestions({
               <p>
                 {attachmentCount
                   ? `已选择 ${attachmentCount} 份资料。`
-                  : '可以直接填写要求，也可以选择资料或公司范本。'}
+                  : '可以直接填写要求，也可以选择参考资料。'}
                 选择资料或范本时，本次要求会先保存在输入框中。
               </p>
               {readinessHints(selected).length > 0 && (
@@ -504,7 +504,7 @@ export function TaskSuggestions({
                       if (prepare()) onOpenCompanyTemplates();
                     }}
                   >
-                    使用公司范本
+                    使用参考资料
                   </Button>
                 )}
               </div>
