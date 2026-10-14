@@ -481,6 +481,69 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).rejects.toThrow('test_retry_not_allowed');
     await retry.finish();
   }, 30000);
+  it('finishes an interrupted test while its real file publication holds the Run lock', async () => {
+    const f = await fileTestFixture();
+    const operation = await f.create('normalize');
+    let entered!: () => void, release!: () => void;
+    const writing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const put = f.storage.put.bind(f.storage);
+    const spy = vi
+      .spyOn(f.storage, 'put')
+      .mockImplementationOnce(async (...args) => {
+        entered();
+        await gate;
+        return put(...args);
+      });
+    const publication = f.publish(
+      operation,
+      JSON.stringify({
+        currency: 'CNY',
+        amountUnit: 'cent',
+        rows: [
+          { entryId: 'one', amountCents: 10000 },
+          { entryId: 'two', amountCents: 20000 },
+        ],
+      }),
+    );
+    await writing;
+    const completion = f.fail(f.test.id);
+    const outcomes = Promise.allSettled([publication, completion]);
+    try {
+      let waiting = false;
+      for (let n = 0; n < 100; n++) {
+        const rows = await fixture.db`select a.pid from pg_stat_activity a
+          join pg_locks l on l.pid=a.pid and l.relation='allrice_platform_employee_test_runs'::regclass
+          where a.datname=current_database() and a.wait_event_type='Lock' and a.query like '%run.execution_spec%'`;
+        if (rows.length) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+    const settled = await outcomes;
+    expect(
+      settled
+        .filter((r) => r.status === 'rejected')
+        .map((r) => String(r.reason)),
+    ).toEqual([]);
+    expect(settled.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    const result = await getEmployeeMethodTest(f.f.a.context, f.test.id);
+    expect(result).toMatchObject({
+      status: 'failed',
+      validationStatus: 'not_verified',
+      files: [{ stage: 'normalize' }],
+    });
+  }, 30000);
   it('binds two actual file versions to one private test, reconciles repeats, and rejects revoked publication replay', async () => {
     const f = await fileTestFixture();
     const [first, repeated] = await Promise.all([

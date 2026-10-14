@@ -614,6 +614,8 @@ async function finalizePlatformEmployeeTestRunInTransaction(
     finalizedByLabel: string;
   },
 ) {
+  // Finalization changes no key. Keep concurrent finalizers exclusive while
+  // allowing a publisher holding Run/Job locks to finish its test FK check.
   const tests = await transaction<TestRunRow[]>`
     select id, employee_id, revision_id, requested_by_label, status, input, purpose,
       output, frozen_runtime_profile, frozen_definition,
@@ -621,7 +623,7 @@ async function finalizePlatformEmployeeTestRunInTransaction(
       timeout_at, completed_at
     from allrice_platform_employee_test_runs
     where id = ${input.testRunId}
-    for update
+    for no key update
   `;
   const existing = tests[0];
   if (!existing) throw new Error('platform_employee_test_not_found');
@@ -791,7 +793,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
       where status = 'running'
         and timeout_at is not null and timeout_at <= now()
       order by timeout_at, id
-      for update skip locked
+      for no key update skip locked
       limit 100
     `;
     for (const staleTest of staleTests) {
