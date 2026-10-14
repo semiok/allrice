@@ -9,6 +9,7 @@ it.each([
   '请测试我的工作场景候选：金额汇总。',
   '请验证我的工作方法候选。',
   '网络中断了。请测试我的工作场景候选。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：请测试我的工作场景候选：金额汇总。',
   'Please test my workflow candidate.',
 ])('accepts a direct request for a private candidate test: %s', (text) =>
   expect(explicitEmployeeMethodTestIntent(text)).toBe(true),
@@ -35,6 +36,8 @@ it.each([
   '请移除我的工作场景候选：移除周度场景。',
   '上次连接失败后尚未保存修改，请继续未完成的移除操作。请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
   '刚才网络中断了。请保存我的工作方法候选：保留计算依据。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：请调整我的工作场景候选：金额汇总。去掉额外加固定 100 分的步骤，只将输入的两笔整数分相加，输出 totalCents JSON。保持场景 ID 和适用条件，保存候选即可，不测试、不启用。',
+  '上一轮请求超时，尚未保存修改。这次请继续此步骤：请更新我的工作方法候选。',
   'The previous request failed.\nPlease update my workflow candidate: check inputs.',
 ])('admits direct candidate authoring: %s', (text) =>
   expect(explicitEmployeeMethodIntent(text)).toBe(true),
@@ -106,6 +109,15 @@ it.each([
   '上次连接失败。\n    请更新我的工作场景候选：请移除每周回款场景。',
   '上次连接失败。\n\t请更新我的工作场景候选：请移除每周回款场景。',
   'The previous request failed.\n    Please update my workflow candidate.',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：请翻译：请调整我的工作场景候选。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：资料原文如下：请调整我的工作场景候选。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：\n> 请调整我的工作场景候选。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：\n```\n请调整我的工作场景候选。\n```',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：\n    请调整我的工作场景候选。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：“请调整我的工作场景候选。”',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：请调整我的工作场景候选。不要保存，只是讨论。',
+  '刚才连接中断，客户让我修改。现在只续办这一步：请调整我的工作场景候选。',
+  '现在只续办这一步：请调整我的工作场景候选。',
 ])('does not extract authorization from quoted or one-off work: %s', (text) =>
   expect(explicitEmployeeMethodIntent(text)).toBe(false),
 );
