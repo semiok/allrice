@@ -193,6 +193,8 @@ integration(
     it.each([
       'workspace.employee.method.inspect',
       'workspace.employee.method.save_candidate',
+      'workspace.employee.method.test',
+      'workspace.employee.method.test_status',
     ])(
       'keeps intrinsic method tool %s on the exact root and denies delegation',
       async (tool) => {
@@ -222,7 +224,7 @@ integration(
           'assistant_authority_denied',
         );
         const readOnly = await profileFixture({ tool, missing: 'write' });
-        if (tool.endsWith('.inspect'))
+        if (tool.endsWith('.inspect') || tool.endsWith('.test_status'))
           await expect(readOnly.configure()).resolves.toBeDefined();
         else
           await expect(readOnly.configure()).rejects.toThrow(
