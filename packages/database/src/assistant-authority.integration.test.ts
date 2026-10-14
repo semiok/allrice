@@ -56,6 +56,137 @@ integration(
       options: Parameters<typeof createAssistantAuthorityFixture>[1] = {},
     ) => createAssistantAuthorityFixture(fixture.db, options);
 
+    const profileTool = 'workspace.employee.profile.update';
+    const profileFixture = (
+      options: {
+        declared?: boolean;
+        missing?:
+          | 'instance'
+          | 'binding'
+          | 'write'
+          | 'owner'
+          | 'workspace'
+          | 'assignment';
+        general?: boolean;
+      } = {},
+    ) =>
+      authorityFixture({
+        configure: false,
+        toolNames: [
+          ...selectedTools,
+          ...(options.declared ? [profileTool] : []),
+        ],
+        allowedTools: [...selectedTools, profileTool],
+        snapshot: (value) => ({
+          ...value,
+          ...(options.missing === 'instance'
+            ? {}
+            : {
+                instance: {
+                  id: randomUUID(),
+                  assignmentId:
+                    options.missing === 'assignment'
+                      ? randomUUID()
+                      : value.assignment.id,
+                  organizationId: value.tenantContext.organizationId,
+                  workspaceId:
+                    options.missing === 'workspace'
+                      ? randomUUID()
+                      : value.tenantContext.workspaceId,
+                  ownerId:
+                    options.missing === 'owner'
+                      ? randomUUID()
+                      : value.assignment.userId,
+                  kind: options.general ? 'general' : 'custom',
+                  revision: 1,
+                  profile: { name: '小白' },
+                  creationSource: {
+                    kind: 'tenant_version',
+                    employeeVersionId: value.employee.versionId,
+                  },
+                  source: {
+                    kind: 'tenant_version',
+                    employeeVersionId: value.employee.versionId,
+                  },
+                },
+              }),
+          capabilitySnapshot: {
+            ...value.capabilitySnapshot,
+            grantedCapabilities:
+              value.capabilitySnapshot.grantedCapabilities.filter(
+                (c) => options.missing !== 'write' || c !== 'storage:write',
+              ),
+            bindings: {
+              ...value.capabilitySnapshot.bindings,
+              toolNames: [
+                ...selectedTools,
+                ...(options.missing === 'binding' ? [] : [profileTool]),
+              ],
+            },
+          },
+        }),
+      });
+
+    it.each([false, true])(
+      'keeps personal profile edits root-only even if declared=%s',
+      async (declared) => {
+        const f = await profileFixture({ declared });
+        await expect(f.configure()).resolves.toBeDefined();
+        await expect(
+          f.authorize('tool', [profileTool]),
+        ).resolves.toBeUndefined();
+        await expect(
+          f.runtime.provision({
+            ...f.base,
+            parentRunId: f.rootRunId,
+            delegationId: randomUUID(),
+            label: 'Cannot edit the owner profile',
+            text: 'Synthetic forbidden delegation',
+            tools: ['assistant.report', profileTool],
+          }),
+        ).rejects.toThrow('assistant_authority_denied');
+        const child = (
+          await f.runtime.provision({
+            ...f.base,
+            parentRunId: f.rootRunId,
+            delegationId: randomUUID(),
+            label: 'Read only child',
+            text: 'Synthetic read',
+            tools: ['web.fetch'],
+          })
+        ).instance;
+        await expect(
+          f.authorize('tool', [profileTool], {
+            ...f.task,
+            runId: child.runId,
+            parentRunId: f.rootRunId,
+          }),
+        ).rejects.toThrow('assistant_authority_denied');
+      },
+    );
+
+    it.each([
+      'instance',
+      'binding',
+      'write',
+      'owner',
+      'workspace',
+      'assignment',
+    ] as const)(
+      'rejects personal profile admission without %s authority',
+      async (missing) => {
+        const f = await profileFixture({ missing });
+        await expect(f.configure()).rejects.toThrow(
+          'assistant_authority_denied',
+        );
+      },
+    );
+
+    it('rejects a profile tool on a general employee even when declared', async () => {
+      const f = await profileFixture({ declared: true, general: true });
+      await expect(f.configure()).rejects.toThrow('assistant_authority_denied');
+    });
+
     const imageFixture = (
       options: {
         enabled?: boolean;

@@ -296,11 +296,33 @@ export async function assertAssistantAuthority(
       ),
       model,
     );
+  // The root also uses the assistant ledger for tool metering. Personal
+  // profile edits are frozen per Run, not published on the shared template;
+  // admit this exact root-only tool without making it delegable. Its Broker
+  // handler still checks the current instance, user request and write lease.
+  const instance =
+    snapshot.data.schemaVersion === 2 ? snapshot.data.instance : undefined;
+  const rootProfileTool =
+    task.runId === task.rootRunId &&
+    task.parentRunId === null &&
+    ['configure', 'tool'].includes(input.phase) &&
+    instance?.kind === 'custom' &&
+    instance.ownerId === root.owner_id &&
+    instance.organizationId === task.scope.organizationId &&
+    instance.workspaceId === task.scope.workspaceId &&
+    instance.assignmentId === root.employee_assignment_id &&
+    snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
+      'storage:write',
+    );
   requireAuthority(
     frozenTools.includes('assistant.delegate') &&
       declaredTools.includes('assistant.delegate') &&
       tools.every(
-        (tool) => frozenTools.includes(tool) && declaredTools.includes(tool),
+        (tool) =>
+          frozenTools.includes(tool) &&
+          (tool === 'workspace.employee.profile.update'
+            ? rootProfileTool
+            : declaredTools.includes(tool)),
       ),
   );
 
