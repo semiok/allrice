@@ -1599,6 +1599,13 @@ div.composerAttachmentMenu,
   color: var(--dsw-alias-label-primary);
 }
 
+.userQuestionContent {
+  overflow-y: auto;
+  flex: 1 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
 .userQuestionHeader {
   display: flex;
   flex: 0 0 auto;
@@ -1623,6 +1630,8 @@ div.composerAttachmentMenu,
   font-size: 16px;
   font-weight: 550;
   line-height: 23px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .userQuestionHeader > strong {
@@ -1632,10 +1641,7 @@ div.composerAttachmentMenu,
 }
 
 .userQuestionBody {
-  overflow-y: auto;
-  min-height: 0;
   padding: 0 12px;
-  overscroll-behavior: contain;
 }
 
 .userQuestionDetail {
