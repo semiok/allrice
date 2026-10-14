@@ -1,5 +1,30 @@
 import { expect, it } from 'vitest';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+import { requireSuccessfulCloudCommand } from '../cloud-runner/tool-result.js';
+import type { RiceToolExecutionInput } from '../tool-broker/types.js';
+
+it('delivers output-limit failures as native isError results instead of successful JSON', async () => {
+  await nativeBrokerRoundtrip({
+    canonicalName: 'python.execute',
+    wireName: 'python_execute',
+    args: { script: 'print("synthetic")' },
+    invalidArgs: { script: 'not executed', location: 'host' },
+    expectedToolError: '标准输出超出本次 outputBytes 上限',
+    onToolCall: async (call) => {
+      requireSuccessfulCloudCommand(
+        { context: { runId: 'synthetic' }, call } as RiceToolExecutionInput,
+        {
+          status: 'failed',
+          reason: 'output_limit',
+          exitCode: 122,
+          stopped: true,
+          cleanupConfirmed: true,
+        },
+      );
+      throw Error('failed command unexpectedly returned');
+    },
+  });
+}, 45_000);
 
 it('exposes canonical Python location to the actual DSH model and preserves omitted runtime fields', async () => {
   await nativeBrokerRoundtrip({
