@@ -1,3 +1,4 @@
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { z } from 'zod';
 
 // The DSH DSL projects shape only. These bounds run before JSON-RPC; the
@@ -127,7 +128,7 @@ export const cloudNativeTools = [
     wireName: 'cloud_process_execute',
     description:
       'Run an exact approved script in the existing no-network SaaS gVisor sandbox. Omit language to retain Node 22; language:"python" selects fixed Python 3.11, Matplotlib/Agg, pandas, openpyxl, Pillow and the configured Noto CJK default for Chinese charts. Office libraries are not guaranteed here: use workspace_export_create.python for DOCX/PPTX creation and reopen checks, or workspace_document_read for later inspection. Read only explicitly selected input/ CSV/XLSX copies, treat missing/nonnumeric values explicitly, and save actual output/ PNG bytes with format:"png" and .png path/fileName. The trusted platform decoder validates PNG before returning an immutable objectId/checksum/versionId for native preview/download or embedding through the same Office Skill. Supply exactly one of inline script or frozenScript; frozenScript:{skill,path} retains the original Run-frozen Node bytes. No Bridge, host files or network access. Approval binds exact language/script, objects/checksums, outputs and limits. A proposal is not execution success.',
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       CloudNativeArgumentsSchema.parse(args);
@@ -249,7 +250,7 @@ cloudNativeTools.push({
   wireName: 'python_execute',
   description:
     'Execute Python computation and CJK charts, preferring the ready managed Bridge in auto mode and using authorized cloud only when local cannot carry the task. Omitted language means Python. location:auto/local/cloud is top-level. Busy/preparing local runtimes wait; explicit local, local-only data and unknown outcomes must never replay in cloud. Reuse fixed Python/Matplotlib/Agg/pandas/openpyxl/Pillow and the configured Noto CJK default, without installing dependencies, network access or host paths. Do not assume python-docx/python-pptx here; create and reopen Office files within workspace_export_create.python, or inspect existing files with workspace_document_read. Read exact input/ object copies; declare actual output/ PNG/JSON/CSV/TXT files or no files for stdout-only computation. Real checker-approved PNG bytes return immutable objectId/checksum/versionId for preview, download and embedding through the same Office Skill. Approval binds the exact original call and frozen authority.',
-  timeoutMs: 180000,
+  timeoutMs: managedToolWaitTimeoutMs,
   isConcurrencySafe: false,
   validateArguments(args) {
     PythonNativeArgumentsSchema.parse(args);

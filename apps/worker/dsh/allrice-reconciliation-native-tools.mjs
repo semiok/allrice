@@ -1,3 +1,4 @@
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { z } from 'zod';
 
 export const ReconciliationNativeArgumentsSchema = z
@@ -14,7 +15,7 @@ export const reconciliationNativeTools = [
     wireName: 'workspace_reconciliation_export',
     description:
       "Create a real XLSX from this Run's confirmed cloud reconciliation JSON artifact using deterministic integer-cent data, not model arithmetic. artifactId is the JSON versionId returned by cloud_process_execute. Returns an immutable workbook and actual downloadUrl to include in the final answer. Optional parentObjectId creates a reviewed version lineage, never overwrites old bytes.",
-    timeoutMs: 65000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       ReconciliationNativeArgumentsSchema.parse(args);
