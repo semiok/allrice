@@ -11,6 +11,9 @@ it.each([
   '请保存我的工作方法候选：处理 Excel 时不要修改原始文件。',
   '请重命名我的工作场景候选：把周度改为周度回款。',
   '请移除我的工作场景候选：移除周度场景。',
+  '上次连接失败后尚未保存修改，请继续未完成的移除操作。请更新我的工作场景候选：请移除每周回款场景。请解除月度资料引用。',
+  '刚才网络中断了。请保存我的工作方法候选：保留计算依据。',
+  'The previous request failed.\nPlease update my workflow candidate: check inputs.',
 ])('admits direct candidate authoring: %s', (text) =>
   expect(explicitEmployeeMethodIntent(text)).toBe(true),
 );
@@ -19,6 +22,18 @@ it.each([
   ['scene', '请停用我的工作场景：请停用周度场景。'],
   ['reference', '请更新我的工作场景候选。请解除旧资料引用。'],
   ['reference', 'Please update my work method: replace this reference.'],
+  [
+    'scene',
+    '上次连接失败后尚未保存修改。请更新我的工作场景候选：请移除每周回款场景。',
+  ],
+  [
+    'reference',
+    '上次连接失败后尚未保存修改。请更新我的工作场景候选：请解除月度资料引用。',
+  ],
+  [
+    'reference',
+    'The request failed.\nPlease update my work method: replace this reference.',
+  ],
 ] as const)('allows direct %s removal intent: %s', (kind, text) => {
   expect(explicitEmployeeMethodRemovalIntent(text, kind)).toBe(true);
 });
@@ -55,6 +70,20 @@ it.each([
   '请不要更新工作方法',
   '请修改《工作方法》这篇文章的错别字。',
   '请修改工作方法这篇文章的错别字。',
+  '网络中断了。\n> 请保存我的工作场景候选。',
+  '网络中断了。\n```\n请保存我的工作场景候选。\n```',
+  '上次没有保存。资料原文如下：\n请更新我的工作场景候选。',
+  '请翻译下文：\n请保存我的工作场景候选。',
+  'Please translate this message:\nPlease update my workflow candidate.',
+  '请解释下面的提示：请保存工作场景候选。请更新工作方法。',
+  '上次网络中断。请保存我的工作场景候选。不要保存，只是讨论。',
+  '请翻译下文：\n第一段是背景。\n\n请更新我的工作场景候选：请移除每周回款场景。',
+  '客户的原话是：\n请更新我的工作场景候选：请移除每周回款场景。',
+  '请翻译下面这段话。\n请更新我的工作场景候选：请移除每周回款场景。',
+  '上次连接失败后客户说：请更新我的工作场景候选：请移除每周回款场景。',
+  '上次连接失败。\n    请更新我的工作场景候选：请移除每周回款场景。',
+  '上次连接失败。\n\t请更新我的工作场景候选：请移除每周回款场景。',
+  'The previous request failed.\n    Please update my workflow candidate.',
 ])('does not extract authorization from quoted or one-off work: %s', (text) =>
   expect(explicitEmployeeMethodIntent(text)).toBe(false),
 );
