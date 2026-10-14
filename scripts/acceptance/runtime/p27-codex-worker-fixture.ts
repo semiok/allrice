@@ -1,6 +1,6 @@
 import { withFixturePlatformAdministrator } from './fixture-platform-authority.ts';
 /** One isolated ordinary Codex Worker task. Preparation never executes a model or reads credentials. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   PromptImageAttachment,
   RequestContext,
@@ -49,6 +49,8 @@ export async function createP27CodexWorkerFixture(
     imageGeneration?: boolean;
     /** Exercise platform image tools and the production assistant controller together. */
     imageGenerationAssistants?: boolean;
+    /** Synthetic current-schema instance/Worker wiring regression. */
+    personalProfile?: 'writable' | 'read_only';
   } = {},
 ) {
   const runLimits = options.imageGeneration
@@ -60,6 +62,11 @@ export async function createP27CodexWorkerFixture(
     'P27_CODEX_WORKER_MIGRATION_CHECKPOINT_INVALID',
   );
   requireFixture(!owned, 'P27_CODEX_WORKER_FIXTURE_ALREADY_OWNED');
+  requireFixture(
+    !options.personalProfile ||
+      (options.allowCiDatabase === true && !options.throughMigration),
+    'P27_PROFILE_REQUIRES_CURRENT_SYNTHETIC_FIXTURE',
+  );
   requireFixture(
     !options.imageGenerationAssistants || options.imageGeneration === true,
     'P27_IMAGE_ASSISTANTS_REQUIRE_IMAGES',
@@ -256,7 +263,9 @@ export async function createP27CodexWorkerFixture(
           ]
         : options.syntheticImagesWithAssistants
           ? ['assistant.delegate', 'assistant.report']
-          : [],
+          : options.personalProfile === 'writable'
+            ? ['workspace.export.create']
+            : [],
       runtimePolicy: {
         harness: 'dsh',
         provider: 'openai-codex',
@@ -271,20 +280,23 @@ export async function createP27CodexWorkerFixture(
         dataScopes: ['workspace'],
         connectorIdentityModes: ['user'],
         approvalPolicy: 'confirm_side_effects',
-        deniedCapabilities: options.imageGeneration
-          ? ['secret:use', 'automation:write', 'network:outbound']
-          : [
-              'secret:use',
-              'storage:read',
-              'storage:write',
-              'automation:write',
-              'network:outbound',
-            ],
+        deniedCapabilities:
+          options.imageGeneration || options.personalProfile === 'writable'
+            ? ['secret:use', 'automation:write', 'network:outbound']
+            : [
+                'secret:use',
+                'storage:read',
+                'storage:write',
+                'automation:write',
+                'network:outbound',
+              ],
       },
     });
     const checksum = config.employeeManifestChecksum(manifest);
     await db.begin(async (tx) => {
       await tx`insert into allrice_users(id,email,display_name,password_hash) values(${ownerId},${`${ownerId}@example.test`},'P27 isolated','not-login')`;
+      if (options.personalProfile)
+        await tx`insert into allrice_sessions(id,user_id,token_hash,expires_at) values(${context.sessionId!},${ownerId},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
       await tx`insert into allrice_organizations(id,slug,name) values(${organizationId},${`p27-codex-worker-${organizationId}`},'P27 isolated')`;
       await tx`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${organizationId},'synthetic','P27 isolated')`;
       await tx`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role) values(${membershipId},${organizationId},${workspaceId},${ownerId},'admin')`;
@@ -327,6 +339,16 @@ export async function createP27CodexWorkerFixture(
     );
     let preparing = false;
     let attempted = false;
+    const personalInstance = options.personalProfile
+      ? await (
+          await import('../../../packages/database/src/employees/employee-instances.ts')
+        ).createEmployeeInstance(context, {
+          workspaceId,
+          assignmentId,
+          requestId: randomUUID(),
+          profile: { name: '小白', expressionStyle: 'structured' },
+        })
+      : null;
     async function prepare(prompt: string, images?: PromptImageAttachment[]) {
       requireFixture(
         !closed && !preparing,
@@ -350,6 +372,8 @@ export async function createP27CodexWorkerFixture(
         await db.begin(async (tx) => {
           await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
             values(${sessionId},${organizationId},${workspaceId},${ownerId},'P27 isolated',${assignmentId},${employeeVersionId})`;
+          if (personalInstance)
+            await tx`update allrice_chat_sessions set employee_instance_id=${personalInstance.id} where id=${sessionId}`;
           await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
             values(${userMessageId},${organizationId},${workspaceId},${sessionId},${ownerId},'user',${tx.json({ text: prompt, citations: [] })}),
               (${assistantMessageId},${organizationId},${workspaceId},${sessionId},${ownerId},'assistant','{"text":"","citations":[]}')`;
