@@ -102,7 +102,7 @@ function tree(status = 'cancel_requested') {
     budgets: [],
   };
 }
-function event(question = false) {
+function event(question: boolean | string | string[] = false) {
   return {
     schemaVersion: 3,
     eventId: 'event-1',
@@ -121,15 +121,21 @@ function event(question = false) {
           type: 'session/user-question',
           payload: {
             questionId: 'question-1',
-            questions: [
-              {
-                id: 'q1',
-                question: '确认范围？',
-                header: '范围',
-                options: [{ label: '只读检查', description: '不修改文件' }],
-                multiSelect: false,
-              },
-            ],
+            questions: (Array.isArray(question)
+              ? question
+              : [typeof question === 'string' ? question : '确认范围？']
+            ).map((text, index) => ({
+              id: `q${index + 1}`,
+              question: text,
+              header: '范围',
+              options: [
+                { label: '只读检查', description: '不修改文件' },
+                ...(typeof question !== 'boolean'
+                  ? [{ label: '暂不执行' }]
+                  : []),
+              ],
+              multiSelect: false,
+            })),
           },
         }
       : null,
@@ -248,12 +254,13 @@ suite(
         uploadPending?: boolean;
         bridgeFiles?: boolean;
         running?: boolean;
-        question?: boolean;
+        question?: boolean | string | string[];
         delayHistoryB?: boolean;
         immediateReply?: boolean;
         longHistory?: boolean;
         settled?: 'failed' | 'canceled';
         width?: number;
+        height?: number;
         workspaceFiles?: WorkspaceFile[];
         taskSuggestions?: TaskSuggestionDisplay[];
         nextSteps?: TaskNextSteps;
@@ -600,7 +607,10 @@ suite(
         throw Error('Loopback fixture not listening');
       const origin = `http://127.0.0.1:${address.port}`;
       const context: BrowserContext = await browser.newContext({
-        viewport: { width: options.width ?? 1440, height: 1000 },
+        viewport: {
+          width: options.width ?? 1440,
+          height: options.height ?? 1000,
+        },
         hasTouch: (options.width ?? 1440) < 760,
         ...(process.env.ALLRICE_TEST_DEV_STORAGE_STATE
           ? { storageState: process.env.ALLRICE_TEST_DEV_STORAGE_STATE }
@@ -2986,6 +2996,135 @@ suite(
         const before = readsB();
         await f.respond(0);
         expect(readsB()).toBe(before);
+        expect(f.writes).toHaveLength(1);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }, 15_000);
+    it.each([
+      [320, 568],
+      [390, 844],
+      [1440, 900],
+    ])(
+      'long confirmation at %ipx by %ipx keeps the whole question and both choices operable',
+      async (width, height) => {
+        const question =
+          '是否采用这份准确版本的工作方法？\n' +
+          '逐笔核对输入，保留原始记录，汇总全部金额并标明单位。'.repeat(32) +
+          '\n版本标识：' +
+          '0123456789abcdef'.repeat(12);
+        const f = await fixture({ running: true, question, width, height });
+        try {
+          const heading = f.page.getByRole('heading', {
+            name: question,
+            exact: true,
+          });
+          expect(await heading.textContent()).toBe(question);
+          const decline = f.page.getByRole('radio', {
+            name: '暂不执行',
+            exact: true,
+          });
+          await decline.click({ timeout: 3000 });
+          expect(await decline.getAttribute('aria-checked')).toBe('true');
+          const approve = f.page.getByRole('radio', { name: /只读检查/ });
+          await approve.click();
+          expect(await approve.getAttribute('aria-checked')).toBe('true');
+          expect(await decline.getAttribute('aria-checked')).toBe('false');
+          const overflow = await heading.evaluate((el) => ({
+            width: el.clientWidth,
+            scrollWidth: el.scrollWidth,
+          }));
+          expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.width + 1);
+          await f.page
+            .getByRole('button', { name: '提交并继续', exact: true })
+            .click();
+          await f.waitPending(1);
+          expect(f.pending[0]!.body.userQuestionAnswer).toEqual({
+            questionId: 'question-1',
+            answers: [{ id: 'q1', selected: ['只读检查'] }],
+          });
+          expect(f.writes).toHaveLength(1);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      15_000,
+    );
+    it('switching long questions reveals each heading and preserves each answer', async () => {
+      const questions = ['第一题：', '第二题：'].map(
+        (title) => title + '核对全部输入，保留原始资料与检查依据。'.repeat(50),
+      );
+      const f = await fixture({
+        running: true,
+        question: questions,
+        width: 390,
+        height: 568,
+      });
+      try {
+        const expectTop = async (index: number) => {
+          const heading = f.page.getByRole('heading', {
+            name: questions[index],
+            exact: true,
+          });
+          const position = await heading.evaluate((el) => {
+            const scroll = el.closest('[class*="userQuestionContent"]')!;
+            return {
+              scrollTop: scroll.scrollTop,
+              headingTop: el.getBoundingClientRect().top,
+              contentTop: scroll.getBoundingClientRect().top,
+              contentBottom: scroll.getBoundingClientRect().bottom,
+            };
+          });
+          expect(position.scrollTop).toBe(0);
+          expect(position.headingTop).toBeGreaterThanOrEqual(
+            position.contentTop,
+          );
+          expect(position.headingTop).toBeLessThan(position.contentBottom);
+        };
+        await f.page.getByRole('radio', { name: /只读检查/ }).click();
+        await f.page
+          .getByRole('button', { name: '下一题', exact: true })
+          .click();
+        await expectTop(1);
+        await f.page
+          .getByRole('radio', { name: '暂不执行', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '上一题', exact: true })
+          .click();
+        await expectTop(0);
+        expect(
+          await f.page
+            .getByRole('radio', { name: /只读检查/ })
+            .getAttribute('aria-checked'),
+        ).toBe('true');
+        await f.page
+          .getByRole('button', { name: '下一题', exact: true })
+          .click();
+        await expectTop(1);
+        expect(
+          await f.page
+            .getByRole('radio', { name: '暂不执行', exact: true })
+            .getAttribute('aria-checked'),
+        ).toBe('true');
+        await f.page
+          .getByRole('button', { name: '提交并继续', exact: true })
+          .click();
+        await f.waitPending(1);
+        expect(f.pending[0]!.body.userQuestionAnswer).toEqual({
+          questionId: 'question-1',
+          answers: [
+            { id: 'q1', selected: ['只读检查'] },
+            { id: 'q2', selected: ['暂不执行'] },
+          ],
+        });
+        expect(
+          await f.page
+            .getByRole('radio', { name: '暂不执行', exact: true })
+            .isDisabled(),
+        ).toBe(true);
         expect(f.writes).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {

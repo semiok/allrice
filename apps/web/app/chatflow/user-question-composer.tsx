@@ -136,110 +136,115 @@ export function UserQuestionComposer({
         aria-labelledby={`user-question-${pending.questionId}-${index}`}
         className={styles.userQuestionCard}
       >
-        <header className={styles.userQuestionHeader}>
-          <div>
-            <span>{question.header ?? 'Rice 需要你确认'}</span>
-            <h2 id={`user-question-${pending.questionId}-${index}`}>
-              {question.question}
-            </h2>
-          </div>
-          {questions.length > 1 ? (
-            <strong>
-              {index + 1} / {questions.length}
-            </strong>
-          ) : null}
-        </header>
-
-        <div className={styles.userQuestionBody}>
-          {question.detail ? (
-            <div className={styles.userQuestionDetail}>
-              <AssistantMarkdown text={question.detail} />
+        <div
+          className={styles.userQuestionContent}
+          key={`${pending.questionId}-${index}`}
+        >
+          <header className={styles.userQuestionHeader}>
+            <div>
+              <span>{question.header ?? 'Rice 需要你确认'}</span>
+              <h2 id={`user-question-${pending.questionId}-${index}`}>
+                {question.question}
+              </h2>
             </div>
-          ) : null}
-          <div
-            aria-label={question.question}
-            className={styles.userQuestionOptions}
-            role={question.multiSelect ? 'group' : 'radiogroup'}
-          >
-            {(question.options ?? []).map((option, optionIndex) => {
-              const selected = draft.selected.includes(option.label);
-              const display = recommendedLabel(option.label);
-              return (
-                <button
-                  aria-checked={selected}
-                  className={`${styles.userQuestionOption} ${
-                    selected ? styles.userQuestionOptionSelected : ''
-                  }`}
-                  disabled={busy}
-                  key={`${option.label}-${optionIndex}`}
-                  onClick={() => {
-                    if (question.multiSelect) {
-                      replaceDraft({
-                        ...draft,
-                        selected: selected
-                          ? draft.selected.filter(
-                              (label) => label !== option.label,
-                            )
-                          : [...draft.selected, option.label],
-                        skipped: false,
-                      });
-                    } else {
-                      replaceDraft({
-                        selected: [option.label],
-                        custom: '',
-                        skipped: false,
-                      });
-                    }
-                  }}
-                  role={question.multiSelect ? 'checkbox' : 'radio'}
-                  type="button"
-                >
-                  <i aria-hidden="true">
-                    {question.multiSelect
-                      ? selected
-                        ? '✓'
-                        : ''
-                      : optionIndex + 1}
-                  </i>
-                  <span>
-                    <strong>{display.label}</strong>
-                    {display.recommended ? <em>推荐</em> : null}
-                    {option.description ? (
-                      <small>{option.description}</small>
-                    ) : null}
-                  </span>
-                </button>
-              );
-            })}
+            {questions.length > 1 ? (
+              <strong>
+                {index + 1} / {questions.length}
+              </strong>
+            ) : null}
+          </header>
+
+          <div className={styles.userQuestionBody}>
+            {question.detail ? (
+              <div className={styles.userQuestionDetail}>
+                <AssistantMarkdown text={question.detail} />
+              </div>
+            ) : null}
+            <div
+              aria-label={question.question}
+              className={styles.userQuestionOptions}
+              role={question.multiSelect ? 'group' : 'radiogroup'}
+            >
+              {(question.options ?? []).map((option, optionIndex) => {
+                const selected = draft.selected.includes(option.label);
+                const display = recommendedLabel(option.label);
+                return (
+                  <button
+                    aria-checked={selected}
+                    className={`${styles.userQuestionOption} ${
+                      selected ? styles.userQuestionOptionSelected : ''
+                    }`}
+                    disabled={busy}
+                    key={`${option.label}-${optionIndex}`}
+                    onClick={() => {
+                      if (question.multiSelect) {
+                        replaceDraft({
+                          ...draft,
+                          selected: selected
+                            ? draft.selected.filter(
+                                (label) => label !== option.label,
+                              )
+                            : [...draft.selected, option.label],
+                          skipped: false,
+                        });
+                      } else {
+                        replaceDraft({
+                          selected: [option.label],
+                          custom: '',
+                          skipped: false,
+                        });
+                      }
+                    }}
+                    role={question.multiSelect ? 'checkbox' : 'radio'}
+                    type="button"
+                  >
+                    <i aria-hidden="true">
+                      {question.multiSelect
+                        ? selected
+                          ? '✓'
+                          : ''
+                        : optionIndex + 1}
+                    </i>
+                    <span>
+                      <strong>{display.label}</strong>
+                      {display.recommended ? <em>推荐</em> : null}
+                      {option.description ? (
+                        <small>{option.description}</small>
+                      ) : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <textarea
+              aria-label="自定义答案"
+              className={styles.userQuestionCustom}
+              disabled={busy}
+              onChange={(event) =>
+                replaceDraft({
+                  ...draft,
+                  selected: question.multiSelect ? draft.selected : [],
+                  custom: event.target.value,
+                  skipped: false,
+                })
+              }
+              onKeyDown={(event) => {
+                if (
+                  event.key !== 'Enter' ||
+                  event.shiftKey ||
+                  event.nativeEvent.isComposing
+                )
+                  return;
+                event.preventDefault();
+                continueFlow();
+              }}
+              placeholder={
+                question.options?.length ? '或者输入其他答案' : '输入你的答案'
+              }
+              rows={2}
+              value={draft.custom}
+            />
           </div>
-          <textarea
-            aria-label="自定义答案"
-            className={styles.userQuestionCustom}
-            disabled={busy}
-            onChange={(event) =>
-              replaceDraft({
-                ...draft,
-                selected: question.multiSelect ? draft.selected : [],
-                custom: event.target.value,
-                skipped: false,
-              })
-            }
-            onKeyDown={(event) => {
-              if (
-                event.key !== 'Enter' ||
-                event.shiftKey ||
-                event.nativeEvent.isComposing
-              )
-                return;
-              event.preventDefault();
-              continueFlow();
-            }}
-            placeholder={
-              question.options?.length ? '或者输入其他答案' : '输入你的答案'
-            }
-            rows={2}
-            value={draft.custom}
-          />
         </div>
 
         <footer className={styles.userQuestionFooter}>
