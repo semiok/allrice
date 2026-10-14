@@ -15,8 +15,7 @@ import {
   hasNativeViewport,
 } from './native-document-preview';
 import { DocumentToolbar, DocumentVersions } from './document-reader';
-import { WorkAdoption } from './work-adoption';
-import { CompanyTemplatePublisher } from './company-template-publisher';
+import { SaveArtifactReference } from './save-artifact-reference';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
@@ -925,25 +924,13 @@ function ArtifactReview({
             {!readOnly &&
               !toolResult &&
               ['document', 'plan', 'file'].includes(artifact.kind) && (
-                <CompanyTemplatePublisher
+                <SaveArtifactReference
                   key={artifact.version.id}
                   workspaceId={workspaceId}
                   headers={tenantHeaders}
                   versionId={artifact.version.id}
                   fileName={artifact.version.fileName}
-                />
-              )}
-            {!readOnly &&
-              !toolResult &&
-              artifact.provenance.runId &&
-              ['document', 'plan', 'file'].includes(artifact.kind) && (
-                <WorkAdoption
-                  key={'adoption-' + artifact.version.id}
-                  workspaceId={workspaceId}
-                  headers={tenantHeaders}
-                  versionId={artifact.version.id}
-                  fileName={artifact.version.fileName}
-                  runId={artifact.provenance.runId}
+                  version={artifact.version.version}
                 />
               )}
           </DocumentToolbar>

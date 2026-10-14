@@ -3,14 +3,17 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { ContentOwnershipSchema } from './content-maintenance.ts';
 
+// PostgreSQL UUID identity is case-insensitive; JSON ownership and dedup keys must agree.
+const ReferenceInputUuidSchema = UuidSchema.transform((id) => id.toLowerCase());
+
 export const ReferenceUploadInputSchema = z
   .object({
-    workspaceId: UuidSchema,
-    requestId: UuidSchema,
-    sourceId: UuidSchema.optional(),
+    workspaceId: ReferenceInputUuidSchema,
+    requestId: ReferenceInputUuidSchema,
+    sourceId: ReferenceInputUuidSchema.optional(),
     expectedRevision: z.number().int().positive().optional(),
     scope: z.enum(['personal', 'department', 'company', 'platform']),
-    departmentId: UuidSchema.optional(),
+    departmentId: ReferenceInputUuidSchema.optional(),
     fileName: z.string().trim().min(1).max(160),
     purpose: z.string().trim().max(1000).default(''),
     mediaType: z.string().min(1).max(255),
@@ -24,6 +27,37 @@ export const ReferenceUploadInputSchema = z
       c.addIssue({ code: 'custom', message: '部门资料需要指定部门' });
   });
 export type ReferenceUploadInput = z.infer<typeof ReferenceUploadInputSchema>;
+export const ReferenceArtifactSaveInputSchema = z
+  .object({
+    workspaceId: ReferenceInputUuidSchema,
+    requestId: ReferenceInputUuidSchema,
+    artifactVersionId: ReferenceInputUuidSchema,
+    scope: z.enum(['personal', 'department', 'company']).default('personal'),
+    departmentId: ReferenceInputUuidSchema.optional(),
+    purpose: z.string().trim().max(1000).default(''),
+  })
+  .strict()
+  .superRefine((v, c) => {
+    if ((v.scope === 'department') !== !!v.departmentId)
+      c.addIssue({ code: 'custom', message: '部门资料需要指定部门' });
+  });
+export type ReferenceArtifactSaveInput = z.infer<
+  typeof ReferenceArtifactSaveInputSchema
+>;
+export const ReferenceSaveResultSchema = z
+  .object({
+    sourceId: UuidSchema,
+    revisionId: UuidSchema,
+  })
+  .strict();
+export const ReferenceLibraryOptionsSchema = z.object({
+  workspaceId: UuidSchema,
+  platformMaintainer: z.boolean(),
+  maintenanceLevel: z.enum(['personal', 'department', 'company']),
+  writable: z.boolean(),
+  departmentId: UuidSchema.nullable(),
+  departments: z.array(z.object({ id: UuidSchema, name: z.string() })),
+});
 export const ReferenceProcessingStateSchema = z.enum([
   'uploading',
   'saved',
@@ -48,6 +82,15 @@ export const ReferenceRevisionSchema = z
     failure: z.string().nullable(),
     canMaintain: z.boolean(),
     createdAt: TimestampSchema,
+    origin: z
+      .object({
+        fileName: z.string(),
+        version: z.number().int().positive(),
+        checksum: ChecksumSchema,
+      })
+      .strict()
+      .nullable()
+      .default(null),
   })
   .strict();
 export type ReferenceRevision = z.infer<typeof ReferenceRevisionSchema>;

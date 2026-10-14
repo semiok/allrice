@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, ReferenceRevision } from '@allrice/contracts';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import * as client from '../../../../packages/database/src/core/client.ts';
+import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import {
   createAssistantFixtureDatabase,
   assistantFixtureStorage,
@@ -23,6 +24,10 @@ import {
 } from '../../../../packages/database/src/organization-administration.ts';
 import { processNextReference } from '../../../worker/src/reference-processing.ts';
 import { GET as list, POST as upload } from '../api/v1/references/route';
+import {
+  GET as saveOptions,
+  POST as saveArtifact,
+} from '../api/v1/references/artifacts/route';
 import { POST as action } from '../api/v1/references/[id]/route';
 import { GET as preview } from '../api/v1/references/revisions/[id]/preview/route';
 import { GET as download } from '../api/v1/references/revisions/[id]/download/route';
@@ -54,6 +59,7 @@ suite(
       readerToken: string;
     const failures: string[] = [];
     beforeAll(async () => {
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       f = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       ports.storage.mockReturnValue(assistantFixtureStorage(f.db));
@@ -104,7 +110,10 @@ suite(
         return token === adminToken
           ? authenticatePlatformSession(token)
           : authenticateSession(token, {
-              workspaceId: company.defaultWorkspaceId,
+              workspaceId:
+                req.headers.get('x-workspace-id') ??
+                new URL(req.url).searchParams.get('workspaceId') ??
+                company.defaultWorkspaceId,
             });
       });
       const require = createRequire(import.meta.url),
@@ -157,17 +166,21 @@ suite(
                   ? req.method === 'POST'
                     ? await upload(request)
                     : await list(request)
-                  : parts[4] === 'revisions'
-                    ? parts[6] === 'preview'
-                      ? await preview(request, {
-                          params: Promise.resolve({ id: parts[5]! }),
-                        })
-                      : await download(request, {
-                          params: Promise.resolve({ id: parts[5]! }),
-                        })
-                    : await action(request, {
-                        params: Promise.resolve({ id: parts[4]! }),
-                      });
+                  : parts[4] === 'artifacts'
+                    ? req.method === 'POST'
+                      ? await saveArtifact(request)
+                      : await saveOptions(request)
+                    : parts[4] === 'revisions'
+                      ? parts[6] === 'preview'
+                        ? await preview(request, {
+                            params: Promise.resolve({ id: parts[5]! }),
+                          })
+                        : await download(request, {
+                            params: Promise.resolve({ id: parts[5]! }),
+                          })
+                      : await action(request, {
+                          params: Promise.resolve({ id: parts[4]! }),
+                        });
             res.writeHead(result.status, Object.fromEntries(result.headers));
             res.end(Buffer.from(await result.arrayBuffer()));
             return;
@@ -269,6 +282,119 @@ suite(
       expect(result.status).toBe(201);
       return (await result.json()) as { sourceId: string; revisionId: string };
     }
+    it.each([1440, 390])(
+      'saves an exact business artifact through the dialog and reads its retained file at %ipx',
+      async (width) => {
+        const a = await tenantValidationFixture(f.db);
+        const token = (await createSession(a.context.actor.id)).token;
+        await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${a.context.organizationId},${a.context.actor.id},'Publisher','company')`;
+        const c = await browser.newContext({
+          viewport: { width, height: 900 },
+        });
+        await c.addCookies([
+          { name: 'fixture_session', value: token, url: origin },
+        ]);
+        const page = await c.newPage();
+        try {
+          await page.goto(
+            origin +
+              '/?workspaceId=' +
+              a.context.workspaceId +
+              '&artifactId=' +
+              a.artifact.artifactId,
+          );
+          await page
+            .getByRole('button', { name: '保存为参考资料', exact: true })
+            .click();
+          const dialog = page.getByRole('dialog', {
+            name: '保存为参考资料',
+            exact: true,
+          });
+          await expect
+            .poll(() =>
+              dialog
+                .getByRole('button', { name: '保存', exact: true })
+                .isEnabled(),
+            )
+            .toBe(true);
+          expect(await dialog.getByLabel('保存范围').inputValue()).toBe(
+            'personal',
+          );
+          await dialog.getByLabel('保存范围').selectOption('company');
+          await dialog
+            .getByLabel('参考资料用途')
+            .fill('Synthetic exact-version reference');
+          const response = page.waitForResponse(
+            (r) =>
+              r.url().endsWith('/references/artifacts') &&
+              r.request().method() === 'POST',
+          );
+          await dialog
+            .getByRole('button', { name: '保存', exact: true })
+            .click();
+          const result = await response;
+          expect(result.status()).toBe(201);
+          const saved = await result.json();
+          await dialog.getByRole('status').waitFor();
+          await dialog
+            .getByRole('button', { name: '完成', exact: true })
+            .click();
+          await expect.poll(() => dialog.count()).toBe(0);
+          await processNextReference(f.storageRoot);
+          await page
+            .getByRole('button', { name: '查看参考资料', exact: true })
+            .click();
+          await page
+            .getByRole('button', { name: 'evidence.txt', exact: true })
+            .click();
+          await page
+            .getByText('Isolated fixture, not a real model answer.', {
+              exact: false,
+            })
+            .first()
+            .waitFor();
+          const download = await api(
+            '/revisions/' +
+              saved.revisionId +
+              '/download?workspaceId=' +
+              a.context.workspaceId,
+            token,
+          );
+          expect(download.status).toBe(200);
+          expect(
+            'sha256:' +
+              createHash('sha256')
+                .update(Buffer.from(await download.arrayBuffer()))
+                .digest('hex'),
+          ).toBe(a.artifact.digest);
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth <= window.innerWidth,
+            ),
+          ).toBe(true);
+          await page
+            .getByRole('dialog')
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await page
+            .getByRole('button', { name: '保存为参考资料', exact: true })
+            .click();
+          await dialog.getByLabel('保存范围').selectOption('company');
+          await dialog
+            .getByRole('button', { name: '保存', exact: true })
+            .click();
+          await dialog.getByRole('status').waitFor();
+          expect(
+            (
+              await f.db`select count(*)::int n from allrice_knowledge_revisions where source_artifact_version_id=${a.artifact.artifactId}`
+            )[0]!.n,
+          ).toBe(1);
+        } finally {
+          await c.close();
+        }
+      },
+      30000,
+    );
     it('uploads from the drawer, indexes without a model, preserves both versions and previews/downloads exact files', async () => {
       const page = await pageFor();
       await page.getByLabel('资料保存范围').selectOption('company');
