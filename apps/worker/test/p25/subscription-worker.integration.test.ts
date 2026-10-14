@@ -270,10 +270,10 @@ integration(
                   expect(await bridge.cancellation()).toBeDefined();
                   const [assistant] =
                     await fixture.db`select allowed_tools from allrice_assistant_instances where run_id=${task.runId}`;
-                  expect(assistant.allowed_tools).toContain(
+                  expect(assistant?.allowed_tools).toContain(
                     'assistant.delegate',
                   );
-                  expect(assistant.allowed_tools).toContain(profileTool);
+                  expect(assistant?.allowed_tools).toContain(profileTool);
                 }
                 // Exercise the actual frozen binding -> Worker -> adapter
                 // envelope and Broker write, without any model or credential.
