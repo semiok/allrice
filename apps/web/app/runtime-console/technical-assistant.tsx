@@ -1,4 +1,5 @@
 'use client';
+import { TechnicalFailureDetails } from './technical-failure-details';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -131,6 +132,7 @@ function Records({
               {item.action && ` · ${item.action}`}
               {item.category && ` · ${item.category}`} · {time(item.observedAt)}
             </p>
+            <TechnicalFailureDetails record={item} />
           </div>
           <AdminButton disabled={busy} onClick={() => onCapture(item)}>
             记录问题
@@ -595,6 +597,7 @@ function IssueDetail({
             <dt>错误代码</dt>
             <dd>{item.errorCode ?? '没有记录'}</dd>
           </dl>
+          <TechnicalFailureDetails record={item} />
         </details>
       ))}
       <p className={css.meta}>

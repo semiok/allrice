@@ -406,12 +406,11 @@ export async function runCloudCommandOperation(
       checksum: a.object.checksum,
     })),
   };
-  // The finite project command's timeout is a failed check, with a confirmed
-  // physical stop. It does not cancel the Run or prevent a later source fix.
+  // A finite command's deadline is a failed execution with a confirmed stop,
+  // not a cancellation request. This applies to Python/Node as well as project
+  // checks; the ledger correctly rejects a synthetic cancellation receipt.
   const stopped =
-    outcome.reason === 'canceled' ||
-    (service && outcome.reason === 'deadline') ||
-    (outcome.reason === 'deadline' && !('kind' in payload));
+    outcome.reason === 'canceled' || (service && outcome.reason === 'deadline');
   const signal = stopped
     ? { type: 'operation.stopped' as const, evidence, effects: 'none' as const }
     : outcome.reason === 'unknown'
@@ -491,6 +490,8 @@ export async function runCloudCommandOperation(
     artifacts: summary.artifacts,
     output: outcome.output,
     exitCode: outcome.exitCode,
+    reason: outcome.reason,
+    stopped: outcome.stopped,
     cleanupConfirmed: true,
     ...('kind' in payload
       ? {

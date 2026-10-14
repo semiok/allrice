@@ -2,6 +2,7 @@ import { createCloudCommandOperation } from '@allrice/database';
 import { PythonExecuteArgsSchema } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { runCloudCommandOperation } from '../../cloud-runner/executor.js';
+import { requireSuccessfulCloudCommand } from '../../cloud-runner/tool-result.js';
 import { executeManagedCharts } from '../../python/managed-charts.js';
 import type { RiceToolHandler } from '../types.js';
 import { resolveCloudToolArguments } from './cloud-frozen-script.js';
@@ -24,6 +25,7 @@ export const executeCloudCommand: RiceToolHandler = async ({
     storage: new LocalStorageAdapter(input.storageRoot),
     ...(input.signal ? { signal: input.signal } : {}),
   });
+  requireSuccessfulCloudCommand(input, result);
   return {
     modelContent: JSON.stringify({
       ...result,

@@ -151,6 +151,37 @@ suite(
         /SECRET|SYNTHETIC-ONLY|Reconciliation rule/,
       );
     });
+    it('reads original model-call failure metadata without copying private error bodies', async () => {
+      const callId = randomUUID();
+      const model = {
+        version: 1,
+        truncated: false,
+        failures: [
+          {
+            nativeSessionId: 'dsh-original',
+            callId,
+            phase: 'finish',
+            code: 'PI_AI_ERROR',
+            stopKind: 'error',
+            inputUsageKnown: false,
+            outputUsageKnown: false,
+            settlementConfirmed: true,
+          },
+        ],
+      };
+      await fixture.db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,payload)
+        values(${customer.org},${customer.workspace},${customer.run},99,'turn.failed',${fixture.db.json({ assistantDiagnostics: model, errorMessage: 'SECRET-provider-body', prompt: 'SECRET-prompt' })})`;
+      const facts = await read();
+      expect(
+        facts.runs.value?.find((r) => r.id === customer.run)?.failureDetails,
+      ).toEqual({ model, cloud: [], cloudTruncated: false });
+      expect(JSON.stringify(facts)).not.toContain('SECRET');
+      await fixture.db`update allrice_run_events set payload=${fixture.db.json({ assistantDiagnostics: { ...model, providerBody: 'SECRET' } })} where run_id=${customer.run} and sequence=99`;
+      expect(
+        (await read()).runs.value?.find((r) => r.id === customer.run)
+          ?.failureDetails?.model,
+      ).toBeNull();
+    });
     it('persists one problem and one occurrence for concurrent or ambiguous duplicate captures; explicitly groups related evidence', async () => {
       const capture = () =>
         capturePlatformTechnicalIssue(

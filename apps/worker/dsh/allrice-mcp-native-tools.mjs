@@ -1,3 +1,4 @@
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { z } from 'zod';
 
 // DSH's DSL describes shape only; repeat bounds before JSON-RPC. The Broker
@@ -57,7 +58,7 @@ export const mcpNativeTools = [
           'Arguments matching the exact frozen remote input schema; never include credentials.',
       },
     },
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       McpNativeArgumentsSchema.parse(args);
