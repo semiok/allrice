@@ -69,6 +69,7 @@ integration(
     it.each([
       'complete',
       'personal_profile_writable',
+      'personal_profile_with_assistants',
       'personal_profile_read_only',
       'image_with_assistants',
       'image_generation_with_assistants',
@@ -89,6 +90,7 @@ integration(
         const unknownUsage = ![
           'complete',
           'personal_profile_writable',
+          'personal_profile_with_assistants',
           'personal_profile_read_only',
           'quota_exhausted',
           'image_with_assistants',
@@ -108,11 +110,13 @@ integration(
           imageGenerationAssistants:
             mode === 'image_generation_with_assistants',
           personalProfile:
-            mode === 'personal_profile_writable'
-              ? 'writable'
-              : mode === 'personal_profile_read_only'
-                ? 'read_only'
-                : undefined,
+            mode === 'personal_profile_with_assistants'
+              ? 'writable_with_assistants'
+              : mode === 'personal_profile_writable'
+                ? 'writable'
+                : mode === 'personal_profile_read_only'
+                  ? 'read_only'
+                  : undefined,
         });
         let cleanup: (() => Promise<void>) | undefined;
         try {
@@ -162,7 +166,11 @@ integration(
               : 'Synthetic arithmetic.',
             images,
           );
-          if (images || mode === 'image_generation_with_assistants')
+          if (
+            images ||
+            mode === 'image_generation_with_assistants' ||
+            mode === 'personal_profile_with_assistants'
+          )
             vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
           if (mode === 'image_generation_with_assistants')
             vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
@@ -244,14 +252,36 @@ integration(
               if (mode === 'startup_undispatched')
                 return originalExecute.call(this, input);
               const profileTool = 'workspace.employee.profile.update';
-              if (mode === 'personal_profile_writable') {
+              if (
+                mode === 'personal_profile_writable' ||
+                mode === 'personal_profile_with_assistants'
+              ) {
+                let bridge:
+                  | Awaited<
+                      ReturnType<NonNullable<typeof input.assistants>['bind']>
+                    >
+                  | undefined;
+                if (mode === 'personal_profile_with_assistants') {
+                  bridge = await input.assistants!.bind(
+                    `dsh-${task.sessionId}`,
+                    input.generation,
+                    input.onToolCall,
+                  );
+                  expect(await bridge.cancellation()).toBeDefined();
+                  const [assistant] =
+                    await fixture.db`select allowed_tools from allrice_assistant_instances where run_id=${task.runId}`;
+                  expect(assistant.allowed_tools).toContain(
+                    'assistant.delegate',
+                  );
+                  expect(assistant.allowed_tools).toContain(profileTool);
+                }
                 // Exercise the actual frozen binding -> Worker -> adapter
                 // envelope and Broker write, without any model or credential.
                 expect(input.tools?.map((tool) => tool.name)).toContain(
                   profileTool,
                 );
                 expect(input.authorizedToolNames).toContain(profileTool);
-                const receipt = await input.onToolCall!({
+                const call = {
                   id: 'synthetic-profile-update',
                   name: profileTool,
                   arguments: {
@@ -259,8 +289,16 @@ integration(
                     name: '小禾',
                     expressionStyle: 'concise',
                   },
-                });
-                expect(JSON.parse(receipt.modelContent)).toMatchObject({
+                };
+                const receipt = bridge
+                  ? await bridge.handle('tool', {
+                      nativeSessionId: `dsh-${task.sessionId}`,
+                      callId: call.id,
+                      name: call.name,
+                      arguments: call.arguments,
+                    })
+                  : await input.onToolCall!(call);
+                expect(JSON.parse(String(receipt.modelContent))).toMatchObject({
                   revision: 2,
                   profile: { name: '小禾', expressionStyle: 'concise' },
                 });
@@ -274,6 +312,21 @@ integration(
                 expect(task.binding.executionSnapshot.instance?.revision).toBe(
                   1,
                 );
+                if (bridge) {
+                  const usage =
+                    await fixture.db`select amount,settled_amount from allrice_assistant_usage where run_id=${task.runId} and metric='tool_calls'`;
+                  expect(usage).toHaveLength(1);
+                  expect(Number(usage[0]!.amount)).toBe(1);
+                  expect(Number(usage[0]!.settled_amount)).toBe(1);
+                  await expect(
+                    bridge.handle('tool', {
+                      nativeSessionId: `dsh-${task.sessionId}`,
+                      callId: call.id,
+                      name: call.name,
+                      arguments: call.arguments,
+                    }),
+                  ).rejects.toThrow('assistant_tool_unknown_no_replay');
+                }
               } else {
                 expect(input.tools?.map((tool) => tool.name)).not.toContain(
                   profileTool,
@@ -360,6 +413,7 @@ integration(
                 ...([
                   'image_with_assistants',
                   'image_generation_with_assistants',
+                  'personal_profile_with_assistants',
                 ].includes(mode)
                   ? {
                       assistantStatus: 'completed' as const,

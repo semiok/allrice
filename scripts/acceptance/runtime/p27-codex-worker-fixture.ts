@@ -50,9 +50,11 @@ export async function createP27CodexWorkerFixture(
     /** Exercise platform image tools and the production assistant controller together. */
     imageGenerationAssistants?: boolean;
     /** Synthetic current-schema instance/Worker wiring regression. */
-    personalProfile?: 'writable' | 'read_only';
+    personalProfile?: 'writable' | 'read_only' | 'writable_with_assistants';
   } = {},
 ) {
+  const profileAssistants =
+    options.personalProfile === 'writable_with_assistants';
   const runLimits = options.imageGeneration
     ? { ...ordinaryRunLimits, timeoutMs: 600_000 }
     : ordinaryRunLimits;
@@ -263,8 +265,13 @@ export async function createP27CodexWorkerFixture(
           ]
         : options.syntheticImagesWithAssistants
           ? ['assistant.delegate', 'assistant.report']
-          : options.personalProfile === 'writable'
-            ? ['workspace.export.create']
+          : options.personalProfile?.startsWith('writable')
+            ? [
+                'workspace.export.create',
+                ...(profileAssistants
+                  ? ['assistant.delegate', 'assistant.report']
+                  : []),
+              ]
             : [],
       runtimePolicy: {
         harness: 'dsh',
@@ -281,7 +288,8 @@ export async function createP27CodexWorkerFixture(
         connectorIdentityModes: ['user'],
         approvalPolicy: 'confirm_side_effects',
         deniedCapabilities:
-          options.imageGeneration || options.personalProfile === 'writable'
+          options.imageGeneration ||
+          options.personalProfile?.startsWith('writable')
             ? ['secret:use', 'automation:write', 'network:outbound']
             : [
                 'secret:use',
@@ -319,7 +327,7 @@ export async function createP27CodexWorkerFixture(
       await tx`insert into allrice_provider_release_controls(connection_id,release_stage,allowlisted_organization_ids,production_approved)
         values(${connectionId},'canary',${[organizationId]},false)`;
       await tx`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
-        values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: options.imageGenerationAssistants ? [{ action: 'assistant.delegate', effect: 'allow' }] : [] })})`;
+        values(${organizationId},${workspaceId},1,${tx.json({ version: 1, enabled: true, mode: 'execute', rules: options.imageGenerationAssistants || profileAssistants ? [{ action: 'assistant.delegate', effect: 'allow' }] : [] })})`;
     });
     await withFixturePlatformAdministrator(ownerId, () =>
       models.upsertEmployeeModelPolicy({
@@ -427,7 +435,8 @@ export async function createP27CodexWorkerFixture(
                 mode: 'daily',
                 allowAssistants:
                   images !== undefined ||
-                  options.imageGenerationAssistants === true,
+                  options.imageGenerationAssistants === true ||
+                  profileAssistants,
                 maxConcurrent: 1,
                 maxDepth: 1,
                 maxChildren: 1,
