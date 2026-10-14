@@ -64,15 +64,17 @@ function methodOperationClauses(text: string) {
       quotedPassage = false;
       continue;
     }
-    if (
-      /^(?:资料|附件|示例|例子|原文|引用|document|example|quotation).*(?:如下|原文|内容|:|：)/iu.test(
+    if (quotedPassage) continue;
+    const sourceStart =
+      /(?:^|[。；;！!])\s*(?:资料|附件|示例|例子|原文|引用|document|example|quotation).*(?:如下|原文|内容|:|：)/iu.exec(
         line.trim(),
-      )
-    ) {
+      );
+    if (sourceStart) {
+      if (sourceStart.index > 0)
+        lines.push(line.trim().slice(0, sourceStart.index));
       quotedPassage = true;
       continue;
     }
-    if (quotedPassage) continue;
     lines.push(line);
   }
   return lines
@@ -89,7 +91,7 @@ export function explicitEmployeeMethodIntent(text: string) {
   const clauses = methodOperationClauses(text);
   if (
     clauses.some((clause) =>
-      /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:保存|修改|更新|持久化)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
+      /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:保存|修改|更新|持久化|重命名|移除|删除|停用)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist|rename|remove|delete|disable)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
         clause,
       ),
     )
@@ -97,10 +99,10 @@ export function explicitEmployeeMethodIntent(text: string) {
     return false;
   const first = text.trim().split(/[。；;！!\n：:]/, 1)[0]!;
   return (
-    /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制)(?:[^《》“”"'「」『』`。；;！!\n：:]{0,80})(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?$/u.test(
+    /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:[^《》“”"'「」『』`。；;！!\n：:]{0,80})(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?$/u.test(
       first,
     ) ||
-    /^(?:please )?(?:save|update|edit|create|add|customize)\s+(?:(?:my|this)\s+)?(?:work )?(?:method|scene|workflow)(?: (?:candidate|draft))?$/i.test(
+    /^(?:please )?(?:save|update|edit|create|add|customize|rename|remove|delete|disable)\s+(?:(?:my|this)\s+)?(?:work )?(?:method|scene|workflow)(?: (?:candidate|draft))?$/i.test(
       first,
     )
   );
@@ -126,6 +128,92 @@ export function explicitEmployeeMethodReferenceIntent(text: string) {
         clause.trim(),
       ),
   );
+}
+
+/** Removing an index is a separate user intent. It never deletes the source
+ * or changes active content, but must not be inferred from an ordinary edit. */
+export function explicitEmployeeMethodRemovalIntent(
+  text: string,
+  kind: 'scene' | 'reference',
+) {
+  const clauses = methodOperationClauses(text).map((s, index) => {
+    const colon = s.search(/[：:]/);
+    // Only unwrap the user's leading authoring request, never "example:" or
+    // a document's command later in the message.
+    return index === 0 &&
+      colon >= 0 &&
+      explicitEmployeeMethodIntent(s.slice(0, colon))
+      ? s.slice(colon + 1).trim()
+      : s;
+  });
+  const target =
+    kind === 'scene'
+      ? /场景|\bscene\b/iu
+      : /资料|引用|绑定|\breference\b|\bbinding\b/iu;
+  if (
+    clauses.some(
+      (s) =>
+        target.test(s) &&
+        /^(?:请)?(?:不要|无需|不必|勿|不能|不允许).*(?:移除|删除|停用|解除|取消|替换)|^(?:please )?(?:do not|don't|never)\b.*\b(?:remove|delete|disable|unlink|replace)\b/iu.test(
+          s,
+        ),
+    )
+  )
+    return false;
+  return clauses.some((s) => {
+    const chinese =
+      /^(?:请)?(?:(?:从|在)(?:当前|我的|这个|该)?(?:候选|草稿)(?:中)?[，, ]*)?(?:移除|删除|停用|解除|取消|替换)\s*(.{1,120})$/u.exec(
+        s,
+      );
+    if (chinese) {
+      const object = chinese[1]!.trim();
+      // An ambiguous compound instruction must never authorize removal of
+      // the entire container ("delete steps, preserve this scene").
+      if (
+        /中的|内的|里的|下的|里面|内部|步骤|空行|段落|内容|文字|文本|保留|保持|检查|核对|然后|之后|再|并|[：:,，、]/u.test(
+          object,
+        )
+      )
+        return false;
+      return kind === 'scene'
+        ? /场景(?:候选)?$|^(?:这个|该|我的|当前)?(?:工作)?场景\s*QUOTED$/u.test(
+            object,
+          )
+        : /资料(?:引用|绑定)?$|(?:引用|绑定)$|^(?:这个|该|我的|当前)?(?:资料)?(?:引用|绑定)\s*QUOTED$/u.test(
+            object,
+          );
+    }
+    const english =
+      /^(?:please )?(?:remove|delete|disable|unlink|replace)\s+(.{1,120})$/iu.exec(
+        s,
+      );
+    if (!english) return false;
+    const object = english[1]!.trim().replace(/[.!?]+$/, '');
+    if (
+      /[,;]|\b(?:from|within|inside|in|of|for|steps?|lines?|content|text|keep|preserve|retain|then|and|but)\b/iu.test(
+        object,
+      )
+    )
+      return false;
+    return kind === 'scene'
+      ? /\bscene(?:\s+QUOTED)?$/iu.test(object)
+      : /\b(?:reference|binding)(?:\s+QUOTED)?$/iu.test(object);
+  });
+}
+
+function assertMethodEditIntent(
+  text: string,
+  args: ReturnType<typeof EmployeeMethodSaveSchema.parse>,
+) {
+  if (
+    !explicitEmployeeMethodIntent(text) ||
+    (args.references?.length && !explicitEmployeeMethodReferenceIntent(text)) ||
+    (args.removeReferences?.length &&
+      !explicitEmployeeMethodRemovalIntent(text, 'reference')) ||
+    (args.operation === 'remove_scene' &&
+      !explicitEmployeeMethodRemovalIntent(text, 'scene'))
+  )
+    throw new EmployeeMethodChatError('explicit_method_request_required');
 }
 
 const emptyManifest = () => ({
@@ -272,11 +360,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
       };
     },
   );
-  if (
-    !explicitEmployeeMethodIntent(text) ||
-    (args.references?.length && !explicitEmployeeMethodReferenceIntent(text))
-  )
-    throw new EmployeeMethodChatError('explicit_method_request_required');
+  assertMethodEditIntent(text, args);
   const base: Extract<EmployeeContentMutation, { operation: 'save_draft' }> = {
     operation: 'save_draft',
     workspaceId: scope.workspaceId,
@@ -309,12 +393,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
           current,
           'workspace.employee.method.save_candidate',
         );
-        if (
-          !explicitEmployeeMethodIntent(original) ||
-          (args.references?.length &&
-            !explicitEmployeeMethodReferenceIntent(original))
-        )
-          throw new EmployeeMethodChatError('explicit_method_request_required');
+        assertMethodEditIntent(original, args);
       },
       buildInput: async (row) => {
         const [revision] =
@@ -335,26 +414,46 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
         let scene = manifest.scenes.find((s) => s.id === sceneId);
         if (args.scene?.id && !scene)
           throw new EmployeeContentError('version_conflict');
+        if (args.operation === 'remove_scene') {
+          return {
+            ...base,
+            manifest: {
+              ...manifest,
+              scenes: manifest.scenes.filter((s) => s.id !== sceneId),
+            },
+          };
+        }
         if (args.section === 'scene') {
           if (!scene) {
             scene = {
               id: sceneId!,
-              name: args.scene!.name,
-              appliesWhen: args.scene!.appliesWhen,
+              name: args.scene!.name!,
+              appliesWhen: args.scene!.appliesWhen!,
               references: [],
             };
             manifest.scenes.push(scene);
-          } else
-            Object.assign(scene, {
-              name: args.scene!.name,
-              appliesWhen: args.scene!.appliesWhen,
-            });
+          } else {
+            if (args.scene!.name !== undefined) scene.name = args.scene!.name;
+            if (args.scene!.appliesWhen !== undefined)
+              scene.appliesWhen = args.scene!.appliesWhen;
+          }
         }
         const previousRefs = scene?.references ?? manifest.common;
         let updatedRefs: Extract<
           EmployeeContentMutation,
           { operation: 'save_draft' }
         >['manifest']['common'] = [...previousRefs];
+        for (const ref of args.removeReferences ?? []) {
+          if (
+            !previousRefs.some((old) => referenceKey(old) === referenceKey(ref))
+          )
+            throw new EmployeeContentError('version_conflict');
+          updatedRefs = updatedRefs.filter(
+            (old) =>
+              old.sourceKind === 'draft_text' ||
+              referenceKey(old) !== referenceKey(ref),
+          );
+        }
         const textEdits: typeof base.textEdits = [];
         for (const [field, kind] of [
           ['requirements', 'requirement'],
@@ -391,6 +490,16 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
           updatedRefs.push({ sourceKind: 'draft_text', contentId });
         }
         for (const ref of args.references ?? []) {
+          if (
+            updatedRefs.some(
+              (old) =>
+                old.sourceKind !== 'draft_text' &&
+                old.sourceKind === ref.sourceKind &&
+                old.contentId === ref.contentId &&
+                referenceKey(old) !== referenceKey(ref),
+            )
+          )
+            throw new EmployeeContentError('version_conflict');
           // A reference remains a pinned index, never copied or widened. Current
           // source authority is checked within the same company transaction gate.
           const [assignment] = await tx<

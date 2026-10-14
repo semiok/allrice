@@ -44,24 +44,39 @@ export const employeeMethodNativeTools = [
     canonicalName: 'workspace.employee.method.save_candidate',
     wireName: 'workspace_employee_method_save_candidate',
     description:
-      'Save one personal work-method candidate edit after an explicit direct user request. First inspect candidate for expectedRevision. section=common edits shared requirements within this private instance; section=scene requires name/appliesWhen and existing scene id when updating. Omit id only for a new scene. requirements/procedure replace their chat-authored text; omitted fields and all other scenes remain. references append currently readable immutable sources explicitly requested for long-term use. No activate, validation, scope or permission changes. Success saves a draft only; never claim it is enabled. Read again on conflict. Unknown results must not be repeated blindly.',
+      'Save one personal work-method candidate edit after an explicit direct user request. First inspect candidate for expectedRevision. section=common edits shared requirements within this private instance; section=scene requires an existing scene id when updating and name/appliesWhen when creating. Existing scene metadata can be edited alone; omitted fields and other scenes remain. operation=remove_scene stages removal of that existing scene from the candidate; pass only scene.id and no content fields. references append currently readable immutable sources explicitly requested for long-term use. removeReferences unlinks exact existing knowledge/workflow pins after explicit user removal or replacement; to replace a version supply the old pin here and the new pin in references. It never deletes source files or history. requirements/procedure replace chat-authored text. No activation, validation, scope or permission changes. Success saves a draft only, leaving active content unchanged. Read again on conflict. Unknown results must not be repeated blindly.',
     timeoutMs: 15000,
     isConcurrencySafe: false,
     parameters: {
       expectedRevision: { type: 'integer', required: true },
+      operation: { type: 'string', enum: ['upsert', 'remove_scene'] },
       section: { type: 'string', required: true, enum: ['common', 'scene'] },
       scene: {
         type: 'object',
         additionalProperties: false,
         properties: {
           id: { type: 'string' },
-          name: { type: 'string', required: true },
-          appliesWhen: { type: 'string', required: true },
+          name: { type: 'string' },
+          appliesWhen: { type: 'string' },
         },
       },
       requirements: { type: 'string' },
       procedure: { type: 'string' },
       references: { type: 'array', items: reference },
+      removeReferences: {
+        type: 'array',
+        items: {
+          ...reference,
+          properties: {
+            ...reference.properties,
+            sourceKind: {
+              type: 'string',
+              required: true,
+              enum: ['knowledge', 'workflow'],
+            },
+          },
+        },
+      },
       changeSummary: { type: 'string', required: true },
     },
     validateArguments: (args) => EmployeeMethodSaveSchema.parse(args),

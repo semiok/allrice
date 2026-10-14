@@ -53,18 +53,27 @@ export const EmployeeMethodInspectSchema = z
 export const EmployeeMethodSaveSchema = z
   .object({
     expectedRevision: z.number().int().nonnegative(),
+    operation: z.enum(['upsert', 'remove_scene']).optional(),
     section: z.enum(['common', 'scene']),
     scene: z
       .object({
         id: UuidSchema.optional(),
-        name: z.string().trim().min(1).max(100),
-        appliesWhen: z.string().trim().min(1).max(1000),
+        name: z.string().trim().min(1).max(100).optional(),
+        appliesWhen: z.string().trim().min(1).max(1000).optional(),
       })
       .strict()
       .optional(),
     requirements: z.string().trim().min(1).max(8000).optional(),
     procedure: z.string().trim().min(1).max(8000).optional(),
     references: z.array(EmployeeContentReferenceSchema).max(16).optional(),
+    removeReferences: z
+      .array(
+        EmployeeContentReferenceSchema.extend({
+          sourceKind: z.enum(['knowledge', 'workflow']),
+        }),
+      )
+      .max(16)
+      .optional(),
     changeSummary: z.string().trim().min(1).max(1000),
   })
   .strict()
@@ -74,10 +83,43 @@ export const EmployeeMethodSaveSchema = z
         code: 'custom',
         message: 'Only scene edits require scene metadata.',
       });
-    if (!input.requirements && !input.procedure && !input.references?.length)
+    if (input.operation === 'remove_scene') {
+      if (
+        input.section !== 'scene' ||
+        !input.scene?.id ||
+        input.scene.name !== undefined ||
+        input.scene.appliesWhen !== undefined ||
+        input.requirements !== undefined ||
+        input.procedure !== undefined ||
+        input.references !== undefined ||
+        input.removeReferences !== undefined
+      )
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Scene removal requires only the existing scene id.',
+        });
+      return;
+    }
+    if (
+      input.scene &&
+      !input.scene.id &&
+      (!input.scene.name || !input.scene.appliesWhen)
+    )
       ctx.addIssue({
         code: 'custom',
-        message: 'Provide a requirement, procedure or pinned reference.',
+        message: 'A new scene requires its name and applicability.',
+      });
+    if (
+      !input.requirements &&
+      !input.procedure &&
+      !input.references?.length &&
+      !input.removeReferences?.length &&
+      !(input.scene?.id && (input.scene.name || input.scene.appliesWhen))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Provide text, pinned references or existing scene metadata to change.',
       });
     if (
       new TextEncoder().encode(

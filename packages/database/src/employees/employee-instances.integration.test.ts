@@ -8,7 +8,11 @@ import {
   assertEmployeeContentContext,
   assertEmployeeContentReferenceMessages,
 } from './employee-runtime-content.ts';
-import { getEmployeeContentSet } from './employee-content.ts';
+import {
+  getEmployeeContentSet,
+  getEmployeeContentHistory,
+  mutateEmployeeContent,
+} from './employee-content.ts';
 import { randomUUID } from 'node:crypto';
 import {
   prepareReferenceUpload,
@@ -646,6 +650,309 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       linked.set.candidate!.manifest.scenes,
     );
     expect(final.set.active).toBeNull();
+  }, 60000);
+
+  it('renames and removes only the intended candidate scene, preserving active content, source bodies and replay receipts', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const first = await methodRun(f, instance.id);
+    const save = (run: typeof first, args: unknown, callId = randomUUID()) =>
+      saveEmployeeMethodFromChat({ ...run, callId, arguments: args });
+    const weekly = await save(first, {
+      expectedRevision: 0,
+      section: 'scene',
+      scene: { name: '每周对账', appliesWhen: '每周' },
+      procedure: '逐笔核对',
+      changeSummary: '周度',
+    });
+    const monthly = await save(first, {
+      expectedRevision: 1,
+      section: 'scene',
+      scene: { name: '每月对账', appliesWhen: '月末' },
+      procedure: '按月汇总',
+      changeSummary: '月度',
+    });
+    await first.finish();
+    const snapshot = await getEmployeeContentSet(f.a.context, weekly.setId);
+    const [week, month] = snapshot.set.candidate!.manifest.scenes;
+    const activation = {
+      workspaceId: f.a.workspaceId,
+      setId: weekly.setId,
+      ownership: {
+        scope: 'personal' as const,
+        organizationId: f.a.organizationId,
+        ownerId: f.a.user.id,
+      },
+      target: { kind: 'instance' as const, instanceId: instance.id },
+      candidateRevisionId: monthly.candidate.id,
+      candidateDigest: monthly.candidate.digest,
+      changeSummary: 'Isolated pre-existing active fixture',
+    };
+    const validation = await mutateEmployeeContent(f.a.context, {
+      ...activation,
+      operation: 'validate',
+      expectedRevision: monthly.revision,
+      requestId: randomUUID(),
+    });
+    const active = await mutateEmployeeContent(f.a.context, {
+      ...activation,
+      operation: 'activate',
+      expectedRevision: validation.revision,
+      requestId: randomUUID(),
+    });
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请更新我的工作场景候选：将每周对账改名为每周回款。请移除每月对账场景。只保存候选，不启用。',
+    );
+    const renameArgs = {
+        expectedRevision: active.revision,
+        section: 'scene',
+        scene: { id: week!.id, name: '每周回款' },
+        changeSummary: '只改名称',
+      },
+      renameId = randomUUID();
+    const renamed = await save(run, renameArgs, renameId);
+    const afterRename = await getEmployeeContentSet(f.a.context, weekly.setId);
+    expect(afterRename.set.candidate!.manifest.scenes).toEqual([
+      { ...week, name: '每周回款' },
+      month,
+    ]);
+    expect(afterRename.sources).toEqual(snapshot.sources);
+    const remove = {
+        expectedRevision: renamed.revision,
+        section: 'scene',
+        operation: 'remove_scene',
+        scene: { id: month!.id },
+        changeSummary: '候选不再包含月度',
+      },
+      removeId = randomUUID();
+    await expect(
+      save(run, { ...remove, scene: { id: randomUUID() } }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    await expect(
+      save(run, { ...remove, expectedRevision: active.revision }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const removed = await save(run, remove, removeId);
+    expect(await save(run, remove, removeId)).toEqual(removed);
+    expect(await save(run, renameArgs, renameId)).toEqual(renamed);
+    const final = await getEmployeeContentSet(f.a.context, weekly.setId);
+    expect(final.set.active).toMatchObject(active.active!);
+    expect(final.set.active!.manifest).toEqual(
+      snapshot.set.candidate!.manifest,
+    );
+    expect(final.set.candidate!.manifest.scenes).toEqual([
+      { ...week, name: '每周回款' },
+    ]);
+    expect(
+      (
+        await getEmployeeContentHistory(f.a.context, weekly.setId)
+      ).revisions.some((r) => r.id === monthly.candidate.id),
+    ).toBe(true);
+    const ids = snapshot.sources.map((s) => s.reference.contentId);
+    expect(
+      await fixture.db`select id from allrice_company_assets where id=any(${ids}::uuid[]) and state<>'archived'`,
+    ).toHaveLength(2);
+    await expect(
+      getEmployeeContentSet(f.b.context, weekly.setId),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    const ordinary = await methodRun(
+      f,
+      instance.id,
+      '请更新我的工作场景候选：只改名称。',
+    );
+    await expect(
+      save(ordinary, {
+        ...remove,
+        expectedRevision: removed.revision,
+        scene: { id: week!.id },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+    for (const text of [
+      '请更新我的工作场景候选：删除每周回款场景中的重复步骤。',
+      '请更新我的工作场景候选：删除重复步骤，保留每周回款场景。',
+    ]) {
+      const contentEdit = await methodRun(f, instance.id, text);
+      await expect(
+        save(contentEdit, {
+          ...remove,
+          expectedRevision: removed.revision,
+          scene: { id: week!.id },
+        }),
+      ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+      await contentEdit.finish();
+    }
+    const unchanged = await getEmployeeContentSet(f.a.context, weekly.setId);
+    expect(unchanged.set.revision).toBe(removed.revision);
+    expect(unchanged.set.candidate).toEqual(final.set.candidate);
+  }, 60000);
+
+  it('replaces an exact Knowledge pin and can unlink an archived source without deleting its historical versions', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    async function upload(previous?: { sourceId: string }) {
+      const file = await prepareReferenceUpload(f.a.context, {
+        workspaceId: f.a.workspaceId,
+        requestId: randomUUID(),
+        scope: 'personal',
+        fileName: '核对口径.txt',
+        purpose: '合成口径',
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from(previous ? '新版口径' : '旧版口径').toString(
+          'base64',
+        ),
+        ...(previous
+          ? { sourceId: previous.sourceId, expectedRevision: 1 }
+          : {}),
+      });
+      await completeReferenceUpload(
+        f.a.context,
+        f.a.workspaceId,
+        file.revisionId,
+      );
+      const claim = await claimReferenceProcessing();
+      expect(claim?.revisionId).toBe(file.revisionId);
+      await finishReferenceProcessing(claim!, [
+        { content: '核对口径', start: 0, end: 4 },
+      ]);
+      return file;
+    }
+    const v1 = await upload(),
+      first = await methodRun(
+        f,
+        instance.id,
+        '请保存我的工作场景候选。请长期引用本次资料。',
+        undefined,
+        [v1.revisionId],
+      );
+    const pin1 = (
+      await inspectEmployeeMethodFromChat({
+        ...first,
+        arguments: { view: 'candidate' },
+      })
+    ).selectedReferences[0]!.reference;
+    const saved = await saveEmployeeMethodFromChat({
+      ...first,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '周度', appliesWhen: '每周' },
+        references: [pin1],
+        changeSummary: '原始资料版本',
+      },
+    });
+    await first.finish();
+    const scene = (await getEmployeeContentSet(f.a.context, saved.setId)).set
+      .candidate!.manifest.scenes[0]!;
+    const v2 = await upload(v1),
+      next = await methodRun(
+        f,
+        instance.id,
+        '请更新我的工作场景候选。请替换旧资料引用。请长期引用本次选择的资料新版。',
+        undefined,
+        [v2.revisionId],
+      );
+    const pin2 = (
+      await inspectEmployeeMethodFromChat({
+        ...next,
+        arguments: { view: 'candidate' },
+      })
+    ).selectedReferences[0]!.reference;
+    const replace = {
+      expectedRevision: 1,
+      section: 'scene',
+      scene: { id: scene.id },
+      references: [pin2],
+      removeReferences: [pin1],
+      changeSummary: '固定新版口径',
+    };
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...next,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: replace.expectedRevision,
+          section: replace.section,
+          scene: replace.scene,
+          references: replace.references,
+          changeSummary: replace.changeSummary,
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const updated = await saveEmployeeMethodFromChat({
+      ...next,
+      arguments: replace,
+    });
+    expect(
+      await saveEmployeeMethodFromChat({ ...next, arguments: replace }),
+    ).toEqual(updated);
+    expect(
+      (await getEmployeeContentSet(f.a.context, saved.setId)).set.candidate!
+        .manifest.scenes[0]!.references,
+    ).toEqual([pin2]);
+    const contentEdit = await methodRun(
+      f,
+      instance.id,
+      '请更新我的工作场景候选：删除资料中的空行后再核对。',
+    );
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...contentEdit,
+        arguments: {
+          expectedRevision: 2,
+          section: 'scene',
+          scene: { id: scene.id },
+          removeReferences: [pin2],
+          changeSummary: 'Must reject body edit interpreted as unlink',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+    const unchanged = await getEmployeeContentSet(f.a.context, saved.setId);
+    expect(unchanged.set.revision).toBe(2);
+    expect(unchanged.set.candidate!.manifest.scenes[0]!.references).toEqual([
+      pin2,
+    ]);
+    await contentEdit.finish();
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...next,
+        callId: randomUUID(),
+        arguments: { ...replace, expectedRevision: 2 },
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    await next.finish();
+    await changeReference(f.a.context, v2.sourceId, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      action: 'archive',
+    });
+    const unlink = await methodRun(
+      f,
+      instance.id,
+      '请更新我的工作场景候选。请解除旧资料引用。',
+    );
+    const unlinked = await saveEmployeeMethodFromChat({
+      ...unlink,
+      arguments: {
+        expectedRevision: 2,
+        section: 'scene',
+        scene: { id: scene.id },
+        removeReferences: [pin2],
+        changeSummary: '解除已归档资料引用',
+      },
+    });
+    expect(unlinked.active).toBeNull();
+    const final = await getEmployeeContentSet(f.a.context, saved.setId);
+    expect(final.set.candidate!.manifest.scenes[0]!.references).toEqual([]);
+    expect(
+      await fixture.db`select id from allrice_knowledge_revisions where id in (${v1.revisionId},${v2.revisionId})`,
+    ).toHaveLength(2);
+    expect(
+      (
+        await getEmployeeContentHistory(f.a.context, saved.setId)
+      ).revisions.some((r) => r.id === saved.candidate.id),
+    ).toBe(true);
   }, 60000);
 
   it('rejects foreign actor, general instance, stale lease and revoked assignment for method tools', async () => {
