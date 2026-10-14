@@ -41,11 +41,16 @@ describe('fixed candidate method validation', () => {
       caseId: 'cny-total-v1',
     };
     expect(EmployeeMethodTestStartSchema.parse(args)).toEqual(args);
+    const retry = { ...args, retryOfTestId: randomUUID() };
+    expect(EmployeeMethodTestStartSchema.parse(retry)).toEqual(retry);
     for (const extra of [
       { expected: 30100 },
       { model: 'arbitrary' },
       { ownerId: randomUUID() },
       { caseId: 'custom' },
+      { retryOfTestId: 'latest' },
+      { currency: 'USD' },
+      { amountUnit: 'yuan' },
     ])
       expect(
         EmployeeMethodTestStartSchema.safeParse({ ...args, ...extra }).success,

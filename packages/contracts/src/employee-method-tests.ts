@@ -10,6 +10,7 @@ export const EmployeeMethodTestStartSchema = z
     candidateDigest: ChecksumSchema,
     sceneId: UuidSchema,
     caseId: z.literal('cny-total-v1'),
+    retryOfTestId: UuidSchema.optional(),
   })
   .strict();
 export const EmployeeMethodTestInspectSchema = z
@@ -48,6 +49,10 @@ export const EmployeeMethodTestSchema = z
     createdAt: TimestampSchema,
     completedAt: TimestampSchema.nullable(),
     errorCode: z.string().nullable(),
+    retryOfTestId: UuidSchema.nullable(),
+    retryTestId: UuidSchema.nullable(),
+    currency: z.literal('CNY'),
+    amountUnit: z.literal('cent'),
     coverage: z.literal(
       '仅验证所选场景在固定合成金额样例中的结果，不代表所有业务场景已验证。',
     ),

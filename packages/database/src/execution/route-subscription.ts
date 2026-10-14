@@ -22,8 +22,11 @@ export async function freezeRouteSubscriptionSnapshot(
   const snapshotDigest = runtimeLedgerInputDigest(snapshot);
   return sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext(${`tenant:${input.organizationId.toLowerCase()}`}))`;
+    // Ordinary runs must match their actual session. Isolated method retries
+    // retain the original model session; source_session_id records the new
+    // requesting chat and is audit provenance, not a replacement model binding.
     const [row] = await tx`
-      select d.*,coalesce(e.session_id,t.source_session_id) as session_id,
+      select d.*,coalesce(e.session_id::text,t.model_snapshot->>'sessionId') as session_id,
         coalesce(e.execution_snapshot->'modelSnapshot',t.model_snapshot) as model_snapshot,
         p.provider_key,p.auth_mode,s.snapshot_digest as old_digest,s.snapshot as old_snapshot
       from allrice_route_decisions d

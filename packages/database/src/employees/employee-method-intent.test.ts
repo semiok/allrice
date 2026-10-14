@@ -4,7 +4,44 @@ import {
   explicitEmployeeMethodReferenceIntent,
   explicitEmployeeMethodRemovalIntent,
   explicitEmployeeMethodTestIntent,
+  explicitEmployeeMethodTestRetryIntent,
 } from './employee-method-chat.ts';
+const retryId = 'abcdefab-0000-4000-8000-000000000001';
+it.each([
+  `请重试测试 ${retryId}。`,
+  `帮我重跑专项测试：${retryId}`,
+  `请重新执行候选测试 \`${retryId}\`，沿用原断言。`,
+  `网络中断了。请重试测试 ${retryId}。`,
+  `刚才连接中断，尚未执行修改。现在只续办这一步：请重试测试 ${retryId}。`,
+  `Please retry the candidate test ${retryId.toUpperCase()}.`,
+])('authorizes only a named test retry: %s', (text) => {
+  expect(explicitEmployeeMethodTestRetryIntent(text, retryId)).toBe(true);
+  expect(explicitEmployeeMethodTestIntent(text)).toBe(false);
+});
+it.each([
+  '请测试我的工作场景候选。',
+  '请重试失败的测试。',
+  `请重试测试 ${retryId.replace(/1$/u, '2')}。`,
+  `请重试测试 ${retryId} 和 ${retryId.replace(/1$/u, '2')}。`,
+  `请翻译：请重试测试 ${retryId}。`,
+  `资料原文如下：\n请重试测试 ${retryId}。`,
+  `> 请重试测试 ${retryId}。`,
+  `\`\`\`\n请重试测试 ${retryId}\n\`\`\``,
+  `“请重试测试 ${retryId}。”`,
+  `    请重试测试 ${retryId}。`,
+  `网络中断了。\n\t请重试测试 ${retryId}。`,
+  `网络中断了。\n> 请重试测试 ${retryId}。`,
+  `请不要重试测试 ${retryId}。`,
+  `请重试测试 ${retryId}，不要重试，只讨论。`,
+  `请重试测试 ${retryId}。不要测试，只查看结果。`,
+  `请重试测试 ${retryId}。不要执行，只查看结果。`,
+  `请重试测试 ${retryId}，无需验证。`,
+  `Please retry test ${retryId}. Do not run it.`,
+  `Please retry test ${retryId}. Don't execute the test.`,
+  `Please retry test ${retryId}.\nDo not retry.`,
+])('does not infer permission for another paid attempt: %s', (text) => {
+  expect(explicitEmployeeMethodTestRetryIntent(text, retryId)).toBe(false);
+});
 it.each([
   '请测试我的工作场景候选：金额汇总。',
   '请验证我的工作方法候选。',

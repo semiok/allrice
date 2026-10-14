@@ -18,6 +18,19 @@ it.each([
       candidateDigest: `sha256:${'a'.repeat(64)}`,
       sceneId: '00000000-0000-4000-8000-000000000002',
       caseId: 'cny-total-v1',
+      retryOfTestId: '00000000-0000-4000-8000-000000000003',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    schema: EmployeeMethodTestStartSchema,
+    args: {
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      sceneId: '00000000-0000-4000-8000-000000000002',
+      caseId: 'cny-total-v1',
     },
   },
   {
@@ -35,7 +48,15 @@ it.each([
       onToolCall: async (call) => {
         expect(schema.parse(call.arguments)).toEqual(test.args);
         return {
-          modelContent: '{"status":"queued","validationStatus":"pending"}',
+          modelContent: JSON.stringify({
+            status: 'queued',
+            validationStatus: 'pending',
+            retryOfTestId:
+              'retryOfTestId' in test.args ? test.args.retryOfTestId : null,
+            retryTestId: null,
+            currency: 'CNY',
+            amountUnit: 'cent',
+          }),
           summary: 'Queued',
         };
       },

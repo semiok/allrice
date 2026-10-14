@@ -74,7 +74,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.test',
     description:
-      '用户明确要求验证候选时，针对当前小白的准确候选版本和场景排队执行固定合成金额测试。先读取候选取得 revision、digest 和 sceneId。仅验证 cny-total-v1，不读取公司文件、不启用方法。返回同一测试 ID；排队不等于失败，不重复提交。',
+      '用户明确要求验证候选时，针对当前小白的准确候选版本和场景排队执行固定合成金额测试。先读取候选取得 revision、digest 和 sceneId。仅验证 cny-total-v1，不读取公司文件、不启用方法。返回同一测试 ID；排队不等于失败，不重复提交。只有用户明确指定执行失败且 not_verified 的测试 ID 才可用 retryOfTestId 重试；沿用原冻结候选、模型和断言。同一父测试只创建一个后续测试，结果未知先回读，不自动重试。',
     inputSchema: z.toJSONSchema(EmployeeMethodTestStartSchema),
   },
   {

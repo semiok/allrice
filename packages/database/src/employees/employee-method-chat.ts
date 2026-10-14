@@ -34,7 +34,11 @@ import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 export class EmployeeMethodChatError extends Error {
   constructor(
     readonly code:
-      'explicit_method_request_required' | 'method_context_unavailable',
+      | 'explicit_method_request_required'
+      | 'explicit_test_retry_required'
+      | 'test_retry_not_allowed'
+      | 'test_retry_model_changed'
+      | 'method_context_unavailable',
   ) {
     super(code);
   }
@@ -145,6 +149,36 @@ export function explicitEmployeeMethodTestIntent(text: string) {
     ) &&
     explicitEmployeeMethodIntent(normalized.replace(/\.(?=\s*$)/u, ''))
   );
+}
+
+/** A new paid attempt needs a direct request naming this exact failed test.
+ * An identifier in backticks is allowed; instructions inside quotations are not. */
+export function explicitEmployeeMethodTestRetryIntent(
+  text: string,
+  testId: string,
+) {
+  if (!text.trim() || text.length > 32000) return false;
+  const request = withoutMethodRetryPreface(text).replace(
+    /^(?:[ \t]*\r?\n)+/u,
+    '',
+  );
+  if (/^(?: {4}|\t)/u.test(request)) return false;
+  if (
+    methodOperationClauses(request)
+      .flatMap((clause) => clause.split(/[，,.]/u))
+      .some((clause) =>
+        /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:重试|重跑|重新(?:运行|执行)|测试|验证|运行|执行)|^(?:please )?(?:do not|don't|never)\s+(?:retry|rerun|test|validate|run|execute)/iu.test(
+          clause.trim(),
+        ),
+      )
+  )
+    return false;
+  const first = request.split(/[。；;！!\n，,]/u, 1)[0]!.trim();
+  const match =
+    /^(?:(?:请)?(?:为我|帮我)?(?:重试|重跑|重新运行|重新执行)(?:这个)?(?:专项|候选)?测试|(?:please )?(?:retry|rerun) (?:the )?(?:candidate )?test)[：:\s]*(`?)([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\1$/iu.exec(
+      first.replace(/\.(?=\s*$)/u, ''),
+    );
+  return match?.[2]?.toLowerCase() === testId.toLowerCase();
 }
 
 export function explicitEmployeeMethodReferenceIntent(text: string) {
