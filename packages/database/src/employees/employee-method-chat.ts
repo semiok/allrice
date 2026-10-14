@@ -87,8 +87,16 @@ function methodOperationClauses(text: string) {
 /** Only skip a bounded prior-transport outcome, never arbitrary prose that
  * could introduce instructions from a document, example or another person. */
 function withoutMethodRetryPreface(text: string) {
-  return text.replace(
-    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后)?(?:尚未|还未|没有)(?:保存|完成)(?:修改|操作|任务)?)?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|(?:网络|连接)(?:失败|中断|断开|超时)(?:了)?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
+  const request = text.replace(
+    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后|[，,])?(?:尚未|还未|没有)(?:(?:保存|完成)(?:修改|操作|任务)?|执行(?:修改|操作|任务)))?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|(?:网络|连接)(?:失败|中断|断开|超时)(?:了)?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
+    '',
+  );
+  if (request === text) return text;
+  // Only a recognized transport outcome may introduce this bounded transition.
+  // The remainder must still start with an explicit authoring/test request;
+  // quoted, indented, explanatory or negated text stays unauthorized.
+  return request.replace(
+    /^(?:\r?\n)*(?:现在|这次)?(?:请)?(?:只)?(?:继续|续办)(?:这一步|此步骤|原操作)[：:]/u,
     '',
   );
 }
