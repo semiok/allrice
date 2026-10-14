@@ -18,6 +18,7 @@ import {
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { runCloudCommandOperation } from '../cloud-runner/executor.js';
+import { requireSuccessfulCloudCommand } from '../cloud-runner/tool-result.js';
 import { HandlerError, confirmToolFailure } from '../errors.js';
 import { waitForLocalAdmission } from '../tool-broker/handlers/local-admission.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
@@ -165,6 +166,7 @@ export async function executeManagedCharts(
       storage,
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    requireSuccessfulCloudCommand(input, result);
     return {
       ...result,
       source: 'cloud-gvisor-v1' as const,

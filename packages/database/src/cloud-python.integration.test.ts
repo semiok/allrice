@@ -94,6 +94,43 @@ suite(
     });
     const fixture = () => createCloudExecutionFixture(db, storageRoot);
 
+    it.each(['deadline', 'output_limit'] as const)(
+      'settles a stopped finite %s as failed with its cause, without replay',
+      async (reason) => {
+        const f = await fixture();
+        const created = await f.create(`failed-${reason}`, {
+          ...args,
+          outputs: [],
+        });
+        await f.approve(created);
+        const backend = new CapturedBackend([]);
+        const execute = vi.spyOn(backend, 'execute').mockResolvedValue({
+          containerId: '1'.repeat(64),
+          exitCode: reason === 'deadline' ? 137 : 122,
+          stopped: true,
+          reason,
+          output: '',
+          elapsedMs: 1,
+          artifacts: [],
+        });
+        const options = { storage: f.storage, backend, database: db };
+        const result = await runCloudCommandOperation(created, options);
+        expect(result).toMatchObject({
+          status: 'failed',
+          reason,
+          stopped: true,
+          cleanupConfirmed: true,
+          artifacts: [],
+        });
+        const repeated = await runCloudCommandOperation(created, options);
+        expect(repeated).toMatchObject({ status: 'failed', reason });
+        expect(execute).toHaveBeenCalledTimes(1);
+        const [run] =
+          await db`select state from allrice_runs where id=${f.run}`;
+        expect(run?.state).not.toBe('canceled');
+      },
+    );
+
     it('freezes Python image/language without changing existing grant profiles, Node payloads or replay authority', async () => {
       const f = await fixture();
       const node = await f.create('old-node');

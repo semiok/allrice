@@ -1,3 +1,4 @@
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { z } from 'zod';
 import {
   BrowserVerificationPlanSchema,
@@ -22,7 +23,7 @@ export const browserWorkspaceNativeTools = [
     description:
       'Request the isolated preview of an already-approved live HTTP service in the current Run. Supply only processId, never host, URL, port or credentials. Bridge preview must be opted in. The first navigation requires exact approval; pending may be checked using the same processId. This does not start a new service, publish host ports or replay unknown effects.',
     parameters: { processId: { type: 'string', required: true } },
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       z.object({ processId: z.uuid() }).strict().parse(args);
@@ -44,7 +45,7 @@ export const browserWorkspaceNativeTools = [
       observationId: { type: 'string' },
       action: { type: 'object', additionalProperties: true },
     },
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       schema
@@ -129,7 +130,7 @@ export const browserWorkspaceNativeTools = [
       observationId: { type: 'string' },
       action: { type: 'object', additionalProperties: true },
     },
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       schema

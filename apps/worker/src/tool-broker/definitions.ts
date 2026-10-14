@@ -146,7 +146,7 @@ export const riceToolDefinitions = [
   {
     name: 'python.execute',
     description:
-      '执行 Python 数据计算与中文图表，默认优先已就绪的电脑 Bridge，缺能力或离线时由云端补位。location 可选 auto/local/cloud；本地准备中或忙碌时等待，explicit local、本地限定输入及 unknown 结果不得改云端重跑。省略 language 表示 Python，固定无网络环境内读取精确 input 文件并生成已声明 output 文件，可无文件只返回计算结果。PNG 用可信 Pillow 检查后进入原成果预览、下载与版本；该原图可作为统一 Office Skill 的输入。不安装依赖、不传镜像或宿主路径。',
+      '执行 Python 数据计算与中文图表，默认优先已就绪的电脑 Bridge，缺能力或离线时由云端补位。location 可选 auto/local/cloud；本地准备中或忙碌时等待，explicit local、本地限定输入及 unknown 结果不得改云端重跑。省略 language 表示 Python，固定无网络环境内读取精确 input 文件并生成已声明 output 文件，可无文件只返回计算结果。PNG 用可信 Pillow 检查后进入原成果预览、下载与版本；该原图可作为统一 Office Skill 的输入。不安装依赖、不传镜像或宿主路径。Excel 声明行列数不等于实际数据范围；先核实非空范围，再分批读取，禁止遍历整片空白区域。只打印简短摘要和样本，完整表头和数据写入声明的成果文件。',
     inputSchema: z.toJSONSchema(PythonExecuteArgsSchema, {
       unrepresentable: 'any',
     }),

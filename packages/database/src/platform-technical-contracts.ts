@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { UuidSchema, WorkerOperationsSchema } from '@allrice/contracts';
+import {
+  AssistantFailureDiagnosticsSchema,
+  UuidSchema,
+  WorkerOperationsSchema,
+} from '@allrice/contracts';
 export * from './platform-repair-contracts.ts';
 export * from './platform-maintenance-contracts.ts';
 export * from './platform-repository-credential-contracts.ts';
@@ -93,6 +97,32 @@ const Health = z
       .nullable(),
   })
   .strict();
+export const TechnicalRunFailureDetailsSchema = z
+  .object({
+    model: AssistantFailureDiagnosticsSchema.nullable(),
+    cloud: z
+      .array(
+        z
+          .object({
+            operationId: UuidSchema,
+            status: z.string().regex(/^[a-z_]{1,40}$/),
+            reason: z.enum([
+              'deadline',
+              'output_limit',
+              'failed',
+              'canceled',
+              'unknown',
+            ]),
+            exitCode: z.number().int().nullable(),
+            stopped: z.boolean(),
+            cleanupConfirmed: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(8),
+    cloudTruncated: z.boolean(),
+  })
+  .strict();
 export const TechnicalRecordSchema = z
   .object({
     kind: z.enum(['run', 'operation', 'feedback']),
@@ -109,6 +139,7 @@ export const TechnicalRecordSchema = z
       .nullable(),
     category: Code,
     observedAt: Time,
+    failureDetails: TechnicalRunFailureDetailsSchema.optional(),
   })
   .strict();
 export type TechnicalRecord = z.infer<typeof TechnicalRecordSchema>;

@@ -23,6 +23,7 @@ export async function nativeBrokerRoundtrip(input: {
   brokerArgs?: Record<string, unknown>;
   invalidArgs: Record<string, unknown>;
   invalidResultIncludes?: string;
+  expectedToolError?: string;
   /** Loopback-only transient provider failures after the first tool result. */
   retryAfterTool?: number;
   /** Fixed real backends may take longer than a transport-only stub. */
@@ -35,7 +36,7 @@ export async function nativeBrokerRoundtrip(input: {
   const errors: unknown[] = [];
   const received: unknown[] = [];
   const sentinel = `synthetic-broker-${randomUUID()}`;
-  let expectedModelContent = sentinel;
+  let expectedModelContent = input.expectedToolError ?? sentinel;
   const server = createServer((req, res) => {
     void (async () => {
       const chunks: Buffer[] = [];
@@ -144,12 +145,22 @@ export async function nativeBrokerRoundtrip(input: {
   const session = `native-${randomUUID()}`;
   let completed = 0;
   let nativeRetries = 0;
+  const nativeToolFailures: boolean[] = [];
   client.subscribe((notice) => {
-    const event = notice.params.event as { type?: string } | undefined;
+    const event = notice.params.event as
+      | {
+          type?: string;
+          data?: { message?: { content?: { isError?: boolean }[] } };
+        }
+      | undefined;
     if (notice.method === 'session.event' && event?.type === 'turn/end')
       completed++;
     if (notice.method === 'session.event' && event?.type === 'llm/retry')
       nativeRetries++;
+    if (notice.method === 'session.event' && event?.type === 'tool/result')
+      nativeToolFailures.push(
+        event.data?.message?.content?.[0]?.isError === true,
+      );
   });
   const inbound = dshInboundToolHandler({
     tools: [
@@ -219,6 +230,7 @@ export async function nativeBrokerRoundtrip(input: {
         .parameters!,
     );
     expect(received).toHaveLength(1);
+    if (input.expectedToolError) expect(nativeToolFailures[0]).toBe(true);
     for (const request of requests.slice(1, 2 + (input.retryAfterTool ?? 0)))
       expect(JSON.stringify(request)).toContain(
         JSON.stringify(expectedModelContent).slice(1, -1),

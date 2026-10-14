@@ -185,6 +185,92 @@ const run = (request: RiceToolExecutionInput) =>
   executePythonCommand({ input: request, arguments: request.call.arguments });
 
 describe('canonical Python original-call execution adapter', () => {
+  it.each([
+    ['deadline', 'CLOUD_EXECUTION_TIMEOUT'],
+    ['output_limit', 'CLOUD_OUTPUT_LIMIT'],
+    ['failed', 'CLOUD_EXECUTION_FAILED'],
+  ])(
+    'reports a confirmed cloud %s to the native tool as a failure',
+    async (reason, code) => {
+      const request = input(argumentsForPng());
+      ports.select.mockResolvedValue({
+        choice: { status: 'execute', location: 'cloud' },
+        selectionReason: 'local_missing',
+      });
+      ports.runCloud.mockResolvedValue({
+        status: 'failed',
+        reason,
+        stopped: true,
+        cleanupConfirmed: true,
+        exitCode: 122,
+        artifacts: [],
+      });
+      const error = await run(request).catch((error: unknown) => error);
+      expect(error).toMatchObject({ code, retryable: false });
+      expect(
+        isConfirmedToolFailure(error, {
+          runId: request.context.runId,
+          callId: request.call.id,
+          toolName: request.call.name,
+        }),
+      ).toBe(true);
+      request.call.name = 'cloud.process.execute';
+      const cloudError = await executeCloudCommand({
+        input: request,
+        arguments: request.call.arguments,
+      }).catch((error: unknown) => error);
+      expect(cloudError).toMatchObject({ code });
+      expect(
+        isConfirmedToolFailure(cloudError, {
+          runId: request.context.runId,
+          callId: request.call.id,
+          toolName: request.call.name,
+        }),
+      ).toBe(true);
+      expect(ports.create).not.toHaveBeenCalled();
+    },
+  );
+  it.each([
+    {
+      status: 'unknown',
+      reason: 'unknown',
+      stopped: true,
+      cleanupConfirmed: true,
+    },
+    {
+      status: 'failed',
+      reason: 'deadline',
+      stopped: false,
+      cleanupConfirmed: true,
+    },
+    {
+      status: 'failed',
+      reason: 'output_limit',
+      stopped: true,
+      cleanupConfirmed: false,
+    },
+  ])(
+    'preserves uncertainty without confirming or replaying $reason',
+    async (result) => {
+      const request = input(argumentsForPng());
+      ports.select.mockResolvedValue({
+        choice: { status: 'execute', location: 'cloud' },
+        selectionReason: 'local_missing',
+      });
+      ports.runCloud.mockResolvedValue(result);
+      const error = await run(request).catch((error: unknown) => error);
+      expect(error).toMatchObject({ code: 'CLOUD_RESULT_UNKNOWN' });
+      expect(
+        isConfirmedToolFailure(error, {
+          runId: request.context.runId,
+          callId: request.call.id,
+          toolName: request.call.name,
+        }),
+      ).toBe(false);
+      expect(ports.runCloud).toHaveBeenCalledTimes(1);
+      expect(ports.create).not.toHaveBeenCalled();
+    },
+  );
   it('keeps omitted language/location/raw bytes and publishes the original ready object instead of a version ID', async () => {
     const args = argumentsForPng(),
       request = input(args),

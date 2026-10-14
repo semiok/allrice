@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
@@ -347,7 +348,7 @@ const brokerNativeTools = [
     wireName: 'local_process_execute',
     // Approval can wait one hour; the execution payload retains its own short
     // command/CPU timeout. This is only the outer approval + receipt envelope.
-    timeoutMs: 3_700_000,
+    timeoutMs: managedToolWaitTimeoutMs,
     description:
       'Run an approved Node/npm or private-venv Python command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional projectPreparation installs pinned pnpm/uv dependencies from an exact lock and verified archives before this command. It cannot combine with diagnostics, dependencies, background or a candidate. Optional diagnostics is read-only fixed Node with empty args; dependencies performs bounded locked npm preparation; background is a finite originating-Run-owned service. Supply either a workspace_project exact project ref (omit files, require matching projectPreparation; no folder grant needed) or current SHA-256 host files. Never mix sources. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
     parameters: {
@@ -1312,23 +1313,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             },
             render: (_args, value) => [{ type: 'text', text: value.content }],
           },
-          // Approval and resource queues have their own waiting lifecycle.
-          // The executor starts its short script deadline after admission;
-          // Office must not fail at 65s simply because other tenants are busy.
-          timeoutMs: [
-            'workspace.export.create',
-            'workspace.reconciliation.export',
-            'local.process.execute',
-            'cloud.process.execute',
-            'cloud.mcp.call',
-            'local.mcp.call',
-            'local.mcp.discover',
-            'local.browser.workspace',
-            'browser.workspace',
-            'local.preview.open',
-          ].includes(tool.canonicalName)
-            ? 3_800_000
-            : (tool.timeoutMs ?? 65_000),
+          // Tool declarations are the single source for DSH's native enforcer.
+          timeoutMs: tool.timeoutMs ?? 65_000,
           isConcurrencySafe: () =>
             tool.isConcurrencySafe ??
             tool.canonicalName !== 'local.process.execute',

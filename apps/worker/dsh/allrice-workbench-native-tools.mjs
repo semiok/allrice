@@ -1,3 +1,4 @@
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 // Model-visible native declarations; publication and execution authority stay
 // in the Tool Broker. Keep wire enums in parity with its validated definitions.
 import {
@@ -62,6 +63,7 @@ export const workbenchNativeTools = [
   })),
   {
     canonicalName: 'workspace.export.create',
+    timeoutMs: managedToolWaitTimeoutMs,
     wireName: 'workspace_export_create',
     description:
       'Create a tenant-private deliverable or reviewable file-change proposal in AllRice managed storage when requested. Native Python Office can use the authorized ready Bridge runtime; select its execution location with the top-level location parameter. Publishing a proposal does not write to the local device.',
