@@ -113,9 +113,12 @@ async function snapshot(
     tests.push(proof);
   }
   if (
-    (changes.commonChanged ? content.scenes : changes.changedScenes).some(
-      (s) => !tests.some((t) => t.sceneId === s.id),
-    ) ||
+    (changes.commonChanged
+      ? content.scenes
+      : content.restoredFromRevisionId
+        ? content.manifest.scenes
+        : changes.changedScenes
+    ).some((s) => !tests.some((t) => t.sceneId === s.id)) ||
     (changes.commonChanged && !content.scenes.length)
   )
     throw new EmployeeMethodActivationError('activation_test_coverage');

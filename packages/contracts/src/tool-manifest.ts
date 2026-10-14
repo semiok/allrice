@@ -31,6 +31,10 @@ export const employeeCustomizationTools = [
     name: 'workspace.employee.method.save_candidate',
     capability: 'storage:write',
   },
+  {
+    name: 'workspace.employee.method.restore_candidate',
+    capability: 'storage:write',
+  },
   { name: 'workspace.employee.method.test', capability: 'storage:write' },
   { name: 'workspace.employee.method.test_status', capability: 'storage:read' },
   {
@@ -69,6 +73,13 @@ export const allRiceToolManifest = [
     risk: 'managed_write',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_employee_method_save_candidate',
+  },
+  {
+    canonicalName: 'workspace.employee.method.restore_candidate',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_employee_method_restore_candidate',
   },
   {
     canonicalName: 'workspace.employee.method.test',

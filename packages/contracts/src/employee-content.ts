@@ -47,7 +47,21 @@ export type EmployeeContentReference = z.infer<
  * source identities and activation are deliberately not model inputs. */
 export const EmployeeMethodInspectSchema = z
   .object({
-    view: z.enum(['effective', 'candidate']),
+    view: z.enum(['effective', 'candidate', 'history']),
+    beforeRevision: z.number().int().positive().optional(),
+  })
+  .strict()
+  .refine(
+    (input) => input.beforeRevision === undefined || input.view === 'history',
+    {
+      message: 'Only history supports a revision cursor.',
+    },
+  );
+export const EmployeeMethodRestoreSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    sourceRevisionId: UuidSchema,
+    changeSummary: z.string().trim().min(1).max(1000),
   })
   .strict();
 export const EmployeeMethodSaveSchema = z

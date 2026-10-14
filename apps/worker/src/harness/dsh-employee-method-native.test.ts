@@ -6,12 +6,29 @@ import {
   EmployeeMethodActivateSchema,
   EmployeeMethodFileStepSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodRestoreSchema,
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
 } from '@allrice/contracts';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 it.each([
+  {
+    canonicalName: 'workspace.employee.method.restore_candidate',
+    wireName: 'workspace_employee_method_restore_candidate',
+    schema: EmployeeMethodRestoreSchema,
+    args: {
+      expectedRevision: 4,
+      sourceRevisionId: '00000000-0000-4000-8000-000000000001',
+      changeSummary: 'Restore entire personal method to revision 1',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.inspect',
+    wireName: 'workspace_employee_method_inspect',
+    schema: EmployeeMethodInspectSchema,
+    args: { view: 'history', beforeRevision: 4 },
+  },
   {
     canonicalName: 'workspace.employee.method.prepare_activation',
     wireName: 'workspace_employee_method_prepare_activation',
@@ -126,7 +143,10 @@ it('passes candidate view through actual native DSH and excludes target authorit
     args: { view: 'candidate' },
     invalidArgs: { view: 'candidate', instanceId: 'foreign' },
     inspectSchema(schema) {
-      expect(Object.keys(schema.properties as object)).toEqual(['view']);
+      expect(Object.keys(schema.properties as object)).toEqual([
+        'view',
+        'beforeRevision',
+      ]);
     },
     onToolCall: async (call) => {
       expect(EmployeeMethodInspectSchema.parse(call.arguments)).toEqual({

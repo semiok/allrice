@@ -193,6 +193,7 @@ integration(
     it.each([
       'workspace.employee.method.inspect',
       'workspace.employee.method.save_candidate',
+      'workspace.employee.method.restore_candidate',
       'workspace.employee.method.test',
       'workspace.employee.method.test_status',
     ])(

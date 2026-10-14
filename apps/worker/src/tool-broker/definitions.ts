@@ -12,6 +12,7 @@ import {
   EmployeeMethodPrepareActivationSchema,
   EmployeeMethodActivateSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodRestoreSchema,
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
 } from '@allrice/contracts';
@@ -64,7 +65,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '查看当前小白的已启用内容或个人工作场景候选。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
+      '查看当前小白的已启用内容、个人候选或 history 历史索引；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
@@ -72,6 +73,12 @@ export const riceToolDefinitions = [
     description:
       '用户明确要求保存或调整工作方法时，保存当前小白的个人候选。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用、修改上级或权限，不得声称已生效。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
+  },
+  {
+    name: 'workspace.employee.method.restore_candidate',
+    description:
+      '用户明确要求将整份个人工作方法恢复到指定历史版时，先 inspect history 核对版本号和 ID，再以当前 expectedRevision 恢复。只生成新候选，保留已启用版本、历史和来源权限；需对新候选重新测试并准确确认。不接受单场景恢复、权限或启用参数。',
+    inputSchema: z.toJSONSchema(EmployeeMethodRestoreSchema),
   },
   {
     name: 'workspace.employee.method.test',
