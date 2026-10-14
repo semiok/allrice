@@ -181,7 +181,7 @@ export async function listReferenceRevisions(
     if (!access.canRead || (s.status === 'archived' && !access.canMaintain))
       continue;
     const rows =
-      await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,o.checksum,o.size_bytes,o.media_type,
+      await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,r.checksum as manifest_digest,o.checksum,o.size_bytes,o.media_type,
       p.state,p.failure,o.state as file_state from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id
       join allrice_knowledge_processing p on p.revision_id=r.id where r.knowledge_source_id=${s.id} and r.status='published'
       order by r.revision desc ${sourceId ? sql`` : sql`limit 1`}`;
@@ -195,6 +195,7 @@ export async function listReferenceRevisions(
           fileName: r.file_name,
           purpose: r.description,
           checksum: r.checksum,
+          manifestDigest: r.manifest_digest,
           sizeBytes: Number(r.size_bytes),
           mediaType: r.media_type,
           status: s.status,

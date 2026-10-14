@@ -76,6 +76,8 @@ import { resolveEmployeeExecution } from './employeehub.ts';
 import {
   prepareEmployeeContentContext,
   loadEmployeeRuntimeScene,
+  loadEmployeeRuntimeReferences,
+  readEmployeeReferenceCitations,
   adoptEmployeeRuntimeScene,
   assertEmployeeContentContext,
   readEmployeeRuntimeContent,
@@ -341,6 +343,7 @@ suite(
       custom = true,
       sessionReferenceIds: string[] = [],
       referenceRevisionIds: string[] = [],
+      request = 'Use current requirements',
     ) {
       const session = sessionId
         ? { id: sessionId }
@@ -356,7 +359,7 @@ suite(
         s.company.workspaceId,
         session.id,
         {
-          text: 'Use current requirements',
+          text: request,
           clientMessageId: randomUUID(),
           sessionReferenceIds,
           ...(referenceRevisionIds.length ? { referenceRevisionIds } : {}),
@@ -423,6 +426,436 @@ suite(
         action: 'archive',
       });
     }
+    async function managedRef(s: Setup, result: { revisionId: string }) {
+      const [pin] = await f.db.begin((tx) =>
+        captureReferenceSelections(s.a, [result.revisionId], tx),
+      );
+      return {
+        sourceKind: 'knowledge' as const,
+        contentId: pin!.sourceId,
+        revisionId: pin!.revisionId,
+        digest: pin!.digest,
+      };
+    }
+    async function referenceArtifact(
+      run: Awaited<ReturnType<typeof runtimeRun>>,
+    ) {
+      const {
+        organizationId: org,
+        workspaceId: ws,
+        ownerId: owner,
+        runId,
+        sessionId,
+      } = run.scope;
+      const id = randomUUID(),
+        objectId = randomUUID(),
+        checksum = `sha256:${'a'.repeat(64)}`;
+      await f.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
+        values(${objectId},${org},${ws},${owner},${`organizations/${org}/workspaces/${ws}/owners/${owner}/artifacts/${objectId}`},'artifacts','text/plain',1,${checksum},'ready',true)`;
+      await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+        values(${id},${org},${ws},${owner},${objectId},${randomUUID()},1,${sessionId},'sources.txt','text')`;
+      await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+        values(${id},${org},${ws},${owner},${runId},'document',${f.db.json({ kind: 'model_proposal', runId, operationId: null, stepId: null, referenceReads: ['untrusted claim'] })},${randomUUID()},${checksum})`;
+      return id;
+    }
+    it('bound references retrieve Chinese/common and selected-scene excerpts with stable receipts, exact versions and per-version artifact sources', async () => {
+      const s = await setup(),
+        common = await readyReference(s, '预算总额为873元。'),
+        weekly = await readyReference(s, '预算已花费218元。WEEK_ONLY'),
+        monthly = await readyReference(s, '月度利润999元。MONTH_ONLY'),
+        sceneId = randomUUID(),
+        otherId = randomUUID();
+      await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [await managedRef(s, common)],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: sceneId,
+                name: '每周核算',
+                appliesWhen: '周度预算',
+                references: [
+                  await managedRef(s, weekly),
+                  await managedRef(s, common),
+                ],
+              },
+              {
+                id: otherId,
+                name: '月度利润',
+                appliesWhen: '月度',
+                references: [await managedRef(s, monthly)],
+              },
+            ],
+          },
+        }),
+      );
+      const run = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '请核对预算总额及预算花费',
+        ),
+        worker = await sceneLease(run);
+      await readyReference(s, '预算总额改为9999元。', 'company', {
+        sourceId: common.sourceId,
+        revision: 1,
+      });
+      const initial = await loadEmployeeRuntimeReferences(
+        run.scope,
+        run.runtime.generationId,
+        worker,
+      );
+      expect(initial).toHaveLength(1);
+      expect(initial[0]!.content).toBe('预算总额为873元。');
+      expect(initial[0]!.citation).toMatchObject({
+        referenceLabel: 'R1',
+        reference: { revisionId: common.revisionId, revision: 1 },
+      });
+      await f.db`update allrice_knowledge_chunks set id=${randomUUID()} where document_id=${initial[0]!.citation.documentId}`;
+      expect(
+        await loadEmployeeRuntimeReferences(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).toEqual(initial);
+      const artifactBefore = await referenceArtifact(run),
+        scene = run.runtime.scenes.find((x) => x.id === sceneId)!;
+      const loaded = await loadEmployeeRuntimeScene(
+        run.scope,
+        run.runtime.generationId,
+        { sceneId, sceneDigest: scene.digest },
+        worker,
+      );
+      expect(loaded.knowledge).toHaveLength(2);
+      expect(
+        loaded.knowledge.find(
+          (k) => k.citation.reference!.revisionId === common.revisionId,
+        )!.citation.referenceLabel,
+      ).toBe('R1');
+      expect(
+        loaded.knowledge.find(
+          (k) => k.citation.reference!.revisionId === weekly.revisionId,
+        )!.citation.referenceLabel,
+      ).toBe('R2');
+      expect(JSON.stringify(loaded)).not.toContain('MONTH_ONLY');
+      const citations = await readEmployeeReferenceCitations(run.scope);
+      expect(citations.map((c) => c.referenceLabel)).toEqual(['R1', 'R2']);
+      const artifactAfter = await referenceArtifact(run);
+      const { getWorkbenchArtifact } = await import('../artifact-review.ts');
+      expect(
+        (await getWorkbenchArtifact(s.a, run.scope.sessionId, artifactBefore))
+          .provenance.referenceReads,
+      ).toHaveLength(1);
+      const sources = (
+        await getWorkbenchArtifact(s.a, run.scope.sessionId, artifactAfter)
+      ).provenance.referenceReads!;
+      expect(sources).toHaveLength(2);
+      expect(sources.map((r) => r.origin.kind)).toEqual(['common', 'scene']);
+      expect(
+        sources.every(
+          (r) => r.runId === run.scope.runId && r.jobId === worker.jobId,
+        ),
+      ).toBe(true);
+      await expect(
+        f.db`update allrice_employee_runs set reference_reads='[]' where run_id=${run.scope.runId}`,
+      ).rejects.toThrow();
+      await archiveReference(s, weekly.sourceId);
+      await expect(
+        assertEmployeeContentContext(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      // Historical source evidence remains; current file access must still reject.
+      expect(
+        (await getWorkbenchArtifact(s.a, run.scope.sessionId, artifactAfter))
+          .provenance.referenceReads,
+      ).toEqual(sources);
+      await expect(
+        getWorkbenchArtifact(s.b, run.scope.sessionId, artifactAfter),
+      ).rejects.toThrow();
+      await releaseConversationRuntime({
+        ...run.scope,
+        workerId: worker.workerId,
+        outcome: 'idle',
+      });
+      await run.finish();
+      const next = await runtimeRun(
+          s,
+          run.scope.sessionId,
+          true,
+          [],
+          [],
+          '计算月度利润',
+        ),
+        nextWorker = await sceneLease(next);
+      expect(next.runtime.nativeContextKey).not.toBe(
+        run.runtime.nativeContextKey,
+      );
+      const month = next.runtime.scenes.find((x) => x.id === otherId)!;
+      const nextLoaded = await loadEmployeeRuntimeScene(
+        next.scope,
+        next.runtime.generationId,
+        { sceneId: month.id, sceneDigest: month.digest },
+        nextWorker,
+      );
+      expect(nextLoaded.knowledge.map((k) => k.content)).toEqual([
+        '月度利润999元。MONTH_ONLY',
+      ]);
+      expect(
+        JSON.stringify(await readEmployeeReferenceCitations(next.scope)),
+      ).not.toContain(weekly.revisionId);
+      await releaseConversationRuntime({
+        ...next.scope,
+        workerId: nextWorker.workerId,
+        outcome: 'idle',
+      });
+      await next.finish();
+    }, 120000);
+    it('bound references do not label an irrelevant, unready or missing index as read; common-only tasks get distinct native contexts', async () => {
+      const s = await setup(),
+        ref = await readyReference(s, '火星探测器运行速度。');
+      await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [await managedRef(s, ref)],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const run = await runtimeRun(
+          s,
+          undefined,
+          true,
+          [],
+          [],
+          '请核对预算支出',
+        ),
+        worker = await sceneLease(run);
+      expect(
+        await loadEmployeeRuntimeReferences(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).toEqual([]);
+      expect(await readEmployeeReferenceCitations(run.scope)).toEqual([]);
+      await f.db`update allrice_knowledge_documents set active=false where knowledge_revision_id=${ref.revisionId}`;
+      await expect(
+        loadEmployeeRuntimeReferences(
+          run.scope,
+          run.runtime.generationId,
+          worker,
+        ),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      expect(await readEmployeeReferenceCitations(run.scope)).toEqual([]);
+      await f.db`update allrice_knowledge_documents set active=true where knowledge_revision_id=${ref.revisionId}`;
+      await releaseConversationRuntime({
+        ...run.scope,
+        workerId: worker.workerId,
+        outcome: 'idle',
+      });
+      await run.finish();
+      const next = await runtimeRun(
+          s,
+          run.scope.sessionId,
+          true,
+          [],
+          [],
+          '查阅火星探测器速度',
+        ),
+        nextWorker = await sceneLease(next);
+      expect(next.runtime.nativeContextKey).not.toBe(
+        run.runtime.nativeContextKey,
+      );
+      expect(
+        (
+          await loadEmployeeRuntimeReferences(
+            next.scope,
+            next.runtime.generationId,
+            nextWorker,
+          )
+        ).map((r) => r.content),
+      ).toEqual(['火星探测器运行速度。']);
+      await releaseConversationRuntime({
+        ...next.scope,
+        workerId: nextWorker.workerId,
+        outcome: 'idle',
+      });
+      await next.finish();
+    }, 120000);
+    it('bound reference evidence remains subject to the importing reader and every native compaction guard', async () => {
+      const s = await setup(),
+        ref = await readyReference(s, '预算100元', 'department');
+      await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [await managedRef(s, ref)],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const source = await runtimeRun(s, undefined, true, [], [], '核对预算'),
+        worker = await sceneLease(source);
+      await loadEmployeeRuntimeReferences(
+        source.scope,
+        source.runtime.generationId,
+        worker,
+      );
+      await releaseConversationRuntime({
+        ...source.scope,
+        workerId: worker.workerId,
+        outcome: 'idle',
+      });
+      await source.finish();
+      await f.db`update allrice_messages set status='completed',content=${f.db.json({ text: 'DERIVED_BUDGET_100', citations: [] })} where id=${source.sent.assistantMessage.id}`;
+      const imported = await runtimeRun(s, undefined, false, [
+        source.scope.sessionId,
+      ]);
+      await assertEmployeeContentContext(
+        imported.scope,
+        imported.runtime.generationId,
+      );
+      await archiveReference(s, ref.sourceId);
+      await expect(
+        assertEmployeeContentContext(
+          imported.scope,
+          imported.runtime.generationId,
+        ),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        assertEmployeeContentReferenceMessages(s.a, source.scope.sessionId, [
+          source.sent.assistantMessage.id,
+        ]),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      expect(await readEmployeeReferenceCitations(source.scope)).toHaveLength(
+        1,
+      );
+      await imported.finish();
+    }, 120000);
+
+    it.each(['personal', 'department'] as const)(
+      'bound references cannot promote a %s source into company content',
+      async (scope) => {
+        const s = await setup(),
+          ref = await readyReference(s, '预算100元', scope),
+          pin = await managedRef(s, ref);
+        const draft = s.draft({
+          ownership: {
+            scope: 'company',
+            organizationId: s.company.organizationId,
+          },
+          target: { kind: 'employee', employeeId: s.employeeId },
+          manifest: {
+            schemaVersion: 1,
+            common: [pin],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        });
+        const saved = await mutateEmployeeContent(s.a, draft),
+          checked = await mutateEmployeeContent(
+            s.a,
+            action(draft, saved, 'validate'),
+          );
+        expect(checked.validation?.valid).toBe(false);
+        expect(checked.validation?.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: 'source_scope_mismatch' }),
+          ]),
+        );
+        const forged = s.draft({
+          setId: randomUUID(),
+          manifest: {
+            schemaVersion: 1,
+            common: [{ ...pin, digest: `sha256:${'0'.repeat(64)}` }],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        });
+        const fs = await mutateEmployeeContent(s.a, forged),
+          fc = await mutateEmployeeContent(s.a, action(forged, fs, 'validate'));
+        expect(fc.validation?.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: 'source_changed' }),
+          ]),
+        );
+      },
+    );
+    it('bound reference excerpts and receipts do not survive lease cancellation while waiting for the index query', async () => {
+      const s = await setup(),
+        ref = await readyReference(s, '预算100元');
+      await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [await managedRef(s, ref)],
+            scenes: [],
+            declaredConflicts: [],
+          },
+        }),
+      );
+      const run = await runtimeRun(s, undefined, true, [], [], '核对预算'),
+        worker = await sceneLease(run),
+        ready = contentGate<number>(),
+        release = contentGate<void>();
+      const holder = f.db.begin(async (tx) => {
+        const [pid] = await tx`select pg_backend_pid() id`;
+        await tx`lock table allrice_knowledge_chunks in access exclusive mode`;
+        ready.resolve(pid!.id);
+        await release.promise;
+      });
+      const pid = await ready.promise;
+      const reading = loadEmployeeRuntimeReferences(
+        run.scope,
+        run.runtime.generationId,
+        worker,
+      ).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      try {
+        await expect
+          .poll(
+            async () => {
+              const [r] =
+                await f.db`select count(*)::int n from pg_stat_activity where ${pid}::int=any(pg_blocking_pids(pid))`;
+              return r!.n;
+            },
+            { timeout: 5000 },
+          )
+          .toBeGreaterThan(0);
+        await f.db`update allrice_jobs set cancel_requested_at=now() where id=${worker.jobId}`;
+      } finally {
+        release.resolve();
+      }
+      await holder;
+      expect(await reading).toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      expect(await readEmployeeReferenceCitations(run.scope)).toEqual([]);
+      await releaseConversationRuntime({
+        ...run.scope,
+        workerId: worker.workerId,
+        outcome: 'idle',
+      });
+      await run.finish();
+    }, 120000);
+
     it('references pin the chosen version through ordinary admission, message replay and verified source retrieval', async () => {
       const s = await setup(),
         ref = await readyReference(s);

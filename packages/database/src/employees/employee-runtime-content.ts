@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
+  retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
 } from '../reference-runtime.ts';
 import {
@@ -8,6 +9,10 @@ import {
   EmployeeRuntimeContentSchema,
   EmployeeSceneReadSchema,
   EmployeeSceneStateSchema,
+  ReferenceReadSchema,
+  ReferenceReadsSchema,
+  type ReferenceRead,
+  type KnowledgeRetrievalResult,
   type EmployeeRuntimeContent,
   type EmployeeResolvedContent,
   type EmployeeInstanceSnapshot,
@@ -247,6 +252,8 @@ type RunRow = {
   content_generation_id: string | null;
   user_message_id: string;
   reference_selections: unknown;
+  reference_reads: unknown;
+  user_request: string;
   session_references:
     { sessionId: string; messages: { id: string }[] }[] | null;
 };
@@ -261,7 +268,7 @@ async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
   >`select er.execution_snapshot->'content' as content,
-      er.content_generation_id,er.content_scene_state,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
+      er.content_generation_id,er.content_scene_state,er.reference_reads,er.prompt_snapshot->>'userRequest' as user_request,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
       and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId} and er.owner_id=${scope.ownerId}
@@ -318,9 +325,10 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
         | 'content_scene_state'
         | 'session_references'
         | 'reference_selections'
+        | 'reference_reads'
       >[]
     >`
-      select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+      select distinct execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED' limit 129`;
     if (rows.length > 128) return unavailable();
@@ -416,11 +424,12 @@ async function generationIsReadable(
       content: unknown;
       content_scene_state: unknown;
       reference_selections: unknown;
+      reference_reads: unknown;
       session_references:
         { sessionId: string; messages: { id: string }[] }[] | null;
     }[]
   >`
-    select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+    select distinct execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED' limit 129`;
@@ -435,6 +444,14 @@ async function generationIsReadable(
         sql,
         locked,
       );
+      const reads = ReferenceReadsSchema.parse(row.reference_reads ?? []);
+      for (const read of reads)
+        await assertReferenceSelections(
+          reader,
+          [read.citation.reference],
+          sql,
+          locked,
+        );
       if (row.content) {
         const state = parseSceneState(row.content_scene_state);
         const scenes = employeeRuntimeScenes(
@@ -622,12 +639,14 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =
-      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (content_scene_state is not null or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (content_scene_state is not null or reference_reads is not null or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,
       nativeContextKey:
-        current.scenes.length || priorScene
+        current.scenes.length ||
+        current.sources.some((s) => s.referenceFile) ||
+        priorScene
           ? `${context!.generation_id}-${scope.runId}`
           : context!.generation_id,
       historyFromMessageId: context!.history_from_message_id,
@@ -674,6 +693,168 @@ async function validContentLease(
           and j.status='running' and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null
           and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId} and r.owner_id=${scope.ownerId}`;
   return !!lease;
+}
+
+/** Store proof before excerpts leave this transaction. Stable identities use the
+ * retained file, locator and actual text digest, never a rebuildable chunk ID. */
+async function recordReferenceReads(
+  tx: ContentSql,
+  scope: RunScope,
+  run: RunRow,
+  generationId: string,
+  worker: ContentWorker,
+  groups: {
+    origin: ReferenceRead['origin'];
+    results: KnowledgeRetrievalResult[];
+  }[],
+) {
+  const reads = ReferenceReadsSchema.parse(run.reference_reads ?? []);
+  if (
+    reads.some(
+      (r) => r.runId !== scope.runId || r.generationId !== generationId,
+    )
+  )
+    return unavailable();
+  const before = reads.length;
+  const results: KnowledgeRetrievalResult[] = [];
+  for (const group of groups)
+    for (const result of group.results) {
+      if (!result.citation.reference) return unavailable();
+      const checksum =
+        'sha256:' + createHash('sha256').update(result.content).digest('hex');
+      let receipt = reads.find(
+        (r) =>
+          r.citation.reference.digest === result.citation.reference!.digest &&
+          r.citation.reference.revisionId ===
+            result.citation.reference!.revisionId &&
+          r.citation.reference.checksum ===
+            result.citation.reference!.checksum &&
+          runtimePolicyDigest(r.citation.locator) ===
+            runtimePolicyDigest(result.citation.locator) &&
+          r.contentChecksum === checksum,
+      );
+      if (!receipt) {
+        if (reads.length >= 64) return unavailable();
+        const id = randomUUID();
+        receipt = ReferenceReadSchema.parse({
+          receiptId: id,
+          origin: group.origin,
+          citation: {
+            ...result.citation,
+            id,
+            referenceLabel: `R${reads.length + 1}`,
+          },
+          contentChecksum: checksum,
+          runId: scope.runId,
+          generationId,
+          jobId: worker.jobId,
+          workerId: worker.workerId,
+          readAt: new Date().toISOString(),
+        });
+        reads.push(receipt);
+      }
+      if (!results.some((r) => r.citation.id === receipt!.receiptId))
+        results.push({ content: result.content, citation: receipt.citation });
+    }
+  if (reads.length !== before)
+    await tx`update allrice_employee_runs set reference_reads=${tx.json(reads)} where run_id=${scope.runId}`;
+  return results;
+}
+
+/** Initial common and explicitly selected references share the existing content
+ * authority, exact execution lease and native generation. No other scene is read. */
+export async function loadEmployeeRuntimeReferences(
+  scope: RunScope,
+  generationId: string,
+  worker: ContentWorker,
+) {
+  const result = await withContentLocks(scope, async (tx) => {
+    const run = await ownedRun(scope, tx);
+    if (
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx))
+    )
+      return unavailable();
+    if (
+      !(await generationIsReadable(
+        scope,
+        generationId,
+        tx,
+        identity(scope),
+        new Set(),
+        true,
+      ))
+    ) {
+      await tx`update allrice_employee_content_contexts set invalidated_at=clock_timestamp() where generation_id=${generationId}`;
+      return { rejected: true as const };
+    }
+    const current = await readEmployeeRuntimeContent(
+      identity(scope),
+      run.content,
+      tx,
+      undefined,
+      true,
+    );
+    const selections = await assertReferenceSelections(
+      identity(scope),
+      run.reference_selections,
+      tx,
+      true,
+    );
+    const explicit = await retrieveReferenceKnowledgeInTransaction(
+      {
+        context: identity(scope),
+        selections,
+        query: run.user_request,
+        mode: 'explicit',
+      },
+      tx,
+    );
+    const common = await retrieveReferenceKnowledgeInTransaction(
+      {
+        context: identity(scope),
+        selections: current.sources.flatMap((s) =>
+          s.referenceFile &&
+          !selections.some((p) => p.revisionId === s.referenceFile!.revisionId)
+            ? [s.referenceFile]
+            : [],
+        ),
+        query: run.user_request,
+        mode: 'automatic',
+      },
+      tx,
+    );
+    const knowledge = await recordReferenceReads(
+      tx,
+      scope,
+      run,
+      generationId,
+      worker,
+      [
+        { origin: { kind: 'explicit' }, results: explicit },
+        { origin: { kind: 'common' }, results: common },
+      ],
+    );
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
+    return { knowledge };
+  });
+  if ('rejected' in result) return unavailable();
+  return result.knowledge;
+}
+
+/** Worker completion reads committed receipts, including earlier attempts and
+ * native scene loads. This is not a general-purpose reference lookup endpoint. */
+export async function readEmployeeReferenceCitations(scope: RunScope) {
+  const run = await ownedRun(scope, getDatabase());
+  const reads = ReferenceReadsSchema.parse(run.reference_reads ?? []);
+  if (
+    reads.some(
+      (r) =>
+        r.runId !== scope.runId || r.generationId !== run.content_generation_id,
+    )
+  )
+    return unavailable();
+  return reads.map((r) => r.citation);
 }
 
 /** Every real model dispatch, including native compaction, uses this same gate.
@@ -785,9 +966,43 @@ export async function loadEmployeeRuntimeScene(
         )
         .map(employeeContentReferenceKey),
     );
+    const candidates = current.sources.filter((s) =>
+      refs.has(employeeContentReferenceKey(s.reference)),
+    );
+    const results = await retrieveReferenceKnowledgeInTransaction(
+      {
+        context: identity(scope),
+        selections: candidates.flatMap((s) =>
+          s.referenceFile ? [s.referenceFile] : [],
+        ),
+        query: run.user_request,
+        mode: 'automatic',
+      },
+      tx,
+    );
+    const knowledge = await recordReferenceReads(
+      tx,
+      scope,
+      run,
+      generationId,
+      worker,
+      [
+        {
+          origin: {
+            kind: 'scene',
+            sceneId: scene.id,
+            sceneDigest: scene.digest,
+          },
+          results,
+        },
+      ],
+    );
+    // Index/source reads can wait as well; no data or receipt survives an expired lease.
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
     return {
       scene,
       receipt,
+      knowledge,
       sources: current.sources
         .filter(
           (s) =>

@@ -32,6 +32,7 @@ import {
 } from 'react';
 import {
   type WorkbenchArtifact,
+  type ReferenceSelection,
   type ArtifactBrowserVerification,
   type ChangesetDocument,
   type ReviewContinuationInput,
@@ -94,6 +95,7 @@ type Props = {
   onReload: (cursor?: ArtifactCursor) => Promise<void>;
   readOnly?: boolean;
   onContinued?: (runId: string) => void;
+  onOpenReference?: (reference: ReferenceSelection) => void;
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
@@ -380,6 +382,7 @@ function ArtifactTabBody(
           onContinued={props.onContinued}
           onCatalog={props.onCatalog}
           onReload={props.onReload}
+          onOpenReference={props.onOpenReference}
         />
       </div>
     );
@@ -615,6 +618,7 @@ function ArtifactReview({
   readOnly = false,
   onCatalog,
   onReload,
+  onOpenReference,
 }: {
   active: boolean;
   artifactId: string;
@@ -626,6 +630,7 @@ function ArtifactReview({
   onContinued?: (runId: string) => void;
   onCatalog: () => void;
   onReload: () => Promise<void>;
+  onOpenReference?: (reference: ReferenceSelection) => void;
 }) {
   const [artifact, setArtifact] = useState<WorkbenchArtifact | null>(null),
     [preview, setPreview] = useState<ArtifactPreview | null>(null),
@@ -934,6 +939,38 @@ function ArtifactReview({
                 />
               )}
           </DocumentToolbar>
+          {!!artifact.provenance.referenceReads?.length && (
+            <details className={styles.notice}>
+              <summary>生成此版本时已检索的资料</summary>
+              <p>
+                只记录实际返回的片段，不代表已阅读整份文件或采用其中全部内容。
+              </p>
+              <ul>
+                {artifact.provenance.referenceReads.map((read) => (
+                  <li key={read.receiptId}>
+                    {onOpenReference ? (
+                      <button
+                        type="button"
+                        onClick={() => onOpenReference(read.citation.reference)}
+                      >
+                        [{read.citation.referenceLabel}] {read.citation.label}
+                      </button>
+                    ) : (
+                      <span>
+                        [{read.citation.referenceLabel}] {read.citation.label}
+                      </span>
+                    )}
+                    {' · '}
+                    {read.origin.kind === 'explicit'
+                      ? '本次选择'
+                      : read.origin.kind === 'scene'
+                        ? '场景资料'
+                        : '常用资料'}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           {browserVerification ? (
             <section aria-label="页面验证">
               <p>

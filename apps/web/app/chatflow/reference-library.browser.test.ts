@@ -353,6 +353,19 @@ suite(
             })
             .first()
             .waitFor();
+          expect(
+            await page
+              .getByRole('dialog', { name: '参考资料', exact: true })
+              .evaluate((dialog) => {
+                const bounds = dialog.getBoundingClientRect();
+                return [
+                  ...dialog.querySelectorAll('fieldset,input,select'),
+                ].every((control) => {
+                  const box = control.getBoundingClientRect();
+                  return box.left >= bounds.left && box.right <= bounds.right;
+                });
+              }),
+          ).toBe(true);
           const download = await api(
             '/revisions/' +
               saved.revisionId +

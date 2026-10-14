@@ -12,6 +12,10 @@ import {
   type ContentIdentity,
 } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import {
+  readReferenceSelection,
+  ReferenceRuntimeError,
+} from '../reference-runtime.ts';
 import { resolveEffectiveKnowledgeAcl } from '../capabilities/capability-registry.ts';
 import {
   canReferenceScope,
@@ -154,6 +158,46 @@ export async function resolveEmployeeContentSource(
         ? { publish: { contentId: ref.contentId, revisionId: ref.revisionId } }
         : {}),
     };
+  }
+  if (ref.sourceKind === 'knowledge') {
+    const [managed] = await sql`select id from allrice_knowledge_sources
+      where id=${ref.contentId} and ownership is not null`;
+    if (managed) {
+      try {
+        const { selection } = await readReferenceSelection(
+          context,
+          ref.revisionId,
+          sql,
+          lock,
+        );
+        if (selection.sourceId !== ref.contentId) return unavailable(ref);
+        if (selection.digest !== ref.digest)
+          return unavailable(ref, 'source_changed');
+        if (!canReferenceScope(ownership, selection.ownership))
+          return unavailable(ref, 'source_scope_mismatch');
+        const access = await getContentAccess(
+          context,
+          selection.ownership,
+          sql,
+          lock,
+        );
+        return {
+          dto: {
+            reference: ref,
+            available: true,
+            ownership: selection.ownership,
+            canMaintain: access.canMaintain,
+            title: selection.fileName,
+            body: selection.purpose,
+            referenceFile: selection,
+          },
+          dependency: { ref, selection },
+        };
+      } catch (error) {
+        if (error instanceof ReferenceRuntimeError) return unavailable(ref);
+        throw error;
+      }
+    }
   }
   if (ref.sourceKind === 'knowledge' || ref.sourceKind === 'workflow') {
     const knowledge = ref.sourceKind === 'knowledge';

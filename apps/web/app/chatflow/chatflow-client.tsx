@@ -1908,6 +1908,7 @@ export function ChatFlowClient({
 
       {workbenchEnabled && hasWorkbenchContent ? (
         <ArtifactWorkbench
+          onOpenReference={openReference}
           readOnly={sessionArchived}
           open={workbenchOpen}
           width={resize.width}

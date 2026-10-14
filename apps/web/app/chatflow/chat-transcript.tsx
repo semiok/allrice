@@ -399,7 +399,10 @@ export function ChatTranscript({
                                               onOpenReference?.(c.reference!)
                                             }
                                           >
-                                            [K{index + 1}] {c.label}
+                                            [
+                                            {c.referenceLabel ??
+                                              `K${index + 1}`}
+                                            ] {c.label}
                                           </button>
                                         ) : null,
                                     )}

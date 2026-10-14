@@ -37,6 +37,8 @@ import {
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
   loadEmployeeRuntimeScene,
+  loadEmployeeRuntimeReferences,
+  readEmployeeReferenceCitations,
   adoptEmployeeRuntimeScene,
   EmployeeRuntimeContentError,
   ReferenceRuntimeError,
@@ -87,7 +89,10 @@ import {
   getHarnessRouter,
   harnessRouteKey,
 } from '../harness/router.js';
-import { buildAuthorizedKnowledgeContext } from '../knowledge.js';
+import {
+  buildAuthorizedKnowledgeContext,
+  formatKnowledgeExcerpts,
+} from '../knowledge.js';
 import { estimateModelCostCents } from '../model-cost.js';
 import {
   assertInitialModelInputBudget,
@@ -322,6 +327,7 @@ export async function executeEmployeeRun({
                   body,
                 })),
               ),
+              formatKnowledgeExcerpts(loaded.knowledge),
             ].join('\n'),
           };
         },
@@ -1110,7 +1116,16 @@ export async function executeEmployeeRun({
       context: execution.context,
       employeeId: executionSnapshot.employee.id,
       knowledgeRevisionIds: selectedKnowledgeRevisionIds,
-      referenceSelections: resolved.promptSnapshot.referenceSelections,
+      referenceSelections: contentRuntime
+        ? undefined
+        : resolved.promptSnapshot.referenceSelections,
+      referenceResults: contentRuntime
+        ? await loadEmployeeRuntimeReferences(
+            contentScope,
+            contentRuntime.generationId,
+            workflowLease,
+          )
+        : undefined,
       referenceIdentity: {
         actor: { type: 'user', id: contentScope.ownerId },
         organizationId: contentScope.organizationId,
@@ -1858,7 +1873,13 @@ export async function executeEmployeeRun({
               result.cacheUsageKnown === true && priorWaitUsage.cacheUsageKnown,
           }
         : {}),
-      citations: [...knowledge.citations, ...workflowCitations].filter(
+      citations: [
+        ...knowledge.citations,
+        ...(contentRuntime
+          ? await readEmployeeReferenceCitations(contentScope)
+          : []),
+        ...workflowCitations,
+      ].filter(
         (citation, index, values) =>
           values.findIndex(
             (candidate) =>

@@ -6,6 +6,7 @@ import { DeliverableVersionSchema } from '../operations.ts';
 import { RuntimeExecutionScopeSchema } from './identity.ts';
 import { isRuntimeRelativePath } from './policy.ts';
 import { LocalFilePathSchema } from '../local-files.ts';
+import { ReferenceReadsSchema } from '../reference-reads.ts';
 
 export const WorkbenchArtifactKindSchema = z.enum([
   'document',
@@ -184,6 +185,7 @@ export const ArtifactProvenanceSchema = z
     runId: UuidSchema.nullable(),
     operationId: UuidSchema.nullable(),
     stepId: UuidSchema.nullable(),
+    referenceReads: ReferenceReadsSchema.optional(),
   })
   .strict();
 export const WorkbenchArtifactSchema = z

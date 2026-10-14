@@ -1,4 +1,5 @@
 // Isolated UI entry for the real HTTP/database/Worker browser regression.
+import '../app/styles/base.css';
 import { createRoot } from 'react-dom/client';
 import { useState } from 'react';
 import { ReferenceLibrary } from '../app/chatflow/reference-library';
