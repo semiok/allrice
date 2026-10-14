@@ -1,3 +1,4 @@
+import { executeEmployeeMethodFileStep } from './employee-method-file-tests.js';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
@@ -8,6 +9,7 @@ import {
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
   employeeMethodTestStillCurrent,
+  methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
 } from '@allrice/database';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
@@ -18,7 +20,18 @@ vi.mock('@allrice/database', () => ({
   claimNextPlatformEmployeeTestRun: vi.fn(),
   completePlatformEmployeeTestRun: vi.fn(),
   employeeMethodTestStillCurrent: vi.fn(),
+  methodFileExecutionUnverified: vi.fn(),
   freezeRouteSubscriptionSnapshot: vi.fn(),
+}));
+vi.mock('./employee-method-file-tests.js', () => ({
+  employeeMethodFileTools: [
+    {
+      name: 'platform.employee.method.step',
+      description: 'fixed files',
+      inputSchema: { type: 'object' },
+    },
+  ],
+  executeEmployeeMethodFileStep: vi.fn(),
 }));
 vi.mock('./tool-broker.js', () => ({
   executeRiceTool: vi.fn(),
@@ -119,6 +132,7 @@ const receipt = {
 beforeEach(() => {
   vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(claimed());
   vi.mocked(employeeMethodTestStillCurrent).mockResolvedValue(true);
+  vi.mocked(methodFileExecutionUnverified).mockResolvedValue(false);
   vi.mocked(freezeRouteSubscriptionSnapshot).mockResolvedValue({
     frozen: true,
     snapshotDigest: 'synthetic',
@@ -300,3 +314,43 @@ it.each([false, true])(
     });
   },
 );
+
+it('limits file-case tools and keeps an unknown backend result unverified even if the model claims success', async () => {
+  const test = claimed();
+  test.methodCandidate!.caseId = 'cny-file-flow-v1';
+  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
+  vi.mocked(executeEmployeeMethodFileStep).mockImplementation(async (input) => {
+    input.onUnverified('METHOD_FILE_UNKNOWN');
+    return { modelContent: '{"status":"unknown"}', summary: 'unknown' };
+  });
+  vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
+    async (input) => {
+      expect(input.authorizedToolNames).toEqual([
+        'platform.employee.method.step',
+      ]);
+      expect(input.tools.map((t) => t.name)).toEqual([
+        'platform.employee.method.step',
+      ]);
+      expect(input.nativeSkills).toEqual([]);
+      expect(input.kernel.grantedCapabilities).toEqual(['model:invoke']);
+      await input.onToolCall!({
+        id: 'opaque-model-call',
+        name: 'platform.employee.method.step',
+        arguments: { stage: 'normalize', script: 'x' },
+      });
+      return receipt;
+    },
+  );
+  await run();
+  expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
+    test.id,
+    expect.objectContaining({
+      answer: null,
+      error: expect.objectContaining({
+        code: 'EMPLOYEE_METHOD_TEST_EXECUTION_UNVERIFIED',
+      }),
+      usage: receipt.usage,
+      modelExecution: expect.objectContaining({ usageComplete: true }),
+    }),
+  );
+});

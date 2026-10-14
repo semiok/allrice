@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
+import { methodTestNativeTools } from './allrice-method-test-native-tools.mjs';
 import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
@@ -75,6 +76,7 @@ const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
   ...employeeProfileNativeTools,
   ...employeeMethodNativeTools,
+  ...methodTestNativeTools,
   ...technicalNativeTools,
   ...browserWorkspaceNativeTools,
   ...mcpNativeTools,

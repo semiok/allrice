@@ -996,6 +996,12 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
           handler: 'platform_employee_preview',
           platformEmployeeTestRunId: row.id,
           employeeRevisionId: row.revision_id,
+          ...(methodClaim
+            ? {
+                employeeMethodSnapshotDigest:
+                  methodClaim.binding.snapshot_digest,
+              }
+            : {}),
         })},
         ${transaction.json({ prompt: parsedInput.prompt })}, ${issuedAt}
       )
