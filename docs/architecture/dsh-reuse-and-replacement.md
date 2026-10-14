@@ -506,3 +506,31 @@ AllRice 通过公开的 `llm/stream` middleware 请求 Worker 校验，覆盖原
 ### MET179 PR3b2：工作场景原生渐进加载
 
 `allrice-progressive-scene-provider-v1` 使用固定 DSH 的公开 Skill Provider list/get 和 session/event、llm/stream。目录不带正文；Worker 按冻结引用与当前权限、lease 提交读取回执后才返回内容。原生 get（包括不可调用 slash 的探查）只算读取；匹配的成功 tool/result 才登记采用，下一派发等待采用事务。场景读取接入既有 content generation，撤权后压缩、恢复和跨会话引用同样失效。跨 Run 使用独立原生线程，保留已授权的普通历史，避免上一场景的工具结果或 summary 自动沿用。可删除条件：上游提供同等租户来源读取/采用持久化接口后替换适配；没有改动 DSH 核心或另造 Skill/Agent 循环。
+
+### 2026-10-14：执行时限与后台计算复用复评
+
+固定上游仍为 `0.1.5-rc.3`。工具外层超时继续复用
+`@deepseek-ai/dsh-tool-call-timeout-policy`，时限直接声明在原生工具的
+`timeoutMs`；移除 JSON-RPC 注册器按工具名称再覆盖一次的清单。已支持审批和资源
+排队的工具保持原有效时限，Python 补齐同一等待策略，避免还在排队就被三分钟
+外层等待切断。脚本的执行预算仍由授权后的执行器管理，不把外层等待时限当作计算预算。
+原生注册器与 policy 的测试覆盖超过原 Python 等待上限、工具超时等待收尾、上级取消
+不误分类；没有另建计时器或重试循环。
+
+后台长计算的原生复用方向是 `dsh-jobs` 的 producer 接口及 `dsh-tool-jobs` 的
+`job_output` / `job_list` / `job_kill`。现有 `dsh-jobs-local` 实测支持等待超时继续
+运行、取消后先进入 stopping、执行器提交停止回执后进入终态。它是进程内注册表，
+不能代替 AllRice 已有的租户授权、持久操作身份与跨 Worker 对账。AllRice 应仅实现
+受控 producer：沿用原 operationId、Run、原始工具调用和成果版本，将物理停止和
+清理回执接到原生 `done`。普通宿主 bash 不应因此对租户开放。
+
+当前 SDK 的 JSON-RPC request signal 只放弃本地等待，不发送远端终止。接入后台
+producer 时必须补齐实际取消接线，并验证父 Run 收尾、owner 释放、Worker 中断、
+跨 owner 隔离及未知结果不重放；不能把请求已取消当成容器已停止。DSH 原生
+`job_output` 的等待超时也不能再映射成计算失败。
+
+本次仅收口原生工具时限声明。后台长计算尚未接入；现有 Python 默认 30 秒、最大
+60 秒的计算限制仍保留。后续接入须通过长于 60 秒的有效计算、无输出计算、取消、
+恢复核对与成果只交付一次的实际验证，再调整服务端冻结的计算预算。模型 idle
+补救层处理的是不响应 abort 的 transport，不能因为 DSH 也有 watchdog 就未经
+复现删除。所有复用判断按实际源码和验证记录更新，不把本页方案视为已交付能力。

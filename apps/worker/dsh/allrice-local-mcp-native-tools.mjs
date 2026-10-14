@@ -1,3 +1,4 @@
+import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
 
@@ -30,7 +31,7 @@ export const localMcpNativeTools = [
     description:
       'Request exact user approval to initialize and discover one frozen local MCP server in the Bridge isolated sandbox. This runs code; discovery does not grant its tools. Never retry an unknown result automatically.',
     parameters: { connectionId },
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       discover.parse(args);
@@ -57,7 +58,7 @@ export const localMcpNativeTools = [
           'Arguments matching the exact frozen input schema; at most 8 KiB. Never include credentials.',
       },
     },
-    timeoutMs: 180000,
+    timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
       call.parse(args);
