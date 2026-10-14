@@ -409,6 +409,44 @@ export async function inspectEmployeeMethodTestFromChat(
   );
 }
 
+/** Activation uses the original fixed assertion and current frozen authority;
+ * a model's description of a successful test is never evidence. */
+export async function readEmployeeMethodActivationTest(
+  tx: Tx,
+  context: Identity,
+  instanceId: string,
+  testId: string,
+  modelInput: unknown,
+) {
+  const result = await dto(tx, context, testId);
+  if (result.instanceId !== instanceId) throw new DataAccessError('not_found');
+  if (
+    !result.applicable ||
+    result.status !== 'succeeded' ||
+    result.validationStatus !== 'passed'
+  )
+    throw new EmployeeContentError('validation_required');
+  const b = await readBinding(tx, testId);
+  const model = SessionModelSnapshotSchema.parse(modelInput);
+  const original = SessionModelSnapshotSchema.parse(b.model_snapshot);
+  const comparable = (m: typeof model) =>
+    runtimePolicyDigest({ ...m, sessionId: null, frozenAt: null });
+  if (comparable(model) !== comparable(original))
+    throw new EmployeeContentError('source_changed');
+  await assertEmployeeMethodModelCurrent(tx, b, original);
+  return {
+    testId,
+    sceneId: result.sceneId,
+    caseId: result.caseId,
+    snapshotDigest: b.snapshot_digest,
+    candidateRevisionId: result.candidateRevisionId,
+    candidateDigest: result.candidateDigest,
+    dependencyDigest: result.dependencyDigest,
+    assertion: result.assertion,
+    coverage: result.coverage,
+  };
+}
+
 export async function getEmployeeMethodTest(context: Identity, testId: string) {
   return employeeAccessTransaction(getDatabase(), (tx) =>
     dto(tx, context, UuidSchema.parse(testId)),

@@ -834,6 +834,7 @@ export async function inspectEmployeeMethodContent(
       candidate: null,
       active: null,
       sources: [],
+      candidateTests: [],
     };
   const candidate = await readRevision(tx, row.candidate_revision_id);
   const active = await readRevision(tx, row.active_revision_id);
@@ -854,6 +855,13 @@ export async function inspectEmployeeMethodContent(
         })
       ).dto,
     );
+  const tests = candidate
+    ? await tx`select t.test_id,t.scene_id,t.case_id,p.status
+    from allrice_employee_method_tests t join allrice_platform_employee_test_runs p on p.id=t.test_id and p.purpose='method_candidate'
+    where t.organization_id=${context.organizationId} and t.workspace_id=${context.workspaceId} and t.owner_id=${context.actor.id}
+      and t.instance_id=${instanceId} and t.set_id=${row.id} and t.candidate_revision_id=${candidate.id} and t.candidate_digest=${candidate.digest}
+    order by t.created_at desc,t.test_id limit 32`
+    : [];
   return {
     view,
     instanceId,
@@ -862,19 +870,26 @@ export async function inspectEmployeeMethodContent(
     candidate: candidate ? revisionDto(candidate) : null,
     active: active ? { id: active.id, digest: active.digest } : null,
     sources,
+    // Discovery only. test_status/activation rechecks dependency and authority;
+    // a stored 'succeeded' state alone is not a current passing assertion.
+    candidateTests: tests.map((t) => ({
+      testId: t.test_id,
+      sceneId: t.scene_id,
+      caseId: t.case_id,
+      status: t.status,
+    })),
   };
 }
 
 /** Same layer/source resolver as effective content, with exactly one candidate
  * substituted. Tests freeze this overlay separately from the published package. */
-export async function freezeEmployeeMethodCandidate(
+export async function freezeEmployeeMethodActivationCandidate(
   context: EmployeeContentContext,
   input: {
     instanceId: string;
     expectedRevision: number;
     candidateRevisionId: string;
     candidateDigest: string;
-    sceneId: string;
   },
   tx: ContentTx,
 ) {
@@ -908,15 +923,7 @@ export async function freezeEmployeeMethodCandidate(
   );
   if (!result.validation.valid)
     throw new EmployeeContentError('validation_failed');
-  const scene = result.scenes.find((s) => s.id === input.sceneId);
-  if (!scene || !revision.manifest.scenes.some((s) => s.id === scene.id))
-    throw new EmployeeContentError('source_changed');
-  const selected = new Set(
-    [...result.common, ...scene.references].map(exactKey),
-  );
-  const sources = result.resolved.filter((s) =>
-    selected.has(exactKey(s.dto.reference)),
-  );
+  const active = await readRevision(tx, row.active_revision_id);
   return {
     setId: row.id,
     setRevision: row.revision,
@@ -925,8 +932,46 @@ export async function freezeEmployeeMethodCandidate(
     dependencyDigest: result.validation.dependencyDigest,
     employeeId: target.employeeId,
     employeeVersionId: target.versionId,
+    activeRevisionId: active?.id ?? null,
+    activeManifest: active?.manifest ?? emptyManifest,
+    manifest: revision.manifest,
+    sources: result.resolved.map((s) => s.dto),
+    common: result.common,
+    scenes: result.scenes,
+  };
+}
+
+export async function freezeEmployeeMethodCandidate(
+  context: EmployeeContentContext,
+  input: Parameters<typeof freezeEmployeeMethodActivationCandidate>[1] & {
+    sceneId: string;
+  },
+  tx: ContentTx,
+) {
+  const result = await freezeEmployeeMethodActivationCandidate(
+    context,
+    input,
+    tx,
+  );
+  const scene = result.scenes.find((s) => s.id === input.sceneId);
+  if (!scene || !result.manifest.scenes.some((s) => s.id === scene.id))
+    throw new EmployeeContentError('source_changed');
+  const selected = new Set(
+    [...result.common, ...scene.references].map(exactKey),
+  );
+  const sources = result.sources.filter((s) =>
+    selected.has(exactKey(s.reference)),
+  );
+  return {
+    setId: result.setId,
+    setRevision: result.setRevision,
+    candidateRevisionId: result.candidateRevisionId,
+    candidateDigest: result.candidateDigest,
+    dependencyDigest: result.dependencyDigest,
+    employeeId: result.employeeId,
+    employeeVersionId: result.employeeVersionId,
     scene,
     common: result.common,
-    sources: sources.map((s) => s.dto),
+    sources,
   };
 }

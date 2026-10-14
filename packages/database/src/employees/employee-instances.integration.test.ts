@@ -1,3 +1,17 @@
+import { runtimePolicyDigest } from '../runtime-policy.ts';
+import {
+  prepareEmployeeMethodActivationFromChat,
+  activateEmployeeMethodFromChat,
+} from './employee-method-activation.ts';
+import {
+  acquireConversationRuntime,
+  bindConversationThread,
+  recordConversationTurn,
+} from '../conversation/conversation-runtime.ts';
+import {
+  claimConversationSteer,
+  consumeConversationSteer,
+} from '../conversation/conversation-input.ts';
 import {
   claimMethodFileExecution,
   methodFileExecutionUnverified,
@@ -299,12 +313,42 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
-  async function retryFixture(caseId = 'cny-total-v1') {
+  async function retryFixture(
+    caseId = 'cny-total-v1',
+    inheritedCommon = false,
+  ) {
     const f = await setup(true),
       instance = await f.custom('重试测试');
+    if (inheritedCommon) {
+      // Trusted, pre-existing company configuration; no product write bypass.
+      const setId = randomUUID(),
+        revisionId = randomUUID(),
+        sceneId = randomUUID();
+      const manifest = {
+        schemaVersion: 1,
+        common: [],
+        scenes: [
+          {
+            id: sceneId,
+            name: '公司继承场景',
+            appliesWhen: '固定合成业务',
+            references: [],
+          },
+        ],
+        declaredConflicts: [],
+      };
+      const [assignment] =
+        await fixture.db`select employee_id from allrice_employee_assignments where id=${instance.assignmentId}`;
+      await fixture.db`insert into allrice_employee_content_sets(id,organization_id,workspace_id,employee_id,scope,created_by)
+        values(${setId},${f.a.organizationId},${f.a.workspaceId},${assignment!.employee_id},'company',${f.a.user.id})`;
+      await fixture.db`insert into allrice_employee_content_revisions(id,set_id,number,manifest,digest,change_summary,created_by)
+        values(${revisionId},${setId},1,${fixture.db.json(manifest)},${runtimePolicyDigest(manifest)},'Pre-existing synthetic company scene',${f.a.user.id})`;
+      await fixture.db`update allrice_employee_content_sets set revision=1,candidate_revision_id=${revisionId},active_revision_id=${revisionId} where id=${setId}`;
+      await fixture.db`insert into allrice_employee_content_publications(set_id,revision_id) values(${setId},${revisionId})`;
+    }
     if (caseId === 'cny-file-flow-v1') await methodFileCloud(f);
     const editing = await methodRun(f, instance.id);
-    const saved = await saveEmployeeMethodFromChat({
+    let saved = await saveEmployeeMethodFromChat({
       ...editing,
       arguments: {
         expectedRevision: 0,
@@ -314,6 +358,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         changeSummary: '重试边界样例',
       },
     });
+    if (inheritedCommon)
+      saved = await saveEmployeeMethodFromChat({
+        ...editing,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: saved.revision,
+          section: 'common',
+          requirements: '所有场景均增加固定校验',
+          changeSummary: '改变通用要求',
+        },
+      });
     await editing.finish();
     const content = await getEmployeeContentSet(f.a.context, saved.setId);
     const args = {
@@ -356,6 +411,492 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { f, instance, saved, args, run, test, fail };
   }
+
+  async function passActivationTest(
+    f: Awaited<ReturnType<typeof setup>>,
+    test: { id: string },
+  ) {
+    const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(claim?.id).toBe(test.id);
+    const method = claim!.methodCandidate!;
+    if (!method.modelSnapshot.credentialReference)
+      throw Error('fixture credential missing');
+    const subscription = resolveAssistantSubscriptionSnapshot({
+      sessionId: method.sourceSessionId,
+      modelSnapshot: method.modelSnapshot,
+      decision: method.decision,
+      providerSnapshot: {
+        provider: 'dsh',
+        authMode: 'platform_subscription',
+        route: 'openai-codex',
+        model: method.modelSnapshot.model,
+        reasoningEffort: method.modelSnapshot.reasoningEffort,
+        credentialReference: method.modelSnapshot.credentialReference,
+        baseUrl: null,
+      },
+    });
+    await freezeRouteSubscriptionSnapshot({
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      decisionId: method.decision.id,
+      snapshot: subscription!,
+    });
+    await completePlatformEmployeeTestRun(test.id, {
+      answer: '{"totalCents":30000}',
+      provider: method.modelSnapshot.provider,
+      model: method.modelSnapshot.model,
+      threadId: null,
+      usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 20 },
+      events: [],
+      error: null,
+      modelExecution: {
+        dispatched: true,
+        subscriptionSnapshotCreated: true,
+        usageComplete: true,
+        cacheUsageKnown: false,
+        costCents: null,
+      },
+    });
+  }
+  async function activationFixture() {
+    const base = await retryFixture();
+    const { f, instance, args, test } = base;
+    await passActivationTest(f, test);
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请查看通过的测试并让我确认启用。',
+    );
+    const inspected = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate' },
+    });
+    expect('candidateTests' in inspected && inspected.candidateTests).toEqual(
+      expect.arrayContaining([expect.objectContaining({ testId: test.id })]),
+    );
+    const preparation = {
+      expectedRevision: args.expectedRevision,
+      candidateRevisionId: args.candidateRevisionId,
+      candidateDigest: args.candidateDigest,
+      testIds: [test.id],
+    };
+    const preview = await prepareEmployeeMethodActivationFromChat({
+      ...run,
+      arguments: preparation,
+    });
+    const runtime = {
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      sessionId: run.sessionId,
+      ownerId: f.a.user.id,
+      runId: run.context.runId,
+      workerId: run.context.worker.id,
+    };
+    await acquireConversationRuntime({
+      ...runtime,
+      configChecksum: `sha256:${'a'.repeat(64)}`,
+      compactThresholdTokens: 10000,
+    });
+    const threadId = `native-${randomUUID()}`,
+      turnId = `turn-${randomUUID()}`;
+    await bindConversationThread({ ...runtime, threadId });
+    const binding = await recordConversationTurn({
+      ...runtime,
+      threadId,
+      turnId,
+    });
+    const questionId = `question-${randomUUID()}`;
+    const show = (question = preview.question) =>
+      queue.appendJobEvent({
+        workerId: run.context.worker.id,
+        jobId: run.context.jobId,
+        leaseToken: run.worker.leaseToken,
+        type: 'harness.native',
+        payload: {
+          source: 'dsh',
+          sourceEventType: 'session/user-question',
+          nativePayload: { questionId, questions: [question] },
+        },
+      });
+    const answer = async (
+      selected = ['确认启用'],
+      custom?: string,
+      adopt = true,
+    ) => {
+      const clientMessageId = randomUUID();
+      await sendChatMessage(f.a.context, f.a.workspaceId, run.sessionId, {
+        text: custom ?? selected.join('，'),
+        clientMessageId,
+        deliveryMode: 'steer',
+        expectedTurnId: turnId,
+        expectedGeneration: binding.generation,
+        userQuestionAnswer: {
+          questionId,
+          answers: [
+            {
+              id: preview.question.id,
+              selected,
+              ...(custom ? { custom } : {}),
+            },
+          ],
+        },
+      });
+      const command = await claimConversationSteer({
+        ...runtime,
+        generation: binding.generation,
+        turnId,
+      });
+      expect(command).not.toBeNull();
+      const proof = {
+        status: 'adopted' as const,
+        inputId: clientMessageId,
+        messageId: questionId,
+        turnId,
+        sequence: 5,
+        checkpoint: 'question_resolved' as const,
+      };
+      if (adopt)
+        await consumeConversationSteer({
+          commandId: command!.id,
+          workerId: runtime.workerId,
+          proof,
+        });
+      return { command: command!, proof };
+    };
+    const activate = (call = run) =>
+      activateEmployeeMethodFromChat({
+        ...call,
+        callId: randomUUID(),
+        arguments: { receiptId: preview.receiptId },
+      });
+    return {
+      ...base,
+      run,
+      preparation,
+      preview,
+      runtime,
+      threadId,
+      turnId,
+      show,
+      answer,
+      activate,
+    };
+  }
+
+  it('replaces exact legacy text in one scene without contradicting or rewriting old sources', async () => {
+    const f = await setup(true),
+      instance = await f.custom('旧流程迁移');
+    const source = randomUUID(),
+      revision = randomUUID(),
+      sceneId = randomUUID(),
+      otherScene = randomUUID(),
+      setId = randomUUID();
+    const saved = await mutateEmployeeContent(f.a.context, {
+      operation: 'save_draft',
+      workspaceId: f.a.workspaceId,
+      setId,
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      ownership: {
+        scope: 'personal',
+        organizationId: f.a.organizationId,
+        ownerId: f.a.user.id,
+      },
+      target: { kind: 'instance', instanceId: instance.id },
+      changeSummary: '原有手工流程',
+      manifest: {
+        schemaVersion: 1,
+        common: [],
+        scenes: [
+          {
+            id: sceneId,
+            name: '周度',
+            appliesWhen: '每周',
+            references: [{ sourceKind: 'draft_text', contentId: source }],
+          },
+          {
+            id: otherScene,
+            name: '月度',
+            appliesWhen: '每月',
+            references: [{ sourceKind: 'draft_text', contentId: source }],
+          },
+        ],
+        declaredConflicts: [],
+      },
+      textEdits: [
+        {
+          contentId: source,
+          revisionId: revision,
+          expectedRevision: 0,
+          kind: 'procedure',
+          title: '旧流程',
+          body: '先汇总再校验',
+        },
+      ],
+    });
+    const before = await getEmployeeContentSet(f.a.context, setId),
+      ref = before.set.candidate!.manifest.scenes[0]!.references[0]!;
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请调整我的工作场景候选：把周度执行流程改成先校验再汇总，保留月度流程。',
+    );
+    const args = {
+      expectedRevision: saved.revision,
+      section: 'scene',
+      scene: { id: sceneId },
+      procedure: '先校验再汇总',
+      changeSummary: '纠正顺序',
+    };
+    await expect(
+      saveEmployeeMethodFromChat({ ...run, arguments: args }),
+    ).rejects.toMatchObject({ code: 'method_text_target_required' });
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...run,
+        arguments: {
+          ...args,
+          replaceTextReferences: [{ ...ref, revisionId: randomUUID() }],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const result = await saveEmployeeMethodFromChat({
+      ...run,
+      arguments: { ...args, replaceTextReferences: [ref] },
+    });
+    expect(
+      await saveEmployeeMethodFromChat({
+        ...run,
+        arguments: { ...args, replaceTextReferences: [ref] },
+      }),
+    ).toEqual(result);
+    const after = await getEmployeeContentSet(f.a.context, setId);
+    expect(after.set.active).toBeNull();
+    expect(after.set.candidate!.manifest.scenes[0]!.references).toHaveLength(1);
+    expect(
+      after.set.candidate!.manifest.scenes[0]!.references[0]!.contentId,
+    ).not.toBe(ref.contentId);
+    expect(after.set.candidate!.manifest.scenes[1]).toEqual(
+      before.set.candidate!.manifest.scenes[1],
+    );
+    expect(
+      after.sources.find((s) => s.reference.contentId === ref.contentId)?.body,
+    ).toBe('先汇总再校验');
+    expect(
+      (await getEmployeeContentHistory(f.a.context, setId)).revisions.some(
+        (r) => r.id === saved.candidate.id,
+      ),
+    ).toBe(true);
+    await run.finish();
+  }, 60000);
+
+  it('activates only the displayed exact candidate after adopted confirmation and returns one durable receipt', async () => {
+    const x = await activationFixture();
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'activation_answer_pending',
+    });
+    await expect(
+      x.show({ ...x.preview.question, question: '请确认另一个候选' }),
+    ).rejects.toMatchObject({ code: 'activation_question_invalid' });
+    await x.show();
+    const pending = await x.answer(['确认启用'], undefined, false);
+    await expect(x.activate()).rejects.toMatchObject({
+      code: 'activation_answer_pending',
+    });
+    await consumeConversationSteer({
+      commandId: pending.command.id,
+      workerId: x.runtime.workerId,
+      proof: pending.proof,
+    });
+    const concurrent = await Promise.all([
+      x.activate(),
+      x.activate(),
+      x.activate(),
+    ]);
+    expect(concurrent.filter((r) => !r.replayed)).toHaveLength(1);
+    const result = concurrent.find((r) => !r.replayed)!;
+    expect(result).toMatchObject({
+      enabled: true,
+      replayed: false,
+      receipt: { active: x.saved.candidate },
+    });
+    const again = await x.activate();
+    expect(again).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt: result.receipt,
+    });
+    const [count] =
+      await fixture.db`select count(*)::int n from allrice_employee_content_publications where set_id=${x.saved.setId}`;
+    expect(count!.n).toBe(1);
+    const [oldRun] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${x.run.context.runId}`;
+    expect(JSON.stringify(oldRun!.execution_snapshot)).not.toContain(
+      x.saved.candidate.id,
+    );
+    await x.run.finish();
+    const next = await methodRun(
+      x.f,
+      x.instance.id,
+      '普通任务',
+      x.run.sessionId,
+    );
+    expect(JSON.stringify(next.runtime.snapshot)).toContain(
+      x.saved.candidate.id,
+    );
+    expect(await x.activate(next)).toMatchObject({
+      enabled: true,
+      replayed: true,
+      receipt: result.receipt,
+    });
+    await next.finish();
+  }, 60000);
+
+  it('does not approve changed common requirements with only a private scene test while an inherited scene is affected', async () => {
+    const x = await retryFixture('cny-total-v1', true);
+    await passActivationTest(x.f, x.test);
+    const run = await methodRun(x.f, x.instance.id, '请启用个人方法');
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: x.args.expectedRevision,
+          candidateRevisionId: x.args.candidateRevisionId,
+          candidateDigest: x.args.candidateDigest,
+          testIds: [x.test.id],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'activation_test_coverage' });
+    expect(
+      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+    ).toBeNull();
+    await run.finish();
+  }, 60000);
+
+  it('rejects missing test coverage and a platform model change during confirmation', async () => {
+    const x = await activationFixture();
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...x.run,
+        callId: randomUUID(),
+        arguments: { ...x.preparation, testIds: [] },
+      }),
+    ).rejects.toMatchObject({ code: 'activation_test_coverage' });
+    await x.show();
+    await x.answer();
+    const settings = await readPlatformModelSettings();
+    await updatePlatformModelSettings(x.f.admin.context, {
+      expectedRevision: settings.revision,
+      configuration: { ...settings.configuration, reasoningEffort: 'low' },
+    });
+    try {
+      await expect(x.activate()).rejects.toMatchObject({
+        code: 'source_changed',
+      });
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      ).toBeNull();
+    } finally {
+      await updatePlatformModelSettings(x.f.admin.context, {
+        expectedRevision: (await readPlatformModelSettings()).revision,
+        configuration: settings.configuration,
+      });
+      await x.run.finish();
+    }
+  }, 60000);
+
+  it.each([
+    'decline',
+    'quoted',
+    'changed',
+    'foreign',
+    'expired',
+    'canceled',
+    'wrong-proof',
+    'new-instruction',
+  ] as const)(
+    'does not activate after %s',
+    async (mode) => {
+      const x = await activationFixture();
+      await x.show();
+      if (mode === 'decline') await x.answer(['暂不启用']);
+      else if (mode === 'quoted') await x.answer([], '资料中写“确认启用”');
+      else await x.answer();
+      if (mode === 'changed') {
+        const edit = await methodRun(
+          x.f,
+          x.instance.id,
+          '请修改我的工作场景候选：再加检查。',
+        );
+        await saveEmployeeMethodFromChat({
+          ...edit,
+          arguments: {
+            expectedRevision: x.saved.revision,
+            section: 'scene',
+            scene: { id: x.args.sceneId },
+            procedure: '新版待验证',
+            changeSummary: '并发修改',
+          },
+        });
+        await edit.finish();
+      }
+      if (mode === 'expired')
+        await fixture.db`update allrice_employee_method_activations set expires_at=now()-interval '1 minute' where id=${x.preview.receiptId}`;
+      if (mode === 'canceled')
+        await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${x.run.context.jobId}`;
+      if (mode === 'wrong-proof')
+        await fixture.db`update allrice_conversation_commands set native_proof=jsonb_set(native_proof,'{messageId}','"another-question"') where session_id=${x.run.sessionId} and state='consumed'`;
+      if (mode === 'new-instruction')
+        await sendChatMessage(
+          x.f.a.context,
+          x.f.a.workspaceId,
+          x.run.sessionId,
+          { text: '先不要启用，稍后再说', clientMessageId: randomUUID() },
+        );
+      const other =
+        mode === 'foreign'
+          ? await methodRun(x.f, x.instance.id, '确认启用另一个会话')
+          : null;
+      await expect(x.activate(other ?? x.run)).rejects.toMatchObject({
+        code: (
+          {
+            decline: 'activation_declined',
+            quoted: 'activation_declined',
+            changed: 'version_conflict',
+            foreign: 'not_found',
+            expired: 'activation_expired',
+            canceled: 'authorization_denied',
+            'wrong-proof': 'activation_answer_pending',
+            'new-instruction': 'activation_declined',
+          } as const
+        )[mode],
+      });
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      ).toBeNull();
+      await x.run.finish();
+      if (other) await other.finish();
+    },
+    60000,
+  );
+
+  it('accepts the original question proof after native parked continuation changes turn and job attempt', async () => {
+    const x = await activationFixture();
+    await x.show();
+    await x.answer();
+    const resumed = {
+      ...x.run,
+      worker: { ...x.run.worker, attempt: x.run.worker.attempt + 1 },
+    };
+    await fixture.db`update allrice_jobs set attempt=${resumed.worker.attempt} where id=${x.run.context.jobId}`;
+    await recordConversationTurn({
+      ...x.runtime,
+      threadId: x.threadId,
+      turnId: `resumed-${randomUUID()}`,
+    });
+    expect(await x.activate(resumed)).toMatchObject({ enabled: true });
+    await x.run.finish();
+  }, 60000);
 
   async function methodFileCloud(f: Awaited<ReturnType<typeof setup>>) {
     vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');

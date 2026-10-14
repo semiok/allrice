@@ -74,6 +74,14 @@ export const EmployeeMethodSaveSchema = z
       )
       .max(16)
       .optional(),
+    replaceTextReferences: z
+      .array(
+        EmployeeContentReferenceSchema.extend({
+          sourceKind: z.enum(['requirement', 'procedure']),
+        }),
+      )
+      .max(16)
+      .optional(),
     changeSummary: z.string().trim().min(1).max(1000),
   })
   .strict()
@@ -92,7 +100,8 @@ export const EmployeeMethodSaveSchema = z
         input.requirements !== undefined ||
         input.procedure !== undefined ||
         input.references !== undefined ||
-        input.removeReferences !== undefined
+        input.removeReferences !== undefined ||
+        input.replaceTextReferences !== undefined
       )
         ctx.addIssue({
           code: 'custom',
@@ -100,6 +109,23 @@ export const EmployeeMethodSaveSchema = z
         });
       return;
     }
+    const replacements = input.replaceTextReferences ?? [];
+    if (
+      new Set(replacements.map((ref) => ref.contentId)).size !==
+        replacements.length ||
+      replacements.some(
+        (ref) =>
+          !(ref.sourceKind === 'procedure'
+            ? input.procedure
+            : input.requirements) ||
+          input.references?.some((added) => added.contentId === ref.contentId),
+      )
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Replacing text requires one exact source pin and its new text, without adding the removed source again.',
+      });
     if (
       input.scene &&
       !input.scene.id &&

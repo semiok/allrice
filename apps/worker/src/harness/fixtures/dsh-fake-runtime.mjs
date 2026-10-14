@@ -227,6 +227,21 @@ lines.on('line', (line) => {
     model: 'fake',
     contextWindow: 128000,
   });
+  if (prompt.includes('long-method-confirmation-question')) {
+    notify('session.user-question', {
+      sessionId,
+      questionId: 'long-confirmation',
+      questions: [
+        {
+          id: 'method-preview',
+          header: '启用工作方法',
+          question: '完整确认内容'.repeat(300),
+          multiSelect: false,
+          options: [{ label: '确认启用' }, { label: '暂不启用' }],
+        },
+      ],
+    });
+  }
   if (prompt.includes('model-wait-progress')) {
     const callId = '00000000-0000-4000-8000-000000000099';
     notify('allrice.modelWait', {
