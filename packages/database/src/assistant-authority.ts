@@ -9,6 +9,7 @@ import {
   runtimeContractEqual,
   withPlatformImageTools,
   employeeCustomizationTools,
+  employeeCustomizationToolsForInstance,
 } from '@allrice/contracts';
 import { z } from 'zod';
 import type { AssistantAuthorityInput } from './assistant-runtime.ts';
@@ -303,11 +304,11 @@ export async function assertAssistantAuthority(
   // handler still checks the current instance, user request and write lease.
   const instance =
     snapshot.data.schemaVersion === 2 ? snapshot.data.instance : undefined;
-  const customRoot =
+  const personalRoot =
     task.runId === task.rootRunId &&
     task.parentRunId === null &&
     ['configure', 'tool'].includes(input.phase) &&
-    instance?.kind === 'custom' &&
+    instance !== undefined &&
     instance.ownerId === root.owner_id &&
     instance.organizationId === task.scope.organizationId &&
     instance.workspaceId === task.scope.workspaceId &&
@@ -322,7 +323,10 @@ export async function assertAssistantAuthority(
         return (
           frozenTools.includes(tool) &&
           (intrinsic
-            ? customRoot &&
+            ? personalRoot &&
+              employeeCustomizationToolsForInstance(instance?.kind).some(
+                (entry) => entry.name === tool,
+              ) &&
               snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
                 intrinsic.capability,
               )

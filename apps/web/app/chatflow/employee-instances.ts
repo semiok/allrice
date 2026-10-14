@@ -20,19 +20,25 @@ export function employeeChoices(workspace: Workspace): Employee[] {
           ...employee,
           instanceId: instance.id,
           isDefault: employee.isDefault && instance.kind === 'general',
-          currentVersion: {
-            ...employee.currentVersion,
-            manifest: {
-              ...employee.currentVersion.manifest,
-              ...(instance.profile.name ? { name: instance.profile.name } : {}),
-              ...(instance.profile.description
-                ? { description: instance.profile.description }
-                : {}),
-              ...(instance.profile.appearance
-                ? { appearance: instance.profile.appearance }
-                : {}),
-            },
-          },
+          ...(instance.kind === 'custom'
+            ? {
+                currentVersion: {
+                  ...employee.currentVersion,
+                  manifest: {
+                    ...employee.currentVersion.manifest,
+                    ...(instance.profile.name
+                      ? { name: instance.profile.name }
+                      : {}),
+                    ...(instance.profile.description
+                      ? { description: instance.profile.description }
+                      : {}),
+                    ...(instance.profile.appearance
+                      ? { appearance: instance.profile.appearance }
+                      : {}),
+                  },
+                },
+              }
+            : {}),
         }))
       : [employee],
   );
@@ -54,10 +60,11 @@ export function employeeChoiceProfile(
       (p) => p.assignmentId === (employee?.id ?? id),
     );
   if (!base) return undefined;
-  const personal = employee?.instances?.find(
+  const instance = employee?.instances?.find(
     (i) => i.id === employee.instanceId,
-  )?.profile;
-  if (!personal) return base;
+  );
+  if (instance?.kind !== 'custom') return base;
+  const personal = instance.profile;
   return {
     ...base,
     name: personal.name ?? base.name,

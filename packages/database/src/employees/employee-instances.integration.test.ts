@@ -3118,13 +3118,6 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         arguments: args,
       }),
     ).rejects.toThrow();
-    const general = await profileRun(f, f.assignment.id, '以后回答保持简洁。');
-    expect(general.frozen.capabilitySnapshot.bindings.toolNames).not.toContain(
-      'workspace.employee.profile.update',
-    );
-    await expect(
-      updateEmployeeProfileFromChat({ ...general, arguments: args }),
-    ).rejects.toThrow();
     await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${input.context.jobId}`;
     await expect(
       updateEmployeeProfileFromChat({ ...input, arguments: args }),
@@ -3133,6 +3126,207 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       (await getEmployeeInstanceHistory(f.a.context, i.id)).revisions,
     ).toHaveLength(1);
   });
+  it('saves only a general owner expression preference, replays exactly and freezes it in a new Session', async () => {
+    const f = await setup(true),
+      id = f.assignment.id;
+    const input = await profileRun(f, id, '以后回答保持简洁。');
+    expect(input.frozen.instance).toMatchObject({
+      kind: 'general',
+      revision: 1,
+      profile: {},
+    });
+    expect(
+      input.frozen.capabilitySnapshot.bindings.toolNames.filter(
+        (name: string) => name.startsWith('workspace.employee.'),
+      ),
+    ).toEqual(['workspace.employee.profile.update']);
+    const args = { expectedRevision: 1, expressionStyle: 'concise' };
+    const call = () =>
+      updateEmployeeProfileFromChat({ ...input, arguments: args });
+    const saved = await call();
+    expect(saved).toMatchObject({
+      id,
+      revision: 2,
+      profile: { expressionStyle: 'concise' },
+    });
+    expect(await call()).toEqual(saved);
+    const next = await profileRun(f, id, '请说明你的回答方式。');
+    expect(next.sessionId).not.toBe(input.sessionId);
+    expect(next.frozen.instance).toMatchObject({
+      revision: 2,
+      profile: { expressionStyle: 'concise' },
+    });
+    expect(next.frozen.employee.definition).toEqual(
+      input.frozen.employee.definition,
+    );
+    const [old] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${input.context.runId}`;
+    expect(old!.execution_snapshot).toEqual(input.frozen);
+    expect(
+      (await getEmployeeInstance(f.b.context, f.bAssignment.id)).profile,
+    ).toEqual({});
+    await expect(
+      updateEmployeeInstance(f.b.context, id, {
+        workspaceId: f.b.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 2,
+        profile: { expressionStyle: 'exploratory' },
+      }),
+    ).rejects.toThrow();
+    await updateEmployeeInstance(f.a.context, id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      profile: { expressionStyle: 'exploratory' },
+    });
+    expect(await call()).toEqual(saved);
+    expect((await getEmployeeInstance(f.a.context, id)).profile).toEqual({
+      expressionStyle: 'exploratory',
+    });
+    await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${input.context.jobId}`;
+    await expect(call()).rejects.toThrow();
+  });
+
+  it('rejects general name/mixed fields and nonpersistent chat without creating profile revisions', async () => {
+    const f = await setup(true),
+      id = f.assignment.id;
+    const input = await profileRun(
+      f,
+      id,
+      '请把你的名字改为小禾。以后回答保持简洁。',
+    );
+    for (const patch of [
+      { name: '小禾' },
+      { name: '小禾', expressionStyle: 'concise' },
+    ]) {
+      await expect(
+        updateEmployeeProfileFromChat({
+          ...input,
+          callId: randomUUID(),
+          arguments: { expectedRevision: 1, ...patch },
+        }),
+      ).rejects.toMatchObject({ code: 'general_profile_style_only' });
+      await expect(
+        updateEmployeeInstance(f.a.context, id, {
+          workspaceId: f.a.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          profile: patch,
+        }),
+      ).rejects.toThrow();
+    }
+    await expect(
+      updateEmployeeInstance(f.a.context, id, {
+        workspaceId: f.a.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        profile: { mission: 'Change duty', expressionStyle: 'concise' },
+      }),
+    ).rejects.toThrow();
+    for (const text of [
+      '这次简洁回答。',
+      '引用资料原文：\n以后回答保持简洁。',
+      '请把下面这句话翻译成中文：\nBy default respond concise.',
+    ]) {
+      const invalid = await profileRun(f, id, text);
+      await expect(
+        updateEmployeeProfileFromChat({
+          ...invalid,
+          arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+        }),
+      ).rejects.toMatchObject({ code: 'explicit_profile_request_required' });
+    }
+    expect(
+      (await getEmployeeInstanceHistory(f.a.context, id)).revisions,
+    ).toHaveLength(1);
+    expect((await getEmployeeInstance(f.a.context, id)).profile).toEqual({});
+  });
+
+  it('serializes general style updates and rejects stale leases and withdrawn assignment replay', async () => {
+    const f = await setup(true),
+      id = f.assignment.id;
+    const a = await profileRun(f, id, '以后回答保持简洁。'),
+      b = await profileRun(f, id, '以后回答保持结构化。');
+    const first = {
+        ...a,
+        arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+      },
+      second = {
+        ...b,
+        arguments: { expectedRevision: 1, expressionStyle: 'structured' },
+      };
+    const results = await Promise.allSettled([
+      updateEmployeeProfileFromChat(first),
+      updateEmployeeProfileFromChat(second),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect((await getEmployeeInstance(f.a.context, id)).revision).toBe(2);
+    const accepted = results[0]!.status === 'fulfilled' ? first : second;
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...accepted,
+        worker: { ...accepted.worker, leaseToken: randomUUID() },
+      }),
+    ).rejects.toThrow();
+    await f.change('withdraw');
+    await expect(updateEmployeeProfileFromChat(accepted)).rejects.toThrow();
+  });
+
+  it('restores only general expression preference without reviving historical identity fields', async () => {
+    const f = await setup(true),
+      id = f.assignment.id;
+    // Synthetic migration history from before the kind-specific profile boundary.
+    const historical = {
+      name: 'Historical label',
+      mission: 'Historical duty',
+      expressionStyle: 'structured',
+    };
+    const current = {
+      name: 'Retained legacy label',
+      mission: 'Retained legacy duty',
+      expressionStyle: 'concise',
+    };
+    await fixture.db`insert into allrice_employee_instance_revisions(instance_id,revision,profile,operation) values(${id},2,${fixture.db.json(historical)},'update'),(${id},3,${fixture.db.json(current)},'update')`;
+    await fixture.db`update allrice_employee_instances set revision=3,profile=${fixture.db.json(current)} where id=${id}`;
+    const prior = (await getEmployeeInstanceHistory(f.a.context, id)).revisions;
+    const args = {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 3,
+      operation: 'restore',
+      sourceRevision: 2,
+    };
+    const restored = await changeEmployeeInstanceLifecycle(
+      f.a.context,
+      id,
+      args,
+    );
+    expect(restored).toMatchObject({
+      revision: 4,
+      profile: { ...current, expressionStyle: 'structured' },
+    });
+    expect(
+      await changeEmployeeInstanceLifecycle(f.a.context, id, args),
+    ).toEqual(restored);
+    expect(
+      (await getEmployeeInstanceHistory(f.a.context, id)).revisions.filter(
+        (r) => r.revision < 4,
+      ),
+    ).toEqual(prior);
+    const session = await f.session(id);
+    const listed = await listChatSessions(f.a.context, f.a.workspaceId, {
+      includeEmployeeGroups: true,
+    });
+    expect(listed.sessions.find((s) => s.id === session.id)?.employeeName).toBe(
+      f.assignment.currentVersion.manifest.name,
+    );
+    expect(
+      listed.employeeGroups?.find((g) => g.employeeInstanceId === id)
+        ?.employeeName,
+    ).toBe(f.assignment.currentVersion.manifest.name);
+  });
+
   it('serializes concurrent chat updates and rejects withdrawn assignment authority', async () => {
     const f = await setup(true),
       i = await f.custom('小白');
