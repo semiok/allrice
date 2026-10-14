@@ -770,6 +770,7 @@ function nativeSkillSnapshot(value) {
 class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   authorizationNotify = () => undefined;
   modelWaitNotify = () => undefined;
+  modelStreamNotify = () => undefined;
   codexModels = null;
   nativeTools = new Set();
   nativeToolsRegistered = new Set();
@@ -1001,6 +1002,17 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             scenes.length > 0 ||
             requestedSkills.some((skill) => skill.invocation.modelInvocable),
           onModelWait: (state) => this.modelWaitNotify(state),
+          onModelStream: (state) => this.modelStreamNotify(state),
+          modelStreamOptions: {
+            // Bounded deployment/test setting; never supplied by model input.
+            idleMs: Math.min(
+              300_000,
+              Math.max(
+                100,
+                Number(process.env.ALLRICE_MODEL_STREAM_IDLE_MS) || 300_000,
+              ),
+            ),
+          },
           controlTools: requestedTools.filter((name) =>
             name.startsWith('assistant.'),
           ),
@@ -1797,6 +1809,8 @@ installNativeContextProjection(ctx, (method, params) =>
 );
 server.modelWaitNotify = (state) =>
   transport.notify('allrice.modelWait', state);
+server.modelStreamNotify = (state) =>
+  transport.notify('allrice.modelStream', state);
 server.installUserQuestionProvider();
 if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
   server.assistantBridge = (method, params, signal) =>

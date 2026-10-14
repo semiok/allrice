@@ -534,3 +534,32 @@ producer 时必须补齐实际取消接线，并验证父 Run 收尾、owner 释
 恢复核对与成果只交付一次的实际验证，再调整服务端冻结的计算预算。模型 idle
 补救层处理的是不响应 abort 的 transport，不能因为 DSH 也有 watchdog 就未经
 复现删除。所有复用判断按实际源码和验证记录更新，不把本页方案视为已交付能力。
+
+### 模型断流诊断与当前步骤续做（2026-10-15）
+
+责任登记：`allrice-observed-model-recovery-v1`（AllRice 协议扩展）。
+
+Run `9620a5c1` 的本地五分钟等待截止只能证明没有新的归一化输出，不能证明供应商
+断线或已完成。AllRice 在自有 `llm/stream` 包装内按请求观察 SSE 字节、心跳和结束
+事件；只记录计数与枚举，不保存响应内容、URL、凭证或思考文本。WebSocket 没有
+公开的逐帧观察接口时明确记录 `unobserved`，不能把它标为“没有心跳”。
+
+超时后先取消该请求的 HTTP 读取，或调用 pi-ai 公开的、按 session 限定的 WebSocket
+清理。只有旧 `next()` 与 `return()` 都结束、所观察连接关闭、原生工具都有结果且
+没有活跃子助手，并收到 Worker 结算确认，才将本地 TIMEOUT 交给已有 DSH 重试策略。
+同一原生 turn 最多重试两次，沿用已有上下文与 CSV/JSON 等工具成果；不再投递原始
+任务，不推定报告生成成功，不补造 token usage。关闭无法确认、取消、撤销授权、
+额度不足或结算失败继续停止。默认五分钟的语义输出等待上限保持不变；只有心跳
+不会无限延长等待。重试仍会经过现有权限、内容授权和用量准入检查。
+
+隔离验证了官方 `@deepseek-ai/dsh-timeout@0.2.1-alpha.3` 发布包（npm 完整性校验）：
+同一个不响应取消的 iterator，rc.3 在 30ms 期限后仍挂起，alpha.3 在约 31ms 拒绝。
+修复来源是[官方提交 dbb150f](https://github.com/deepseek-ai/deepseek-harness/commit/dbb150ff0e589ec5b34a261c201a853affe71a29)。
+但 alpha.3 的 pi-ai adapter 要求整套 DSH `0.2.1-alpha.3`、Cordis `~4.0.5-alpha.2`
+及 pi-ai `^1.1.0`，与当前 `0.1.5-rc.3` / `4.0.2` / `0.85.1` 不兼容，因此不做
+单包替换，也不进入真实模型验收或升级。DSH 核心、锁文件与已有补丁均未改变。
+
+退役条件：官方统一版本通过现有原生日志、权限、用量、工具、流式及真实任务验收，
+且能证明取消后旧请求停止，才移除重复的等待保护。业务诊断与结算确认仍由 AllRice
+负责。原生运行时的本地 SSE 三种故障、WebSocket 关闭、限次、取消和无 ACK 测试
+分别在 `allrice-model-errors-native.test.mjs`、`allrice-codex-output-bound-wire.test.mjs`。
