@@ -1,4 +1,13 @@
 import {
+  prepareEmployeeMethodTestClaim,
+  recordEmployeeMethodTestExecution,
+  finishEmployeeMethodTestInTransaction,
+} from './employee-method-tests.ts';
+import { DataAccessError } from '../data.ts';
+import { EmployeeContentError } from './employee-content-model.ts';
+import { EmployeeInstanceError } from './employee-instances.ts';
+import { ModelGovernanceError } from '../providers/model-governance.ts';
+import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
@@ -103,6 +112,7 @@ interface EmployeeRow {
 }
 
 interface TestRunRow {
+  purpose: 'platform_preview' | 'method_candidate';
   id: string;
   employee_id: string;
   revision_id: string;
@@ -480,12 +490,12 @@ export async function listPlatformEmployeeTestRuns(
   const limit = Math.min(Math.max(Math.trunc(limitInput), 1), 50);
   const sql = getDatabase();
   const rows = await sql<TestRunRow[]>`
-    select id, employee_id, revision_id, requested_by_label, status, input,
+    select id, employee_id, revision_id, requested_by_label, status, input, purpose,
       output, frozen_runtime_profile, frozen_definition,
       frozen_native_skills, frozen_package_checksum, created_at, started_at,
       timeout_at, completed_at
     from allrice_platform_employee_test_runs
-    where employee_id = ${employeeId}
+    where employee_id = ${employeeId} and purpose='platform_preview'
     order by created_at desc, id desc
     limit ${limit}
   `;
@@ -567,7 +577,7 @@ export async function queuePlatformEmployeeTestRun(
         ${transaction.json(frozen.nativeSkills)},
         ${runtimePackage.checksum}
       )
-      returning id, employee_id, revision_id, requested_by_label, status,
+      returning id, employee_id, revision_id, requested_by_label, purpose, status,
         input, output, frozen_runtime_profile, frozen_definition,
         frozen_native_skills, frozen_package_checksum, created_at, started_at,
         timeout_at, completed_at
@@ -605,7 +615,7 @@ async function finalizePlatformEmployeeTestRunInTransaction(
   },
 ) {
   const tests = await transaction<TestRunRow[]>`
-    select id, employee_id, revision_id, requested_by_label, status, input,
+    select id, employee_id, revision_id, requested_by_label, status, input, purpose,
       output, frozen_runtime_profile, frozen_definition,
       frozen_native_skills, frozen_package_checksum, created_at, started_at,
       timeout_at, completed_at
@@ -654,6 +664,13 @@ async function finalizePlatformEmployeeTestRunInTransaction(
           },
         })
       : input.output;
+  if (existing.purpose === 'method_candidate')
+    await finishEmployeeMethodTestInTransaction(
+      transaction,
+      input.testRunId,
+      normalizedOutput,
+      terminal.runStatus,
+    );
   const persistedOutput: unknown = JSON.parse(JSON.stringify(normalizedOutput));
   const rows = await transaction<TestRunRow[]>`
     update allrice_platform_employee_test_runs
@@ -661,7 +678,7 @@ async function finalizePlatformEmployeeTestRunInTransaction(
       output = ${transaction.json(persistedOutput as never)},
       completed_at = now()
     where id = ${input.testRunId} and status = 'running'
-    returning id, employee_id, revision_id, requested_by_label, status, input,
+    returning id, employee_id, revision_id, requested_by_label, purpose, status, input,
       output, frozen_runtime_profile, frozen_definition,
       frozen_native_skills, frozen_package_checksum, created_at, started_at,
       timeout_at, completed_at
@@ -669,7 +686,7 @@ async function finalizePlatformEmployeeTestRunInTransaction(
   const row = rows[0];
   if (!row) {
     const replay = await transaction<TestRunRow[]>`
-      select id, employee_id, revision_id, requested_by_label, status, input,
+      select id, employee_id, revision_id, requested_by_label, status, input, purpose,
         output, frozen_runtime_profile, frozen_definition,
         frozen_native_skills, frozen_package_checksum, created_at, started_at,
         timeout_at, completed_at
@@ -767,7 +784,7 @@ async function finalizePlatformEmployeeTestRunInTransaction(
 export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
   const workerId = UuidSchema.parse(workerIdInput);
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
+  return employeeAccessTransaction(sql, async (transaction) => {
     if (!(await devAdmissionOpen(transaction))) return null;
     const staleTests = await transaction<{ id: string }[]>`
       select id from allrice_platform_employee_test_runs
@@ -796,12 +813,12 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
       });
     }
     const rows = await transaction<TestRunRow[]>`
-      select id, employee_id, revision_id, requested_by_label, status, input,
+      select id, employee_id, revision_id, requested_by_label, status, input, purpose,
         output, frozen_runtime_profile, frozen_definition,
         frozen_native_skills, frozen_package_checksum, created_at, started_at,
         timeout_at, completed_at
       from allrice_platform_employee_test_runs
-      where status = 'queued'
+      where status = 'queued' and available_at <= clock_timestamp()
         and frozen_runtime_profile is not null
         and frozen_definition is not null
         and frozen_native_skills is not null
@@ -855,15 +872,33 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     const parsedInput = CreatePlatformEmployeeTestRunInputSchema.parse(
       row.input,
     );
-    let previewContext;
+    let previewContext: Awaited<
+      ReturnType<typeof resolvePlatformPreviewContext>
+    >['context'];
+    let methodClaim: Awaited<
+      ReturnType<typeof prepareEmployeeMethodTestClaim>
+    > = null;
     try {
-      ({ context: previewContext } = await resolvePlatformPreviewContext(
-        transaction,
-        parsedInput,
-        row.requested_by_label,
-      ));
+      if (row.purpose === 'method_candidate') {
+        methodClaim = await prepareEmployeeMethodTestClaim(transaction, row.id);
+        if (!methodClaim) return null;
+        previewContext = methodClaim.previewContext;
+      } else {
+        ({ context: previewContext } = await resolvePlatformPreviewContext(
+          transaction,
+          parsedInput,
+          row.requested_by_label,
+        ));
+      }
     } catch (error) {
-      if (!(error instanceof PlatformPreviewContextError)) throw error;
+      if (!(
+        error instanceof PlatformPreviewContextError ||
+        error instanceof DataAccessError ||
+        error instanceof EmployeeContentError ||
+        error instanceof EmployeeInstanceError ||
+        error instanceof ModelGovernanceError
+      ))
+        throw error;
       await transaction`update allrice_platform_employee_test_runs
         set status='running',worker_id=${workerId},started_at=clock_timestamp(),timeout_at=clock_timestamp()
         where id=${row.id} and status='queued'`;
@@ -888,7 +923,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     const issuedAt = new Date();
     const expiresAt = platformEmployeeTestTimeoutAt(
       issuedAt,
-      runtimeProfile.timeoutMs,
+      methodClaim?.timeoutMs ?? runtimeProfile.timeoutMs,
     );
     const claimed = await transaction`
       update allrice_platform_employee_test_runs
@@ -913,16 +948,18 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         action: 'job:execute',
         workspaceId: previewContext.workspace_id,
       },
-      ...['storage_object', 'memory', 'chat_session'].map((resourceType) => ({
-        resourceType,
-        action: 'resource:read',
-        workspaceId: previewContext.workspace_id,
-      })),
+      ...(methodClaim ? [] : ['storage_object', 'memory', 'chat_session']).map(
+        (resourceType) => ({
+          resourceType,
+          action: 'resource:read',
+          workspaceId: previewContext.workspace_id,
+        }),
+      ),
     ];
     await transaction`
       select id from allrice_users
       where id = ${previewContext.owner_id}
-      for update
+      for no key update
     `;
     const policyVersions = await transaction<{ version: number }[]>`
       select coalesce(max(version), 0)::integer + 1 as version
@@ -982,6 +1019,9 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         ${workerId}, ${leaseToken}, ${issuedAt}, ${issuedAt}, ${expiresAt}
       )
     `;
+    const methodCandidate = methodClaim
+      ? await recordEmployeeMethodTestExecution(transaction, methodClaim, runId)
+      : null;
     await transaction`
       insert into allrice_run_events (
         organization_id, workspace_id, run_id, sequence, event_type, payload,
@@ -1005,6 +1045,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     `;
     return {
       id: row.id,
+      methodCandidate,
       employeeId: row.employee_id,
       revisionId: row.revision_id,
       requestedByLabel: row.requested_by_label,
@@ -1882,7 +1923,7 @@ export async function publishPlatformEmployee(
     where employee_id = ${employeeId}
       and revision_id = ${compilation.revisionId}
       and frozen_package_checksum = ${packageChecksum}
-      and status = 'succeeded'
+      and status = 'succeeded' and purpose='platform_preview'
       and completed_at >= clock_timestamp() - interval '24 hours'
     order by completed_at desc limit 1
   `;
@@ -2101,7 +2142,7 @@ export async function publishPlatformEmployee(
       select id, completed_at from allrice_platform_employee_test_runs
       where id = ${successfulTests[0]!.id} and employee_id = ${employeeId}
         and revision_id = ${revision.id} and frozen_package_checksum = ${packageChecksum}
-        and status = 'succeeded'
+        and status = 'succeeded' and purpose='platform_preview'
         and completed_at >= clock_timestamp() - interval '24 hours'
       for share
     `;

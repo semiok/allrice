@@ -176,9 +176,11 @@ export async function getOrganizationModelQuota(
   });
 }
 
-export async function getProviderGovernance(connectionId: string) {
+export async function getProviderGovernance(
+  connectionId: string,
+  sql: GovernanceSql = getDatabase(),
+) {
   const id = UuidSchema.parse(connectionId);
-  const sql = getDatabase();
   const rows = await sql<ProviderGovernanceRow[]>`
     select b.kill_switch,
       case
@@ -221,7 +223,7 @@ export async function getModelGovernanceSnapshot(input: {
 }) {
   const quota = await getOrganizationModelQuota(input.organizationId);
   const providers = await Promise.all(
-    [...new Set(input.connectionIds)].map(getProviderGovernance),
+    [...new Set(input.connectionIds)].map((id) => getProviderGovernance(id)),
   );
   return { quota, providers };
 }
@@ -456,13 +458,16 @@ export async function resourceStatus(
           `
         : input.scope === 'employee'
           ? await sql<{ count: number }[]>`
-              select count(*)::integer as count from allrice_employee_runs e
-              join allrice_jobs j on j.run_id=e.run_id
-              where e.organization_id = ${input.organizationId}
-                and e.workspace_id = ${input.workspaceId}
-                and (e.execution_snapshot -> 'employee' ->> 'id')::uuid = ${input.scopeId}
+              select count(*)::integer as count from allrice_jobs j
+              where j.organization_id = ${input.organizationId}
+                and j.workspace_id = ${input.workspaceId}
+                and (exists(select 1 from allrice_employee_runs e where e.run_id=j.run_id
+                  and (e.execution_snapshot -> 'employee' ->> 'id')::uuid = ${input.scopeId})
+                  or exists(select 1 from allrice_employee_method_tests t where t.run_id=j.run_id
+                    and t.organization_id=j.organization_id and t.workspace_id=j.workspace_id
+                    and t.owner_id=j.owner_id and t.employee_id=${input.scopeId}))
                 and j.status in ('claimed', 'running', 'waiting_approval')
-                and (${input.excludingRunId ?? null}::uuid is null or e.run_id<>${input.excludingRunId ?? null})
+                and (${input.excludingRunId ?? null}::uuid is null or j.run_id<>${input.excludingRunId ?? null})
             `
           : await sql<{ count: number }[]>`
               select count(distinct j.id)::integer as count
@@ -606,7 +611,7 @@ export function assertModelResourceAvailable(input: {
   }
 }
 
-export async function admitModelExecution(input: {
+export type ModelExecutionAdmission = {
   organizationId: string;
   workspaceId: string;
   userId: string;
@@ -615,7 +620,18 @@ export async function admitModelExecution(input: {
   requestedTokens: number;
   requestedRuntimeMs: number;
   runId?: string;
-}) {
+};
+
+export async function admitModelExecution(input: ModelExecutionAdmission) {
+  return getDatabase().begin((tx) =>
+    admitModelExecutionInTransaction(input, tx),
+  );
+}
+
+export async function admitModelExecutionInTransaction(
+  input: ModelExecutionAdmission,
+  transaction: postgres.TransactionSql,
+) {
   const values = {
     organizationId: UuidSchema.parse(input.organizationId),
     workspaceId: UuidSchema.parse(input.workspaceId),
@@ -631,99 +647,96 @@ export async function admitModelExecution(input: {
     ['employee', values.employeeId],
     ['provider', values.connectionId],
   ] as const;
-  const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    for (const [scope, scopeId] of scopes) {
-      await transaction`
+  for (const [scope, scopeId] of scopes) {
+    await transaction`
         select pg_advisory_xact_lock(hashtext(${`${scope}:${scopeId.toLowerCase()}`}))
       `;
-    }
-    // This transaction is the new-Run admission boundary. RouteOutcome writers
-    // take the same tenant lock before their route row lock. Re-read after any
-    // wait; a previously captured UI/Worker quota is not admission authority.
-    // Already admitted live bounded Runs are not retroactively canceled here.
-    // Derive from the actual selected server connection, never request input.
-    // Missing/unsupported identities get no exemption; frozen-route validation
-    // still runs before Worker dispatch and durable subscription settlement.
-    const [billing] = await transaction<{ subscription: boolean }[]>`
+  }
+  // This transaction is the new-Run admission boundary. RouteOutcome writers
+  // take the same tenant lock before their route row lock. Re-read after any
+  // wait; a previously captured UI/Worker quota is not admission authority.
+  // Already admitted live bounded Runs are not retroactively canceled here.
+  // Derive from the actual selected server connection, never request input.
+  // Missing/unsupported identities get no exemption; frozen-route validation
+  // still runs before Worker dispatch and durable subscription settlement.
+  const [billing] = await transaction<{ subscription: boolean }[]>`
       select p.auth_mode='chatgpt_subscription' and p.provider_key in ('codex','openai-codex')
         and c.base_url is null and c.credential_reference is not null as subscription
       from allrice_model_connections c join allrice_model_providers p on p.id=c.provider_id
       where c.id=${values.connectionId} and (c.scope='platform' or c.organization_id=${values.organizationId})`;
-    assertQuotaAvailable(
-      await getOrganizationModelQuota(values.organizationId, transaction),
-      billing?.subscription === true ? 'subscription' : 'token_metered',
-      values.requestedTokens,
-    );
-    // The Worker already claimed this Run. Exclude only its verified identity
-    // from the other active slots; otherwise a limit of three rejects Run three.
-    // Queued followups also consume no execution slot until they are claimed.
-    const admittingRun = input.runId
-      ? ((
-          await transaction`select id from allrice_runs where id=${UuidSchema.parse(input.runId)}
+  assertQuotaAvailable(
+    await getOrganizationModelQuota(values.organizationId, transaction),
+    billing?.subscription === true ? 'subscription' : 'token_metered',
+    values.requestedTokens,
+  );
+  // The Worker already claimed this Run. Exclude only its verified identity
+  // from the other active slots; otherwise a limit of three rejects Run three.
+  // Queued followups also consume no execution slot until they are claimed.
+  const admittingRun = input.runId
+    ? ((
+        await transaction`select id from allrice_runs where id=${UuidSchema.parse(input.runId)}
           and organization_id=${values.organizationId} and workspace_id=${values.workspaceId}
           and owner_id=${values.userId}`
-        )[0]?.id as string | undefined)
-      : undefined;
-    const resources = await Promise.all(
-      scopes.map(([scope, scopeId]) =>
-        resourceStatus(
-          {
-            organizationId: values.organizationId,
-            workspaceId: values.workspaceId,
-            scope,
-            scopeId,
-            excludingRunId: admittingRun,
-          },
-          transaction,
-        ),
+      )[0]?.id as string | undefined)
+    : undefined;
+  const resources = await Promise.all(
+    scopes.map(([scope, scopeId]) =>
+      resourceStatus(
+        {
+          organizationId: values.organizationId,
+          workspaceId: values.workspaceId,
+          scope,
+          scopeId,
+          excludingRunId: admittingRun,
+        },
+        transaction,
       ),
-    );
-    assertModelResourceAvailable({
-      resources,
-      billingMode:
-        billing?.subscription === true ? 'subscription' : 'token_metered',
-      requestedTokens: values.requestedTokens,
-      requestedRuntimeMs: values.requestedRuntimeMs,
-      frozenTaskClock:
-        input.runId !== undefined
-          ? !!(
-              await transaction`select 1 from allrice_task_clocks c join allrice_runs r on r.id=c.run_id
+    ),
+  );
+  assertModelResourceAvailable({
+    resources,
+    billingMode:
+      billing?.subscription === true ? 'subscription' : 'token_metered',
+    requestedTokens: values.requestedTokens,
+    requestedRuntimeMs: values.requestedRuntimeMs,
+    frozenTaskClock:
+      input.runId !== undefined
+        ? !!(
+            await transaction`select 1 from allrice_task_clocks c join allrice_runs r on r.id=c.run_id
             where c.run_id=${UuidSchema.parse(input.runId)} and c.organization_id=${values.organizationId}
               and c.workspace_id=${values.workspaceId} and r.owner_id=${values.userId}
               and (c.policy->>'timeoutMs')::bigint=${values.requestedRuntimeMs}`
-            )[0]
-          : false,
-    });
-    const releases = await transaction<
-      {
-        release_stage: 'experimental' | 'canary' | 'production' | 'disabled';
-        allowlisted_organization_ids: string[];
-        production_approved: boolean;
-      }[]
-    >`
+          )[0]
+        : false,
+  });
+  const releases = await transaction<
+    {
+      release_stage: 'experimental' | 'canary' | 'production' | 'disabled';
+      allowlisted_organization_ids: string[];
+      production_approved: boolean;
+    }[]
+  >`
       select release_stage, allowlisted_organization_ids, production_approved
       from allrice_provider_release_controls
       where connection_id = ${values.connectionId}
     `;
-    const release = releases[0];
-    if (release) {
-      ProviderReleaseControlSchema.parse({
-        connectionId: values.connectionId,
-        releaseStage: release.release_stage,
-        allowlistedOrganizationIds: release.allowlisted_organization_ids,
-        productionApproved: release.production_approved,
-      });
-      // A connected model needs no additional production approval. Keep an
-      // explicit legacy disabled state effective; authorization, tenant scope,
-      // connection status and the emergency stop are enforced independently.
-      const allowed = release.release_stage !== 'disabled';
-      if (!allowed) {
-        throw new ModelGovernanceError('PROVIDER_NOT_RELEASED', 'provider');
-      }
+  const release = releases[0];
+  if (release) {
+    ProviderReleaseControlSchema.parse({
+      connectionId: values.connectionId,
+      releaseStage: release.release_stage,
+      allowlistedOrganizationIds: release.allowlisted_organization_ids,
+      productionApproved: release.production_approved,
+    });
+    // A connected model needs no additional production approval. Keep an
+    // explicit legacy disabled state effective; authorization, tenant scope,
+    // connection status and the emergency stop are enforced independently.
+    const allowed = release.release_stage !== 'disabled';
+    if (!allowed) {
+      throw new ModelGovernanceError('PROVIDER_NOT_RELEASED', 'provider');
     }
-    return resources;
-  });
+  }
+  return resources;
 }
 
 export async function getModelGovernanceForAdmin(context: RequestContext) {

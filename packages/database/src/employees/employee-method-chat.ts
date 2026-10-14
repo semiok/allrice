@@ -88,7 +88,7 @@ function methodOperationClauses(text: string) {
  * could introduce instructions from a document, example or another person. */
 function withoutMethodRetryPreface(text: string) {
   return text.replace(
-    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后)?(?:尚未|还未|没有)(?:保存|完成)(?:修改|操作|任务)?)?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
+    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后)?(?:尚未|还未|没有)(?:保存|完成)(?:修改|操作|任务)?)?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|(?:网络|连接)(?:失败|中断|断开|超时)(?:了)?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
     '',
   );
 }
@@ -121,6 +121,22 @@ export function explicitEmployeeMethodIntent(text: string) {
   )
     return false;
   return methodAuthoringHeader(withoutMethodRetryPreface(text));
+}
+
+export function explicitEmployeeMethodTestIntent(text: string) {
+  const request = withoutMethodRetryPreface(text);
+  const normalized = request
+    .replace(/^((?:请)?(?:为我|帮我)?)(?:验证|测试)/u, '$1更新')
+    .replace(/^(please )?(?:test|validate)\s+/i, '$1update ');
+  return (
+    normalized !== request &&
+    !methodOperationClauses(request).some((c) =>
+      /^(?:请)?(?:不要|无需|不必|勿)(?:测试|验证)|^(?:please )?(?:do not|don't|never) (?:test|validate)/iu.test(
+        c,
+      ),
+    ) &&
+    explicitEmployeeMethodIntent(normalized.replace(/\.(?=\s*$)/u, ''))
+  );
 }
 
 export function explicitEmployeeMethodReferenceIntent(text: string) {
@@ -243,7 +259,7 @@ const emptyManifest = () => ({
 /** Commit the context boundary BEFORE revealing a candidate or attempting a
  * save. Failure, interruption and abandoned edits cannot roll it back. The
  * original Run stays bound and readable; only subsequent Runs start fresh. */
-async function enterMethodChat<T>(
+export async function enterMethodChat<T>(
   input: EmployeeChatCall,
   tool: string,
   retire: boolean,

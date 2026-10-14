@@ -60,7 +60,7 @@ export function employeeChatIdentity(
 }
 /** Caller holds principal, assignment and current-instance locks. Root/job
  * locks use NOWAIT and the existing whole-transaction retry to avoid inversion. */
-export async function assertEmployeeChatRun(
+export async function assertEmployeeChatExecution(
   tx: postgres.TransactionSql,
   input: EmployeeChatCall,
   before: EmployeeInstance,
@@ -110,10 +110,12 @@ export async function assertEmployeeChatRun(
     frozen.instance.kind !== 'custom'
   )
     fail();
-  const capability =
-    tool === 'workspace.employee.method.inspect'
-      ? 'storage:read'
-      : 'storage:write';
+  const capability = [
+    'workspace.employee.method.inspect',
+    'workspace.employee.method.test_status',
+  ].includes(tool)
+    ? 'storage:read'
+    : 'storage:write';
   if (
     frozen.tenantContext.organizationId !== ctx.organizationId ||
     frozen.tenantContext.workspaceId !== ctx.workspaceId ||
@@ -123,5 +125,11 @@ export async function assertEmployeeChatRun(
     !frozen.capabilitySnapshot.bindings.toolNames.includes(tool)
   )
     fail();
-  return live.text;
+  return { text: live.text, snapshot: frozen };
+}
+
+export async function assertEmployeeChatRun(
+  ...args: Parameters<typeof assertEmployeeChatExecution>
+) {
+  return (await assertEmployeeChatExecution(...args)).text;
 }

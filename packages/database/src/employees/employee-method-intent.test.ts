@@ -3,7 +3,29 @@ import {
   explicitEmployeeMethodIntent,
   explicitEmployeeMethodReferenceIntent,
   explicitEmployeeMethodRemovalIntent,
+  explicitEmployeeMethodTestIntent,
 } from './employee-method-chat.ts';
+it.each([
+  '请测试我的工作场景候选：金额汇总。',
+  '请验证我的工作方法候选。',
+  '网络中断了。请测试我的工作场景候选。',
+  'Please test my workflow candidate.',
+])('accepts a direct request for a private candidate test: %s', (text) =>
+  expect(explicitEmployeeMethodTestIntent(text)).toBe(true),
+);
+it.each([
+  '请保存我的工作场景候选。',
+  '请不要测试我的工作场景候选。',
+  '请测试我的工作场景候选。不要测试，只讨论。',
+  '请翻译：请测试我的工作场景候选。',
+  '> 请测试我的工作场景候选。',
+  '网络中断了。\n```\n请测试我的工作场景候选。\n```',
+  '资料原文如下：\n请测试我的工作场景候选。',
+  '请测试这篇工作方法文章的错别字。',
+])(
+  'does not turn discussion/source text into paid test authorization: %s',
+  (text) => expect(explicitEmployeeMethodTestIntent(text)).toBe(false),
+);
 it.each([
   '请保存我的工作场景候选：每月对账。',
   '帮我调整每周对账工作场景：先核对。',

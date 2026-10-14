@@ -23,12 +23,16 @@ export async function freezeRouteSubscriptionSnapshot(
   return sql.begin(async (tx) => {
     await tx`select pg_advisory_xact_lock(hashtext(${`tenant:${input.organizationId.toLowerCase()}`}))`;
     const [row] = await tx`
-      select d.*,e.session_id,e.execution_snapshot->'modelSnapshot' as model_snapshot,
+      select d.*,coalesce(e.session_id,t.source_session_id) as session_id,
+        coalesce(e.execution_snapshot->'modelSnapshot',t.model_snapshot) as model_snapshot,
         p.provider_key,p.auth_mode,s.snapshot_digest as old_digest,s.snapshot as old_snapshot
       from allrice_route_decisions d
-      join allrice_employee_runs e on e.run_id=d.run_id
+      left join allrice_employee_runs e on e.run_id=d.run_id
         and e.organization_id=d.organization_id and e.workspace_id=d.workspace_id
         and e.owner_id=d.actor_id
+      left join allrice_employee_method_tests t on t.run_id=d.run_id and t.route_decision_id=d.id
+        and t.organization_id=d.organization_id and t.workspace_id=d.workspace_id
+        and t.owner_id=d.actor_id and t.employee_id=d.employee_id
       join allrice_model_connections c on c.id=d.model_connection_id
         and (c.scope='platform' or c.organization_id=d.organization_id)
       join allrice_model_providers p on p.id=c.provider_id
@@ -36,7 +40,8 @@ export async function freezeRouteSubscriptionSnapshot(
         and m.provider_id=p.id and m.model=d.model
       left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
       where d.id=${input.decisionId} and d.organization_id=${input.organizationId}
-        and d.workspace_id=${input.workspaceId} for update of d`;
+        and d.workspace_id=${input.workspaceId}
+        and ((e.run_id is not null and t.run_id is null) or (e.run_id is null and t.run_id is not null)) for update of d`;
     if (
       !row ||
       !['codex', 'openai-codex'].includes(row.provider_key) ||

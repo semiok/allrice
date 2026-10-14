@@ -1,3 +1,4 @@
+import type postgres from 'postgres';
 import {
   RouteDecisionSchema,
   RouteOutcomeSchema,
@@ -69,9 +70,15 @@ export async function recordRouteDecision(
   input: RouteDecision,
   sql = getDatabase(),
 ) {
+  return sql.begin((tx) => recordRouteDecisionInTransaction(input, tx));
+}
+
+export async function recordRouteDecisionInTransaction(
+  input: RouteDecision,
+  transaction: postgres.TransactionSql,
+) {
   const decision = RouteDecisionSchema.parse(input);
-  return sql.begin(async (transaction) => {
-    const inserted = await transaction<{ id: string }[]>`
+  const inserted = await transaction<{ id: string }[]>`
       insert into allrice_route_decisions (
         id, organization_id, workspace_id, actor_id, employee_id, run_id,
         input_checksum, candidates, selected_kind, selected_candidate_id,
@@ -94,7 +101,7 @@ export async function recordRouteDecision(
       ) on conflict (run_id, attempt) do nothing
       returning id
     `;
-    const rows = await transaction<RouteDecisionRow[]>`
+  const rows = await transaction<RouteDecisionRow[]>`
       select id, organization_id, workspace_id, actor_id, employee_id, run_id,
         input_checksum, candidates, selected_kind, selected_candidate_id,
         harness, provider, model, model_connection_id,
@@ -106,10 +113,10 @@ export async function recordRouteDecision(
         and organization_id = ${decision.organizationId}
         and workspace_id = ${decision.workspaceId}
     `;
-    const stored = rows[0];
-    if (!stored) throw new Error('route decision persistence failed');
-    if (inserted[0]) {
-      await transaction`
+  const stored = rows[0];
+  if (!stored) throw new Error('route decision persistence failed');
+  if (inserted[0]) {
+    await transaction`
         insert into allrice_audit_events (
           organization_id, workspace_id, actor_id, action, resource_type,
           resource_id, decision, reason, metadata
@@ -128,9 +135,8 @@ export async function recordRouteDecision(
           })}
         )
       `;
-    }
-    return mapDecision(stored);
-  });
+  }
+  return mapDecision(stored);
 }
 
 export async function completeRouteDecision(
@@ -144,6 +150,20 @@ export async function completeRouteDecision(
   },
   sql = getDatabase(),
 ) {
+  return sql.begin((tx) => completeRouteDecisionInTransaction(input, tx));
+}
+
+export async function completeRouteDecisionInTransaction(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    outcome: RouteOutcome;
+    /** Trusted Worker pre-dispatch failure only; never reconciles old usage.
+     * The fresh flag must come from this attempt's actual freeze result. */
+    undispatched?: { subscriptionSnapshotCreated: boolean };
+  },
+  transaction: postgres.TransactionSql,
+) {
   let outcome = RouteOutcomeSchema.parse(input.outcome);
   if (
     input.undispatched &&
@@ -153,28 +173,27 @@ export async function completeRouteDecision(
       outcome.outputTokens !== 0)
   )
     throw new Error('undispatched route outcome must not claim executed usage');
-  await sql.begin(async (transaction) => {
-    // Same first lock as model admission. Never take the route row lock before
-    // this tenant fence, or an admission could miss a committing unknown ledger.
-    await transaction`
+  // Same first lock as model admission. Never take the route row lock before
+  // this tenant fence, or an admission could miss a committing unknown ledger.
+  await transaction`
       select pg_advisory_xact_lock(hashtext(${`tenant:${input.organizationId.toLowerCase()}`}))
     `;
-    const decisions = await transaction<
-      {
-        id: string;
-        model_connection_id: string | null;
-        model_catalog_entry_id: string | null;
-        status: string;
-        input_tokens: number;
-        cached_input_tokens: number;
-        output_tokens: number;
-        cost_cents: string | number | null;
-        usage_complete: boolean;
-        cache_usage_known: boolean;
-        completed_at: Date | null;
-        subscription: boolean;
-      }[]
-    >`
+  const decisions = await transaction<
+    {
+      id: string;
+      model_connection_id: string | null;
+      model_catalog_entry_id: string | null;
+      status: string;
+      input_tokens: number;
+      cached_input_tokens: number;
+      output_tokens: number;
+      cost_cents: string | number | null;
+      usage_complete: boolean;
+      cache_usage_known: boolean;
+      completed_at: Date | null;
+      subscription: boolean;
+    }[]
+  >`
       select id, model_connection_id, model_catalog_entry_id, status,
         input_tokens, cached_input_tokens, output_tokens, cost_cents,
         usage_complete, cache_usage_known, completed_at,
@@ -185,50 +204,50 @@ export async function completeRouteDecision(
         and workspace_id = ${input.workspaceId}
       for update
     `;
-    const decision = decisions[0];
-    if (!decision) throw new Error('route decision outcome was not accepted');
-    if (input.undispatched) {
-      // Both receipt writers and this refusal hold tenant then route locks.
-      // Recheck here, after any wait: even a late receipt must remain byte-for-
-      // byte intact, including knownness, timestamps and the route's status.
-      const [receipt] = await transaction`
+  const decision = decisions[0];
+  if (!decision) throw new Error('route decision outcome was not accepted');
+  if (input.undispatched) {
+    // Both receipt writers and this refusal hold tenant then route locks.
+    // Recheck here, after any wait: even a late receipt must remain byte-for-
+    // byte intact, including knownness, timestamps and the route's status.
+    const [receipt] = await transaction`
         select id from allrice_model_usage_ledger
         where route_decision_id=${decision.id}`;
-      if (receipt) return;
-      if (decision.subscription)
-        outcome = {
-          ...outcome,
-          costCents: null,
-          // An old proof could precede an interrupted provider invocation.
-          // No current dispatch is not proof of zero historical Token usage.
-          usageComplete: input.undispatched.subscriptionSnapshotCreated,
-          cacheUsageKnown: false,
-        };
-    }
-    // A subscription proof means monetary cost is not applicable, never zero
-    // or a token-priced cash charge. No proof leaves existing unknown rules intact.
-    if (decision.subscription && outcome.costCents !== null)
-      throw new Error('subscription route cannot record a monetary charge');
-    // An ordinary late/legacy writer cannot reconcile unknown accounting, lower
-    // confirmed usage, or move the accounting month. Reconciliation needs its
-    // own evidence/authority flow; this port only accepts replay or conservative
-    // degradation of a completed receipt.
-    if (
-      decision.status !== 'pending' &&
-      (decision.status !== outcome.status ||
-        outcome.inputTokens < decision.input_tokens ||
-        outcome.cachedInputTokens < decision.cached_input_tokens ||
-        outcome.outputTokens < decision.output_tokens ||
-        (!decision.usage_complete && outcome.usageComplete) ||
-        (!decision.cache_usage_known && outcome.cacheUsageKnown) ||
-        (decision.cost_cents === null && outcome.costCents !== null) ||
-        (decision.cost_cents !== null &&
-          outcome.costCents !== null &&
-          outcome.costCents < Number(decision.cost_cents)))
-    )
-      throw new Error('route decision outcome conflict');
-    const completedAt = decision.completed_at ?? new Date(outcome.completedAt);
-    const rows = await transaction<{ id: string }[]>`
+    if (receipt) return;
+    if (decision.subscription)
+      outcome = {
+        ...outcome,
+        costCents: null,
+        // An old proof could precede an interrupted provider invocation.
+        // No current dispatch is not proof of zero historical Token usage.
+        usageComplete: input.undispatched.subscriptionSnapshotCreated,
+        cacheUsageKnown: false,
+      };
+  }
+  // A subscription proof means monetary cost is not applicable, never zero
+  // or a token-priced cash charge. No proof leaves existing unknown rules intact.
+  if (decision.subscription && outcome.costCents !== null)
+    throw new Error('subscription route cannot record a monetary charge');
+  // An ordinary late/legacy writer cannot reconcile unknown accounting, lower
+  // confirmed usage, or move the accounting month. Reconciliation needs its
+  // own evidence/authority flow; this port only accepts replay or conservative
+  // degradation of a completed receipt.
+  if (
+    decision.status !== 'pending' &&
+    (decision.status !== outcome.status ||
+      outcome.inputTokens < decision.input_tokens ||
+      outcome.cachedInputTokens < decision.cached_input_tokens ||
+      outcome.outputTokens < decision.output_tokens ||
+      (!decision.usage_complete && outcome.usageComplete) ||
+      (!decision.cache_usage_known && outcome.cacheUsageKnown) ||
+      (decision.cost_cents === null && outcome.costCents !== null) ||
+      (decision.cost_cents !== null &&
+        outcome.costCents !== null &&
+        outcome.costCents < Number(decision.cost_cents)))
+  )
+    throw new Error('route decision outcome conflict');
+  const completedAt = decision.completed_at ?? new Date(outcome.completedAt);
+  const rows = await transaction<{ id: string }[]>`
       update allrice_route_decisions set
         status = ${outcome.status}, input_tokens = ${outcome.inputTokens},
         cached_input_tokens = ${outcome.cachedInputTokens},
@@ -243,8 +262,8 @@ export async function completeRouteDecision(
         and status in ('pending', ${outcome.status})
       returning id
     `;
-    if (!rows[0]) throw new Error('route decision outcome was not accepted');
-    await transaction`
+  if (!rows[0]) throw new Error('route decision outcome was not accepted');
+  await transaction`
       insert into allrice_model_usage_ledger (
         id, organization_id, workspace_id, route_decision_id, connection_id,
         model_catalog_entry_id, status, input_tokens, cached_input_tokens,
@@ -266,15 +285,15 @@ export async function completeRouteDecision(
         usage_complete = excluded.usage_complete,
         occurred_at = excluded.occurred_at
     `;
-    if (!decision.model_connection_id) return;
-    const previous = await transaction<
-      { circuit_state: 'closed' | 'open' | 'half_open' }[]
-    >`
+  if (!decision.model_connection_id) return;
+  const previous = await transaction<
+    { circuit_state: 'closed' | 'open' | 'half_open' }[]
+  >`
       select circuit_state from allrice_provider_circuit_breakers
       where connection_id = ${decision.model_connection_id}
     `;
-    if (outcome.status === 'succeeded') {
-      await transaction`
+  if (outcome.status === 'succeeded') {
+    await transaction`
         insert into allrice_provider_circuit_breakers (
           connection_id, circuit_state, consecutive_failures,
           opened_until, last_error_code
@@ -283,8 +302,8 @@ export async function completeRouteDecision(
           circuit_state = 'closed', consecutive_failures = 0,
           opened_until = null, last_error_code = null, updated_at = now()
       `;
-      if (previous[0] && previous[0].circuit_state !== 'closed') {
-        await transaction`
+    if (previous[0] && previous[0].circuit_state !== 'closed') {
+      await transaction`
           insert into allrice_operational_incidents (
             id, organization_id, workspace_id, connection_id, kind,
             severity, detail_code, metadata
@@ -295,16 +314,16 @@ export async function completeRouteDecision(
             ${transaction.json({ routeDecisionId: decision.id })}
           )
         `;
-      }
-      return;
     }
-    if (outcome.status !== 'failed' || !outcome.failureCategory) return;
-    const circuits = await transaction<
-      {
-        circuit_state: 'closed' | 'open' | 'half_open';
-        consecutive_failures: number;
-      }[]
-    >`
+    return;
+  }
+  if (outcome.status !== 'failed' || !outcome.failureCategory) return;
+  const circuits = await transaction<
+    {
+      circuit_state: 'closed' | 'open' | 'half_open';
+      consecutive_failures: number;
+    }[]
+  >`
       insert into allrice_provider_circuit_breakers (
         connection_id, circuit_state, consecutive_failures,
         opened_until, last_error_code
@@ -326,12 +345,12 @@ export async function completeRouteDecision(
         updated_at = now()
       returning circuit_state, consecutive_failures
     `;
-    const circuit = circuits[0];
-    if (
-      circuit?.circuit_state === 'open' &&
-      previous[0]?.circuit_state !== 'open'
-    ) {
-      await transaction`
+  const circuit = circuits[0];
+  if (
+    circuit?.circuit_state === 'open' &&
+    previous[0]?.circuit_state !== 'open'
+  ) {
+    await transaction`
         insert into allrice_operational_incidents (
           id, organization_id, workspace_id, connection_id, kind,
           severity, detail_code, metadata
@@ -346,8 +365,7 @@ export async function completeRouteDecision(
           })}
         )
       `;
-    }
-  });
+  }
 }
 
 export async function getRouteDecisionForRun(input: {
