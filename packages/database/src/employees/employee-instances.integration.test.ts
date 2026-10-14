@@ -4,6 +4,13 @@ import {
   filterEmployeeMethodMemories,
 } from './employee-method-chat.ts';
 import {
+  startEmployeeMethodTestFromChat,
+  getEmployeeMethodTest,
+  employeeMethodTestStillCurrent,
+} from './employee-method-tests.ts';
+import { freezeRouteSubscriptionSnapshot } from '../execution/route-subscription.ts';
+import { resolveAssistantSubscriptionSnapshot } from '@allrice/contracts';
+import {
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
   assertEmployeeContentReferenceMessages,
@@ -64,6 +71,10 @@ import {
   savePlatformEmployeeDraft,
   disablePlatformEmployee,
   assignPublishedPlatformEmployeeToWorkspace,
+  claimNextPlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+  listPlatformEmployeeTestRuns,
+  listPlatformEmployeeAuditEvents,
 } from './platform-employees.ts';
 import {
   assertEmployeeInstanceAdmission,
@@ -269,6 +280,351 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
+  it('validates an exact candidate through the shared queue and ledger without activating or exposing it', async () => {
+    const f = await setup(true),
+      instance = await f.custom('金额助手');
+    const editing = await methodRun(f, instance.id);
+    const saved = await saveEmployeeMethodFromChat({
+      ...editing,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '金额汇总', appliesWhen: '合成金额测试' },
+        procedure: '将输入整数分相加后额外加 100 分。只输出 totalCents JSON。',
+        changeSummary: '已知错误的候选',
+      },
+    });
+    await editing.finish();
+    const content = await getEmployeeContentSet(f.a.context, saved.setId);
+    const args = {
+      expectedRevision: saved.revision,
+      candidateRevisionId: saved.candidate.id,
+      candidateDigest: saved.candidate.digest,
+      sceneId: content.set.candidate!.manifest.scenes[0]!.id,
+      caseId: 'cny-total-v1',
+    };
+    const testing = await methodRun(
+      f,
+      instance.id,
+      '请测试我的工作场景候选：金额汇总。',
+    );
+    const first = await startEmployeeMethodTestFromChat({
+      ...testing,
+      arguments: args,
+    });
+    expect(first).toMatchObject({
+      status: 'queued',
+      validationStatus: 'pending',
+      applicable: true,
+      runId: null,
+    });
+    expect(
+      await startEmployeeMethodTestFromChat({ ...testing, arguments: args }),
+    ).toEqual(first);
+    expect(
+      (
+        await startEmployeeMethodTestFromChat({
+          ...testing,
+          callId: randomUUID(),
+          arguments: args,
+        })
+      ).id,
+    ).toBe(first.id);
+    const simultaneous = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        startEmployeeMethodTestFromChat({
+          ...testing,
+          callId: randomUUID(),
+          arguments: args,
+        }),
+      ),
+    );
+    expect(new Set(simultaneous.map((t) => t.id))).toEqual(new Set([first.id]));
+    await expect(
+      getEmployeeMethodTest(f.b.context, first.id),
+    ).rejects.toMatchObject({ code: 'not_found' });
+    expect(
+      (await listPlatformEmployeeTestRuns(f.source.employeeId)).some(
+        (t) => t.id === first.id,
+      ),
+    ).toBe(false);
+    expect(
+      (await listPlatformEmployeeAuditEvents(f.source.employeeId)).length,
+    ).toBeGreaterThan(0);
+    await fixture.db`insert into allrice_model_resource_limits(id,organization_id,scope_type,scope_id,concurrent_run_limit,monthly_run_limit,monthly_token_limit,max_runtime_ms)
+      values(${randomUUID()},${f.a.organizationId},'user',${f.a.user.id},1,2000,2000000,3600000)`;
+    expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+    expect(await getEmployeeMethodTest(f.a.context, first.id)).toMatchObject({
+      status: 'queued',
+      runId: null,
+    });
+    const [beforeDispatch] =
+      await fixture.db`select run_id,route_decision_id from allrice_employee_method_tests where test_id=${first.id}`;
+    expect(beforeDispatch).toMatchObject({
+      run_id: null,
+      route_decision_id: null,
+    });
+    await testing.finish();
+    const [platform] =
+      await fixture.db`select current_draft_revision_id from allrice_platform_employees where id=${f.source.employeeId}`;
+    await savePlatformEmployeeDraft(f.source.employeeId, {
+      definition: {
+        ...f.source.definition,
+        description: 'UNPUBLISHED_NEXT_BASE',
+      },
+      expectedRevisionId: platform!.current_draft_revision_id,
+    });
+    await fixture.db`update allrice_platform_employee_test_runs set available_at=now() where id=${first.id}`;
+    const claimed = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(claimed?.id).toBe(first.id);
+    expect(claimed?.methodCandidate?.instructions).toContain('额外加 100 分');
+    expect(JSON.stringify(claimed?.definition)).not.toContain(
+      'UNPUBLISHED_NEXT_BASE',
+    );
+    expect(claimed?.previewExecution.policySnapshot.grants).toHaveLength(1);
+    expect(claimed?.previewContext.ownerId).toBe(f.a.user.id);
+    const method = claimed!.methodCandidate!;
+    expect(method.modelSnapshot).toEqual(testing.frozen.modelSnapshot);
+    if (!method.modelSnapshot.credentialReference)
+      throw new Error(
+        'The subscription fixture requires its frozen credential',
+      );
+    const subscription = resolveAssistantSubscriptionSnapshot({
+      sessionId: method.sourceSessionId,
+      modelSnapshot: method.modelSnapshot,
+      decision: method.decision,
+      providerSnapshot: {
+        provider: 'dsh',
+        authMode: 'platform_subscription',
+        route: 'openai-codex',
+        model: method.modelSnapshot.model,
+        reasoningEffort: method.modelSnapshot.reasoningEffort,
+        credentialReference: method.modelSnapshot.credentialReference,
+        baseUrl: null,
+      },
+    });
+    expect(subscription).toBeDefined();
+    await freezeRouteSubscriptionSnapshot({
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      decisionId: method.decision.id,
+      snapshot: subscription!,
+    });
+    const receipt = {
+      answer: '{"totalCents":30100}',
+      provider: method.modelSnapshot.provider,
+      model: method.modelSnapshot.model,
+      threadId: null,
+      usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 20 },
+      events: [],
+      error: null,
+      modelExecution: {
+        dispatched: true,
+        subscriptionSnapshotCreated: true,
+        usageComplete: true,
+        cacheUsageKnown: false,
+        costCents: null,
+      },
+    };
+    await completePlatformEmployeeTestRun(first.id, receipt);
+    expect(await getEmployeeMethodTest(f.a.context, first.id)).toMatchObject({
+      status: 'succeeded',
+      validationStatus: 'failed',
+      assertion: { expected: 30000, actual: 30100, passed: false },
+      applicable: true,
+    });
+    const [ledger] =
+      await fixture.db`select * from allrice_model_usage_ledger where route_decision_id=${method.decision.id}`;
+    expect(ledger).toMatchObject({ usage_complete: true, cost_cents: null });
+    const [proof] =
+      await fixture.db`select snapshot from allrice_route_subscription_snapshots where route_decision_id=${method.decision.id}`;
+    expect(proof?.snapshot).toEqual(subscription);
+    await completePlatformEmployeeTestRun(first.id, {
+      ...receipt,
+      answer: '{"totalCents":30000}',
+    });
+    expect(
+      (await getEmployeeMethodTest(f.a.context, first.id)).assertion?.actual,
+    ).toBe(30100);
+    const correcting = await methodRun(
+      f,
+      instance.id,
+      '请调整我的工作场景候选：金额汇总不再额外加 100 分。',
+    );
+    const corrected = await saveEmployeeMethodFromChat({
+      ...correcting,
+      arguments: {
+        expectedRevision: saved.revision,
+        section: 'scene',
+        scene: { id: args.sceneId },
+        procedure:
+          '将输入的金额整数分相加，不加其他金额；只输出 totalCents JSON。',
+        changeSummary: '修正多加金额',
+      },
+    });
+    expect(
+      (await getEmployeeMethodTest(f.a.context, first.id)).applicable,
+    ).toBe(false);
+    await correcting.finish();
+    const repeat = await methodRun(
+      f,
+      instance.id,
+      '请测试我的工作场景候选：金额汇总。',
+    );
+    const second = await startEmployeeMethodTestFromChat({
+      ...repeat,
+      arguments: {
+        ...args,
+        expectedRevision: corrected.revision,
+        candidateRevisionId: corrected.candidate.id,
+        candidateDigest: corrected.candidate.digest,
+      },
+    });
+    expect(second.id).not.toBe(first.id);
+    await repeat.finish();
+    const claim2 = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(claim2?.id).toBe(second.id);
+    expect(await employeeMethodTestStillCurrent(second.id)).toBe(true);
+    const secondMethod = claim2!.methodCandidate!;
+    if (!secondMethod.modelSnapshot.credentialReference)
+      throw new Error(
+        'The subscription fixture requires its frozen credential',
+      );
+    const secondSubscription = resolveAssistantSubscriptionSnapshot({
+      sessionId: secondMethod.sourceSessionId,
+      modelSnapshot: secondMethod.modelSnapshot,
+      decision: secondMethod.decision,
+      providerSnapshot: {
+        provider: 'dsh',
+        authMode: 'platform_subscription',
+        route: 'openai-codex',
+        model: secondMethod.modelSnapshot.model,
+        reasoningEffort: secondMethod.modelSnapshot.reasoningEffort,
+        credentialReference: secondMethod.modelSnapshot.credentialReference,
+        baseUrl: null,
+      },
+    });
+    await freezeRouteSubscriptionSnapshot({
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      decisionId: secondMethod.decision.id,
+      snapshot: secondSubscription!,
+    });
+    await completePlatformEmployeeTestRun(second.id, {
+      ...receipt,
+      answer: '{"totalCents":30000}',
+    });
+    expect(await getEmployeeMethodTest(f.a.context, second.id)).toMatchObject({
+      status: 'succeeded',
+      validationStatus: 'passed',
+      applicable: true,
+    });
+    expect(
+      (await getEmployeeContentSet(f.a.context, saved.setId)).set.active,
+    ).toBeNull();
+  }, 60000);
+  it.each(['queued-stale', 'running-canceled', 'worker-timeout'] as const)(
+    'does not turn %s into a pass or lose unknown usage',
+    async (mode) => {
+      const f = await setup(true),
+        instance = await f.custom('边界测试');
+      const editing = await methodRun(f, instance.id);
+      const saved = await saveEmployeeMethodFromChat({
+        ...editing,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: '金额汇总', appliesWhen: '合成数据' },
+          procedure: '整数分相加',
+          changeSummary: '固定样例',
+        },
+      });
+      await editing.finish();
+      const scene = (await getEmployeeContentSet(f.a.context, saved.setId)).set
+        .candidate!.manifest.scenes[0]!;
+      const run = await methodRun(
+        f,
+        instance.id,
+        '请测试我的工作场景候选：金额汇总。',
+      );
+      const test = await startEmployeeMethodTestFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: saved.revision,
+          candidateRevisionId: saved.candidate.id,
+          candidateDigest: saved.candidate.digest,
+          sceneId: scene.id,
+          caseId: 'cny-total-v1',
+        },
+      });
+      await run.finish();
+      if (mode === 'queued-stale') {
+        await updateEmployeeInstance(f.a.context, instance.id, {
+          workspaceId: f.a.workspaceId,
+          expectedRevision: instance.revision,
+          requestId: randomUUID(),
+          profile: { name: '修改后的员工' },
+        });
+        expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+        expect(await getEmployeeMethodTest(f.a.context, test.id)).toMatchObject(
+          {
+            status: 'failed',
+            validationStatus: 'not_verified',
+            applicable: false,
+            runId: null,
+          },
+        );
+        return;
+      }
+      const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+      expect(claim?.id).toBe(test.id);
+      if (mode === 'running-canceled') {
+        await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where run_id=${claim!.previewExecution.runId}`;
+        expect(await employeeMethodTestStillCurrent(test.id)).toBe(false);
+        await completePlatformEmployeeTestRun(test.id, {
+          answer: null,
+          provider: null,
+          model: null,
+          threadId: null,
+          usage: null,
+          events: [],
+          error: { code: 'TEST_CANCELED', message: 'Synthetic stop' },
+          modelExecution: {
+            dispatched: true,
+            subscriptionSnapshotCreated: false,
+            usageComplete: false,
+            cacheUsageKnown: false,
+            costCents: null,
+          },
+        });
+      } else {
+        await fixture.db`update allrice_platform_employee_test_runs set timeout_at=clock_timestamp()-interval '1 second' where id=${test.id}`;
+        expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+      }
+      const outcome = await getEmployeeMethodTest(f.a.context, test.id);
+      expect(outcome).toMatchObject({
+        status: 'failed',
+        validationStatus: 'not_verified',
+        assertion: { passed: false, reason: 'execution_failed' },
+      });
+      const [usage] =
+        await fixture.db`select usage_complete,cost_cents from allrice_model_usage_ledger where route_decision_id=${claim!.methodCandidate!.decision.id}`;
+      expect(usage).toMatchObject({ usage_complete: false, cost_cents: null });
+      await completePlatformEmployeeTestRun(test.id, {
+        answer: '{"totalCents":30000}',
+        provider: 'openai-codex',
+        model: claim!.methodCandidate!.modelSnapshot.model,
+        threadId: null,
+        usage: { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 },
+        events: [],
+        error: null,
+      });
+      expect(await getEmployeeMethodTest(f.a.context, test.id)).toEqual(
+        outcome,
+      );
+    },
+    60000,
+  );
   it('exposes exact selected reference pins for explicit long-term binding and rechecks withdrawal', async () => {
     const f = await setup(true),
       instance = await f.custom('小白');

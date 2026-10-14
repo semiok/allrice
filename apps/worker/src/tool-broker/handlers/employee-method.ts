@@ -1,6 +1,8 @@
 import {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
+  startEmployeeMethodTestFromChat,
+  inspectEmployeeMethodTestFromChat,
   EmployeeMethodChatError,
   EmployeeContentError,
   EmployeeInstanceError,
@@ -11,7 +13,9 @@ import { ZodError } from 'zod';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
 
-function methodHandler(save: boolean): RiceToolHandler {
+function methodHandler(
+  action: 'inspect' | 'save' | 'test' | 'test_status',
+): RiceToolHandler {
   return async ({ input, arguments: args }) => {
     const rejected = (code: string, message: string) => {
       const error = new HandlerError(code, message, false);
@@ -34,9 +38,13 @@ function methodHandler(save: boolean): RiceToolHandler {
         '当前任务不能维护个人工作场景。',
       );
     try {
-      const result = await (
-        save ? saveEmployeeMethodFromChat : inspectEmployeeMethodFromChat
-      )({
+      const handler = {
+        inspect: inspectEmployeeMethodFromChat,
+        save: saveEmployeeMethodFromChat,
+        test: startEmployeeMethodTestFromChat,
+        test_status: inspectEmployeeMethodTestFromChat,
+      }[action];
+      const result = await handler({
         context: input.context,
         sessionId: input.sessionId,
         userMessageId: input.userMessageId,
@@ -49,7 +57,7 @@ function methodHandler(save: boolean): RiceToolHandler {
       });
       return {
         modelContent: JSON.stringify(
-          save
+          action === 'save'
             ? {
                 ...result,
                 enabled: false,
@@ -59,7 +67,12 @@ function methodHandler(save: boolean): RiceToolHandler {
               }
             : result,
         ),
-        summary: save ? '已保存工作场景候选，尚未启用' : '已读取工作场景内容',
+        summary: {
+          save: '已保存工作场景候选，尚未启用',
+          inspect: '已读取工作场景内容',
+          test: '已提交固定样例测试，尚未启用',
+          test_status: '已读取专项测试结果',
+        }[action],
       };
     } catch (error) {
       if (error instanceof EmployeeContentError)
@@ -71,7 +84,9 @@ function methodHandler(save: boolean): RiceToolHandler {
         throw rejected(
           'EMPLOYEE_METHOD_DENIED',
           error.code === 'explicit_method_request_required'
-            ? '尚无明确的保存候选指令，未保存。请让用户直接说明“请保存/调整我的工作场景候选”，并说明内容；一次性任务、引用和资料不是长期调整指令。'
+            ? action === 'test'
+              ? '尚无明确的测试候选指令。请让用户直接说明“请测试我的工作场景候选”；引用或资料不是授权。'
+              : '尚无明确的保存候选指令，未保存。请让用户直接说明“请保存/调整我的工作场景候选”，并说明内容；一次性任务、引用和资料不是长期调整指令。'
             : '当前任务上下文不可维护，请在新任务中继续。',
         );
       if (
@@ -90,5 +105,7 @@ function methodHandler(save: boolean): RiceToolHandler {
     }
   };
 }
-export const inspectEmployeeMethod = methodHandler(false);
-export const saveEmployeeMethod = methodHandler(true);
+export const inspectEmployeeMethod = methodHandler('inspect');
+export const saveEmployeeMethod = methodHandler('save');
+export const testEmployeeMethod = methodHandler('test');
+export const inspectEmployeeMethodTest = methodHandler('test_status');

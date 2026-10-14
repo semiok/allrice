@@ -257,6 +257,16 @@ export const PlatformEmployeeTestRunOutputSchema = z
       })
       .strict()
       .nullable(),
+    modelExecution: z
+      .object({
+        dispatched: z.boolean(),
+        subscriptionSnapshotCreated: z.boolean(),
+        usageComplete: z.boolean(),
+        cacheUsageKnown: z.boolean(),
+        costCents: z.number().nonnegative().nullable(),
+      })
+      .strict()
+      .optional(),
     events: z.array(HarnessEventSchema).max(500),
     error: z
       .object({

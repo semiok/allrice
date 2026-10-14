@@ -329,19 +329,21 @@
       "id": "bf08fedb-c962-466f-a42f-36a397174cec",
       "name": "employee-customization",
       "contentFile": "skills/employee-customization/SKILL.md",
-      "version": "1.0.1",
-      "checksum": "sha256:5afa95c1cd1523a44f68609a145c25160619aed0138470e2b2dbb88511db6252",
+      "version": "1.1.0",
+      "checksum": "sha256:0002dac8daeaef6cabb48b257c55744e3a73d98e528b99833e3399f4a0f8b663",
       "source": "allrice",
-      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=5afa95c1cd1523a44f68609a145c25160619aed0138470e2b2dbb88511db6252",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=0002dac8daeaef6cabb48b257c55744e3a73d98e528b99833e3399f4a0f8b663",
       "license": "Apache-2.0",
       "reviewStatus": "reviewed",
-      "reviewedByLabel": "MET-181 controlled personal method candidates",
+      "reviewedByLabel": "MET-181 isolated fixed-case candidate validation",
       "createdByLabel": "MET-181 PR2",
       "modelInvocable": true,
       "userInvocable": true,
       "requiredToolRefs": [
         "workspace.employee.method.inspect",
-        "workspace.employee.method.save_candidate"
+        "workspace.employee.method.save_candidate",
+        "workspace.employee.method.test",
+        "workspace.employee.method.test_status"
       ],
       "enabled": true
     }

@@ -11,7 +11,7 @@ import * as employeeRuntimeContent from './employees/employee-runtime-content.ts
  * name filtering or shuffle. They are not five independent migrations.
  */
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import {
   afterAll,
   afterEach,
@@ -420,13 +420,23 @@ integration('subscription incremental migration and cold SQL readers', () => {
       await tx.unsafe(quotaSql);
     });
     expect(await ledgerHistory()).toEqual(history);
-    // The current quota reader also requires the additive 0099 review table.
-    // Keep the 0097/0098 interruption assertions above, then bring this owned
-    // fixture to the reader's schema before testing cold current binaries.
+    // Keep the exact 0097/0098 interruption checkpoints above. Current binary
+    // readers also require later additive tables (including method-test route
+    // bindings), so advance this owned schema before exercising those readers.
+    // The account-slot migration was applied explicitly during legacy seeding.
+    const remainingMigrations = (
+      await readdir(new URL('../migrations/', import.meta.url))
+    )
+      .filter(
+        (name) =>
+          name.endsWith('.sql') &&
+          name > '0098_codex_subscription_quota.sql' &&
+          name !== '0121_codex_subscription_slots.sql',
+      )
+      .sort();
     await db.begin(async (tx) => {
-      await tx.unsafe(
-        await migration('0099_subscription_usage_budget_reviews.sql'),
-      );
+      for (const name of remainingMigrations)
+        await tx.unsafe(await migration(name));
     });
     expect(await ledgerHistory()).toEqual(history);
     expect(await getCodexProviderStatus()).toMatchObject({

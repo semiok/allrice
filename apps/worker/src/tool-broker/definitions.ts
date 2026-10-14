@@ -10,6 +10,8 @@ import {
   EmployeeProfileChatInputSchema,
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodTestStartSchema,
+  EmployeeMethodTestInspectSchema,
 } from '@allrice/contracts';
 import {
   allRiceToolManifest,
@@ -68,6 +70,18 @@ export const riceToolDefinitions = [
     description:
       '用户明确要求保存或调整工作方法时，保存当前小白的个人候选。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用、修改上级或权限，不得声称已生效。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
+  },
+  {
+    name: 'workspace.employee.method.test',
+    description:
+      '用户明确要求验证候选时，针对当前小白的准确候选版本和场景排队执行固定合成金额测试。先读取候选取得 revision、digest 和 sceneId。仅验证 cny-total-v1，不读取公司文件、不启用方法。返回同一测试 ID；排队不等于失败，不重复提交。',
+    inputSchema: z.toJSONSchema(EmployeeMethodTestStartSchema),
+  },
+  {
+    name: 'workspace.employee.method.test_status',
+    description:
+      '读取当前小白的专项测试结果。区分执行状态、业务断言和结果是否仍适用；固定样例通过不代表所有业务通过。不自动启用候选。仍排队时告知测试 ID 并结束当前回复，后续读取同一 ID，避免占用并发名额反复轮询。',
+    inputSchema: z.toJSONSchema(EmployeeMethodTestInspectSchema),
   },
   ...(['delegate', 'message', 'report', 'stop', 'development'] as const).map(
     (action) => ({

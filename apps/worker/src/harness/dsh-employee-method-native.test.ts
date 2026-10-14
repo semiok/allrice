@@ -2,8 +2,47 @@ import { expect, it } from 'vitest';
 import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodTestStartSchema,
+  EmployeeMethodTestInspectSchema,
 } from '@allrice/contracts';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+
+it.each([
+  {
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    schema: EmployeeMethodTestStartSchema,
+    args: {
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      sceneId: '00000000-0000-4000-8000-000000000002',
+      caseId: 'cny-total-v1',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.test_status',
+    wireName: 'workspace_employee_method_test_status',
+    schema: EmployeeMethodTestInspectSchema,
+    args: { testId: '00000000-0000-4000-8000-000000000003' },
+  },
+])(
+  'roundtrips exact candidate test parameters without model-supplied expectations: $wireName',
+  async ({ schema, ...test }) => {
+    await nativeBrokerRoundtrip({
+      ...test,
+      invalidArgs: { ...test.args, expected: 30100 },
+      onToolCall: async (call) => {
+        expect(schema.parse(call.arguments)).toEqual(test.args);
+        return {
+          modelContent: '{"status":"queued","validationStatus":"pending"}',
+          summary: 'Queued',
+        };
+      },
+    });
+  },
+  45000,
+);
 
 it('passes candidate view through actual native DSH and excludes target authority inputs', async () => {
   await nativeBrokerRoundtrip({

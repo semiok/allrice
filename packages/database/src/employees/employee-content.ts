@@ -864,3 +864,69 @@ export async function inspectEmployeeMethodContent(
     sources,
   };
 }
+
+/** Same layer/source resolver as effective content, with exactly one candidate
+ * substituted. Tests freeze this overlay separately from the published package. */
+export async function freezeEmployeeMethodCandidate(
+  context: EmployeeContentContext,
+  input: {
+    instanceId: string;
+    expectedRevision: number;
+    candidateRevisionId: string;
+    candidateDigest: string;
+    sceneId: string;
+  },
+  tx: ContentTx,
+) {
+  const target = await resolveTarget(
+    context,
+    { kind: 'instance', instanceId: input.instanceId },
+    tx,
+    true,
+  );
+  const [row] = await tx<
+    ContentSetRow[]
+  >`select * from allrice_employee_content_sets
+    where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+      and instance_id=${input.instanceId} and scope='personal' and owner_id=${context.actor.id} for share`;
+  if (!row) throw new DataAccessError('not_found');
+  if (
+    row.revision !== input.expectedRevision ||
+    row.candidate_revision_id !== input.candidateRevisionId
+  )
+    throw new EmployeeContentError('version_conflict');
+  const revision = await readRevision(tx, row.candidate_revision_id);
+  if (!revision || revision.digest !== input.candidateDigest)
+    throw new EmployeeContentError('version_conflict');
+  const result = await assemble(
+    context,
+    target,
+    contentOwnership(row),
+    tx,
+    { row, revision },
+    true,
+  );
+  if (!result.validation.valid)
+    throw new EmployeeContentError('validation_failed');
+  const scene = result.scenes.find((s) => s.id === input.sceneId);
+  if (!scene || !revision.manifest.scenes.some((s) => s.id === scene.id))
+    throw new EmployeeContentError('source_changed');
+  const selected = new Set(
+    [...result.common, ...scene.references].map(exactKey),
+  );
+  const sources = result.resolved.filter((s) =>
+    selected.has(exactKey(s.dto.reference)),
+  );
+  return {
+    setId: row.id,
+    setRevision: row.revision,
+    candidateRevisionId: revision.id,
+    candidateDigest: revision.digest,
+    dependencyDigest: result.validation.dependencyDigest,
+    employeeId: target.employeeId,
+    employeeVersionId: target.versionId,
+    scene,
+    common: result.common,
+    sources: sources.map((s) => s.dto),
+  };
+}

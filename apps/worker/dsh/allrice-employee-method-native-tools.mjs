@@ -1,6 +1,8 @@
 import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodTestStartSchema,
+  EmployeeMethodTestInspectSchema,
 } from '@allrice/contracts';
 const reference = {
   type: 'object',
@@ -24,6 +26,32 @@ const reference = {
   },
 };
 export const employeeMethodNativeTools = [
+  {
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    description:
+      'After an explicit user request to test their candidate, queue the exact current candidate revision and scene against the server fixed cny-total-v1 synthetic case. Inspect candidate first for revision ID, digest and scene ID. No business files, tool writes or activation. Repeated identical inputs reuse the same test. Queued does not mean failed: save the test ID, finish this reply to free concurrency, and inspect that same test in a later turn. Never regenerate candidates or resubmit to obtain a pass.',
+    timeoutMs: 15000,
+    isConcurrencySafe: false,
+    parameters: {
+      expectedRevision: { type: 'integer', required: true },
+      candidateRevisionId: { type: 'string', required: true },
+      candidateDigest: { type: 'string', required: true },
+      sceneId: { type: 'string', required: true },
+      caseId: { type: 'string', required: true, enum: ['cny-total-v1'] },
+    },
+    validateArguments: (args) => EmployeeMethodTestStartSchema.parse(args),
+  },
+  {
+    canonicalName: 'workspace.employee.method.test_status',
+    wireName: 'workspace_employee_method_test_status',
+    description:
+      'Read one test belonging to the current personal custom employee. Report execution status separately from validationStatus, assertion.expected/actual and applicable. A passed fixed example is limited evidence, never full business approval. No activation. If queued/running, keep the same test ID and finish the reply instead of repeated polling which can occupy its concurrency slot.',
+    timeoutMs: 15000,
+    isConcurrencySafe: false,
+    parameters: { testId: { type: 'string', required: true } },
+    validateArguments: (args) => EmployeeMethodTestInspectSchema.parse(args),
+  },
   {
     canonicalName: 'workspace.employee.method.inspect',
     wireName: 'workspace_employee_method_inspect',

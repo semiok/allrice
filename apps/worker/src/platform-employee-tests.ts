@@ -7,14 +7,22 @@ import {
   ExecutionContextSchema,
   type HarnessEvent,
   type SkillCapability,
+  type PlatformEmployeeTestRunOutput,
 } from '@allrice/contracts';
 import {
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
+  employeeMethodTestStillCurrent,
+  freezeRouteSubscriptionSnapshot,
 } from '@allrice/database';
 
 import { HandlerError } from './errors.js';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
+import { providerSnapshotForModelTarget } from './routing/provider-snapshot.js';
+import { preflightAssistantSubscription } from './assistant-pricing-preflight.js';
+import { estimateModelCostCents } from './model-cost.js';
+import { checkCompletedModelBudget } from './model-result-budget.js';
+import { getAssistantFailureUsage } from './harness/dsh/assistant-outcome.js';
 import {
   executeRiceTool,
   riceReadOnlyToolDefinitionsForPreview,
@@ -49,8 +57,43 @@ export async function executeNextPlatformEmployeeTest(input: {
   );
   const adapter = new DshHarnessAdapter({
     runtimeRoot: testDirectory,
-    requestTimeoutMs: test.runtimeProfile.timeoutMs,
+    requestTimeoutMs:
+      test.methodCandidate?.timeoutMs ?? test.runtimeProfile.timeoutMs,
   });
+  const method = test.methodCandidate;
+  const controller = new AbortController();
+  const signal = AbortSignal.any([input.signal, controller.signal]);
+  let guard: ReturnType<typeof setInterval> | undefined;
+  let checking: Promise<void> | undefined;
+  const meter: NonNullable<PlatformEmployeeTestRunOutput['modelExecution']> = {
+    dispatched: false,
+    subscriptionSnapshotCreated: false,
+    usageComplete: false,
+    cacheUsageKnown: false,
+    costCents: null,
+  };
+  let usage: PlatformEmployeeTestRunOutput['usage'] = null;
+  const checkCandidate = (): Promise<void> => {
+    // Finalization joins an in-flight poll instead of skipping its verdict.
+    if (checking) return checking;
+    if (!method || signal.aborted) return Promise.resolve();
+    checking = (async () => {
+      try {
+        if (!(await employeeMethodTestStillCurrent(test.id)))
+          throw new HandlerError(
+            'EMPLOYEE_METHOD_TEST_STALE',
+            '候选、权限或模型连接已变化，测试已停止；请重新检查后发起测试。',
+            false,
+          );
+      } catch (error) {
+        // An unavailable authority read also fails closed.
+        controller.abort(error);
+      }
+    })().finally(() => {
+      checking = undefined;
+    });
+    return checking;
+  };
   const ids = {
     assignmentId: randomUUID(),
     versionId: randomUUID(),
@@ -60,6 +103,12 @@ export async function executeNextPlatformEmployeeTest(input: {
   };
   const events: HarnessEvent[] = [];
   try {
+    await checkCandidate();
+    signal.throwIfAborted();
+    if (method)
+      guard = setInterval(() => {
+        void checkCandidate();
+      }, 2_000);
     const executionContext = ExecutionContextSchema.parse({
       executionId: randomUUID(),
       runId: test.previewExecution.runId,
@@ -72,7 +121,7 @@ export async function executeNextPlatformEmployeeTest(input: {
       startedAt: test.previewExecution.startedAt,
     });
     const grantedCapabilities: SkillCapability[] = ['model:invoke'];
-    for (const toolName of test.runtimeProfile.toolNames) {
+    for (const toolName of method ? [] : test.runtimeProfile.toolNames) {
       const capability = riceToolCapability(toolName);
       if (
         capability &&
@@ -84,22 +133,45 @@ export async function executeNextPlatformEmployeeTest(input: {
         grantedCapabilities.push(capability);
       }
     }
-    const tools = riceReadOnlyToolDefinitionsForPreview(
-      grantedCapabilities,
-      test.runtimeProfile.toolNames,
-    );
-    const snapshot = DshExecutionSnapshotSchema.parse({
-      provider: 'dsh',
-      authMode:
-        test.runtimeProfile.provider === 'openai-codex'
-          ? 'platform_subscription'
-          : 'allrice_credential',
-      route: test.runtimeProfile.provider,
-      model: test.runtimeProfile.model,
-      reasoningEffort: test.runtimeProfile.reasoningEffort,
-      credentialReference: test.runtimeProfile.credentialReference,
-      baseUrl: test.runtimeProfile.baseUrl,
-    });
+    const tools = method
+      ? []
+      : riceReadOnlyToolDefinitionsForPreview(
+          grantedCapabilities,
+          test.runtimeProfile.toolNames,
+        );
+    const snapshot = method
+      ? providerSnapshotForModelTarget(method.modelSnapshot)
+      : DshExecutionSnapshotSchema.parse({
+          provider: 'dsh',
+          authMode:
+            test.runtimeProfile.provider === 'openai-codex'
+              ? 'platform_subscription'
+              : 'allrice_credential',
+          route: test.runtimeProfile.provider,
+          model: test.runtimeProfile.model,
+          reasoningEffort: test.runtimeProfile.reasoningEffort,
+          credentialReference: test.runtimeProfile.credentialReference,
+          baseUrl: test.runtimeProfile.baseUrl,
+        });
+    const subscriptionSnapshot = method
+      ? preflightAssistantSubscription({
+          sessionId: method.sourceSessionId,
+          modelSnapshot: method.modelSnapshot,
+          decision: method.decision,
+          providerSnapshot: snapshot,
+        })
+      : undefined;
+    if (subscriptionSnapshot && method) {
+      const frozen = await freezeRouteSubscriptionSnapshot({
+        organizationId: test.previewContext.organizationId,
+        workspaceId: test.previewContext.workspaceId,
+        decisionId: method.decision.id,
+        snapshot: subscriptionSnapshot,
+      });
+      meter.subscriptionSnapshotCreated = frozen.frozen;
+    }
+    signal.throwIfAborted();
+    meter.dispatched = true;
     const result = await adapter.execute({
       kernel: EmployeeKernelRequestSchema.parse({
         schemaVersion: 1,
@@ -109,29 +181,39 @@ export async function executeNextPlatformEmployeeTest(input: {
         sessionId: ids.sessionId,
         userMessageId: ids.userMessageId,
         assistantMessageId: ids.assistantMessageId,
-        systemInstructions: test.runtimeProfile.systemPrompt,
+        systemInstructions: [
+          test.runtimeProfile.systemPrompt,
+          method?.instructions,
+        ]
+          .filter(Boolean)
+          .join('\n\n'),
         userRequest: test.input.prompt,
         bootstrapConversation: '',
         authorizedMemoryContext: '',
         grantedCapabilities,
-        skillVersionIds: test.runtimeProfile.nativeSkillIds,
+        skillVersionIds: method ? [] : test.runtimeProfile.nativeSkillIds,
       }),
       providerSnapshot: snapshot,
       storageObjects: [],
-      nativeSkills: test.nativeSkills,
+      nativeSkills: method ? [] : test.nativeSkills,
       workDirectory: testDirectory,
       executionEnvironment: {
         ALLRICE_ORGANIZATION_ID: test.previewContext.organizationId,
         ALLRICE_WORKSPACE_ID: test.previewContext.workspaceId,
         ALLRICE_OWNER_ID: test.previewContext.ownerId,
+        ALLRICE_RUN_ID: test.previewExecution.runId,
+        ALLRICE_JOB_ID: test.previewExecution.jobId,
+        ALLRICE_ATTEMPT: String(test.previewExecution.jobAttempt),
         ALLRICE_PLATFORM_EMPLOYEE_PREVIEW: 'true',
       },
-      signal: input.signal,
+      signal,
       attempt: 1,
       generation: 0,
-      maxOutputTokens: 8_000,
+      maxOutputTokens: method
+        ? Math.min(method.modelSnapshot.runLimits.maxOutputTokens, 8_000)
+        : 8_000,
       tools,
-      authorizedToolNames: test.runtimeProfile.toolNames,
+      authorizedToolNames: method ? [] : test.runtimeProfile.toolNames,
       onToolCall:
         tools.length > 0
           ? (call) =>
@@ -146,7 +228,7 @@ export async function executeNextPlatformEmployeeTest(input: {
                 skillVersionIds: test.nativeSkills.map((skill) => skill.id),
                 platformTestRunId: test.id,
                 platformActorLabel: test.requestedByLabel,
-                signal: input.signal,
+                signal,
                 call,
               })
           : undefined,
@@ -158,6 +240,45 @@ export async function executeNextPlatformEmployeeTest(input: {
         }
       },
     });
+    usage = result.usage;
+    if (method) {
+      // Match the ordinary single-root receipt rules. A subscription never
+      // becomes a cash estimate; missing token receipts remain unknown.
+      if (
+        subscriptionSnapshot &&
+        (result.provider !== subscriptionSnapshot.provider ||
+          result.model !== subscriptionSnapshot.model ||
+          result.costCurrency !== undefined ||
+          result.priceSnapshotDigest !== undefined ||
+          (result.estimatedCostCents !== undefined &&
+            result.estimatedCostCents !== null))
+      )
+        throw new HandlerError(
+          'ASSISTANT_SUBSCRIPTION_RESULT_UNVERIFIED',
+          '测试结果的模型身份与冻结版本不一致。',
+          false,
+        );
+      meter.usageComplete = result.usageComplete ?? false;
+      meter.cacheUsageKnown = result.cacheUsageKnown ?? false;
+      meter.costCents =
+        subscriptionSnapshot ||
+        result.costEstimateAvailable === false ||
+        !meter.usageComplete
+          ? null
+          : estimateModelCostCents({
+              provider: result.provider,
+              model: result.model,
+              ...result.usage,
+            });
+      checkCompletedModelBudget({
+        verifiedSubscription: !!subscriptionSnapshot,
+        limits: method.modelSnapshot.runLimits,
+        result,
+        costCents: meter.costCents,
+      });
+      await checkCandidate();
+      signal.throwIfAborted();
+    }
     await completePlatformEmployeeTestRun(test.id, {
       answer: result.answer,
       provider: result.provider,
@@ -166,24 +287,42 @@ export async function executeNextPlatformEmployeeTest(input: {
       usage: result.usage,
       events,
       error: null,
+      ...(method ? { modelExecution: meter } : {}),
     });
   } catch (error) {
+    const failedUsage = method
+      ? getAssistantFailureUsage(
+          error,
+          test.previewExecution.runId,
+          test.previewExecution.jobAttempt,
+        )
+      : undefined;
+    if (failedUsage) {
+      usage = failedUsage.usage;
+      meter.usageComplete = failedUsage.usageComplete;
+      meter.cacheUsageKnown = failedUsage.cacheUsageKnown;
+      meter.costCents = null;
+    }
     await completePlatformEmployeeTestRun(test.id, {
       answer: null,
-      provider: test.runtimeProfile.provider,
-      model: test.runtimeProfile.model,
+      provider: method?.modelSnapshot.provider ?? test.runtimeProfile.provider,
+      model: method?.modelSnapshot.model ?? test.runtimeProfile.model,
       threadId: null,
-      usage: null,
+      usage,
       events,
       error: {
-        code: errorCode(error),
+        code: errorCode(
+          controller.signal.aborted ? controller.signal.reason : error,
+        ),
         message:
           error instanceof Error
             ? error.message.slice(0, 2_000)
             : '草稿测试运行失败。',
       },
+      ...(method ? { modelExecution: meter } : {}),
     });
   } finally {
+    if (guard) clearInterval(guard);
     await adapter.close();
   }
   return true;

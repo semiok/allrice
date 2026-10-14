@@ -18,6 +18,12 @@ export {
   isEmployeeMethodAuthoringRun,
   filterEmployeeMethodMemories,
 } from './employees/employee-method-chat.ts';
+export {
+  startEmployeeMethodTestFromChat,
+  inspectEmployeeMethodTestFromChat,
+  getEmployeeMethodTest,
+  employeeMethodTestStillCurrent,
+} from './employees/employee-method-tests.ts';
 export * from './employees/employee-runtime-content.ts';
 export * from './organization-departments.ts';
 export * from './organization-employee-assignments.ts';
