@@ -1,22 +1,31 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import {
+  EmployeeMethodFileAssertionSchema,
+  EmployeeMethodFileStageSchema,
+  employeeMethodFileCase,
+} from './employee-method-file-case.ts';
 
 export const employeeMethodTestEnvironment = 'isolated-text-v1';
+export const EmployeeMethodTestCaseIdSchema = z.enum([
+  'cny-total-v1',
+  'cny-file-flow-v1',
+]);
 export const EmployeeMethodTestStartSchema = z
   .object({
     expectedRevision: z.number().int().positive(),
     candidateRevisionId: UuidSchema,
     candidateDigest: ChecksumSchema,
     sceneId: UuidSchema,
-    caseId: z.literal('cny-total-v1'),
+    caseId: EmployeeMethodTestCaseIdSchema,
     retryOfTestId: UuidSchema.optional(),
   })
   .strict();
 export const EmployeeMethodTestInspectSchema = z
   .object({ testId: UuidSchema })
   .strict();
-export const EmployeeMethodTestAssertionSchema = z
+export const EmployeeMethodAmountAssertionSchema = z
   .object({
     id: z.literal('integer-cny-total'),
     passed: z.boolean(),
@@ -30,6 +39,10 @@ export const EmployeeMethodTestAssertionSchema = z
     ]),
   })
   .strict();
+export const EmployeeMethodTestAssertionSchema = z.union([
+  EmployeeMethodAmountAssertionSchema,
+  EmployeeMethodFileAssertionSchema,
+]);
 export const EmployeeMethodTestSchema = z
   .object({
     id: UuidSchema,
@@ -39,8 +52,11 @@ export const EmployeeMethodTestSchema = z
     candidateDigest: ChecksumSchema,
     dependencyDigest: ChecksumSchema,
     sceneId: UuidSchema,
-    caseId: z.literal('cny-total-v1'),
-    environment: z.literal(employeeMethodTestEnvironment),
+    caseId: EmployeeMethodTestCaseIdSchema,
+    environment: z.enum([
+      employeeMethodTestEnvironment,
+      employeeMethodFileCase.environment,
+    ]),
     status: z.enum(['queued', 'running', 'succeeded', 'failed']),
     validationStatus: z.enum(['pending', 'passed', 'failed', 'not_verified']),
     applicable: z.boolean(),
@@ -51,11 +67,27 @@ export const EmployeeMethodTestSchema = z
     errorCode: z.string().nullable(),
     retryOfTestId: UuidSchema.nullable(),
     retryTestId: UuidSchema.nullable(),
+    files: z
+      .array(
+        z
+          .object({
+            stage: EmployeeMethodFileStageSchema,
+            objectId: UuidSchema,
+            versionId: UuidSchema,
+            fileName: z.string(),
+            checksum: ChecksumSchema,
+            downloadUrl: z.string(),
+            previewUrl: z.string(),
+          })
+          .strict(),
+      )
+      .default([]),
     currency: z.literal('CNY'),
     amountUnit: z.literal('cent'),
-    coverage: z.literal(
+    coverage: z.enum([
       '仅验证所选场景在固定合成金额样例中的结果，不代表所有业务场景已验证。',
-    ),
+      employeeMethodFileCase.coverage,
+    ]),
   })
   .strict();
 export type EmployeeMethodTest = z.infer<typeof EmployeeMethodTestSchema>;

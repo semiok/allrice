@@ -1,3 +1,7 @@
+import {
+  employeeMethodFileTools,
+  executeEmployeeMethodFileStep,
+} from './employee-method-file-tests.js';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 
@@ -13,6 +17,7 @@ import {
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
   employeeMethodTestStillCurrent,
+  methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
 } from '@allrice/database';
 
@@ -61,6 +66,7 @@ export async function executeNextPlatformEmployeeTest(input: {
       test.methodCandidate?.timeoutMs ?? test.runtimeProfile.timeoutMs,
   });
   const method = test.methodCandidate;
+  let methodExecutionIssue: string | undefined;
   const controller = new AbortController();
   const signal = AbortSignal.any([input.signal, controller.signal]);
   let guard: ReturnType<typeof setInterval> | undefined;
@@ -134,7 +140,9 @@ export async function executeNextPlatformEmployeeTest(input: {
       }
     }
     const tools = method
-      ? []
+      ? method.caseId === 'cny-file-flow-v1'
+        ? employeeMethodFileTools
+        : []
       : riceReadOnlyToolDefinitionsForPreview(
           grantedCapabilities,
           test.runtimeProfile.toolNames,
@@ -213,25 +221,42 @@ export async function executeNextPlatformEmployeeTest(input: {
         ? Math.min(method.modelSnapshot.runLimits.maxOutputTokens, 8_000)
         : 8_000,
       tools,
-      authorizedToolNames: method ? [] : test.runtimeProfile.toolNames,
+      authorizedToolNames: method
+        ? tools.map((tool) => tool.name)
+        : test.runtimeProfile.toolNames,
       onToolCall:
-        tools.length > 0
+        method?.caseId === 'cny-file-flow-v1'
           ? (call) =>
-              executeRiceTool({
-                nativeSkills: test.nativeSkills,
+              executeEmployeeMethodFileStep({
                 context: executionContext,
-                managedBrowserJobAttempt: test.previewExecution.jobAttempt,
-                managedBrowserJobLeaseToken: test.previewExecution.leaseToken,
-                capabilities: grantedCapabilities,
+                testId: test.id,
+                onUnverified: (code) => {
+                  methodExecutionIssue ??= code;
+                },
+                leaseToken: test.previewExecution.leaseToken,
+                jobAttempt: test.previewExecution.jobAttempt,
+                call,
+                signal,
                 storageRoot:
                   process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
-                skillVersionIds: test.nativeSkills.map((skill) => skill.id),
-                platformTestRunId: test.id,
-                platformActorLabel: test.requestedByLabel,
-                signal,
-                call,
               })
-          : undefined,
+          : tools.length > 0
+            ? (call) =>
+                executeRiceTool({
+                  nativeSkills: test.nativeSkills,
+                  context: executionContext,
+                  managedBrowserJobAttempt: test.previewExecution.jobAttempt,
+                  managedBrowserJobLeaseToken: test.previewExecution.leaseToken,
+                  capabilities: grantedCapabilities,
+                  storageRoot:
+                    process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
+                  skillVersionIds: test.nativeSkills.map((skill) => skill.id),
+                  platformTestRunId: test.id,
+                  platformActorLabel: test.requestedByLabel,
+                  signal,
+                  call,
+                })
+            : undefined,
       onEvent: async (event) => {
         // The final answer is persisted separately. Keep the safe native
         // timeline, lifecycle and usage events without storing delta spam.
@@ -276,6 +301,16 @@ export async function executeNextPlatformEmployeeTest(input: {
         result,
         costCents: meter.costCents,
       });
+      if (
+        method.caseId === 'cny-file-flow-v1' &&
+        (methodExecutionIssue ||
+          (await methodFileExecutionUnverified(executionContext, test.id)))
+      )
+        throw new HandlerError(
+          'EMPLOYEE_METHOD_TEST_EXECUTION_UNVERIFIED',
+          '隔离文件执行尚未获得完整结果，请保留本测试并按明确重试流程处理。',
+          false,
+        );
       await checkCandidate();
       signal.throwIfAborted();
     }

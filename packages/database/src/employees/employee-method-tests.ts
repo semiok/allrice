@@ -11,6 +11,10 @@ import {
   RouteDecisionSchema,
   UuidSchema,
   employeeMethodAmountCase,
+  employeeMethodFileCase,
+  EmployeeMethodFileAssertionSchema,
+  runtimeContractEqual,
+  type ExecutionContext,
   employeeMethodTestEnvironment,
   type RequestContext,
   type PlatformEmployeeTestRunOutput,
@@ -50,13 +54,20 @@ import {
   completeRouteDecisionInTransaction,
 } from '../execution/route-decision.ts';
 
+import {
+  freezeMethodFileEnvironment,
+  currentMethodFileGrant,
+} from './employee-method-file-runtime.ts';
+
 type Tx = postgres.TransactionSql;
 type Identity = Pick<
   RequestContext,
   'actor' | 'organizationId' | 'workspaceId' | 'requestId'
 >;
 type Candidate = Awaited<ReturnType<typeof freezeEmployeeMethodCandidate>>;
-type Binding = {
+export type EmployeeMethodTestBinding = {
+  case_id: string;
+  environment: string;
   test_id: string;
   organization_id: string;
   workspace_id: string;
@@ -79,6 +90,7 @@ type Binding = {
     content: Candidate;
     instance: ReturnType<typeof EmployeeInstanceSchema.parse>;
     timeoutMs: number;
+    fileEnvironment?: Awaited<ReturnType<typeof freezeMethodFileEnvironment>>;
   };
   snapshot_digest: string;
   run_id: string | null;
@@ -86,6 +98,7 @@ type Binding = {
   assertion: unknown | null;
   created_at: Date;
 };
+type Binding = EmployeeMethodTestBinding;
 const contextFor = (b: Binding): Identity => ({
   actor: { type: 'user', id: b.owner_id },
   organizationId: b.organization_id,
@@ -117,6 +130,20 @@ async function readBinding(tx: Tx, testId: string) {
 
 async function currentBinding(tx: Tx, b: Binding, admission = false) {
   const context = contextFor(b);
+  if (b.case_id === employeeMethodFileCase.id) {
+    try {
+      if (
+        !runtimeContractEqual(
+          b.candidate_snapshot.fileEnvironment?.manifest,
+          employeeMethodFileCase,
+        )
+      )
+        throw new Error('case_changed');
+      await currentMethodFileGrant(tx, b, false);
+    } catch {
+      throw new EmployeeContentError('source_changed');
+    }
+  }
   // Chat callers already hold SHARE before the content lock. A DTO must not
   // upgrade that lock while another chat waits for the same content lock.
   // The scheduler alone reserves policy allocation before taking content.
@@ -175,28 +202,35 @@ async function dto(tx: Tx, context: Identity, testId: string) {
     candidateDigest: b.candidate_digest,
     dependencyDigest: b.dependency_digest,
     sceneId: b.scene_id,
-    caseId: employeeMethodAmountCase.id,
-    environment: employeeMethodTestEnvironment,
+    caseId: b.case_id,
+    environment: b.environment,
     status: test.status,
     applicable,
     assertion,
     validationStatus: ['queued', 'running'].includes(test.status)
       ? 'pending'
-      : test.status === 'failed'
-        ? 'not_verified'
-        : assertion?.passed
-          ? 'passed'
-          : 'failed',
+      : assertion &&
+          !assertion.passed &&
+          assertion.reason !== 'execution_failed'
+        ? 'failed'
+        : test.status === 'failed'
+          ? 'not_verified'
+          : assertion?.passed
+            ? 'passed'
+            : 'failed',
     runId: b.run_id,
     createdAt: b.created_at.toISOString(),
     completedAt: test.completed_at?.toISOString() ?? null,
     errorCode: test.output?.error?.code ?? null,
     retryOfTestId: b.retry_of_test_id,
     retryTestId: retry?.test_id ?? null,
+    files: await methodTestFiles(tx, b),
     currency: 'CNY',
     amountUnit: 'cent',
     coverage:
-      '仅验证所选场景在固定合成金额样例中的结果，不代表所有业务场景已验证。',
+      b.case_id === employeeMethodFileCase.id
+        ? employeeMethodFileCase.coverage
+        : '仅验证所选场景在固定合成金额样例中的结果，不代表所有业务场景已验证。',
   });
 }
 
@@ -253,7 +287,8 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
             retry.candidate_snapshot.content.setRevision ||
           args.candidateRevisionId !== retry.candidate_revision_id ||
           args.candidateDigest !== retry.candidate_digest ||
-          args.sceneId !== retry.scene_id
+          args.sceneId !== retry.scene_id ||
+          args.caseId !== retry.case_id
         )
           throw new EmployeeContentError('source_changed');
         if (
@@ -312,6 +347,9 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
         content,
         instance,
         timeoutMs,
+        ...(args.caseId === employeeMethodFileCase.id
+          ? { fileEnvironment: await freezeMethodFileEnvironment(tx, scope) }
+          : {}),
       };
       const bindingDigest =
         retry?.binding_digest ??
@@ -320,8 +358,9 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
           profileRevision: instance.revision,
           packageChecksum: profile.runtimePackage!.checksum,
           model: { ...model, sessionId: null, frozenAt: null },
-          case: employeeMethodAmountCase.id,
-          environment: employeeMethodTestEnvironment,
+          case: args.caseId,
+          environment:
+            candidate.fileEnvironment ?? employeeMethodTestEnvironment,
           timeoutMs,
         });
       // The existing content lock serializes starts. Read-only reuse never waits
@@ -337,13 +376,13 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
       const id = randomUUID();
       await tx`insert into allrice_platform_employee_test_runs(id,employee_id,revision_id,requested_by_label,status,input,
       frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose)
-      values(${id},${base.employee_id},${base.id},${scope.actor.id},'queued',${tx.json({ prompt: employeeMethodAmountCase.prompt, environment: 'platform', workspaceId: scope.workspaceId, ownerId: scope.actor.id })},
+      values(${id},${base.employee_id},${base.id},${scope.actor.id},'queued',${tx.json({ prompt: args.caseId === employeeMethodFileCase.id ? employeeMethodFileCase.prompt : employeeMethodAmountCase.prompt, environment: 'platform', workspaceId: scope.workspaceId, ownerId: scope.actor.id })},
         ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'method_candidate')`;
       await tx`insert into allrice_employee_method_tests(test_id,organization_id,workspace_id,owner_id,employee_id,instance_id,set_id,
       candidate_revision_id,candidate_digest,dependency_digest,scene_id,case_id,environment,request_id,request_digest,binding_digest,
       source_run_id,source_session_id,employee_version_id,model_snapshot,candidate_snapshot,snapshot_digest,retry_of_test_id)
       values(${id},${scope.organizationId},${scope.workspaceId},${scope.actor.id},${content.employeeId},${instance.id},${content.setId},
-        ${content.candidateRevisionId},${content.candidateDigest},${content.dependencyDigest},${args.sceneId},${employeeMethodAmountCase.id},${employeeMethodTestEnvironment},${requestId},${requestDigest},${bindingDigest},
+        ${content.candidateRevisionId},${content.candidateDigest},${content.dependencyDigest},${args.sceneId},${args.caseId},${args.caseId === employeeMethodFileCase.id ? employeeMethodFileCase.environment : employeeMethodTestEnvironment},${requestId},${requestDigest},${bindingDigest},
         ${input.context.runId},${input.sessionId},${content.employeeVersionId},${tx.json(model)},${tx.json(candidate)},${runtimePolicyDigest({ candidate, model })},${retry?.test_id ?? null})`;
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
       values(${scope.organizationId},${scope.workspaceId},${scope.actor.id},${retry ? 'employee.method.test.retried' : 'employee.method.test.queued'},'employee_method_test',${id},'allowed','isolated_fixed_case',${requestId})`;
@@ -381,6 +420,14 @@ export async function getEmployeeMethodTest(context: Identity, testId: string) {
 export async function prepareEmployeeMethodTestClaim(tx: Tx, testId: string) {
   const b = await readBinding(tx, testId);
   await currentBinding(tx, b, true);
+  if (b.case_id === employeeMethodFileCase.id) {
+    try {
+      await currentMethodFileGrant(tx, b);
+      await freezeMethodFileEnvironment(tx, contextFor(b));
+    } catch {
+      throw new DataAccessError('authorization_denied');
+    }
+  }
   const model = SessionModelSnapshotSchema.parse(b.model_snapshot);
   await assertEmployeeMethodModelCurrent(tx, b, model);
   try {
@@ -426,7 +473,7 @@ export async function prepareEmployeeMethodTestClaim(tx: Tx, testId: string) {
     binding: b,
     modelSnapshot: model,
     timeoutMs: b.candidate_snapshot.timeoutMs,
-    instructions: `隔离的工作方法测试。仅针对所选候选场景应用下面的方法；它尚未启用。不要调用工具、读取公司文件或修改任何状态。\n场景：${content.scene.name}\n${methodInstructions}`,
+    instructions: `隔离的工作方法测试。仅针对所选候选场景应用下面的方法；它尚未启用。${b.case_id === employeeMethodFileCase.id ? '只可使用 platform_employee_method_step 处理平台合成文件。不得读取公司资料。工具仅在隔离云端执行 JavaScript，输入、输出、限额由平台固定。按候选实际顺序执行，不要替候选修正错误。' : '不要调用工具、读取公司文件或修改任何状态。'}\n场景：${content.scene.name}\n${methodInstructions}`,
     previewContext: {
       organization_id: b.organization_id,
       workspace_id: b.workspace_id,
@@ -482,13 +529,16 @@ export async function recordEmployeeMethodTestExecution(
       employeeId: b.employee_id,
       inputChecksum: runtimePolicyDigest({
         candidate: b.snapshot_digest,
-        case: employeeMethodAmountCase.id,
+        case: b.case_id,
       }),
       candidates: [
         {
-          id: employeeMethodAmountCase.id,
+          id: b.case_id,
           kind: 'direct',
-          name: '隔离金额样例',
+          name:
+            b.case_id === employeeMethodFileCase.id
+              ? '隔离文件流程样例'
+              : '隔离金额样例',
           bindingId: null,
           requiredCapabilities: ['model:invoke'],
           risk: 'low',
@@ -499,7 +549,7 @@ export async function recordEmployeeMethodTestExecution(
         },
       ],
       selectedKind: 'direct',
-      selectedCandidateId: employeeMethodAmountCase.id,
+      selectedCandidateId: b.case_id,
       harness: m.harness,
       provider: m.provider,
       model: m.model,
@@ -515,6 +565,7 @@ export async function recordEmployeeMethodTestExecution(
   );
   await tx`update allrice_employee_method_tests set run_id=${runId},route_decision_id=${decision.id} where test_id=${b.test_id} and run_id is null`;
   return {
+    caseId: b.case_id,
     modelSnapshot: m,
     // A retry can be requested in a new chat. Subscription execution must use
     // the original frozen model session; the new source session stays in the
@@ -536,10 +587,22 @@ export async function finishEmployeeMethodTestInTransaction(
     Binding[]
   >`select * from allrice_employee_method_tests where test_id=${testId}`;
   if (!b) return;
-  const assertion = employeeMethodAmountCase.evaluate(
-    output.answer,
-    status !== 'succeeded',
-  );
+  const assertion =
+    b.case_id === employeeMethodFileCase.id
+      ? EmployeeMethodFileAssertionSchema.parse(
+          b.assertion ?? {
+            id: 'file-flow-cny-total',
+            expected: 30000,
+            actual: null,
+            passed: false,
+            reason:
+              status === 'succeeded' ? 'missing_stage' : 'execution_failed',
+          },
+        )
+      : employeeMethodAmountCase.evaluate(
+          output.answer,
+          status !== 'succeeded',
+        );
   await tx`update allrice_employee_method_tests set assertion=${tx.json(assertion)} where test_id=${testId}`;
   if (!b.route_decision_id) return;
   const meter = output.modelExecution;
@@ -601,4 +664,98 @@ export async function employeeMethodTestStillCurrent(testId: string) {
       throw error;
     }
   });
+}
+
+/** Called inside the runtime admission transaction. Never lock the test row
+ * after a Run lock: test finalization takes those locks in the reverse order. */
+export async function assertEmployeeMethodFileExecution(
+  tx: Tx,
+  context: Pick<
+    ExecutionContext,
+    'organizationId' | 'workspaceId' | 'runId' | 'jobId' | 'worker'
+  > & {
+    policySnapshot: Pick<
+      ExecutionContext['policySnapshot'],
+      'id' | 'subjectId'
+    >;
+  },
+) {
+  const [row] = await tx<
+    { test_id: string }[]
+  >`select test_id from allrice_employee_method_tests
+    where run_id=${context.runId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId} and owner_id=${context.policySnapshot.subjectId}`;
+  if (!row) throw new DataAccessError('authorization_denied');
+  const b = await readBinding(tx, row.test_id);
+  if (
+    b.case_id !== employeeMethodFileCase.id ||
+    !b.candidate_snapshot.fileEnvironment ||
+    !runtimeContractEqual(
+      b.candidate_snapshot.fileEnvironment.manifest,
+      employeeMethodFileCase,
+    )
+  )
+    throw new DataAccessError('authorization_denied');
+  await currentBinding(tx, b);
+  await assertEmployeeMethodModelCurrent(
+    tx,
+    b,
+    SessionModelSnapshotSchema.parse(b.model_snapshot),
+  );
+  const [run] = await tx<
+    {
+      execution_spec: Record<string, unknown>;
+      policy_snapshot_id: string;
+      payload: unknown;
+      timeout_at: Date;
+      lease_token: string;
+      attempt: number;
+    }[]
+  >`select r.execution_spec,r.policy_snapshot_id,p.payload,j.timeout_at,j.lease_token::text,j.attempt
+    from allrice_runs r join allrice_jobs j on j.run_id=r.id and j.id=${context.jobId}
+      and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
+    join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
+    join allrice_platform_employee_test_runs t on t.id=${b.test_id} and t.purpose='method_candidate' and t.status='running'
+    where r.id=${context.runId} and r.organization_id=${b.organization_id} and r.workspace_id=${b.workspace_id}
+      and r.owner_id=${b.owner_id} and r.state='running' and j.status='running'
+      and j.worker_id=${context.worker.id} and j.cancel_requested_at is null
+      and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() for share of r,j,p`;
+  if (
+    !run ||
+    run.policy_snapshot_id !== context.policySnapshot.id ||
+    run.execution_spec.platformEmployeeTestRunId !== b.test_id ||
+    run.execution_spec.employeeMethodSnapshotDigest !== b.snapshot_digest
+  )
+    throw new DataAccessError('authorization_denied');
+  return { b, run };
+}
+
+async function methodTestFiles(tx: Tx, b: Binding) {
+  if (b.case_id !== employeeMethodFileCase.id) return [];
+  const files = await tx<
+    {
+      stage: string;
+      object_id: string;
+      version_id: string;
+      file_name: string;
+      checksum: string;
+    }[]
+  >`
+    select s.stage,o.id object_id,v.id version_id,v.file_name,o.checksum
+    from allrice_employee_method_file_steps s join allrice_deliverable_versions v on v.id=s.output_version_id
+    join allrice_storage_objects o on o.id=s.output_object_id and o.id=v.object_id
+    join allrice_workbench_artifacts a on a.version_id=v.id and a.run_id=${b.run_id}
+    where s.test_id=${b.test_id} and v.platform_test_run_id=${b.test_id}
+      and o.organization_id=${b.organization_id} and o.workspace_id=${b.workspace_id}
+      and o.owner_id=${b.owner_id} and o.visibility='private' and o.immutable and o.state='ready' and o.deleted_at is null
+    order by s.created_at,s.stage`;
+  return files.map((f) => ({
+    stage: f.stage,
+    objectId: f.object_id,
+    versionId: f.version_id,
+    fileName: f.file_name,
+    checksum: f.checksum,
+    downloadUrl: `/api/v1/files/${f.object_id}/download?workspaceId=${b.workspace_id}`,
+    previewUrl: `/api/v1/files/${f.object_id}/preview?workspaceId=${b.workspace_id}&name=${encodeURIComponent(f.file_name)}`,
+  }));
 }

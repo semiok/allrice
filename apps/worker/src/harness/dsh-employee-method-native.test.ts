@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import { z } from 'zod';
 import {
   EmployeeMethodInspectSchema,
+  EmployeeMethodFileStepSchema,
   EmployeeMethodSaveSchema,
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
@@ -9,6 +10,28 @@ import {
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
 it.each([
+  {
+    canonicalName: 'platform.employee.method.step',
+    wireName: 'platform_employee_method_step',
+    schema: EmployeeMethodFileStepSchema,
+    args: {
+      stage: 'normalize',
+      script:
+        "import fs from 'node:fs'; console.log(fs.readFileSync('input/amounts.csv','utf8'));",
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    schema: EmployeeMethodTestStartSchema,
+    args: {
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      sceneId: '00000000-0000-4000-8000-000000000002',
+      caseId: 'cny-file-flow-v1',
+    },
+  },
   {
     canonicalName: 'workspace.employee.method.test',
     wireName: 'workspace_employee_method_test',

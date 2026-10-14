@@ -1,4 +1,19 @@
 import {
+  claimMethodFileExecution,
+  methodFileExecutionUnverified,
+} from './employee-method-file-runtime.ts';
+import {
+  ExecutionContextSchema,
+  cloudToolchainImageV1,
+} from '@allrice/contracts';
+import {
+  createEmployeeMethodFileOperation,
+  publishCloudOperationArtifacts,
+  loadCloudCommandInputs,
+} from '../cloud-execution.ts';
+import { assistantFixtureStorage } from '../assistant-runtime.fixture.ts';
+import { getStoredFile } from '../data.ts';
+import {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
   filterEmployeeMethodMemories,
@@ -24,7 +39,7 @@ import {
   getEmployeeContentHistory,
   mutateEmployeeContent,
 } from './employee-content.ts';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   prepareReferenceUpload,
   completeReferenceUpload,
@@ -284,9 +299,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
-  async function retryFixture() {
+  async function retryFixture(caseId = 'cny-total-v1') {
     const f = await setup(true),
       instance = await f.custom('重试测试');
+    if (caseId === 'cny-file-flow-v1') await methodFileCloud(f);
     const editing = await methodRun(f, instance.id);
     const saved = await saveEmployeeMethodFromChat({
       ...editing,
@@ -305,7 +321,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       candidateRevisionId: saved.candidate.id,
       candidateDigest: saved.candidate.digest,
       sceneId: content.set.candidate!.manifest.scenes[0]!.id,
-      caseId: 'cny-total-v1',
+      caseId,
     };
     const run = await methodRun(
       f,
@@ -340,6 +356,418 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { f, instance, saved, args, run, test, fail };
   }
+
+  async function methodFileCloud(f: Awaited<ReturnType<typeof setup>>) {
+    vi.stubEnv('ALLRICE_CLOUD_RUNNER_ENABLED', '1');
+    vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
+    const target = randomUUID(),
+      grant = randomUUID();
+    const profile = {
+      backend: 'cloud-gvisor-v1',
+      imageDigest: cloudToolchainImageV1,
+      architecture: 'amd64',
+      runtime: 'runsc',
+      runtimeVersion: 'release-20260831.0',
+      runtimeChecksum:
+        'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
+      network: 'none',
+      maximumConcurrency: 2,
+    };
+    await fixture.db`insert into allrice_execution_targets(id,organization_id,workspace_id,target_key,kind,label,state,capabilities)
+      values(${target},${f.a.organizationId},${f.a.workspaceId},${target},'cloud_sandbox','isolated method fixture','online','["process.execute"]')`;
+    await fixture.db`insert into allrice_cloud_execution_grants(id,organization_id,workspace_id,owner_id,target_id,version,profile,enabled)
+      values(${grant},${f.a.organizationId},${f.a.workspaceId},${f.a.user.id},${target},1,${fixture.db.json(profile)},true)`;
+    const controls = {
+      version: 1,
+      enabled: true,
+      mode: 'execute',
+      rules: [{ action: 'cloud.process.execute', effect: 'allow' }],
+    };
+    await fixture.db`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
+      values(${f.a.organizationId},${f.a.workspaceId},1,${fixture.db.json(controls)})
+      on conflict(organization_id,workspace_id) do update set controls=excluded.controls,version=1`;
+    return grant;
+  }
+  async function fileTestFixture() {
+    const f = await retryFixture('cny-file-flow-v1');
+    const workerId = randomUUID();
+    const claim = await claimNextPlatformEmployeeTestRun(workerId);
+    expect(claim?.id).toBe(f.test.id);
+    if (!claim) throw Error('file test not claimed');
+    const context = ExecutionContextSchema.parse({
+      executionId: randomUUID(),
+      runId: claim.previewExecution.runId,
+      jobId: claim.previewExecution.jobId,
+      worker: { type: 'worker', id: workerId },
+      delegatedBy: f.f.a.context.actor,
+      organizationId: f.f.a.organizationId,
+      workspaceId: f.f.a.workspaceId,
+      policySnapshot: claim.previewExecution.policySnapshot,
+      startedAt: claim.previewExecution.startedAt,
+    });
+    const storage = assistantFixtureStorage(fixture.db);
+    const create = (
+      stage: 'normalize' | 'summarize',
+      script = 'console.log("fixture script");',
+      callId = randomUUID(),
+    ) =>
+      createEmployeeMethodFileOperation(
+        {
+          context,
+          arguments: { stage, script },
+          callId,
+          leaseToken: claim.previewExecution.leaseToken,
+          jobAttempt: claim.previewExecution.jobAttempt,
+          storage,
+        },
+        fixture.db,
+      );
+    // Simulated backend outcome only: these tests prove DB authority, immutable
+    // publication and assertions. Physical sandbox execution is separate QA.
+    const publish = async (
+      created: Awaited<ReturnType<typeof create>>,
+      text: string,
+    ) => {
+      const { binding } = created.snapshot;
+      const lease = await created.ledger.dispatch({
+        scope: binding.task.scope,
+        operationId: binding.attempt.operationId,
+        leaseOwner: workerId,
+        leaseMs: 15000,
+      });
+      const artifacts = [
+        {
+          path: created.payload.arguments.outputs[0]!.path,
+          contentBase64: Buffer.from(text).toString('base64'),
+        },
+      ];
+      await fixture.db`update allrice_cloud_execution_attempts
+        set outcome=${fixture.db.json({ stopped: true, reason: 'completed', artifacts })}
+        where operation_id=${binding.attempt.operationId} and lease_token=${lease.leaseToken}`;
+      return publishCloudOperationArtifacts(
+        { context, binding, payload: created.payload, artifacts },
+        storage,
+        fixture.db,
+      );
+    };
+    return { ...f, claim, context, storage, create, publish };
+  }
+  it('keeps a wrong-stage business failure through a later transport failure and forbids retry washing', async () => {
+    const f = await fileTestFixture();
+    await expect(f.create('summarize')).rejects.toThrow(
+      'method_test_wrong_stage',
+    );
+    await expect(f.create('normalize')).rejects.toThrow(
+      'method_test_already_failed',
+    );
+    await f.fail(f.test.id);
+    const result = await getEmployeeMethodTest(f.f.a.context, f.test.id);
+    expect(result).toMatchObject({
+      status: 'failed',
+      validationStatus: 'failed',
+      assertion: { passed: false, reason: 'wrong_stage' },
+      files: [],
+    });
+    const retry = await methodRun(
+      f.f,
+      f.instance.id,
+      `请重试测试 ${f.test.id}`,
+    );
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...retry,
+        arguments: { ...f.args, retryOfTestId: f.test.id },
+      }),
+    ).rejects.toThrow('test_retry_not_allowed');
+    await retry.finish();
+  }, 30000);
+  it('finishes an interrupted test while its real file publication holds the Run lock', async () => {
+    const f = await fileTestFixture();
+    const operation = await f.create('normalize');
+    let entered!: () => void, release!: () => void;
+    const writing = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const put = f.storage.put.bind(f.storage);
+    const spy = vi
+      .spyOn(f.storage, 'put')
+      .mockImplementationOnce(async (...args) => {
+        entered();
+        await gate;
+        return put(...args);
+      });
+    const publication = f.publish(
+      operation,
+      JSON.stringify({
+        currency: 'CNY',
+        amountUnit: 'cent',
+        rows: [
+          { entryId: 'one', amountCents: 10000 },
+          { entryId: 'two', amountCents: 20000 },
+        ],
+      }),
+    );
+    await writing;
+    const completion = f.fail(f.test.id);
+    const outcomes = Promise.allSettled([publication, completion]);
+    try {
+      let waiting = false;
+      for (let n = 0; n < 100; n++) {
+        const rows = await fixture.db`select a.pid from pg_stat_activity a
+          join pg_locks l on l.pid=a.pid and l.relation='allrice_platform_employee_test_runs'::regclass
+          where a.datname=current_database() and a.wait_event_type='Lock' and a.query like '%run.execution_spec%'`;
+        if (rows.length) {
+          waiting = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(waiting).toBe(true);
+    } finally {
+      release();
+      spy.mockRestore();
+    }
+    const settled = await outcomes;
+    expect(
+      settled
+        .filter((r) => r.status === 'rejected')
+        .map((r) => String(r.reason)),
+    ).toEqual([]);
+    expect(settled.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+    const result = await getEmployeeMethodTest(f.f.a.context, f.test.id);
+    expect(result).toMatchObject({
+      status: 'failed',
+      validationStatus: 'not_verified',
+      files: [{ stage: 'normalize' }],
+    });
+  }, 30000);
+  it('binds two actual file versions to one private test, reconciles repeats, and rejects revoked publication replay', async () => {
+    const f = await fileTestFixture();
+    const [first, repeated] = await Promise.all([
+      f.create('normalize'),
+      f.create('normalize'),
+    ]);
+    expect(first.snapshot.binding.attempt.operationId).toBe(
+      repeated.snapshot.binding.attempt.operationId,
+    );
+    expect(first.snapshot.binding.task.chatSessionId).toBeNull();
+    const claims = await Promise.all([
+      claimMethodFileExecution(
+        f.context,
+        first.snapshot.binding.attempt.operationId,
+        fixture.db,
+      ),
+      claimMethodFileExecution(
+        f.context,
+        first.snapshot.binding.attempt.operationId,
+        fixture.db,
+      ),
+    ]);
+    expect(claims.sort()).toEqual([false, true]);
+    expect(
+      await methodFileExecutionUnverified(f.context, f.test.id, fixture.db),
+    ).toBe(true);
+    expect(f.context.policySnapshot.grants).toEqual([
+      {
+        resourceType: 'job',
+        action: 'job:execute',
+        workspaceId: f.context.workspaceId,
+      },
+    ]);
+    await expect(
+      f.create('normalize', 'console.log("changed");'),
+    ).rejects.toThrow('method_test_step_already_recorded');
+    const source = await loadCloudCommandInputs(
+      f.context,
+      first.payload,
+      f.storage,
+      fixture.db,
+    );
+    expect(
+      source.map((i) => [
+        i.path,
+        Buffer.from(i.contentBase64, 'base64').toString(),
+      ]),
+    ).toEqual([['amounts.csv', 'entryId,amountCents\none,10000\ntwo,20000\n']]);
+    expect(first.payload.arguments.inputs).toHaveLength(1);
+    expect(first.payload.arguments.inputs[0]!.path).toBe(source[0]!.path);
+    expect(first.payload.arguments.inputs[0]!.checksum).toBe(
+      `sha256:${createHash('sha256').update(Buffer.from(source[0]!.contentBase64, 'base64')).digest('hex')}`,
+    );
+    const body = JSON.stringify({
+      currency: 'CNY',
+      amountUnit: 'cent',
+      rows: [
+        { entryId: 'one', amountCents: 10000 },
+        { entryId: 'two', amountCents: 20000 },
+      ],
+    });
+    const normalized = await f.publish(first, body);
+    const second = await f.create('summarize');
+    expect(second.payload.arguments.inputs[0]!.objectId).toBe(
+      normalized[0]!.object.id,
+    );
+    expect(
+      Buffer.from(
+        (
+          await loadCloudCommandInputs(
+            f.context,
+            second.payload,
+            f.storage,
+            fixture.db,
+          )
+        )[0]!.contentBase64,
+        'base64',
+      ).toString(),
+    ).toBe(body);
+    const csv = 'currency,amountUnit,totalCents\nCNY,cent,30000\n';
+    const final = await f.publish(second, csv);
+    const result = await getEmployeeMethodTest(f.f.a.context, f.test.id);
+    expect(result.assertion).toMatchObject({ passed: true, actual: 30000 });
+    expect(result.files.map((i) => i.stage)).toEqual([
+      'normalize',
+      'summarize',
+    ]);
+    const actual = await getStoredFile(
+      f.f.a.context,
+      final[0]!.object.id,
+      fixture.db,
+    );
+    expect(await new Response(await f.storage.get(actual.object)).text()).toBe(
+      csv,
+    );
+    await expect(
+      getStoredFile(f.f.b.context, final[0]!.object.id, fixture.db),
+    ).rejects.toThrow();
+    await expect(
+      getEmployeeMethodTest(f.f.b.context, f.test.id),
+    ).rejects.toThrow('not_found');
+    const frozen = first.snapshot.binding.execution;
+    await fixture.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${frozen.grantId}`;
+    await expect(
+      publishCloudOperationArtifacts(
+        {
+          context: f.context,
+          binding: second.snapshot.binding,
+          payload: second.payload,
+          artifacts: [
+            {
+              path: 'summary.csv',
+              contentBase64: Buffer.from(csv).toString('base64'),
+            },
+          ],
+        },
+        f.storage,
+        fixture.db,
+      ),
+    ).rejects.toThrow('source_changed');
+    await completePlatformEmployeeTestRun(f.test.id, {
+      answer: 'done',
+      provider: null,
+      model: null,
+      threadId: null,
+      usage: null,
+      events: [],
+      error: null,
+    });
+    const done = await getEmployeeMethodTest(f.f.a.context, f.test.id);
+    expect(done.validationStatus).toBe('passed');
+    expect(
+      (await getEmployeeContentSet(f.f.a.context, f.saved.setId)).set.active,
+    ).toBeNull();
+  }, 30000);
+  it('uses collected bytes rather than a correct final answer and preserves inflated amount evidence', async () => {
+    const f = await fileTestFixture();
+    const first = await f.create('normalize');
+    await f.publish(
+      first,
+      JSON.stringify({
+        currency: 'CNY',
+        amountUnit: 'cent',
+        rows: [
+          { entryId: 'one', amountCents: 10000 },
+          { entryId: 'two', amountCents: 22000 },
+        ],
+      }),
+    );
+    await completePlatformEmployeeTestRun(f.test.id, {
+      answer: '{"totalCents":30000}',
+      provider: null,
+      model: null,
+      threadId: null,
+      usage: null,
+      events: [],
+      error: null,
+    });
+    const result = await getEmployeeMethodTest(f.f.a.context, f.test.id);
+    expect(result).toMatchObject({
+      validationStatus: 'failed',
+      assertion: { actual: 32000, expected: 30000, reason: 'amount_mismatch' },
+      files: [{ fileName: 'normalized.json' }],
+    });
+  }, 30000);
+
+  it('keeps an unknown file execution as not_verified and retries only its exact fixed case', async () => {
+    const f = await fileTestFixture();
+    const c = await f.create('normalize');
+    expect(
+      await claimMethodFileExecution(
+        f.context,
+        c.snapshot.binding.attempt.operationId,
+        fixture.db,
+      ),
+    ).toBe(true);
+    expect(
+      await methodFileExecutionUnverified(f.context, f.test.id, fixture.db),
+    ).toBe(true);
+    await f.fail(f.test.id);
+    expect(await getEmployeeMethodTest(f.f.a.context, f.test.id)).toMatchObject(
+      {
+        validationStatus: 'not_verified',
+        assertion: { reason: 'execution_failed' },
+      },
+    );
+    const retry = await methodRun(
+      f.f,
+      f.instance.id,
+      `请重试测试 ${f.test.id}`,
+    );
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...retry,
+        arguments: {
+          ...f.args,
+          caseId: 'cny-total-v1',
+          retryOfTestId: f.test.id,
+        },
+      }),
+    ).rejects.toThrow('source_changed');
+    const child = await startEmployeeMethodTestFromChat({
+      ...retry,
+      arguments: { ...f.args, retryOfTestId: f.test.id },
+    });
+    expect(child).toMatchObject({
+      caseId: 'cny-file-flow-v1',
+      retryOfTestId: f.test.id,
+    });
+    await retry.finish();
+    expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+      child.id,
+    );
+    await f.fail(child.id);
+  }, 30000);
+  it('blocks file work after cancel or a changed snapshot without publishing another artifact', async () => {
+    const f = await fileTestFixture();
+    await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${f.context.jobId}`;
+    await expect(f.create('normalize')).rejects.toThrow();
+    expect(
+      await fixture.db`select * from allrice_employee_method_file_steps where test_id=${f.test.id}`,
+    ).toHaveLength(0);
+    await f.fail(f.test.id);
+  }, 30000);
   it('creates exactly one explicit retry per failed attempt and freezes the original cross-session execution', async () => {
     const { f, instance, saved, args, run, test, fail } = await retryFixture();
     const firstClaim = await claimNextPlatformEmployeeTestRun(randomUUID());

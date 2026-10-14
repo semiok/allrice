@@ -1,3 +1,4 @@
+import { methodFileProof } from './employees/employee-method-file-runtime.ts';
 import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { createHash } from 'node:crypto';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
@@ -186,27 +187,52 @@ export async function checkCloudBindingAuthority(
     )
       throw new RuntimePolicyError('cloud_input_changed');
   }
+  const method =
+    !project && !origin && !('kind' in payload)
+      ? await methodFileProof(
+          tx,
+          {
+            organizationId: context.organizationId,
+            workspaceId: context.workspaceId,
+            runId: binding.task.runId,
+            jobId: stored.job_id,
+            worker: { type: 'worker', id: stored.worker_id },
+            policySnapshot: {
+              id: binding.policy.snapshotId,
+              subjectId: context.actor.id,
+            },
+          },
+          payload,
+          binding.attempt.operationId,
+          binding,
+        )
+      : undefined;
+  if (method && method.run.lease_token !== stored.job_lease_token)
+    throw new RuntimePolicyError('cloud_worker_lease_changed');
   const [frozen] =
     await tx`select e.execution_snapshot from allrice_employee_runs e join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id where e.run_id=${binding.task.runId} and e.organization_id=${context.organizationId} and e.workspace_id=${context.workspaceId} and e.owner_id=${context.actor.id} and e.session_id=${binding.task.chatSessionId} and e.employee_version_id=${binding.task.frozenConfiguration.employeeVersionId} and (${continuingService} or (c.active_run_id=e.run_id and c.state='running' and c.thread_generation=${binding.attempt.generation})) for share of e,c`;
   const snapshot = EmployeeExecutionSnapshotSchema.safeParse(
     frozen?.execution_snapshot,
   );
   if (
-    !snapshot.success ||
-    snapshot.data.tenantContext.organizationId !== context.organizationId ||
-    snapshot.data.tenantContext.workspaceId !== context.workspaceId ||
-    snapshot.data.tenantContext.actorId !== context.actor.id ||
-    snapshot.data.tenantContext.policySnapshotId !==
-      binding.policy.snapshotId ||
-    !snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
-      'storage:write',
-    ) ||
-    !snapshot.data.capabilitySnapshot.bindings.toolNames.includes(
-      origin ? 'python.execute' : 'cloud.process.execute',
-    )
+    !method &&
+    (!snapshot.success ||
+      snapshot.data.tenantContext.organizationId !== context.organizationId ||
+      snapshot.data.tenantContext.workspaceId !== context.workspaceId ||
+      snapshot.data.tenantContext.actorId !== context.actor.id ||
+      snapshot.data.tenantContext.policySnapshotId !==
+        binding.policy.snapshotId ||
+      !snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
+        'storage:write',
+      ) ||
+      !snapshot.data.capabilitySnapshot.bindings.toolNames.includes(
+        origin ? 'python.execute' : 'cloud.process.execute',
+      ))
   )
     throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
   if (origin && !('kind' in payload)) {
+    if (!snapshot.success)
+      throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
     const f = snapshot.data;
     if (
       f.employee.definition.schemaVersion !== 2 ||
@@ -276,6 +302,8 @@ export async function checkCloudBindingAuthority(
   if (!worker && !continuingService)
     throw new RuntimePolicyError('cloud_worker_lease_changed');
   if (project) {
+    if (!snapshot.success)
+      throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
     const source = project.arguments.projectSource;
     const needsOutbound =
       !project.arguments.projectPreparation.offline &&
