@@ -3,6 +3,22 @@ import {
   publishPlatformEmployee,
 } from './platform-employees.ts';
 import { randomUUID } from 'node:crypto';
+import { updateQueuedMessage } from '../conversation/queued-messages.ts';
+import {
+  prepareReferenceUpload,
+  completeReferenceUpload,
+  changeReference,
+} from '../reference-library.ts';
+import {
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+} from '../reference-processing.ts';
+import {
+  captureReferenceSelections,
+  retrieveSelectedReferenceKnowledge,
+  assertReferenceSelections,
+} from '../reference-runtime.ts';
+
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WorkflowDefinitionSchema } from '@allrice/contracts';
 import type {
@@ -324,6 +340,7 @@ suite(
       sessionId?: string,
       custom = true,
       sessionReferenceIds: string[] = [],
+      referenceRevisionIds: string[] = [],
     ) {
       const session = sessionId
         ? { id: sessionId }
@@ -342,7 +359,10 @@ suite(
           text: 'Use current requirements',
           clientMessageId: randomUUID(),
           sessionReferenceIds,
-          ...(sessionReferenceIds.length ? { deliveryMode: 'follow_up' } : {}),
+          ...(referenceRevisionIds.length ? { referenceRevisionIds } : {}),
+          ...(sessionReferenceIds.length || referenceRevisionIds.length
+            ? { deliveryMode: 'follow_up' }
+            : {}),
         },
       );
       const scope = {
@@ -362,6 +382,357 @@ suite(
       };
       return { scope, sent, resolved, runtime: runtime!, finish };
     }
+
+    async function readyReference(
+      s: Setup,
+      body = 'REFERENCE_V1 budget=1000 spent=300 balance=700',
+      scope: 'company' | 'department' | 'personal' = 'company',
+      previous?: { sourceId: string; revision: number },
+    ) {
+      const input = {
+        workspaceId: s.company.workspaceId,
+        requestId: randomUUID(),
+        scope,
+        ...(scope === 'department' ? { departmentId: s.dept.id } : {}),
+        ...(previous
+          ? { sourceId: previous.sourceId, expectedRevision: previous.revision }
+          : {}),
+        fileName: '已确认口径.txt',
+        purpose: '核对预算',
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from(body).toString('base64'),
+      };
+      const ref = await prepareReferenceUpload(s.a, input);
+      await assistantFixtureStorage(f.db).put(
+        ref.object,
+        new Blob([new Uint8Array(ref.bytes)]).stream(),
+      );
+      await completeReferenceUpload(s.a, s.company.workspaceId, ref.revisionId);
+      const claim = await claimReferenceProcessing();
+      expect(claim?.revisionId).toBe(ref.revisionId);
+      await finishReferenceProcessing(claim!, [
+        { content: body, start: 0, end: body.length },
+      ]);
+      return ref;
+    }
+    async function archiveReference(s: Setup, sourceId: string, revision = 1) {
+      await changeReference(s.a, sourceId, {
+        workspaceId: s.company.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: revision,
+        action: 'archive',
+      });
+    }
+    it('references pin the chosen version through ordinary admission, message replay and verified source retrieval', async () => {
+      const s = await setup(),
+        ref = await readyReference(s);
+      const run = await runtimeRun(s, undefined, false, [], [ref.revisionId]);
+      const pins = run.resolved.promptSnapshot.referenceSelections!;
+      expect(pins).toHaveLength(1);
+      expect(pins[0]).toMatchObject({
+        revisionId: ref.revisionId,
+        checksum: ref.object.checksum,
+        revision: 1,
+      });
+      expect(pins[0]!.digest).not.toBe(ref.object.checksum);
+      const [stored] =
+        await f.db`select content,client_message_id from allrice_messages where id=${run.sent.userMessage.id}`;
+      expect(stored!.content.referenceSelections).toEqual(pins);
+      const replayInput = {
+        clientMessageId: stored!.client_message_id,
+        text: 'Use current requirements',
+        sessionReferenceIds: [],
+        referenceRevisionIds: [ref.revisionId],
+        deliveryMode: 'follow_up',
+      };
+      expect(
+        (
+          await sendChatMessage(
+            s.a,
+            s.company.workspaceId,
+            run.scope.sessionId,
+            replayInput,
+          )
+        ).run.id,
+      ).toBe(run.scope.runId);
+      const v2 = await readyReference(
+        s,
+        'REFERENCE_V2 budget=2000',
+        'company',
+        { sourceId: ref.sourceId, revision: 1 },
+      );
+      await expect(
+        sendChatMessage(s.a, s.company.workspaceId, run.scope.sessionId, {
+          ...replayInput,
+          referenceRevisionIds: [v2.revisionId],
+        }),
+      ).rejects.toMatchObject({ code: 'input_id_conflict' });
+      const results = await retrieveSelectedReferenceKnowledge({
+        context: s.a,
+        selections: pins,
+        query: '核对预算',
+      });
+      expect(results.map((r) => r.content).join('')).toContain('REFERENCE_V1');
+      expect(JSON.stringify(results)).not.toContain('REFERENCE_V2');
+      expect(results[0]!.citation.reference).toEqual(pins[0]);
+      await assertEmployeeContentContext(run.scope, run.runtime.generationId);
+      await run.finish();
+      const next = await runtimeRun(s, run.scope.sessionId, false);
+      expect(next.resolved.promptSnapshot.referenceSelections).toBeUndefined();
+      expect(next.runtime.nativeContextKey).not.toBe(
+        run.runtime.nativeContextKey,
+      );
+      await next.finish();
+    }, 120000);
+    it('references use reader ownership without maintenance privilege and deny personal, cross-company and changed-department access', async () => {
+      const s = await setup(),
+        other = await setup();
+      const ref = await readyReference(s, 'DEPARTMENT_ONLY', 'department');
+      const pins = await f.db.begin((tx) =>
+        captureReferenceSelections(s.b, [ref.revisionId], tx),
+      );
+      expect(
+        (
+          await retrieveSelectedReferenceKnowledge({
+            context: s.b,
+            selections: pins,
+            query: '部门',
+          })
+        )[0]!.content,
+      ).toBe('DEPARTMENT_ONLY');
+      for (const reader of [s.c, other.a])
+        await expect(
+          retrieveSelectedReferenceKnowledge({
+            context: reader,
+            selections: pins,
+            query: '部门',
+          }),
+        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      await f.db`update allrice_organization_people set department_id=${s.otherDept.id} where organization_id=${s.company.organizationId} and user_id=${s.b.actor.id}`;
+      await expect(
+        retrieveSelectedReferenceKnowledge({
+          context: s.b,
+          selections: pins,
+          query: '部门',
+        }),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      const privateRef = await readyReference(s, 'PRIVATE_ONLY', 'personal');
+      await expect(
+        f.db.begin((tx) =>
+          captureReferenceSelections(s.b, [privateRef.revisionId], tx),
+        ),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      await expect(
+        f.db.begin((tx) =>
+          assertReferenceSelections(
+            s.a,
+            [{ ...pins[0], checksum: `sha256:${'0'.repeat(64)}` }],
+            tx,
+            true,
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+    }, 120000);
+    it('references revoke native history, compressed context and imported answers without creating a permanent employee binding', async () => {
+      const s = await setup(),
+        ref = await readyReference(s);
+      const source = await runtimeRun(
+        s,
+        undefined,
+        false,
+        [],
+        [ref.revisionId],
+      );
+      await source.finish();
+      await f.db`update allrice_messages set status='completed',content=${f.db.json({ text: 'DERIVED_REFERENCE_700', citations: [] })} where id=${source.sent.assistantMessage.id}`;
+      const imported = await runtimeRun(s, undefined, false, [
+        source.scope.sessionId,
+      ]);
+      await imported.finish();
+      await assertEmployeeContentContext(
+        imported.scope,
+        imported.runtime.generationId,
+      );
+      await archiveReference(s, ref.sourceId);
+      for (const r of [source, imported])
+        await expect(
+          assertEmployeeContentContext(r.scope, r.runtime.generationId),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await expect(
+        prepareEmployeeContentContext(source.scope),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      const next = await runtimeRun(s, source.scope.sessionId, false);
+      expect(next.runtime.generationId).not.toBe(source.runtime.generationId);
+      expect(next.runtime.allowedMessageIds).not.toContain(
+        source.sent.assistantMessage.id,
+      );
+      expect(next.resolved.promptSnapshot.referenceSelections).toBeUndefined();
+      await next.finish();
+    }, 120000);
+    it('references in queued messages cannot be promoted into a text-only steering turn', async () => {
+      const s = await setup(),
+        ref = await readyReference(s);
+      const first = await runtimeRun(s, undefined, false);
+      await sceneLease(first);
+      const queued = await sendChatMessage(
+        s.a,
+        s.company.workspaceId,
+        first.scope.sessionId,
+        {
+          clientMessageId: randomUUID(),
+          text: '使用资料的新任务',
+          deliveryMode: 'follow_up',
+          referenceRevisionIds: [ref.revisionId],
+        },
+      );
+      await expect(
+        updateQueuedMessage(
+          s.a,
+          s.company.workspaceId,
+          first.scope.sessionId,
+          queued.userMessage.id,
+          {
+            action: 'steer',
+            expectedTurnId: 'synthetic-turn',
+            expectedGeneration: 1,
+          },
+        ),
+      ).rejects.toMatchObject({ code: 'queued_references_require_turn' });
+      await updateQueuedMessage(
+        s.a,
+        s.company.workspaceId,
+        first.scope.sessionId,
+        queued.userMessage.id,
+        { action: 'edit' },
+      );
+      const [stored] =
+        await f.db`select content from allrice_messages where id=${queued.userMessage.id}`;
+      expect(stored!.content.referenceSelections[0].revisionId).toBe(
+        ref.revisionId,
+      );
+      await first.finish();
+    }, 120000);
+    it.each(['archive', 'department'])(
+      'references recheck current authority after waiting for %s locks',
+      async (kind) => {
+        const s = await setup(),
+          ref = await readyReference(s, 'LOCKED_PRIVATE_BODY', 'department');
+        const pins = await f.db.begin((tx) =>
+          captureReferenceSelections(s.b, [ref.revisionId], tx),
+        );
+        const ready = contentGate<number>(),
+          release = contentGate<void>();
+        const holder = f.db.begin(async (tx) => {
+          const [pid] = await tx`select pg_backend_pid() as id`;
+          if (kind === 'archive')
+            await tx`update allrice_knowledge_sources set status='archived' where id=${ref.sourceId}`;
+          else
+            await tx`update allrice_organization_people set department_id=${s.otherDept.id} where organization_id=${s.company.organizationId} and user_id=${s.b.actor.id}`;
+          ready.resolve(pid!.id);
+          await release.promise;
+        });
+        const pid = await ready.promise;
+        const waiting = retrieveSelectedReferenceKnowledge({
+          context: s.b,
+          selections: pins,
+          query: 'PRIVATE',
+        }).then(
+          (body) => ({ body }),
+          (error: unknown) => error,
+        );
+        try {
+          await expect
+            .poll(
+              async () =>
+                (
+                  await f.db`select count(*)::int n from pg_stat_activity where ${pid}::int=any(pg_blocking_pids(pid))`
+                )[0]!.n,
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+        } finally {
+          release.resolve();
+        }
+        await holder;
+        expect(await waiting).toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      },
+      120000,
+    );
+    it('references revoked between message commit and final queue admission never create a Run, including replay', async () => {
+      const s = await setup(),
+        ref = await readyReference(s);
+      const session = await createChatSession(s.a, {
+        workspaceId: s.company.workspaceId,
+        employeeAssignmentId: s.assigned.id,
+      });
+      const module = await import('./employeehub.ts'),
+        original = module.prepareEmployeeRunBinding;
+      const spy = vi
+        .spyOn(module, 'prepareEmployeeRunBinding')
+        .mockImplementationOnce(async (input) => {
+          const binding = await original(input);
+          await archiveReference(s, ref.sourceId);
+          return binding;
+        });
+      const input = {
+        clientMessageId: randomUUID(),
+        text: 'ADMISSION_RACE',
+        deliveryMode: 'follow_up',
+        referenceRevisionIds: [ref.revisionId],
+      };
+      try {
+        await expect(
+          sendChatMessage(s.a, s.company.workspaceId, session.id, input),
+        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      } finally {
+        spy.mockRestore();
+      }
+      await expect(
+        sendChatMessage(s.a, s.company.workspaceId, session.id, input),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      expect(
+        await f.db`select run_id from allrice_employee_runs where session_id=${session.id}`,
+      ).toHaveLength(0);
+      expect(
+        await f.db`select id from allrice_messages where session_id=${session.id} and role='user'`,
+      ).toHaveLength(1);
+    }, 120000);
+    it('references reject missing indexes and stale index checksums instead of reporting fabricated adoption', async () => {
+      const s = await setup(),
+        ref = await readyReference(s);
+      const pins = await f.db.begin((tx) =>
+        captureReferenceSelections(s.a, [ref.revisionId], tx),
+      );
+      await f.db`update allrice_knowledge_documents set checksum=${`sha256:${'0'.repeat(64)}`} where knowledge_revision_id=${ref.revisionId}`;
+      await expect(
+        retrieveSelectedReferenceKnowledge({
+          context: s.a,
+          selections: pins,
+          query: 'budget',
+        }),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      await f.db`update allrice_knowledge_processing set state='unsupported' where revision_id=${ref.revisionId}`;
+      await expect(
+        f.db.begin((tx) =>
+          captureReferenceSelections(s.a, [ref.revisionId], tx),
+        ),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      const session = await createChatSession(s.a, {
+        workspaceId: s.company.workspaceId,
+        employeeAssignmentId: s.assigned.id,
+      });
+      await expect(
+        sendChatMessage(s.a, s.company.workspaceId, session.id, {
+          text: 'read',
+          clientMessageId: randomUUID(),
+          referenceRevisionIds: [ref.revisionId],
+          deliveryMode: 'follow_up',
+        }),
+      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      expect(
+        await f.db`select id from allrice_messages where session_id=${session.id}`,
+      ).toHaveLength(0);
+    }, 120000);
 
     async function sceneLease(run: Awaited<ReturnType<typeof runtimeRun>>) {
       const worker = {

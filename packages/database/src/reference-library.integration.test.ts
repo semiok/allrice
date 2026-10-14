@@ -1,3 +1,7 @@
+import {
+  captureReferenceSelections,
+  retrieveSelectedReferenceKnowledge,
+} from './reference-runtime.ts';
 import { listKnowledgeSourceFilesForExecution } from './memory/knowledge-retrieval.ts';
 import {
   getToolBrokerFile,
@@ -231,6 +235,17 @@ suite(
         (await listReferenceRevisions(reader, reader.workspaceId!))[0]
           ?.processing,
       ).toBe('ready');
+      const selected = await f.db.begin((tx) =>
+        captureReferenceSelections(reader, [p.revisionId], tx),
+      );
+      const retrieved = await retrieveSelectedReferenceKnowledge({
+        context: reader,
+        selections: selected,
+        query: '预算',
+      });
+      expect(retrieved[0]!.content).toContain('一千元');
+      expect(retrieved[0]!.citation.reference?.revisionId).toBe(p.revisionId);
+
       expect(
         (
           await f.db`select count(*)::int n from allrice_knowledge_documents where knowledge_revision_id=${p.revisionId}`
@@ -241,6 +256,36 @@ suite(
           await f.db`select count(*)::int n from allrice_runs where organization_id=${a.company.organizationId}`
         )[0]?.n,
       ).toBe(0);
+      await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${a.company.organizationId},${w!.id},${a.owner.actor.id},'member')`;
+      const updater = { ...a.owner, workspaceId: w!.id as string };
+      const later = await upload(
+        updater,
+        input(updater, 'company', {
+          sourceId: p.sourceId,
+          expectedRevision: 1,
+          contentBase64: Buffer.from('V2_OTHER_WORKSPACE').toString('base64'),
+        }),
+      );
+      const laterClaim = await claimReferenceProcessing();
+      expect(laterClaim?.revisionId).toBe(later.revisionId);
+      await finishReferenceProcessing(laterClaim!, [
+        { content: 'V2_OTHER_WORKSPACE', start: 0, end: 18 },
+      ]);
+      const [document] =
+        await f.db`select storage_object_id from allrice_knowledge_documents where knowledge_revision_id=${later.revisionId}`;
+      expect(document!.storage_object_id).toBeNull();
+      const laterPins = await f.db.begin((tx) =>
+        captureReferenceSelections(a.reader, [later.revisionId], tx),
+      );
+      expect(
+        (
+          await retrieveSelectedReferenceKnowledge({
+            context: a.reader,
+            selections: laterPins,
+            query: 'V2',
+          })
+        )[0]!.content,
+      ).toBe('V2_OTHER_WORKSPACE');
     });
     it('publishes platform material only through a current control-plane administrator and shares exact versions across companies', async () => {
       const platform = (await authenticatePlatformSession(
@@ -252,6 +297,11 @@ suite(
         (await referenceLibraryOptions(platform, platform.workspaceId!))
           .platformMaintainer,
       ).toBe(true);
+      const platformClaim = await claimReferenceProcessing();
+      expect(platformClaim?.revisionId).toBe(p.revisionId);
+      await finishReferenceProcessing(platformClaim!, [
+        { content: 'PLATFORM_REFERENCE_93', start: 0, end: 21 },
+      ]);
       for (const a of [await setup(), await setup()]) {
         expect(
           (await listReferenceRevisions(a.reader, a.reader.workspaceId!)).find(
@@ -267,6 +317,18 @@ suite(
             )
           ).object.id,
         ).toBe(p.object.id);
+        const pins = await f.db.begin((tx) =>
+          captureReferenceSelections(a.reader, [p.revisionId], tx),
+        );
+        expect(
+          (
+            await retrieveSelectedReferenceKnowledge({
+              context: a.reader,
+              selections: pins,
+              query: '平台',
+            })
+          )[0]!.content,
+        ).toBe('PLATFORM_REFERENCE_93');
         await expect(
           prepareReferenceUpload(a.owner, input(a.owner, 'platform')),
         ).rejects.toThrow('authorization_denied');

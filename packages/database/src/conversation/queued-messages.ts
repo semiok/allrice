@@ -78,7 +78,7 @@ export async function updateQueuedMessage(
     >`
       select f.run_id,f.state,f.mode,f.assistant_message_id,f.client_user_message_id,
         m.content->>'text' as text,i.kind,j.status,j.cancel_requested_at,r.error_code,
-        jsonb_array_length(m.session_references)>0 as has_references,
+        (jsonb_array_length(m.session_references)>0 or coalesce(jsonb_array_length(m.content->'referenceSelections'),0)>0) as has_references,
         coalesce(jsonb_array_length(m.content->'companyAssets'->'templates'),0)>0 as has_company_templates,
         exists(select 1 from allrice_message_attachments a where a.message_id=m.id) as has_attachments
       from allrice_conversation_followups f

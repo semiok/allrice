@@ -6,6 +6,24 @@ import { ContentOwnershipSchema } from './content-maintenance.ts';
 // PostgreSQL UUID identity is case-insensitive; JSON ownership and dedup keys must agree.
 const ReferenceInputUuidSchema = UuidSchema.transform((id) => id.toLowerCase());
 
+/** Server-captured pin; file bytes and revision manifest have different digests. */
+export const ReferenceSelectionSchema = z
+  .object({
+    sourceId: UuidSchema,
+    revisionId: UuidSchema,
+    revision: z.number().int().positive(),
+    fileName: z.string().max(160),
+    purpose: z.string().max(1000),
+    digest: ChecksumSchema,
+    checksum: ChecksumSchema,
+    ownership: ContentOwnershipSchema,
+  })
+  .strict();
+export type ReferenceSelection = z.infer<typeof ReferenceSelectionSchema>;
+export const ReferenceSelectionsSchema = z
+  .array(ReferenceSelectionSchema)
+  .max(3);
+
 export const ReferenceUploadInputSchema = z
   .object({
     workspaceId: ReferenceInputUuidSchema,

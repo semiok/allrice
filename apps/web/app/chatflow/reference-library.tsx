@@ -41,11 +41,15 @@ export function ReferenceLibrary({
   headers,
   onClose,
   platform = false,
+  onSelect,
+  initialReference,
 }: {
   workspaceId: string;
   headers: Record<string, string>;
   onClose: () => void;
   platform?: boolean;
+  onSelect?: (reference: ReferenceRevision) => void;
+  initialReference?: { sourceId: string; revisionId: string } | null;
 }) {
   const [directory, setDirectory] = useState<z.infer<
       typeof responseSchema
@@ -135,6 +139,30 @@ export function ReferenceLibrary({
       });
     return () => controller.abort();
   }, [previewBase, q, headers, selected]);
+  const initialSourceId = initialReference?.sourceId,
+    initialRevisionId = initialReference?.revisionId;
+  useEffect(() => {
+    if (!initialSourceId || !initialRevisionId) return;
+    const controller = new AbortController();
+    void workbenchJson(base + q + '&sourceId=' + initialSourceId, headers, {
+      signal: controller.signal,
+    })
+      .then(responseSchema.parse)
+      .then((value) => {
+        if (controller.signal.aborted) return;
+        setVersions(value.references);
+        const revision = value.references.find(
+          (r) => r.revisionId === initialRevisionId,
+        );
+        setSelected(revision ?? null);
+        if (!revision) setError('该资料版本已不可用。');
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setError(e instanceof Error ? e.message : '资料不可用');
+      });
+    return () => controller.abort();
+  }, [initialSourceId, initialRevisionId, q, headers]);
   async function open(r: ReferenceRevision) {
     setPreview(null);
     setSelected(null);
@@ -382,6 +410,16 @@ export function ReferenceLibrary({
                 </p>
               )}
               {r.failure && <p className={css.hint}>{r.failure}</p>}
+              {onSelect && (
+                <Button
+                  disabled={
+                    busy || r.status !== 'active' || r.processing !== 'ready'
+                  }
+                  onClick={() => onSelect(r)}
+                >
+                  引用 v{r.revision}
+                </Button>
+              )}
               {r.canMaintain && (
                 <div className={css.actions}>
                   {r.status === 'active' && (
@@ -456,6 +494,18 @@ export function ReferenceLibrary({
               ))}
             </select>
           </DocumentToolbar>
+          {onSelect && (
+            <Button
+              disabled={
+                busy ||
+                selected.status !== 'active' ||
+                selected.processing !== 'ready'
+              }
+              onClick={() => onSelect(selected)}
+            >
+              引用当前版本 v{selected.revision}
+            </Button>
+          )}
           {selected.status === 'archived' ? (
             <p>资料已停用，恢复后可查看。</p>
           ) : previewError ? (

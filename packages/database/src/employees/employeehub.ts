@@ -210,6 +210,9 @@ export interface EmployeeRunBinding {
     'tenantContext' | 'createdAt'
   >;
   promptSnapshot: {
+    referenceSelections?: ReturnType<
+      typeof EmployeePromptSnapshotSchema.parse
+    >['referenceSelections'];
     companyAssets?: ReturnType<
       typeof EmployeePromptSnapshotSchema.parse
     >['companyAssets'];

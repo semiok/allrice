@@ -798,6 +798,20 @@ async function enqueueRunCore(
         );
       }
     }
+    if (options.employeeBinding?.promptSnapshot.referenceSelections) {
+      // Final admission rechecks authority after the message transaction. Pins
+      // cannot sneak through a department move or a source withdrawal.
+      const { assertReferenceSelections } =
+        await import('../reference-runtime.ts');
+      await assertReferenceSelections(
+        instanceIdentity,
+        options.employeeBinding.promptSnapshot.referenceSelections,
+        transaction,
+        true,
+      );
+      if (!options.employeeBinding.executionSnapshot.content)
+        throw new QueueError('policy_denied');
+    }
     if (options.folderEventId) {
       const { assertFolderTriggerMessage } =
         await import('../folder-triggers.ts');

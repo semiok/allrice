@@ -5,6 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type * as Database from '@allrice/database';
+import { ReferenceRuntimeError } from '@allrice/database';
 import type * as Router from '../../src/harness/router.js';
 import type * as Controller from '../../src/harness/dsh/assistant-controller.js';
 import type {
@@ -69,6 +70,7 @@ const state = vi.hoisted(() => ({
   credentials: vi.fn(),
   workflowId: null as string | null,
   workflow: vi.fn(),
+  knowledge: vi.fn(),
 }));
 // Internal governance helpers import this module directly. Bind it too; never
 // let a new frozen model snapshot fall through to a real application database.
@@ -116,10 +118,7 @@ vi.mock('../../src/harness/router.js', async (original) => ({
   }),
 }));
 vi.mock('../../src/knowledge.js', () => ({
-  buildAuthorizedKnowledgeContext: vi.fn(async () => ({
-    context: '',
-    citations: [],
-  })),
+  buildAuthorizedKnowledgeContext: state.knowledge,
 }));
 vi.mock('../../src/conversation/checkpoint-maintenance.js', () => ({
   finalizeEmployeeConversationContext: async () => state.runtime(),
@@ -220,6 +219,7 @@ integration(
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_JSON', undefined);
       vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', undefined);
       state.workflowId = null;
+      state.knowledge.mockResolvedValue({ context: '', citations: [] });
       state.append.mockResolvedValue(undefined);
       acquire.mockRejectedValue(lateError);
       state.credentials.mockRejectedValue(Error('test_forbids_credentials'));
@@ -991,6 +991,48 @@ integration(
         });
       },
     );
+    it('a missing verified reference index fails before any model call with the exact source error', async () => {
+      const { f, job } = await fixture({ compatible: true, price: true });
+      const resolved = await state.resolved();
+      const pin = {
+        sourceId: randomUUID(),
+        revisionId: randomUUID(),
+        revision: 1,
+        fileName: 'Budget.txt',
+        purpose: '',
+        ownership: { scope: 'company', organizationId: f.org },
+        digest: `sha256:${'a'.repeat(64)}`,
+        checksum: `sha256:${'b'.repeat(64)}`,
+      };
+      state.resolved.mockResolvedValue({
+        ...resolved,
+        promptSnapshot: {
+          ...resolved.promptSnapshot,
+          referenceSelections: [pin],
+        },
+      });
+      state.knowledge.mockRejectedValueOnce(new ReferenceRuntimeError());
+      await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+        code: 'REFERENCE_UNAVAILABLE',
+        retryable: false,
+      });
+      expect(state.knowledge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          referenceSelections: [pin],
+          referenceIdentity: {
+            actor: { type: 'user', id: f.user },
+            organizationId: f.org,
+            workspaceId: f.workspace,
+          },
+        }),
+      );
+      expect(execute).not.toHaveBeenCalled();
+      expect(acquire).not.toHaveBeenCalled();
+      noNativeAccess();
+      expect(await knownZero(f.org)).toMatchObject({
+        error_code: 'REFERENCE_UNAVAILABLE',
+      });
+    });
     it.each([false, true])(
       'ordinary Codex without a frozen identity is refused before acquisition (configuration omitted %s)',
       async (omitted) => {

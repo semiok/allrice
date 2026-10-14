@@ -40,12 +40,14 @@ import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
 import { SteeredWorkProcess } from './steered-work-process';
+import { type ReferenceDraft } from './reference-chips';
 import { TranscriptUserMessage } from './transcript-user-message';
 import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
 
 interface ChatTranscriptProps {
+  onOpenReference?: (reference: ReferenceDraft) => void;
   messageImages?: MessageImageSource;
   streamingOutput?: boolean;
   atBottom: boolean;
@@ -71,6 +73,7 @@ interface ChatTranscriptProps {
 }
 
 export function ChatTranscript({
+  onOpenReference,
   messageImages,
   streamingOutput = false,
   atBottom,
@@ -208,7 +211,10 @@ export function ChatTranscript({
               );
               const nativeFailure =
                 message.status === 'failed'
-                  ? (nativeExecutionFailureText(message.errorCode) ??
+                  ? ((message.errorCode === 'REFERENCE_UNAVAILABLE'
+                      ? '参考资料已不可用，请检查资料状态和访问权限后重新发起任务。'
+                      : null) ??
+                    nativeExecutionFailureText(message.errorCode) ??
                     nativeExecutionDiagnosticFailureText(
                       message.errorCode,
                       traceEvents.findLast(
@@ -254,6 +260,7 @@ export function ChatTranscript({
                     <TranscriptUserMessage
                       message={message}
                       messageImages={messageImages}
+                      onOpenReference={onOpenReference}
                     />
                   ) : (
                     <ArtifactLinkResolver.Provider
@@ -373,6 +380,31 @@ export function ChatTranscript({
                                     />
                                   ) : null}
                                 </SteeredWorkProcess>
+                                {!!message.content.citations?.some(
+                                  (c) => c.type === 'knowledge' && c.reference,
+                                ) && (
+                                  <div
+                                    className={styles.referenceSources}
+                                    aria-label="参考资料来源"
+                                  >
+                                    <span>本次检索资料</span>
+                                    {message.content.citations.map(
+                                      (c, index) =>
+                                        c.type === 'knowledge' &&
+                                        c.reference ? (
+                                          <button
+                                            type="button"
+                                            key={c.id}
+                                            onClick={() =>
+                                              onOpenReference?.(c.reference!)
+                                            }
+                                          >
+                                            [K{index + 1}] {c.label}
+                                          </button>
+                                        ) : null,
+                                    )}
+                                  </div>
+                                )}
                                 {applicationFailure && (
                                   <p
                                     className={styles.failedMessage}

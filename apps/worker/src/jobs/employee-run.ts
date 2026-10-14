@@ -39,6 +39,7 @@ import {
   loadEmployeeRuntimeScene,
   adoptEmployeeRuntimeScene,
   EmployeeRuntimeContentError,
+  ReferenceRuntimeError,
   ModelGovernanceError,
   assertReviewRunCurrent,
   assertAssistantAuthority,
@@ -1109,6 +1110,12 @@ export async function executeEmployeeRun({
       context: execution.context,
       employeeId: executionSnapshot.employee.id,
       knowledgeRevisionIds: selectedKnowledgeRevisionIds,
+      referenceSelections: resolved.promptSnapshot.referenceSelections,
+      referenceIdentity: {
+        actor: { type: 'user', id: contentScope.ownerId },
+        organizationId: contentScope.organizationId,
+        workspaceId: contentScope.workspaceId,
+      },
       query: kernel.userRequest,
       storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
     });
@@ -1869,7 +1876,9 @@ export async function executeEmployeeRun({
             '等待期间的授权或配置已变更，未恢复执行。请重新确认后发起任务。',
             false,
           )
-        : caught;
+        : caught instanceof ReferenceRuntimeError
+          ? new HandlerError(caught.code, caught.message, false)
+          : caught;
     const failedUsage = getAssistantFailureUsage(
       error,
       execution.context.runId,
@@ -1928,9 +1937,13 @@ export async function executeEmployeeRun({
           usageComplete: routeUsageComplete,
           cacheUsageKnown: routeCacheUsageKnown,
           errorCode,
-          failureCategory: errorCode.startsWith('ASSISTANT_')
-            ? null
-            : classifyProviderFailure(errorCode),
+          failureCategory:
+            errorCode.startsWith('ASSISTANT_') ||
+            ['REFERENCE_UNAVAILABLE', 'EMPLOYEE_CONTENT_UNAVAILABLE'].includes(
+              errorCode,
+            )
+              ? null
+              : classifyProviderFailure(errorCode),
           completedAt: new Date().toISOString(),
         },
       }).catch((outcomeError: unknown) => {

@@ -1,5 +1,6 @@
 import {
   DataAccessError,
+  ReferenceRuntimeError,
   SessionReferenceError,
   sendChatMessage,
   ArtifactReviewError,
@@ -55,6 +56,16 @@ export async function POST(
       headers: { 'Cache-Control': 'private, no-store' },
     });
   } catch (error) {
+    if (error instanceof ReferenceRuntimeError)
+      return Response.json(
+        {
+          error: {
+            code: error.code,
+            message: error.message + '输入草稿已保留。',
+          },
+        },
+        { status: 409, headers: { 'Cache-Control': 'private, no-store' } },
+      );
     if (
       error instanceof CompanyAssetError ||
       error instanceof CompanyRunAssetError

@@ -14,6 +14,7 @@ import {
 } from './company-template-use';
 import { TaskSuggestions } from './task-suggestions';
 import type { PreparedComposerDraft } from '../../lib/chatflow/composer-draft';
+import { ReferenceChips, type ReferenceDraft } from './reference-chips';
 import { SessionReferenceChips } from './session-reference-picker';
 
 import type { MutableRefObject, RefObject } from 'react';
@@ -57,6 +58,8 @@ interface ChatComposerProps {
   sessionReferences?: SessionReference[];
   onOpenSessionReferences?: () => void;
   onOpenReferenceLibrary?: () => void;
+  referenceSelections?: ReferenceDraft[];
+  onRemoveReference?: (id: string) => void;
   onRemoveSessionReference?: (id: string) => void;
   employeeName: string;
   attachmentMenuOpen: boolean;
@@ -103,6 +106,8 @@ export function ChatComposer({
   onPrepareTask,
   onTaskPreparation,
   companyReferences = [],
+  referenceSelections = [],
+  onRemoveReference,
   onRemoveCompanyReference,
   sessionReferences = [],
   onOpenSessionReferences,
@@ -165,6 +170,11 @@ export function ChatComposer({
           references={companyReferences}
           disabled={busy}
           onRemove={onRemoveCompanyReference ?? (() => {})}
+        />
+        <ReferenceChips
+          references={referenceSelections}
+          disabled={busy}
+          onRemove={onRemoveReference}
         />
         <SessionReferenceChips
           references={sessionReferences}
