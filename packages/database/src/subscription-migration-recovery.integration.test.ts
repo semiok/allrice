@@ -222,6 +222,9 @@ integration('subscription incremental migration and cold SQL readers', () => {
       expect(
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('instance');
+      expect(
+        task.binding.executionSnapshot.capabilitySnapshot.bindings.toolNames,
+      ).not.toContain('workspace.employee.profile.update');
       expect(legacyInstance).toHaveBeenCalledTimes(1);
       expect(legacyCapabilities).toHaveBeenCalledTimes(1);
       expect(legacyContent).toHaveBeenCalledTimes(1);

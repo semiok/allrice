@@ -1523,7 +1523,7 @@ export async function prepareEmployeeRunBinding(input: {
           // Personal configuration is an intrinsic custom-instance action.
           // It still requires existing storage:write authority and is frozen
           // only for new Runs; shared publications/assignments stay unchanged.
-          ...(instance.kind === 'custom' &&
+          ...(instance?.kind === 'custom' &&
           grantedCapabilities.includes('storage:write')
             ? {
                 toolNames: [
