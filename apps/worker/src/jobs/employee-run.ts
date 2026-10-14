@@ -414,6 +414,16 @@ export async function executeEmployeeRun({
     .update(
       JSON.stringify({
         employeeVersionId: input.employeeVersionId,
+        ...(resolved.executionSnapshot?.schemaVersion === 2 &&
+        resolved.executionSnapshot.instance
+          ? {
+              employeeInstance: {
+                id: resolved.executionSnapshot.instance.id,
+                revision: resolved.executionSnapshot.instance.revision,
+                profile: resolved.executionSnapshot.instance.profile,
+              },
+            }
+          : {}),
         ...(contentRuntime
           ? {
               contentGenerationId: contentRuntime.generationId,

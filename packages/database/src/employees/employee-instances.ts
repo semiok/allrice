@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import {
   CreateEmployeeInstanceInputSchema,
@@ -8,10 +8,16 @@ import {
   EmployeeInstanceLifecycleInputSchema,
   EmployeeInstanceRevisionSchema,
   EmployeeVersionSourceSchema,
+  EmployeeProfileChatInputSchema,
+  EmployeeExecutionSnapshotSchema,
+  ExecutionContextSchema,
+  EmployeeInstanceProfileSchema,
   UuidSchema,
   type EmployeeInstance,
   type EmployeeInstanceSnapshot,
   type RequestContext,
+  type ExecutionContext,
+  type EmployeeInstanceProfile,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
@@ -20,6 +26,11 @@ import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
+import {
+  assertPublishingRun,
+  assertWorkbenchSession,
+} from '../artifact-review.ts';
+import { explicitEmployeeProfileIntent } from './employee-profile-intent.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 type Tx = postgres.TransactionSql;
@@ -94,7 +105,7 @@ async function authority(
 
 async function auditInstance(
   tx: Tx,
-  context: RequestContext,
+  context: Identity & Pick<RequestContext, 'requestId'>,
   id: string,
   operation: 'create' | 'update' | 'archive' | 'restore',
 ) {
@@ -357,31 +368,186 @@ export async function updateEmployeeInstance(
   const id = UuidSchema.parse(idInput),
     value = UpdateEmployeeInstanceInputSchema.parse(input),
     scope = { ...context, workspaceId: value.workspaceId };
-  return getDatabase().begin(async (tx) => {
-    await authority(scope, tx, true);
-    const before = await getEmployeeInstance(scope, id, tx);
-    await assignment(scope, before.assignmentId, tx, true);
-    const [row] = await tx<
-      { revision: number }[]
-    >`select revision from allrice_employee_instances where id=${id} for update`;
-    const [prior] = await tx<
-      { response: unknown; matches: boolean }[]
-    >`select response,request_input=${tx.json(value)}::jsonb matches
+  return getDatabase().begin((tx) =>
+    writeInstanceProfile(tx, scope, id, value, () => value.profile),
+  );
+}
+
+/** One revision/receipt transaction for HTTP and governed chat updates. Patch
+ * against the locked profile only after replay lookup, preserving other fields. */
+async function writeInstanceProfile(
+  tx: Tx,
+  scope: Identity & Pick<RequestContext, 'requestId'>,
+  id: string,
+  value: { requestId: string; expectedRevision: number } & postgres.JSONValue,
+  profileFor: (current: EmployeeInstanceProfile) => EmployeeInstanceProfile,
+  authorize?: (before: EmployeeInstance) => Promise<void>,
+) {
+  await authority(scope, tx, true);
+  const before = await getEmployeeInstance(scope, id, tx);
+  await assignment(scope, before.assignmentId, tx, true);
+  const [row] = await tx<
+    { revision: number; profile: unknown; archived_at: Date | null }[]
+  >`select revision,profile,archived_at from allrice_employee_instances where id=${id} for update`;
+  if (!row || row.archived_at)
+    throw new EmployeeInstanceError('instance_archived');
+  await authorize?.(before);
+  const [prior] = await tx<
+    { response: unknown; matches: boolean }[]
+  >`select response,request_input=${tx.json(value)}::jsonb matches
       from allrice_employee_instance_revisions where instance_id=${id} and request_id=${value.requestId}`;
-    if (prior) {
-      if (!prior.matches) throw new EmployeeInstanceError('instance_conflict');
-      return EmployeeInstanceSchema.parse(prior.response);
-    }
-    if (row?.revision !== value.expectedRevision)
-      throw new EmployeeInstanceError('instance_conflict');
-    const revision = row.revision + 1;
-    await tx`insert into allrice_employee_instance_revisions(instance_id,revision,profile,request_id,request_input)
-      values(${id},${revision},${tx.json(value.profile)},${value.requestId},${tx.json(value)})`;
-    await tx`update allrice_employee_instances set revision=${revision},profile=${tx.json(value.profile)},updated_at=clock_timestamp() where id=${id}`;
-    const result = await getEmployeeInstance(scope, id, tx);
-    await tx`update allrice_employee_instance_revisions set response=${tx.json(result)} where instance_id=${id} and revision=${revision}`;
-    await auditInstance(tx, scope, id, 'update');
-    return result;
+  if (prior) {
+    if (!prior.matches) throw new EmployeeInstanceError('instance_conflict');
+    return EmployeeInstanceSchema.parse(prior.response);
+  }
+  if (row?.revision !== value.expectedRevision)
+    throw new EmployeeInstanceError('instance_conflict');
+  const revision = row.revision + 1;
+  const profile = EmployeeInstanceProfileSchema.parse(
+    profileFor(EmployeeInstanceProfileSchema.parse(row.profile)),
+  );
+  await tx`insert into allrice_employee_instance_revisions(instance_id,revision,profile,request_id,request_input)
+      values(${id},${revision},${tx.json(profile)},${value.requestId},${tx.json(value)})`;
+  await tx`update allrice_employee_instances set revision=${revision},profile=${tx.json(profile)},updated_at=clock_timestamp() where id=${id}`;
+  const result = await getEmployeeInstance(scope, id, tx);
+  await tx`update allrice_employee_instance_revisions set response=${tx.json(result)} where instance_id=${id} and revision=${revision}`;
+  await auditInstance(tx, scope, id, 'update');
+  return result;
+}
+
+export class EmployeeProfileChatError extends Error {
+  constructor(
+    public readonly code:
+      'explicit_profile_request_required' | 'profile_run_unavailable',
+  ) {
+    super(code);
+  }
+}
+
+/** The sole chat write entry. The root Run, original user message, Session and
+ * current assignment resolve the private target; model arguments contain none. */
+export async function updateEmployeeProfileFromChat(input: {
+  context: ExecutionContext;
+  sessionId: string;
+  userMessageId: string;
+  callId: string;
+  worker: { attempt: number; leaseToken: string };
+  arguments: unknown;
+}) {
+  const ctx = ExecutionContextSchema.parse(input.context);
+  const args = EmployeeProfileChatInputSchema.parse(input.arguments);
+  function fail(): never {
+    throw new EmployeeProfileChatError('profile_run_unavailable');
+  }
+  if (
+    !ctx.workspaceId ||
+    ctx.policySnapshot.organizationId !== ctx.organizationId ||
+    ctx.delegatedBy.type !== 'user' ||
+    ctx.delegatedBy.id !== ctx.policySnapshot.subjectId ||
+    Date.parse(ctx.policySnapshot.expiresAt) <= Date.now() ||
+    !input.callId ||
+    input.callId.length > 200 ||
+    !Number.isSafeInteger(input.worker.attempt) ||
+    input.worker.attempt < 0
+  )
+    fail();
+  UuidSchema.parse(input.sessionId);
+  UuidSchema.parse(input.userMessageId);
+  UuidSchema.parse(input.worker.leaseToken);
+  const hex = createHash('sha256')
+    .update(
+      JSON.stringify([
+        ctx.organizationId,
+        ctx.workspaceId,
+        ctx.runId,
+        input.callId,
+      ]),
+    )
+    .digest('hex');
+  const requestId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+  const scope: Identity & Pick<RequestContext, 'requestId'> = {
+    actor: { type: 'user', id: ctx.policySnapshot.subjectId },
+    organizationId: ctx.organizationId,
+    workspaceId: ctx.workspaceId!,
+    requestId,
+  };
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
+    // Read the target without locks first. The same binding is checked again
+    // under the Session lock below, after identity/assignment/instance locks.
+    const [target] = await tx<
+      { id: string }[]
+    >`select coalesce(s.employee_instance_id,s.employee_assignment_id) id
+      from allrice_chat_sessions s where s.id=${input.sessionId} and s.organization_id=${ctx.organizationId}
+        and s.workspace_id=${ctx.workspaceId!} and s.owner_id=${ctx.policySnapshot.subjectId} and s.archived_at is null`;
+    if (!target) fail();
+    const { expectedRevision, ...patch } = args;
+    return writeInstanceProfile(
+      tx,
+      scope,
+      target.id,
+      {
+        requestId,
+        expectedRevision,
+        patch,
+        runId: ctx.runId,
+        userMessageId: input.userMessageId,
+      },
+      (current) => ({ ...current, ...patch }),
+      async (before) => {
+        if (before.kind !== 'custom') fail();
+        await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
+        // Cancellation takes root/job locks before employee authority. NOWAIT
+        // uses the existing bounded transaction retry instead of deadlocking.
+        const roots =
+          await tx`select root_run_id,cancel_requested_at,cancel_request_id,deadline_at
+          from allrice_runtime_roots where root_run_id=${ctx.runId} for share nowait`;
+        if (
+          roots.some(
+            (r) =>
+              r.cancel_requested_at ||
+              r.cancel_request_id ||
+              r.deadline_at <= new Date(),
+          )
+        )
+          fail();
+        const [live] = await tx<
+          { execution_snapshot: unknown; text: string }[]
+        >`select er.execution_snapshot,m.content->>'text' text
+          from allrice_employee_runs er
+          join allrice_runs r on r.id=er.run_id and r.organization_id=er.organization_id and r.workspace_id=er.workspace_id and r.owner_id=er.owner_id
+          join allrice_jobs j on j.id=${ctx.jobId} and j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
+          join allrice_chat_sessions s on s.id=er.session_id and coalesce(s.employee_instance_id,s.employee_assignment_id)=${target.id}
+          join allrice_messages m on m.id=er.user_message_id and m.session_id=s.id and m.owner_id=er.owner_id and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id and m.role='user'
+          join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.id=${ctx.policySnapshot.id} and p.organization_id=r.organization_id and p.subject_id=r.owner_id
+          where er.run_id=${ctx.runId} and er.session_id=${input.sessionId} and er.user_message_id=${input.userMessageId}
+            and er.employee_assignment_id=${before.assignmentId} and er.organization_id=${ctx.organizationId} and er.workspace_id=${ctx.workspaceId!} and er.owner_id=${ctx.policySnapshot.subjectId}
+            and r.state='running' and p.expires_at>clock_timestamp()
+            and j.status='running' and j.worker_id=${ctx.worker.id} and j.attempt=${input.worker.attempt} and j.lease_token=${input.worker.leaseToken}
+            and j.cancel_requested_at is null and j.timeout_at>clock_timestamp() and j.lease_expires_at>clock_timestamp()
+            and not exists(select 1 from allrice_runtime_run_links l where l.run_id=r.id and l.root_run_id<>r.id)
+          for share of er,r,j,p,m nowait`;
+        if (!live) fail();
+        const frozen = EmployeeExecutionSnapshotSchema.parse(
+          live.execution_snapshot,
+        );
+        if (
+          frozen.schemaVersion !== 2 ||
+          frozen.instance?.id !== target.id ||
+          frozen.instance.kind !== 'custom'
+        )
+          fail();
+        await assertPublishingRun(
+          tx,
+          ctx,
+          input.sessionId,
+          'workspace.employee.profile.update',
+        );
+        if (!explicitEmployeeProfileIntent(live.text, args))
+          throw new EmployeeProfileChatError(
+            'explicit_profile_request_required',
+          );
+      },
+    );
   });
 }
 

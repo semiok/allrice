@@ -10,6 +10,8 @@ import {
 } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 import { confirmToolFailure } from '../../src/errors.js';
+import * as employeeDatabase from '@allrice/database';
+import { updateEmployeeProfile } from '../../src/tool-broker/handlers/employee-profile.js';
 import type { HarnessToolResult } from '../../src/harness/adapter.js';
 import { gate, p24Fixture } from '../p24/fixture.js';
 
@@ -130,6 +132,64 @@ integration(
           status: complete ? 'completed' : 'unknown',
           usageComplete: complete,
         });
+      },
+    );
+
+    it.each(['conflict', 'intent', 'unknown-commit'] as const)(
+      'settles only confirmed personal-profile refusal through the real governed bridge: %s',
+      async (mode) => {
+        const f = await assistantFixture(database.db),
+          name = 'workspace.employee.profile.update';
+        await database.db`update allrice_assistant_instances set allowed_tools=allowed_tools||${database.db.json([name])}::jsonb where run_id=${f.task.runId}`;
+        // Database transactions have separate real-PG coverage. Inject their
+        // exact error classes here to test the production handler/bridge ledger.
+        const failure =
+          mode === 'conflict'
+            ? new employeeDatabase.EmployeeInstanceError('instance_conflict')
+            : mode === 'intent'
+              ? new employeeDatabase.EmployeeProfileChatError(
+                  'explicit_profile_request_required',
+                )
+              : new Error('Connection lost during commit');
+        const stub = vi
+          .spyOn(employeeDatabase, 'updateEmployeeProfileFromChat')
+          .mockRejectedValue(failure);
+        try {
+          const bridge = createAssistantWorkerBridge({
+            runtime: f.runtime,
+            task: f.task,
+            context: f.context,
+            worker: f.worker,
+            wireNames: {},
+            readOnlyTools: new Set(),
+            onRootTool: (call) =>
+              updateEmployeeProfile({
+                input: {
+                  context: { runId: f.task.runId },
+                  sessionId: f.task.chatSessionId!,
+                  userMessageId: randomUUID(),
+                  call,
+                  managedBrowserJobAttempt: 0,
+                  managedBrowserJobLeaseToken: f.worker.leaseToken,
+                },
+                arguments: call.arguments,
+              } as Parameters<typeof updateEmployeeProfile>[0]),
+          });
+          await expect(
+            bridge.handle('tool', {
+              nativeSessionId: f.nativeSessionId,
+              callId: randomUUID(),
+              name,
+              arguments: { expectedRevision: 1, name: '小禾' },
+            }),
+          ).rejects.toThrow();
+          expect(stub).toHaveBeenCalledTimes(1);
+          expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({
+            status: mode === 'unknown-commit' ? 'unknown' : 'completed',
+          });
+        } finally {
+          stub.mockRestore();
+        }
       },
     );
 

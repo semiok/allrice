@@ -13,6 +13,8 @@ import type {
 import {
   CompanyAssetSchema,
   WorkbenchArtifactSchema,
+  EmployeeInstanceSchema,
+  type EmployeeInstance,
   TaskNextStepsSchema,
   type MessageFeedbackItem,
   McpConnectionSchema,
@@ -266,6 +268,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      createdEmployeeInstances: [] as EmployeeInstance[],
       historyRunning: options.running ?? false,
       bridgeDevices: [] as BridgeDevice[],
       bridgeError: false,
@@ -858,6 +861,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       id: id(7),
                       employeeId: id(9),
                       isDefault: true,
+                      ...(state.createdEmployeeInstances.length
+                        ? {
+                            instances: [
+                              {
+                                ...state.createdEmployeeInstances[0]!,
+                                id: id(7),
+                                kind: 'general',
+                                profile: {},
+                              },
+                              ...state.createdEmployeeInstances,
+                            ],
+                          }
+                        : {}),
                       versions: [],
                       currentVersion: {
                         id: id(8),
@@ -3104,6 +3120,104 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await management.innerText()).toContain('文件夹\n未连接');
         await f.page.keyboard.press('Escape');
         expect(await computer.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  it.each([
+    [1440, 1],
+    [390, 1],
+    [1440, 2],
+  ])(
+    'creates a private Xiaobai with one idempotent request at width %s with %s assigned employees',
+    async (width, employeeCount) => {
+      const f = await fixture({ width, touch: width < 600, employeeCount });
+      const created = EmployeeInstanceSchema.parse({
+        id: id(8100),
+        assignmentId: id(7),
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        kind: 'custom',
+        revision: 1,
+        profile: { name: '小白', expressionStyle: 'structured' },
+        creationSource: { kind: 'tenant_version', employeeVersionId: id(8) },
+        source: { kind: 'tenant_version', employeeVersionId: id(8) },
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      });
+      const requests: Record<string, unknown>[] = [],
+        sessions: Record<string, unknown>[] = [];
+      try {
+        await f.page.route('**/api/v1/employee-instances', async (route) => {
+          requests.push(route.request().postDataJSON());
+          f.state.createdEmployeeInstances = [created]; // First write succeeds but its response is lost.
+          await route.fulfill({
+            status: requests.length === 1 ? 503 : 201,
+            contentType: 'application/json',
+            body: JSON.stringify(
+              requests.length === 1
+                ? { error: { message: '创建结果暂时无法读取，请重试。' } }
+                : { instance: created },
+            ),
+          });
+        });
+        await f.page.route('**/api/v1/sessions', async (route) => {
+          if (route.request().method() !== 'POST') return route.fallback();
+          sessions.push(route.request().postDataJSON());
+          await route.fulfill({
+            status: 201,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              session: { ...session(A), employeeInstanceId: created.id },
+            }),
+          });
+        });
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await f.page
+          .getByRole('button', { name: '定制小白', exact: true })
+          .click();
+        const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
+        if (employeeCount > 1)
+          expect(
+            await picker
+              .getByRole('combobox', { name: '小白的基础员工' })
+              .inputValue(),
+          ).toBe(id(7));
+        else expect(await picker.getByRole('combobox').count()).toBe(0);
+        await picker
+          .getByRole('button', { name: '创建小白', exact: true })
+          .click();
+        await picker.getByRole('alert').waitFor();
+        await picker
+          .getByRole('button', { name: '创建小白', exact: true })
+          .click();
+        await expect.poll(() => picker.count()).toBe(0);
+        expect(requests).toHaveLength(2);
+        expect(requests[1]).toEqual(requests[0]);
+        expect(requests[0]).toMatchObject({
+          assignmentId: id(7),
+          workspaceId: workspace,
+          profile: created.profile,
+        });
+        expect(requests[0]).not.toHaveProperty('ownerId');
+        const input = f.page.getByRole('textbox', { name: '给 小白 的消息' });
+        await input.fill('请把你的名字改为小禾。以后回答保持简洁。');
+        await input.press('Enter');
+        await expect.poll(() => sessions.length).toBe(1);
+        expect(sessions[0]).toMatchObject({
+          employeeAssignmentId: id(7),
+          employeeInstanceId: created.id,
+        });
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        expect(f.state.createdEmployeeInstances).toHaveLength(1);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();

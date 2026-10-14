@@ -111,6 +111,23 @@ export type EmployeeInstanceProfile = z.infer<
   typeof EmployeeInstanceProfileSchema
 >;
 
+/** Owner and target are supplied by the current Run, never by the model. */
+export const EmployeeProfileChatInputSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+    name: z.string().trim().min(1).max(120).optional(),
+    expressionStyle: z
+      .enum(['concise', 'structured', 'exploratory'])
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (value) => value.name !== undefined || value.expressionStyle !== undefined,
+    {
+      message: 'Specify a name or expressionStyle.',
+    },
+  );
+
 export const EmployeeVersionSourceSchema = z.discriminatedUnion('kind', [
   z
     .object({

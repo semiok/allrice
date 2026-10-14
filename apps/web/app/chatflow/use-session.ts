@@ -9,7 +9,10 @@ import {
   type SetStateAction,
 } from 'react';
 
-import type { SaasCapabilityManifest } from '@allrice/contracts';
+import type {
+  SaasCapabilityManifest,
+  EmployeeInstance,
+} from '@allrice/contracts';
 
 import type { History, Session, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
@@ -479,6 +482,33 @@ export function useSession({ setError }: UseSessionOptions) {
       : (workspace?.employees.find((item) => item.isDefault) ??
         workspace?.employees[0]);
   return {
+    registerEmployeeInstance: (instance: EmployeeInstance) => {
+      setWorkspace((current) => {
+        if (
+          !current ||
+          instance.organizationId !== current.organizationId ||
+          instance.workspaceId !== current.workspaceId ||
+          instance.ownerId !== current.viewerId
+        )
+          return current;
+        return {
+          ...current,
+          employees: current.employees.map((employee) =>
+            employee.id === instance.assignmentId
+              ? {
+                  ...employee,
+                  instances: [
+                    ...(employee.instances ?? []).filter(
+                      (i) => i.id !== instance.id,
+                    ),
+                    instance,
+                  ],
+                }
+              : employee,
+          ),
+        };
+      });
+    },
     newSessionEmployee,
     updateSession,
     setPendingEmployeeAssignmentId,

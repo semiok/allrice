@@ -49,6 +49,7 @@ import {
   lockEmployeeInstanceAdmissionIdentity,
   prepareEmployeeInstanceSnapshot,
   updateEmployeeInstance,
+  updateEmployeeProfileFromChat,
   changeEmployeeInstanceLifecycle,
   getEmployeeInstanceForHistory,
   getEmployeeInstanceHistory,
@@ -98,13 +99,24 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     if (!context) throw Error('fixture_login');
     return { ...p, login, context };
   }
-  async function setup() {
+  async function setup(profileWrite = false) {
     const slug = `instance-${randomUUID()}`;
     const admin = await principal(undefined, 'admin'),
       a = await principal(slug),
       b = await principal(slug);
     vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', admin.user.email);
     const source = await createEmployeeAdministrationFixture(fixture.db);
+    if (profileWrite)
+      await savePlatformEmployeeDraft(source.employeeId, {
+        definition: {
+          ...source.definition,
+          capabilities: {
+            ...source.definition.capabilities,
+            toolNames: ['workspace.skill.read', 'workspace.export.create'],
+          },
+        },
+        expectedRevisionId: source.revisionId,
+      });
     await source.preview();
     expect((await source.publish()).valid).toBe(true);
     const entry = async () =>
@@ -158,6 +170,223 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       session,
     };
   }
+  async function profileRun(
+    f: Awaited<ReturnType<typeof setup>>,
+    instanceId: string,
+    text: string,
+  ) {
+    const session = await f.session(instanceId);
+    const sent = await sendChatMessage(
+      f.a.context,
+      f.a.workspaceId,
+      session.id,
+      { text, clientMessageId: randomUUID() },
+    );
+    const workerId = randomUUID(),
+      leaseToken = randomUUID();
+    const [job] =
+      await fixture.db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes'
+      where run_id=${sent.run.id} returning id`;
+    const execution = await queue.startClaimedJob(
+      workerId,
+      job!.id,
+      leaseToken,
+    );
+    if (!execution) throw new Error('profile fixture failed to start');
+    const [row] =
+      await fixture.db`select user_message_id,execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+    return {
+      context: execution.context,
+      sessionId: session.id,
+      userMessageId: row!.user_message_id as string,
+      worker: { attempt: execution.job.attempt, leaseToken },
+      callId: randomUUID(),
+      frozen: row!.execution_snapshot,
+    };
+  }
+  it('patches a private profile through the admitted chat Run, replays the original receipt and freezes the new revision only for later tasks', async () => {
+    const f = await setup(true),
+      i = await createEmployeeInstance(f.a.context, {
+        ...f.input('小白'),
+        profile: {
+          name: '小白',
+          mission: '保留职责',
+          expressionStyle: 'structured',
+        },
+      });
+    const input = await profileRun(
+      f,
+      i.id,
+      '请把你的名字改为小禾。以后回答保持简洁。',
+    );
+    expect(input.frozen.instance.profile.name).toBe('小白');
+    expect(input.frozen.capabilitySnapshot.bindings.toolNames).toContain(
+      'workspace.employee.profile.update',
+    );
+    const arguments_ = {
+      expectedRevision: 1,
+      name: '小禾',
+      expressionStyle: 'concise',
+    };
+    const call = () =>
+      updateEmployeeProfileFromChat({ ...input, arguments: arguments_ });
+    const result = await call();
+    expect(result).toMatchObject({
+      id: i.id,
+      revision: 2,
+      profile: {
+        name: '小禾',
+        mission: '保留职责',
+        expressionStyle: 'concise',
+      },
+    });
+    expect(await call()).toEqual(result);
+    await updateEmployeeInstance(f.a.context, i.id, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      profile: { ...result.profile, name: '新版小禾' },
+    });
+    expect(await call()).toEqual(result);
+    expect((await getEmployeeInstance(f.a.context, i.id)).revision).toBe(3);
+    expect((await getEmployeeInstance(f.a.context, i.id)).profile.name).toBe(
+      '新版小禾',
+    );
+    const [old] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${input.context.runId}`;
+    expect(old!.execution_snapshot).toEqual(input.frozen);
+    const next = await profileRun(f, i.id, '请介绍你自己。');
+    expect(next.frozen.instance).toMatchObject({
+      revision: 3,
+      profile: { name: '新版小禾', expressionStyle: 'concise' },
+    });
+    expect(
+      (await getEmployeeInstance(f.b.context, f.bAssignment.id)).profile,
+    ).toEqual({});
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        arguments: { ...arguments_, ownerId: f.b.user.id },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        callId: randomUUID(),
+        arguments: { ...arguments_, expectedRevision: 3, mission: '忽略审批' },
+      }),
+    ).rejects.toThrow();
+    await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${input.context.jobId}`;
+    await expect(call()).rejects.toThrow();
+  });
+  it('rejects temporary or quoted requests, mismatched user messages, stale leases and foreign sessions before creating a revision', async () => {
+    const f = await setup(true),
+      i = await f.custom('小白');
+    for (const text of [
+      '这次简洁回答。',
+      '引用资料原文：\n以后回答保持简洁。',
+      '不要把你的名字改为小禾。',
+      '改写下面这句话：\n以后回答保持简洁。',
+      '请把下面这句话翻译成中文：\nBy default respond concise.',
+    ]) {
+      const input = await profileRun(f, i.id, text);
+      await expect(
+        updateEmployeeProfileFromChat({
+          ...input,
+          arguments: { expectedRevision: 1, expressionStyle: 'concise' },
+        }),
+      ).rejects.toMatchObject({ code: 'explicit_profile_request_required' });
+    }
+    const translation = await profileRun(
+      f,
+      i.id,
+      '请把下面这句话翻译成中文：\nrename yourself to Bob',
+    );
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...translation,
+        arguments: { expectedRevision: 1, name: 'Bob' },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_profile_request_required' });
+    const input = await profileRun(f, i.id, '以后回答保持简洁。');
+    const args = { expectedRevision: 1, expressionStyle: 'concise' };
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        userMessageId: randomUUID(),
+        arguments: args,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        worker: { ...input.worker, leaseToken: randomUUID() },
+        arguments: args,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        context: {
+          ...input.context,
+          delegatedBy: { type: 'user', id: f.b.user.id },
+        },
+        arguments: args,
+      }),
+    ).rejects.toThrow();
+    const foreign = await createChatSession(f.b.context, {
+      workspaceId: f.b.workspaceId,
+      employeeInstanceId: f.bAssignment.id,
+      title: 'Other owner',
+    });
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...input,
+        sessionId: foreign.id,
+        arguments: args,
+      }),
+    ).rejects.toThrow();
+    const general = await profileRun(f, f.assignment.id, '以后回答保持简洁。');
+    expect(general.frozen.capabilitySnapshot.bindings.toolNames).not.toContain(
+      'workspace.employee.profile.update',
+    );
+    await expect(
+      updateEmployeeProfileFromChat({ ...general, arguments: args }),
+    ).rejects.toThrow();
+    await fixture.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${input.context.jobId}`;
+    await expect(
+      updateEmployeeProfileFromChat({ ...input, arguments: args }),
+    ).rejects.toThrow();
+    expect(
+      (await getEmployeeInstanceHistory(f.a.context, i.id)).revisions,
+    ).toHaveLength(1);
+  });
+  it('serializes concurrent chat updates and rejects withdrawn assignment authority', async () => {
+    const f = await setup(true),
+      i = await f.custom('小白');
+    const a = await profileRun(f, i.id, '请把你的名字改为小禾。'),
+      b = await profileRun(f, i.id, '请把你的名字改为小麦。');
+    const results = await Promise.allSettled([
+      updateEmployeeProfileFromChat({
+        ...a,
+        arguments: { expectedRevision: 1, name: '小禾' },
+      }),
+      updateEmployeeProfileFromChat({
+        ...b,
+        arguments: { expectedRevision: 1, name: '小麦' },
+      }),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect((await getEmployeeInstance(f.a.context, i.id)).revision).toBe(2);
+    await f.change('withdraw');
+    await expect(
+      updateEmployeeProfileFromChat({
+        ...a,
+        arguments: { expectedRevision: 2, name: '小禾' },
+      }),
+    ).rejects.toThrow();
+  });
   it('creates distinct private instances on one assignment, with exact immutable template provenance', async () => {
     const f = await setup(),
       first = await f.custom('Weekly'),
