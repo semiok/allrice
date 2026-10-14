@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReferenceSelectionSchema } from './reference-library.ts';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import {
@@ -290,6 +291,8 @@ export const EmployeeResolvedContentSchema = z
     body: z.string().optional(),
     ownership: ContentOwnershipSchema.nullable(),
     canMaintain: z.boolean(),
+    // Directory metadata only. Runtime retrieval rechecks the current reader.
+    referenceFile: ReferenceSelectionSchema.optional(),
   })
   .strict();
 export const EmployeeEffectiveContentSchema = z

@@ -28,6 +28,11 @@ export const KnowledgeCitationSchema = z
     updatedAt: TimestampSchema,
     score: z.number().min(-1).max(1),
     reference: ReferenceSelectionSchema.optional(),
+    // Stable within a Run, including references loaded by a later scene tool.
+    referenceLabel: z
+      .string()
+      .regex(/^R[1-9]\d?$/)
+      .optional(),
   })
   .strict();
 export type KnowledgeCitation = z.infer<typeof KnowledgeCitationSchema>;

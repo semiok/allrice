@@ -93,6 +93,7 @@ export const ReferenceRevisionSchema = z
     fileName: z.string(),
     purpose: z.string(),
     checksum: ChecksumSchema,
+    manifestDigest: ChecksumSchema.optional(),
     sizeBytes: z.number().int().nonnegative(),
     mediaType: z.string(),
     status: z.enum(['active', 'archived']),

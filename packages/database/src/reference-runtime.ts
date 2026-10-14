@@ -6,6 +6,7 @@ import {
   ReferenceSelectionsSchema,
   UuidSchema,
   type ReferenceSelection,
+  type KnowledgeRetrievalResult,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
@@ -26,7 +27,7 @@ export class ReferenceRuntimeError extends Error {
 
 /** The immutable revision is a pin, never an authorization token. A reader
  * needs no maintenance privilege and never inherits the uploader's authority. */
-async function readSelection(
+export async function readReferenceSelection(
   context: ContentIdentity,
   revisionId: string,
   sql: Sql,
@@ -89,7 +90,9 @@ export async function captureReferenceSelections(
     throw new ReferenceRuntimeError();
   const selections: ReferenceSelection[] = [];
   for (const id of [...revisionIds].sort())
-    selections.push((await readSelection(context, id, sql, true)).selection);
+    selections.push(
+      (await readReferenceSelection(context, id, sql, true)).selection,
+    );
   return selections;
 }
 
@@ -103,7 +106,7 @@ export async function assertReferenceSelections(
   for (const selection of [...selections].sort((a, b) =>
     a.revisionId.localeCompare(b.revisionId),
   )) {
-    const current = await readSelection(
+    const current = await readReferenceSelection(
       context,
       selection.revisionId,
       sql,
@@ -115,9 +118,129 @@ export async function assertReferenceSelections(
   return selections;
 }
 
-/** Reuse the retained revision's verified index in its source namespace. The
- * user's explicit selection supplies relevance; return bounded excerpts, not
- * an assertion that the whole file was read. No workspace-file ACL bypass. */
+/** Tokenize this bounded reference query without changing the existing index.
+ * The legacy hash embedding treats a full Chinese sentence as one token. Use
+ * lexical candidates (Han bigrams and words) before vector ranking so unrelated
+ * hash collisions cannot be described as a relevant automatic retrieval. */
+export function referenceQueryTerms(query: string) {
+  const ignored = new Set([
+    '请帮',
+    '帮我',
+    '一下',
+    '进行',
+    '完成',
+    '请用',
+    '使用',
+    '根据',
+    '相关',
+    '资料',
+    '参考',
+    '内容',
+    '生成',
+    '文件',
+    '报告',
+    '输出',
+    'the',
+    'and',
+    'for',
+    'this',
+    'that',
+    'with',
+    'from',
+    'please',
+  ]);
+  const terms = new Set<string>();
+  for (const word of query
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/[\p{Script=Han}]+|[a-z0-9_]{2,}/gu) ?? []) {
+    if (/\p{Script=Han}/u.test(word)) {
+      const characters = Array.from(word);
+      for (let i = 0; i + 1 < characters.length; i++) {
+        const term = characters[i]! + characters[i + 1]!;
+        if (!ignored.has(term)) terms.add(term);
+      }
+    } else if (!ignored.has(word)) terms.add(word);
+    if (terms.size >= 64) break;
+  }
+  return [...terms].slice(0, 64);
+}
+
+/** Caller owns the principal/content/lease transaction. Ready without a
+ * matching index fails explicitly; a valid index with no relevant hit is empty.
+ * No file-owner or workspace-file ACL is substituted for the current reader. */
+export async function retrieveReferenceKnowledgeInTransaction(
+  input: {
+    context: ContentIdentity;
+    selections: ReferenceSelection[];
+    query: string;
+    mode: 'explicit' | 'automatic';
+  },
+  tx: Sql,
+): Promise<KnowledgeRetrievalResult[]> {
+  if (input.selections.length > (input.mode === 'explicit' ? 3 : 128))
+    throw new ReferenceRuntimeError();
+  const terms = referenceQueryTerms(input.query);
+  const vector = `[${embedKnowledgeText(input.query).join(',')}]`;
+  const results: { result: KnowledgeRetrievalResult; matches: number }[] = [];
+  for (const selection of [...input.selections].sort((a, b) =>
+    a.revisionId.localeCompare(b.revisionId),
+  )) {
+    const current = await readReferenceSelection(
+      input.context,
+      selection.revisionId,
+      tx,
+      true,
+    );
+    if (!isDeepStrictEqual(current.selection, selection))
+      throw new ReferenceRuntimeError();
+    const rows =
+      await tx`select c.id,c.content,c.locator,d.id as document_id,d.source_updated_at,
+      greatest(-1,least(1,1-(c.embedding<=>${vector}::vector))) as score,
+      (select count(*) from unnest(${tx.array(terms)}::text[]) q(term)
+        where strpos(lower(c.content),q.term)>0) as matches
+      from allrice_knowledge_documents d join allrice_knowledge_chunks c on c.document_id=d.id
+        and c.organization_id=d.organization_id and c.workspace_id=d.workspace_id
+      where d.knowledge_revision_id=${selection.revisionId} and d.active
+        and d.organization_id=${current.organizationId} and d.workspace_id=${current.workspaceId}
+        and d.source_ref=${'file:' + current.objectId} and d.checksum=${selection.checksum}
+      order by ${input.mode === 'automatic' ? tx`matches desc,` : tx``} score desc,c.id limit 2`;
+    if (!rows.length) throw new ReferenceRuntimeError();
+    for (const row of rows) {
+      if (input.mode === 'automatic' && !Number(row.matches)) continue;
+      results.push({
+        matches: Number(row.matches),
+        result: KnowledgeRetrievalResultSchema.parse({
+          content: row.content,
+          citation: {
+            type: 'knowledge',
+            id: row.id,
+            label: `${selection.fileName} · v${selection.revision}`,
+            knowledgeRevisionId: selection.revisionId,
+            documentId: row.document_id,
+            sourceKind: 'managed',
+            scope: 'user',
+            locator: row.locator,
+            updatedAt: row.source_updated_at.toISOString(),
+            score: Number(row.score),
+            reference: selection,
+          },
+        }),
+      });
+    }
+  }
+  if (input.mode === 'automatic')
+    results.sort(
+      (a, b) =>
+        b.matches - a.matches ||
+        b.result.citation.score - a.result.citation.score ||
+        a.result.citation.id.localeCompare(b.result.citation.id),
+    );
+  return results.slice(0, 6).map((r) => r.result);
+}
+
+/** The user's explicit selection supplies relevance. Historical callers keep
+ * the same at-most-three-source behavior; employee Runs also persist receipts. */
 export async function retrieveSelectedReferenceKnowledge(input: {
   context: ContentIdentity;
   selections: ReferenceSelection[];
@@ -125,52 +248,12 @@ export async function retrieveSelectedReferenceKnowledge(input: {
 }) {
   if (!input.selections.length) return [];
   const selections = ReferenceSelectionsSchema.parse(input.selections);
-  const vector = `[${embedKnowledgeText(input.query).join(',')}]`;
   return getDatabase().begin(async (tx) => {
     if (!(await readContentPrincipal(input.context, tx, true)))
       throw new ReferenceRuntimeError();
-    const results = [];
-    for (const selection of [...selections].sort((a, b) =>
-      a.revisionId.localeCompare(b.revisionId),
-    )) {
-      const current = await readSelection(
-        input.context,
-        selection.revisionId,
-        tx,
-        true,
-      );
-      if (!isDeepStrictEqual(current.selection, selection))
-        throw new ReferenceRuntimeError();
-      const rows =
-        await tx`select c.id,c.content,c.locator,d.id as document_id,d.source_updated_at,
-          greatest(-1,least(1,1-(c.embedding<=>${vector}::vector))) as score
-        from allrice_knowledge_documents d join allrice_knowledge_chunks c on c.document_id=d.id
-          and c.organization_id=d.organization_id and c.workspace_id=d.workspace_id
-        where d.knowledge_revision_id=${selection.revisionId} and d.active
-          and d.organization_id=${current.organizationId} and d.workspace_id=${current.workspaceId}
-          and d.source_ref=${'file:' + current.objectId} and d.checksum=${selection.checksum}
-        order by score desc,c.id limit 2`;
-      if (!rows.length) throw new ReferenceRuntimeError();
-      for (const row of rows)
-        results.push(
-          KnowledgeRetrievalResultSchema.parse({
-            content: row.content,
-            citation: {
-              type: 'knowledge',
-              id: row.id,
-              label: `${selection.fileName} · v${selection.revision}`,
-              knowledgeRevisionId: selection.revisionId,
-              documentId: row.document_id,
-              sourceKind: 'managed',
-              scope: 'user',
-              locator: row.locator,
-              updatedAt: row.source_updated_at.toISOString(),
-              score: Number(row.score),
-              reference: selection,
-            },
-          }),
-        );
-    }
-    return results;
+    return retrieveReferenceKnowledgeInTransaction(
+      { ...input, selections, mode: 'explicit' },
+      tx,
+    );
   });
 }

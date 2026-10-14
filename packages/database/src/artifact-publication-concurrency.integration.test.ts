@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { TransactionSql } from 'postgres';
 import {
   ExecutionContextSchema,
+  ReferenceReadSchema,
   type StoragePort,
   type WorkbenchArtifact,
 } from '@allrice/contracts';
@@ -348,6 +349,95 @@ suite(
         ).toHaveLength(1);
       },
     );
+
+    it('freezes actual reference evidence per series version and preserves it on publication replay', async () => {
+      const f = await setup(),
+        sql = fixture.db,
+        generationId = randomUUID();
+      await sql`insert into allrice_employee_content_contexts(generation_id,organization_id,workspace_id,owner_id,session_id)
+        values(${generationId},${f.org},${f.workspace},${f.user},${f.session})`;
+      const makeRead = (n: number) => {
+        const id = randomUUID(),
+          revisionId = randomUUID();
+        return ReferenceReadSchema.parse({
+          receiptId: id,
+          origin: { kind: 'common' },
+          runId: f.rootRunId,
+          generationId,
+          jobId: f.worker.jobId,
+          workerId: f.worker.workerId,
+          readAt: new Date().toISOString(),
+          contentChecksum: `sha256:${'d'.repeat(64)}`,
+          citation: {
+            type: 'knowledge',
+            id,
+            label: `source-${n}.txt · v1`,
+            referenceLabel: `R${n}`,
+            knowledgeRevisionId: revisionId,
+            documentId: randomUUID(),
+            sourceKind: 'managed',
+            scope: 'user',
+            updatedAt: new Date().toISOString(),
+            score: 1,
+            locator: {
+              sourceRef: 'file:' + randomUUID(),
+              chunk: 0,
+              start: 0,
+              end: 20,
+            },
+            reference: {
+              sourceId: randomUUID(),
+              revisionId,
+              revision: 1,
+              fileName: `source-${n}.txt`,
+              purpose: 'Synthetic source receipt',
+              digest: `sha256:${'c'.repeat(64)}`,
+              checksum: `sha256:${'b'.repeat(64)}`,
+              ownership: { scope: 'company', organizationId: f.org },
+            },
+          },
+        });
+      };
+      // Producer authorization/retrieval is covered by employee-content tests;
+      // this fixture injects its exact persisted output into the real publisher.
+      const first = makeRead(1),
+        second = {
+          ...makeRead(2),
+          origin: {
+            kind: 'scene' as const,
+            sceneId: randomUUID(),
+            sceneDigest: `sha256:${'e'.repeat(64)}` as const,
+          },
+        };
+      await sql`update allrice_employee_runs set content_generation_id=${generationId},reference_reads=${sql.json([first])} where run_id=${f.rootRunId}`;
+      const v1 = await publishWorkbenchArtifact(f.input, f.storage);
+      expect(v1.provenance.referenceReads).toEqual([first]);
+      await sql`update allrice_employee_runs set reference_reads=${sql.json([first, second])} where run_id=${f.rootRunId}`;
+      const repeated = await publishWorkbenchArtifact(f.input, f.storage);
+      expect(repeated.id).toBe(v1.id);
+      expect(repeated.provenance.referenceReads).toEqual([first]);
+      const v2 = await publishWorkbenchArtifact(
+        {
+          ...f.input,
+          callId: randomUUID(),
+          parentObjectId: v1.object.id,
+          bytes: Buffer.from('Revised with a later scene source'),
+          changeSummary: 'Use second source',
+        },
+        f.storage,
+      );
+      expect(v2.version.seriesId).toBe(v1.version.seriesId);
+      expect(v2.version.version).toBe(2);
+      expect(v2.provenance.referenceReads).toEqual([first, second]);
+      expect(
+        (await getWorkbenchArtifact(f.requestContext, f.session, v1.id))
+          .provenance.referenceReads,
+      ).toEqual([first]);
+      expect(
+        (await publishWorkbenchArtifact(f.input, f.storage)).provenance
+          .referenceReads,
+      ).toEqual([first]);
+    });
 
     it('rejects a foreign file parent without disclosing or rewriting it', async () => {
       const foreign = await setup();
