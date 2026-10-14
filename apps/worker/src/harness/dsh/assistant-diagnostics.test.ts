@@ -26,6 +26,29 @@ function evidence() {
   };
 }
 describe('closed-schema assistant failure diagnostics', () => {
+  it('preserves bounded stream facts while rejecting raw transport data', () => {
+    const input = evidence();
+    const stream = {
+      transport: 'sse',
+      state: 'heartbeat_only',
+      bytes: 120,
+      heartbeats: 3,
+      events: 0,
+      terminalEvent: false,
+      outputItemEnded: false,
+      readFailed: false,
+      lastByteAgeMs: 12,
+      localCloseConfirmed: true,
+      finishSeen: false,
+      recoveryEligible: true,
+    };
+    Object.assign(input.failures[0]!, { stream });
+    expect(
+      parseAssistantFailureDiagnostics(input)?.failures[0]?.stream,
+    ).toEqual(stream);
+    Object.assign(stream, { responseBody: 'synthetic-private-text' });
+    expect(parseAssistantFailureDiagnostics(input)).toBeUndefined();
+  });
   it('retains only detached scalar observations with explicit unknown usage', () => {
     const input = evidence();
     const parsed = parseAssistantFailureDiagnostics(input);

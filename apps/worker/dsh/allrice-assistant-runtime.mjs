@@ -1,4 +1,11 @@
-import { boundedModelStream } from './allrice-model-stream.mjs';
+import {
+  boundedModelStream,
+  modelStreamRecoveryReceipt,
+} from './allrice-model-stream.mjs';
+import {
+  createModelTransport,
+  installModelTransportObservation,
+} from './allrice-model-transport.mjs';
 /* global AbortController, Buffer */
 import { createHash, randomUUID } from 'node:crypto';
 import { types } from 'node:util';
@@ -44,6 +51,29 @@ const retryableModelFailures = new Set([
   'RATE_LIMIT',
   'EMPTY_RESPONSE',
 ]);
+
+// The model loop normally waits for tools, but children and a missing tool
+// receipt can outlive a step. Never continue over an unresolved operation.
+function nativeToolsQuiescent(ctx, id) {
+  const agent = ctx.agents.get(id);
+  if (!agent) return false;
+  for (const current of ctx.agents.list()) {
+    if (current !== agent && current.status !== 'idle') return false;
+    const open = new Set();
+    for (const event of current.session.snapshotEvents()) {
+      if (event.type === 'tool/call') open.add(event.data.callId);
+      if (event.type === 'tool/result') {
+        const message = event.data.message;
+        const block = message?.content?.find((b) => b.type === 'tool-result');
+        open.delete(
+          block?.toolCallId ?? message?.toolCallId ?? message?.callId,
+        );
+      }
+    }
+    if (open.size) return false;
+  }
+  return true;
+}
 function ownData(value, key) {
   if (!value || typeof value !== 'object' || types.isProxy(value)) return;
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -150,6 +180,7 @@ export function createGovernedAssistantNativeRuntime(
   bridge,
   options = {},
 ) {
+  installModelTransportObservation();
   const optionsForRuntime = options;
   const bindings = new Map();
   const deliveries = new Map();
@@ -189,7 +220,10 @@ export function createGovernedAssistantNativeRuntime(
       version: 1,
       failures: [...failures.values()]
         .filter((entry) => owned(entry.nativeSessionId))
-        .map((entry) => ({ ...entry })),
+        .map((entry) => ({
+          ...entry,
+          ...(entry.stream ? { stream: { ...entry.stream } } : {}),
+        })),
       truncated: failuresTruncated,
     };
   }
@@ -533,9 +567,19 @@ export function createGovernedAssistantNativeRuntime(
     let modelFailureCode;
     let settlementThrew = false;
     let settlementError;
+    let streamDiagnostic;
+    let localRecoveryConfirmed = false;
+    let recoveryError;
+    let recoveryReleased = false;
+    let streamFailed = false;
     try {
       for await (const chunk of boundedModelStream(next(), {
+        ...optionsForRuntime.modelStreamOptions,
         signal: options.signal,
+        transport: createModelTransport(options),
+        onDiagnostic: (diagnostic) => {
+          streamDiagnostic = diagnostic;
+        },
         onWait: (status) =>
           optionsForRuntime.onModelWait?.({ sessionId: id, callId, status }),
       })) {
@@ -559,10 +603,18 @@ export function createGovernedAssistantNativeRuntime(
         yield chunk;
       }
     } catch (error) {
-      // A hard wait bound is not a provider completion receipt. Preserve an
-      // unknown admission; the failed runtime is dropped rather than replayed.
+      streamFailed = true;
+      const receipt = modelStreamRecoveryReceipt(error);
+      localRecoveryConfirmed =
+        receipt?.localCloseConfirmed === true &&
+        options.purpose !== 'compaction' &&
+        !options.signal?.aborted &&
+        nativeToolsQuiescent(ctx, id);
+      // A local close is NOT provider success or known usage. Only a confirmed
+      // shutdown plus quiescent native tools can release the next model step.
       failure(id, callId, 'stream', failureCode(error), stopKind);
-      throw error;
+      if (localRecoveryConfirmed) recoveryError = error;
+      else throw error;
     } finally {
       const settled = usage ? settledTokenUsage(usage, observedOutput) : {};
       if (
@@ -618,21 +670,60 @@ export function createGovernedAssistantNativeRuntime(
       // after the execution receipt is durably acknowledged. Keep unknown usage
       // unknown. Native DSH owns recovery of partial model output; no tool is
       // replayed here, and each tool's independent execution receipt stays intact.
-      // Missing ACKs and streams with no terminal provider receipt remain blocked.
+      // Missing ACKs and unconfirmed shutdowns remain blocked. Native retry
+      // retains previous tools/files and enforces the existing two-retry cap.
       const observedUsageOnly =
         acknowledgement?.tokenUsageObservational === true &&
         (['stop', 'tool-calls'].includes(stopKind) ||
           (stopKind === 'error' &&
-            retryableModelFailures.has(modelFailureCode)));
+            retryableModelFailures.has(modelFailureCode)) ||
+          localRecoveryConfirmed);
+      if (streamDiagnostic) {
+        const diagnostic = {
+          ...streamDiagnostic,
+          recoveryEligible:
+            localRecoveryConfirmed &&
+            observedUsageOnly &&
+            acknowledgement?.settled === true &&
+            !options.signal?.aborted,
+        };
+        const entry = failures.get(callId);
+        if (entry) entry.stream = diagnostic;
+        optionsForRuntime.onModelStream?.({
+          sessionId: id,
+          callId,
+          diagnostic,
+        });
+      }
       if (
         acknowledgement?.settled === true &&
         ((settled.inputTokens !== undefined &&
-          settled.outputTokens !== undefined) ||
+          settled.outputTokens !== undefined &&
+          (!streamFailed || localRecoveryConfirmed)) ||
           observedUsageOnly)
-      )
+      ) {
         modelAdmissions.delete(id);
+        recoveryReleased = localRecoveryConfirmed && !options.signal?.aborted;
+      }
     }
     if (settlementThrew) throw settlementError;
+    if (recoveryError) {
+      if (!recoveryReleased) throw recoveryError;
+      // Middleware exceptions end a DSH turn; its request-recovery seam accepts
+      // a failure finish. Emit only after local shutdown, tool and ledger gates.
+      // This is explicitly a local TIMEOUT, never a fabricated provider success.
+      yield {
+        type: 'finish',
+        reason: {
+          kind: 'error',
+          failure: {
+            code: 'TIMEOUT',
+            message:
+              'AllRice model idle deadline; previous local request closed',
+          },
+        },
+      };
+    }
   });
   async function start(p) {
     const parent = live(p.parentNativeSessionId);

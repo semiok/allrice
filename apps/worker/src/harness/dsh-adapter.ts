@@ -8,6 +8,7 @@ import {
   RuntimeNativeInputProofSchema,
   EmployeeSceneReadSchema,
   EmployeeSceneStateSchema,
+  ModelStreamDiagnosticSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
 import { AssistantRuntimeError } from '@allrice/database';
@@ -1046,6 +1047,43 @@ export class DshHarnessAdapter implements HarnessAdapter {
           sourceEventId: `dsh:model-wait:${callId}:${status}:${randomUUID()}`,
           sourceOccurredAt: new Date().toISOString(),
           sourcePayload: { callId, status },
+        });
+        return;
+      }
+      if (notification.method === 'allrice.modelStream') {
+        const { callId } = notification.params;
+        const parsed = ModelStreamDiagnosticSchema.safeParse(
+          notification.params.diagnostic,
+        );
+        if (
+          typeof callId !== 'string' ||
+          !/^[a-f0-9-]{36}$/i.test(callId) ||
+          !parsed.success
+        )
+          return;
+        const diagnostic = parsed.data;
+        const summaries = {
+          transport_closed: '模型连接已关闭。',
+          heartbeat_only: '连接仍有心跳，但模型未返回新内容。',
+          missing_terminal: '模型已返回输出项，但未收到响应结束事件。',
+          transport_active: '连接仍有数据，但模型未返回可用的新内容。',
+          transport_silent: '模型连接长时间没有新数据。',
+          unobserved: '模型长时间没有新内容，底层连接状态暂无法确认。',
+        };
+        await input.onNative({
+          type: 'native.event',
+          presentation: 'lifecycle',
+          status: 'failed',
+          label: '模型响应诊断',
+          summary:
+            summaries[diagnostic.state] +
+            (diagnostic.recoveryEligible
+              ? '旧请求已停止，保留已完成工作，按重试限额继续。'
+              : '已完成的内容和工具结果已保留。'),
+          sourceEventType: 'allrice/model-stream',
+          sourceEventId: `dsh:model-stream:${callId}`,
+          sourceOccurredAt: new Date().toISOString(),
+          sourcePayload: { callId, diagnostic },
         });
         return;
       }
