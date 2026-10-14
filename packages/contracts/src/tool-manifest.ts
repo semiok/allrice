@@ -31,6 +31,13 @@ export interface AllRiceToolManifestEntry {
  * and the Tool Broker remains the final validation and authorization boundary.
  */
 export const allRiceToolManifest = [
+  {
+    canonicalName: 'workspace.employee.profile.update',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_employee_profile_update',
+  },
   ...(['delegate', 'message', 'report', 'stop'] as const).map((action) => ({
     canonicalName: `assistant.${action}` as const,
     capability: 'model:invoke' as const,

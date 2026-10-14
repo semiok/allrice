@@ -226,6 +226,7 @@ export function EmployeeProduction({
     setConfirmed(false);
   };
   const [directory, setDirectory] = useState<DirectoryResponse | null>(null);
+  const directorySequence = useRef(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<PlatformEmployeeDefinition | null>(null);
   const [previewEnvironment, setPreviewEnvironment] = useState<
@@ -309,12 +310,14 @@ export function EmployeeProduction({
 
   const load = useCallback(
     async (preferredId?: string) => {
+      const sequence = ++directorySequence.current;
       setBusy(true);
       invalidateReview();
       try {
         const result = await api<DirectoryResponse>(
           '/api/v1/admin/platform-employees',
         );
+        if (sequence !== directorySequence.current) return;
         setDirectory(result);
         const nextId =
           preferredId &&
@@ -339,9 +342,10 @@ export function EmployeeProduction({
         );
         setError('');
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : '加载失败');
+        if (sequence === directorySequence.current)
+          setError(reason instanceof Error ? reason.message : '加载失败');
       } finally {
-        setBusy(false);
+        if (sequence === directorySequence.current) setBusy(false);
       }
     },
     [selectedId],
@@ -349,6 +353,9 @@ export function EmployeeProduction({
 
   useEffect(() => {
     void load();
+    return () => {
+      directorySequence.current++;
+    };
   }, []);
 
   const loadTestRuns = useCallback(async (employeeId: string) => {
@@ -449,6 +456,7 @@ export function EmployeeProduction({
 
   function choose(employee: Employee) {
     if (employee.id === selectedId || !mayDiscard()) return;
+    directorySequence.current++;
     invalidateReview();
     skillSequence.current++;
     setSkillView(null);

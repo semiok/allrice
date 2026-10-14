@@ -1,4 +1,5 @@
 import { generateImage } from './handlers/image.js';
+import { updateEmployeeProfile } from './handlers/employee-profile.js';
 import { runProjectWorkspace } from './handlers/project.js';
 import { executeLocalFileTool } from './handlers/local-files.js';
 import { HandlerError } from '../errors.js';
@@ -65,6 +66,10 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'workspace.employee.profile.update': registration(
+    'workspace',
+    updateEmployeeProfile,
+  ),
   'image.generate': registration('delivery', generateImage),
   'image.edit': registration('delivery', generateImage),
   ...(Object.fromEntries(

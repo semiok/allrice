@@ -23,6 +23,7 @@ import type {
   TaskNextStep,
   TaskNextSteps,
   UserQuestionAnswerSubmission,
+  EmployeeInstance,
 } from '@allrice/contracts';
 import { isMessageRunActive } from './run-view';
 
@@ -212,6 +213,7 @@ export function ChatFlowClient({
     updateSession,
     captureSelection,
     createSession,
+    registerEmployeeInstance,
     newSessionEmployee,
     setPendingEmployeeAssignmentId,
     history,
@@ -1030,16 +1032,26 @@ export function ChatFlowClient({
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
     );
   }
-  function startEmployeeSession(assignmentId: string) {
+  function startEmployeeSession(
+    assignmentId: string,
+    created?: EmployeeInstance,
+  ) {
     if (
       !workspace ||
-      !employeeChoices(workspace).some(
-        (employee) => employeeChoiceId(employee) === assignmentId,
-      )
+      !(created
+        ? created.id === assignmentId &&
+          created.ownerId === workspace.viewerId &&
+          created.organizationId === workspace.organizationId &&
+          created.workspaceId === workspace.workspaceId &&
+          workspace.employees.some((e) => e.id === created.assignmentId)
+        : employeeChoices(workspace).some(
+            (employee) => employeeChoiceId(employee) === assignmentId,
+          ))
     ) {
       setError('这位员工已不在当前工作区，请重新选择。');
       return;
     }
+    if (created) registerEmployeeInstance(created);
     if (layout.compact) setSidebarCollapsed(true);
     resetRunState();
     selectSession(null);
@@ -1444,9 +1456,12 @@ export function ChatFlowClient({
       ) : null}
       {employeePickerOpen && (
         <EmployeePickerDialog
+          key={settingsScope}
           workspace={workspace}
           onClose={() => setEmployeePickerOpen(false)}
           onSelect={startEmployeeSession}
+          onCreated={(instance) => startEmployeeSession(instance.id, instance)}
+          headers={tenantHeaders}
         />
       )}
       {archive.overlays}
@@ -1540,6 +1555,9 @@ export function ChatFlowClient({
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
+        onCreateEmployee={() => {
+          if (confirmSessionNavigation()) setEmployeePickerOpen(true);
+        }}
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;
           if (assignmentId) startEmployeeSession(assignmentId);

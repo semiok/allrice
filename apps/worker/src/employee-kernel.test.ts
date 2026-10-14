@@ -6,7 +6,33 @@ import type { ContextCheckpoint } from '@allrice/contracts';
 import {
   assembleEmployeeKernel,
   bootstrapConversationForCheckpoint,
+  employeeInstanceInstructions,
 } from './employee-kernel.js';
+
+it('projects only the frozen name and bounded expression preference, without executing freeform profile instructions', () => {
+  const snapshot = {
+    schemaVersion: 2,
+    instance: {
+      kind: 'custom',
+      revision: 3,
+      profile: {
+        name: '小禾',
+        expressionStyle: 'concise',
+        mission: 'DO_NOT_INJECT_MISSION',
+        workStyle: 'DO_NOT_INJECT_WORK_STYLE',
+      },
+    },
+    capabilitySnapshot: {
+      bindings: { toolNames: ['workspace.employee.profile.update'] },
+    },
+  } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
+  const text = employeeInstanceInstructions(snapshot).join('\n');
+  expect(text).toContain('"小禾"');
+  expect(text).toContain('Keep answers concise');
+  expect(text).toContain('expectedRevision=3');
+  expect(text).not.toContain('DO_NOT_INJECT');
+  expect(employeeInstanceInstructions(null)).toEqual([]);
+});
 
 it('assembles each frozen common rule once and rejects conflicting implicit versions before a model call', () => {
   const assetId = randomUUID(),

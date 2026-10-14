@@ -901,12 +901,22 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       const original = (await getPlatformEmployee(f.employeeId))!;
       const originalDraft = original.currentDraft!;
       const { page, context } = await pageFor();
+      let releaseFirst: (() => void) | undefined;
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      let directoryReads = 0;
+      let firstFinished: (() => void) | undefined;
+      const firstResponse = new Promise<void>((resolve) => {
+        firstFinished = resolve;
+      });
       try {
         // Only reorder real directory records to exercise initial load and
         // explicit selection separately; definitions and writes stay unmocked.
         await page.route(
           '**/api/v1/admin/platform-employees',
           async (route) => {
+            const order = ++directoryReads;
             const response = await route.fetch();
             const directory = await response.json();
             const target = directory.employees.filter(
@@ -917,6 +927,9 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
               (employee: PlatformEmployeeSummary) =>
                 employee.id !== f.employeeId,
             );
+            // StrictMode mounts load twice. Make the first response arrive
+            // after selection so stale directory loads cannot reset the form.
+            if (entry === 'choose' && order === 1) await firstGate;
             await route.fulfill({
               response,
               json: {
@@ -927,12 +940,29 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
                     : [...others, ...target],
               },
             });
+            if (order === 1) firstFinished?.();
           },
         );
         await page.goto(`${origin}/runtime-console?view=employees`);
         if (entry === 'choose')
           await page.getByRole('button').filter({ hasText: name }).click();
         await page.getByRole('heading', { name, exact: true }).waitFor();
+        if (entry === 'choose') {
+          expect(directoryReads).toBeGreaterThanOrEqual(2);
+          releaseFirst?.();
+          await firstResponse;
+          await page.evaluate(
+            () =>
+              new Promise<void>((resolve) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => resolve()),
+                ),
+              ),
+          );
+          expect(
+            await page.getByRole('heading', { name, exact: true }).isVisible(),
+          ).toBe(true);
+        }
         const save = async (expectedRevisionId: string) => {
           const button = page.getByRole('button', {
             name: '保存草稿',
@@ -1000,6 +1030,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           originalDraft.definition,
         );
       } finally {
+        releaseFirst?.();
         await page.unrouteAll({ behavior: 'wait' });
         await context.close();
       }
