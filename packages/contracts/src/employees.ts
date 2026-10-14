@@ -1,4 +1,5 @@
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
+import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
 import { EmployeeRuntimeContentSchema } from './employee-content.ts';
 import { z } from 'zod';
@@ -748,6 +749,7 @@ export const EmployeePromptSnapshotSchema = z
   .object({
     systemPrompt: z.string().min(1).max(10_000),
     companyAssets: CompanyRunSnapshotSchema.optional(),
+    referenceSelections: ReferenceSelectionsSchema.optional(),
     organizationContext: z
       .object({
         organizationId: UuidSchema,

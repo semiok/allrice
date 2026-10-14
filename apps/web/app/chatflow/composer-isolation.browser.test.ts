@@ -1630,6 +1630,80 @@ suite(
       15_000,
     );
 
+    it.each([1440, 390])(
+      'fixed reference selection survives a failed send and remains task-local at %ipx',
+      async (width) => {
+        const f = await fixture({ width });
+        const reference = {
+          sourceId: C,
+          revisionId: runId,
+          revision: 1,
+          fileName: 'Budget-v1.txt',
+          purpose: '核对预算',
+          checksum: `sha256:${'a'.repeat(64)}`,
+          ownership: { scope: 'company', organizationId: A },
+          sizeBytes: 24,
+          mediaType: 'text/plain',
+          status: 'active',
+          processing: 'ready',
+          failure: null,
+          canMaintain: false,
+          createdAt: now,
+          origin: null,
+        };
+        try {
+          await f.page.route('**/api/v1/references?*', (route) =>
+            route.fulfill({
+              json: {
+                references: [reference],
+                options: {
+                  workspaceId: B,
+                  platformMaintainer: false,
+                  maintenanceLevel: 'personal',
+                  writable: false,
+                  departmentId: null,
+                  departments: [],
+                },
+              },
+            }),
+          );
+          await f.page
+            .getByRole('button', { name: '添加文件', exact: true })
+            .click();
+          await f.page
+            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .click();
+          await f.page
+            .getByRole('button', { name: '引用 v1', exact: true })
+            .click();
+          const chip = f.page.getByRole('button', {
+            name: '移除资料 Budget-v1.txt v1',
+            exact: true,
+          });
+          await chip.waitFor();
+          await f.send('核对资料中的预算');
+          await f.waitPending(1);
+          expect(f.pending[0]!.body.referenceRevisionIds).toEqual([runId]);
+          expect(f.pending[0]!.body).not.toHaveProperty('referenceSelections');
+          await f.respond(0, false);
+          await chip.waitFor();
+          await f.send('核对资料中的预算');
+          await f.waitPending(2);
+          expect(f.pending[1]!.body).toEqual(f.pending[0]!.body);
+          await f.respond(1);
+          await expect.poll(() => chip.count()).toBe(0);
+          await f.send('普通下一任务');
+          await f.waitPending(3);
+          expect(f.pending[2]!.body).not.toHaveProperty('referenceRevisionIds');
+          await f.respond(2);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+      30000,
+    );
+
     const weeklyTask: TaskSuggestionDisplay = {
       id: 'weekly-summary',
       title: '整理周报',

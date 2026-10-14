@@ -1,6 +1,7 @@
 import type { Message } from './chatflow-types';
 import type { MessageImageSource } from './message-image-cache';
 import { MessageImageGallery } from './attachment-components';
+import { ReferenceChips, type ReferenceDraft } from './reference-chips';
 import { SessionReferenceChips } from './session-reference-picker';
 import { UserQuestionReceipt } from './user-question-receipt';
 import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
@@ -10,9 +11,11 @@ import styles from './dsh-saas.module.css';
 export function TranscriptUserMessage({
   message,
   messageImages,
+  onOpenReference,
 }: {
   message: Message;
   messageImages?: MessageImageSource;
+  onOpenReference?: (reference: ReferenceDraft) => void;
 }) {
   return (
     <>
@@ -55,6 +58,10 @@ export function TranscriptUserMessage({
       ) : message.role === 'user' ? (
         <div className={messageUi.userRow} data-actions-reveal="hover">
           <div className={messageUi.userStack}>
+            <ReferenceChips
+              references={message.content.referenceSelections ?? []}
+              onOpen={onOpenReference}
+            />
             <SessionReferenceChips
               references={message.content.sessionReferences ?? []}
             />

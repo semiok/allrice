@@ -31,6 +31,7 @@ import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-sta
 import { projectNativeContext } from '../../lib/chatflow/native-context';
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
+import { type ReferenceDraft } from './reference-chips';
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
 import { CompanyTemplateBrowser } from './company-template-browser';
@@ -154,6 +155,16 @@ export function ChatFlowClient({
     SessionReference[]
   >([]);
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
+  const [referenceSelections, setReferenceSelections] = useState<
+    ReferenceDraft[]
+  >([]);
+  const [referenceToView, setReferenceToView] = useState<ReferenceDraft | null>(
+    null,
+  );
+  function openReference(reference: ReferenceDraft) {
+    setReferenceToView(reference);
+    setReferenceLibraryOpen(true);
+  }
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
   const [companyTemplatesScope, setCompanyTemplatesScope] = useState<
     string | null
@@ -265,6 +276,8 @@ export function ChatFlowClient({
             text: visibleSubmission.user.content.text,
             attachments: visibleSubmission.user.attachments,
             sessionReferences: visibleSubmission.user.content.sessionReferences,
+            referenceSelections:
+              visibleSubmission.user.content.referenceSelections,
             createdAt: visibleSubmission.user.createdAt,
           },
         ]
@@ -272,7 +285,10 @@ export function ChatFlowClient({
   ];
   useEffect(() => {
     setSessionReferences([]);
+    setReferenceSelections([]);
     setReferencePickerOpen(false);
+    setReferenceLibraryOpen(false);
+    setReferenceToView(null);
     setCompanyReferences([]);
   }, [settingsScope, activeId]);
   const preferences = usePersonalPreferences(workspace, tenantHeaders);
@@ -614,6 +630,7 @@ export function ChatFlowClient({
     if (!action) return;
     const draftAttachments = [...pendingAttachments];
     const draftReferences = [...sessionReferences];
+    const draftReferenceSelections = [...referenceSelections];
     const draftCompanyReferences = [...companyReferences];
     let clientMessageId = crypto.randomUUID();
     const optimisticUserId = `optimistic-user:${clientMessageId}`;
@@ -651,6 +668,7 @@ export function ChatFlowClient({
     setSubmission(echo);
     setDraft('');
     setSessionReferences([]);
+    setReferenceSelections([]);
     setCompanyReferences([]);
     try {
       await nextPaint();
@@ -689,6 +707,13 @@ export function ChatFlowClient({
         text,
         ...(draftCompanyReferences.length
           ? { companyTemplates: draftCompanyReferences.map((r) => r.selection) }
+          : {}),
+        ...(draftReferenceSelections.length
+          ? {
+              referenceRevisionIds: draftReferenceSelections.map(
+                (r) => r.revisionId,
+              ),
+            }
           : {}),
         ...(draftReferences.length
           ? {
@@ -737,6 +762,7 @@ export function ChatFlowClient({
       clearPendingAttachments(retainedPreviews);
       setSubmission(null);
       setSessionReferences([]);
+      setReferenceSelections([]);
       setHistory((current) => {
         if (!current || current.session.id !== sessionId) return current;
         const messages = current.messages.filter(
@@ -780,6 +806,8 @@ export function ChatFlowClient({
                 previewUrl: undefined,
               })),
               sessionReferences: draftReferences,
+              referenceSelections:
+                result.userMessage.content.referenceSelections,
               companyAssets: result.userMessage.content.companyAssets,
               createdAt: result.userMessage.createdAt,
             },
@@ -795,6 +823,7 @@ export function ChatFlowClient({
       setSubmission(null);
       setDraft(text);
       setSessionReferences(draftReferences);
+      setReferenceSelections(draftReferenceSelections);
       setCompanyReferences(draftCompanyReferences);
       setError(cause instanceof Error ? cause.message : '消息发送失败');
     } finally {
@@ -812,7 +841,8 @@ export function ChatFlowClient({
       (draft.trim() ||
         pendingAttachments.length ||
         sessionReferences.length ||
-        companyReferences.length)
+        companyReferences.length ||
+        referenceSelections.length)
     )
       throw new Error('请先发送或清空当前草稿，再编辑排队消息。');
     const action = sessionActions.begin('composer');
@@ -869,6 +899,7 @@ export function ChatFlowClient({
           })),
         );
         setSessionReferences(item.sessionReferences ?? []);
+        setReferenceSelections(item.referenceSelections ?? []);
         setPendingAttachments(
           (item.attachments ?? []).map((a) => ({
             ...a,
@@ -997,7 +1028,8 @@ export function ChatFlowClient({
         draft.trim() ||
         pendingAttachments.length ||
         sessionReferences.length ||
-        companyReferences.length
+        companyReferences.length ||
+        referenceSelections.length
       ) ||
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
     );
@@ -1019,6 +1051,7 @@ export function ChatFlowClient({
     setPendingEmployeeAssignmentId(assignmentId);
     setDraft('');
     setSessionReferences([]);
+    setReferenceSelections([]);
     setCompanyReferences([]);
     setReferencePickerOpen(false);
     clearPendingAttachments();
@@ -1299,7 +1332,16 @@ export function ChatFlowClient({
       }
       sessionReferences={sessionReferences}
       onOpenSessionReferences={() => setReferencePickerOpen(true)}
-      onOpenReferenceLibrary={() => setReferenceLibraryOpen(true)}
+      referenceSelections={referenceSelections}
+      onRemoveReference={(id) =>
+        setReferenceSelections((items) =>
+          items.filter((r) => r.revisionId !== id),
+        )
+      }
+      onOpenReferenceLibrary={() => {
+        setReferenceToView(null);
+        setReferenceLibraryOpen(true);
+      }}
       onRemoveSessionReference={(id) =>
         setSessionReferences((current) =>
           current.filter((item) => item.sessionId !== id),
@@ -1411,10 +1453,27 @@ export function ChatFlowClient({
       {archive.overlays}
       {referenceLibraryOpen && workspace && (
         <ReferenceLibrary
-          key={`references/${settingsScope}`}
+          key={`references/${settingsScope}/${referenceToView?.revisionId ?? 'choose'}`}
           workspaceId={workspace.workspaceId}
           headers={tenantHeaders}
           onClose={() => setReferenceLibraryOpen(false)}
+          initialReference={referenceToView}
+          onSelect={(r) => {
+            if (
+              referenceSelections.length >= 3 &&
+              !referenceSelections.some((s) => s.revisionId === r.revisionId)
+            ) {
+              setError('每次任务最多引用 3 份资料。');
+            } else {
+              setReferenceSelections((items) =>
+                items.some((s) => s.revisionId === r.revisionId)
+                  ? items
+                  : [...items, r],
+              );
+              setError('');
+            }
+            setReferenceLibraryOpen(false);
+          }}
         />
       )}
       <CompanyTemplateBrowser
@@ -1510,6 +1569,7 @@ export function ChatFlowClient({
           if (sessionId !== activeId) {
             clearPendingAttachments();
             setSessionReferences([]);
+            setReferenceSelections([]);
             setCompanyReferences([]);
             setReferencePickerOpen(false);
             setDraft('');
@@ -1760,6 +1820,7 @@ export function ChatFlowClient({
                   headers={tenantHeaders}
                 >
                   <ChatTranscript
+                    onOpenReference={openReference}
                     streamingOutput={preferences.value.streamingOutput}
                     employeeName={activeEmployeeName}
                     atBottom={atTranscriptBottom}

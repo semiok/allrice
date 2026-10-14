@@ -16,6 +16,7 @@ import { readSessionWorkMethods } from './work-methods.ts';
 import { readSessionSteering } from './steering-history.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
+import { captureReferenceSelections } from '../reference-runtime.ts';
 import { captureCompanyRunAssets } from '../company-run-assets.ts';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import {
@@ -1053,6 +1054,7 @@ export async function getChatSessionHistory(
           attachments: mapped.attachments,
           sessionReferences: mapped.content.sessionReferences,
           companyAssets: mapped.content.companyAssets,
+          referenceSelections: mapped.content.referenceSelections,
           createdAt: mapped.createdAt,
         };
       }),
@@ -1405,6 +1407,7 @@ export async function sendChatMessage(
             message.reviewContinuation ||
             message.changesetAction ||
             message.companyTemplates?.length ||
+            message.referenceRevisionIds?.length ||
             message.assistantPreference))
       )
         throw new ArtifactReviewError('input_id_conflict');
@@ -1459,6 +1462,11 @@ export async function sendChatMessage(
         session,
         message.sessionReferenceIds ?? [],
       );
+      const referenceSelections = await captureReferenceSelections(
+        { ...context, workspaceId },
+        message.referenceRevisionIds ?? [],
+        transaction,
+      );
       const companyAssets = await captureCompanyRunAssets(
         transaction,
         { ...context, workspaceId },
@@ -1476,6 +1484,7 @@ export async function sendChatMessage(
           ${transaction.json({
             text: message.text,
             companyAssets,
+            ...(referenceSelections.length ? { referenceSelections } : {}),
             citations: [],
             ...(references.length
               ? {
@@ -1707,6 +1716,9 @@ export async function sendChatMessage(
       assistantMessageId: result.assistantMessage.id,
       promptSnapshot: {
         systemPrompt: '',
+        referenceSelections: ChatMessageContentSchema.parse(
+          result.userMessage.content,
+        ).referenceSelections,
         companyAssets: ChatMessageContentSchema.parse(
           result.userMessage.content,
         ).companyAssets,

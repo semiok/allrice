@@ -8,6 +8,8 @@ import type {
   UserPreferences,
   EmployeeAccentColor,
   SessionReference,
+  ReferenceSelection,
+  ChatCitation,
   CompanyRunSnapshot,
   WorkMethod,
   BridgeReadinessCapability,
@@ -99,6 +101,8 @@ export interface Message {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: {
     companyAssets?: CompanyRunSnapshot;
+    referenceSelections?: ReferenceSelection[];
+    citations?: ChatCitation[];
     sessionReferences?: SessionReference[];
     budgetWarning?:
       'MODEL_OUTPUT_BUDGET_EXCEEDED' | 'MODEL_TOTAL_TOKEN_BUDGET_EXCEEDED';
@@ -119,6 +123,7 @@ export interface Message {
 }
 
 export interface QueuedMessage {
+  referenceSelections?: ReferenceSelection[];
   companyAssets?: CompanyRunSnapshot;
   sessionReferences?: SessionReference[];
   id: string;

@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
+  assertReferenceSelections,
+  ReferenceRuntimeError,
+} from '../reference-runtime.ts';
+import {
   EmployeeContentManifestSchema,
   EmployeeRuntimeContentSchema,
   EmployeeSceneReadSchema,
@@ -242,6 +246,7 @@ type RunRow = {
   content_scene_state: unknown;
   content_generation_id: string | null;
   user_message_id: string;
+  reference_selections: unknown;
   session_references:
     { sessionId: string; messages: { id: string }[] }[] | null;
 };
@@ -256,7 +261,7 @@ async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
   >`select er.execution_snapshot->'content' as content,
-      er.content_generation_id,er.content_scene_state,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references
+      er.content_generation_id,er.content_scene_state,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
       and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId} and er.owner_id=${scope.ownerId}
@@ -307,9 +312,15 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
     owners.add(context.owner_id);
     sessions.add(context.session_id);
     const rows = await sql<
-      Pick<RunRow, 'content' | 'content_scene_state' | 'session_references'>[]
+      Pick<
+        RunRow,
+        | 'content'
+        | 'content_scene_state'
+        | 'session_references'
+        | 'reference_selections'
+      >[]
     >`
-      select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references
+      select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED' limit 129`;
     if (rows.length > 128) return unavailable();
@@ -404,11 +415,12 @@ async function generationIsReadable(
     {
       content: unknown;
       content_scene_state: unknown;
+      reference_selections: unknown;
       session_references:
         { sessionId: string; messages: { id: string }[] }[] | null;
     }[]
   >`
-    select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references
+    select distinct execution_snapshot->'content' as content,content_scene_state,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED' limit 129`;
@@ -417,6 +429,12 @@ async function generationIsReadable(
   if (rows.length > 128) return false;
   for (const row of rows) {
     try {
+      await assertReferenceSelections(
+        reader,
+        row.reference_selections,
+        sql,
+        locked,
+      );
       if (row.content) {
         const state = parseSceneState(row.content_scene_state);
         const scenes = employeeRuntimeScenes(
@@ -452,7 +470,8 @@ async function generationIsReadable(
     } catch (error) {
       if (
         error instanceof EmployeeRuntimeContentError ||
-        error instanceof ZodError
+        error instanceof ZodError ||
+        error instanceof ReferenceRuntimeError
       )
         return false;
       throw error;
@@ -519,7 +538,26 @@ export async function assertEmployeeContentReferenceMessages(
 export async function prepareEmployeeContentContext(scope: RunScope) {
   const result = await withContentLocks(scope, async (tx) => {
     const run = await ownedRun(scope, tx);
-    if (!run.content) return null; // unchanged historical snapshots
+    if (!run.content) {
+      if (
+        Array.isArray(run.reference_selections) &&
+        run.reference_selections.length
+      )
+        return unavailable();
+      return null; // unchanged historical snapshots
+    }
+    try {
+      await assertReferenceSelections(
+        identity(scope),
+        run.reference_selections,
+        tx,
+        true,
+      );
+    } catch (error) {
+      if (error instanceof ReferenceRuntimeError || error instanceof ZodError)
+        return unavailable();
+      throw error;
+    }
     const current = await readEmployeeRuntimeContent(
       identity(scope),
       run.content,
@@ -584,7 +622,7 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =
-      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and content_scene_state is not null limit 1`;
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (content_scene_state is not null or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,

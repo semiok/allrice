@@ -109,8 +109,14 @@ async function referenceAccess(
   ownership: ContentOwnership,
   sql: Sql,
   maintain = false,
+  lockRead = false,
 ) {
-  const access = await getContentAccess(context, ownership, sql, maintain);
+  const access = await getContentAccess(
+    context,
+    ownership,
+    sql,
+    maintain || lockRead,
+  );
   if (
     ownership.scope === 'platform' &&
     access.canRead &&
@@ -132,16 +138,23 @@ export async function referenceSourceAccess(
   sourceId: string,
   sql: Sql = getDatabase(),
   maintain = false,
+  lockRead = false,
 ) {
-  if (maintain) await readContentPrincipal(context, sql, true);
+  if (maintain || lockRead) await readContentPrincipal(context, sql, true);
   const [s] = await sql<
     SourceRow[]
   >`select id,organization_id,workspace_id,ownership,status
     from allrice_knowledge_sources where id=${UuidSchema.parse(sourceId)} and ownership is not null
-    ${maintain ? sql`for update` : sql``}`;
+    ${maintain ? sql`for update` : lockRead ? sql`for share` : sql``}`;
   if (!s) throw new DataAccessError('not_found');
   const ownership = ContentOwnershipSchema.parse(s.ownership);
-  const access = await referenceAccess(context, ownership, sql, maintain);
+  const access = await referenceAccess(
+    context,
+    ownership,
+    sql,
+    maintain,
+    lockRead,
+  );
   if (!access.canRead || (maintain && !access.canMaintain))
     throw new DataAccessError('not_found');
   return { source: s, ownership, access };

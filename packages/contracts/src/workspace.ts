@@ -4,6 +4,7 @@ import {
   CompanyTemplateSelectionSchema,
 } from './company-assets.ts';
 import { SessionReferenceSchema } from './session-reference.ts';
+import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { z } from 'zod';
 import { WorkMethodSchema } from './work-methods.ts';
 
@@ -54,6 +55,7 @@ export const ChatCitationSchema = z.union([
     .strict(),
   KnowledgeCitationSchema,
 ]);
+export type ChatCitation = z.infer<typeof ChatCitationSchema>;
 
 export const ReviewContinuationInputSchema = z.discriminatedUnion('kind', [
   z
@@ -80,6 +82,7 @@ export const ChatMessageContentSchema = z
   .object({
     text: z.string().max(100_000),
     companyAssets: CompanyRunSnapshotSchema.optional(),
+    referenceSelections: ReferenceSelectionsSchema.optional(),
     budgetWarning: z
       .enum([
         'MODEL_OUTPUT_BUDGET_EXCEEDED',
@@ -244,6 +247,10 @@ export const SendChatMessageInputSchema = z
     attachmentIds: z.array(UuidSchema).max(20).default([]),
     companyTemplates: z.array(CompanyTemplateSelectionSchema).max(3).optional(),
     sessionReferenceIds: z.array(UuidSchema).max(3).optional(),
+    referenceRevisionIds: z
+      .array(UuidSchema.transform((id) => id.toLowerCase()))
+      .max(3)
+      .optional(),
     deliveryMode: z.enum(['auto', 'steer', 'follow_up']).default('auto'),
     expectedTurnId: z.string().trim().min(1).max(255).optional(),
     expectedGeneration: z.number().int().nonnegative().optional(),
@@ -254,6 +261,20 @@ export const SendChatMessageInputSchema = z
   })
   .strict()
   .superRefine((value, context) => {
+    if (
+      value.referenceRevisionIds?.length &&
+      (value.deliveryMode !== 'follow_up' ||
+        value.userQuestionAnswer ||
+        value.reviewContinuation ||
+        value.changesetAction ||
+        new Set(value.referenceRevisionIds).size !==
+          value.referenceRevisionIds.length)
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'reference files require a distinct ordinary task and unique fixed revisions',
+      });
     if (
       value.companyTemplates?.length &&
       (value.deliveryMode !== 'follow_up' ||

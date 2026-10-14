@@ -96,12 +96,16 @@ export function QueuedMessagesDock({
                     `范本：${r.revision.content.title} v${r.revision.number}`,
                 ),
                 ...(row.sessionReferences ?? []).map((r) => `＠ ${r.label}`),
+                ...(row.referenceSelections ?? []).map(
+                  (r) => `${r.fileName} · v${r.revision}`,
+                ),
                 ...(row.attachments ?? []).map((a) => `📎 ${a.fileName}`),
               ].join('　');
               const steerUnavailable = row.companyAssets?.templates.length
                 ? '选用范本的消息会作为下一轮任务处理'
-                : row.sessionReferences?.length
-                  ? '引用会话的消息会作为下一轮任务处理'
+                : row.sessionReferences?.length ||
+                    row.referenceSelections?.length
+                  ? '引用会话或资料的消息会作为下一轮任务处理'
                   : row.attachments?.length
                     ? '含附件的消息会作为下一轮任务处理'
                     : !canSteer

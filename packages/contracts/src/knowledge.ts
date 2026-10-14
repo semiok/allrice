@@ -4,6 +4,7 @@ import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { CapabilityDataScopeSchema } from './capabilities.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillCapabilitySchema } from './skills.ts';
+import { ReferenceSelectionSchema } from './reference-library.ts';
 
 export const KnowledgeLocatorSchema = z
   .object({
@@ -26,6 +27,7 @@ export const KnowledgeCitationSchema = z
     locator: KnowledgeLocatorSchema,
     updatedAt: TimestampSchema,
     score: z.number().min(-1).max(1),
+    reference: ReferenceSelectionSchema.optional(),
   })
   .strict();
 export type KnowledgeCitation = z.infer<typeof KnowledgeCitationSchema>;
