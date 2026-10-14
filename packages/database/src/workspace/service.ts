@@ -1139,6 +1139,11 @@ async function loadWorkspaceMemoryRecallCandidates(input: {
     where c.organization_id = ${input.context.organizationId}
       and c.workspace_id = ${input.workspaceId}
       and m.archived_at is null
+      and not exists(select 1 from allrice_employee_runs er
+        where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
+          and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
+            or (m.source_type='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+              where cp.id=m.source_id and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))))
       and (
         ${input.durableOnly}::boolean = false
         or (
@@ -2060,6 +2065,15 @@ export async function createTraceableMemory(
   const memory = CreateWorkspaceMemoryInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, memory.workspaceId);
   const sql = getDatabase();
+  // A candidate discussion is not a source for long-term memory. Also checked
+  // at recall time, covering a memory committed before authoring was entered.
+  const [candidateSource] =
+    await sql`select er.run_id from allrice_employee_runs er
+    where er.organization_id=${context.organizationId} and er.workspace_id=${workspaceId} and er.method_authoring
+      and ((${memory.sourceType}='message' and ${memory.sourceId}::uuid in (er.user_message_id,er.assistant_message_id))
+        or (${memory.sourceType}='checkpoint' and exists(select 1 from allrice_context_checkpoints cp
+          where cp.id=${memory.sourceId}::uuid and cp.covered_through_message_id in (er.user_message_id,er.assistant_message_id)))) limit 1`;
+  if (candidateSource) throw new DataAccessError('authorization_denied');
   if (memory.sourceType === 'user' && memory.sourceId !== null) {
     throw new DataAccessError('authorization_denied');
   }

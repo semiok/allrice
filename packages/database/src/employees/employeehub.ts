@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AssignEmployeeVersionInputSchema,
   allRiceToolManifest,
+  employeeCustomizationTools,
   CreateEmployeeInputSchema,
   DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
@@ -1520,16 +1521,16 @@ export async function prepareEmployeeRunBinding(input: {
         grantedCapabilities,
         bindings: {
           ...capabilityBindings(manifest.data),
-          // Personal configuration is an intrinsic custom-instance action.
-          // It still requires existing storage:write authority and is frozen
-          // only for new Runs; shared publications/assignments stay unchanged.
-          ...(instance?.kind === 'custom' &&
-          grantedCapabilities.includes('storage:write')
+          // Exact intrinsic bindings are computed from existing grants, never
+          // widened by the guidance Skill or shared employee publication.
+          ...(instance?.kind === 'custom'
             ? {
                 toolNames: [
                   ...new Set([
                     ...capabilityBindings(manifest.data).toolNames,
-                    'workspace.employee.profile.update',
+                    ...employeeCustomizationTools
+                      .filter((t) => grantedCapabilities.includes(t.capability))
+                      .map((t) => t.name),
                   ]),
                 ],
               }

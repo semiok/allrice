@@ -63,7 +63,7 @@ describe('platform content catalog', () => {
   it('loads every current production Skill from its canonical source file', async () => {
     const catalog = await loadPlatformContentCatalog();
 
-    expect(catalog.skills).toHaveLength(16);
+    expect(catalog.skills).toHaveLength(17);
     expect(catalog.skills.map((skill) => skill.name)).toEqual([
       'business-reconciliation',
       'web-research',
@@ -81,6 +81,7 @@ describe('platform content catalog', () => {
       'project-development',
       'scientific-analysis',
       'operations-review',
+      'employee-customization',
     ]);
     expect(catalog.skills.every((skill) => skill.content.endsWith('\n'))).toBe(
       true,
@@ -99,7 +100,7 @@ describe('platform content catalog', () => {
       'structured-deliverable',
     ]);
     expect(legacy.every((skill) => !skill.enabled)).toBe(true);
-    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(14);
+    expect(catalog.skills.filter((skill) => skill.enabled)).toHaveLength(15);
     expect(office.requiredToolRefs).toEqual(
       expect.arrayContaining(legacy.flatMap((skill) => skill.requiredToolRefs)),
     );

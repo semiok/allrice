@@ -43,6 +43,52 @@ export const EmployeeContentReferenceSchema = z
 export type EmployeeContentReference = z.infer<
   typeof EmployeeContentReferenceSchema
 >;
+/** These tools can address only the current user's custom instance. Scope,
+ * source identities and activation are deliberately not model inputs. */
+export const EmployeeMethodInspectSchema = z
+  .object({
+    view: z.enum(['effective', 'candidate']),
+  })
+  .strict();
+export const EmployeeMethodSaveSchema = z
+  .object({
+    expectedRevision: z.number().int().nonnegative(),
+    section: z.enum(['common', 'scene']),
+    scene: z
+      .object({
+        id: UuidSchema.optional(),
+        name: z.string().trim().min(1).max(100),
+        appliesWhen: z.string().trim().min(1).max(1000),
+      })
+      .strict()
+      .optional(),
+    requirements: z.string().trim().min(1).max(8000).optional(),
+    procedure: z.string().trim().min(1).max(8000).optional(),
+    references: z.array(EmployeeContentReferenceSchema).max(16).optional(),
+    changeSummary: z.string().trim().min(1).max(1000),
+  })
+  .strict()
+  .superRefine((input, ctx) => {
+    if ((input.section === 'scene') !== !!input.scene)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Only scene edits require scene metadata.',
+      });
+    if (!input.requirements && !input.procedure && !input.references?.length)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Provide a requirement, procedure or pinned reference.',
+      });
+    if (
+      new TextEncoder().encode(
+        (input.requirements ?? '') + (input.procedure ?? ''),
+      ).length > 32000
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Text exceeds the content budget.',
+      });
+  });
 export const EmployeeDraftReferenceSchema = z.union([
   EmployeeContentReferenceSchema,
   z

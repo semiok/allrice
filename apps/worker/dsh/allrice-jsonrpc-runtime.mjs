@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
 import {
@@ -72,6 +73,7 @@ const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
   ...employeeProfileNativeTools,
+  ...employeeMethodNativeTools,
   ...technicalNativeTools,
   ...browserWorkspaceNativeTools,
   ...mcpNativeTools,

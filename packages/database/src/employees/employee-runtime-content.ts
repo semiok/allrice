@@ -283,7 +283,7 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
   const run = await ownedRun(scope, sql);
   const [root] = run.content_generation_id
     ? await sql`select generation_id from allrice_employee_content_contexts where generation_id=${run.content_generation_id}`
-    : await sql`select generation_id from allrice_employee_content_contexts where session_id=${scope.sessionId} and invalidated_at is null`;
+    : await sql`select generation_id from allrice_employee_content_contexts where session_id=${scope.sessionId} and invalidated_at is null and retired_at is null`;
   const pending = new Set<string>(root ? [root.generation_id] : []);
   const owners = new Set([scope.ownerId]),
     instances = new Set<string>(),
@@ -594,7 +594,7 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
         >`select * from allrice_employee_content_contexts where generation_id=${run.content_generation_id} for update`
       : await tx<
           ContentContextRow[]
-        >`select * from allrice_employee_content_contexts where session_id=${scope.sessionId} and invalidated_at is null for update`;
+        >`select * from allrice_employee_content_contexts where session_id=${scope.sessionId} and invalidated_at is null and retired_at is null for update`;
     if (run.content_generation_id && (!context || context.invalidated_at))
       return { rejected: true as const };
     let discardHistory = false;

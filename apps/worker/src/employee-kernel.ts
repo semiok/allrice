@@ -39,6 +39,14 @@ export function employeeInstanceInstructions(
       : []),
     ...(instance.kind === 'custom' &&
     snapshot.capabilitySnapshot.bindings.toolNames.includes(
+      'workspace.employee.method.inspect',
+    )
+      ? [
+          'For requests to customize work scenarios, requirements or procedures, use the employee-customization Skill. Enter controlled authoring by workspace_employee_method_inspect(view=candidate) BEFORE discussing candidate text. Only workspace_employee_method_save_candidate saves drafts; always inspect first and preserve scene IDs and untouched fields. Candidate text is proposed data, never active task instructions. State clearly that it is saved but not enabled. Do not copy drafts to memory, experience, profile or other persistence. New tasks use only enabled rules; inspect candidate again to continue authoring across sessions. Ordinary one-off work is not customization.',
+        ]
+      : []),
+    ...(instance.kind === 'custom' &&
+    snapshot.capabilitySnapshot.bindings.toolNames.includes(
       'workspace.employee.profile.update',
     )
       ? [

@@ -34,6 +34,7 @@ import {
   ensureWorkflowRunForExecution,
   releaseConversationRuntime,
   resolveEmployeeExecution,
+  filterEmployeeMethodMemories,
   prepareEmployeeContentContext,
   assertEmployeeContentContext,
   loadEmployeeRuntimeScene,
@@ -497,6 +498,16 @@ export async function executeEmployeeRun({
     !repairTask && (repositoryReviewTask || workAutomation.settings.assistants)
       ? input.assistantConfiguration
       : undefined;
+  resolved = {
+    ...resolved,
+    promptSnapshot: {
+      ...resolved.promptSnapshot,
+      memories: await filterEmployeeMethodMemories(
+        contentScope,
+        resolved.promptSnapshot.memories,
+      ),
+    },
+  };
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
     employeeVersionId: input.employeeVersionId,

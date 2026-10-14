@@ -22,6 +22,17 @@ export interface AllRiceToolManifestEntry {
   dshWireName?: string;
 }
 
+/** Frozen intrinsic tools for a personal custom employee. A Skill or published
+ * template never grants these to another instance or delegated child. */
+export const employeeCustomizationTools = [
+  { name: 'workspace.employee.profile.update', capability: 'storage:write' },
+  { name: 'workspace.employee.method.inspect', capability: 'storage:read' },
+  {
+    name: 'workspace.employee.method.save_candidate',
+    capability: 'storage:write',
+  },
+] as const;
+
 /**
  * Metadata-only single source of truth for the governed AllRice tool surface.
  *
@@ -37,6 +48,20 @@ export const allRiceToolManifest = [
     risk: 'managed_write',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_employee_profile_update',
+  },
+  {
+    canonicalName: 'workspace.employee.method.inspect',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_employee_method_inspect',
+  },
+  {
+    canonicalName: 'workspace.employee.method.save_candidate',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_employee_method_save_candidate',
   },
   ...(['delegate', 'message', 'report', 'stop'] as const).map((action) => ({
     canonicalName: `assistant.${action}` as const,

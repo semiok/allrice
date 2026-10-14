@@ -8,6 +8,7 @@ import {
   RuntimeTaskRefSchema,
   runtimeContractEqual,
   withPlatformImageTools,
+  employeeCustomizationTools,
 } from '@allrice/contracts';
 import { z } from 'zod';
 import type { AssistantAuthorityInput } from './assistant-runtime.ts';
@@ -302,7 +303,7 @@ export async function assertAssistantAuthority(
   // handler still checks the current instance, user request and write lease.
   const instance =
     snapshot.data.schemaVersion === 2 ? snapshot.data.instance : undefined;
-  const rootProfileTool =
+  const customRoot =
     task.runId === task.rootRunId &&
     task.parentRunId === null &&
     ['configure', 'tool'].includes(input.phase) &&
@@ -310,20 +311,24 @@ export async function assertAssistantAuthority(
     instance.ownerId === root.owner_id &&
     instance.organizationId === task.scope.organizationId &&
     instance.workspaceId === task.scope.workspaceId &&
-    instance.assignmentId === root.employee_assignment_id &&
-    snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
-      'storage:write',
-    );
+    instance.assignmentId === root.employee_assignment_id;
   requireAuthority(
     frozenTools.includes('assistant.delegate') &&
       declaredTools.includes('assistant.delegate') &&
-      tools.every(
-        (tool) =>
+      tools.every((tool) => {
+        const intrinsic = employeeCustomizationTools.find(
+          (t) => t.name === tool,
+        );
+        return (
           frozenTools.includes(tool) &&
-          (tool === 'workspace.employee.profile.update'
-            ? rootProfileTool
-            : declaredTools.includes(tool)),
-      ),
+          (intrinsic
+            ? customRoot &&
+              snapshot.data.capabilitySnapshot.grantedCapabilities.includes(
+                intrinsic.capability,
+              )
+            : declaredTools.includes(tool))
+        );
+      }),
   );
 
   const frozenPolicy = PolicySnapshotSchema.pick({

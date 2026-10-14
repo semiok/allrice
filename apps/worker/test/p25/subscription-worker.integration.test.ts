@@ -18,6 +18,7 @@ import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import {
   getOrganizationModelQuota,
   assertQuotaAvailable,
+  createTraceableMemory,
 } from '@allrice/database';
 import type * as Database from '@allrice/database';
 import {
@@ -27,14 +28,34 @@ import {
 import { LocalStorageAdapter } from '@allrice/storage';
 import { assistantSubscriptionSnapshotDigest } from '../../src/assistant-pricing-preflight.ts';
 
-const status = vi.hoisted(() => ({ quota: undefined as unknown }));
-vi.mock('@allrice/database', async (original) => ({
-  ...(await original<typeof Database>()),
-  getCodexProviderStatus: vi.fn(async () => ({
-    status: 'connected',
-    quota: status.quota,
-  })),
+const status = vi.hoisted(() => ({
+  quota: undefined as unknown,
+  frozenMemories: undefined as { id: string; content: string }[] | undefined,
 }));
+vi.mock('@allrice/database', async (original) => {
+  const database = await original<typeof Database>();
+  return {
+    ...database,
+    resolveEmployeeExecution: async (
+      ...args: Parameters<typeof Database.resolveEmployeeExecution>
+    ) => {
+      const resolved = await database.resolveEmployeeExecution(...args);
+      return status.frozenMemories
+        ? {
+            ...resolved,
+            promptSnapshot: {
+              ...resolved.promptSnapshot,
+              memories: status.frozenMemories,
+            },
+          }
+        : resolved;
+    },
+    getCodexProviderStatus: vi.fn(async () => ({
+      status: 'connected',
+      quota: status.quota,
+    })),
+  };
+});
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -45,6 +66,7 @@ integration(
   () => {
     beforeEach(() => {
       status.quota = undefined;
+      status.frozenMemories = undefined;
       vi.stubEnv('ALLRICE_GEMINI_API_ENABLED', '0');
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '0');
       vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
@@ -70,6 +92,7 @@ integration(
       'complete',
       'personal_profile_writable',
       'personal_profile_with_assistants',
+      'personal_method_with_assistants',
       'personal_profile_read_only',
       'image_with_assistants',
       'image_generation_with_assistants',
@@ -91,6 +114,7 @@ integration(
           'complete',
           'personal_profile_writable',
           'personal_profile_with_assistants',
+          'personal_method_with_assistants',
           'personal_profile_read_only',
           'quota_exhausted',
           'image_with_assistants',
@@ -109,14 +133,16 @@ integration(
           imageGeneration: mode === 'image_generation_with_assistants',
           imageGenerationAssistants:
             mode === 'image_generation_with_assistants',
-          personalProfile:
-            mode === 'personal_profile_with_assistants'
-              ? 'writable_with_assistants'
-              : mode === 'personal_profile_writable'
-                ? 'writable'
-                : mode === 'personal_profile_read_only'
-                  ? 'read_only'
-                  : undefined,
+          personalProfile: [
+            'personal_profile_with_assistants',
+            'personal_method_with_assistants',
+          ].includes(mode)
+            ? 'writable_with_assistants'
+            : mode === 'personal_profile_writable'
+              ? 'writable'
+              : mode === 'personal_profile_read_only'
+                ? 'read_only'
+                : undefined,
         });
         let cleanup: (() => Promise<void>) | undefined;
         try {
@@ -161,15 +187,60 @@ integration(
             images = [image];
           }
           const task = await fixture.prepareOrdinaryTask(
-            mode.startsWith('personal_profile')
-              ? '请把你的名字改为小禾。以后回答保持简洁。'
-              : 'Synthetic arithmetic.',
+            mode === 'personal_method_with_assistants'
+              ? '请保存我的工作场景候选：每周核对数据。'
+              : mode.startsWith('personal_profile')
+                ? '请把你的名字改为小禾。以后回答保持简洁。'
+                : 'Synthetic arithmetic.',
             images,
           );
+          if (mode === 'complete') {
+            const [source] =
+              await fixture.db`select user_message_id from allrice_employee_runs where run_id=${task.runId}`;
+            const draftMemory = await createTraceableMemory(fixture.context, {
+              workspaceId: fixture.workspaceId,
+              content: 'QUEUED_DRAFT_MEMORY',
+              visibility: 'private',
+              sourceType: 'message',
+              sourceId: source!.user_message_id,
+              sourceLabel: 'Synthetic prior discussion',
+              lifecycleState: 'durable',
+              memoryClass: 'user_preference',
+              confidence: 1,
+              expiresAt: null,
+            });
+            const ordinaryMemory = await createTraceableMemory(
+              fixture.context,
+              {
+                workspaceId: fixture.workspaceId,
+                content: 'ORDINARY_MEMORY_RETAINED',
+                visibility: 'private',
+                sourceType: 'user',
+                sourceId: null,
+                sourceLabel: 'Synthetic ordinary preference',
+                lifecycleState: 'durable',
+                memoryClass: 'user_preference',
+                confidence: 1,
+                expiresAt: null,
+              },
+            );
+            // The queue ordering is covered in the DB integration; this exercises
+            // the actual Worker sink with a frozen, now-ineligible memory.
+            // Supply the already-frozen array at the resolver test boundary;
+            // never rewrite production-protected immutable snapshot columns.
+            status.frozenMemories = [
+              { id: draftMemory.id, content: draftMemory.content },
+              { id: ordinaryMemory.id, content: ordinaryMemory.content },
+            ];
+            await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${task.runId}`;
+          }
           if (
             images ||
             mode === 'image_generation_with_assistants' ||
-            mode === 'personal_profile_with_assistants'
+            [
+              'personal_profile_with_assistants',
+              'personal_method_with_assistants',
+            ].includes(mode)
           )
             vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
           if (mode === 'image_generation_with_assistants')
@@ -251,6 +322,14 @@ integration(
             ) {
               if (mode === 'startup_undispatched')
                 return originalExecute.call(this, input);
+              if (mode === 'complete') {
+                expect(input.kernel.authorizedMemoryContext).not.toContain(
+                  'QUEUED_DRAFT_MEMORY',
+                );
+                expect(input.kernel.authorizedMemoryContext).toContain(
+                  'ORDINARY_MEMORY_RETAINED',
+                );
+              }
               const profileTool = 'workspace.employee.profile.update';
               if (
                 mode === 'personal_profile_writable' ||
@@ -327,10 +406,71 @@ integration(
                     }),
                   ).rejects.toThrow('assistant_tool_unknown_no_replay');
                 }
-              } else {
+              } else if (mode !== 'personal_method_with_assistants') {
                 expect(input.tools?.map((tool) => tool.name)).not.toContain(
                   profileTool,
                 );
+              }
+              if (mode === 'personal_method_with_assistants') {
+                const bridge = await input.assistants!.bind(
+                  `dsh-${task.sessionId}`,
+                  input.generation,
+                  input.onToolCall,
+                );
+                const inspectTool = 'workspace.employee.method.inspect',
+                  saveTool = 'workspace.employee.method.save_candidate';
+                expect(input.tools?.map((t) => t.name)).toEqual(
+                  expect.arrayContaining([inspectTool, saveTool]),
+                );
+                expect(input.authorizedToolNames).toEqual(
+                  expect.arrayContaining([inspectTool, saveTool]),
+                );
+                const call = (name: string, callId: string, args: unknown) =>
+                  bridge.handle('tool', {
+                    nativeSessionId: `dsh-${task.sessionId}`,
+                    name,
+                    callId,
+                    arguments: args,
+                  });
+                expect(
+                  JSON.parse(
+                    String(
+                      (
+                        await call(inspectTool, 'inspect-candidate', {
+                          view: 'candidate',
+                        })
+                      ).modelContent,
+                    ),
+                  ),
+                ).toMatchObject({ revision: 0 });
+                const saved = await call(saveTool, 'save-method', {
+                  expectedRevision: 0,
+                  section: 'scene',
+                  scene: { name: '每周核对', appliesWhen: '每周' },
+                  procedure: '先核对原始数据',
+                  changeSummary: '新增周核对',
+                });
+                expect(JSON.parse(String(saved.modelContent))).toMatchObject({
+                  revision: 1,
+                  enabled: false,
+                  active: null,
+                });
+                const [row] =
+                  await fixture.db`select s.revision,s.active_revision_id from allrice_employee_content_sets s
+                  join allrice_chat_sessions c on c.employee_instance_id=s.instance_id where c.id=${task.sessionId}`;
+                expect(row).toMatchObject({
+                  revision: 1,
+                  active_revision_id: null,
+                });
+                const usage =
+                  await fixture.db`select amount,settled_amount from allrice_assistant_usage where run_id=${task.runId} and metric='tool_calls'`;
+                expect(usage).toHaveLength(2);
+                expect(
+                  usage.every(
+                    (u) =>
+                      Number(u.amount) === 1 && Number(u.settled_amount) === 1,
+                  ),
+                ).toBe(true);
               }
               if (mode === 'image_generation_with_assistants') {
                 expect(input.tools?.map((t) => t.name)).toEqual(
@@ -414,6 +554,7 @@ integration(
                   'image_with_assistants',
                   'image_generation_with_assistants',
                   'personal_profile_with_assistants',
+                  'personal_method_with_assistants',
                 ].includes(mode)
                   ? {
                       assistantStatus: 'completed' as const,

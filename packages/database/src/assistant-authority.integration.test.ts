@@ -60,6 +60,7 @@ integration(
     const profileFixture = (
       options: {
         declared?: boolean;
+        tool?: string;
         missing?:
           | 'instance'
           | 'binding'
@@ -74,9 +75,9 @@ integration(
         configure: false,
         toolNames: [
           ...selectedTools,
-          ...(options.declared ? [profileTool] : []),
+          ...(options.declared ? [options.tool ?? profileTool] : []),
         ],
-        allowedTools: [...selectedTools, profileTool],
+        allowedTools: [...selectedTools, options.tool ?? profileTool],
         snapshot: (value) => ({
           ...value,
           ...(options.missing === 'instance'
@@ -120,7 +121,9 @@ integration(
               ...value.capabilitySnapshot.bindings,
               toolNames: [
                 ...selectedTools,
-                ...(options.missing === 'binding' ? [] : [profileTool]),
+                ...(options.missing === 'binding'
+                  ? []
+                  : [options.tool ?? profileTool]),
               ],
             },
           },
@@ -186,6 +189,47 @@ integration(
       const f = await profileFixture({ declared: true, general: true });
       await expect(f.configure()).rejects.toThrow('assistant_authority_denied');
     });
+
+    it.each([
+      'workspace.employee.method.inspect',
+      'workspace.employee.method.save_candidate',
+    ])(
+      'keeps intrinsic method tool %s on the exact root and denies delegation',
+      async (tool) => {
+        const f = await profileFixture({ tool });
+        await expect(f.configure()).resolves.toBeDefined();
+        await expect(f.authorize('tool', [tool])).resolves.toBeUndefined();
+        await expect(
+          f.runtime.provision({
+            ...f.base,
+            parentRunId: f.rootRunId,
+            delegationId: randomUUID(),
+            label: 'No private method access',
+            text: 'Synthetic',
+            tools: ['assistant.report', tool],
+          }),
+        ).rejects.toThrow('assistant_authority_denied');
+        const denied = await profileFixture({
+          tool,
+          general: true,
+          declared: true,
+        });
+        await expect(denied.configure()).rejects.toThrow(
+          'assistant_authority_denied',
+        );
+        const missing = await profileFixture({ tool, missing: 'binding' });
+        await expect(missing.configure()).rejects.toThrow(
+          'assistant_authority_denied',
+        );
+        const readOnly = await profileFixture({ tool, missing: 'write' });
+        if (tool.endsWith('.inspect'))
+          await expect(readOnly.configure()).resolves.toBeDefined();
+        else
+          await expect(readOnly.configure()).rejects.toThrow(
+            'assistant_authority_denied',
+          );
+      },
+    );
 
     const imageFixture = (
       options: {

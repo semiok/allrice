@@ -9,7 +9,6 @@ import {
   EmployeeInstanceRevisionSchema,
   EmployeeVersionSourceSchema,
   EmployeeProfileChatInputSchema,
-  EmployeeExecutionSnapshotSchema,
   ExecutionContextSchema,
   EmployeeInstanceProfileSchema,
   UuidSchema,
@@ -26,10 +25,7 @@ import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
-import {
-  assertPublishingRun,
-  assertWorkbenchSession,
-} from '../artifact-review.ts';
+import { assertEmployeeChatRun } from './employee-chat-authority.ts';
 import { explicitEmployeeProfileIntent } from './employee-profile-intent.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
@@ -495,54 +491,14 @@ export async function updateEmployeeProfileFromChat(input: {
       (current) => ({ ...current, ...patch }),
       async (before) => {
         if (before.kind !== 'custom') fail();
-        await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
-        // Cancellation takes root/job locks before employee authority. NOWAIT
-        // uses the existing bounded transaction retry instead of deadlocking.
-        const roots =
-          await tx`select root_run_id,cancel_requested_at,cancel_request_id,deadline_at
-          from allrice_runtime_roots where root_run_id=${ctx.runId} for share nowait`;
-        if (
-          roots.some(
-            (r) =>
-              r.cancel_requested_at ||
-              r.cancel_request_id ||
-              r.deadline_at <= new Date(),
-          )
-        )
-          fail();
-        const [live] = await tx<
-          { execution_snapshot: unknown; text: string }[]
-        >`select er.execution_snapshot,m.content->>'text' text
-          from allrice_employee_runs er
-          join allrice_runs r on r.id=er.run_id and r.organization_id=er.organization_id and r.workspace_id=er.workspace_id and r.owner_id=er.owner_id
-          join allrice_jobs j on j.id=${ctx.jobId} and j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
-          join allrice_chat_sessions s on s.id=er.session_id and coalesce(s.employee_instance_id,s.employee_assignment_id)=${target.id}
-          join allrice_messages m on m.id=er.user_message_id and m.session_id=s.id and m.owner_id=er.owner_id and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id and m.role='user'
-          join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.id=${ctx.policySnapshot.id} and p.organization_id=r.organization_id and p.subject_id=r.owner_id
-          where er.run_id=${ctx.runId} and er.session_id=${input.sessionId} and er.user_message_id=${input.userMessageId}
-            and er.employee_assignment_id=${before.assignmentId} and er.organization_id=${ctx.organizationId} and er.workspace_id=${ctx.workspaceId!} and er.owner_id=${ctx.policySnapshot.subjectId}
-            and r.state='running' and p.expires_at>clock_timestamp()
-            and j.status='running' and j.worker_id=${ctx.worker.id} and j.attempt=${input.worker.attempt} and j.lease_token=${input.worker.leaseToken}
-            and j.cancel_requested_at is null and j.timeout_at>clock_timestamp() and j.lease_expires_at>clock_timestamp()
-            and not exists(select 1 from allrice_runtime_run_links l where l.run_id=r.id and l.root_run_id<>r.id)
-          for share of er,r,j,p,m nowait`;
-        if (!live) fail();
-        const frozen = EmployeeExecutionSnapshotSchema.parse(
-          live.execution_snapshot,
-        );
-        if (
-          frozen.schemaVersion !== 2 ||
-          frozen.instance?.id !== target.id ||
-          frozen.instance.kind !== 'custom'
-        )
-          fail();
-        await assertPublishingRun(
+        const text = await assertEmployeeChatRun(
           tx,
-          ctx,
-          input.sessionId,
+          input,
+          before,
           'workspace.employee.profile.update',
+          fail,
         );
-        if (!explicitEmployeeProfileIntent(live.text, args))
+        if (!explicitEmployeeProfileIntent(text, args))
           throw new EmployeeProfileChatError(
             'explicit_profile_request_required',
           );
