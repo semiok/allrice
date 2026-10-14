@@ -56,8 +56,10 @@ it('roundtrips nested scene edits and pinned source references with no activatio
       expect(Object.keys(schema.properties as object).sort()).toEqual([
         'changeSummary',
         'expectedRevision',
+        'operation',
         'procedure',
         'references',
+        'removeReferences',
         'requirements',
         'scene',
         'section',
@@ -72,3 +74,46 @@ it('roundtrips nested scene edits and pinned source references with no activatio
     },
   });
 }, 45000);
+
+it.each([
+  {
+    operation: 'remove_scene',
+    scene: { id: '00000000-0000-4000-8000-000000000001' },
+  },
+  { scene: { id: '00000000-0000-4000-8000-000000000001', name: '周度回款' } },
+  {
+    scene: { id: '00000000-0000-4000-8000-000000000001' },
+    removeReferences: [
+      {
+        sourceKind: 'knowledge',
+        contentId: '00000000-0000-4000-8000-000000000002',
+        revisionId: '00000000-0000-4000-8000-000000000003',
+        digest: `sha256:${'a'.repeat(64)}`,
+      },
+    ],
+  },
+])(
+  'roundtrips candidate lifecycle edits through native DSH: %j',
+  async (edit) => {
+    const args = {
+      expectedRevision: 3,
+      section: 'scene',
+      changeSummary: '候选调整，尚未启用',
+      ...edit,
+    };
+    await nativeBrokerRoundtrip({
+      canonicalName: 'workspace.employee.method.save_candidate',
+      wireName: 'workspace_employee_method_save_candidate',
+      args,
+      invalidArgs: { ...args, ownerId: 'foreign' },
+      onToolCall: async (call) => {
+        expect(EmployeeMethodSaveSchema.parse(call.arguments)).toEqual(args);
+        return {
+          modelContent: '{"revision":4,"enabled":false}',
+          summary: 'Candidate edited',
+        };
+      },
+    });
+  },
+  45000,
+);

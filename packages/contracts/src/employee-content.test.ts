@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { EmployeeContentMutationSchema } from './employee-content.ts';
+import {
+  EmployeeContentMutationSchema,
+  EmployeeMethodSaveSchema,
+} from './employee-content.ts';
 function input() {
   return {
     operation: 'save_draft',
@@ -25,6 +28,49 @@ function input() {
   };
 }
 describe('employee content input boundaries', () => {
+  it('accepts bounded existing-scene edits and rejects ambiguous removal payloads', () => {
+    const base = {
+      expectedRevision: 2,
+      section: 'scene',
+      scene: { id: randomUUID() },
+      changeSummary: '候选调整',
+    };
+    expect(
+      EmployeeMethodSaveSchema.safeParse({
+        ...base,
+        scene: { ...base.scene, name: '周度回款' },
+      }).success,
+    ).toBe(true);
+    expect(
+      EmployeeMethodSaveSchema.safeParse({ ...base, operation: 'remove_scene' })
+        .success,
+    ).toBe(true);
+    for (const value of [
+      base,
+      { ...base, scene: { name: '缺少适用条件' } },
+      { ...base, operation: 'remove_scene', section: 'common' },
+      {
+        ...base,
+        operation: 'remove_scene',
+        scene: { ...base.scene, name: '不要静默忽略' },
+      },
+      { ...base, operation: 'remove_scene', procedure: '不得同时编辑' },
+      { ...base, operation: 'remove_scene', references: [] },
+      { ...base, operation: 'remove_scene', activate: true },
+      {
+        ...base,
+        removeReferences: [
+          {
+            sourceKind: 'requirement',
+            contentId: randomUUID(),
+            revisionId: randomUUID(),
+            digest: `sha256:${'0'.repeat(64)}`,
+          },
+        ],
+      },
+    ])
+      expect(EmployeeMethodSaveSchema.safeParse(value).success).toBe(false);
+  });
   it('rejects authority/tool fields, foreign target kinds, ambiguous scene IDs and unresolved text edits', () => {
     const base = input(),
       scene = {
