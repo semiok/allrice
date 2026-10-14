@@ -34,7 +34,6 @@ import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 import { type ReferenceDraft } from './reference-chips';
 import { SessionReferencePicker } from './session-reference-picker';
 import { ChatComposer } from './chat-composer';
-import { CompanyTemplateBrowser } from './company-template-browser';
 import { type CompanyDraftReference } from './company-template-use';
 import {
   CompanyAssetSchema,
@@ -162,15 +161,12 @@ export function ChatFlowClient({
     null,
   );
   function openReference(reference: ReferenceDraft) {
+    setRecommendedTemplates(false);
     setReferenceToView(reference);
     setReferenceLibraryOpen(true);
   }
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
-  const [companyTemplatesScope, setCompanyTemplatesScope] = useState<
-    string | null
-  >(null);
-  const [recommendCompanyTemplates, setRecommendCompanyTemplates] =
-    useState(false);
+  const [recommendedTemplates, setRecommendedTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
   const [cancelRequestedRunId, setCancelRequestedRunId] = useState<
     string | null
@@ -1230,6 +1226,7 @@ export function ChatFlowClient({
       companyAssetUrl(base, {
         assetId: reference.selection.assetId,
         history: '1',
+        revisionId: reference.selection.revisionId,
       }),
       tenantHeaders,
     )) as {
@@ -1276,7 +1273,7 @@ export function ChatFlowClient({
         `请参考公司范本「${revision.content.title}」v${revision.number}，根据本次填写内容制作新的成果；缺少资料请先向我确认。`,
       ),
     );
-    setCompanyTemplatesScope(null);
+    setReferenceLibraryOpen(false);
   }
 
   const openBridgeSettings = () => {
@@ -1297,8 +1294,9 @@ export function ChatFlowClient({
         void nextSteps.reload();
       }}
       onOpenCompanyTemplates={() => {
-        setRecommendCompanyTemplates(true);
-        setCompanyTemplatesScope(settingsScope);
+        setRecommendedTemplates(true);
+        setReferenceToView(null);
+        setReferenceLibraryOpen(true);
       }}
       onPrepareNextStep={prepareNextStep}
       compact={layout.compact}
@@ -1339,6 +1337,7 @@ export function ChatFlowClient({
         )
       }
       onOpenReferenceLibrary={() => {
+        setRecommendedTemplates(false);
         setReferenceToView(null);
         setReferenceLibraryOpen(true);
       }}
@@ -1458,6 +1457,15 @@ export function ChatFlowClient({
           headers={tenantHeaders}
           onClose={() => setReferenceLibraryOpen(false)}
           initialReference={referenceToView}
+          onPrepareTemplate={prepareCompanyTemplate}
+          initialTemplates={
+            recommendedTemplates
+              ? {
+                  employeeId: activeEmployee?.employeeId,
+                  taskText: draft.slice(0, 512),
+                }
+              : undefined
+          }
           onSelect={(r) => {
             if (
               referenceSelections.length >= 3 &&
@@ -1476,17 +1484,6 @@ export function ChatFlowClient({
           }}
         />
       )}
-      <CompanyTemplateBrowser
-        key={settingsScope}
-        open={companyTemplatesScope === settingsScope}
-        onClose={() => setCompanyTemplatesScope(null)}
-        workspaceId={workspace.workspaceId}
-        headers={tenantHeaders}
-        onPrepare={prepareCompanyTemplate}
-        recommended={recommendCompanyTemplates}
-        employeeId={activeEmployee?.employeeId}
-        taskText={draft.slice(0, 512)}
-      />
       <ChatSidebar
         experienceEnabled={experienceEnabled}
         archive={archive}
@@ -1638,11 +1635,12 @@ export function ChatFlowClient({
                     type="button"
                     className={workbenchUi.entry}
                     onClick={() => {
-                      setRecommendCompanyTemplates(false);
-                      setCompanyTemplatesScope(settingsScope);
+                      setRecommendedTemplates(false);
+                      setReferenceToView(null);
+                      setReferenceLibraryOpen(true);
                     }}
                   >
-                    公司范本
+                    参考资料
                   </button>
                   {workbenchEnabled ? (
                     <button

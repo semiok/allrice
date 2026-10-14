@@ -281,19 +281,21 @@ export async function listCompanyAssetRevisions(
   id: string,
   administration = false,
   db: Db = getDatabase(),
+  selectedRevisionId?: string,
 ) {
   const current = await getCompanyAsset(context, org, id, administration, db);
   const revisions = await db<
     Row[]
   >`select r.*,r.id as revision_id from allrice_company_asset_revisions r where r.asset_id=${current.id} and r.organization_id=${org}
-    and (${administration || current.ownerId === context.actor.id} or exists(select 1 from allrice_company_asset_publications p where p.asset_id=r.asset_id and p.revision_id=r.id)) order by r.number desc limit 50`;
+    and (${administration || current.ownerId === context.actor.id} or exists(select 1 from allrice_company_asset_publications p where p.asset_id=r.asset_id and p.revision_id=r.id))
+    order by (r.id=${selectedRevisionId ? UuidSchema.parse(selectedRevisionId) : current.publishedRevisionId}::uuid) desc nulls last,r.number desc limit 50`;
   await requireCompanyAssetReader(context, org, db, administration);
   const publications = await db<
     { revision_id: string }[]
   >`select revision_id from allrice_company_asset_publications where asset_id=${current.id}`;
   return {
     asset: current,
-    revisions: revisions.map(revision),
+    revisions: revisions.map(revision).sort((a, b) => b.number - a.number),
     publishedRevisionIds: publications.map((p) => p.revision_id),
   };
 }

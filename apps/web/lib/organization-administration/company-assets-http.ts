@@ -96,7 +96,16 @@ export async function companyAssetsHttp(
       );
     if (p.get('history') === '1')
       return Response.json(
-        await listCompanyAssetRevisions(context, org, id, administration),
+        await listCompanyAssetRevisions(
+          context,
+          org,
+          id,
+          administration,
+          undefined,
+          p.has('revisionId')
+            ? UuidSchema.parse(p.get('revisionId'))
+            : undefined,
+        ),
         { headers },
       );
     if (p.get('preview') === '1' || p.get('download') === '1') {

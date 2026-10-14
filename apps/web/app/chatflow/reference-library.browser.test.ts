@@ -31,6 +31,8 @@ import {
 import { POST as action } from '../api/v1/references/[id]/route';
 import { GET as preview } from '../api/v1/references/revisions/[id]/preview/route';
 import { GET as download } from '../api/v1/references/revisions/[id]/download/route';
+import { GET as companyAssets } from '../api/v1/company-assets/route';
+import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
 vi.mock('../../lib/identity/session', () => ({
@@ -160,27 +162,29 @@ suite(
                 : {}),
             });
             const result =
-              parts[3] !== 'references'
-                ? new Response(null, { status: 404 })
-                : !parts[4]
-                  ? req.method === 'POST'
-                    ? await upload(request)
-                    : await list(request)
-                  : parts[4] === 'artifacts'
+              parts[3] === 'company-assets'
+                ? await companyAssets(request)
+                : parts[3] !== 'references'
+                  ? new Response(null, { status: 404 })
+                  : !parts[4]
                     ? req.method === 'POST'
-                      ? await saveArtifact(request)
-                      : await saveOptions(request)
-                    : parts[4] === 'revisions'
-                      ? parts[6] === 'preview'
-                        ? await preview(request, {
-                            params: Promise.resolve({ id: parts[5]! }),
-                          })
-                        : await download(request, {
-                            params: Promise.resolve({ id: parts[5]! }),
-                          })
-                      : await action(request, {
-                          params: Promise.resolve({ id: parts[4]! }),
-                        });
+                      ? await upload(request)
+                      : await list(request)
+                    : parts[4] === 'artifacts'
+                      ? req.method === 'POST'
+                        ? await saveArtifact(request)
+                        : await saveOptions(request)
+                      : parts[4] === 'revisions'
+                        ? parts[6] === 'preview'
+                          ? await preview(request, {
+                              params: Promise.resolve({ id: parts[5]! }),
+                            })
+                          : await download(request, {
+                              params: Promise.resolve({ id: parts[5]! }),
+                            })
+                        : await action(request, {
+                            params: Promise.resolve({ id: parts[4]! }),
+                          });
             res.writeHead(result.status, Object.fromEntries(result.headers));
             res.end(Buffer.from(await result.arrayBuffer()));
             return;
@@ -283,6 +287,120 @@ suite(
       return (await result.json()) as { sourceId: string; revisionId: string };
     }
     it.each([1440, 390])(
+      'opens a migrated fixed revision and fills existing template parameters at %ipx',
+      async (width) => {
+        const a = await tenantValidationFixture(f.db);
+        const token = (await createSession(a.context.actor.id)).token;
+        const ctx = {
+          ...(await authenticateSession(token))!,
+          workspaceId: a.context.workspaceId,
+        };
+        await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${ctx.organizationId},${ctx.actor.id},'Publisher','company')`;
+        const storage = assistantFixtureStorage(f.db),
+          assetId = randomUUID();
+        let asset = await mutateCompanyAsset(
+          ctx,
+          ctx.organizationId,
+          {
+            operation: 'save',
+            assetId,
+            expectedRevision: 0,
+            content: {
+              kind: 'template',
+              title: '月度汇总',
+              body: '使用本次期间数据',
+              category: '',
+              appliesToEmployeeIds: [],
+              taskKeywords: [],
+              sourceVersionId: a.artifact.artifactId,
+              slots: [
+                {
+                  key: 'period',
+                  label: '期间',
+                  required: true,
+                  multiline: false,
+                },
+              ],
+            },
+          },
+          storage,
+        );
+        const fixed = asset.latest;
+        asset = await mutateCompanyAsset(
+          ctx,
+          ctx.organizationId,
+          { operation: 'publish', assetId, expectedRevision: asset.revision },
+          storage,
+        );
+        await mutateCompanyAsset(
+          ctx,
+          ctx.organizationId,
+          {
+            operation: 'save',
+            assetId,
+            expectedRevision: asset.revision,
+            content: { ...fixed.content, title: '新草稿不代替共享版' },
+          },
+          storage,
+        );
+        const c = await browser.newContext({
+          viewport: { width, height: 900 },
+        });
+        await c.addCookies([
+          { name: 'fixture_session', value: token, url: origin },
+        ]);
+        const page = await c.newPage();
+        try {
+          await page.goto(origin + '/?workspaceId=' + ctx.workspaceId);
+          await page
+            .getByRole('button', { name: '填写参数与选用', exact: true })
+            .click();
+          await page
+            .getByRole('button', { name: '选用此修订', exact: true })
+            .click();
+          await page.getByLabel('期间', { exact: true }).fill('2026-10');
+          await page
+            .getByRole('button', { name: '加入消息草稿', exact: true })
+            .click();
+          await expect
+            .poll(() => page.getByLabel('已填写的范本引用').textContent())
+            .not.toBe('');
+          expect(
+            JSON.parse(
+              (await page.getByLabel('已填写的范本引用').textContent())!,
+            ),
+          ).toEqual({
+            assetId,
+            revisionId: fixed.id,
+            digest: fixed.digest,
+            parameters: { period: '2026-10' },
+          });
+          expect(await page.getByLabel('公司资料修订').inputValue()).toBe(
+            fixed.id,
+          );
+          await page
+            .getByRole('button', { name: '历史资料与草稿', exact: true })
+            .click();
+          await page
+            .getByRole('dialog', { name: '历史资料与草稿', exact: true })
+            .waitFor();
+          await page
+            .getByText('新草稿不代替共享版', { exact: true })
+            .first()
+            .waitFor();
+          expect(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+        } finally {
+          await c.close();
+          await f.db`update allrice_organizations set archived_at=clock_timestamp() where id=${ctx.organizationId}`;
+        }
+      },
+      45000,
+    );
+    it.each([1440, 390])(
       'saves an exact business artifact through the dialog and reads its retained file at %ipx',
       async (width) => {
         const a = await tenantValidationFixture(f.db);
@@ -353,6 +471,16 @@ suite(
             })
             .first()
             .waitFor();
+          const visiblePreview = await page
+            .getByRole('region', { name: '参考资料预览' })
+            .boundingBox();
+          expect(visiblePreview!.y).toBeGreaterThanOrEqual(0);
+          expect(visiblePreview!.y).toBeLessThan(400);
+          expect(
+            await page
+              .getByRole('region', { name: '参考资料预览' })
+              .evaluate((el) => el === document.activeElement),
+          ).toBe(true);
           expect(
             await page
               .getByRole('dialog', { name: '参考资料', exact: true })
@@ -492,7 +620,15 @@ suite(
       ).toBe(0);
       await writeFile(join(f.storageRoot, object!.object_key), bytes);
       const page = await pageFor();
-      await page.getByRole('button', { name: '重试处理' }).click();
+      const [retried] = await Promise.all([
+        page.waitForResponse(
+          (r) =>
+            r.url().endsWith('/references/' + saved.sourceId) &&
+            r.request().method() === 'POST',
+        ),
+        page.getByRole('button', { name: '重试处理' }).click(),
+      ]);
+      expect(retried.status()).toBe(200);
       await processNextReference(f.storageRoot);
       await page.getByRole('button', { name: '刷新', exact: true }).click();
       expect(

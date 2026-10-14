@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   ReferenceRevisionSchema,
   ReferenceLibraryOptionsSchema,
+  CompanyAssetSchema,
   type ReferenceRevision,
   type ReferenceUploadInput,
 } from '@allrice/contracts';
@@ -17,6 +18,12 @@ import {
   type ArtifactPreview,
 } from '../../lib/chatflow/workbench-model';
 import css from './reference-library.module.css';
+import {
+  CompanyTemplateBrowser,
+  CompanyAssetRevisionView,
+} from './company-template-browser';
+import type { CompanyDraftReference } from './company-template-use';
+import { companyAssetUrl } from './company-template-publisher';
 
 const responseSchema = z.object({
   references: z.array(ReferenceRevisionSchema),
@@ -43,6 +50,8 @@ export function ReferenceLibrary({
   platform = false,
   onSelect,
   initialReference,
+  onPrepareTemplate,
+  initialTemplates,
 }: {
   workspaceId: string;
   headers: Record<string, string>;
@@ -50,6 +59,8 @@ export function ReferenceLibrary({
   platform?: boolean;
   onSelect?: (reference: ReferenceRevision) => void;
   initialReference?: { sourceId: string; revisionId: string } | null;
+  onPrepareTemplate?: (reference: CompanyDraftReference) => Promise<void>;
+  initialTemplates?: { employeeId?: string; taskText: string };
 }) {
   const [directory, setDirectory] = useState<z.infer<
       typeof responseSchema
@@ -68,6 +79,15 @@ export function ReferenceLibrary({
     [query, setQuery] = useState('');
   const [updating, setUpdating] = useState<ReferenceRevision | null>(null),
     [file, setFile] = useState<File | null>(null);
+  const [legacyDirectory, setLegacyDirectory] = useState(!!initialTemplates);
+  const previewSection = useRef<HTMLElement>(null),
+    focusPreview = useRef(false);
+  useEffect(() => {
+    if (!selected || !focusPreview.current) return;
+    focusPreview.current = false;
+    previewSection.current?.focus({ preventScroll: true });
+    previewSection.current?.scrollIntoView({ block: 'start' });
+  }, [selected]);
   const pending = useRef<ReferenceUploadInput | null>(null),
     actions = useRef(
       new Map<
@@ -124,7 +144,8 @@ export function ReferenceLibrary({
   useEffect(() => {
     setPreview(null);
     setPreviewError('');
-    if (!selected || selected.status === 'archived') return;
+    if (!selected || selected.status === 'archived' || selected.companyTemplate)
+      return;
     const controller = new AbortController();
     void workbenchJson(previewBase + '/preview' + q, headers, {
       signal: controller.signal,
@@ -154,6 +175,7 @@ export function ReferenceLibrary({
         const revision = value.references.find(
           (r) => r.revisionId === initialRevisionId,
         );
+        focusPreview.current = true;
         setSelected(revision ?? null);
         if (!revision) setError('该资料版本已不可用。');
       })
@@ -163,7 +185,7 @@ export function ReferenceLibrary({
       });
     return () => controller.abort();
   }, [initialSourceId, initialRevisionId, q, headers]);
-  async function open(r: ReferenceRevision) {
+  async function open(r: ReferenceRevision, focus = true) {
     setPreview(null);
     setSelected(null);
     setVersions([]);
@@ -172,6 +194,7 @@ export function ReferenceLibrary({
         await workbenchJson(base + q + '&sourceId=' + r.sourceId, headers),
       );
       setVersions(value.references);
+      focusPreview.current = focus;
       setSelected(
         value.references.find((v) => v.revisionId === r.revisionId) ?? null,
       );
@@ -271,6 +294,24 @@ export function ReferenceLibrary({
     latest =
       selected &&
       directory?.references.find((r) => r.sourceId === selected.sourceId);
+  if (legacyDirectory)
+    return (
+      <CompanyTemplateBrowser
+        open
+        title={initialTemplates ? '参考资料' : '历史资料与草稿'}
+        recommended={!!initialTemplates}
+        employeeId={initialTemplates?.employeeId}
+        taskText={initialTemplates?.taskText}
+        workspaceId={workspaceId}
+        headers={headers}
+        onPrepare={onPrepareTemplate}
+        onClose={() => {
+          setLegacyDirectory(false);
+          setSelected(null);
+          void reload();
+        }}
+      />
+    );
   return (
     <DshDialog
       title="参考资料"
@@ -301,7 +342,89 @@ export function ReferenceLibrary({
         >
           刷新
         </Button>
+        {!platform && (
+          <Button onClick={() => setLegacyDirectory(true)}>
+            历史资料与草稿
+          </Button>
+        )}
       </div>
+      {selected && (
+        <section
+          ref={previewSection}
+          tabIndex={-1}
+          className={css.preview}
+          aria-label="参考资料预览"
+        >
+          {selected.companyTemplate ? (
+            <LegacyReferenceDetails
+              key={selected.revisionId}
+              reference={selected}
+              workspaceId={workspaceId}
+              headers={headers}
+              onPrepare={onPrepareTemplate}
+              onChange={() => void reload()}
+            />
+          ) : (
+            <>
+              <DocumentToolbar
+                title={selected.fileName}
+                downloadUrl={previewBase + '/download' + q}
+                actions={[{ id: 'refresh', label: '刷新预览' }]}
+                onAction={() => void open(selected, false)}
+              >
+                <select
+                  aria-label="参考资料版本"
+                  value={selected.revisionId}
+                  onChange={(e) =>
+                    setSelected(
+                      versions.find((v) => v.revisionId === e.target.value) ??
+                        null,
+                    )
+                  }
+                >
+                  {versions.map((v) => (
+                    <option value={v.revisionId} key={v.revisionId}>
+                      v{v.revision}
+                    </option>
+                  ))}
+                </select>
+              </DocumentToolbar>
+              {onSelect && (
+                <Button
+                  disabled={
+                    busy ||
+                    selected.status !== 'active' ||
+                    selected.processing !== 'ready'
+                  }
+                  onClick={() => onSelect(selected)}
+                >
+                  引用当前版本 v{selected.revision}
+                </Button>
+              )}
+              {selected.status === 'archived' ? (
+                <p>资料已停用，恢复后可查看。</p>
+              ) : previewError ? (
+                <p role="alert">{previewError}</p>
+              ) : preview ? (
+                <NativeDocumentPreview
+                  preview={preview}
+                  fileName={selected.fileName}
+                  pageUrl={previewBase + '/preview' + q}
+                  headers={headers}
+                />
+              ) : (
+                <p>正在加载预览…</p>
+              )}
+              {latest && (
+                <p className={css.hint}>
+                  当前查看固定版本 v{selected.revision}；最新为 v
+                  {latest.revision}。
+                </p>
+              )}
+            </>
+          )}
+        </section>
+      )}
       {options?.writable && (
         <fieldset disabled={busy} className={css.upload}>
           <legend>{updating ? '更新参考资料' : '上传参考资料'}</legend>
@@ -410,7 +533,20 @@ export function ReferenceLibrary({
                 </p>
               )}
               {r.failure && <p className={css.hint}>{r.failure}</p>}
-              {onSelect && (
+              {r.companyTemplate && (
+                <Button onClick={() => void open(r)}>填写参数与选用</Button>
+              )}
+              {r.companyTemplate &&
+                r.canRetryProcessing &&
+                r.processing === 'failed' && (
+                  <Button
+                    disabled={busy}
+                    onClick={() => void action(r, 'retry')}
+                  >
+                    重试处理
+                  </Button>
+                )}
+              {onSelect && !r.companyTemplate && (
                 <Button
                   disabled={
                     busy || r.status !== 'active' || r.processing !== 'ready'
@@ -470,63 +606,62 @@ export function ReferenceLibrary({
       {directory?.references.length === 0 && (
         <p className={css.hint}>还没有可查看的参考资料。</p>
       )}
-      {selected && (
-        <section className={css.preview} aria-label="参考资料预览">
-          <DocumentToolbar
-            title={selected.fileName}
-            downloadUrl={previewBase + '/download' + q}
-            actions={[{ id: 'refresh', label: '刷新预览' }]}
-            onAction={() => void open(selected)}
-          >
-            <select
-              aria-label="参考资料版本"
-              value={selected.revisionId}
-              onChange={(e) =>
-                setSelected(
-                  versions.find((v) => v.revisionId === e.target.value) ?? null,
-                )
-              }
-            >
-              {versions.map((v) => (
-                <option value={v.revisionId} key={v.revisionId}>
-                  v{v.revision}
-                </option>
-              ))}
-            </select>
-          </DocumentToolbar>
-          {onSelect && (
-            <Button
-              disabled={
-                busy ||
-                selected.status !== 'active' ||
-                selected.processing !== 'ready'
-              }
-              onClick={() => onSelect(selected)}
-            >
-              引用当前版本 v{selected.revision}
-            </Button>
-          )}
-          {selected.status === 'archived' ? (
-            <p>资料已停用，恢复后可查看。</p>
-          ) : previewError ? (
-            <p role="alert">{previewError}</p>
-          ) : preview ? (
-            <NativeDocumentPreview
-              preview={preview}
-              fileName={selected.fileName}
-              pageUrl={previewBase + '/preview' + q}
-              headers={headers}
-            />
-          ) : (
-            <p>正在加载预览…</p>
-          )}
-          {latest && (
-            <p className={css.hint}>
-              当前查看固定版本 v{selected.revision}；最新为 v{latest.revision}。
-            </p>
-          )}
-        </section>
-      )}
     </DshDialog>
+  );
+}
+
+/** Reuse the existing publication, fixed-version file and parameter workflow.
+ * Knowledge processing support does not gate a published Office template. */
+function LegacyReferenceDetails({
+  reference,
+  workspaceId,
+  headers,
+  onPrepare,
+  onChange,
+}: {
+  reference: ReferenceRevision;
+  workspaceId: string;
+  headers: Record<string, string>;
+  onPrepare?: (reference: CompanyDraftReference) => Promise<void>;
+  onChange: () => void;
+}) {
+  const [asset, setAsset] = useState<z.infer<typeof CompanyAssetSchema> | null>(
+    null,
+  );
+  const [error, setError] = useState('');
+  const base = companyAssetUrl('/api/v1/company-assets', { workspaceId });
+  const identity = reference.companyTemplate!;
+  useEffect(() => {
+    const controller = new AbortController();
+    void workbenchJson(
+      companyAssetUrl(base, {
+        assetId: identity.assetId,
+        history: '1',
+        revisionId: identity.revisionId,
+      }),
+      headers,
+      { signal: controller.signal },
+    )
+      .then(z.object({ asset: CompanyAssetSchema }).parse)
+      .then((value) => {
+        if (!controller.signal.aborted) setAsset(value.asset);
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setError(e instanceof Error ? e.message : '资料不可用');
+      });
+    return () => controller.abort();
+  }, [base, headers, identity.assetId]);
+  if (error) return <p role="alert">{error}</p>;
+  if (!asset) return <p>正在读取资料…</p>;
+  return (
+    <CompanyAssetRevisionView
+      initial={asset}
+      initialRevisionId={identity.revisionId}
+      base={base}
+      headers={headers}
+      onPrepare={onPrepare}
+      onChange={onChange}
+    />
   );
 }

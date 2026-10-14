@@ -100,7 +100,16 @@ export const ReferenceRevisionSchema = z
     processing: ReferenceProcessingStateSchema,
     failure: z.string().nullable(),
     canMaintain: z.boolean(),
+    canRetryProcessing: z.boolean().optional(),
     createdAt: TimestampSchema,
+    companyTemplate: z
+      .object({
+        assetId: UuidSchema,
+        revisionId: UuidSchema,
+        digest: ChecksumSchema,
+      })
+      .strict()
+      .optional(),
     origin: z
       .object({
         fileName: z.string(),

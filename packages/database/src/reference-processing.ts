@@ -6,6 +6,10 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { writeKnowledgeDocument } from './memory/knowledge-retrieval.ts';
+import {
+  legacyReferenceAuthority,
+  assertLegacyReferenceRevision,
+} from './reference-company-templates.ts';
 
 export async function claimReferenceProcessing() {
   return getDatabase().begin(async (tx) => {
@@ -17,7 +21,9 @@ export async function claimReferenceProcessing() {
       join allrice_knowledge_sources s on s.id=r.knowledge_source_id and s.ownership is not null and s.status='active'
       join allrice_storage_objects o on o.id=r.file_object_id and o.state='ready' and o.deleted_at is null
       join allrice_organizations org on org.id=s.organization_id and org.archived_at is null
-      where p.state='saved' or (p.state='processing' and p.lease_until<clock_timestamp() and p.attempts<3)
+      left join allrice_company_assets a on a.id=s.legacy_company_asset_id
+      where (s.legacy_company_asset_id is null or a.state='published')
+      and (p.state='saved' or (p.state='processing' and p.lease_until<clock_timestamp() and p.attempts<3))
       order by p.updated_at,p.revision_id limit 1 for update of p skip locked`;
     if (!row) return null;
     const token = randomUUID();
@@ -56,6 +62,16 @@ export async function finishReferenceProcessing(
     const [organization] =
       await tx`select id from allrice_organizations where id=${claim.object.organizationId} and archived_at is null for share`;
     if (!organization) throw new Error('资料已停用');
+    const [locator] =
+      await tx`select knowledge_source_id from allrice_knowledge_revisions where id=${claim.revisionId}`;
+    if (!locator) throw new Error('资料已停用');
+    const legacy = await legacyReferenceAuthority(
+      tx,
+      locator.knowledge_source_id,
+      true,
+    );
+    if (legacy)
+      await assertLegacyReferenceRevision(tx, claim.revisionId, legacy.id);
     // Match maintenance lock order: source -> revision -> processing -> index.
     const [s] =
       await tx`select s.* from allrice_knowledge_sources s join allrice_knowledge_revisions r on r.knowledge_source_id=s.id

@@ -20,6 +20,18 @@ import {
 import { getStoredFile } from './data.ts';
 import { readArtifactBytes } from './artifact-review.ts';
 import {
+  listReferenceRevisions,
+  getReferenceFile,
+  changeReference,
+  prepareReferenceUpload,
+} from './reference-library.ts';
+import { readReferenceSelection } from './reference-runtime.ts';
+import { captureCompanyRunAssets } from './company-run-assets.ts';
+import {
+  finishReferenceProcessing,
+  failReferenceProcessing,
+} from './reference-processing.ts';
+import {
   getCompanyAsset,
   getCompanyAssetFile,
   listCompanyAssets,
@@ -792,6 +804,290 @@ suite(
       } finally {
         await f.db`update allrice_organization_people set content_maintenance_level='company' where organization_id=${a.context.organizationId} and user_id=${owner.actor.id}`;
         await f.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${a.context.organizationId} and user_id=${member.actor.id}`;
+      }
+    });
+    it('migrates published templates twice without sharing newer drafts, duplicating files or bypassing withdrawal', async () => {
+      const assetId = randomUUID();
+      let current = await mutate(owner, {
+        operation: 'save',
+        assetId,
+        expectedRevision: 0,
+        content: content('template', {
+          sourceVersionId: a.artifact.artifactId,
+          slots: [
+            { key: 'period', label: '期间', required: true, multiline: false },
+          ],
+        }),
+      });
+      const v1 = current.latest;
+      // Represents pre-migration data, not a new publication produced by the hook.
+      await f.db`alter table allrice_company_asset_publications disable trigger company_reference_published`;
+      try {
+        current = await mutate(owner, {
+          operation: 'publish',
+          assetId,
+          expectedRevision: current.revision,
+        });
+      } finally {
+        await f.db`alter table allrice_company_asset_publications enable trigger company_reference_published`;
+      }
+      current = await mutate(owner, {
+        operation: 'save',
+        assetId,
+        expectedRevision: current.revision,
+        content: {
+          ...v1.content,
+          title: 'PRIVATE_NEW_DRAFT',
+          body: 'Private procedure, not shared',
+        },
+      });
+      const draftId = current.latest.id;
+      const [before] =
+        await f.db`select count(*)::int as objects,sum(size_bytes)::text as bytes from allrice_storage_objects`;
+      for (let n = 0; n < 2; n++)
+        await f.db`select allrice_sync_company_template_reference(${assetId})`;
+      const [after] =
+        await f.db`select count(*)::int as objects,sum(size_bytes)::text as bytes from allrice_storage_objects`;
+      expect(after).toEqual(before);
+      const [mapped] =
+        await f.db`select r.* from allrice_knowledge_revisions r where legacy_company_asset_id=${assetId}`;
+      expect(mapped).toMatchObject({
+        legacy_company_revision_id: v1.id,
+        file_object_id: v1.file!.objectId,
+        workspace_id: owner.workspaceId,
+        revision: 1,
+      });
+      const sourceId = mapped!.knowledge_source_id as string;
+      for (const ctx of [owner, member]) {
+        const refs = await listReferenceRevisions(
+          ctx,
+          ctx.workspaceId!,
+          sourceId,
+        );
+        expect(refs).toHaveLength(1);
+        expect(refs[0]).toMatchObject({
+          revisionId: mapped!.id,
+          canMaintain: false,
+          companyTemplate: { assetId, revisionId: v1.id, digest: v1.digest },
+        });
+        expect(JSON.stringify(refs)).not.toContain('PRIVATE_NEW_DRAFT');
+        const file = await getReferenceFile(
+          ctx,
+          ctx.workspaceId!,
+          mapped!.id,
+          f.db,
+        );
+        expect(file.object.id).toBe(v1.file!.objectId);
+        expect(file.object.workspaceId).toBe(owner.workspaceId);
+      }
+      await expect(
+        getReferenceFile(
+          foreign.context,
+          foreign.context.workspaceId!,
+          mapped!.id,
+          f.db,
+        ),
+      ).rejects.toThrow();
+      expect(
+        await f.db`select id from allrice_knowledge_revisions where legacy_company_revision_id=${draftId}`,
+      ).toHaveLength(0);
+      await expect(
+        changeReference(owner, sourceId, {
+          workspaceId: owner.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          action: 'archive',
+        }),
+      ).rejects.toThrow('not_found');
+      await expect(
+        prepareReferenceUpload(owner, {
+          workspaceId: owner.workspaceId,
+          requestId: randomUUID(),
+          sourceId,
+          expectedRevision: 1,
+          scope: 'company',
+          fileName: 'bypass.txt',
+          purpose: '',
+          mediaType: 'text/plain',
+          contentBase64: Buffer.from('bypass').toString('base64'),
+        }),
+      ).rejects.toThrow('not_found');
+      // Existing message admission freezes the ORIGINAL template ID, digest and slots.
+      const selection = {
+        assetId,
+        revisionId: v1.id,
+        digest: v1.digest,
+        parameters: { period: '2026-10' },
+      };
+      const snapshot = await f.db.begin((tx) =>
+        captureCompanyRunAssets(tx, member, randomUUID(), '月度复盘', [
+          selection,
+        ]),
+      );
+      expect(snapshot.templates[0]).toMatchObject({
+        assetId,
+        revision: { id: v1.id, digest: v1.digest },
+        parameters: selection.parameters,
+      });
+      const retained = await getReferenceFile(
+        owner,
+        owner.workspaceId!,
+        mapped!.id,
+        f.db,
+      );
+      const claim = {
+        revisionId: mapped!.id as string,
+        token: randomUUID(),
+        object: retained.object,
+        fileName: retained.fileName,
+      };
+      await f.db`update allrice_knowledge_processing set state='processing',lease_token=${claim.token},lease_until=clock_timestamp()+interval '5 minutes' where revision_id=${claim.revisionId}`;
+      current = await mutate(owner, {
+        operation: 'pause',
+        assetId,
+        expectedRevision: current.revision,
+      });
+      await expect(
+        finishReferenceProcessing(claim, [
+          { content: 'Synthetic reference', start: 0, end: 19 },
+        ]),
+      ).rejects.toThrow('not_found');
+      await failReferenceProcessing(
+        claim,
+        '资料处理失败，请重试；原文件已保留。',
+      );
+      current = await mutate(owner, {
+        operation: 'resume',
+        assetId,
+        expectedRevision: current.revision,
+      });
+      const retry = {
+        workspaceId: owner.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        action: 'retry',
+      };
+      await expect(
+        changeReference(member, sourceId, {
+          ...retry,
+          workspaceId: member.workspaceId,
+        }),
+      ).rejects.toThrow('not_found');
+      await changeReference(owner, sourceId, retry);
+      await changeReference(owner, sourceId, retry);
+      expect(
+        (
+          await f.db`select state from allrice_knowledge_processing where revision_id=${claim.revisionId}`
+        )[0]!.state,
+      ).toBe('saved');
+      claim.token = randomUUID();
+      await f.db`update allrice_knowledge_processing set state='processing',lease_token=${claim.token},lease_until=clock_timestamp()+interval '5 minutes' where revision_id=${claim.revisionId}`;
+      await finishReferenceProcessing(claim, [
+        { content: 'Synthetic reference', start: 0, end: 19 },
+      ]);
+      expect(
+        (await readReferenceSelection(member, mapped!.id, f.db, false))
+          .selection.revision,
+      ).toBe(1);
+      for (const operation of ['pause', 'withdraw'] as const) {
+        current = await mutate(owner, {
+          operation,
+          assetId,
+          expectedRevision: current.revision,
+        });
+        expect(
+          await listReferenceRevisions(member, member.workspaceId!, sourceId),
+        ).toEqual([]);
+        await expect(
+          getReferenceFile(owner, owner.workspaceId!, mapped!.id, f.db),
+        ).rejects.toThrow('not_found');
+        await expect(
+          readReferenceSelection(member, mapped!.id, f.db, false),
+        ).rejects.toThrow('所选资料');
+        await expect(
+          f.db.begin((tx) =>
+            captureCompanyRunAssets(tx, member, randomUUID(), '月度复盘', [
+              selection,
+            ]),
+          ),
+        ).rejects.toThrow('asset_unavailable');
+        current = await mutate(owner, {
+          operation: 'resume',
+          assetId,
+          expectedRevision: current.revision,
+        });
+        expect(current.publishedRevisionId).toBe(v1.id);
+        expect(
+          (await listReferenceRevisions(member, member.workspaceId!)).find(
+            (r) => r.sourceId === sourceId,
+          )?.revision,
+        ).toBe(1);
+      }
+      current = await mutate(owner, {
+        operation: 'publish',
+        assetId,
+        expectedRevision: current.revision,
+      });
+      expect(
+        (await listReferenceRevisions(member, member.workspaceId!)).find(
+          (r) => r.sourceId === sourceId,
+        )?.revision,
+      ).toBe(2);
+      expect(
+        await listReferenceRevisions(member, member.workspaceId!, sourceId),
+      ).toHaveLength(2);
+      for (let n = 0; n < 50; n++)
+        current = await mutate(owner, {
+          operation: 'save',
+          assetId,
+          expectedRevision: current.revision,
+          content: { ...current.latest.content, title: 'Private draft ' + n },
+        });
+      const pinnedHistory = await listCompanyAssetRevisions(
+        owner,
+        owner.organizationId,
+        assetId,
+        false,
+        f.db,
+        v1.id,
+      );
+      expect(pinnedHistory.revisions).toHaveLength(50);
+      expect(pinnedHistory.revisions.some((r) => r.id === v1.id)).toBe(true);
+      const unauthorizedPin = await listCompanyAssetRevisions(
+        member,
+        member.organizationId,
+        assetId,
+        false,
+        f.db,
+        current.latest.id,
+      );
+      expect(unauthorizedPin.revisions.map((r) => r.id).sort()).toEqual(
+        [v1.id, draftId].sort(),
+      );
+      expect(
+        (await getReferenceFile(member, member.workspaceId!, mapped!.id, f.db))
+          .object.id,
+      ).toBe(v1.file!.objectId);
+      expect(
+        (
+          await f.db`select count(*)::int as objects,sum(size_bytes)::text as bytes from allrice_storage_objects`
+        )[0],
+      ).toEqual(before);
+      // Private original Session lifecycle does not withdraw a separately published snapshot.
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${a.task.chatSessionId!}`;
+      try {
+        expect(
+          (
+            await getReferenceFile(
+              member,
+              member.workspaceId!,
+              mapped!.id,
+              f.db,
+            )
+          ).object.id,
+        ).toBe(v1.file!.objectId);
+      } finally {
+        await f.db`update allrice_chat_sessions set archived_at=null where id=${a.task.chatSessionId!}`;
       }
     });
     it('rolls back failed snapshot copies and removes only the uncommitted object', async () => {

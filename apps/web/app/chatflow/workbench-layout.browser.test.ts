@@ -2614,6 +2614,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           },
         },
       });
+      await f.page.route('**/api/v1/references?*', (route) =>
+        route.fulfill({
+          json: {
+            references: [],
+            options: {
+              workspaceId: id(1),
+              platformMaintainer: false,
+              maintenanceLevel: 'personal',
+              writable: true,
+              departmentId: null,
+              departments: [],
+            },
+          },
+        }),
+      );
       let withdrawn = false,
         deniedWrites = 0;
       await f.page.route('**/api/v1/company-assets*', async (route) => {
@@ -2655,18 +2670,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (width === 640)
             await f.page
               .getByRole('dialog', { name: '常用任务', exact: true })
-              .getByRole('button', { name: '公司范本', exact: true })
+              .getByRole('button', { name: '参考资料', exact: true })
               .click();
           else
             await f.page
-              .getByRole('menuitem', { name: '公司范本', exact: true })
+              .getByRole('menuitem', { name: '参考资料', exact: true })
               .click();
         } else
           await f.page
-            .getByRole('button', { name: '公司范本', exact: true })
+            .getByRole('button', { name: '参考资料', exact: true })
+            .click();
+        if (!recommended)
+          await f.page
+            .getByRole('button', { name: '历史资料与草稿', exact: true })
             .click();
         const dialog = f.page.getByRole('dialog', {
-          name: '公司范本',
+          name: recommended ? '参考资料' : '历史资料与草稿',
           exact: true,
         });
         if (recommended) {
