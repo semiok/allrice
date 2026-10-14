@@ -31,6 +31,7 @@ import {
   enterMethodChat,
   EmployeeMethodChatError,
   explicitEmployeeMethodTestIntent,
+  explicitEmployeeMethodTestRetryIntent,
 } from './employee-method-chat.ts';
 import {
   assertEmployeeChatExecution,
@@ -68,13 +69,15 @@ type Binding = {
   dependency_digest: string;
   scene_id: string;
   request_digest: string;
+  binding_digest: string;
+  retry_of_test_id: string | null;
   source_run_id: string;
   source_session_id: string;
   employee_version_id: string;
   model_snapshot: unknown;
   candidate_snapshot: {
     content: Candidate;
-    instance: unknown;
+    instance: ReturnType<typeof EmployeeInstanceSchema.parse>;
     timeoutMs: number;
   };
   snapshot_digest: string;
@@ -160,6 +163,10 @@ async function dto(tx: Tx, context: Identity, testId: string) {
   const assertion = b.assertion
     ? EmployeeMethodTestAssertionSchema.parse(b.assertion)
     : null;
+  const [retry] = await tx<{ test_id: string }[]>`
+    select test_id from allrice_employee_method_tests
+    where retry_of_test_id=${b.test_id} and organization_id=${b.organization_id}
+      and workspace_id=${b.workspace_id} and owner_id=${b.owner_id}`;
   return EmployeeMethodTestSchema.parse({
     id: b.test_id,
     instanceId: b.instance_id,
@@ -184,6 +191,10 @@ async function dto(tx: Tx, context: Identity, testId: string) {
     createdAt: b.created_at.toISOString(),
     completedAt: test.completed_at?.toISOString() ?? null,
     errorCode: test.output?.error?.code ?? null,
+    retryOfTestId: b.retry_of_test_id,
+    retryTestId: retry?.test_id ?? null,
+    currency: 'CNY',
+    amountUnit: 'cent',
     coverage:
       '仅验证所选场景在固定合成金额样例中的结果，不代表所有业务场景已验证。',
   });
@@ -197,7 +208,10 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
     'workspace.employee.method.test',
     true,
     async (tx, instance, text) => {
-      if (!explicitEmployeeMethodTestIntent(text))
+      if (args.retryOfTestId) {
+        if (!explicitEmployeeMethodTestRetryIntent(text, args.retryOfTestId))
+          throw new EmployeeMethodChatError('explicit_test_retry_required');
+      } else if (!explicitEmployeeMethodTestIntent(text))
         throw new EmployeeMethodChatError('explicit_method_request_required');
       await acquireDevAdmission(tx);
       const requestDigest = runtimePolicyDigest(args);
@@ -221,25 +235,62 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
       );
       if (snapshot.schemaVersion !== 2 || !snapshot.modelSnapshot)
         throw new DataAccessError('authorization_denied');
-      const model = SessionModelSnapshotSchema.parse(snapshot.modelSnapshot);
+      let model = SessionModelSnapshotSchema.parse(snapshot.modelSnapshot);
       if (
         model.sessionId !== input.sessionId ||
         model.employeeId !== snapshot.employee.id ||
         model.harness !== 'dsh'
       )
         throw new DataAccessError('authorization_denied');
-      const content = await freezeEmployeeMethodCandidate(
-        scope,
-        { ...args, instanceId: instance.id },
-        tx,
-      );
+      let retry: Binding | null = null;
+      if (args.retryOfTestId) {
+        const parent = await dto(tx, scope, args.retryOfTestId);
+        if (parent.instanceId !== instance.id)
+          throw new DataAccessError('not_found');
+        retry = await readBinding(tx, parent.id);
+        if (
+          args.expectedRevision !==
+            retry.candidate_snapshot.content.setRevision ||
+          args.candidateRevisionId !== retry.candidate_revision_id ||
+          args.candidateDigest !== retry.candidate_digest ||
+          args.sceneId !== retry.scene_id
+        )
+          throw new EmployeeContentError('source_changed');
+        if (
+          parent.status !== 'failed' ||
+          parent.validationStatus !== 'not_verified'
+        )
+          throw new EmployeeMethodChatError('test_retry_not_allowed');
+        // Reconcile an uncertain or concurrent write before considering any
+        // new paid execution. A later retry must name that child explicitly.
+        if (parent.retryTestId) return dto(tx, scope, parent.retryTestId);
+        await currentBinding(tx, retry);
+        const originalModel = SessionModelSnapshotSchema.parse(
+          retry.model_snapshot,
+        );
+        const comparableModel = (m: typeof model) =>
+          runtimePolicyDigest({ ...m, sessionId: null, frozenAt: null });
+        if (comparableModel(model) !== comparableModel(originalModel))
+          throw new EmployeeMethodChatError('test_retry_model_changed');
+        await assertEmployeeMethodModelCurrent(tx, retry, originalModel);
+        model = originalModel;
+      }
+      const content =
+        retry?.candidate_snapshot.content ??
+        (await freezeEmployeeMethodCandidate(
+          scope,
+          { ...args, instanceId: instance.id },
+          tx,
+        ));
       if (
         content.employeeVersionId !==
         snapshot.instance!.source.employeeVersionId
       )
         throw new EmployeeContentError('source_changed');
-      const [base] =
-        await tx`select r.employee_id,r.id,r.runtime_profile,r.definition
+      const [base] = retry
+        ? await tx`select employee_id,revision_id id,frozen_runtime_profile runtime_profile,frozen_definition definition
+          from allrice_platform_employee_test_runs where id=${retry.test_id} and purpose='method_candidate'`
+        : await tx`select r.employee_id,r.id,r.runtime_profile,r.definition
       from allrice_employee_version_sources s join allrice_platform_employee_revisions r
         on r.id=s.platform_revision_id and r.employee_id=s.platform_employee_id
       where s.employee_version_id=${content.employeeVersionId} and s.employee_id=${content.employeeId}
@@ -254,25 +305,35 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
         nativeSkills: profile.runtimePackage?.skills,
         packageChecksum: profile.runtimePackage?.checksum ?? null,
       });
-      const timeoutMs = Math.min(model.runLimits.timeoutMs, 300_000);
-      const candidate = { content, instance, timeoutMs };
-      const bindingDigest = runtimePolicyDigest({
+      const timeoutMs =
+        retry?.candidate_snapshot.timeoutMs ??
+        Math.min(model.runLimits.timeoutMs, 300_000);
+      const candidate = retry?.candidate_snapshot ?? {
         content,
-        profileRevision: instance.revision,
-        packageChecksum: profile.runtimePackage!.checksum,
-        model: { ...model, sessionId: null, frozenAt: null },
-        case: employeeMethodAmountCase.id,
-        environment: employeeMethodTestEnvironment,
+        instance,
         timeoutMs,
-      });
+      };
+      const bindingDigest =
+        retry?.binding_digest ??
+        runtimePolicyDigest({
+          content,
+          profileRevision: instance.revision,
+          packageChecksum: profile.runtimePackage!.checksum,
+          model: { ...model, sessionId: null, frozenAt: null },
+          case: employeeMethodAmountCase.id,
+          environment: employeeMethodTestEnvironment,
+          timeoutMs,
+        });
       // The existing content lock serializes starts. Read-only reuse never waits
       // on a scheduler's test row while holding principal/content locks.
-      const [same] = await tx<
-        { test_id: string }[]
-      >`select test_id from allrice_employee_method_tests
+      if (!retry) {
+        const [same] = await tx<
+          { test_id: string }[]
+        >`select test_id from allrice_employee_method_tests
       where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.actor.id}
-        and instance_id=${instance.id} and binding_digest=${bindingDigest}`;
-      if (same) return dto(tx, scope, same.test_id);
+        and instance_id=${instance.id} and binding_digest=${bindingDigest} and retry_of_test_id is null`;
+        if (same) return dto(tx, scope, same.test_id);
+      }
       const id = randomUUID();
       await tx`insert into allrice_platform_employee_test_runs(id,employee_id,revision_id,requested_by_label,status,input,
       frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose)
@@ -280,12 +341,12 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
         ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'method_candidate')`;
       await tx`insert into allrice_employee_method_tests(test_id,organization_id,workspace_id,owner_id,employee_id,instance_id,set_id,
       candidate_revision_id,candidate_digest,dependency_digest,scene_id,case_id,environment,request_id,request_digest,binding_digest,
-      source_run_id,source_session_id,employee_version_id,model_snapshot,candidate_snapshot,snapshot_digest)
+      source_run_id,source_session_id,employee_version_id,model_snapshot,candidate_snapshot,snapshot_digest,retry_of_test_id)
       values(${id},${scope.organizationId},${scope.workspaceId},${scope.actor.id},${content.employeeId},${instance.id},${content.setId},
         ${content.candidateRevisionId},${content.candidateDigest},${content.dependencyDigest},${args.sceneId},${employeeMethodAmountCase.id},${employeeMethodTestEnvironment},${requestId},${requestDigest},${bindingDigest},
-        ${input.context.runId},${input.sessionId},${content.employeeVersionId},${tx.json(model)},${tx.json(candidate)},${runtimePolicyDigest({ candidate, model })})`;
+        ${input.context.runId},${input.sessionId},${content.employeeVersionId},${tx.json(model)},${tx.json(candidate)},${runtimePolicyDigest({ candidate, model })},${retry?.test_id ?? null})`;
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
-      values(${scope.organizationId},${scope.workspaceId},${scope.actor.id},'employee.method.test.queued','employee_method_test',${id},'allowed','isolated_fixed_case',${requestId})`;
+      values(${scope.organizationId},${scope.workspaceId},${scope.actor.id},${retry ? 'employee.method.test.retried' : 'employee.method.test.queued'},'employee_method_test',${id},'allowed','isolated_fixed_case',${requestId})`;
       return dto(tx, scope, id);
     },
   );
@@ -455,7 +516,10 @@ export async function recordEmployeeMethodTestExecution(
   await tx`update allrice_employee_method_tests set run_id=${runId},route_decision_id=${decision.id} where test_id=${b.test_id} and run_id is null`;
   return {
     modelSnapshot: m,
-    sourceSessionId: b.source_session_id,
+    // A retry can be requested in a new chat. Subscription execution must use
+    // the original frozen model session; the new source session stays in the
+    // binding for audit and must not silently rewrite that model snapshot.
+    sourceSessionId: m.sessionId,
     instructions: claim.instructions,
     timeoutMs: claim.timeoutMs,
     decision,

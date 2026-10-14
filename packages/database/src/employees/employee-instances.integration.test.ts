@@ -9,6 +9,10 @@ import {
   employeeMethodTestStillCurrent,
 } from './employee-method-tests.ts';
 import { freezeRouteSubscriptionSnapshot } from '../execution/route-subscription.ts';
+import {
+  readPlatformModelSettings,
+  updatePlatformModelSettings,
+} from '../providers/platform-model-settings.ts';
 import { resolveAssistantSubscriptionSnapshot } from '@allrice/contracts';
 import {
   prepareEmployeeContentContext,
@@ -280,6 +284,334 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
+  async function retryFixture() {
+    const f = await setup(true),
+      instance = await f.custom('重试测试');
+    const editing = await methodRun(f, instance.id);
+    const saved = await saveEmployeeMethodFromChat({
+      ...editing,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '金额汇总', appliesWhen: '固定合成数据' },
+        procedure: '只将整数分相加',
+        changeSummary: '重试边界样例',
+      },
+    });
+    await editing.finish();
+    const content = await getEmployeeContentSet(f.a.context, saved.setId);
+    const args = {
+      expectedRevision: saved.revision,
+      candidateRevisionId: saved.candidate.id,
+      candidateDigest: saved.candidate.digest,
+      sceneId: content.set.candidate!.manifest.scenes[0]!.id,
+      caseId: 'cny-total-v1',
+    };
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请测试我的工作场景候选：金额汇总。',
+    );
+    const test = await startEmployeeMethodTestFromChat({
+      ...run,
+      arguments: args,
+    });
+    await run.finish();
+    const fail = async (id: string) => {
+      await completePlatformEmployeeTestRun(id, {
+        answer: null,
+        provider: null,
+        model: null,
+        threadId: null,
+        usage: null,
+        events: [],
+        error: {
+          code: 'DSH_TRANSPORT',
+          message: 'Synthetic interrupted response',
+        },
+        modelExecution: {
+          dispatched: true,
+          subscriptionSnapshotCreated: false,
+          usageComplete: false,
+          cacheUsageKnown: false,
+          costCents: null,
+        },
+      });
+    };
+    return { f, instance, saved, args, run, test, fail };
+  }
+  it('creates exactly one explicit retry per failed attempt and freezes the original cross-session execution', async () => {
+    const { f, instance, saved, args, run, test, fail } = await retryFixture();
+    const firstClaim = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(firstClaim?.id).toBe(test.id);
+    await fail(test.id);
+    const original = await getEmployeeMethodTest(f.a.context, test.id);
+    expect(original).toMatchObject({
+      validationStatus: 'not_verified',
+      retryTestId: null,
+      currency: 'CNY',
+      amountUnit: 'cent',
+    });
+    const ordinary = await methodRun(
+      f,
+      instance.id,
+      '请测试我的工作场景候选：金额汇总。',
+    );
+    expect(
+      (await startEmployeeMethodTestFromChat({ ...ordinary, arguments: args }))
+        .id,
+    ).toBe(test.id);
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...ordinary,
+        callId: randomUUID(),
+        arguments: { ...args, retryOfTestId: test.id },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_test_retry_required' });
+    await ordinary.finish();
+    const retrying = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    expect(retrying.sessionId).not.toBe(run.sessionId);
+    const retryArgs = { ...args, retryOfTestId: test.id };
+    const attempts = await Promise.all(
+      [retrying.callId, retrying.callId, retrying.callId].map((callId) =>
+        startEmployeeMethodTestFromChat({
+          ...retrying,
+          callId,
+          arguments: retryArgs,
+        }),
+      ),
+    );
+    const child = attempts[0]!;
+    expect(new Set(attempts.map((t) => t.id)).size).toBe(1);
+    expect(child).toMatchObject({
+      status: 'queued',
+      retryOfTestId: test.id,
+      retryTestId: null,
+    });
+    expect(child.id).not.toBe(test.id);
+    expect(
+      await startEmployeeMethodTestFromChat({
+        ...retrying,
+        arguments: retryArgs,
+      }),
+    ).toEqual(child);
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...retrying,
+        arguments: { ...retryArgs, sceneId: randomUUID() },
+      }),
+    ).rejects.toMatchObject({ code: 'request_conflict' });
+    const parentAfter = await getEmployeeMethodTest(f.a.context, test.id);
+    expect(parentAfter).toEqual({ ...original, retryTestId: child.id });
+    for (const context of [f.b.context, (await principal()).context])
+      await expect(
+        getEmployeeMethodTest(context, child.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
+    const [parentRow] =
+      await fixture.db`select * from allrice_employee_method_tests where test_id=${test.id}`;
+    const [childRow] =
+      await fixture.db`select * from allrice_employee_method_tests where test_id=${child.id}`;
+    for (const key of [
+      'model_snapshot',
+      'candidate_snapshot',
+      'snapshot_digest',
+      'binding_digest',
+    ])
+      expect(childRow![key]).toEqual(parentRow![key]);
+    expect(childRow!.source_session_id).toBe(retrying.sessionId);
+    expect(childRow!.source_run_id).toBe(retrying.context.runId);
+    const [oldBase] =
+      await fixture.db`select frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,input from allrice_platform_employee_test_runs where id=${test.id}`;
+    const [newBase] =
+      await fixture.db`select frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,input from allrice_platform_employee_test_runs where id=${child.id}`;
+    expect(newBase).toEqual(oldBase);
+    await retrying.finish();
+    const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(claim?.id).toBe(child.id);
+    const method = claim!.methodCandidate!;
+    expect(method.modelSnapshot).toEqual(run.frozen.modelSnapshot);
+    expect(method.sourceSessionId).toBe(run.sessionId);
+    const subscription = resolveAssistantSubscriptionSnapshot({
+      sessionId: method.sourceSessionId,
+      modelSnapshot: method.modelSnapshot,
+      decision: method.decision,
+      providerSnapshot: {
+        provider: 'dsh',
+        authMode: 'platform_subscription',
+        route: 'openai-codex',
+        model: method.modelSnapshot.model,
+        reasoningEffort: method.modelSnapshot.reasoningEffort,
+        credentialReference: method.modelSnapshot.credentialReference!,
+        baseUrl: null,
+      },
+    });
+    expect(subscription).toBeDefined();
+    await freezeRouteSubscriptionSnapshot({
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      decisionId: method.decision.id,
+      snapshot: subscription!,
+    });
+    await fail(child.id);
+    const repeatParent = await methodRun(
+      f,
+      instance.id,
+      `请重试测试 ${test.id}。`,
+    );
+    expect(
+      (
+        await startEmployeeMethodTestFromChat({
+          ...repeatParent,
+          arguments: retryArgs,
+        })
+      ).id,
+    ).toBe(child.id);
+    await repeatParent.finish();
+    const next = await methodRun(f, instance.id, `请重试测试 ${child.id}。`);
+    await expect(
+      startEmployeeMethodTestFromChat({ ...next, arguments: retryArgs }),
+    ).rejects.toMatchObject({ code: 'explicit_test_retry_required' });
+    const grandchild = await startEmployeeMethodTestFromChat({
+      ...next,
+      callId: randomUUID(),
+      arguments: { ...args, retryOfTestId: child.id },
+    });
+    expect(grandchild.retryOfTestId).toBe(child.id);
+    await next.finish();
+    expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+      grandchild.id,
+    );
+    await fail(grandchild.id);
+    const ledger =
+      await fixture.db`select usage_complete,cost_cents from allrice_model_usage_ledger where route_decision_id in (select route_decision_id from allrice_employee_method_tests where binding_digest=${parentRow!.binding_digest})`;
+    expect(ledger).toHaveLength(3);
+    expect(
+      ledger.every(
+        (row) => row.usage_complete === false && row.cost_cents === null,
+      ),
+    ).toBe(true);
+    expect(
+      (await getEmployeeContentSet(f.a.context, saved.setId)).set.active,
+    ).toBeNull();
+  }, 60000);
+  it('deduplicates concurrent different call IDs for one exact failed parent', async () => {
+    const { f, instance, args, test, fail } = await retryFixture();
+    expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+      test.id,
+    );
+    await fail(test.id);
+    const retrying = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    const results = await Promise.all(
+      Array.from({ length: 3 }, () =>
+        startEmployeeMethodTestFromChat({
+          ...retrying,
+          callId: randomUUID(),
+          arguments: { ...args, retryOfTestId: test.id },
+        }),
+      ),
+    );
+    expect(new Set(results.map((result) => result.id)).size).toBe(1);
+    expect(
+      (
+        await fixture.db`select test_id from allrice_employee_method_tests where retry_of_test_id=${test.id}`
+      ).length,
+    ).toBe(1);
+    await retrying.finish();
+    expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+      results[0]!.id,
+    );
+    await fail(results[0]!.id);
+  }, 60000);
+  it.each(['queued', 'running', 'passed', 'assertion-failed'] as const)(
+    'rejects retry of %s without enqueuing another attempt',
+    async (status) => {
+      const { f, instance, args, test, fail } = await retryFixture();
+      if (status !== 'queued')
+        expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+          test.id,
+        );
+      if (status === 'passed' || status === 'assertion-failed')
+        await completePlatformEmployeeTestRun(test.id, {
+          answer: JSON.stringify({
+            totalCents: status === 'passed' ? 30000 : 30100,
+          }),
+          provider: 'openai-codex',
+          model: 'fixture',
+          threadId: null,
+          usage: null,
+          events: [],
+          error: null,
+        });
+      const retrying = await methodRun(
+        f,
+        instance.id,
+        `请重试测试 ${test.id}。`,
+      );
+      await expect(
+        startEmployeeMethodTestFromChat({
+          ...retrying,
+          arguments: { ...args, retryOfTestId: test.id },
+        }),
+      ).rejects.toMatchObject({ code: 'test_retry_not_allowed' });
+      expect(
+        (await getEmployeeMethodTest(f.a.context, test.id)).retryTestId,
+      ).toBeNull();
+      await retrying.finish();
+      if (status === 'queued')
+        expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+          test.id,
+        );
+      if (status === 'queued' || status === 'running') await fail(test.id);
+    },
+    60000,
+  );
+  it('rejects stale candidate and model changes instead of creating a differently bound retry', async () => {
+    const { f, instance, saved, args, test, fail } = await retryFixture();
+    expect((await claimNextPlatformEmployeeTestRun(randomUUID()))?.id).toBe(
+      test.id,
+    );
+    await fail(test.id);
+    const settings = await readPlatformModelSettings();
+    await updatePlatformModelSettings(f.admin.context, {
+      expectedRevision: settings.revision,
+      configuration: { ...settings.configuration, reasoningEffort: 'low' },
+    });
+    const retrying = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...retrying,
+        arguments: { ...args, retryOfTestId: test.id },
+      }),
+    ).rejects.toMatchObject({ code: 'test_retry_model_changed' });
+    await retrying.finish();
+    const edit = await methodRun(f, instance.id);
+    await saveEmployeeMethodFromChat({
+      ...edit,
+      arguments: {
+        expectedRevision: saved.revision,
+        section: 'scene',
+        scene: { id: args.sceneId },
+        procedure: '先核对输入，再将整数分相加',
+        changeSummary: '新候选',
+      },
+    });
+    await edit.finish();
+    const stale = await methodRun(f, instance.id, `请重试测试 ${test.id}。`);
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...stale,
+        arguments: { ...args, retryOfTestId: test.id },
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    expect(
+      (await getEmployeeMethodTest(f.a.context, test.id)).retryTestId,
+    ).toBeNull();
+    await stale.finish();
+    await updatePlatformModelSettings(f.admin.context, {
+      expectedRevision: (await readPlatformModelSettings()).revision,
+      configuration: settings.configuration,
+    });
+  }, 60000);
   it('validates an exact candidate through the shared queue and ledger without activating or exposing it', async () => {
     const f = await setup(true),
       instance = await f.custom('金额助手');
