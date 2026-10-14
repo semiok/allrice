@@ -168,14 +168,39 @@ export function explicitEmployeeMethodRestoreIntent(
     '',
   );
   if (/^(?: {4}|\t)/u.test(request)) return false;
+  const clauses = methodOperationClauses(request).flatMap((clause) =>
+    clause.split(/[，,：:]/u).map((part) => part.trim()),
+  );
   if (
-    methodOperationClauses(request)
-      .flatMap((c) => c.split(/[，,：:]/u))
-      .some((c) =>
-        /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:恢复|还原|回退|保存|执行)|^(?:please )?(?:do not|don't|never)\s+(?:restore|revert|save|execute)/iu.test(
-          c.trim(),
-        ),
+    clauses.some((clause, index) => {
+      if (
+        /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不|别|暂不|无需|不必|勿|不能|不允许)(?:实际|立即|进行)?(?:恢复|还原|回退|保存|执行)|^(?:please )?(?:do not|don't|never)\s+(?:(?:actually|immediately)\s+)?(?:restore|revert|save|execute)/iu.test(
+          clause,
+        )
       )
+        return true;
+      // "Only discuss" limits the action. "Only show differences" may instead
+      // limit the reply after an explicit preceding "after saving the candidate".
+      if (
+        /^(?:请)?(?:先)?(?:只|仅)讨论|^(?:please )?(?:only|just)\s+discuss/iu.test(
+          clause,
+        )
+      )
+        return true;
+      if (
+        !/^(?:请)?(?:先)?(?:只|仅)(?:展示|查看|解释|分析)|^(?:please )?(?:only|just)\s+(?:show|view|explain|analyze)/iu.test(
+          clause,
+        )
+      )
+        return false;
+      return !clauses
+        .slice(0, index)
+        .some((prior) =>
+          /^(?:请)?(?:先)?保存(?:为)?(?:新的?)?候选(?:后|之后|以后)$|^after saving (?:the |a |a new )?candidate$/iu.test(
+            prior,
+          ),
+        );
+    })
   )
     return false;
   if (

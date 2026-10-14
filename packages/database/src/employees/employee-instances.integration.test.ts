@@ -819,7 +819,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const other = await methodRun(
       f,
       unrelated.id,
-      '请恢复我的整份工作方法到第1版',
+      '请恢复我的整份工作方法到第1版，保存候选后，只展示差异。',
     );
     await expect(
       restoreEmployeeMethodFromChat({ ...other, arguments: args }),
@@ -830,6 +830,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       '请恢复我的整份工作方法到第2版',
       '> 请恢复我的整份工作方法到第1版',
       '请恢复我的整份工作方法到第1版：不要保存，只展示差异。',
+      '请恢复我的整份工作方法到第1版，先不要保存，只展示差异。',
+      '请恢复我的整份工作方法到第1版，只讨论，不执行。',
+      '请恢复我的整份工作方法到第1版，本次暂时不要实际恢复。',
+      '请恢复我的整份工作方法到第1版，先别保存候选。',
+      '请恢复我的整份工作方法到第1版，暂不保存。',
+      '请恢复我的整份工作方法到第1版，保存候选后，先不要保存，只展示差异。',
       '请恢复我的工作方法到第1版，只恢复周度场景，月度场景保持不变。',
     ]) {
       const denied = await methodRun(f, instance.id, text);
@@ -844,7 +850,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const restore = await methodRun(
       f,
       instance.id,
-      '请恢复我的整份工作方法到第1版',
+      '请恢复我的整份工作方法到第1版，保存候选后，只展示差异。',
     );
     await expect(
       restoreEmployeeMethodFromChat({
