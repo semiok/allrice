@@ -1,4 +1,4 @@
-/* global Buffer, process */
+/* global Buffer, process, setInterval, clearInterval */
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
@@ -53,12 +53,14 @@ async function scenario({
   contentCallsAllowed,
   compact = false,
   progressPause = false,
+  stalls = [],
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'allrice-model-recovery-'));
   const requests = [],
     notices = [],
     bridgeCalls = [],
     toolCalls = [];
+  const connections = [];
   let serverError;
   let adoptionAttempts = 0;
   let contentCalls = 0,
@@ -79,7 +81,39 @@ async function scenario({
       res.writeHead(200, { 'content-type': 'text/event-stream' });
       const send = (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
       const index = requests.length - 1;
+      connections.push(`open:${index}`);
+      res.on('close', () => connections.push(`close:${index}`));
       const firstTool = toolFirst || skillFirst || sceneFirst;
+      const stall = stalls[index - (firstTool ? 1 : 0)];
+      if (stall) {
+        if (stall === 'missing_terminal') {
+          send({
+            type: 'response.output_item.added',
+            output_index: 0,
+            item: { type: 'message', id: 'partial', content: [] },
+          });
+          send({
+            type: 'response.output_text.delta',
+            output_index: 0,
+            delta: 'PARTIAL_REPORT',
+          });
+          send({
+            type: 'response.output_item.done',
+            output_index: 0,
+            item: {
+              type: 'message',
+              id: 'partial',
+              role: 'assistant',
+              content: [{ type: 'output_text', text: 'PARTIAL_REPORT' }],
+            },
+          });
+        } else if (stall === 'heartbeat') {
+          res.write(': keep-alive\n\n');
+          const timer = setInterval(() => res.write(': keep-alive\n\n'), 40);
+          res.on('close', () => clearInterval(timer));
+        } else res.flushHeaders();
+        return;
+      }
       if (
         !(firstTool && index === 0) &&
         failures[index - (firstTool ? 1 : 0)]
@@ -211,6 +245,7 @@ async function scenario({
         requestTimeoutMs: 15000,
         environment: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
+          ...(stalls.length ? { ALLRICE_MODEL_STREAM_IDLE_MS: '350' } : {}),
           ...(assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
           ...(progressPause ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
           DSH_CORDIS_CONFIG: join(root, 'profile.yml'),
@@ -399,6 +434,8 @@ async function scenario({
             nativeSessionId: sessionId,
           })
         : null,
+      connections,
+      notices,
     };
   } finally {
     await client?.close();
@@ -407,6 +444,82 @@ async function scenario({
     await rm(root, { recursive: true, force: true });
   }
 }
+
+describe('observed idle recovery through the actual native loop', () => {
+  it.each([
+    ['silent', 'transport_silent'],
+    ['heartbeat', 'heartbeat_only'],
+    ['missing_terminal', 'missing_terminal'],
+  ])(
+    'closes %s before continuing saved tools and files',
+    async (stall, state) => {
+      const r = await scenario({
+        toolFirst: true,
+        failures: [],
+        stalls: [stall],
+      });
+      expect(r.requests).toHaveLength(3);
+      expect(r.toolCalls).toHaveLength(1);
+      expect(JSON.stringify(r.requests[2])).toContain('SAVED_TOOL_RESULT_42');
+      expect(r.connections.indexOf('close:1')).toBeLessThan(
+        r.connections.indexOf('open:2'),
+      );
+      expect(r.events.filter((e) => e.type === 'turn/start')).toHaveLength(1);
+      expect(r.events.filter((e) => e.type === 'llm/retry')).toHaveLength(1);
+      expect(r.events.find((e) => e.type === 'turn/end').data.reason.kind).toBe(
+        'completed',
+      );
+      expect(
+        r.diagnostics.failures.find((f) => f.code === 'TIMEOUT').stream,
+      ).toMatchObject({
+        transport: 'sse',
+        state,
+        localCloseConfirmed: true,
+        recoveryEligible: true,
+      });
+      const settlement = r.bridgeCalls.filter(
+        (c) => c.method === 'allrice/assistant/model-settle',
+      )[1];
+      expect(settlement).not.toHaveProperty('inputTokens');
+      expect(settlement).not.toHaveProperty('outputTokens');
+    },
+    30000,
+  );
+  it('caps repeated stalls at the existing two native retries', async () => {
+    const r = await scenario({
+      failures: [],
+      stalls: ['silent', 'heartbeat', 'silent'],
+    });
+    expect(r.requests).toHaveLength(3);
+    expect(r.events.filter((e) => e.type === 'llm/retry')).toHaveLength(2);
+    expect(r.events.find((e) => e.type === 'turn/end').data.reason.kind).toBe(
+      'error',
+    );
+  }, 30000);
+  it('does not continue without the accounting acknowledgement', async () => {
+    const r = await scenario({
+      failures: [],
+      stalls: ['silent'],
+      settle: false,
+    });
+    expect(r.requests).toHaveLength(1);
+    expect(r.diagnostics.failures[0].stream).toMatchObject({
+      localCloseConfirmed: true,
+      recoveryEligible: false,
+    });
+  }, 30000);
+  it('honors cancellation during native recovery without another provider call', async () => {
+    const r = await scenario({
+      failures: [],
+      stalls: ['heartbeat'],
+      cancel: true,
+    });
+    expect(r.requests).toHaveLength(1);
+    expect(r.events.find((e) => e.type === 'turn/end').data.reason.kind).toBe(
+      'aborted',
+    );
+  }, 30000);
+});
 
 describe('content authorization uses actual DSH dispatch and compaction', () => {
   for (const assistants of [true, false]) {

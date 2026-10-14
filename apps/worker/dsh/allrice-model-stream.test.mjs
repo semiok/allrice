@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { boundedModelStream } from './allrice-model-stream.mjs';
+import {
+  boundedModelStream,
+  modelStreamRecoveryReceipt,
+} from './allrice-model-stream.mjs';
 
 afterEach(() => vi.useRealTimers());
 function stuck() {
@@ -12,6 +15,58 @@ function stuck() {
   };
 }
 describe('native model wait bound', () => {
+  it('does not certify a close while the previous read is still outstanding', async () => {
+    vi.useFakeTimers();
+    const source = stuck();
+    source.return.mockResolvedValue({ done: true });
+    const transport = {
+      run: (fn) => fn(),
+      stop: vi.fn(),
+      snapshot: () => ({ state: 'transport_silent' }),
+      locallyClosed: () => true,
+    };
+    const iterator = boundedModelStream(source, {
+      idleMs: 100,
+      closeWaitMs: 50,
+      transport,
+    });
+    let error;
+    const settled = iterator.next().catch((caught) => {
+      error = caught;
+    });
+    await vi.advanceTimersByTimeAsync(150);
+    await settled;
+    expect(error.code).toBe('TIMEOUT');
+    expect(modelStreamRecoveryReceipt(error).localCloseConfirmed).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it('does not certify a read that stops without a transport close', async () => {
+    vi.useFakeTimers();
+    const source = stuck();
+    let finish;
+    source.next.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    source.return.mockResolvedValue({ done: true });
+    const transport = {
+      run: (fn) => fn(),
+      stop: () => finish({ done: true }),
+      snapshot: () => ({ state: 'unobserved' }),
+      locallyClosed: () => false,
+    };
+    let error;
+    const settled = boundedModelStream(source, { idleMs: 100, transport })
+      .next()
+      .catch((caught) => {
+        error = caught;
+      });
+    await vi.advanceTimersByTimeAsync(100);
+    await settled;
+    expect(modelStreamRecoveryReceipt(error).localCloseConfirmed).toBe(false);
+  });
   it('does not report a terminal provider failure as a recovered response', async () => {
     vi.useFakeTimers();
     const source = stuck();

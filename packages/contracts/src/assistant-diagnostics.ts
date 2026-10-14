@@ -21,6 +21,29 @@ export const AssistantDiagnosticCodeSchema = z.enum([
   'SETTLEMENT_REJECTED',
   'SETTLEMENT_FAILED',
 ]);
+export const ModelStreamDiagnosticSchema = z
+  .object({
+    transport: z.enum(['sse', 'websocket', 'unobserved']),
+    state: z.enum([
+      'transport_closed',
+      'heartbeat_only',
+      'missing_terminal',
+      'transport_active',
+      'transport_silent',
+      'unobserved',
+    ]),
+    bytes: z.number().int().nonnegative().safe(),
+    heartbeats: z.number().int().nonnegative().safe(),
+    events: z.number().int().nonnegative().safe(),
+    terminalEvent: z.boolean(),
+    outputItemEnded: z.boolean(),
+    readFailed: z.boolean(),
+    lastByteAgeMs: z.number().int().nonnegative().safe().optional(),
+    localCloseConfirmed: z.boolean(),
+    finishSeen: z.boolean(),
+    recoveryEligible: z.boolean(),
+  })
+  .strict();
 const FailureSchema = z
   .object({
     nativeSessionId: z.string().regex(/^[a-zA-Z0-9_.-]{1,200}$/),
@@ -39,6 +62,7 @@ const FailureSchema = z
     outputUsageKnown: z.boolean(),
     settlementConfirmed: z.boolean(),
     settlementFailureCode: AssistantDiagnosticCodeSchema.optional(),
+    stream: ModelStreamDiagnosticSchema.optional(),
   })
   .strict();
 export const AssistantFailureDiagnosticsSchema = z

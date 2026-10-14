@@ -8,6 +8,14 @@ import { openAICodexResponsesApi } from '@earendil-works/pi-ai/api/openai-codex-
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
+import {
+  boundedModelStream,
+  modelStreamRecoveryReceipt,
+} from './allrice-model-stream.mjs';
+import {
+  createModelTransport,
+  installModelTransportObservation,
+} from './allrice-model-transport.mjs';
 import { runCodexSubscriptionCapProbe } from './allrice-codex-subscription-cap-probe.mjs';
 
 // This unsigned, deliberately synthetic value is generated here, not read from
@@ -41,6 +49,7 @@ async function runWire({
   stall = false,
   failureMessage,
   websocket,
+  guarded = false,
 } = {}) {
   const calls = [];
   const server = createServer((request, response) => {
@@ -176,6 +185,7 @@ async function runWire({
           delta: 'Synthetic WebSocket output.',
         }),
       );
+      if (websocket === 'idle') return;
       if (websocket === 'invalid-json') socket.send('{invalid');
       if (websocket === 'complete') {
         const item = {
@@ -328,7 +338,9 @@ async function runWire({
     });
     const prepared = await adapter.prepareCall('openai-codex', model.id);
     const chunks = [];
-    for await (const chunk of prepared.stream({
+    const sessionId = guarded ? `wire-close-${Date.now()}` : undefined;
+    const source = prepared.stream({
+      ...(sessionId ? { sessionId } : {}),
       provider: 'openai-codex',
       model: model.id,
       maxTokens: 3754,
@@ -341,10 +353,25 @@ async function runWire({
       onPayload() {
         throw Error('DSH_does_not_forward_onPayload');
       },
-    })) {
-      chunks.push(chunk);
+    });
+    let recovery;
+    if (guarded) installModelTransportObservation();
+    const stream = guarded
+      ? boundedModelStream(source, {
+          idleMs: 200,
+          transport: createModelTransport({
+            provider: 'openai-codex',
+            sessionId,
+          }),
+        })
+      : source;
+    try {
+      for await (const chunk of stream) chunks.push(chunk);
+    } catch (error) {
+      if (!guarded) throw error;
+      recovery = modelStreamRecoveryReceipt(error);
     }
-    return { calls, chunks, forwarded, payloadHookCalls };
+    return { calls, chunks, forwarded, payloadHookCalls, recovery };
   } finally {
     if (wsServer) {
       for (const client of wsServer.clients) client.terminate();
@@ -358,6 +385,16 @@ async function runWire({
 describe.sequential(
   'pinned Codex output-bound wire evidence (offline only)',
   () => {
+    it('closes an idle native WebSocket session and drains the old request', async () => {
+      const r = await runWire({ websocket: 'idle', guarded: true });
+      expect(r.calls).toHaveLength(1);
+      expect(r.calls[0].method).toBe('WS');
+      expect(r.recovery).toMatchObject({
+        transport: 'websocket',
+        state: 'unobserved',
+        localCloseConfirmed: true,
+      });
+    });
     it.each([
       ['premature', 'TRANSPORT'],
       ['invalid-json', 'PI_AI_ERROR'],

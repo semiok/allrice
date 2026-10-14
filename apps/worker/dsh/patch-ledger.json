@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-observed-model-recovery-v1",
+      "issue": "Run 12a3b810; Run 9620a5c1",
+      "upstreamVersion": "0.1.5-rc.3",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-model-transport.mjs",
+      "reason": "Request-scoped SSE diagnostics and session-scoped public pi-ai cleanup. A local idle failure reaches existing bounded native retry only after read/iterator/transport drain, quiescent tools and acknowledged observational accounting. Preserve completed tools, files, unknown usage and current authority; no DSH core edits or whole-Run replay."
+    },
+    {
       "id": "allrice-progressive-scene-provider-v1",
       "issue": "MET-179",
       "upstreamVersion": "0.1.5-rc.3",
