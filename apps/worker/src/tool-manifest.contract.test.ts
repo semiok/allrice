@@ -222,6 +222,10 @@ describe('AllRice worker tool manifest contract', () => {
         canonicalName: 'platform.repository.repair',
         wireName: 'platform_repository_repair',
       },
+      {
+        canonicalName: 'platform.employee.method.step',
+        wireName: 'platform_employee_method_step',
+      },
     ];
     expectedPairs.push(...privatePairs);
     for (const { canonicalName } of privatePairs) {
