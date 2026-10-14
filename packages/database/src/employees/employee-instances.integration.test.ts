@@ -639,7 +639,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const run = await methodRun(
       f,
       instance.id,
-      '请调整我的工作场景候选：把周度执行流程改成先校验再汇总，保留月度流程。',
+      '请调整我的「周度」工作场景候选：把执行流程改成先校验再汇总，保留月度流程。',
     );
     const args = {
       expectedRevision: saved.revision,

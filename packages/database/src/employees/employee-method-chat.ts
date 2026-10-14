@@ -110,7 +110,14 @@ function withoutMethodRetryPreface(text: string) {
 function methodAuthoringHeader(clause: string) {
   const request = clause.replace(/^(?:[ \t]*\r?\n)+/, '');
   if (/^(?: {4}|\t)/u.test(request)) return false;
-  const first = request.split(/[。；;！!\n：:]/, 1)[0]!.trim();
+  let first = request.split(/[。；;！!\n：:]/, 1)[0]!.trim();
+  // A quoted literal scene name is an argument to an unquoted direct request.
+  // Do not unquote an entire instruction, translation or supplied document.
+  const named = first.match(
+    /^(?<verb>(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:我的|这个|该|本人的)?)(?:“[^“”\r\n]{1,80}”|「[^「」\r\n]{1,80}」|『[^『』\r\n]{1,80}』|"[^"\r\n]{1,80}"|`[^`\r\n]{1,80}`)(?<target>的?(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?)$/u,
+  );
+  if (named?.groups)
+    first = `${named.groups.verb}字面名称${named.groups.target}`;
   return (
     /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:[^《》“”"'「」『』`。；;！!\n：:]{0,80})(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?$/u.test(
       first,
@@ -124,13 +131,23 @@ function methodAuthoringHeader(clause: string) {
 /** Require the leading request, allowing only a known retry preface. */
 export function explicitEmployeeMethodIntent(text: string) {
   if (!text.trim() || text.length > 32000) return false;
-  const clauses = methodOperationClauses(text);
+  const clauses = methodOperationClauses(text).flatMap((clause) =>
+    clause.split(/[，,]/u).map((part) => part.trim()),
+  );
   if (
-    clauses.some((clause) =>
-      /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:保存|修改|更新|持久化|重命名|移除|删除|停用)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist|rename|remove|delete|disable)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
+    clauses.some((clause) => {
+      const affirmative = clause.replace(
+        /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)/u,
+        '请',
+      );
+      // Quoted names have already been masked as data. Apply the same target
+      // grammar to a denial, rather than requiring the type next to “我的”.
+      if (affirmative !== clause && methodAuthoringHeader(affirmative))
+        return true;
+      return /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:保存|修改|更新|持久化|重命名|移除|删除|停用)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist|rename|remove|delete|disable)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
         clause,
-      ),
-    )
+      );
+    })
   )
     return false;
   return methodAuthoringHeader(withoutMethodRetryPreface(text));

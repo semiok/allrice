@@ -217,3 +217,70 @@ it.each([
     expect(explicitEmployeeMethodReferenceIntent(text)).toBe(false);
   },
 );
+
+it.each([
+  '请调整我的「金额汇总」工作场景候选：先逐笔核对再相加。',
+  '帮我保存“每月对账”的工作方法候选。',
+  '请更新我的『周度汇总』执行流程：保留来源。',
+  '请修改我的"月度汇总"工作场景候选。',
+  '请调整我的`核对金额`工作场景候选。',
+])(
+  'accepts a literal quoted name inside a direct authoring header: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  },
+);
+it.each([
+  '“请调整我的金额汇总工作场景候选。”',
+  '请翻译：请调整我的「金额汇总」工作场景候选。',
+  '请修改「工作方法」这篇文章的错别字。',
+  '> 请调整我的「金额汇总」工作场景候选。',
+  '资料原文如下：\n请调整我的「金额汇总」工作场景候选。',
+  '请不要调整我的「金额汇总」工作场景候选。',
+  '请调整我的「金额汇总」工作场景候选。不要保存，只讨论。',
+  '请调整我的「金额汇总”工作场景候选。',
+])(
+  'keeps quoted-name discussion and denied writes unauthorized: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(false);
+    expect(explicitEmployeeMethodTestIntent(text)).toBe(false);
+  },
+);
+it('uses the same literal-name boundary for a separately requested test', () => {
+  expect(
+    explicitEmployeeMethodTestIntent('请测试我的「金额汇总」工作场景候选。'),
+  ).toBe(true);
+  expect(
+    explicitEmployeeMethodTestIntent('请调整我的「金额汇总」工作场景候选。'),
+  ).toBe(false);
+});
+
+it.each([
+  '不要保存我的「金额汇总」工作场景候选。',
+  '不要调整我的『金额汇总』工作场景候选。',
+  '请勿更新我的“金额汇总”工作方法。',
+  '不允许修改这个"金额汇总"执行流程。',
+  '无需创建我的金额汇总工作场景候选。',
+  '不要保存我的「金额汇总」工作场景候选，只讨论。',
+  '先核对，不要保存我的「金额汇总」工作场景候选。',
+  '先核对,请勿更新我的“金额汇总”工作方法,只讨论。',
+])('a later named denial overrides candidate authoring: %s', (denial) => {
+  expect(
+    explicitEmployeeMethodIntent(
+      '请调整我的「金额汇总」工作场景候选。' + denial,
+    ),
+  ).toBe(false);
+});
+it('rejects a named denial after a comma in the candidate body', () => {
+  expect(
+    explicitEmployeeMethodIntent(
+      '请调整我的「金额汇总」工作场景候选：先核对，不要保存我的「金额汇总」工作场景候选。',
+    ),
+  ).toBe(false);
+});
+it('does not infer a paid test from the method body of an authoring request', () => {
+  const text =
+    '请调整我的「金额汇总」工作场景候选：逐笔核对再相加。保存并回读后，使用平台固定 cny-total-v1 原样例测试一次，不改标准答案、先不启用。';
+  expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  expect(explicitEmployeeMethodTestIntent(text)).toBe(false);
+});
