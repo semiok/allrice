@@ -1,4 +1,5 @@
 import { expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   EmployeeMethodInspectSchema,
   EmployeeMethodSaveSchema,
@@ -45,6 +46,17 @@ it.each([
     await nativeBrokerRoundtrip({
       ...test,
       invalidArgs: { ...test.args, expected: 30100 },
+      inspectSchema(nativeSchema) {
+        const contract = z.toJSONSchema(schema);
+        // Inspect what the real DSH process sent to the provider, not just
+        // whether its validator accepts a preconstructed tool call.
+        expect(Object.keys(nativeSchema.properties as object).sort()).toEqual(
+          Object.keys(contract.properties ?? {}).sort(),
+        );
+        expect((nativeSchema.required as string[]).toSorted()).toEqual(
+          (contract.required ?? []).toSorted(),
+        );
+      },
       onToolCall: async (call) => {
         expect(schema.parse(call.arguments)).toEqual(test.args);
         return {

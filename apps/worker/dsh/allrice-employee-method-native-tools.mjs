@@ -30,7 +30,7 @@ export const employeeMethodNativeTools = [
     canonicalName: 'workspace.employee.method.test',
     wireName: 'workspace_employee_method_test',
     description:
-      'After an explicit user request to test their candidate, queue the exact current candidate revision and scene against the server fixed cny-total-v1 synthetic case. Inspect candidate first for revision ID, digest and scene ID. No business files, tool writes or activation. Repeated identical inputs reuse the same test. Queued does not mean failed: save the test ID, finish this reply to free concurrency, and inspect that same test in a later turn. Never regenerate candidates or resubmit to obtain a pass.',
+      'After an explicit user request to test their candidate, queue the exact current candidate revision and scene against the server fixed cny-total-v1 synthetic case. Inspect candidate first for revision ID, digest and scene ID. No business files, tool writes or activation. Only an explicit user request naming a terminal failed, not_verified test authorizes retryOfTestId: read that exact test first, preserve its frozen candidate/model/case and historical failure. Repeating that parent retry returns the same child; never recursively retry it. Queued does not mean failed: save the test ID, finish this reply to free concurrency, and inspect that same test in a later turn. Never regenerate candidates or resubmit to obtain a pass. Amount assertions are CNY integer cents.',
     timeoutMs: 15000,
     isConcurrencySafe: false,
     parameters: {
@@ -39,6 +39,7 @@ export const employeeMethodNativeTools = [
       candidateDigest: { type: 'string', required: true },
       sceneId: { type: 'string', required: true },
       caseId: { type: 'string', required: true, enum: ['cny-total-v1'] },
+      retryOfTestId: { type: 'string' },
     },
     validateArguments: (args) => EmployeeMethodTestStartSchema.parse(args),
   },
