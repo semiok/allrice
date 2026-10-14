@@ -686,7 +686,9 @@ export async function executeEmployeeRun({
     const allowedToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
         ? withPlatformImageTools(
-            executionSnapshot.employee.definition.capabilityBindings.toolNames,
+            capabilitySnapshot?.bindings.toolNames ??
+              executionSnapshot.employee.definition.capabilityBindings
+                .toolNames,
             resolved.grantedCapabilities,
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.modelSnapshot

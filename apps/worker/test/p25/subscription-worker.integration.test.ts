@@ -68,6 +68,8 @@ integration(
     });
     it.each([
       'complete',
+      'personal_profile_writable',
+      'personal_profile_read_only',
       'image_with_assistants',
       'image_generation_with_assistants',
       'transport_failure',
@@ -86,6 +88,8 @@ integration(
       async (mode) => {
         const unknownUsage = ![
           'complete',
+          'personal_profile_writable',
+          'personal_profile_read_only',
           'quota_exhausted',
           'image_with_assistants',
           'image_generation_with_assistants',
@@ -103,6 +107,12 @@ integration(
           imageGeneration: mode === 'image_generation_with_assistants',
           imageGenerationAssistants:
             mode === 'image_generation_with_assistants',
+          personalProfile:
+            mode === 'personal_profile_writable'
+              ? 'writable'
+              : mode === 'personal_profile_read_only'
+                ? 'read_only'
+                : undefined,
         });
         let cleanup: (() => Promise<void>) | undefined;
         try {
@@ -147,7 +157,9 @@ integration(
             images = [image];
           }
           const task = await fixture.prepareOrdinaryTask(
-            'Synthetic arithmetic.',
+            mode.startsWith('personal_profile')
+              ? '请把你的名字改为小禾。以后回答保持简洁。'
+              : 'Synthetic arithmetic.',
             images,
           );
           if (images || mode === 'image_generation_with_assistants')
@@ -231,6 +243,42 @@ integration(
             ) {
               if (mode === 'startup_undispatched')
                 return originalExecute.call(this, input);
+              const profileTool = 'workspace.employee.profile.update';
+              if (mode === 'personal_profile_writable') {
+                // Exercise the actual frozen binding -> Worker -> adapter
+                // envelope and Broker write, without any model or credential.
+                expect(input.tools?.map((tool) => tool.name)).toContain(
+                  profileTool,
+                );
+                expect(input.authorizedToolNames).toContain(profileTool);
+                const receipt = await input.onToolCall!({
+                  id: 'synthetic-profile-update',
+                  name: profileTool,
+                  arguments: {
+                    expectedRevision: 1,
+                    name: '小禾',
+                    expressionStyle: 'concise',
+                  },
+                });
+                expect(JSON.parse(receipt.modelContent)).toMatchObject({
+                  revision: 2,
+                  profile: { name: '小禾', expressionStyle: 'concise' },
+                });
+                const [saved] = await fixture.db`select i.revision,i.profile
+                  from allrice_employee_instances i join allrice_chat_sessions s
+                    on s.employee_instance_id=i.id where s.id=${task.sessionId}`;
+                expect(saved).toMatchObject({
+                  revision: 2,
+                  profile: { name: '小禾', expressionStyle: 'concise' },
+                });
+                expect(task.binding.executionSnapshot.instance?.revision).toBe(
+                  1,
+                );
+              } else {
+                expect(input.tools?.map((tool) => tool.name)).not.toContain(
+                  profileTool,
+                );
+              }
               if (mode === 'image_generation_with_assistants') {
                 expect(input.tools?.map((t) => t.name)).toEqual(
                   expect.arrayContaining([
