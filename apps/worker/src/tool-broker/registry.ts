@@ -1,3 +1,7 @@
+import {
+  inspectEmployeeMethod,
+  saveEmployeeMethod,
+} from './handlers/employee-method.js';
 import { generateImage } from './handlers/image.js';
 import { updateEmployeeProfile } from './handlers/employee-profile.js';
 import { runProjectWorkspace } from './handlers/project.js';
@@ -66,6 +70,14 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'workspace.employee.method.inspect': registration(
+    'workspace',
+    inspectEmployeeMethod,
+  ),
+  'workspace.employee.method.save_candidate': registration(
+    'workspace',
+    saveEmployeeMethod,
+  ),
   'workspace.employee.profile.update': registration(
     'workspace',
     updateEmployeeProfile,

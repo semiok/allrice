@@ -1,4 +1,24 @@
+import {
+  inspectEmployeeMethodFromChat,
+  saveEmployeeMethodFromChat,
+  filterEmployeeMethodMemories,
+} from './employee-method-chat.ts';
+import {
+  prepareEmployeeContentContext,
+  assertEmployeeContentContext,
+  assertEmployeeContentReferenceMessages,
+} from './employee-runtime-content.ts';
+import { getEmployeeContentSet } from './employee-content.ts';
 import { randomUUID } from 'node:crypto';
+import {
+  prepareReferenceUpload,
+  completeReferenceUpload,
+  changeReference,
+} from '../reference-library.ts';
+import {
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+} from '../reference-processing.ts';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
@@ -30,6 +50,7 @@ import {
   createAssignedChatSession,
   createChatSession,
   createTraceableMemory,
+  searchWorkspaceMemories,
   getEmployeeWorkspace,
   listChatSessions,
   sendChatMessage,
@@ -174,13 +195,22 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     f: Awaited<ReturnType<typeof setup>>,
     instanceId: string,
     text: string,
+    sessionId?: string,
+    referenceRevisionIds?: string[],
   ) {
-    const session = await f.session(instanceId);
+    const session = sessionId ? { id: sessionId } : await f.session(instanceId);
     const sent = await sendChatMessage(
       f.a.context,
       f.a.workspaceId,
       session.id,
-      { text, clientMessageId: randomUUID() },
+      {
+        text,
+        clientMessageId: randomUUID(),
+        referenceRevisionIds,
+        ...(referenceRevisionIds?.length
+          ? { deliveryMode: 'follow_up' as const }
+          : {}),
+      },
     );
     const workerId = randomUUID(),
       leaseToken = randomUUID();
@@ -204,6 +234,453 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       frozen: row!.execution_snapshot,
     };
   }
+
+  async function methodRun(
+    f: Awaited<ReturnType<typeof setup>>,
+    instanceId: string,
+    text = '请保存我的工作场景候选：每周对账和每月对账，保留原始数据。',
+    sessionId?: string,
+    referenceRevisionIds?: string[],
+  ) {
+    const input = await profileRun(
+      f,
+      instanceId,
+      text,
+      sessionId,
+      referenceRevisionIds,
+    );
+    const scope = {
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+      ownerId: f.a.user.id,
+      sessionId: input.sessionId,
+      runId: input.context.runId,
+    };
+    const runtime = await prepareEmployeeContentContext(scope);
+    expect(runtime).not.toBeNull();
+    const finish = async () => {
+      await fixture.db`update allrice_jobs set status='succeeded',completed_at=now() where run_id=${scope.runId}`;
+      await fixture.db`update allrice_runs set state='succeeded',completed_at=now() where id=${scope.runId}`;
+      await fixture.db`update allrice_employee_runs set status='succeeded',completed_at=now() where run_id=${scope.runId}`;
+    };
+    return { ...input, scope, runtime: runtime!, finish };
+  }
+  it('exposes exact selected reference pins for explicit long-term binding and rechecks withdrawal', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const file = await prepareReferenceUpload(f.a.context, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      scope: 'personal',
+      fileName: '周度口径.txt',
+      purpose: '只读周对账样本',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.from('按实际回款核对').toString('base64'),
+    });
+    await completeReferenceUpload(
+      f.a.context,
+      f.a.workspaceId,
+      file.revisionId,
+    );
+    const claim = await claimReferenceProcessing();
+    expect(claim?.revisionId).toBe(file.revisionId);
+    await finishReferenceProcessing(claim!, [
+      { content: '按实际回款核对', start: 0, end: 7 },
+    ]);
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景候选：按回款核对。请长期引用本次选择的周度口径资料。',
+      undefined,
+      [file.revisionId],
+    );
+    const inspected = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate' },
+    });
+    expect(inspected.selectedReferences).toHaveLength(1);
+    const pin = inspected.selectedReferences[0]!.reference;
+    expect(pin).toMatchObject({
+      sourceKind: 'knowledge',
+      contentId: file.sourceId,
+      revisionId: file.revisionId,
+    });
+    const saved = await saveEmployeeMethodFromChat({
+      ...run,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '每周对账', appliesWhen: '每周' },
+        procedure: '核对回款',
+        references: [pin],
+        changeSummary: '保存周度场景及资料',
+      },
+    });
+    const snapshot = await getEmployeeContentSet(f.a.context, saved.setId);
+    expect(
+      snapshot.set.candidate!.manifest.scenes[0]!.references,
+    ).toContainEqual(pin);
+    await changeReference(f.a.context, file.sourceId, {
+      workspaceId: f.a.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      action: 'archive',
+    });
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+      }),
+    ).rejects.toMatchObject({ code: 'source_changed' });
+  }, 60000);
+
+  it('saves several personal scene candidates, replays exact receipts before merging, and continues across sessions without activation', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const run = await methodRun(f, instance.id);
+    const inspect = async (view: 'effective' | 'candidate' = 'candidate') =>
+      inspectEmployeeMethodFromChat({ ...run, arguments: { view } });
+    expect(await inspect()).toMatchObject({ revision: 0, candidate: null });
+    const common = {
+      expectedRevision: 0,
+      section: 'common',
+      requirements: '保留原始数据 DRAFT_ONLY_MARKER',
+      changeSummary: '通用要求',
+    };
+    const save = (args: unknown, callId = randomUUID()) =>
+      saveEmployeeMethodFromChat({ ...run, callId, arguments: args });
+    const first = await save(common, run.callId);
+    const weekly = await save({
+      expectedRevision: 1,
+      section: 'scene',
+      scene: { name: '每周对账', appliesWhen: '每周' },
+      procedure: '先核对流水，再解释差异',
+      changeSummary: '周对账',
+    });
+    const monthly = await save({
+      expectedRevision: 2,
+      section: 'scene',
+      scene: { name: '每月对账', appliesWhen: '每月' },
+      procedure: '按月汇总后核对',
+      changeSummary: '月对账',
+    });
+    expect([first.revision, weekly.revision, monthly.revision]).toEqual([
+      1, 2, 3,
+    ]);
+    expect(monthly.active).toBeNull();
+    expect(await save(common, run.callId)).toEqual(first);
+    await expect(
+      save({ ...common, requirements: '变更回执输入' }, run.callId),
+    ).rejects.toMatchObject({ code: 'request_conflict' });
+    await expect(save(common)).rejects.toMatchObject({
+      code: 'version_conflict',
+    });
+    const initial = await getEmployeeContentSet(f.a.context, first.setId);
+    const [week, month] = initial.set.candidate!.manifest.scenes;
+    expect(week!.name).toBe('每周对账');
+    expect(month!.name).toBe('每月对账');
+    expect(JSON.stringify(await inspect('effective'))).not.toContain(
+      'DRAFT_ONLY_MARKER',
+    );
+    await run.finish();
+    const continuation = await methodRun(
+      f,
+      instance.id,
+      '请调整我的每月对账工作场景候选：增加检查期间。',
+    );
+    const continued = await inspectEmployeeMethodFromChat({
+      ...continuation,
+      arguments: { view: 'candidate' },
+    });
+    expect(continued).toMatchObject({ revision: 3 });
+    const updated = await saveEmployeeMethodFromChat({
+      ...continuation,
+      arguments: {
+        expectedRevision: 3,
+        section: 'scene',
+        scene: {
+          id: month!.id,
+          name: month!.name,
+          appliesWhen: month!.appliesWhen,
+        },
+        requirements: '先检查月份完整',
+        changeSummary: '增加期间检查',
+      },
+    });
+    expect(updated).toMatchObject({ revision: 4, active: null });
+    const final = await getEmployeeContentSet(f.a.context, first.setId);
+    expect(final.set.candidate!.manifest.scenes[0]).toEqual(week);
+    expect(final.set.candidate!.manifest.scenes[1]!.references).toEqual(
+      expect.arrayContaining(month!.references),
+    );
+    expect(final.sources.some((s) => s.body?.includes('先检查月份完整'))).toBe(
+      true,
+    );
+    expect(continuation.frozen.content.layers).toEqual([]);
+    await expect(
+      getEmployeeContentSet(f.b.context, first.setId),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  }, 60000);
+
+  it.each(['read', 'conflict', 'intent'] as const)(
+    'retires %s draft context without revoking the original Run or visible history',
+    async (action) => {
+      const f = await setup(true),
+        instance = await f.custom('小白');
+      const run = await methodRun(
+        f,
+        instance.id,
+        action === 'intent'
+          ? '请翻译：保存我的工作场景候选 DRAFT_BOUNDARY'
+          : '请保存我的工作场景候选：DRAFT_BOUNDARY',
+      );
+      if (action === 'read')
+        await inspectEmployeeMethodFromChat({
+          ...run,
+          arguments: { view: 'candidate' },
+        });
+      else
+        await expect(
+          saveEmployeeMethodFromChat({
+            ...run,
+            arguments: {
+              expectedRevision: action === 'conflict' ? 99 : 0,
+              section: 'common',
+              requirements: 'DRAFT_BOUNDARY',
+              changeSummary: '候选',
+            },
+          }),
+        ).rejects.toMatchObject({
+          code:
+            action === 'conflict'
+              ? 'version_conflict'
+              : 'explicit_method_request_required',
+        });
+      const [old] =
+        await fixture.db`select retired_at,invalidated_at from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`;
+      expect(old!.retired_at).not.toBeNull();
+      expect(old!.invalidated_at).toBeNull();
+      expect(
+        (await prepareEmployeeContentContext(run.scope))!.generationId,
+      ).toBe(run.runtime.generationId);
+      await run.finish();
+      const next = await methodRun(
+        f,
+        instance.id,
+        '计算 17 乘以 23。',
+        run.sessionId,
+      );
+      expect(next.runtime.generationId).not.toBe(run.runtime.generationId);
+      expect(next.runtime.nativeContextKey).not.toBe(
+        run.runtime.nativeContextKey,
+      );
+      expect(next.runtime.allowedMessageIds).toContain(next.userMessageId);
+      expect(next.runtime.allowedMessageIds).not.toContain(run.userMessageId);
+      expect(next.runtime.historyFromMessageId).toBe(next.userMessageId);
+      await expect(
+        assertEmployeeContentContext(run.scope, run.runtime.generationId),
+      ).resolves.toBeUndefined();
+      await expect(
+        assertEmployeeContentReferenceMessages(f.a.context, run.sessionId, [
+          run.userMessageId,
+        ]),
+      ).resolves.toBeUndefined();
+      const [message] =
+        await fixture.db`select content->>'text' text from allrice_messages where id=${run.userMessageId}`;
+      expect(message!.text).toContain('DRAFT_BOUNDARY');
+    },
+    60000,
+  );
+
+  it('does not recall memory saved before candidate entry and blocks later memory or implicit reference binding', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景候选：以后保持 DRAFT_MEMORY_MARKER。附件仅供本次参考，不要长期绑定。',
+    );
+    const memory = {
+      workspaceId: f.a.workspaceId,
+      employeeId: run.frozen.employee.id,
+      content: 'DRAFT_MEMORY_MARKER 以后使用的候选工作规则',
+      visibility: 'private',
+      sourceType: 'message',
+      sourceId: run.userMessageId,
+      sourceLabel: 'Synthetic test',
+      lifecycleState: 'durable',
+      memoryClass: 'user_preference',
+      confidence: 1,
+      expiresAt: null,
+    };
+    await createTraceableMemory(f.a.context, memory);
+    expect(
+      await searchWorkspaceMemories(f.a.context, {
+        workspaceId: f.a.workspaceId,
+        query: 'DRAFT_MEMORY_MARKER',
+      }),
+    ).toHaveLength(1);
+    // B is frozen while A is still running, before A discloses any draft.
+    const queued = await sendChatMessage(
+      f.a.context,
+      f.a.workspaceId,
+      run.sessionId,
+      {
+        text: 'DRAFT_MEMORY_MARKER',
+        clientMessageId: randomUUID(),
+      },
+    );
+    const [queuedRow] =
+      await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${queued.run.id}`;
+    const frozenMemories = queuedRow!.prompt_snapshot.memories as {
+      id: string;
+      content: string;
+    }[];
+    expect(frozenMemories).toHaveLength(1);
+    expect(
+      await filterEmployeeMethodMemories(run.scope, frozenMemories),
+    ).toEqual(frozenMemories);
+    await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate' },
+    });
+    expect(
+      await searchWorkspaceMemories(f.a.context, {
+        workspaceId: f.a.workspaceId,
+        query: 'DRAFT_MEMORY_MARKER',
+      }),
+    ).toHaveLength(0);
+    expect(
+      await filterEmployeeMethodMemories(run.scope, frozenMemories),
+    ).toEqual([]);
+    const [historical] =
+      await fixture.db`select prompt_snapshot from allrice_employee_runs where run_id=${queued.run.id}`;
+    expect(historical!.prompt_snapshot.memories).toEqual(frozenMemories);
+    await expect(
+      createTraceableMemory(f.a.context, memory),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          section: 'common',
+          requirements: '检查输入',
+          changeSummary: '保存',
+          references: [
+            {
+              sourceKind: 'knowledge',
+              contentId: randomUUID(),
+              revisionId: randomUUID(),
+              digest: `sha256:${'a'.repeat(64)}`,
+            },
+          ],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+    expect(
+      await saveEmployeeMethodFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          section: 'common',
+          requirements: '检查输入',
+          changeSummary: '仅保存文本',
+        },
+      }),
+    ).toMatchObject({ revision: 1, active: null });
+  }, 60000);
+
+  it('pins explicitly requested sources and serializes two-session edits without replacing other scenes', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const first = await methodRun(f, instance.id);
+    const original = await saveEmployeeMethodFromChat({
+      ...first,
+      arguments: {
+        expectedRevision: 0,
+        section: 'common',
+        requirements: '原始凭据不可改',
+        changeSummary: '通用要求',
+      },
+    });
+    const initial = await getEmployeeContentSet(f.a.context, original.setId);
+    const ref = initial.set.candidate!.manifest.common[0]!;
+    const authoring = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景候选。请将这份通用要求长期引用。',
+    );
+    const saved = await saveEmployeeMethodFromChat({
+      ...authoring,
+      arguments: {
+        expectedRevision: 1,
+        section: 'scene',
+        scene: { name: '月度', appliesWhen: '每月' },
+        references: [ref],
+        changeSummary: '绑定现有版本',
+      },
+    });
+    const linked = await getEmployeeContentSet(f.a.context, saved.setId);
+    expect(linked.set.candidate!.manifest.scenes[0]!.references).toEqual([ref]);
+    const a = await methodRun(f, instance.id),
+      b = await methodRun(f, instance.id);
+    const edits = await Promise.allSettled(
+      [a, b].map((run, index) =>
+        saveEmployeeMethodFromChat({
+          ...run,
+          arguments: {
+            expectedRevision: 2,
+            section: 'common',
+            requirements: `第${index}个并发调整`,
+            changeSummary: '并发候选',
+          },
+        }),
+      ),
+    );
+    expect(edits.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(edits.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    const final = await getEmployeeContentSet(f.a.context, saved.setId);
+    expect(final.set.revision).toBe(3);
+    expect(final.set.candidate!.manifest.scenes).toEqual(
+      linked.set.candidate!.manifest.scenes,
+    );
+    expect(final.set.active).toBeNull();
+  }, 60000);
+
+  it('rejects foreign actor, general instance, stale lease and revoked assignment for method tools', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白'),
+      run = await methodRun(f, instance.id);
+    const read = (extra = {}) =>
+      inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+        ...extra,
+      });
+    await expect(
+      read({ worker: { ...run.worker, leaseToken: randomUUID() } }),
+    ).rejects.toBeDefined();
+    await expect(read({ userMessageId: randomUUID() })).rejects.toBeDefined();
+    await expect(
+      read({
+        context: {
+          ...run.context,
+          delegatedBy: { type: 'user', id: f.b.user.id },
+        },
+      }),
+    ).rejects.toBeDefined();
+    const general = await profileRun(f, f.assignment.id, '请保存工作场景候选');
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...general,
+        arguments: { view: 'effective' },
+      }),
+    ).rejects.toBeDefined();
+    await f.change('withdraw');
+    await expect(read()).rejects.toBeDefined();
+  }, 60000);
+
   it('patches a private profile through the admitted chat Run, replays the original receipt and freezes the new revision only for later tasks', async () => {
     const f = await setup(true),
       i = await createEmployeeInstance(f.a.context, {

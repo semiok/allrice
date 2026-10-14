@@ -98,7 +98,7 @@ export async function getContentAccess(
 }
 
 export async function requireContentMaintenance(
-  context: RequestContext,
+  context: ContentIdentity,
   ownership: ContentOwnership,
   tx: postgres.TransactionSql,
 ) {

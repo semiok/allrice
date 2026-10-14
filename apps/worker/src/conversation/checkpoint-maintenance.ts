@@ -1,3 +1,4 @@
+import { isEmployeeMethodAuthoringRun } from '@allrice/database';
 import type {
   ContextCheckpoint,
   EmployeeKernelRequest,
@@ -140,9 +141,17 @@ export async function finalizeEmployeeConversationContext(input: {
         previousSummary: input.checkpoint?.summary,
         messages: [...evidence, ...input.checkpointMessages],
       });
-      const memoryCandidate = buildCheckpointMemoryCandidate(
-        input.checkpointMessages,
-      );
+      const authoring =
+        input.contentGenerationId &&
+        (await isEmployeeMethodAuthoringRun({
+          organizationId: input.executionContext.organizationId,
+          workspaceId: input.executionContext.workspaceId!,
+          ownerId: input.ownerId,
+          runId: input.executionContext.runId,
+        }));
+      const memoryCandidate = authoring
+        ? null
+        : buildCheckpointMemoryCandidate(input.checkpointMessages);
       const savedCheckpoint = await saveContextCheckpoint({
         ...input.ownership,
         ownerId: input.ownerId,

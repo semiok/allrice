@@ -49,6 +49,14 @@ import {
 } from './employee-content-model.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
+// HTTP callers provide a login Session; Worker callers provide current Run
+// authority. Never fabricate a login Session ID from the conversation ID.
+type EmployeeContentContext = Pick<
+  RequestContext,
+  'actor' | 'organizationId' | 'workspaceId' | 'requestId'
+> &
+  Partial<Pick<RequestContext, 'sessionId'>>;
+
 type ResolvedTarget = {
   employeeId: string;
   versionId: string;
@@ -89,7 +97,7 @@ async function readRevision(sql: ContentSql, id: string | null) {
   };
 }
 async function setDto(
-  context: RequestContext,
+  context: EmployeeContentContext,
   row: ContentSetRow,
   sql: ContentSql,
 ): Promise<EmployeeContentSet> {
@@ -114,7 +122,7 @@ async function setDto(
 }
 
 async function resolveTarget(
-  context: RequestContext,
+  context: EmployeeContentContext,
   target: ContentTarget,
   sql: ContentSql,
   lock: boolean,
@@ -145,6 +153,8 @@ async function resolveTarget(
       where id=${instance!.assignmentId} and employee_id=${employeeId} and active ${lock ? sql`for share` : sql``}`;
     if (!assignment) throw new DataAccessError('authorization_denied');
     versionId = assignment.employee_version_id;
+    if (lock)
+      await sql`select id from allrice_employee_instances where id=${target.instanceId} for share`;
     // Publication/revocation may have committed while waiting for the row.
     await getEmployeeInstance(context, target.instanceId, sql);
   } else {
@@ -239,7 +249,7 @@ async function inheritedRows(
 /** The same resolver powers validation and effective reads. Inherited indexes
  * are additive; a lower manifest cannot delete or replace an upstream entry. */
 async function assemble(
-  context: RequestContext,
+  context: EmployeeContentContext,
   target: ResolvedTarget,
   ownership: ContentScope,
   sql: ContentSql,
@@ -350,7 +360,7 @@ async function assemble(
 }
 
 async function saveTextEdits(
-  context: RequestContext,
+  context: EmployeeContentContext,
   input: Extract<EmployeeContentMutation, { operation: 'save_draft' }>,
   tx: ContentTx,
 ) {
@@ -427,153 +437,170 @@ async function saveTextEdits(
 }
 
 export async function mutateEmployeeContent(
-  contextInput: RequestContext,
+  contextInput: EmployeeContentContext,
   raw: unknown,
   db = getDatabase(),
 ): Promise<EmployeeContentReceipt> {
-  const input = EmployeeContentMutationSchema.parse(raw),
-    context = { ...contextInput, workspaceId: input.workspaceId };
-  return db.begin(async (tx) => {
-    await requireContentMaintenance(context, input.ownership, tx);
-    // Short company transaction gate serializes absent-layer insertion and
-    // cross-layer validation without a check-then-insert/activation race.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${context.organizationId}`},0))`;
-    const target = await resolveTarget(context, input.target, tx, true);
-    if (
-      input.ownership.scope === 'personal' &&
-      input.ownership.ownerId !== context.actor.id
-    )
-      throw new DataAccessError('authorization_denied');
-    let [row] = await tx<
-      ContentSetRow[]
-    >`select * from allrice_employee_content_sets where id=${input.setId} for update`;
-    if (
-      row &&
-      (row.organization_id !== context.organizationId ||
-        row.workspace_id !== context.workspaceId ||
-        runtimePolicyDigest(contentOwnership(row)) !==
-          runtimePolicyDigest(input.ownership) ||
-        runtimePolicyDigest(contentTarget(row)) !==
-          runtimePolicyDigest(input.target))
-    )
-      throw new DataAccessError('not_found');
-    const inputDigest = runtimePolicyDigest(input);
-    const [previous] = await tx<
-      { input_digest: string; response: unknown }[]
-    >`select input_digest,response from allrice_employee_content_requests
+  const input = EmployeeContentMutationSchema.parse(raw);
+  const context = { ...contextInput, workspaceId: input.workspaceId };
+  return db.begin((tx) =>
+    mutateEmployeeContentInTransaction(context, input, tx),
+  );
+}
+
+/** Internal composition point for controlled chat edits. Stable original input
+ * is checked before merging a partial edit against the latest candidate. */
+export async function mutateEmployeeContentInTransaction(
+  context: EmployeeContentContext,
+  input: EmployeeContentMutation,
+  tx: ContentTx,
+  options: {
+    inputDigest?: string;
+    authorize?: () => Promise<void>;
+    buildInput?: (
+      row: ContentSetRow | undefined,
+    ) => Promise<EmployeeContentMutation>;
+  } = {},
+): Promise<EmployeeContentReceipt> {
+  await requireContentMaintenance(context, input.ownership, tx);
+  // Short company transaction gate serializes absent-layer insertion and
+  // cross-layer validation without a check-then-insert/activation race.
+  await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${context.organizationId}`},0))`;
+  const target = await resolveTarget(context, input.target, tx, true);
+  if (
+    input.ownership.scope === 'personal' &&
+    input.ownership.ownerId !== context.actor.id
+  )
+    throw new DataAccessError('authorization_denied');
+  await options.authorize?.();
+  let [row] = await tx<
+    ContentSetRow[]
+  >`select * from allrice_employee_content_sets where id=${input.setId} for update`;
+  if (
+    row &&
+    (row.organization_id !== context.organizationId ||
+      row.workspace_id !== context.workspaceId ||
+      runtimePolicyDigest(contentOwnership(row)) !==
+        runtimePolicyDigest(input.ownership) ||
+      runtimePolicyDigest(contentTarget(row)) !==
+        runtimePolicyDigest(input.target))
+  )
+    throw new DataAccessError('not_found');
+  const inputDigest = options.inputDigest ?? runtimePolicyDigest(input);
+  const [previous] = await tx<
+    { input_digest: string; response: unknown }[]
+  >`select input_digest,response from allrice_employee_content_requests
       where organization_id=${context.organizationId} and workspace_id=${context.workspaceId} and actor_id=${context.actor.id} and request_id=${input.requestId}`;
-    if (previous) {
-      if (previous.input_digest !== inputDigest)
-        throw new EmployeeContentError('request_conflict');
-      return EmployeeContentReceiptSchema.parse(previous.response);
-    }
-    if ((row?.revision ?? 0) !== input.expectedRevision)
-      throw new EmployeeContentError('version_conflict');
-    if (!row) {
-      if (input.operation !== 'save_draft')
-        throw new DataAccessError('not_found');
-      const [inserted] = await tx<
-        ContentSetRow[]
-      >`insert into allrice_employee_content_sets
+  if (previous) {
+    if (previous.input_digest !== inputDigest)
+      throw new EmployeeContentError('request_conflict');
+    return EmployeeContentReceiptSchema.parse(previous.response);
+  }
+  if ((row?.revision ?? 0) !== input.expectedRevision)
+    throw new EmployeeContentError('version_conflict');
+  if (options.buildInput)
+    input = EmployeeContentMutationSchema.parse(await options.buildInput(row));
+  if (!row) {
+    if (input.operation !== 'save_draft')
+      throw new DataAccessError('not_found');
+    const [inserted] = await tx<
+      ContentSetRow[]
+    >`insert into allrice_employee_content_sets
         (id,organization_id,workspace_id,employee_id,instance_id,scope,owner_id,department_id,created_by)
         values(${input.setId},${context.organizationId},${context.workspaceId},${target.employeeId},${target.instanceId},${input.ownership.scope},
           ${input.ownership.scope === 'personal' ? input.ownership.ownerId : null},
           ${input.ownership.scope === 'department' ? input.ownership.departmentId : null},${context.actor.id})
         on conflict do nothing returning *`;
-      if (!inserted) throw new EmployeeContentError('version_conflict');
-      row = inserted;
-    }
-    const next = row.revision + 1;
-    let candidate: ContentRevisionRow,
-      validation: EmployeeContentValidation | null = null;
-    let active = await readRevision(tx, row.active_revision_id);
-    if (
-      input.operation === 'save_draft' ||
-      input.operation === 'restore_draft'
-    ) {
-      let manifest: EmployeeContentManifest;
-      if (input.operation === 'save_draft')
-        manifest = await saveTextEdits(context, input, tx);
-      else {
-        const source = await readRevision(tx, input.sourceRevisionId);
-        if (!source || source.set_id !== row.id)
-          throw new DataAccessError('not_found');
-        const [invalidated] =
-          await tx`select revision_id from allrice_employee_content_publications
+    if (!inserted) throw new EmployeeContentError('version_conflict');
+    row = inserted;
+  }
+  const next = row.revision + 1;
+  let candidate: ContentRevisionRow,
+    validation: EmployeeContentValidation | null = null;
+  let active = await readRevision(tx, row.active_revision_id);
+  if (input.operation === 'save_draft' || input.operation === 'restore_draft') {
+    let manifest: EmployeeContentManifest;
+    if (input.operation === 'save_draft')
+      manifest = await saveTextEdits(context, input, tx);
+    else {
+      const source = await readRevision(tx, input.sourceRevisionId);
+      if (!source || source.set_id !== row.id)
+        throw new DataAccessError('not_found');
+      const [invalidated] =
+        await tx`select revision_id from allrice_employee_content_publications
           where set_id=${row.id} and revision_id=${source.id} and invalidated_at is not null`;
-        if (invalidated) throw new EmployeeContentError('source_changed');
-        manifest = source.manifest;
-      }
-      const id = randomUUID(),
-        digest = runtimePolicyDigest(manifest);
-      const [revision] = await tx<
-        ContentRevisionRow[]
-      >`insert into allrice_employee_content_revisions
+      if (invalidated) throw new EmployeeContentError('source_changed');
+      manifest = source.manifest;
+    }
+    const id = randomUUID(),
+      digest = runtimePolicyDigest(manifest);
+    const [revision] = await tx<
+      ContentRevisionRow[]
+    >`insert into allrice_employee_content_revisions
         (id,set_id,number,manifest,digest,change_summary,created_by,restored_from_revision_id)
         values(${id},${row.id},${next},${tx.json(manifest)},${digest},${input.changeSummary},${context.actor.id},
           ${input.operation === 'restore_draft' ? input.sourceRevisionId : null}) returning *`;
-      candidate = revision!;
-    } else {
-      const saved = await readRevision(tx, row.candidate_revision_id);
-      if (
-        !saved ||
-        saved.id !== input.candidateRevisionId ||
-        saved.digest !== input.candidateDigest
-      )
-        throw new EmployeeContentError('version_conflict');
-      candidate = saved;
-      const result = await assemble(
-        context,
-        target,
-        input.ownership,
-        tx,
-        { row, revision: candidate },
-        true,
-      );
-      validation = result.validation;
-      if (input.operation === 'activate') {
-        if (!row.validation?.valid)
-          throw new EmployeeContentError('validation_required');
-        if (!validation.valid)
-          throw new EmployeeContentError('validation_failed');
-        if (row.validation.dependencyDigest !== validation.dependencyDigest)
-          throw new EmployeeContentError('source_changed');
-        if (input.invalidatePrevious && active && active.id !== candidate.id)
-          await tx`update allrice_employee_content_publications set invalidated_at=clock_timestamp()
+    candidate = revision!;
+  } else {
+    const saved = await readRevision(tx, row.candidate_revision_id);
+    if (
+      !saved ||
+      saved.id !== input.candidateRevisionId ||
+      saved.digest !== input.candidateDigest
+    )
+      throw new EmployeeContentError('version_conflict');
+    candidate = saved;
+    const result = await assemble(
+      context,
+      target,
+      input.ownership,
+      tx,
+      { row, revision: candidate },
+      true,
+    );
+    validation = result.validation;
+    if (input.operation === 'activate') {
+      if (!row.validation?.valid)
+        throw new EmployeeContentError('validation_required');
+      if (!validation.valid)
+        throw new EmployeeContentError('validation_failed');
+      if (row.validation.dependencyDigest !== validation.dependencyDigest)
+        throw new EmployeeContentError('source_changed');
+      if (input.invalidatePrevious && active && active.id !== candidate.id)
+        await tx`update allrice_employee_content_publications set invalidated_at=clock_timestamp()
             where set_id=${row.id} and revision_id=${active.id} and invalidated_at is null`;
-        // A revoked publication cannot be resurrected by re-activating the
-        // same revision. A corrected version needs its own immutable revision.
-        const [revoked] =
-          await tx`select revision_id from allrice_employee_content_publications
+      // A revoked publication cannot be resurrected by re-activating the
+      // same revision. A corrected version needs its own immutable revision.
+      const [revoked] =
+        await tx`select revision_id from allrice_employee_content_publications
           where set_id=${row.id} and revision_id=${candidate.id} and invalidated_at is not null`;
-        if (revoked) throw new EmployeeContentError('source_changed');
-        await tx`insert into allrice_employee_content_publications(set_id,revision_id)
+      if (revoked) throw new EmployeeContentError('source_changed');
+      await tx`insert into allrice_employee_content_publications(set_id,revision_id)
           values(${row.id},${candidate.id}) on conflict do nothing`;
-        for (const source of result.resolved)
-          if (source.publish) {
-            await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by)
+      for (const source of result.resolved)
+        if (source.publish) {
+          await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by)
             values(${source.publish.contentId},${source.publish.revisionId},${context.actor.id}) on conflict do nothing`;
-            await tx`update allrice_company_assets set state='published',published_revision_id=${source.publish.revisionId},revision=revision+1,updated_at=clock_timestamp()
+          await tx`update allrice_company_assets set state='published',published_revision_id=${source.publish.revisionId},revision=revision+1,updated_at=clock_timestamp()
             where id=${source.publish.contentId} and latest_revision_id=${source.publish.revisionId}`;
-          }
-        active = candidate;
-      }
+        }
+      active = candidate;
     }
-    await tx`update allrice_employee_content_sets set revision=${next},candidate_revision_id=${candidate.id},active_revision_id=${active?.id ?? null},
+  }
+  await tx`update allrice_employee_content_sets set revision=${next},candidate_revision_id=${candidate.id},active_revision_id=${active?.id ?? null},
       validation=${validation ? tx.json(validation) : null},updated_at=clock_timestamp() where id=${row.id}`;
-    const response = EmployeeContentReceiptSchema.parse({
-      setId: row.id,
-      revision: next,
-      candidate: { id: candidate.id, digest: candidate.digest },
-      active: active ? { id: active.id, digest: active.digest } : null,
-      validation,
-    });
-    await tx`insert into allrice_employee_content_requests(id,organization_id,workspace_id,actor_id,request_id,set_id,operation,input_digest,response)
-      values(${randomUUID()},${context.organizationId},${context.workspaceId},${context.actor.id},${input.requestId},${row.id},${input.operation},${inputDigest},${tx.json(response)})`;
-    await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
-      values(${context.organizationId},${context.workspaceId},${context.actor.id},${`employee.content.${input.operation}`},'employee_content_set',${row.id},'allowed','current_scope_authority',${context.requestId})`;
-    return response;
+  const response = EmployeeContentReceiptSchema.parse({
+    setId: row.id,
+    revision: next,
+    candidate: { id: candidate.id, digest: candidate.digest },
+    active: active ? { id: active.id, digest: active.digest } : null,
+    validation,
   });
+  await tx`insert into allrice_employee_content_requests(id,organization_id,workspace_id,actor_id,request_id,set_id,operation,input_digest,response)
+      values(${randomUUID()},${context.organizationId},${context.workspaceId},${context.actor.id},${input.requestId},${row.id},${input.operation},${inputDigest},${tx.json(response)})`;
+  await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
+      values(${context.organizationId},${context.workspaceId},${context.actor.id},${`employee.content.${input.operation}`},'employee_content_set',${row.id},'allowed','current_scope_authority',${context.requestId})`;
+  return response;
 }
 
 /** Freeze only active indexes at the Run's exact employee version. Scene
@@ -632,7 +659,7 @@ export async function freezeEmployeeRuntimeContent(
 }
 
 export async function getEmployeeContentSet(
-  context: RequestContext,
+  context: EmployeeContentContext,
   idInput: string,
   db = getDatabase(),
 ) {
@@ -669,7 +696,7 @@ export async function getEmployeeContentSet(
 /** Maintainer history contains immutable reference indexes, never source bodies.
  * Reading a source or enabling a restored candidate still requires current ACL. */
 export async function getEmployeeContentHistory(
-  context: RequestContext,
+  context: EmployeeContentContext,
   idInput: string,
   beforeRevision?: number,
 ) {
@@ -711,7 +738,7 @@ export async function getEmployeeContentHistory(
 }
 
 export async function getEffectiveEmployeeContent(
-  context: RequestContext,
+  context: EmployeeContentContext,
   instanceIdInput: string,
   db = getDatabase(),
 ) {
@@ -748,4 +775,92 @@ export async function getEffectiveEmployeeContent(
       validation: result.validation,
     });
   });
+}
+
+/** Chat inspection never leaks a maintainer's upstream draft through the
+ * effective view. Candidate inspection is limited to this private instance. */
+export async function inspectEmployeeMethodContent(
+  context: EmployeeContentContext,
+  instanceId: string,
+  view: 'effective' | 'candidate',
+  tx: ContentTx,
+) {
+  const target = await resolveTarget(
+    context,
+    { kind: 'instance', instanceId },
+    tx,
+    false,
+  );
+  if (view === 'effective') {
+    const result = await assemble(
+      context,
+      target,
+      {
+        scope: 'personal',
+        organizationId: context.organizationId,
+        ownerId: context.actor.id,
+      },
+      tx,
+    );
+    return {
+      view,
+      instanceId,
+      platform: result.platform,
+      common: result.common,
+      scenes: result.scenes,
+      sources: result.resolved.map((s) => s.dto),
+      validation: result.validation,
+      layers: await Promise.all(
+        result.rows.map(async (row) => ({
+          ownership: contentOwnership(row),
+          active: await readRevision(tx, row.active_revision_id).then((r) =>
+            r ? revisionDto(r) : null,
+          ),
+        })),
+      ),
+    };
+  }
+  const [row] = await tx<
+    ContentSetRow[]
+  >`select * from allrice_employee_content_sets
+    where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+      and instance_id=${instanceId} and scope='personal' and owner_id=${context.actor.id}`;
+  if (!row)
+    return {
+      view,
+      instanceId,
+      setId: null,
+      revision: 0,
+      candidate: null,
+      active: null,
+      sources: [],
+    };
+  const candidate = await readRevision(tx, row.candidate_revision_id);
+  const active = await readRevision(tx, row.active_revision_id);
+  const sources = [];
+  for (const ref of new Map(
+    refs(candidate?.manifest ?? emptyManifest).map((r) => [exactKey(r), r]),
+  ).values())
+    sources.push(
+      (
+        await resolveEmployeeContentSource({
+          context,
+          employeeId: row.employee_id,
+          ownership: contentOwnership(row),
+          ref,
+          sql: tx,
+          lock: false,
+          allowDraft: true,
+        })
+      ).dto,
+    );
+  return {
+    view,
+    instanceId,
+    setId: row.id,
+    revision: row.revision,
+    candidate: candidate ? revisionDto(candidate) : null,
+    active: active ? { id: active.id, digest: active.digest } : null,
+    sources,
+  };
 }

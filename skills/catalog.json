@@ -324,6 +324,26 @@
         "workspace.export.create"
       ],
       "enabled": true
+    },
+    {
+      "id": "bf08fedb-c962-466f-a42f-36a397174cec",
+      "name": "employee-customization",
+      "contentFile": "skills/employee-customization/SKILL.md",
+      "version": "1.0.0",
+      "checksum": "sha256:a6581e8028887e68ea67bb373535831b76747c70d16792a34ebde0a80fc4485a",
+      "source": "allrice",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/employee-customization?content-sha256=a6581e8028887e68ea67bb373535831b76747c70d16792a34ebde0a80fc4485a",
+      "license": "Apache-2.0",
+      "reviewStatus": "reviewed",
+      "reviewedByLabel": "MET-181 controlled personal method candidates",
+      "createdByLabel": "MET-181 PR2",
+      "modelInvocable": true,
+      "userInvocable": true,
+      "requiredToolRefs": [
+        "workspace.employee.method.inspect",
+        "workspace.employee.method.save_candidate"
+      ],
+      "enabled": true
     }
   ]
 }
