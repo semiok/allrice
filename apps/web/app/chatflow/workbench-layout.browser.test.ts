@@ -1245,6 +1245,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         throw error;
       });
     const panel = page.locator('#artifact-workbench:not([aria-hidden="true"])');
+    // Dock refresh can hide a retained tab between resolving a role locator
+    // and clicking. Resolve the currently visible menu throughout the action.
+    const fileMenu = panel
+      .locator('button[aria-label="更多文件操作"]:visible')
+      .last();
     const entry = page.getByRole('button', { name: /▤ 交付成果/ });
     return {
       context,
@@ -1263,17 +1268,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         finishStream();
       },
       async fileAction(name: string) {
-        await panel
-          .getByRole('button', { name: '更多文件操作', exact: true })
-          .last()
-          .click();
+        await fileMenu.click();
         await page.getByRole('menuitem', { name, exact: true }).click();
       },
       async selectArtifact(n: number) {
-        await panel
-          .getByRole('button', { name: '更多文件操作', exact: true })
-          .last()
-          .click();
+        await fileMenu.click();
         await page
           .getByRole('menuitem', { name: '查看所有成果', exact: true })
           .click();
@@ -1283,10 +1282,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
       async reloadList() {
         await entry.click();
-        await panel
-          .getByRole('button', { name: '更多文件操作', exact: true })
-          .last()
-          .waitFor();
+        await fileMenu.waitFor();
       },
       async close() {
         releaseStartup();
