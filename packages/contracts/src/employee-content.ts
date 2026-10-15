@@ -69,9 +69,14 @@ export const EmployeeMethodInspectSchema = z
   .object({
     view: z.enum(['effective', 'candidate', 'history']),
     scope: z.enum(['personal', 'department', 'company']).optional(),
+    departmentId: UuidSchema.optional(),
     beforeRevision: z.number().int().positive().optional(),
   })
   .strict()
+  .refine(
+    (input) => input.departmentId === undefined || input.scope === 'department',
+    { message: 'A selected department requires department scope.' },
+  )
   .refine(
     (input) => input.beforeRevision === undefined || input.view === 'history',
     {

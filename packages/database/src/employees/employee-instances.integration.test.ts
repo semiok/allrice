@@ -1,4 +1,5 @@
 import { companyMethodAcceptancePhrases } from './employee-method-company.fixture.ts';
+import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
 import { departmentMethodAcceptancePhrases } from './employee-method-department.fixture.ts';
 import {
   createOrganizationDepartment,
@@ -368,7 +369,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   async function retryFixture(
     caseId = 'cny-total-v1',
     inheritedCommon = false,
-    department: boolean | 'company' = false,
+    department: boolean | 'company' | 'selected' = false,
   ) {
     const f = await setup(true),
       instance = await f.custom('重试测试');
@@ -377,7 +378,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const phrases =
       department === 'company'
         ? companyMethodAcceptancePhrases
-        : departmentMethodAcceptancePhrases;
+        : department === 'selected'
+          ? selectedDepartmentMethodAcceptancePhrases(
+              departmentInfo!.other.name,
+            )
+          : departmentMethodAcceptancePhrases;
+    if (department === 'selected')
+      await departmentInfo!.configure(
+        f.a.user.id,
+        departmentInfo!.department.id,
+        'company',
+      );
     if (department === 'company') {
       await departmentInfo!.configure(
         f.a.user.id,
@@ -515,7 +526,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const inspected = department
       ? await inspectEmployeeMethodFromChat({
           ...editing,
-          arguments: { view: 'candidate', scope: sharedScope },
+          arguments: {
+            view: 'candidate',
+            scope: sharedScope,
+            ...(department === 'selected'
+              ? { departmentId: departmentInfo!.other.id }
+              : {}),
+          },
         })
       : undefined;
     const shared =
@@ -637,7 +654,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       },
     });
   }
-  async function activationFixture(department: boolean | 'company' = false) {
+  async function activationFixture(
+    department: boolean | 'company' | 'selected' = false,
+  ) {
     const base = await retryFixture('cny-total-v1', false, department);
     const { f, instance, args, test } = base;
     if (department === 'company')
@@ -649,7 +668,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       department
         ? (department === 'company'
             ? companyMethodAcceptancePhrases
-            : departmentMethodAcceptancePhrases
+            : department === 'selected'
+              ? selectedDepartmentMethodAcceptancePhrases(
+                  base.departmentInfo!.other.name,
+                )
+              : departmentMethodAcceptancePhrases
           ).confirm
         : '请查看通过的测试并让我确认启用。',
     );
@@ -659,6 +682,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         view: 'candidate',
         ...(department
           ? { scope: department === 'company' ? 'company' : 'department' }
+          : {}),
+        ...(department === 'selected'
+          ? { departmentId: base.departmentInfo!.other.id }
           : {}),
       },
     });
@@ -774,6 +800,304 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       activate,
     };
   }
+
+  it('company maintainer selects another department through the full save/test/confirmation/new-session chain', async () => {
+    const x = await activationFixture('selected');
+    const target = x.departmentInfo!.other;
+    expect(x.args.sharedTarget).toMatchObject({
+      scope: 'department',
+      departmentId: target.id,
+    });
+    expect(x.preview.question.question).toContain(target.name);
+    expect(x.preview.question.question).toContain('该目标部门');
+    expect(x.preview.question.question).not.toContain('影响本部门');
+    await x.show();
+    await x.answer();
+    expect((await x.activate()).enabled).toBe(true);
+    expect((await x.activate()).replayed).toBe(true);
+    await x.run.finish();
+    expect(
+      (
+        await getEffectiveEmployeeContent(x.f.a.context, x.instance.id)
+      ).scenes.map((s) => s.name),
+    ).not.toContain('金额合计');
+    await x.departmentInfo!.configure(x.f.b.user.id, target.id, 'personal');
+    const peer = await createEmployeeInstance(x.f.b.context, {
+      workspaceId: x.f.b.workspaceId,
+      assignmentId: x.f.bAssignment.id,
+      requestId: randomUUID(),
+      profile: { name: '目标部门员工' },
+    });
+    const session = await createChatSession(x.f.b.context, {
+      workspaceId: x.f.b.workspaceId,
+      employeeInstanceId: peer.id,
+      title: '目标部门独立任务',
+    });
+    const adopted = await methodRun(
+      { ...x.f, a: x.f.b },
+      peer.id,
+      selectedDepartmentMethodAcceptancePhrases(target.name).adopt,
+      session.id,
+    );
+    expect(adopted.frozen.content.layers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ setId: x.saved.setId }),
+      ]),
+    );
+    await adopted.finish();
+    await x.departmentInfo!.configure(
+      x.f.a.user.id,
+      x.departmentInfo!.department.id,
+      'department',
+    );
+    const replay = await methodRun(x.f, x.instance.id);
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...replay,
+        arguments: {
+          view: 'candidate',
+          scope: 'department',
+          departmentId: target.id,
+        },
+      }),
+    ).rejects.toThrow('authorization_denied');
+    await replay.finish();
+  });
+
+  it('selected department consumed activation cannot replay after company maintainer is downgraded', async () => {
+    const x = await activationFixture('selected');
+    await x.show();
+    await x.answer();
+    await x.activate();
+    await x.departmentInfo!.configure(
+      x.f.a.user.id,
+      x.departmentInfo!.department.id,
+      'department',
+    );
+    await expect(x.activate()).rejects.toThrow('authorization_denied');
+    await x.run.finish();
+  });
+
+  it('named sharing and test denials leave the candidate, test queue and model routes unchanged', async () => {
+    const x = await retryFixture('cny-total-v1', false, 'selected');
+    await passActivationTest(x.f, x.test);
+    const phrases = selectedDepartmentMethodAcceptancePhrases(
+      x.departmentInfo!.other.name,
+    );
+    for (const target of [
+      `部门「${x.departmentInfo!.other.name}」`,
+      `部门 ${x.departmentInfo!.other.name}`,
+      `部门 ${x.departmentInfo!.other.id}`,
+    ]) {
+      const editing = await methodRun(
+        x.f,
+        x.instance.id,
+        phrases.save + `不要向${target}共享。`,
+      );
+      await expect(
+        saveEmployeeMethodFromChat({
+          ...editing,
+          arguments: {
+            sharedTarget: x.args.sharedTarget,
+            expectedRevision: x.saved.revision,
+            section: 'scene',
+            scene: { id: x.args.sceneId },
+            procedure: 'Must not save',
+            changeSummary: 'Denied sharing',
+          },
+        }),
+      ).rejects.toThrow('explicit_method_request_required');
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
+          .revision,
+      ).toBe(x.saved.revision);
+      await editing.finish();
+    }
+    for (const denial of [
+      '先不要测试部门「验收运营部」的工作场景候选。',
+      '暂不测试。',
+    ]) {
+      const run = await methodRun(x.f, x.instance.id, phrases.test + denial);
+      const count = () => fixture.db`select
+        (select count(*)::int from allrice_employee_method_tests where instance_id=${x.instance.id}) tests,
+        (select count(*)::int from allrice_runs where organization_id=${x.f.a.organizationId}) runs,
+        (select count(*)::int from allrice_route_decisions where organization_id=${x.f.a.organizationId}) routes`;
+      const before = await count();
+      await expect(
+        startEmployeeMethodTestFromChat({ ...run, arguments: x.args }),
+      ).rejects.toThrow('explicit_method_request_required');
+      expect(await count()).toEqual(before);
+      await run.finish();
+    }
+  });
+
+  it('company maintainer without membership discovers choices and must explicitly select an active company department', async () => {
+    const f = await setup(true),
+      instance = await f.custom('部门选择'),
+      d = await departmentFixture(f);
+    await d.configure(f.a.user.id, null, 'company');
+    const editing = await methodRun(
+      f,
+      instance.id,
+      selectedDepartmentMethodAcceptancePhrases(d.other.name).save,
+    );
+    const choices = await inspectEmployeeMethodFromChat({
+      ...editing,
+      arguments: { view: 'candidate', scope: 'department' },
+    });
+    expect(choices).toMatchObject({
+      selectionRequired: true,
+      sharedTarget: null,
+    });
+    expect('departments' in choices && choices.departments).toEqual(
+      expect.arrayContaining(
+        [d.department, d.other].map(({ id, name }) => ({ id, name })),
+      ),
+    );
+    const selected = await inspectEmployeeMethodFromChat({
+      ...editing,
+      arguments: {
+        view: 'candidate',
+        scope: 'department',
+        departmentId: d.other.id,
+      },
+    });
+    expect('sharedTarget' in selected && selected.sharedTarget).toMatchObject({
+      departmentId: d.other.id,
+    });
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...editing,
+        arguments: {
+          view: 'candidate',
+          scope: 'department',
+          departmentId: randomUUID(),
+        },
+      }),
+    ).rejects.toThrow('authorization_denied');
+    await editing.finish();
+  });
+
+  it.each([
+    'own-wording',
+    'wrong-name',
+    'personal-body',
+    'foreign-id',
+  ] as const)(
+    'selected department cannot be supplied by the model instead of direct consent: %s',
+    async (mismatch) => {
+      const x = await retryFixture('cny-total-v1', false, 'selected');
+      await passActivationTest(x.f, x.test);
+      const text =
+        mismatch === 'own-wording'
+          ? departmentMethodAcceptancePhrases.save
+          : mismatch === 'wrong-name'
+            ? selectedDepartmentMethodAcceptancePhrases(
+                x.departmentInfo!.department.name,
+              ).save
+            : mismatch === 'personal-body'
+              ? '请保存我的工作场景候选：资料来自验收运营部。'
+              : selectedDepartmentMethodAcceptancePhrases(
+                  x.departmentInfo!.other.name,
+                ).save;
+      const editing = await methodRun(x.f, x.instance.id, text);
+      await expect(
+        saveEmployeeMethodFromChat({
+          ...editing,
+          arguments: {
+            sharedTarget:
+              mismatch === 'foreign-id'
+                ? { ...x.args.sharedTarget, departmentId: randomUUID() }
+                : x.args.sharedTarget,
+            expectedRevision: x.saved.revision,
+            section: 'scene',
+            scene: { id: x.args.sceneId },
+            procedure: '不得被写入',
+            changeSummary: 'Rejected mismatch',
+          },
+        }),
+      ).rejects.toThrow();
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
+          .revision,
+      ).toBe(x.saved.revision);
+      await editing.finish();
+      const testing = await methodRun(
+        x.f,
+        x.instance.id,
+        mismatch === 'wrong-name'
+          ? selectedDepartmentMethodAcceptancePhrases(
+              x.departmentInfo!.department.name,
+            ).test
+          : departmentMethodAcceptancePhrases.test,
+      );
+      await expect(
+        startEmployeeMethodTestFromChat({ ...testing, arguments: x.args }),
+      ).rejects.toThrow('explicit_method_request_required');
+      await testing.finish();
+    },
+  );
+
+  it.each(['rename', 'demotion'] as const)(
+    'selected department queued test rejects %s before paid admission',
+    async (change) => {
+      const x = await retryFixture('cny-total-v1', false, 'selected');
+      if (change === 'rename')
+        await updateOrganizationDepartment(
+          x.f.admin.context,
+          x.f.a.organizationId,
+          x.departmentInfo!.other.id,
+          {
+            name: '目标部门已改名',
+            expectedRevision: x.departmentInfo!.other.revision,
+            active: true,
+          },
+        );
+      else
+        await x.departmentInfo!.configure(
+          x.f.a.user.id,
+          x.departmentInfo!.department.id,
+          'department',
+        );
+      const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+      expect(claim?.id).not.toBe(x.test.id);
+      const [row] =
+        await fixture.db`select r.status,t.run_id from allrice_employee_method_tests t join allrice_platform_employee_test_runs r on r.id=t.test_id where t.test_id=${x.test.id}`;
+      expect(row).toMatchObject({ status: 'failed', run_id: null });
+    },
+  );
+
+  it.each(['rename', 'demotion', 'archive'] as const)(
+    'selected department pending exact confirmation rejects %s',
+    async (change) => {
+      const x = await activationFixture('selected');
+      await x.show();
+      await x.answer();
+      if (change === 'demotion')
+        await x.departmentInfo!.configure(
+          x.f.a.user.id,
+          x.departmentInfo!.department.id,
+          'department',
+        );
+      else
+        await updateOrganizationDepartment(
+          x.f.admin.context,
+          x.f.a.organizationId,
+          x.departmentInfo!.other.id,
+          {
+            name:
+              change === 'rename' ? '新部门名' : x.departmentInfo!.other.name,
+            expectedRevision: x.departmentInfo!.other.revision,
+            active: change !== 'archive',
+          },
+        );
+      await expect(x.activate()).rejects.toThrow();
+      const [row] =
+        await fixture.db`select active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
+      expect(row!.active_revision_id).toBeNull();
+      await x.run.finish();
+    },
+  );
 
   it('company original wording completes exact confirmation without department and new-session adoption in two departments', async () => {
     const x = await activationFixture('company');
@@ -1207,7 +1531,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     );
     await expect(
       saveEmployeeMethodFromChat({ ...editing, arguments: args }),
-    ).rejects.toThrow('source_changed');
+    ).rejects.toThrow('authorization_denied');
     const [unchanged] =
       await fixture.db`select revision from allrice_employee_content_sets where id=${x.saved.setId}`;
     expect(unchanged!.revision).toBe(x.saved.revision);

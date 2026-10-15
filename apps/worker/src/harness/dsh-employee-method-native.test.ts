@@ -120,7 +120,11 @@ it.each([
     canonicalName: 'workspace.employee.method.inspect',
     wireName: 'workspace_employee_method_inspect',
     schema: EmployeeMethodInspectSchema,
-    args: { view: 'candidate', scope: 'department' },
+    args: {
+      view: 'candidate',
+      scope: 'department',
+      departmentId: departmentTarget.departmentId,
+    },
   },
   {
     canonicalName: 'workspace.employee.method.save_candidate',
@@ -292,6 +296,7 @@ it('passes candidate view through actual native DSH and excludes target authorit
     inspectSchema(schema) {
       expect(Object.keys(schema.properties as object).sort()).toEqual([
         'beforeRevision',
+        'departmentId',
         'scope',
         'view',
       ]);

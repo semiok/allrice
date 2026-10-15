@@ -37,6 +37,7 @@ import {
   explicitEmployeeMethodTestIntent,
   employeeMethodRequestedScope,
   explicitEmployeeMethodTestRetryIntent,
+  assertEmployeeMethodDepartmentRequest,
 } from './employee-method-chat.ts';
 import {
   assertEmployeeChatExecution,
@@ -166,7 +167,13 @@ async function currentBinding(tx: Tx, b: Binding, admission = false) {
   )
     throw new EmployeeContentError('source_changed');
   const current = await freezeEmployeeMethodCandidate(context, inputFor(b), tx);
-  if (current.dependencyDigest !== b.dependency_digest)
+  if (
+    current.dependencyDigest !== b.dependency_digest ||
+    runtimePolicyDigest(current.audience ?? null) !==
+      runtimePolicyDigest(b.candidate_snapshot.content.audience ?? null) ||
+    runtimePolicyDigest(current.sharedTarget ?? null) !==
+      runtimePolicyDigest(b.candidate_snapshot.content.sharedTarget ?? null)
+  )
     throw new EmployeeContentError('source_changed');
   return { instance, current };
 }
@@ -262,6 +269,14 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
       )
         throw new DataAccessError('authorization_denied');
       await acquireDevAdmission(tx);
+      if (!args.retryOfTestId)
+        await assertEmployeeMethodDepartmentRequest(
+          scope,
+          instance.id,
+          args.sharedTarget,
+          text,
+          tx,
+        );
       const requestDigest = runtimePolicyDigest(args);
       const [replay] = await tx<
         Binding[]
