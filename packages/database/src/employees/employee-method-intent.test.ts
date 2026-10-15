@@ -1,4 +1,5 @@
 import { departmentMethodAcceptancePhrases as phrases } from './employee-method-department.fixture.ts';
+import { companyMethodAcceptancePhrases as companyPhrases } from './employee-method-company.fixture.ts';
 import { expect, it } from 'vitest';
 import {
   explicitEmployeeMethodIntent,
@@ -343,6 +344,59 @@ it('admits the original multi-sentence department save and test wording', () => 
   expect(employeeMethodRequestedScope(phrases.save)).toBe('department');
   expect(employeeMethodRequestedScope(phrases.test)).toBe('department');
 });
+it('admits the complete company QA wording before real model acceptance', () => {
+  expect(explicitEmployeeMethodIntent(companyPhrases.save)).toBe(true);
+  expect(explicitEmployeeMethodTestIntent(companyPhrases.test)).toBe(true);
+  expect(employeeMethodRequestedScope(companyPhrases.save)).toBe('company');
+  expect(employeeMethodRequestedScope(companyPhrases.test)).toBe('company');
+});
+it.each([
+  '请更新我们公司的「金额，合计」工作场景候选。只相加；暂不启用。',
+  '请保存公司工作场景候选：以后用整数分。',
+  '请创建全公司的“周度汇总”工作场景：先检查输入。',
+])(
+  'recognizes direct company targets with quoted names and punctuation: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(true);
+    expect(employeeMethodRequestedScope(text)).toBe('company');
+  },
+);
+it.each([
+  `“${companyPhrases.save}”`,
+  `资料原文如下：\n${companyPhrases.save}`,
+  `请翻译：${companyPhrases.save}`,
+  `> ${companyPhrases.save}`,
+  `这次临时按公司流程做一次。${companyPhrases.save}`,
+  `${companyPhrases.save}请先别保存。`,
+  `${companyPhrases.save}只用于本次任务。`,
+  `${companyPhrases.save}不要长期保存。`,
+  'Please save company work method: sum integer cents; do not save company work method.',
+  '请保存本公司工作场景候选：整数分相加。只用于这次任务。',
+])(
+  'does not persist quoted, temporary or denied company requests: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(false);
+  },
+);
+it.each([
+  '请保存本公司工作场景候选：整数分相加。请不要共享。',
+  '请更新本公司的“金额合计”工作场景。仅供我个人使用。',
+  '请创建公司工作场景候选。不要向公司共享。',
+])('does not grant contradictory company sharing: %s', (text) => {
+  expect(employeeMethodRequestedScope(text)).toBe('unsupported');
+});
+it.each([
+  '请保存我的“全公司共享”工作场景：公司样本。',
+  '请创建“公司汇总”工作场景：公司数据。',
+  '请保存仅供我个人使用而非公司共享的工作场景候选：金额只相加。',
+  '请创建我的公司资料汇总工作场景：每周使用。',
+])(
+  'never turns a name or body mention into company authorization: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(true);
+    expect(employeeMethodRequestedScope(text)).toBe('personal');
+  },
+);
 it.each([
   '请创建本部门的「金额，合计」工作场景：只相加。保存候选，不启用。',
   '请更新我们部门的“周度对账”工作场景候选。保留原始数据。',

@@ -21,7 +21,7 @@ type Context = Pick<
 >;
 
 /** Reused by chat, queued tests, confirmation and consumed-receipt reads.
- * The initiating private instance does not own shared department content. */
+ * The initiating private instance does not own shared content. */
 export async function resolveEmployeeMethodTarget(
   context: Context,
   instanceId: string,
@@ -48,7 +48,12 @@ export async function resolveEmployeeMethodTarget(
     };
   }
   const requested = EmployeeMethodSharedTargetSchema.parse(shared);
-  const current = await ownDepartmentMethodTarget(context, instanceId, tx);
+  const current = await sharedEmployeeMethodTarget(
+    context,
+    instanceId,
+    requested.scope,
+    tx,
+  );
   if (
     Object.keys(requested).some(
       (key) =>
@@ -67,15 +72,33 @@ export async function ownDepartmentMethodTarget(
   instanceId: string,
   tx: ContentTx,
 ) {
+  return sharedEmployeeMethodTarget(context, instanceId, 'department', tx);
+}
+
+export async function sharedEmployeeMethodTarget(
+  context: Context,
+  instanceId: string,
+  scope: 'company' | 'department',
+  tx: ContentTx,
+) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const principal = await readContentPrincipal(context, tx, true);
-  if (!principal?.departmentId || !principal.writable)
+  if (
+    !principal?.writable ||
+    (scope === 'department' && !principal.departmentId)
+  )
     throw new DataAccessError('authorization_denied');
-  const ownership = {
-    scope: 'department' as const,
-    organizationId: context.organizationId,
-    departmentId: principal.departmentId,
-  };
+  const ownership =
+    scope === 'company'
+      ? {
+          scope: 'company' as const,
+          organizationId: context.organizationId,
+        }
+      : {
+          scope: 'department' as const,
+          organizationId: context.organizationId,
+          departmentId: principal.departmentId!,
+        };
   await requireContentMaintenance(context, ownership, tx);
   const instance = await getEmployeeInstance(context, instanceId, tx);
   if (instance.kind !== 'custom' || instance.source.kind !== 'platform')
@@ -90,40 +113,61 @@ export async function ownDepartmentMethodTarget(
       and a.workspace_id=${context.workspaceId} and a.employee_version_id=${instance.source.employeeVersionId}
     for share of a,p nowait`;
   if (!assignment) throw new EmployeeContentError('source_changed');
-  const [department] = await tx<
+  const [organization] = await tx<
     { name: string }[]
-  >`select name from allrice_departments
-    where id=${principal.departmentId} and organization_id=${context.organizationId} and archived_at is null for share`;
-  if (!department) throw new DataAccessError('authorization_denied');
+  >`select name from allrice_organizations
+    where id=${context.organizationId} and archived_at is null for share`;
+  if (!organization) throw new DataAccessError('authorization_denied');
+  const department =
+    scope === 'department'
+      ? (
+          await tx<{ name: string }[]>`select name from allrice_departments
+    where id=${principal.departmentId} and organization_id=${context.organizationId} and archived_at is null for share`
+        )[0]
+      : undefined;
+  if (scope === 'department' && !department)
+    throw new DataAccessError('authorization_denied');
   const [row] = await tx<
     { id: string }[]
   >`select id from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and employee_id=${assignment.employee_id} and scope='department' and department_id=${principal.departmentId}`;
+      and employee_id=${assignment.employee_id} and scope=${scope}
+      and department_id is not distinct from ${scope === 'department' ? principal.departmentId : null}::uuid`;
   const setId =
     row?.id ??
     employeeChatUuid(
-      'employee-method-department',
+      `employee-method-${scope}`,
       context.organizationId,
       context.workspaceId,
       assignment.employee_id,
-      principal.departmentId,
+      ...(scope === 'department' ? [principal.departmentId!] : []),
     );
-  const sharedTarget: EmployeeMethodSharedTarget = {
-    scope: 'department',
+  const sharedTarget = EmployeeMethodSharedTargetSchema.parse({
+    scope,
     setId,
     employeeId: assignment.employee_id,
-    departmentId: principal.departmentId,
-  };
+    ...(scope === 'department'
+      ? { departmentId: principal.departmentId! }
+      : {}),
+  });
   return {
     setId,
     target: { kind: 'employee' as const, employeeId: assignment.employee_id },
     ownership,
     identitySeed: setId,
     sharedTarget,
-    audience: {
-      employeeName: assignment.name,
-      departmentName: department.name,
-    },
+    // Keep the established department snapshot shape stable. The immutable
+    // binding digest only accepts JSON values, never optional undefined fields.
+    audience:
+      scope === 'company'
+        ? {
+            employeeName: assignment.name,
+            organizationName: organization.name,
+            organizationId: context.organizationId,
+          }
+        : {
+            employeeName: assignment.name,
+            departmentName: department!.name,
+          },
   };
 }

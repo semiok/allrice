@@ -143,7 +143,9 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
     .join('\n');
   const question = [
     s.content.sharedTarget
-      ? `是否启用「${s.content.audience!.employeeName}」的部门工作方法？范围：${s.content.audience!.departmentName}（${s.content.sharedTarget.departmentId}）。影响本部门使用该公司 AI 员工及其个人定制实例的用户；公司 AI 员工 ID：${s.content.sharedTarget.employeeId}。`
+      ? s.content.sharedTarget.scope === 'company'
+        ? `是否启用「${s.content.audience!.employeeName}」的公司工作方法？范围：${s.content.audience!.organizationName}（${s.content.audience!.organizationId}）。影响本公司各部门及未分配部门、使用该公司 AI 员工及其个人定制实例的用户；公司 AI 员工 ID：${s.content.sharedTarget.employeeId}。`
+        : `是否启用「${s.content.audience!.employeeName}」的部门工作方法？范围：${s.content.audience!.departmentName}（${s.content.sharedTarget.departmentId}）。影响本部门使用该公司 AI 员工及其个人定制实例的用户；公司 AI 员工 ID：${s.content.sharedTarget.employeeId}。`
       : `是否启用「${name}」的个人工作方法？仅影响你自己的这个 AI 员工。`,
     `候选 r${s.content.setRevision} · ${s.content.candidateRevisionId.slice(0, 8)} · ${s.content.candidateDigest.slice(7, 19)}`,
     `通用要求：${s.changes.commonChanged ? '已调整' : '保持原样'}；新增或调整场景：${s.changes.changedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}。`,

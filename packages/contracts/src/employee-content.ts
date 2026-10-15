@@ -45,21 +45,30 @@ export type EmployeeContentReference = z.infer<
 >;
 /** A shared selection is returned by inspect and revalidated against live
  * membership. It identifies content, never grants maintenance authority. */
-export const EmployeeMethodSharedTargetSchema = z
-  .object({
-    scope: z.literal('department'),
-    setId: UuidSchema,
-    employeeId: UuidSchema,
-    departmentId: UuidSchema,
-  })
-  .strict();
+export const EmployeeMethodSharedTargetSchema = z.discriminatedUnion('scope', [
+  z
+    .object({
+      scope: z.literal('company'),
+      setId: UuidSchema,
+      employeeId: UuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      scope: z.literal('department'),
+      setId: UuidSchema,
+      employeeId: UuidSchema,
+      departmentId: UuidSchema,
+    })
+    .strict(),
+]);
 export type EmployeeMethodSharedTarget = z.infer<
   typeof EmployeeMethodSharedTargetSchema
 >;
 export const EmployeeMethodInspectSchema = z
   .object({
     view: z.enum(['effective', 'candidate', 'history']),
-    scope: z.enum(['personal', 'department']).optional(),
+    scope: z.enum(['personal', 'department', 'company']).optional(),
     beforeRevision: z.number().int().positive().optional(),
   })
   .strict()

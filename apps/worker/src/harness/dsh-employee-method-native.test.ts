@@ -18,6 +18,102 @@ const departmentTarget = {
   employeeId: '00000000-0000-4000-8000-000000000012',
   departmentId: '00000000-0000-4000-8000-000000000013',
 };
+const companyTarget = {
+  scope: 'company',
+  setId: departmentTarget.setId,
+  employeeId: departmentTarget.employeeId,
+};
+
+it.each([
+  {
+    canonicalName: 'workspace.employee.method.inspect',
+    wireName: 'workspace_employee_method_inspect',
+    schema: EmployeeMethodInspectSchema,
+    args: { view: 'candidate', scope: 'company' },
+  },
+  {
+    canonicalName: 'workspace.employee.method.save_candidate',
+    wireName: 'workspace_employee_method_save_candidate',
+    schema: EmployeeMethodSaveSchema,
+    args: {
+      sharedTarget: companyTarget,
+      expectedRevision: 0,
+      section: 'scene',
+      scene: { name: '金额合计', appliesWhen: '公司合成金额汇总' },
+      procedure: '整数分相加',
+      changeSummary: 'Company candidate',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    schema: EmployeeMethodTestStartSchema,
+    args: {
+      sharedTarget: companyTarget,
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      sceneId: '00000000-0000-4000-8000-000000000002',
+      caseId: 'cny-total-v1',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.prepare_activation',
+    wireName: 'workspace_employee_method_prepare_activation',
+    schema: EmployeeMethodPrepareActivationSchema,
+    args: {
+      sharedTarget: companyTarget,
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      testIds: ['00000000-0000-4000-8000-000000000002'],
+    },
+  },
+])(
+  'actual provider schema and broker preserve company selection: $canonicalName',
+  async (test) => {
+    await nativeBrokerRoundtrip({
+      canonicalName: test.canonicalName,
+      wireName: test.wireName,
+      args: test.args,
+      invalidArgs:
+        'sharedTarget' in test.args
+          ? {
+              ...test.args,
+              sharedTarget: {
+                ...companyTarget,
+                departmentId: departmentTarget.departmentId,
+              },
+            }
+          : { ...test.args, departmentId: departmentTarget.departmentId },
+      inspectSchema(schema) {
+        const properties = schema.properties as Record<
+          string,
+          Record<string, unknown>
+        >;
+        if ('sharedTarget' in test.args) {
+          const target = properties.sharedTarget!;
+          expect(target.required).toEqual(
+            expect.arrayContaining(['scope', 'setId', 'employeeId']),
+          );
+          expect(target.required).not.toContain('departmentId');
+          expect(
+            (target.properties as Record<string, { enum?: string[] }>).scope!
+              .enum,
+          ).toContain('company');
+        } else expect(properties.scope!.enum).toContain('company');
+      },
+      onToolCall: async (call) => {
+        expect(test.schema.parse(call.arguments)).toEqual(test.args);
+        return {
+          modelContent: '{"scope":"company","enabled":false}',
+          summary: 'Company selection retained',
+        };
+      },
+    });
+  },
+  45000,
+);
 
 it.each([
   {
