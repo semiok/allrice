@@ -9,6 +9,8 @@ import {
   cloudToolchainImageV1,
   RuntimeLocalCommandSchema,
   managedPythonPayloadForPlatform,
+  resolveSandboxExecutionPolicy,
+  type SandboxExecutionPolicy,
   type ProjectExecuteInput,
   type BridgeReadinessState,
 } from '@allrice/contracts';
@@ -26,6 +28,7 @@ import {
 } from './project-execution.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
 import { createCloudProjectOperation } from './cloud-execution.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   listWorkbenchArtifacts,
   readArtifactBytes,
@@ -64,12 +67,40 @@ suite(
       await database?.close();
       vi.unstubAllEnvs();
     });
-    async function setup(cloud = true, knownBug = false) {
+    async function setup(
+      cloud = true,
+      knownBug = false,
+      sandbox: {
+        policy?: SandboxExecutionPolicy;
+        network?: boolean;
+        allowInputTransfer?: boolean;
+        outbound?: boolean;
+      } = {},
+    ) {
       const f = await createAssistantLocalCommandFixture(
         database.db,
         'allow',
         false,
-        { skipChild: true, projectWorkspace: true, projectCloud: cloud },
+        {
+          skipChild: true,
+          projectWorkspace: true,
+          projectCloud: cloud,
+          snapshot: (s) => ({
+            ...s,
+            ...(sandbox.policy
+              ? { sandboxExecutionPolicy: sandbox.policy }
+              : {}),
+            capabilitySnapshot: {
+              ...s.capabilitySnapshot,
+              grantedCapabilities:
+                sandbox.outbound === false
+                  ? s.capabilitySnapshot.grantedCapabilities.filter(
+                      (c) => c !== 'network:outbound',
+                    )
+                  : s.capabilitySnapshot.grantedCapabilities,
+            },
+          }),
+        },
       );
       const storage = assistantFixtureStorage(f.db),
         [job] = await f.db<
@@ -120,6 +151,16 @@ suite(
         architecture: 'amd64',
         imageDigest: cloudToolchainImageV1,
         network: 'none',
+        ...(sandbox.network
+          ? {
+              sandboxNetwork: {
+                version: 1,
+                mode: 'controlled_https',
+                origins: ['https://registry.npmjs.org'],
+                allowInputTransfer: sandbox.allowInputTransfer !== false,
+              },
+            }
+          : {}),
         maximumConcurrency: 2,
         runtimeVersion: 'release-20260831.0',
         runtimeChecksum:
@@ -223,8 +264,24 @@ suite(
       const request = async (text: string) => {
         await f.db`update allrice_messages set content=${f.db.json({ text, citations: [] })} where id=(select user_message_id from allrice_employee_runs where run_id=${f.rootRunId})`;
       };
+      const approveCloud = async (
+        created: Awaited<ReturnType<typeof createCloudProjectOperation>>,
+      ) => {
+        const views = await listCloudRuntimeOperations(
+          f.requestContext,
+          f.rootRunId,
+          f.db,
+        );
+        const view = views.find(
+          (v) =>
+            v.snapshot.binding.attempt.operationId ===
+            created.snapshot.binding.attempt.operationId,
+        );
+        if (view?.approval) await f.approve(view.approval.request);
+      };
       return {
         ...f,
+        approveCloud,
         storage,
         worker,
         args,
@@ -238,6 +295,256 @@ suite(
         opened,
       };
     }
+    it.each([600000, 1800000, 3600000] as const)(
+      'freezes the saved-project %s ms cap and one clock across dispatch/retry',
+      async (cap) => {
+        vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+        const policy = resolveSandboxExecutionPolicy(
+          cap === 600000
+            ? []
+            : [
+                {
+                  scope: 'tenant',
+                  scopeId: randomUUID(),
+                  source: 'tenant_override',
+                  maxExecutionMs: cap,
+                },
+              ],
+        );
+        const f = await setup(true, false, { policy });
+        const args = {
+          ...f.args,
+          execution: { version: 1 as const, kind: 'install' as const },
+        };
+        const selection = await f.select(true, args);
+        expect(selection.choice.location).toBe('cloud'); // older Bridge must not silently ignore the new contract
+        const c = await createCloudProjectOperation(
+          {
+            context: f.context,
+            callId: f.callId,
+            projectSelection: selection,
+            worker: f.worker,
+            storage: f.storage,
+          },
+          f.db,
+        );
+        expect(c.payload.executionBudget).toEqual({
+          version: 1,
+          kind: 'install',
+          policy,
+          initialBudgetMs: 120000,
+        });
+        expect(c.snapshot.binding.command?.budgetDigest).toBe(
+          runtimePolicyDigest({
+            limits: args.limits,
+            execution: c.payload.executionBudget,
+          }),
+        );
+        await f.approveCloud(c);
+        const scope = c.snapshot.binding.task.scope,
+          attempt = c.snapshot.binding.attempt;
+        const lease = await c.ledger.dispatch({
+          scope,
+          operationId: attempt.operationId,
+          leaseOwner: f.context.worker.id,
+          leaseMs: 15000,
+        });
+        const receipt = {
+          scope,
+          operationId: attempt.operationId,
+          attempt,
+          leaseToken: lease.leaseToken,
+        };
+        await c.ledger.startOperation({ ...receipt, receiptId: randomUUID() });
+        const [first, replay] = await Promise.all([
+          c.ledger.exchangeSandboxExecutionBudget(receipt),
+          c.ledger.exchangeSandboxExecutionBudget(receipt),
+        ]);
+        expect(first).toEqual(replay);
+        expect(first.spec.policy.maxExecutionMs).toBe(cap);
+        expect(first.deadlineAt - first.startedAt).toBe(120000);
+        expect(first.hardDeadlineAt - first.startedAt).toBeLessThanOrEqual(cap);
+        const [view] = await listCloudRuntimeOperations(
+          f.requestContext,
+          f.rootRunId,
+          f.db,
+        );
+        expect(view!.proposal).toMatchObject({
+          kind: 'project',
+          executionBudget: c.payload.executionBudget,
+        });
+        await f.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.cloudGrant}`;
+        await expect(
+          c.ledger.exchangeSandboxExecutionBudget(receipt),
+        ).rejects.toThrow('cloud_grant_unavailable');
+        const [stored] =
+          await f.db`select execution_budget from allrice_runtime_operations where id=${attempt.operationId}`;
+        expect(stored!.execution_budget).toEqual(first);
+      },
+    );
+    it('binds source and destinations to exact project approval; revocation blocks dispatch', async () => {
+      vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+      const f = await setup(true, false, { network: true });
+      const network = {
+        mode: 'controlled_https' as const,
+        origins: ['https://registry.npmjs.org'],
+      };
+      const selection = await f.select(true, { ...f.args, network });
+      const c = await createCloudProjectOperation(
+        {
+          context: f.context,
+          callId: f.callId,
+          projectSelection: selection,
+          worker: f.worker,
+          storage: f.storage,
+        },
+        f.db,
+      );
+      expect(c.payload.network).toEqual(network);
+      expect(c.snapshot.binding.dataScope.map((s) => s.destination)).toEqual([
+        'cloud_execution',
+        'external_service',
+      ]);
+      expect(c.snapshot.binding.dataScope[1]).toMatchObject({
+        content: f.args.project.snapshot,
+        externalNetwork: network,
+        authorizationId: f.cloudGrant,
+        authorizationVersion: 1,
+      });
+      const [view] = await listCloudRuntimeOperations(
+        f.requestContext,
+        f.rootRunId,
+        f.db,
+      );
+      expect(view!.proposal).toMatchObject({
+        kind: 'project',
+        network,
+        project: f.args.project,
+      });
+      await f.approveCloud(c);
+      await f.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.cloudGrant}`;
+      await expect(
+        c.ledger.dispatch({
+          scope: c.snapshot.binding.task.scope,
+          operationId: c.snapshot.binding.attempt.operationId,
+          leaseOwner: f.context.worker.id,
+          leaseMs: 15000,
+        }),
+      ).rejects.toThrow('cloud_grant_unavailable');
+    });
+    it.each([
+      [
+        { network: true, allowInputTransfer: false },
+        'sandbox_network_transfer_not_authorized',
+      ],
+      [{ network: true, outbound: false }, 'sandbox_network_not_authorized'],
+      [{ network: false }, 'sandbox_network_not_authorized'],
+    ] as const)(
+      'does not treat saved source as public or borrow missing network authority: %s',
+      async (options, reason) => {
+        vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+        const f = await setup(true, false, options);
+        const selection = await f.select(true, {
+          ...f.args,
+          network: {
+            mode: 'controlled_https',
+            origins: ['https://registry.npmjs.org'],
+          },
+        });
+        await expect(
+          createCloudProjectOperation(
+            {
+              context: f.context,
+              callId: f.callId,
+              projectSelection: selection,
+              worker: f.worker,
+              storage: f.storage,
+            },
+            f.db,
+          ),
+        ).rejects.toThrow(reason);
+        // The caller's immutable proposal may be retained for diagnostics,
+        // but denial must leave no admitted operation or physical attempt.
+        const [counts] = await f.db`select
+          (select count(*)::int from allrice_runtime_operations where run_id=${f.rootRunId}) operations,
+          (select count(*)::int from allrice_cloud_execution_attempts a join allrice_cloud_execution_inputs i on i.operation_id=a.operation_id where i.run_id=${f.rootRunId}) attempts`;
+        expect(counts).toEqual({ operations: 0, attempts: 0 });
+      },
+    );
+    it('keeps omitted legacy project budget and environment digests unchanged', async () => {
+      const f = await setup();
+      await f.setState('offline');
+      const selection = await f.select();
+      const c = await createCloudProjectOperation(
+        {
+          context: f.context,
+          callId: f.callId,
+          projectSelection: selection,
+          worker: f.worker,
+          storage: f.storage,
+        },
+        f.db,
+      );
+      expect(c.payload.executionBudget).toBeUndefined();
+      expect(c.payload.arguments.execution).toBeUndefined();
+      expect(c.payload.arguments.network).toBeUndefined();
+      expect(c.payload.network).toBe('none');
+      expect(c.snapshot.binding.command).toMatchObject({
+        budgetDigest: runtimePolicyDigest(f.args.limits),
+        networkPolicyDigest: runtimePolicyDigest({ network: 'none' }),
+        effectiveEnvironmentDigest: runtimePolicyDigest({
+          backend: 'cloud-gvisor-v1',
+          credentials: 'none',
+          user: '1000',
+          preparation: 'trusted_root_supervisor',
+        }),
+      });
+    });
+    it('rejects missing frozen policy and disables new project budgets without changing legacy requests', async () => {
+      vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+      const old = await setup();
+      const args = {
+        ...old.args,
+        execution: { version: 1 as const, kind: 'compute' as const },
+      };
+      const selection = await old.select(true, args);
+      await expect(
+        createCloudProjectOperation(
+          {
+            context: old.context,
+            callId: old.callId,
+            projectSelection: selection,
+            worker: old.worker,
+            storage: old.storage,
+          },
+          old.db,
+        ),
+      ).rejects.toThrow('sandbox_execution_upgrade_required');
+      const f = await setup(true, false, {
+        policy: resolveSandboxExecutionPolicy([]),
+      });
+      const next = await f.select(true, {
+        ...f.args,
+        execution: args.execution,
+      });
+      vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '0');
+      try {
+        await expect(
+          createCloudProjectOperation(
+            {
+              context: f.context,
+              callId: f.callId,
+              projectSelection: next,
+              worker: f.worker,
+              storage: f.storage,
+            },
+            f.db,
+          ),
+        ).rejects.toThrow('sandbox_execution_not_enabled');
+      } finally {
+        vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+      }
+    });
     it.runIf(process.env.ALLRICE_RUN_PROJECT_CLOUD_INTEGRATION === '1')(
       'first closed loop: known error -> actual runsc failure -> source fix -> original assertion -> details/private static + source download',
       async () => {

@@ -1,4 +1,5 @@
 import { request } from 'node:http';
+import { CloudExecutionBudget } from './execution-budget.js';
 import { inFlightHeartbeat } from './service-diagnostics.js';
 import {
   openCloudProjectServiceGuard,
@@ -10,7 +11,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Duplex } from 'node:stream';
@@ -22,6 +23,8 @@ import {
   CloudExecutionPayloadSchema,
   type CloudExecutionPayload,
   type CloudProjectCommand,
+  CloudProjectRunResultSchema,
+  cloudProjectResultMatchesPayload,
   type RuntimeProjectScope,
   type RuntimeProjectPreparationEvidence,
   CloudCommandInputSchema,
@@ -42,7 +45,6 @@ import {
   SandboxNetworkErrorCodeSchema,
   type SandboxNetworkLease,
   SandboxExecutionBudgetStateSchema,
-  SandboxExecutionProgressSchema,
   type SandboxExecutionBudgetState,
   type SandboxExecutionBudgetSpec,
   type SandboxExecutionRenewal,
@@ -74,6 +76,8 @@ import {
   createLocalPythonArchive,
   openSandboxNetwork,
   sandboxProxyEnvironment,
+  nodeProjectSupervisor,
+  pythonProjectSupervisor,
   type SandboxNetworkSession,
 } from '@allrice/project-runtime';
 import {
@@ -122,6 +126,15 @@ async function serviceCall<T>(task: Promise<T>, timeoutMs = 3000): Promise<T> {
 /** Preparation failed before any create request. Start/create ACK uncertainty never carries this flag. */
 export class CloudProjectPreparationError extends CloudRunnerError {
   readonly notStarted = true;
+  constructor(
+    message: string,
+    readonly preparation?: Pick<
+      CloudRunResult,
+      'elapsedMs' | 'executionBudget'
+    >,
+  ) {
+    super(message);
+  }
 }
 export type CloudRunResult = {
   resolution?: ProjectDependencyResolutionReceipt;
@@ -200,7 +213,7 @@ type Container = {
     Entrypoint?: string[];
     Env?: string[];
   };
-  Mounts?: { Type: string; Name: string; Destination: string }[];
+  Mounts?: { Type: string; Name: string; Destination: string; RW?: boolean }[];
   HostConfig: {
     Runtime: string;
     CapAdd?: string[];
@@ -214,6 +227,10 @@ type Container = {
     Memory?: number;
     MemorySwap?: number;
     PidsLimit?: number;
+    CpuPeriod?: number;
+    CpuQuota?: number;
+    Devices?: unknown[];
+    PortBindings?: Record<string, unknown>;
   };
   State: {
     Running: boolean;
@@ -704,8 +721,14 @@ export class CloudRunnerBackend {
         c.HostConfig.Runtime !== 'runsc'
       )
         throw new CloudRunnerError('CLOUD_CONTAINER_IDENTITY_CHANGED');
-      if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'project')
+      if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'project') {
         await assertCloudProjectContainer(this, c);
+        if (
+          c.Config.Labels['xyz.bplabs.allrice.cloud.sandbox-execution'] &&
+          !c.Config.Labels[networkLabel]
+        )
+          await this.assertProjectSandboxContainer(c);
+      }
       if (c.Config.Labels[networkLabel]) await this.assertNetworkContainer(c);
       return c;
     } catch (e) {
@@ -714,6 +737,15 @@ export class CloudRunnerBackend {
     }
   }
   private async assertNetworkContainer(c: Container) {
+    if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'project') {
+      if (
+        c.Config.Labels[networkLabel] !== 'controlled-https-v1' ||
+        !/^sha256:[a-f0-9]{64}$/.test(c.Config.Labels[networkPolicyLabel] ?? '')
+      )
+        throw new CloudRunnerError('SANDBOX_NETWORK_CONTAINER_CHANGED');
+      await this.assertProjectSandboxContainer(c);
+      return;
+    }
     const h = c.HostConfig,
       config = c.Config;
     const image = await this.json<{ Config: { Env?: string[] } }>(
@@ -771,6 +803,92 @@ export class CloudRunnerBackend {
       })
     )
       throw new CloudRunnerError('SANDBOX_NETWORK_CONTAINER_CHANGED');
+  }
+
+  /** A distinct root supervisor envelope; never borrow the script envelope's
+   * privileges or accept caller-selected entrypoints, mounts or environment. */
+  private async assertProjectSandboxContainer(c: Container) {
+    const config = c.Config,
+      h = c.HostConfig,
+      labels = config.Labels;
+    const profile = labels['xyz.bplabs.allrice.project.profile'];
+    const node = config.Image === cloudToolchainImageV1;
+    const deadline = labels['xyz.bplabs.allrice.cloud.deadline'];
+    const cache = labels['xyz.bplabs.allrice.project.cache'];
+    const attempt = labels[attemptLabel];
+    const image = await this.json<{ Config: { Env?: string[] } }>(
+      'GET',
+      `/images/${config.Image}/json`,
+    );
+    if (
+      labels['xyz.bplabs.allrice.cloud.kind'] !== 'project' ||
+      labels['xyz.bplabs.allrice.cloud.service'] ||
+      labels[resolutionLabel] ||
+      labels['xyz.bplabs.allrice.project.private-service-cache'] ||
+      ![undefined, 'web-development'].includes(profile) ||
+      (profile === 'web-development' && !node) ||
+      ![cloudToolchainImageV1, cloudPythonImageV1].includes(
+        config.Image ?? '',
+      ) ||
+      labels['xyz.bplabs.allrice.project.image'] !== config.Image ||
+      !uuid.test(attempt ?? '') ||
+      !/^[a-f0-9]{64}$/.test(
+        labels['xyz.bplabs.allrice.project.payload'] ?? '',
+      ) ||
+      !/^sha256:[a-f0-9]{64}$/.test(cache ?? '') ||
+      !/^[1-9][0-9]*$/.test(deadline ?? '') ||
+      config.User !== '0:0' ||
+      !runtimeContractEqual(config.Entrypoint, [
+        node ? '/usr/local/bin/node' : '/opt/python/bin/python',
+      ]) ||
+      !runtimeContractEqual(
+        config.Cmd,
+        node
+          ? ['--input-type=module', '--eval', nodeProjectSupervisor, deadline]
+          : ['-I', '-c', pythonProjectSupervisor, deadline],
+      ) ||
+      !runtimeContractEqual(config.Env ?? [], image.Config.Env ?? []) ||
+      h.Runtime !== 'runsc' ||
+      h.NetworkMode !== 'none' ||
+      !h.ReadonlyRootfs ||
+      h.Privileged ||
+      h.Binds?.length ||
+      h.Devices?.length ||
+      Object.keys(h.PortBindings ?? {}).length ||
+      !runtimeContractEqual(h.CapDrop, ['ALL']) ||
+      !runtimeContractEqual(
+        (h.CapAdd ?? []).map((v) => v.replace(/^CAP_/, '')).sort(),
+        ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'KILL', 'SETGID', 'SETUID'],
+      ) ||
+      !h.SecurityOpt?.length ||
+      !h.SecurityOpt.every(
+        (v) => v === 'no-new-privileges' || v === 'no-new-privileges=true',
+      ) ||
+      !h.Memory ||
+      h.Memory < 128 * 1024 ** 2 ||
+      h.Memory > (profile ? 1536 : 512) * 1024 ** 2 ||
+      h.MemorySwap !== h.Memory ||
+      h.CpuPeriod !== 100000 ||
+      !h.CpuQuota ||
+      h.CpuQuota < 10000 ||
+      h.CpuQuota > 100000 ||
+      !h.PidsLimit ||
+      h.PidsLimit < 64 ||
+      h.PidsLimit > (profile ? 128 : 64) ||
+      !runtimeContractEqual(h.Tmpfs, {
+        '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777',
+      }) ||
+      c.Mounts?.length !== 2 ||
+      c.Mounts.some((m) => m.Type !== 'volume' || m.RW !== true) ||
+      !runtimeContractEqual(
+        Object.fromEntries(c.Mounts.map((m) => [m.Destination, m.Name])),
+        {
+          '/tmp/work': `allrice-project-work-${attempt}`,
+          '/cache': `allrice-project-cache-${cache?.slice(7)}`,
+        },
+      )
+    )
+      throw new CloudRunnerError('CLOUD_PROJECT_SANDBOX_CONTAINER_CHANGED');
   }
   async cleanup(attemptId: string, command?: CloudExecutionPayload) {
     const c = await this.inspect(attemptId);
@@ -1116,7 +1234,7 @@ export class CloudRunnerBackend {
     },
   ): Promise<CloudRunResult> {
     const command = CloudExecutionPayloadSchema.parse(commandInput);
-    const budget = 'kind' in command ? undefined : command.executionBudget;
+    const budget = command.executionBudget;
     if (
       Boolean(budget) !== Boolean(options.sandboxExecution) ||
       (budget &&
@@ -1125,7 +1243,7 @@ export class CloudRunnerBackend {
           !runtimeContractEqual(budget, options.sandboxExecution?.spec)))
     )
       throw new CloudRunnerError('SANDBOX_EXECUTION_POLICY_CHANGED');
-    const network = 'kind' in command ? 'none' : command.network;
+    const network = command.network;
     if (network !== 'none') {
       const lease = SandboxNetworkLeaseSchema.parse(options.networkLease);
       if (
@@ -1726,13 +1844,7 @@ export class CloudRunnerBackend {
     command: CloudProjectCommand,
     options: Parameters<CloudRunnerBackend['execute']>[2],
   ): Promise<CloudRunResult> {
-    const startedAt = Date.now(),
-      deadline = options.projectService
-        ? Date.parse(options.projectService.hardDeadlineAt)
-        : Math.min(
-            Date.parse(options.deadlineAt),
-            startedAt + command.arguments.limits.timeoutMs,
-          );
+    const startedAt = Date.now();
     if (!!command.arguments.background !== !!options.projectService)
       throw new CloudProjectPreparationError('CLOUD_SERVICE_IDENTITY');
     await this.preflight(
@@ -1742,50 +1854,142 @@ export class CloudRunnerBackend {
         command.arguments.projectPreparation.resourceProfile ===
           'web-development',
     );
+    if (options.sandboxExecution || options.networkLease) {
+      const { stdout } = await attestWatchdog();
+      const attestation = JSON.parse(stdout);
+      if (
+        attestation.projectSandboxExecution !== 1 ||
+        attestation.sandboxExecution?.version !== 1 ||
+        attestation.sandboxExecution?.physicalLeaseMs !== 5000
+      )
+        throw new CloudProjectPreparationError(
+          'PROJECT_SANDBOX_GUARD_UPGRADE_REQUIRED',
+        );
+    }
     if (await this.inspect(options.attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
     if (!options.projectScope)
       throw new CloudProjectPreparationError('PROJECT_SCOPE_REQUIRED');
+    let budget: CloudExecutionBudget | undefined;
+    try {
+      if (options.sandboxExecution)
+        budget = new CloudExecutionBudget(
+          await serviceCall(options.sandboxExecution.exchange(), 2500),
+          options.sandboxExecution.spec,
+          (request) =>
+            serviceCall(options.sandboxExecution!.exchange(request), 2500),
+        );
+    } catch (error) {
+      throw new CloudProjectPreparationError(
+        error instanceof Error
+          ? error.message
+          : 'SANDBOX_EXECUTION_RENEWAL_UNCONFIRMED',
+      );
+    }
+    const deadline = Math.min(
+      Date.parse(options.deadlineAt),
+      options.networkLease
+        ? Date.parse(options.networkLease.expiresAt)
+        : Infinity,
+      options.projectService
+        ? Date.parse(options.projectService.hardDeadlineAt)
+        : (budget?.state.hardDeadlineAt ??
+            startedAt + command.arguments.limits.timeoutMs),
+    );
+    const preparationFailure = new AbortController();
     const signal = AbortSignal.any([
+      preparationFailure.signal,
       AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       ...(options.signal ? [options.signal] : []),
     ]);
-    let prepared;
+    let preparationReadBytes = 0;
+    let preparationBeat: Promise<void> | undefined;
+    let preparing = true;
+    const beat = async () => {
+      signal.throwIfAborted();
+      if (!(await serviceCall(options.maintainLease(), 2000)))
+        throw new CloudRunnerError('SANDBOX_EXECUTION_REVOKED');
+      await budget?.renew(async () => ({
+        cpuNanos: 0,
+        readBytes: preparationReadBytes,
+        writtenBytes: 0,
+      }));
+      signal.throwIfAborted();
+    };
+    // Before container creation only trusted archive I/O is measurable. This
+    // clock survives the handoff; empty lease heartbeats are never progress.
+    const timer = budget
+      ? setInterval(() => {
+          if (preparing && !preparationBeat && !signal.aborted)
+            preparationBeat = beat()
+              .catch((error: unknown) => preparationFailure.abort(error))
+              .finally(() => {
+                preparationBeat = undefined;
+              });
+        }, 1000)
+      : undefined;
+    let prepared: Awaited<ReturnType<typeof prepareCloudProject>> | undefined;
     try {
-      prepared = await prepareCloudProject(this, this.projectPreparation, {
-        command,
-        scope: options.projectScope,
-        attemptId: options.attemptId,
-        deadline,
-        signal,
-        maintainLease: options.maintainLease,
-        ...(options.projectService
-          ? {
-              serviceId: options.projectService.id,
-              previewHost: (await options.projectService.exchange())
-                .projectService.previewHost,
-            }
-          : {}),
-      });
-    } catch (error) {
-      throw new CloudProjectPreparationError(
-        error && typeof error === 'object' && 'code' in error
-          ? String(error.code)
-          : error instanceof Error
-            ? error.message
-            : 'CLOUD_PROJECT_PREPARATION_FAILED',
-      );
-    }
-    try {
+      try {
+        await beat();
+        prepared = await prepareCloudProject(this, this.projectPreparation, {
+          command,
+          scope: options.projectScope,
+          attemptId: options.attemptId,
+          deadline,
+          signal,
+          maintainLease: options.maintainLease,
+          executionBudget: budget?.state,
+          networkLease: options.networkLease,
+          onPreparationBytes: (bytes) => {
+            preparationReadBytes += bytes;
+          },
+          ...(options.projectService
+            ? {
+                serviceId: options.projectService.id,
+                previewHost: (await options.projectService.exchange())
+                  .projectService.previewHost,
+              }
+            : {}),
+        });
+        // Drain the last authority request before container renewal takes over.
+        preparing = false;
+        if (timer) clearInterval(timer);
+        await preparationBeat;
+        signal.throwIfAborted();
+      } catch (error) {
+        // Download helpers normalize aborts to EXECUTION_REVOKED. Keep the
+        // authority clock's actual failure instead of hiding a deadline or
+        // unconfirmed renewal behind that generic preparation error.
+        const cause = preparationFailure.signal.aborted
+          ? preparationFailure.signal.reason
+          : signal.aborted && Date.now() >= deadline
+            ? new Error('SANDBOX_EXECUTION_DEADLINE')
+            : error;
+        throw new CloudProjectPreparationError(
+          cause && typeof cause === 'object' && 'code' in cause
+            ? String(cause.code)
+            : cause instanceof Error
+              ? cause.message
+              : 'CLOUD_PROJECT_PREPARATION_FAILED',
+          {
+            elapsedMs: Math.max(0, Date.now() - startedAt),
+            ...(budget ? { executionBudget: budget.observation } : {}),
+          },
+        );
+      }
+      const staged = prepared;
       return await this.executeAdmittedPlan(
         {
           command,
-          config: prepared.config,
+          config: staged.config,
+          budgetController: budget,
+          preparationReadBytes,
           afterStart: async (id) => {
-            await prepared.releaseServiceCacheFence();
-            for (const bytes of prepared.archives)
-              await this.putArchive(id, bytes, prepared.signal);
-            if (!(await prepared.maintainLease()))
+            await staged.releaseServiceCacheFence();
+            for (const bytes of staged.archives)
+              await this.putArchive(id, bytes, staged.signal);
+            if (!(await staged.maintainLease()))
               throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
             await this.putArchive(
               id,
@@ -1796,20 +2000,24 @@ export class CloudRunnerBackend {
                   mode: 0o444,
                 },
               ]),
-              prepared.signal,
+              staged.signal,
             );
           },
         },
         {
           ...options,
-          signal: prepared.signal,
-          maintainLease: prepared.maintainLease,
+          signal: staged.signal,
+          maintainLease: staged.maintainLease,
         },
         startedAt,
         deadline,
       );
     } finally {
-      await prepared.release(this.uncertainCreates.has(options.attemptId));
+      preparing = false;
+      if (timer) clearInterval(timer);
+      preparationFailure.abort();
+      await preparationBeat;
+      await prepared?.release(this.uncertainCreates.has(options.attemptId));
     }
   }
 
@@ -2341,6 +2549,8 @@ export class CloudRunnerBackend {
       encoded?: string;
       afterStart?: (id: string) => Promise<void>;
       executionBudget?: SandboxExecutionBudgetState;
+      budgetController?: CloudExecutionBudget;
+      preparationReadBytes?: number;
     },
     options: Parameters<CloudRunnerBackend['execute']>[2],
     startedAt: number,
@@ -2386,8 +2596,16 @@ export class CloudRunnerBackend {
     let networkSession: SandboxNetworkSession | undefined;
     let networkError: string | undefined;
     let networkCloseTask: Promise<void> | undefined;
-    let executionBudget = plan.executionBudget;
-    let pendingRenewal: SandboxExecutionRenewal | undefined;
+    const budget =
+      plan.budgetController ??
+      (plan.executionBudget
+        ? new CloudExecutionBudget(
+            plan.executionBudget,
+            options.sandboxExecution!.spec,
+            (request) =>
+              serviceCall(options.sandboxExecution!.exchange(request), 2500),
+          )
+        : undefined);
     let physicalClosing = false,
       physicalTask: Promise<void> | undefined,
       physicalTimer: ReturnType<typeof setInterval> | undefined;
@@ -2432,15 +2650,16 @@ export class CloudRunnerBackend {
       } else if (networkError && result.reason !== 'completed')
         result.errorCode = networkError;
       if (networkSession) result.network = networkSession.observation;
-      if (executionBudget)
-        result.executionBudget = {
-          startedAt: executionBudget.startedAt,
-          hardDeadlineAt: executionBudget.hardDeadlineAt,
-          deadlineAt: executionBudget.deadlineAt,
-          initialBudgetMs: executionBudget.spec.initialBudgetMs,
-          maxExecutionMs: executionBudget.spec.policy.maxExecutionMs,
-          renewalCount: executionBudget.sequence,
-        };
+      if (budget) result.executionBudget = budget.observation;
+      if (
+        'kind' in plan.command &&
+        plan.command.kind === 'project' &&
+        !cloudProjectResultMatchesPayload(
+          plan.command,
+          CloudProjectRunResultSchema.parse(result),
+        )
+      )
+        throw new CloudRunnerError('CLOUD_PROJECT_RECEIPT_CHANGED');
       return result;
     };
     try {
@@ -2451,79 +2670,57 @@ export class CloudRunnerBackend {
           attemptId,
           options.projectService.hardDeadlineAt,
         );
-      else if (executionBudget)
+      else if (budget)
         serviceGuard = await openCloudSandboxExecutionGuard(
           attemptId,
           new Date(deadline).toISOString(),
         );
       if (serviceGuard) {
         const beat = async () => {
-          if (executionBudget) {
+          if (budget) {
             if (physicalClosing) return;
             executionOptions.signal.throwIfAborted();
-            if (Date.now() >= executionBudget.deadlineAt)
+            if (Date.now() >= budget.state.deadlineAt)
               throw new CloudRunnerError('SANDBOX_EXECUTION_DEADLINE');
             if (!(await serviceCall(options.maintainLease(), 2000)))
               throw new CloudRunnerError('SANDBOX_EXECUTION_REVOKED');
             await serviceGuard!.renew(
-              Math.min(executionBudget.deadlineAt, deadline, Date.now() + 5000),
+              Math.min(budget.state.deadlineAt, deadline, Date.now() + 5000),
             );
-            if (
-              executionBudget.deadlineAt - Date.now() <= 15000 &&
-              executionBudget.deadlineAt < executionBudget.hardDeadlineAt
-            ) {
-              if (!pendingRenewal) {
-                const stats = await serviceCall(
-                  this.json<{
-                    cpu_stats?: { cpu_usage?: { total_usage?: number } };
-                    blkio_stats?: {
-                      io_service_bytes_recursive?: {
-                        op: string;
-                        value: number;
-                      }[];
-                    };
-                  }>(
-                    'GET',
-                    `/containers/${c.Id}/stats?stream=false&one-shot=true`,
-                  ),
-                  2000,
-                );
-                const io = stats.blkio_stats?.io_service_bytes_recursive ?? [];
-                const sum = (op: string) =>
-                  io
-                    .filter((x) => x.op.toLowerCase() === op)
-                    .reduce((a, x) => a + x.value, 0);
-                const network = networkSession?.observation;
-                pendingRenewal = {
-                  requestId: randomUUID(),
-                  sequence: executionBudget.sequence + 1,
-                  progress: SandboxExecutionProgressSchema.parse({
-                    cpuNanos: stats.cpu_stats?.cpu_usage?.total_usage ?? 0,
-                    readBytes: sum('read') + (network?.receivedBytes ?? 0),
-                    writtenBytes: sum('write') + (network?.sentBytes ?? 0),
-                  }),
-                };
-              }
-              const renewed = SandboxExecutionBudgetStateSchema.parse(
-                await serviceCall(
-                  options.sandboxExecution!.exchange(pendingRenewal),
-                  2500,
+            await budget.renew(async () => {
+              const stats = await serviceCall(
+                this.json<{
+                  cpu_stats?: { cpu_usage?: { total_usage?: number } };
+                  blkio_stats?: {
+                    io_service_bytes_recursive?: {
+                      op: string;
+                      value: number;
+                    }[];
+                  };
+                }>(
+                  'GET',
+                  `/containers/${c.Id}/stats?stream=false&one-shot=true`,
                 ),
+                2000,
               );
-              if (
-                !runtimeContractEqual(renewed.spec, executionBudget.spec) ||
-                renewed.startedAt !== executionBudget.startedAt ||
-                renewed.hardDeadlineAt !== executionBudget.hardDeadlineAt ||
-                renewed.sequence !== pendingRenewal.sequence ||
-                renewed.deadlineAt <= Date.now()
-              )
-                throw new CloudRunnerError('SANDBOX_EXECUTION_POLICY_CHANGED');
-              executionBudget = renewed;
-              pendingRenewal = undefined;
-              await serviceGuard!.renew(
-                Math.min(renewed.deadlineAt, deadline, Date.now() + 5000),
-              );
-            }
+              const io = stats.blkio_stats?.io_service_bytes_recursive ?? [];
+              const sum = (op: string) =>
+                io
+                  .filter((x) => x.op.toLowerCase() === op)
+                  .reduce((a, x) => a + x.value, 0);
+              const network = networkSession?.observation;
+              return {
+                cpuNanos: stats.cpu_stats?.cpu_usage?.total_usage ?? 0,
+                readBytes:
+                  (plan.preparationReadBytes ?? 0) +
+                  sum('read') +
+                  (network?.receivedBytes ?? 0),
+                writtenBytes: sum('write') + (network?.sentBytes ?? 0),
+              };
+            });
+            await serviceGuard!.renew(
+              Math.min(budget.state.deadlineAt, deadline, Date.now() + 5000),
+            );
             return;
           }
           const lease = await serviceCall(options.projectService!.exchange());
@@ -2556,7 +2753,7 @@ export class CloudRunnerBackend {
                 );
                 serviceGuard?.close();
                 physicalFailure.abort(
-                  executionBudget && !(error instanceof CloudRunnerError)
+                  budget && !(error instanceof CloudRunnerError)
                     ? new CloudRunnerError(
                         error instanceof Error &&
                           /^SANDBOX_EXECUTION_[A-Z_]+$/.test(error.message)
@@ -2583,6 +2780,9 @@ export class CloudRunnerBackend {
               expiresAt: new Date(deadline).toISOString(),
             },
             signal: executionOptions.signal,
+            ...('kind' in plan.command && plan.command.kind === 'project'
+              ? { projectRuntime: true as const }
+              : {}),
             assertCurrent: async () => {
               executionOptions.signal.throwIfAborted();
               if (Date.now() >= deadline || !(await options.maintainLease()))

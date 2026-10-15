@@ -85,6 +85,26 @@ export function sandboxExecutionBudgetSpec(
 }
 
 const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+export const SandboxExecutionObservationSchema = z
+  .object({
+    startedAt: counter,
+    hardDeadlineAt: counter,
+    deadlineAt: counter,
+    initialBudgetMs: z.union([z.literal(60000), z.literal(120000)]),
+    maxExecutionMs: SandboxExecutionLimitMsSchema,
+    renewalCount: z.number().int().min(0).max(60),
+  })
+  .strict()
+  .refine(
+    (v) =>
+      v.startedAt < v.deadlineAt &&
+      v.deadlineAt <= v.hardDeadlineAt &&
+      v.hardDeadlineAt <= v.startedAt + v.maxExecutionMs,
+    'sandbox_execution_observation_invalid',
+  );
+export type SandboxExecutionObservation = z.infer<
+  typeof SandboxExecutionObservationSchema
+>;
 /** Trusted executor measurements, never stdout, model JSON or a heartbeat. */
 export const SandboxExecutionProgressSchema = z
   .object({

@@ -16,6 +16,8 @@ export function projectStagingArchives(input: {
   deadlineReason: 'timeout' | 'lease_lost';
   /** Trusted cloud service staging only; never supplied by project/model code. */
   privateServiceCache?: true;
+  /** Trusted admission only. Installers retain their offline environment. */
+  runtimeNetwork?: true;
 }) {
   const a = input.command.arguments;
   const chunks: { path: string; bytes: Buffer }[] = [];
@@ -67,6 +69,7 @@ export function projectStagingArchives(input: {
           deadlineUnixMs: input.deadlineUnixMs,
           deadlineReason: input.deadlineReason,
           ...(input.privateServiceCache ? { privateServiceCache: true } : {}),
+          ...(input.runtimeNetwork ? { runtimeNetwork: true } : {}),
           assemblies,
         }),
       ),

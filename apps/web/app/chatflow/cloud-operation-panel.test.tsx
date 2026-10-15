@@ -139,6 +139,35 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).not.toContain('云端待执行脚本');
     expect(html).not.toContain('第三方服务');
     expect(html).not.toContain('<script>');
+    if (op.proposal.kind !== 'project') throw Error('fixture');
+    op.proposal.network = {
+      mode: 'controlled_https',
+      origins: ['https://api.example.com'],
+    };
+    op.proposal.executionBudget = {
+      version: 1,
+      kind: 'build',
+      initialBudgetMs: 120000,
+      policy: { version: 1, maxExecutionMs: 600000, sources: [] },
+    };
+    const networkHtml = render(op);
+    expect(networkHtml).toContain('按授权联网');
+    expect(networkHtml).toContain('https://api.example.com');
+    expect(networkHtml).toContain('本次项目副本中的源码和文件可发送至以上服务');
+    expect(networkHtml).toContain('最多 10 分钟');
+    expect(networkHtml).toContain('120 秒');
+    expect(networkHtml).toContain('准备、安装和执行共用同一时限');
+    expect(networkHtml).not.toContain('不联网');
+    op.snapshot.status = 'unknown';
+    op.result = {
+      output: '',
+      code: 'SANDBOX_NETWORK_CONNECT_FAILED',
+      trusted: false,
+    };
+    const interrupted = render(op);
+    expect(interrupted).toContain('外部请求可能已经生效');
+    expect(interrupted).toContain('不会自动重跑任务');
+    expect(interrupted).toContain('与已授权服务的连接中断或建立失败');
   });
   it('keeps compact statuses distinct from unconfirmed remote outcomes', () => {
     const op = view();
