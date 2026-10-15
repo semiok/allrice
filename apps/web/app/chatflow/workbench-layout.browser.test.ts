@@ -5533,7 +5533,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const first = f.page.locator(`#operation-${id(8990)}`),
         second = f.page.locator(`#operation-${id(8991)}`);
-      await second.getByText('执行中', { exact: true }).waitFor();
+      await second
+        .locator('header')
+        .getByRole('status', { name: '正在执行', exact: true })
+        .waitFor();
       await push('assistant.text.delta', {
         replyId: 'final',
         text: '两页记录核对结束，最终结论在这里。',
@@ -5573,7 +5576,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '查看详情', exact: true })
         .click();
       expect(
-        await second.getByText('发送参数', { exact: true }).isVisible(),
+        await second
+          .getByRole('button', { name: '发送参数', exact: true })
+          .isVisible(),
       ).toBe(true);
       operations[1]!.snapshot.status = 'succeeded';
       await push('tool.completed', {
