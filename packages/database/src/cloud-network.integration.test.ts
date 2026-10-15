@@ -6,6 +6,8 @@ import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import type * as Client from './core/client.ts';
+import { CloudRunnerBackend } from '../../../apps/worker/src/cloud-runner/backend.js';
+import { runCloudCommandOperation } from '../../../apps/worker/src/cloud-runner/executor.js';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
   storageRoot: string;
@@ -154,6 +156,95 @@ suite(
       } finally {
         vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
       }
+    });
+    it('preserves uncertain external effects, cleans the stopped attempt, and never settles or replays it', async () => {
+      const f = await fixture(),
+        c = await f.create('interrupted-network', {
+          ...f.args,
+          inputs: [],
+          network,
+        });
+      await f.approve(c);
+      const backend = new CloudRunnerBackend();
+      const execute = vi.spyOn(backend, 'execute').mockResolvedValue({
+        containerId: 'a'.repeat(64),
+        exitCode: 137,
+        stopped: true,
+        reason: 'canceled',
+        output: '',
+        artifacts: [],
+        elapsedMs: 37246,
+        imageDigest: c.payload.imageDigest,
+        errorCode: 'SANDBOX_NETWORK_REVOKED',
+        network: { sentBytes: 120, receivedBytes: 1000, openedConnections: 1 },
+      });
+      const cleanup = vi.spyOn(backend, 'cleanup').mockResolvedValue();
+      const options = { storage: f.storage, database: db, backend };
+      const first = await runCloudCommandOperation(c, options);
+      expect(first).toMatchObject({
+        status: 'unknown',
+        stopped: true,
+        cleanupConfirmed: true,
+        externalOutcomeUnknown: true,
+        errorCode: 'SANDBOX_NETWORK_REVOKED',
+      });
+      const id = c.snapshot.binding.attempt.operationId;
+      const [attempt] =
+        await db`select cleanup_confirmed_at from allrice_cloud_execution_attempts where operation_id=${id}`;
+      expect(attempt!.cleanup_confirmed_at).toBeTruthy();
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(await runCloudCommandOperation(c, options)).toMatchObject(first);
+      expect(execute).toHaveBeenCalledTimes(1);
+      const [usage] =
+        await db`select observation,settled_amount from allrice_runtime_reservations where operation_id=${id} and metric='tool_calls'`;
+      expect(usage).toMatchObject({ observation: null, settled_amount: null });
+    });
+    it('shares concurrent lease checks but rechecks a revoked grant after the exchange completes', async () => {
+      const f = await fixture(),
+        c = await f.create('network-heartbeats', {
+          ...f.args,
+          inputs: [],
+          network,
+        });
+      await f.approve(c);
+      const heartbeat = vi.spyOn(c.ledger, 'heartbeat');
+      const backend = new CloudRunnerBackend();
+      vi.spyOn(backend, 'cleanup').mockResolvedValue();
+      vi.spyOn(backend, 'execute').mockImplementation(
+        async (command, _files, options) => {
+          expect(
+            await Promise.all(
+              Array.from({ length: 12 }, () => options.maintainLease()),
+            ),
+          ).toEqual(Array(12).fill(true));
+          expect(heartbeat).toHaveBeenCalledTimes(1);
+          await db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
+          expect(await options.maintainLease()).toBe(false);
+          expect(heartbeat).toHaveBeenCalledTimes(2);
+          return {
+            containerId: 'b'.repeat(64),
+            exitCode: 137,
+            stopped: true,
+            reason: 'canceled',
+            output: '',
+            artifacts: [],
+            elapsedMs: 20,
+            imageDigest: command.imageDigest,
+            network: {
+              sentBytes: 120,
+              receivedBytes: 1000,
+              openedConnections: 1,
+            },
+          };
+        },
+      );
+      expect(
+        await runCloudCommandOperation(c, {
+          storage: f.storage,
+          database: db,
+          backend,
+        }),
+      ).toMatchObject({ status: 'unknown', cleanupConfirmed: true });
     });
   },
 );

@@ -147,6 +147,22 @@ export type ProjectDependencyResolutionReceipt = z.infer<
   typeof ProjectDependencyResolutionReceiptSchema
 >;
 
+/** The public ledger summary is exact JSON. Keep large lock material only in
+ * the private execution receipt; undefined fields cannot be canonically hashed. */
+export function projectResolutionReceiptSummary(
+  receipt: ProjectDependencyResolutionReceipt,
+) {
+  return {
+    version: receipt.version,
+    manager: receipt.manager,
+    phase: receipt.phase,
+    status: receipt.status,
+    exitCode: receipt.exitCode,
+    diagnostics: receipt.diagnostics,
+    ...(receipt.errorCode ? { errorCode: receipt.errorCode } : {}),
+  };
+}
+
 export function projectResolutionErrorMessage(code: string | undefined) {
   const messages: Record<string, string> = {
     PROJECT_RESOLUTION_DOWNLOAD_FAILED: '依赖工具下载未完成，请查看诊断记录。',

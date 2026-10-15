@@ -9,6 +9,8 @@ import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createCloudProjectResolutionOperation } from './cloud-execution.ts';
 import { publishProjectResolutionDiagnostics } from './project-resolution-diagnostics.ts';
 import type * as Client from './core/client.ts';
+import { CloudRunnerBackend } from '../../../apps/worker/src/cloud-runner/backend.js';
+import { runProjectResolution } from '../../../apps/worker/src/tool-broker/handlers/project-resolution.js';
 let db: ReturnType<typeof postgres>,
   admin: ReturnType<typeof postgres>,
   storageRoot: string;
@@ -100,6 +102,114 @@ suite(
         { context: f.execution, callId, arguments: args },
         db,
       );
+    it.each(['resolved', 'failed'] as const)(
+      'runs the %s broker result through durable receipts and cleanup',
+      async (status) => {
+        const f = await fixture();
+        const lock = `lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      is-number:
+        specifier: 7.0.0
+        version: 7.0.0
+packages:
+  is-number@7.0.0:
+    resolution: {integrity: sha512-${Buffer.alloc(64, 1).toString('base64')}}
+snapshots:
+  is-number@7.0.0: {}
+`;
+        const exitCode = status === 'resolved' ? 0 : 1;
+        const resolution = {
+          version: 1 as const,
+          manager: 'pnpm' as const,
+          status,
+          exitCode,
+          phase:
+            status === 'resolved'
+              ? ('lock_validation' as const)
+              : ('resolve' as const),
+          diagnostics: status === 'resolved' ? '' : 'No matching version',
+          ...(status === 'resolved'
+            ? { lock }
+            : { errorCode: 'PROJECT_RESOLUTION_PACKAGE_FAILED' as const }),
+        };
+        const execute = vi
+          .spyOn(CloudRunnerBackend.prototype, 'execute')
+          .mockImplementation(async (command) => ({
+            containerId: 'c'.repeat(64),
+            exitCode,
+            stopped: true,
+            reason: status === 'resolved' ? 'completed' : 'failed',
+            output: '',
+            artifacts: [],
+            elapsedMs: 12,
+            imageDigest: command.imageDigest,
+            resolution,
+            network: {
+              sentBytes: 120,
+              receivedBytes: 1000,
+              openedConnections: 1,
+            },
+          }));
+        const cleanup = vi
+          .spyOn(CloudRunnerBackend.prototype, 'cleanup')
+          .mockResolvedValue();
+        try {
+          const c = await create(f);
+          await f.approve(c);
+          const [job] =
+            await db`select attempt,lease_token::text from allrice_jobs where id=${f.execution.jobId}`;
+          const call = () =>
+            runProjectResolution({
+              input: {
+                context: f.execution,
+                storageRoot,
+                sessionId: f.session,
+                capabilities: ['storage:write', 'network:outbound'],
+                call: {
+                  id: 'resolve',
+                  name: 'workspace.project',
+                  arguments: args,
+                },
+                managedBrowserJobAttempt: job!.attempt,
+                managedBrowserJobLeaseToken: job!.lease_token,
+              },
+              arguments: args,
+            });
+          if (status === 'resolved') {
+            const result = JSON.parse((await call()).modelContent);
+            expect(result).toMatchObject({
+              status: 'resolved',
+              installed: false,
+              project: { projectId: expect.any(String) },
+              projectPreparation: { manager: 'pnpm' },
+            });
+            expect(result.sourceDigest).toBe(
+              result.projectPreparation.sourceDigest,
+            );
+          } else
+            await expect(call()).rejects.toMatchObject({
+              code: 'PROJECT_RESOLUTION_PACKAGE_FAILED',
+              message: expect.stringContaining('依赖准备失败诊断.json'),
+            });
+          const { scope } = c.snapshot.binding.task,
+            id = c.snapshot.binding.attempt.operationId;
+          const receipt = (await c.ledger.readReceipts(scope, id)).at(-1)!
+            .payload as { evidence: { resolution: unknown } };
+          expect(receipt.evidence.resolution).not.toHaveProperty('lock');
+          expect(receipt.evidence.resolution).not.toHaveProperty('wheels');
+          const [stored] =
+            await db`select outcome,cleanup_confirmed_at from allrice_cloud_execution_attempts where operation_id=${id}`;
+          expect(stored!.outcome.resolution).toEqual(resolution);
+          expect(stored!.cleanup_confirmed_at).toBeTruthy();
+          expect(cleanup).toHaveBeenCalledTimes(1);
+        } finally {
+          execute.mockRestore();
+          cleanup.mockRestore();
+        }
+      },
+    );
     it('freezes the canonical request and ten-minute install budget without file transfer', async () => {
       const f = await fixture(),
         c = await create(f);
