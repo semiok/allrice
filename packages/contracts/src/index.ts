@@ -129,6 +129,7 @@ export * from './project-outputs.ts';
 export * from './project-service.ts';
 export * from './project-preview.ts';
 export * from './employee-content.ts';
+export * from './employee-details.ts';
 export * from './reference-library.ts';
 
 export * from './employee-method-tests.ts';

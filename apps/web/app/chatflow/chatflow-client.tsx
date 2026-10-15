@@ -3,6 +3,7 @@ import { ReferenceLibrary } from './reference-library';
 
 import {
   employeeChoices,
+  employeeChoice,
   employeeChoiceId,
   employeeChoiceProfile,
 } from './employee-instances';
@@ -1596,7 +1597,10 @@ export function ChatFlowClient({
           else setError('当前没有可用员工，请先派驻员工。');
         }}
         onOpenEmployeeDetails={(assignmentId) => {
-          setDetailsAssignmentId(assignmentId ?? null);
+          setDetailsAssignmentId(
+            assignmentId ??
+              (activeEmployee ? employeeChoiceId(activeEmployee) : null),
+          );
           setEmployeeDetailsOpen(true);
           void loadWorkspace().catch((cause) =>
             setError(
@@ -2005,11 +2009,19 @@ export function ChatFlowClient({
       <EmployeeDetailsDialog
         onClose={() => setEmployeeDetailsOpen(false)}
         open={employeeDetailsOpen}
-        profile={
-          employeeChoiceProfile(workspace, detailsAssignmentId ?? undefined) ??
-          activeEmployeeProfile ??
-          null
+        scopeId={settingsScope}
+        instanceId={
+          detailsAssignmentId
+            ? employeeChoice(workspace, detailsAssignmentId)?.instanceId
+            : undefined
         }
+        employeeId={
+          detailsAssignmentId
+            ? employeeChoice(workspace, detailsAssignmentId)?.employeeId
+            : undefined
+        }
+        workspaceId={workspace.workspaceId}
+        headers={tenantHeaders}
       />
 
       {referencePickerOpen && (
