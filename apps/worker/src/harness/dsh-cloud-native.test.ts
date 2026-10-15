@@ -43,3 +43,21 @@ it('Python PNG declarations use the same DSH native broker and reject invalid bi
     },
   });
 }, 45000);
+
+it('preserves controlled network requests through the actual native JSON-RPC schema', async () => {
+  await nativeBrokerRoundtrip({
+    canonicalName: 'cloud.process.execute',
+    wireName: 'cloud_process_execute',
+    args: {
+      script: 'console.log("synthetic only")',
+      network: {
+        mode: 'controlled_https',
+        origins: ['https://registry.npmjs.org'],
+      },
+    },
+    invalidArgs: {
+      script: 'not executed',
+      network: { mode: 'controlled_https', origins: ['https://127.0.0.1'] },
+    },
+  });
+}, 45000);

@@ -18,9 +18,14 @@ export const employeeRuntimeFeatureFlags = [
   'ALLRICE_BRIDGE_WSS_ENABLED',
 ] as const;
 export function runtimeFeatureEnabled(
-  name: (typeof employeeRuntimeFeatureFlags)[number],
+  name:
+    | (typeof employeeRuntimeFeatureFlags)[number]
+    | 'ALLRICE_SANDBOX_NETWORK_ENABLED',
   environment: Record<string, string | undefined> = process.env,
 ) {
+  // Staged rollout: development mode never grants new outbound access by itself.
+  if (name === 'ALLRICE_SANDBOX_NETWORK_ENABLED')
+    return environment[name] === '1';
   return (
     environment[name] === '1' ||
     (environment[name] === undefined &&

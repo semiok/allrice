@@ -11,6 +11,7 @@ import {
   type DshNativeSkillSnapshot,
   type EmployeePromptSnapshotSchema,
   type RequestContext,
+  type SandboxNetworkGrant,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
 import {
@@ -46,6 +47,8 @@ export async function createCloudExecutionFixture(
     localBrowser?: boolean;
     localPreview?: boolean;
     localProcess?: boolean;
+    sandboxNetwork?: SandboxNetworkGrant;
+    outboundCapability?: boolean;
     managedOffice?: {
       bridgeAccess?: 'none' | 'read_only' | 'read_write';
       freezeBinding?: boolean;
@@ -113,7 +116,10 @@ export async function createCloudExecutionFixture(
     ...(options.dsh ? ['model:invoke'] : []),
     'storage:read',
     'storage:write',
-    ...(options.browserControl || options.localBrowser || options.localPreview
+    ...(options.browserControl ||
+    options.localBrowser ||
+    options.localPreview ||
+    options.outboundCapability
       ? ['network:outbound']
       : []),
   ];
@@ -411,6 +417,9 @@ export async function createCloudExecutionFixture(
         runtimeChecksum:
           'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
         network: 'none',
+        ...(options.sandboxNetwork
+          ? { sandboxNetwork: options.sandboxNetwork }
+          : {}),
         maximumConcurrency: 2,
       },
     },

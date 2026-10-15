@@ -48,6 +48,7 @@ export type CloudOperationView = {
   proposal:
     | {
         kind: 'cloud';
+        network?: Exclude<CloudCommand['network'], 'none'>;
         language?: CloudCommand['arguments']['language'];
         script: string;
         inputs: CloudCommand['arguments']['inputs'];
@@ -158,7 +159,11 @@ export async function listCloudRuntimeOperations(
         mcp_result: {
           evidence: { output: string; code: string | null };
         } | null;
-        cloud_outcome: { output: string; reason: string } | null;
+        cloud_outcome: {
+          output: string;
+          reason: string;
+          errorCode?: string;
+        } | null;
         endpoint: string | null;
         connection_enabled: boolean | null;
         approval_id: string | null;
@@ -271,6 +276,9 @@ export async function listCloudRuntimeOperations(
               }
             : {
                 kind: 'cloud',
+                ...(payload.network !== 'none'
+                  ? { network: payload.network }
+                  : {}),
                 ...(payload.arguments.language
                   ? { language: payload.arguments.language }
                   : {}),
@@ -283,7 +291,7 @@ export async function listCloudRuntimeOperations(
         result: row.cloud_outcome
           ? {
               output: row.cloud_outcome.output,
-              code: row.cloud_outcome.reason,
+              code: row.cloud_outcome.errorCode ?? row.cloud_outcome.reason,
               trusted: false,
             }
           : null,
