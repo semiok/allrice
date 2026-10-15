@@ -10,6 +10,7 @@ import {
   UuidSchema,
   employeeContentLimits,
   type EmployeeMethodSharedTarget,
+  type EmployeeMethodExecutionView,
   type RequestContext,
   type EmployeeContentMutation,
   type EmployeeContentManifest,
@@ -265,6 +266,12 @@ async function assemble(
     const existing = rows.findIndex((r) => r.id === candidate.row.id);
     if (existing >= 0) rows[existing] = candidate.row;
     else rows.push(candidate.row);
+    // A first company publication must precede existing department overlays,
+    // just as it will after activation. Never append it below the department.
+    const order = { company: 0, department: 1, personal: 2 };
+    rows.sort(
+      (a, b) => order[a.scope] - order[b.scope] || a.id.localeCompare(b.id),
+    );
   }
   const issues: EmployeeContentIssue[] = [],
     common: EmployeeContentReference[] = [];
@@ -367,6 +374,24 @@ async function assemble(
 /** A common edit affects the entire shared execution view, including scenes
  * inherited from the company. The server owns this bounded, immutable list;
  * neither the authoring model nor the limited test-history query defines it. */
+type MethodTestCoverage = {
+  digest: string;
+  scenes: {
+    sceneId: string;
+    name: string;
+    inherited: boolean;
+    executionView?: EmployeeMethodExecutionView;
+  }[];
+  views?: {
+    executionView: EmployeeMethodExecutionView;
+    name: string;
+    dependencyDigest: string;
+    sceneIds: string[];
+  }[];
+  valid: boolean;
+  issues: string[];
+  coverage: string;
+};
 function departmentCommonTestCoverage(
   selection: Awaited<ReturnType<typeof resolveEmployeeMethodTarget>>,
   target: ResolvedTarget,
@@ -374,7 +399,7 @@ function departmentCommonTestCoverage(
   candidate: ContentRevisionRow,
   active: ContentRevisionRow | null,
   result: Awaited<ReturnType<typeof assemble>>,
-) {
+): MethodTestCoverage | undefined {
   if (
     selection.sharedTarget?.scope !== 'department' ||
     runtimePolicyDigest(candidate.manifest.common) ===
@@ -413,6 +438,136 @@ function departmentCommonTestCoverage(
     issues,
     coverage: '覆盖该部门与继承公司的共享场景；不读取或验证个人定制内容。',
   };
+}
+
+/** Enumerate only shared execution views under the existing company transaction
+ * gate. Bodies are resolved with the normal source ACL, never private overlays.
+ * Only bounded metadata is frozen into each test; materialized views stay local.
+ */
+async function companyCommonTestCoverage(
+  context: EmployeeContentContext,
+  selection: Awaited<ReturnType<typeof resolveEmployeeMethodTarget>>,
+  target: ResolvedTarget,
+  row: ContentSetRow,
+  candidate: ContentRevisionRow,
+  active: ContentRevisionRow | null,
+  base: Awaited<ReturnType<typeof assemble>>,
+  sql: ContentTx,
+  lock: boolean,
+) {
+  if (
+    selection.sharedTarget?.scope !== 'company' ||
+    runtimePolicyDigest(candidate.manifest.common) ===
+      runtimePolicyDigest(active?.manifest.common ?? [])
+  )
+    return undefined;
+  const departments = await sql<{ id: string; name: string }[]>`
+    select d.id,d.name from allrice_departments d
+    where d.organization_id=${context.organizationId} and d.archived_at is null
+      and exists(select 1 from allrice_employee_content_sets s
+        where s.organization_id=${context.organizationId} and s.workspace_id=${context.workspaceId}
+          and s.employee_id=${target.employeeId} and s.scope='department'
+          and s.department_id=d.id and s.active_revision_id is not null)
+    order by d.id limit 32 ${lock ? sql`for share of d` : sql``}`;
+  const views: {
+    executionView: EmployeeMethodExecutionView;
+    name: string;
+    result: Awaited<ReturnType<typeof assemble>>;
+  }[] = [
+    { executionView: { scope: 'company' }, name: '公司基础', result: base },
+  ];
+  let sceneCount = base.scenes.length;
+  const tooManyViews = departments.length >= 32;
+  const issues: string[] = tooManyViews
+    ? ['公司基础及部门共享组合超过 32 个，不能生成完整测试清单；请先缩小范围。']
+    : [];
+  for (const department of tooManyViews ? [] : departments) {
+    const result = await assemble(
+      context,
+      target,
+      {
+        scope: 'department',
+        organizationId: context.organizationId,
+        departmentId: department.id,
+      },
+      sql,
+      { row, revision: candidate },
+      lock,
+      true,
+    );
+    views.push({
+      executionView: { scope: 'department', departmentId: department.id },
+      name: department.name,
+      result,
+    });
+    sceneCount += result.scenes.length;
+    if (sceneCount > 32) {
+      issues.push(
+        '受影响的公司及部门场景超过 32 项，不能生成完整测试清单；请先缩小范围。',
+      );
+      break;
+    }
+  }
+  for (const view of views) {
+    issues.push(
+      ...view.result.validation.issues.map((i) => `${view.name}：${i.message}`),
+    );
+    if (
+      [
+        ...view.result.common,
+        ...view.result.scenes.flatMap((s) => s.references),
+      ].some((ref) => !['requirement', 'procedure'].includes(ref.sourceKind))
+    )
+      issues.push(
+        `${view.name}包含当前固定文字测试不支持的资料或流程；不能跳过。`,
+      );
+  }
+  if (!sceneCount) issues.push('没有可验证的场景，不能启用共同执行要求。');
+  const metadata = views.map((view) => ({
+    executionView: view.executionView,
+    name: view.name,
+    dependencyDigest: view.result.validation.dependencyDigest,
+    sceneIds: view.result.scenes.map((scene) => scene.id),
+  }));
+  const coverage: MethodTestCoverage = {
+    digest: runtimePolicyDigest({
+      setId: row.id,
+      setRevision: row.revision,
+      candidateRevisionId: candidate.id,
+      candidateDigest: candidate.digest,
+      employeeVersionId: target.versionId,
+      sharedTarget: selection.sharedTarget,
+      audience: selection.audience,
+      departments: [...departments],
+      views: views.map((view) => ({
+        executionView: view.executionView,
+        name: view.name,
+        dependencyDigest: view.result.validation.dependencyDigest,
+        common: view.result.common,
+        scenes: view.result.scenes,
+      })),
+    }),
+    // An overflow is an invalid plan, never a truncated list of payable tests.
+    scenes:
+      sceneCount > 32 || tooManyViews
+        ? []
+        : views.flatMap((view) =>
+            view.result.scenes.map((scene) => ({
+              sceneId: scene.id,
+              name: scene.name,
+              executionView: view.executionView,
+              inherited:
+                view.executionView.scope === 'department' &&
+                candidate.manifest.scenes.some((s) => s.id === scene.id),
+            })),
+          ),
+    views: metadata,
+    valid: !issues.length,
+    issues,
+    coverage:
+      '覆盖公司基础与当前启用的各部门共享组合；不读取或验证个人定制内容。',
+  };
+  return { coverage, views };
 }
 
 async function saveTextEdits(
@@ -865,6 +1020,7 @@ export async function inspectEmployeeMethodContent(
   view: 'effective' | 'candidate',
   tx: ContentTx,
   sharedTarget?: EmployeeMethodSharedTarget,
+  beforeTestId?: string,
 ) {
   const selection = await resolveEmployeeMethodTarget(
     context,
@@ -902,7 +1058,8 @@ export async function inspectEmployeeMethodContent(
   >`select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and id=${selection.setId}`;
-  if (!row)
+  if (!row) {
+    if (beforeTestId) throw new DataAccessError('not_found');
     return {
       view,
       instanceId,
@@ -913,7 +1070,9 @@ export async function inspectEmployeeMethodContent(
       active: null,
       sources: [],
       candidateTests: [],
+      nextBeforeTestId: null,
     };
+  }
   const candidate = await readRevision(tx, row.candidate_revision_id);
   const active = await readRevision(tx, row.active_revision_id);
   const sources = [];
@@ -933,32 +1092,63 @@ export async function inspectEmployeeMethodContent(
         })
       ).dto,
     );
+  if (beforeTestId) {
+    const [anchor] = candidate
+      ? await tx`select test_id from allrice_employee_method_tests
+      where test_id=${beforeTestId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+        and owner_id=${context.actor.id} and instance_id=${instanceId} and set_id=${row.id}
+        and candidate_revision_id=${candidate.id} and candidate_digest=${candidate.digest}`
+      : [];
+    if (!anchor) throw new DataAccessError('not_found');
+  }
   const tests = candidate
-    ? await tx`select t.test_id,t.scene_id,t.case_id,p.status
+    ? await tx`select t.test_id,t.scene_id,t.case_id,p.status,
+      t.candidate_snapshot->'content'->'executionView' execution_view,
+      t.candidate_snapshot->'content'->'testCoverage'->>'digest' coverage_digest
     from allrice_employee_method_tests t join allrice_platform_employee_test_runs p on p.id=t.test_id and p.purpose='method_candidate'
     where t.organization_id=${context.organizationId} and t.workspace_id=${context.workspaceId} and t.owner_id=${context.actor.id}
       and t.instance_id=${instanceId} and t.set_id=${row.id} and t.candidate_revision_id=${candidate.id} and t.candidate_digest=${candidate.digest}
-    order by t.created_at desc,t.test_id limit 32`
+      ${beforeTestId ? tx`and (t.created_at,t.test_id)<(select created_at,test_id from allrice_employee_method_tests where test_id=${beforeTestId})` : tx``}
+    order by t.created_at desc,t.test_id desc limit 33`
     : [];
+  const assembled =
+    candidate && selection.sharedTarget
+      ? await assemble(
+          context,
+          target,
+          selection.ownership,
+          tx,
+          { row, revision: candidate },
+          false,
+          true,
+        )
+      : undefined;
+  const companyCoverage =
+    candidate && assembled
+      ? await companyCommonTestCoverage(
+          context,
+          selection,
+          target,
+          row,
+          candidate,
+          active,
+          assembled,
+          tx,
+          false,
+        )
+      : undefined;
   const testCoverage =
-    candidate && selection.sharedTarget?.scope === 'department'
+    companyCoverage?.coverage ??
+    (candidate && assembled
       ? departmentCommonTestCoverage(
           selection,
           target,
           row,
           candidate,
           active,
-          await assemble(
-            context,
-            target,
-            selection.ownership,
-            tx,
-            { row, revision: candidate },
-            false,
-            true,
-          ),
+          assembled,
         )
-      : undefined;
+      : undefined);
   return {
     view,
     instanceId,
@@ -971,12 +1161,15 @@ export async function inspectEmployeeMethodContent(
     ...(testCoverage ? { testCoverage } : {}),
     // Discovery only. test_status/activation rechecks dependency and authority;
     // a stored 'succeeded' state alone is not a current passing assertion.
-    candidateTests: tests.map((t) => ({
+    candidateTests: tests.slice(0, 32).map((t) => ({
       testId: t.test_id,
       sceneId: t.scene_id,
       caseId: t.case_id,
       status: t.status,
+      ...(t.execution_view ? { executionView: t.execution_view } : {}),
+      ...(t.coverage_digest ? { coverageDigest: t.coverage_digest } : {}),
     })),
+    nextBeforeTestId: tests.length > 32 ? tests[31]!.test_id : null,
   };
 }
 
@@ -990,6 +1183,7 @@ export async function freezeEmployeeMethodActivationCandidate(
     expectedRevision: number;
     candidateRevisionId: string;
     candidateDigest: string;
+    executionView?: EmployeeMethodExecutionView;
   },
   tx: ContentTx,
 ) {
@@ -1014,7 +1208,7 @@ export async function freezeEmployeeMethodActivationCandidate(
   const revision = await readRevision(tx, row.candidate_revision_id);
   if (!revision || revision.digest !== input.candidateDigest)
     throw new EmployeeContentError('version_conflict');
-  const result = await assemble(
+  let result = await assemble(
     context,
     target,
     contentOwnership(row),
@@ -1026,20 +1220,30 @@ export async function freezeEmployeeMethodActivationCandidate(
   if (!result.validation.valid)
     throw new EmployeeContentError('validation_failed');
   const active = await readRevision(tx, row.active_revision_id);
-  const testCoverage = departmentCommonTestCoverage(
+  const companyCoverage = await companyCommonTestCoverage(
+    context,
     selection,
     target,
     row,
     revision,
     active,
     result,
+    tx,
+    true,
   );
+  const testCoverage =
+    companyCoverage?.coverage ??
+    departmentCommonTestCoverage(
+      selection,
+      target,
+      row,
+      revision,
+      active,
+      result,
+    );
   if (
     selection.sharedTarget &&
-    ((selection.sharedTarget.scope === 'company' &&
-      runtimePolicyDigest(revision.manifest.common) !==
-        runtimePolicyDigest(active?.manifest.common ?? [])) ||
-      (testCoverage && !testCoverage.valid) ||
+    ((testCoverage && !testCoverage.valid) ||
       revision.manifest.scenes.some((scene) =>
         scene.references.some(
           (ref) => !['requirement', 'procedure'].includes(ref.sourceKind),
@@ -1047,11 +1251,21 @@ export async function freezeEmployeeMethodActivationCandidate(
       ))
   )
     throw new EmployeeContentError('validation_failed');
+  if (input.executionView) {
+    const selected = companyCoverage?.views.find(
+      (view) =>
+        runtimePolicyDigest(view.executionView) ===
+        runtimePolicyDigest(input.executionView),
+    );
+    if (!selected) throw new EmployeeContentError('source_changed');
+    result = selected.result;
+  }
   return {
     ...(selection.sharedTarget
       ? { sharedTarget: selection.sharedTarget, audience: selection.audience }
       : {}),
     ...(testCoverage ? { testCoverage } : {}),
+    ...(input.executionView ? { executionView: input.executionView } : {}),
     setId: row.id,
     setRevision: row.revision,
     candidateRevisionId: revision.id,
@@ -1085,6 +1299,7 @@ export async function freezeEmployeeMethodCandidate(
   const scene = result.scenes.find((s) => s.id === input.sceneId);
   if (
     !scene ||
+    Boolean(result.testCoverage?.views) !== Boolean(input.executionView) ||
     (result.testCoverage
       ? input.coverageDigest !== result.testCoverage.digest
       : input.coverageDigest !== undefined ||
@@ -1102,6 +1317,7 @@ export async function freezeEmployeeMethodCandidate(
       ? { sharedTarget: result.sharedTarget, audience: result.audience }
       : {}),
     ...(result.testCoverage ? { testCoverage: result.testCoverage } : {}),
+    ...(result.executionView ? { executionView: result.executionView } : {}),
     setId: result.setId,
     setRevision: result.setRevision,
     candidateRevisionId: result.candidateRevisionId,

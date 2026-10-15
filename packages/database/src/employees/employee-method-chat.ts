@@ -103,7 +103,7 @@ function methodOperationClauses(text: string) {
  * could introduce instructions from a document, example or another person. */
 function withoutMethodRetryPreface(text: string) {
   const request = text.replace(
-    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后|[，,])?(?:尚未|还未|没有)(?:(?:保存|完成)(?:修改|操作|任务)?|执行(?:修改|操作|任务)))?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|(?:网络|连接)(?:失败|中断|断开|超时)(?:了)?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
+    /^(?:(?:上次|刚才|上一轮|之前)(?:的)?(?:连接|网络|请求|任务|操作)?(?:失败|中断|断开|超时)(?:了)?(?:(?:后|[，,])?(?:尚未|还未|没有)(?:(?:保存|完成)(?:修改|操作|任务)?|执行(?:修改|操作|任务)))?(?:[，,](?:请)?继续(?:未完成的)?(?:移除操作|操作|任务))?[。！!\n]|(?:网络|连接)(?:失败|中断|断开|断|超时)(?:了)?(?:[，,](?:刚才|之前)?(?:尚未|还未|没有)(?:保存|完成)(?:修改|操作|任务)?)?[。！!\n]|The(?: previous| last)? (?:request|operation|task) (?:failed|timed out|was interrupted)[.!])/iu,
     '',
   );
   if (request === text) return text;
@@ -190,7 +190,7 @@ export function explicitEmployeeMethodCommonIntent(text: string) {
   const raw = withoutMethodRetryPreface(text).replace(/^(?:[ \t]*\r?\n)+/u, '');
   const request = namedMethodDepartmentRequest(raw)?.normalized ?? raw;
   const header = request.split(/[。；;！!\n：:]/u, 1)[0]!.trim();
-  return /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制)(?:本部门|我们部门|我的部门|本公司|我们公司|公司|全公司)的(?:通用|共同|所有场景共用的)执行要求(?:候选|草稿)?$/u.test(
+  return /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制)(?:本部门|我们部门|我的部门|本公司|我们公司|公司|全公司)的?(?:通用|共同|所有场景共用的)执行要求(?:候选|草稿)?$/u.test(
     header,
   );
 }
@@ -446,11 +446,11 @@ export function employeeMethodRequestedScope(text: string) {
   // The scope is the direct grammatical target, not a keyword in an object
   // name or an explanation that expressly excludes sharing.
   const department =
-    /^(?:本部门|我们部门|我的部门)(?:的|\s|整份|工作|执行|QUOTED)/u.test(
+    /^(?:本部门|我们部门|我的部门)(?:的|\s|整份|工作|执行|(?:通用|共同|所有场景共用的)执行要求|QUOTED)/u.test(
       object,
     );
   const company =
-    /^(?:本公司|我们公司|全公司|公司)(?:的|\s|整份|工作|执行|QUOTED)/u.test(
+    /^(?:本公司|我们公司|全公司|公司)(?:的|\s|整份|工作|执行|(?:通用|共同|所有场景共用的)执行要求|QUOTED)/u.test(
       object,
     ) ||
     /^(?:please )?(?:save|update|edit|create|add|customize|rename|remove|delete|disable|test|validate)\s+(?:our )?company\s+(?:work )?(?:method|scene|workflow)(?: (?:candidate|draft))?[.!]?$/iu.test(
@@ -696,6 +696,7 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
         args.view,
         tx,
         selected?.sharedTarget,
+        args.beforeTestId,
       );
       if (selected)
         return {
@@ -839,9 +840,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
   const { scope, requestId } = employeeChatIdentity(input);
   if (
     args.sharedTarget &&
-    ((args.section !== 'scene' && args.sharedTarget.scope !== 'department') ||
-      args.references?.length ||
-      args.removeReferences?.length)
+    (args.references?.length || args.removeReferences?.length)
   )
     throw new DataAccessError('authorization_denied');
   const { instance, selection, text } = await enterMethodChat(

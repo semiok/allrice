@@ -24,6 +24,71 @@ const companyTarget = {
   employeeId: departmentTarget.employeeId,
 };
 
+it.each([
+  { scope: 'company' },
+  { scope: 'department', departmentId: departmentTarget.departmentId },
+])(
+  'preserves company publication target and distinct execution view through native schema: %s',
+  async (executionView) => {
+    const args = {
+      sharedTarget: companyTarget,
+      executionView,
+      expectedRevision: 3,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      coverageDigest: `sha256:${'b'.repeat(64)}`,
+      sceneId: '00000000-0000-4000-8000-000000000002',
+      caseId: 'cny-total-v1',
+    };
+    await nativeBrokerRoundtrip({
+      canonicalName: 'workspace.employee.method.test',
+      wireName: 'workspace_employee_method_test',
+      args,
+      invalidArgs: {
+        ...args,
+        executionView: { ...executionView, ownerId: departmentTarget.setId },
+      },
+      onToolCall: async (call) => {
+        expect(EmployeeMethodTestStartSchema.parse(call.arguments)).toEqual(
+          args,
+        );
+        return {
+          modelContent: JSON.stringify({
+            executionView,
+            sharedTarget: companyTarget,
+          }),
+          summary: 'Shared execution view retained',
+        };
+      },
+    });
+  },
+  45000,
+);
+
+it('roundtrips candidate test pagination without turning a historical status into a passing proof', async () => {
+  const args = {
+    view: 'candidate',
+    scope: 'company',
+    beforeTestId: '00000000-0000-4000-8000-000000000001',
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.employee.method.inspect',
+    wireName: 'workspace_employee_method_inspect',
+    args,
+    invalidArgs: { ...args, ownerId: departmentTarget.setId },
+    onToolCall: async (call) => {
+      expect(EmployeeMethodInspectSchema.parse(call.arguments)).toEqual(args);
+      return {
+        modelContent: JSON.stringify({
+          candidateTests: [],
+          nextBeforeTestId: null,
+        }),
+        summary: 'Scoped candidate discovery',
+      };
+    },
+  });
+}, 45000);
+
 it('roundtrips server coverage digest for a department common candidate through the native provider schema', async () => {
   const args = {
     sharedTarget: departmentTarget,
@@ -352,6 +417,7 @@ it('passes candidate view through actual native DSH and excludes target authorit
     inspectSchema(schema) {
       expect(Object.keys(schema.properties as object).sort()).toEqual([
         'beforeRevision',
+        'beforeTestId',
         'departmentId',
         'scope',
         'view',

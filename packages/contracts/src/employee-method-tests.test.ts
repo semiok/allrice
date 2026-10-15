@@ -43,7 +43,17 @@ describe('fixed candidate method validation', () => {
     expect(EmployeeMethodTestStartSchema.parse(args)).toEqual(args);
     const retry = { ...args, retryOfTestId: randomUUID() };
     expect(EmployeeMethodTestStartSchema.parse(retry)).toEqual(retry);
+    for (const executionView of [
+      { scope: 'company' },
+      { scope: 'department', departmentId: randomUUID() },
+    ])
+      expect(
+        EmployeeMethodTestStartSchema.parse({ ...args, executionView }),
+      ).toEqual({ ...args, executionView });
     for (const extra of [
+      { executionView: { scope: 'personal', ownerId: randomUUID() } },
+      { executionView: { scope: 'department' } },
+      { executionView: { scope: 'company', departmentId: randomUUID() } },
       { expected: 30100 },
       { model: 'arbitrary' },
       { ownerId: randomUUID() },
