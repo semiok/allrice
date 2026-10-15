@@ -1,6 +1,6 @@
 .root {
   display: grid;
-  gap: 8px;
+  gap: 12px;
   margin: 16px 0;
   min-width: 0;
 }
@@ -621,5 +621,164 @@
 @media (pointer: coarse) {
   .compactCard .detailsToggle {
     min-height: 44px;
+  }
+}
+
+/* Cloud receipts keep a 72px summary and a 72px first-level detail grid.
+ * Opening an individual record or reviewing an approval may grow naturally. */
+.cloudCard {
+  padding: 0;
+  border-radius: 10px;
+}
+.cloudCard .cloudHeader {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  min-height: 70px;
+  box-sizing: border-box;
+  padding: 8px 16px;
+}
+.cloudCard .title {
+  gap: 8px;
+  white-space: nowrap;
+  line-height: 20px;
+}
+.cloudCard .icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  flex: none;
+}
+.cloudCard .cloudScope {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  color: var(--dsw-alias-label-secondary, #68717e);
+  line-height: 18px;
+  white-space: nowrap;
+}
+.cloudScope > span + span::before {
+  content: '·';
+  margin-right: 8px;
+}
+.cloudControls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.cloudControls .status {
+  font-size: 12px;
+  line-height: 18px;
+}
+.cloudCard .detailsToggle {
+  padding: 0 4px;
+  gap: 5px;
+  border: 0;
+  background: transparent;
+}
+.cloudCard .detailsToggle[aria-expanded='true'] svg {
+  transform: rotate(180deg);
+}
+.cloudCard .executionFooter {
+  border: 0;
+}
+.cloudCard .executionBody {
+  padding: 3px 12px 4px;
+  border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
+}
+.cloudCard .detailSections {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.cloudCard .detailSection {
+  min-width: 0;
+  border: 0;
+}
+.cloudCard .detailSection[open] {
+  grid-column: 1 / -1;
+}
+.cloudCard .detailSection > summary {
+  box-sizing: border-box;
+  min-height: 32px;
+  padding: 5px 4px;
+  gap: 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 22px;
+}
+.cloudCard .detailLabel {
+  flex: none;
+  white-space: nowrap;
+}
+.cloudCard .detailMeta {
+  margin-left: auto;
+  min-width: 0;
+  max-width: none;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cloudCard .detailBody {
+  padding: 6px 4px 12px;
+}
+.cloudCard > .notice {
+  margin: 0;
+  padding: 0 16px 12px;
+}
+.cloudCard .actions {
+  margin-top: 0;
+  padding: 12px 16px;
+}
+@container (max-width: 650px) {
+  .cloudCard .cloudHeader {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0 8px;
+    padding: 4px 12px;
+  }
+  .cloudCard .title {
+    grid-column: 1;
+  }
+  .cloudCard .cloudScope {
+    grid-column: 1;
+    font-size: 11px;
+    gap: 6px;
+  }
+  .cloudScope .cloudLocation {
+    display: none;
+  }
+  .cloudScope > span + span::before {
+    margin-right: 6px;
+  }
+  .cloudControls {
+    grid-column: 2;
+    grid-row: 1 / 3;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0 8px;
+    max-width: 160px;
+  }
+  .cloudControls .status {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+  .cloudCard .stopButton {
+    width: 32px;
+    padding: 0;
+  }
+  .cloudCard .stopLabel {
+    display: none;
+  }
+  .cloudCard .detailSections {
+    column-gap: 8px;
+  }
+  .cloudCard .detailIcon {
+    display: none;
   }
 }

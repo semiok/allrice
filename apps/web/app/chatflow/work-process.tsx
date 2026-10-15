@@ -316,12 +316,17 @@ export function WorkProcess({
         </div>
         {children}
       </DisclosureRow>
-      {renderOperation &&
-        items
-          .filter((item) => item.operationId)
-          .map((item) => (
-            <div key={item.id}>{renderOperation(item.operationId!)}</div>
-          ))}
+      {renderOperation && (
+        <div className={styles.processReceipts}>
+          {items
+            .filter((item) => item.operationId)
+            .map((item) => (
+              <div className={styles.operationReceipt} key={item.id}>
+                {renderOperation(item.operationId!)}
+              </div>
+            ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -347,7 +352,9 @@ function WorkProcessGroup({
         items
           .filter((item) => item.operationId)
           .map((item) => (
-            <div key={item.id}>{renderOperation(item.operationId!)}</div>
+            <div className={styles.operationReceipt} key={item.id}>
+              {renderOperation(item.operationId!)}
+            </div>
           ))}
     </div>
   );
