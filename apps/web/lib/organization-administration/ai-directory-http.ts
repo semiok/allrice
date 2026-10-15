@@ -5,6 +5,7 @@ import {
   listOrganizationAiDirectory,
   listOrganizationPersonAiInstances,
 } from '@allrice/database';
+import { OrganizationAiDirectoryQuerySchema } from '@allrice/contracts';
 import { requirePlatformAdminContext } from '../identity/platform-admin';
 import { isRequestValidationError } from '../api-error-response';
 import { referenceError, referenceHeaders } from '../reference-library';
@@ -66,6 +67,13 @@ export async function organizationAiDirectoryHttp(
       });
     }
     const after = params.get('after') ?? undefined;
+    const query = OrganizationAiDirectoryQuerySchema.parse({
+      after,
+      kind: params.get('kind') ?? undefined,
+      sourceTemplate: params.get('sourceTemplate') ?? undefined,
+      search: params.get('search') ?? undefined,
+      departmentId: params.get('departmentId') ?? undefined,
+    });
     const result =
       instanceId && userId
         ? await getOrganizationAiSharedDetails(
@@ -79,13 +87,9 @@ export async function organizationAiDirectoryHttp(
               context,
               organizationId,
               userId,
-              after,
+              query,
             )
-          : await listOrganizationAiDirectory(context, organizationId, {
-              after,
-              search: params.get('search') ?? undefined,
-              departmentId: params.get('departmentId') ?? undefined,
-            });
+          : await listOrganizationAiDirectory(context, organizationId, query);
     return Response.json(result, { headers: referenceHeaders });
   } catch (error) {
     if (isRequestValidationError(error))

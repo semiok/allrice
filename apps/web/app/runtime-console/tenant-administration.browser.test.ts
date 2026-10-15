@@ -29,6 +29,10 @@ import { tenantResourcesHttp } from '../../lib/tenant-administration/resources-h
 import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
 import { tenantValidationFixture } from '../../../../packages/database/src/tenant-validation.fixture.ts';
 import { employeeAdministrationHttp } from '../../lib/tenant-administration/employee-http';
+import { organizationAdministrationHttp } from '../../lib/organization-administration/http';
+import { organizationAiDirectoryHttp } from '../../lib/organization-administration/ai-directory-http';
+import { platformEmployeeHistoryHttp } from '../../lib/employee-administration/history-http';
+import { createOrganizationAiDirectoryFixture } from '../../../../packages/database/src/organization-ai-directory.fixture.ts';
 import {
   GET as employeeDirectory,
   POST as createEmployeeDraft,
@@ -162,72 +166,108 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           });
           const parts = path.split('/');
           const result =
-            parts[4] === 'platform-employees'
-              ? !parts[5]
-                ? await (
-                    request.method === 'POST'
-                      ? createEmployeeDraft
-                      : employeeDirectory
-                  )(request)
-                : parts[6] === 'test-runs'
-                  ? await (
-                      request.method === 'POST'
-                        ? queueEmployeeTest
-                        : employeeTestRuns
-                    )(request, {
-                      params: Promise.resolve({ employeeId: parts[5]! }),
-                    })
-                  : parts[6] === 'lifecycle'
-                    ? await (
-                        request.method === 'POST'
-                          ? employeeLifecycleAction
-                          : employeeLifecycle
-                      )(request, {
-                        params: Promise.resolve({ employeeId: parts[5]! }),
-                      })
-                    : await employeeAdministrationHttp(
-                        request,
-                        parts[5]!,
-                        parts[6] === 'review'
-                          ? 'review'
-                          : parts[6] === 'publish'
-                            ? 'publish'
-                            : 'save',
-                      )
-              : parts[4] === 'platform-skills'
-                ? await employeeAdministrationHttp(request, parts[5]!, 'skill')
-                : ['quotas', 'environments', 'mcp', 'local-mcp'].includes(
-                      parts[6] ?? '',
-                    )
-                  ? await tenantResourcesHttp(
+            parts[4] === 'organizations'
+              ? parts[6] === 'ai-directory' || parts[8] === 'ai-instances'
+                ? await organizationAiDirectoryHttp(
+                    request,
+                    parts[5]!,
+                    parts[7],
+                    parts[9],
+                    parts[10] === 'references'
+                      ? {
+                          revisionId: parts[11]!,
+                          action:
+                            parts[12] === 'download' ? 'download' : 'preview',
+                        }
+                      : undefined,
+                  )
+                : await organizationAdministrationHttp(
+                    request,
+                    parts[5],
+                    parts[7],
+                    parts[6] === 'departments' ? 'departments' : undefined,
+                  )
+              : parts[4] === 'platform-employees' &&
+                  parts[5] === 'history-directory'
+                ? await platformEmployeeHistoryHttp(request)
+                : parts[4] === 'platform-employees' && parts[6] === 'revisions'
+                  ? await platformEmployeeHistoryHttp(
                       request,
-                      parts[5]!,
-                      parts[6] as
-                        'quotas' | 'environments' | 'mcp' | 'local-mcp',
+                      parts[5],
+                      parts[7],
                     )
-                  : parts[6] === 'employees'
-                    ? await tenantEmployeesHttp(request, parts[5]!)
-                    : parts[6] === 'validation'
-                      ? await tenantValidationHttp(request, parts[5]!)
-                      : parts[6] === 'policy'
-                        ? await tenantPolicyHttp(request, parts[5]!)
-                        : parts[4] === 'tenants' &&
-                            (!parts[6] ||
-                              (parts[6] === 'members' &&
-                                parts[7] &&
-                                parts.length === 8))
-                          ? await tenantAdministrationHttp(
+                  : parts[4] === 'platform-employees'
+                    ? !parts[5]
+                      ? await (
+                          request.method === 'POST'
+                            ? createEmployeeDraft
+                            : employeeDirectory
+                        )(request)
+                      : parts[6] === 'test-runs'
+                        ? await (
+                            request.method === 'POST'
+                              ? queueEmployeeTest
+                              : employeeTestRuns
+                          )(request, {
+                            params: Promise.resolve({ employeeId: parts[5]! }),
+                          })
+                        : parts[6] === 'lifecycle'
+                          ? await (
+                              request.method === 'POST'
+                                ? employeeLifecycleAction
+                                : employeeLifecycle
+                            )(request, {
+                              params: Promise.resolve({
+                                employeeId: parts[5]!,
+                              }),
+                            })
+                          : await employeeAdministrationHttp(
                               request,
-                              parts[5],
-                              parts[7],
+                              parts[5]!,
+                              parts[6] === 'review'
+                                ? 'review'
+                                : parts[6] === 'publish'
+                                  ? 'publish'
+                                  : 'save',
                             )
-                          : new Response(
-                              '<!DOCTYPE html><title>Not Found</title>',
-                              {
-                                status: 404,
-                                headers: { 'Content-Type': 'text/html' },
-                              },
-                            );
+                    : parts[4] === 'platform-skills'
+                      ? await employeeAdministrationHttp(
+                          request,
+                          parts[5]!,
+                          'skill',
+                        )
+                      : ['quotas', 'environments', 'mcp', 'local-mcp'].includes(
+                            parts[6] ?? '',
+                          )
+                        ? await tenantResourcesHttp(
+                            request,
+                            parts[5]!,
+                            parts[6] as
+                              'quotas' | 'environments' | 'mcp' | 'local-mcp',
+                          )
+                        : parts[6] === 'employees'
+                          ? await tenantEmployeesHttp(request, parts[5]!)
+                          : parts[6] === 'validation'
+                            ? await tenantValidationHttp(request, parts[5]!)
+                            : parts[6] === 'policy'
+                              ? await tenantPolicyHttp(request, parts[5]!)
+                              : parts[4] === 'tenants' &&
+                                  (!parts[6] ||
+                                    (parts[6] === 'members' &&
+                                      parts[7] &&
+                                      parts.length === 8))
+                                ? await tenantAdministrationHttp(
+                                    request,
+                                    parts[5],
+                                    parts[7],
+                                  )
+                                : new Response(
+                                    '<!DOCTYPE html><title>Not Found</title>',
+                                    {
+                                      status: 404,
+                                      headers: { 'Content-Type': 'text/html' },
+                                    },
+                                  );
           res.writeHead(result.status, Object.fromEntries(result.headers));
           res.end(await result.text());
           return;
@@ -298,6 +338,155 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       .waitFor();
     return { page, context };
   }
+  it.each([1440, 390])(
+    'browses real employee instances, shared content and exact template history (%i)',
+    async (width) => {
+      const admin = (await authenticateSession(platform.session.token))!;
+      const s = await createOrganizationAiDirectoryFixture(fixture.db, admin);
+      await s.publication.catalog(s.publication.b);
+      const context = await browser.newContext({
+        viewport: { width, height: 1000 },
+      });
+      await context.addCookies([
+        { name: 'fixture_session', value: platform.session.token, url: origin },
+      ]);
+      const page = await context.newPage();
+      page.setDefaultTimeout(10000);
+      const errors: string[] = [],
+        writes: string[] = [];
+      page.on('pageerror', (e) => errors.push(e.message));
+      page.on('request', (r) => {
+        if (r.url().includes('/api/') && r.method() !== 'GET')
+          writes.push(r.method() + ' ' + r.url());
+      });
+      try {
+        await page.goto(origin + '/?view=employees');
+        await page.getByRole('tab', { name: '员工实例', exact: true }).click();
+        await page
+          .getByLabel('AI 实例公司')
+          .locator(`option[value="${s.company.organizationId}"]`)
+          .waitFor({ state: 'attached' });
+        await page
+          .getByLabel('AI 实例公司')
+          .selectOption(s.company.organizationId);
+        await page
+          .getByLabel('AI 实例来源')
+          .locator(`option[value="${s.publication.employeeId}"]`)
+          .waitFor({ state: 'attached' });
+        await page
+          .getByLabel('AI 实例来源')
+          .selectOption(s.publication.employeeId);
+        await page.getByLabel('AI 实例类型').selectOption('custom');
+        await expect
+          .poll(() => page.getByLabel('当前筛选统计').innerText())
+          .toContain('1 名员工');
+        expect(await page.getByLabel('当前筛选统计').innerText()).toContain(
+          '通用 0',
+        );
+        await page
+          .getByRole('button', { name: '查看研究员甲的 AI 员工', exact: true })
+          .click();
+        await page
+          .getByRole('button', { name: '查看共享详情', exact: true })
+          .click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByText(/已配发基础人设与公司／部门共享内容/).waitFor();
+        expect(await dialog.innerText()).not.toMatch(/PRIVATE_|CANDIDATE_/);
+        await dialog
+          .getByRole('tab', { name: '执行流程', exact: true })
+          .click();
+        await dialog
+          .getByRole('tab', { name: '经验积累', exact: true })
+          .click();
+        await dialog.getByText('自动沉淀尚未启用', { exact: false }).waitFor();
+        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        await page.getByRole('tab', { name: '模板历史', exact: true }).click();
+        await page
+          .getByLabel('历史来源模板')
+          .locator(`option[value="${s.publication.employeeId}"]`)
+          .waitFor({ state: 'attached' });
+        await page
+          .getByLabel('历史来源模板')
+          .selectOption(s.publication.employeeId);
+        const saved = page.getByRole('article', {
+          name: '模板版本只读详情',
+          exact: true,
+        });
+        await saved
+          .getByRole('heading', {
+            name: s.publication.definition.name + ' · r1',
+            exact: true,
+          })
+          .waitFor();
+        expect(await saved.innerText()).toContain('v1.0.0');
+        expect(await saved.innerText()).not.toContain('v1.1.0');
+        await saved.getByText('查看保存的执行要求', { exact: true }).click();
+        await saved
+          .getByText(s.publication.definition.systemPrompt, { exact: true })
+          .waitFor();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth + 1,
+          ),
+        ).toBe(true);
+        expect(writes).toEqual([]);
+        expect(errors).toEqual([]);
+        const denied = await page.request.get(
+          `${origin}/api/v1/admin/platform-employees/${s.publication.employeeId}/revisions/${s.publication.revisionId}`,
+          { headers: { cookie: `fixture_session=${snow.session.token}` } },
+        );
+        expect(denied.status()).toBe(403);
+        await page
+          .getByRole('tab', { name: '模板与发布', exact: true })
+          .click();
+        await page
+          .getByRole('button')
+          .filter({
+            has: page.getByText(s.publication.definition.name, { exact: true }),
+          })
+          .click();
+        await page
+          .getByRole('button', { name: '经验沉淀', exact: true })
+          .click();
+        await page
+          .getByText('自动经验沉淀尚未启用。', { exact: true })
+          .waitFor();
+        expect(await page.getByRole('checkbox').count()).toBe(0);
+      } finally {
+        await context.close();
+      }
+    },
+  );
+  it('protects unsaved template edits when switching to the instance/history directory', async () => {
+    const f = await createEmployeeAdministrationFixture(fixture.db, {
+      name: '目录切换保护',
+    });
+    const { page, context } = await pageFor();
+    try {
+      await page.goto(origin + '/?view=employees');
+      await page
+        .getByRole('button')
+        .filter({ has: page.getByText(f.definition.name, { exact: true }) })
+        .click();
+      await page.getByLabel('名称', { exact: true }).fill('尚未保存的修改');
+      page.once('dialog', (d) => d.dismiss());
+      await page.getByRole('tab', { name: '模板历史', exact: true }).click();
+      expect(await page.getByLabel('名称', { exact: true }).inputValue()).toBe(
+        '尚未保存的修改',
+      );
+      page.once('dialog', (d) => d.accept());
+      await page.getByRole('tab', { name: '员工实例', exact: true }).click();
+      await page
+        .getByRole('heading', { name: '员工实例', exact: true })
+        .waitFor();
+      expect(
+        (await getPlatformEmployee(f.employeeId))?.currentDraft?.definition
+          .name,
+      ).toBe(f.definition.name);
+    } finally {
+      await context.close();
+    }
+  });
   it('hides the platform tenant and ignores its old management link without affecting business tenants', async () => {
     const { page, context } = await pageFor();
     try {
