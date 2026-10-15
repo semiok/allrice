@@ -36,6 +36,7 @@ function fixture(options: {
   admissionFailureReturned?: boolean;
   admissionMethod?: string;
   authorityFailure?: Error;
+  streamDiagnostic?: unknown;
 }) {
   const sessionId = randomUUID();
   const threadId = `dsh-${sessionId}`;
@@ -75,6 +76,15 @@ function fixture(options: {
       };
     },
     prompt: async () => {
+      if (options.streamDiagnostic)
+        notify?.({
+          method: 'allrice.modelStream',
+          params: {
+            sessionId: threadId,
+            callId: diagnostics.failures[0]!.callId,
+            diagnostic: options.streamDiagnostic,
+          },
+        });
       if (options.authorityFailure)
         return new Promise((_, reject) => {
           rejectPrompt = reject;
@@ -236,6 +246,42 @@ function fixture(options: {
 }
 
 describe('bounded assistant diagnostic consumption', () => {
+  it('persists short connection-failure facts without calling them a long wait', async () => {
+    const diagnostic = {
+      transport: 'unobserved',
+      state: 'unobserved',
+      bytes: 0,
+      heartbeats: 0,
+      events: 0,
+      terminalEvent: false,
+      outputItemEnded: false,
+      readFailed: false,
+      localCloseConfirmed: false,
+      finishSeen: true,
+      recoveryEligible: false,
+      request: {
+        phase: 'request_failed',
+        elapsedMs: 113,
+        aborted: false,
+        errorCode: 'ECONNRESET',
+      },
+    };
+    const f = fixture({ streamDiagnostic: diagnostic, outcome: 'completed' });
+    const onNative = vi.fn(async () => {});
+    f.input.onEvent = onNative;
+    await f.adapter.execute(f.input);
+    expect(onNative).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceEventType: 'allrice/model-stream',
+        sourcePayload: {
+          callId: f.diagnostics.failures[0]!.callId,
+          diagnostic,
+        },
+        summary:
+          '模型响应中断，底层连接状态暂无法确认。已完成的内容和工具结果已保留。',
+      }),
+    );
+  });
   it('preserves the durable execution deadline instead of generic runtime closure', async () => {
     vi.useFakeTimers();
     const f = fixture({

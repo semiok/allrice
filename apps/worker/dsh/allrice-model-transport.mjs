@@ -1,5 +1,7 @@
 /* global AbortController, AbortSignal, ReadableStream, Response, TextDecoder */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { types } from 'node:util';
+import { ModelTransportFailureCodeSchema } from '@allrice/contracts';
 import {
   closeOpenAICodexWebSocketSessions,
   getOpenAICodexWebSocketDebugStats,
@@ -7,6 +9,23 @@ import {
 
 const requests = new AsyncLocalStorage();
 let installed = false;
+const failureCodes = new Set(ModelTransportFailureCodeSchema.options);
+
+function ownData(value, key) {
+  if (!value || typeof value !== 'object' || types.isProxy(value)) return;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor ? descriptor.value : undefined;
+}
+
+function transportFailureCode(error) {
+  // Native fetch commonly nests the socket/DNS code under cause. Never read
+  // accessors or arbitrary error text, and keep even cyclic causes bounded.
+  for (let depth = 0; error && depth < 4; depth++) {
+    const code = ownData(error, 'code');
+    if (failureCodes.has(code)) return code;
+    error = ownData(error, 'cause');
+  }
+}
 
 // The published DSH adapter does not forward pi-ai's fetch option. Observe
 // fetch only inside our request's async scope; unrelated tools/auth/UI requests
@@ -39,6 +58,7 @@ export function createModelTransport({ provider, sessionId } = {}) {
   let incompleteFrames = false;
   let readFailed = false;
   let stopped = false;
+  let lastRequest;
   const websocketRequests = () =>
     provider === 'openai-codex' && sessionId
       ? (getOpenAICodexWebSocketDebugStats(String(sessionId))?.requests ?? 0)
@@ -112,14 +132,28 @@ export function createModelTransport({ provider, sessionId } = {}) {
       // An abandoned producer must not start a late fallback/reconnect.
       if (stopped) throw controller.signal.reason;
       pendingFetches++;
+      const request = { phase: 'awaiting_headers', startedAt: now() };
+      lastRequest = request;
+      request.signal = controller.signal;
+      const failed = (phase, error) => {
+        request.phase = phase;
+        request.finishedAt = now();
+        request.aborted = request.signal.aborted;
+        request.errorCode = transportFailureCode(error);
+      };
       try {
         const incoming = init?.signal ?? input?.signal;
+        const signal = incoming
+          ? AbortSignal.any([incoming, controller.signal])
+          : controller.signal;
+        request.signal = signal;
         const response = await original(input, {
           ...init,
-          signal: incoming
-            ? AbortSignal.any([incoming, controller.signal])
-            : controller.signal,
+          signal,
         });
+        request.phase = 'headers_received';
+        request.finishedAt = now();
+        request.status = response.status;
         if (
           !response.body ||
           !response.headers.get('content-type')?.includes('text/event-stream')
@@ -165,6 +199,7 @@ export function createModelTransport({ provider, sessionId } = {}) {
                   target.enqueue(result.value);
                 }
               } catch (error) {
+                failed('body_failed', error);
                 readFailed = !controller.signal.aborted;
                 finish();
                 target.error(error);
@@ -179,6 +214,9 @@ export function createModelTransport({ provider, sessionId } = {}) {
           statusText: response.statusText,
           headers: response.headers,
         });
+      } catch (error) {
+        failed('request_failed', error);
+        throw error;
       } finally {
         pendingFetches--;
       }
@@ -212,6 +250,24 @@ export function createModelTransport({ provider, sessionId } = {}) {
         ...(lastByteAt === undefined
           ? {}
           : { lastByteAgeMs: Math.max(0, now() - lastByteAt) }),
+        ...(lastRequest
+          ? {
+              request: {
+                phase: lastRequest.phase,
+                elapsedMs: Math.max(
+                  0,
+                  (lastRequest.finishedAt ?? now()) - lastRequest.startedAt,
+                ),
+                aborted: lastRequest.aborted ?? lastRequest.signal.aborted,
+                ...(lastRequest.status >= 100 && lastRequest.status <= 599
+                  ? { status: lastRequest.status }
+                  : {}),
+                ...(lastRequest.errorCode
+                  ? { errorCode: lastRequest.errorCode }
+                  : {}),
+              },
+            }
+          : {}),
       };
     },
     stop() {

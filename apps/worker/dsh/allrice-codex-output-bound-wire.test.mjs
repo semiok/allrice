@@ -47,6 +47,7 @@ async function runWire({
   probe = false,
   incomplete = false,
   stall = false,
+  disconnect = false,
   failureMessage,
   websocket,
   guarded = false,
@@ -73,6 +74,10 @@ async function runWire({
         body: JSON.parse(decoded.toString('utf8')),
       });
       if (stall) return;
+      if (disconnect) {
+        request.socket.destroy();
+        return;
+      }
       if (rejectLimit) {
         response.writeHead(400, { 'content-type': 'application/json' });
         response.end(
@@ -354,7 +359,7 @@ async function runWire({
         throw Error('DSH_does_not_forward_onPayload');
       },
     });
-    let recovery;
+    let recovery, diagnostic;
     if (guarded) installModelTransportObservation();
     const stream = guarded
       ? boundedModelStream(source, {
@@ -363,6 +368,9 @@ async function runWire({
             provider: 'openai-codex',
             sessionId,
           }),
+          onDiagnostic: (value) => {
+            diagnostic = value;
+          },
         })
       : source;
     try {
@@ -371,7 +379,7 @@ async function runWire({
       if (!guarded) throw error;
       recovery = modelStreamRecoveryReceipt(error);
     }
-    return { calls, chunks, forwarded, payloadHookCalls, recovery };
+    return { calls, chunks, forwarded, payloadHookCalls, recovery, diagnostic };
   } finally {
     if (wsServer) {
       for (const client of wsServer.clients) client.terminate();
@@ -385,6 +393,25 @@ async function runWire({
 describe.sequential(
   'pinned Codex output-bound wire evidence (offline only)',
   () => {
+    it('carries pre-header failure facts through the actual pinned DSH provider', async () => {
+      const r = await runWire({ disconnect: true, guarded: true });
+      expect(r.calls).toHaveLength(1);
+      expect(r.chunks.at(-1)).toMatchObject({
+        type: 'finish',
+        reason: { kind: 'error', failure: { code: 'TRANSPORT' } },
+      });
+      expect(r.diagnostic).toMatchObject({
+        transport: 'unobserved',
+        localCloseConfirmed: false,
+        finishSeen: true,
+        request: {
+          phase: 'request_failed',
+          errorCode: 'UND_ERR_SOCKET',
+          aborted: false,
+        },
+      });
+      expect(JSON.stringify(r.diagnostic)).not.toContain(syntheticToken);
+    });
     it('closes an idle native WebSocket session and drains the old request', async () => {
       const r = await runWire({ websocket: 'idle', guarded: true });
       expect(r.calls).toHaveLength(1);

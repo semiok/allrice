@@ -1068,7 +1068,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           missing_terminal: '模型已返回输出项，但未收到响应结束事件。',
           transport_active: '连接仍有数据，但模型未返回可用的新内容。',
           transport_silent: '模型连接长时间没有新数据。',
-          unobserved: '模型长时间没有新内容，底层连接状态暂无法确认。',
+          unobserved: '模型响应中断，底层连接状态暂无法确认。',
         };
         await input.onNative({
           type: 'native.event',

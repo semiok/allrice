@@ -21,6 +21,24 @@ export const AssistantDiagnosticCodeSchema = z.enum([
   'SETTLEMENT_REJECTED',
   'SETTLEMENT_FAILED',
 ]);
+export const ModelTransportFailureCodeSchema = z.enum([
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'ETIMEDOUT',
+  'EPIPE',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'CERT_HAS_EXPIRED',
+  'DEPTH_ZERO_SELF_SIGNED_CERT',
+  'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'ERR_TLS_CERT_ALTNAME_INVALID',
+]);
 export const ModelStreamDiagnosticSchema = z
   .object({
     transport: z.enum(['sse', 'websocket', 'unobserved']),
@@ -42,6 +60,22 @@ export const ModelStreamDiagnosticSchema = z
     localCloseConfirmed: z.boolean(),
     finishSeen: z.boolean(),
     recoveryEligible: z.boolean(),
+    // Last scoped HTTP attempt only; never a URL, header, body or error text.
+    request: z
+      .object({
+        phase: z.enum([
+          'awaiting_headers',
+          'headers_received',
+          'request_failed',
+          'body_failed',
+        ]),
+        elapsedMs: z.number().int().nonnegative().safe(),
+        aborted: z.boolean(),
+        status: z.number().int().min(100).max(599).optional(),
+        errorCode: ModelTransportFailureCodeSchema.optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 const FailureSchema = z
