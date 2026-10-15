@@ -12,7 +12,7 @@ export const FrozenCloudScriptReferenceSchema = z
       .max(100)
       .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     path: SkillResourcePathSchema.refine(
-      (path) => path.startsWith('scripts/') && /\.m?js$/.test(path),
+      (path) => path.startsWith('scripts/') && /\.(?:m?js|py)$/.test(path),
     ),
   })
   .strict();

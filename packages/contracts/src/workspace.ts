@@ -372,6 +372,7 @@ export const CreateSessionAttachmentInputSchema = z
       'text/plain',
       'text/markdown',
       'application/json',
+      'application/zip',
       'application/pdf',
       ...Object.values(officeMediaTypes),
       'image/png',

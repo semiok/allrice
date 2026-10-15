@@ -15,6 +15,8 @@ export const executeCloudCommand: RiceToolHandler = async ({
     context: input.context,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     arguments: args,
+    storageRoot: input.storageRoot,
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   const created = await createCloudCommandOperation({
     context: input.context,

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { SkillResourcePathSchema } from '@allrice/contracts';
 import { readFrozenSkillResource } from '@allrice/database';
+import { readPrivateSkillResource } from '../../personal-skill-storage.js';
 import type { RiceToolHandler } from '../types.js';
 
 export const readSkillResource: RiceToolHandler = async ({
@@ -14,11 +15,24 @@ export const readSkillResource: RiceToolHandler = async ({
     })
     .strict()
     .parse(args);
-  const resource = readFrozenSkillResource(
-    input.nativeSkills ?? [],
-    query.skill,
-    query.path,
-  );
+  const personal = input.nativeSkills?.find(
+    (skill) => skill.name === query.skill,
+  )?.personal;
+  if (personal && !input.sessionId)
+    throw Error('personal_skill_session_required');
+  const resource = personal
+    ? await readPrivateSkillResource({
+        context: input.context,
+        sessionId: input.sessionId!,
+        ...query,
+        storageRoot: input.storageRoot,
+        signal: input.signal,
+      })
+    : readFrozenSkillResource(
+        input.nativeSkills ?? [],
+        query.skill,
+        query.path,
+      );
   const { contentBase64, ...metadata } = resource;
   const text = /^(text\/|application\/(json|javascript)$)/.test(
     resource.mediaType,

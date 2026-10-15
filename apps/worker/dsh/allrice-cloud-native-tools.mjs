@@ -47,7 +47,8 @@ export const CloudNativeArgumentsSchema = z
           .max(100)
           .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
         path: path.refine(
-          (value) => value.startsWith('scripts/') && /\.m?js$/.test(value),
+          (value) =>
+            value.startsWith('scripts/') && /\.(?:m?js|py)$/.test(value),
         ),
       })
       .strict()
@@ -98,12 +99,14 @@ export const CloudNativeArgumentsSchema = z
     if (value.language !== undefined && value.frozenScript !== undefined)
       ctx.addIssue({
         code: 'custom',
-        message: 'Frozen scripts retain their Node runtime',
+        message:
+          'Frozen script runtime is determined by its verified source; omit language',
       });
     for (const output of value.outputs ?? []) {
       if (
         output.format === 'png' &&
-        (value.language !== 'python' ||
+        ((value.language !== 'python' &&
+          !value.frozenScript?.path.endsWith('.py')) ||
           !output.path.toLowerCase().endsWith('.png') ||
           !output.fileName.toLowerCase().endsWith('.png'))
       )
@@ -133,7 +136,7 @@ export const cloudNativeTools = [
     canonicalName: 'cloud.process.execute',
     wireName: 'cloud_process_execute',
     description:
-      'Run an exact approved script in the SaaS gVisor sandbox. Offline by default. Only when the platform grants outbound access, network selects exact authorized HTTPS origins through the provided standard proxy; input transfer needs separate authorization. Never bypass a denial or switch execution targets after a failure. Optional execution requests a finite compute/install/build budget; the server freezes its cap and renews only while authorized, without resetting elapsed time. Unsupported executors retain their old limits. Omit language to retain Node 22; language:"python" selects fixed Python 3.11, Matplotlib/Agg, pandas, openpyxl, Pillow and the configured Noto CJK default for Chinese charts. Office libraries are not guaranteed here: use workspace_export_create.python for DOCX/PPTX creation and reopen checks, or workspace_document_read for later inspection. Read only explicitly selected input/ CSV/XLSX copies, treat missing/nonnumeric values explicitly, and save actual output/ PNG bytes with format:"png" and .png path/fileName. The trusted platform decoder validates PNG before returning an immutable objectId/checksum/versionId for native preview/download or embedding through the same Office Skill. Supply exactly one of inline script or frozenScript; frozenScript:{skill,path} retains the original Run-frozen Node bytes. No Bridge or host files. Approval binds exact language/script, network destinations, objects/checksums, outputs and limits. A proposal is not execution success; unknown is never replayed. Temporary installs here do not persist into another call; use workspace_project with an exact saved lock and preparation for reusable dependencies. For XLSX, do not trust declared max_row/max_column as populated data. Inspect actual populated XML cells or reset read-only worksheet dimensions, then read bounded ranges in batches; never build a list across a declared million-row sheet. Print a short summary/sample only; write full field maps and tables to declared output files within artifact limits.',
+      'Run an exact approved script in the SaaS gVisor sandbox. Offline by default. Only when the platform grants outbound access, network selects exact authorized HTTPS origins through the provided standard proxy; input transfer needs separate authorization. Never bypass a denial or switch execution targets after a failure. Optional execution requests a finite compute/install/build budget; the server freezes its cap and renews only while authorized, without resetting elapsed time. Unsupported executors retain their old limits. Omit language to retain Node 22; language:"python" selects fixed Python 3.11, Matplotlib/Agg, pandas, openpyxl, Pillow and the configured Noto CJK default for Chinese charts. Office libraries are not guaranteed here: use workspace_export_create.python for DOCX/PPTX creation and reopen checks, or workspace_document_read for later inspection. Read only explicitly selected input/ CSV/XLSX copies, treat missing/nonnumeric values explicitly, and save actual output/ PNG bytes with format:"png" and .png path/fileName. The trusted platform decoder validates PNG before returning an immutable objectId/checksum/versionId for native preview/download or embedding through the same Office Skill. Supply exactly one of inline script or frozenScript; frozenScript:{skill,path} retains the original Run-frozen platform Node or private-package Node/Python bytes; omit language because the verified script determines it. Missing dependencies remain an explicit failure; installation grants no execution or network permissions. No Bridge or host files. Approval binds exact language/script, network destinations, objects/checksums, outputs and limits. A proposal is not execution success; unknown is never replayed. Temporary installs here do not persist into another call; use workspace_project with an exact saved lock and preparation for reusable dependencies. For XLSX, do not trust declared max_row/max_column as populated data. Inspect actual populated XML cells or reset read-only worksheet dimensions, then read bounded ranges in batches; never build a list across a declared million-row sheet. Print a short summary/sample only; write full field maps and tables to declared output files within artifact limits.',
     timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
@@ -187,7 +190,7 @@ export const cloudNativeTools = [
             type: 'string',
             required: true,
             description:
-              'scripts/*.mjs or scripts/*.js bundle path, e.g. scripts/reconcile.mjs.',
+              'Exact scripts/*.mjs, scripts/*.js, or personal-package scripts/*.py path. The server determines language from the verified source. No package dependencies are installed implicitly.',
           },
         },
       },

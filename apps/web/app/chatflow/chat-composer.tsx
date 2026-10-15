@@ -348,7 +348,7 @@ export function ChatComposer({
                 }}
               />
               <input
-                accept=".docx,.xlsx,.pptx,.csv,.txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif"
+                accept=".docx,.xlsx,.pptx,.csv,.txt,.md,.json,.pdf,.png,.jpg,.jpeg,.webp,.gif,.zip"
                 hidden
                 onChange={(event) => {
                   if (event.target.files) {

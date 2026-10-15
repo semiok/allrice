@@ -1384,6 +1384,43 @@ suite(
       15_000,
     );
 
+    it.each([1440, 390])(
+      'uploads a private ZIP skill package through actual composer at %s px',
+      async (width) => {
+        const f = await fixture({ uploadPending: true, width });
+        const bytes = Buffer.from('PK\x03\x04synthetic upload transport');
+        try {
+          await f.page
+            .getByRole('combobox', { name: '上传文件可见范围' })
+            .selectOption('private');
+          const input = f.page.locator('input[type=file]');
+          expect(await input.getAttribute('accept')).toContain('.zip');
+          await input.setInputFiles({
+            name: 'weekly.zip',
+            mimeType: 'application/x-zip-compressed',
+            buffer: bytes,
+          });
+          await f.send('请安装我上传的 ZIP 里的技能，给当前 AI 员工使用。');
+          await f.waitPending(1);
+          expect(f.pending[0]!.path).toContain('/attachments');
+          expect(f.pending[0]!.body).toMatchObject({
+            fileName: 'weekly.zip',
+            mediaType: 'application/zip',
+            visibility: 'private',
+          });
+          expect(
+            Buffer.from(f.pending[0]!.body.contentBase64 as string, 'base64'),
+          ).toEqual(bytes);
+          await f.respond(0);
+          await f.waitPending(2);
+          expect(f.pending[1]!.body.attachmentIds).toEqual([C]);
+          await f.respond(1);
+        } finally {
+          await f.close();
+        }
+      },
+      15000,
+    );
     it.each(['text/csv', 'application/octet-stream', ''])(
       'uploads Chinese CSV bytes and sends its attachment through the actual composer with browser MIME %j',
       async (mimeType) => {
