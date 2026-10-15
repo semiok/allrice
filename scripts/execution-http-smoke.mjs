@@ -203,7 +203,11 @@ const crash = await enqueue({
   type: 'allrice.system.echo',
   input: { value: 'crash-recovered', delayMs: 6_000 },
   maxAttempts: 3,
-  timeoutMs: 30_000,
+  // Compose allows 120 seconds for the replacement Worker to become ready.
+  // Keep this recovery fixture alive through that cold start plus the bounded
+  // 30-second recovery assertion above. The separate 1-second timeout test
+  // still verifies that genuinely expired jobs fail rather than restart.
+  timeoutMs: 180_000,
 });
 await waitFor(crash.id, ['running']);
 console.info('AllRice durable Queue/Run/SSE smoke passed');

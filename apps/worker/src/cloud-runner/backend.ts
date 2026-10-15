@@ -1,4 +1,5 @@
 import { request } from 'node:http';
+import { inFlightHeartbeat } from './service-diagnostics.js';
 import {
   openCloudProjectServiceGuard,
   openCloudSandboxExecutionGuard,
@@ -1354,8 +1355,12 @@ export class CloudRunnerBackend {
       });
       const result = await admit({
         ...options,
-        maintainLease: async () =>
-          (await reservation!.valid()) && options.maintainLease(),
+        // Network admission, the physical guard and the process monitor all
+        // check the same authority. Share overlapping checks, never cache a
+        // completed approval or let their duplicate queries queue behind it.
+        maintainLease: inFlightHeartbeat(
+          async () => (await reservation!.valid()) && options.maintainLease(),
+        ),
       });
       await options.observe?.({
         stage:
