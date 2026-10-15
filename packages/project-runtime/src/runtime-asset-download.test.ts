@@ -43,7 +43,7 @@ async function fixture(handler: RequestListener) {
   };
 }
 it('retries a dropped response from its exact saved offset and validates all bytes', async () => {
-  const calls: Record<string, string | undefined>[] = [];
+  const calls: Record<string, string | string[] | undefined>[] = [];
   let drop: (() => void) | undefined;
   const f = await fixture((req, res) => {
     calls.push({
