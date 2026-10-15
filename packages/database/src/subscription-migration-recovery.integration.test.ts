@@ -3,6 +3,7 @@ import * as platformModels from './providers/platform-model-settings.ts';
 import * as organizationContext from './employees/organization-context.ts';
 import * as employeeInstances from './employees/employee-instances.ts';
 import * as employeeRuntimeContent from './employees/employee-runtime-content.ts';
+import * as sandboxExecutionPolicy from './sandbox-execution-policy.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
@@ -175,6 +176,11 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacyContent = vi
       .spyOn(employeeRuntimeContent, 'prepareEmployeeRuntimeContent')
       .mockResolvedValueOnce(undefined as never);
+    // The 0096 seed also predates the optional sandbox budget snapshot. Keep
+    // its schema historical; production must still require migration 0171.
+    const legacySandboxPolicy = vi
+      .spyOn(sandboxExecutionPolicy, 'freezeSandboxExecutionPolicy')
+      .mockResolvedValueOnce(undefined as never);
     // This synthetic tenant manifest has no platform publication. Its historical
     // seed must not consult the later immutable version-source registry either.
     const legacyPublication = vi
@@ -228,11 +234,16 @@ integration('subscription incremental migration and cold SQL readers', () => {
       expect(legacyInstance).toHaveBeenCalledTimes(1);
       expect(legacyCapabilities).toHaveBeenCalledTimes(1);
       expect(legacyContent).toHaveBeenCalledTimes(1);
+      expect(legacySandboxPolicy).toHaveBeenCalledTimes(1);
+      expect(
+        JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
+      ).not.toHaveProperty('sandboxExecutionPolicy');
       expect(legacyPublication).toHaveBeenCalledTimes(1);
     } finally {
       legacyContext.mockRestore();
       legacyInstance.mockRestore();
       legacyContent.mockRestore();
+      legacySandboxPolicy.mockRestore();
       legacyPublication.mockRestore();
       legacyModels.mockRestore();
       legacyCapabilities.mockRestore();

@@ -24,6 +24,8 @@ export const CloudToolInputSchema = z.union([
   z
     .object({
       frozenScript: FrozenCloudScriptReferenceSchema,
+      network: CloudCommandInputSchema.shape.network,
+      execution: CloudCommandInputSchema.shape.execution,
       inputs: CloudCommandInputSchema.shape.inputs,
       outputs: CloudCommandInputSchema.shape.outputs,
       limits: CloudCommandInputSchema.shape.limits,

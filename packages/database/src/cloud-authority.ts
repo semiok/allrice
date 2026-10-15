@@ -1,3 +1,4 @@
+import { assertCloudExecutionBudget } from './cloud-execution-budget.ts';
 import { methodFileProof } from './employees/employee-method-file-runtime.ts';
 import {
   assertCloudNetworkAuthority,
@@ -131,7 +132,12 @@ export function cloudCommandBinding(
             timeoutMs: repositoryProof.timeoutMs,
             memoryMiB: repositoryProof.memoryMiB,
           }
-        : payload.arguments.limits,
+        : payload.executionBudget
+          ? {
+              limits: payload.arguments.limits,
+              execution: payload.executionBudget,
+            }
+          : payload.arguments.limits,
     ),
   };
 }
@@ -409,6 +415,11 @@ export async function checkCloudBindingAuthority(
   } catch {
     throw new RuntimePolicyError('cloud_input_not_authorized');
   }
+  assertCloudExecutionBudget(
+    payload,
+    snapshot.success ? snapshot.data : undefined,
+    Boolean(repositoryProof || method || origin),
+  );
   assertCloudNetworkAuthority(
     payload,
     profile,
