@@ -139,6 +139,19 @@ function methodAuthoringHeader(clause: string) {
   );
 }
 
+/** Temporary-use restrictions are not permission for a durable method change.
+ * Called only on top-level prose clauses, never quoted candidate/source text. */
+function limitsMethodPersistence(clause: string) {
+  return (
+    /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:仅|只)(?:供|用于|用在|在|限于|限)(?:本次|这次|此次|当前)(?:任务|工作)?(?:中)?(?:使用)?$|^(?:only|just) for (?:this|the current) (?:task|request)[.!]?$/iu.test(
+      clause,
+    ) ||
+    /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不允许|不能|不必|无需|暂不|别|勿|不)(?:长期|永久)(?:保存|持久化)(?:候选|草稿|工作方法|工作场景)?$/iu.test(
+      clause,
+    )
+  );
+}
+
 /** Require the leading request, allowing only a known retry preface. */
 export function explicitEmployeeMethodIntent(text: string) {
   if (!text.trim() || text.length > 32000) return false;
@@ -160,12 +173,7 @@ export function explicitEmployeeMethodIntent(text: string) {
         methodAuthoringHeader(affirmative.replace(/\.$/u, ''))
       )
         return true;
-      if (
-        /^(?:请)?(?:仅|只)(?:供|用于|用在)(?:本次|这次|此次)(?:任务|工作)?(?:使用)?$|^(?:请)?(?:不要|不)(?:长期|永久)保存(?:候选|工作方法|工作场景)?$|^(?:only|just) for (?:this|the current) (?:task|request)[.!]?$/iu.test(
-          clause,
-        )
-      )
-        return true;
+      if (limitsMethodPersistence(clause)) return true;
       return /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不允许|不能|不必|无需|暂不|别|勿|不)(?:保存|修改|更新|持久化|重命名|移除|删除|停用)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist|rename|remove|delete|disable)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
         clause,
       );
@@ -180,6 +188,7 @@ export function explicitEmployeeMethodIntent(text: string) {
 export function explicitEmployeeMethodRestoreIntent(
   text: string,
   source: { id: string; number: number },
+  scope: 'personal' | 'department' | 'company' = 'personal',
 ) {
   if (!text.trim() || text.length > 32000) return false;
   const request = withoutMethodRetryPreface(text).replace(
@@ -203,7 +212,8 @@ export function explicitEmployeeMethodRestoreIntent(
       if (
         /^(?:请)?(?:先)?(?:只|仅)讨论|^(?:please )?(?:only|just)\s+discuss/iu.test(
           clause,
-        )
+        ) ||
+        limitsMethodPersistence(clause)
       )
         return true;
       if (
@@ -232,15 +242,18 @@ export function explicitEmployeeMethodRestoreIntent(
       )
   )
     return false;
-  const header = request.split(/[。；;！!\n，,：:]/u, 1)[0]!.trim();
+  if (employeeMethodRequestedScope(request) !== scope) return false;
+  const normalized =
+    namedMethodDepartmentRequest(request)?.normalized ?? request;
+  const header = normalized.split(/[。；;！!\n，,：:]/u, 1)[0]!.trim();
   const match =
     header.match(
-      /^(?:请)?(?:为我|帮我)?(?:恢复|还原|回退)(?:我的|个人)(?:整份)?工作方法(?:候选)?(?:到|至|为)(?:第\s*([1-9]\d*)\s*版|[rv]([1-9]\d*)|版本\s+([a-f0-9-]{36}))$/iu,
+      /^(?:请)?(?:为我|帮我)?(?:恢复|还原|回退)(?:我的|个人|本部门|我们部门|我的部门|本公司|我们公司|全公司|公司)(?:的)?(?:整份)?工作方法(?:候选)?(?:到|至|为)(?:第\s*([1-9]\d*)\s*版|[rv]([1-9]\d*)|版本\s+([a-f0-9-]{36}))$/iu,
     ) ??
     header
       .replace(/\.$/u, '')
       .match(
-        /^(?:please )?(?:restore|revert) my (?:entire )?work method(?: candidate)? to (?:(?:revision|version) ([1-9]\d*)|[rv]([1-9]\d*)|version-id ([a-f0-9-]{36}))$/iu,
+        /^(?:please )?(?:restore|revert) (?:my|(?:our )?company) (?:entire )?work method(?: candidate)? to (?:(?:revision|version) ([1-9]\d*)|[rv]([1-9]\d*)|version-id ([a-f0-9-]{36}))$/iu,
       );
   return (
     !!match &&
@@ -402,19 +415,24 @@ export function employeeMethodRequestedScope(text: string) {
   const leading = (clauses.find(Boolean) ?? '').split(/[：:]/u, 1)[0]!;
   const object = leading
     .replace(
-      /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用|测试|验证)/u,
+      /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用|测试|验证|恢复|还原|回退)/u,
       '',
     )
     .trim();
   // The scope is the direct grammatical target, not a keyword in an object
   // name or an explanation that expressly excludes sharing.
   const department =
-    /^(?:本部门|我们部门|我的部门)(?:的|\s|工作|执行|QUOTED)/u.test(object);
+    /^(?:本部门|我们部门|我的部门)(?:的|\s|整份|工作|执行|QUOTED)/u.test(
+      object,
+    );
   const company =
-    /^(?:本公司|我们公司|全公司|公司)(?:的|\s|工作|执行|QUOTED)/u.test(
+    /^(?:本公司|我们公司|全公司|公司)(?:的|\s|整份|工作|执行|QUOTED)/u.test(
       object,
     ) ||
     /^(?:please )?(?:save|update|edit|create|add|customize|rename|remove|delete|disable|test|validate)\s+(?:our )?company\s+(?:work )?(?:method|scene|workflow)(?: (?:candidate|draft))?[.!]?$/iu.test(
+      leading,
+    ) ||
+    /^(?:please )?(?:restore|revert) (?:our )?company (?:entire )?work method(?: candidate)? to /iu.test(
       leading,
     );
   const personalOnly = clauses.some((clause) =>
@@ -581,10 +599,7 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
           : undefined;
       if (choices && !args.departmentId && !choices.ownDepartmentId) {
         const principal = await readContentPrincipal(scope, tx, true);
-        if (
-          principal?.maintenanceLevel !== 'company' ||
-          args.view === 'history'
-        )
+        if (principal?.maintenanceLevel !== 'company')
           throw new DataAccessError('authorization_denied');
         return {
           view: args.view,
@@ -605,14 +620,20 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
               args.departmentId,
             )
           : undefined;
-      if (selected && args.view === 'history')
-        throw new DataAccessError('authorization_denied');
       if (args.view === 'history') {
+        const selection =
+          selected ??
+          (await resolveEmployeeMethodTarget(
+            scope,
+            instance.id,
+            undefined,
+            tx,
+          ));
         const [set] = await tx<
           { id: string }[]
         >`select id from allrice_employee_content_sets
           where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-            and instance_id=${instance.id} and scope='personal' and owner_id=${scope.actor.id}`;
+            and id=${selection.setId}`;
         const history = set
           ? await getEmployeeContentHistoryInTransaction(
               scope,
@@ -630,6 +651,13 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
             };
         return {
           ...history,
+          ...(selected
+            ? {
+                sharedTarget: selected.sharedTarget,
+                audience: selected.audience,
+              }
+            : {}),
+          ...(choices ? { departments: choices.departments } : {}),
           view: 'history' as const,
           instanceId: instance.id,
           selectedReferences: [],
@@ -699,18 +727,20 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
   const args = EmployeeMethodRestoreSchema.parse(input.arguments);
   const { scope, requestId } = employeeChatIdentity(input);
   const tool = 'workspace.employee.method.restore_candidate';
-  const { instance, setId } = await enterMethodChat(
+  const { instance, selection } = await enterMethodChat(
     input,
     tool,
     true,
     async (tx, instance) => {
-      const [set] = await tx<
-        { id: string }[]
-      >`select id from allrice_employee_content_sets
-      where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-        and instance_id=${instance.id} and scope='personal' and owner_id=${scope.actor.id}`;
-      if (!set) throw new DataAccessError('not_found');
-      return { instance, setId: set.id };
+      return {
+        instance,
+        selection: await resolveEmployeeMethodTarget(
+          scope,
+          instance.id,
+          args.sharedTarget,
+          tx,
+        ),
+      };
     },
   );
   return employeeAccessTransaction(getDatabase(), (tx) =>
@@ -719,14 +749,10 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
       {
         operation: 'restore_draft',
         workspaceId: scope.workspaceId,
-        setId,
+        setId: selection.setId,
         requestId,
-        ownership: {
-          scope: 'personal',
-          organizationId: scope.organizationId,
-          ownerId: scope.actor.id,
-        },
-        target: { kind: 'instance', instanceId: instance.id },
+        ownership: selection.ownership,
+        target: selection.target,
         expectedRevision: args.expectedRevision,
         sourceRevisionId: args.sourceRevisionId,
         changeSummary: args.changeSummary,
@@ -740,6 +766,12 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
           arguments: args,
         }),
         authorize: async () => {
+          await resolveEmployeeMethodTarget(
+            scope,
+            instance.id,
+            args.sharedTarget,
+            tx,
+          );
           const current = await getEmployeeInstance(scope, instance.id, tx);
           const original = await assertEmployeeChatRun(
             tx,
@@ -750,12 +782,25 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
           const [source] = await tx<
             { id: string; number: number }[]
           >`select id,number from allrice_employee_content_revisions
-          where id=${args.sourceRevisionId} and set_id=${setId}`;
+          where id=${args.sourceRevisionId} and set_id=${selection.setId}`;
           if (!source) throw new DataAccessError('not_found');
-          if (!explicitEmployeeMethodRestoreIntent(original, source))
+          if (
+            !explicitEmployeeMethodRestoreIntent(
+              original,
+              source,
+              selection.ownership.scope,
+            )
+          )
             throw new EmployeeMethodChatError(
               'explicit_method_restore_required',
             );
+          await assertEmployeeMethodDepartmentRequest(
+            scope,
+            instance.id,
+            args.sharedTarget,
+            original,
+            tx,
+          );
         },
       },
     ),

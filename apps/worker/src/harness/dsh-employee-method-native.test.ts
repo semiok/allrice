@@ -24,6 +24,32 @@ const companyTarget = {
   employeeId: departmentTarget.employeeId,
 };
 
+it.each([companyTarget, departmentTarget])(
+  'restoration preserves exact shared scope through native broker: %s',
+  async (target) => {
+    const args = {
+      sharedTarget: target,
+      expectedRevision: 4,
+      sourceRevisionId: '00000000-0000-4000-8000-000000000001',
+      changeSummary: 'Restore exact shared history',
+    };
+    await nativeBrokerRoundtrip({
+      canonicalName: 'workspace.employee.method.restore_candidate',
+      wireName: 'workspace_employee_method_restore_candidate',
+      args,
+      invalidArgs: { ...args, enabled: true },
+      onToolCall: async (call) => {
+        expect(EmployeeMethodRestoreSchema.parse(call.arguments)).toEqual(args);
+        return {
+          modelContent: JSON.stringify({ restored: true, enabled: false }),
+          summary: 'Shared restoration selection retained',
+        };
+      },
+    });
+  },
+  45000,
+);
+
 it.each([
   {
     canonicalName: 'workspace.employee.method.inspect',

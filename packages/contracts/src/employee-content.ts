@@ -85,6 +85,7 @@ export const EmployeeMethodInspectSchema = z
   );
 export const EmployeeMethodRestoreSchema = z
   .object({
+    sharedTarget: EmployeeMethodSharedTargetSchema.optional(),
     expectedRevision: z.number().int().nonnegative(),
     sourceRevisionId: UuidSchema,
     changeSummary: z.string().trim().min(1).max(1000),

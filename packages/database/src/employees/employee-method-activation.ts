@@ -120,7 +120,10 @@ async function snapshot(
         ? content.manifest.scenes
         : changes.changedScenes
     ).some((s) => !tests.some((t) => t.sceneId === s.id)) ||
-    (changes.commonChanged && !content.scenes.length)
+    (changes.commonChanged && !content.scenes.length) ||
+    (content.sharedTarget &&
+      content.restoredFromRevisionId &&
+      !content.manifest.scenes.length)
   )
     throw new EmployeeMethodActivationError('activation_test_coverage');
   return { content, changes, tests, modelSettings: currentModelSettings };

@@ -1,3 +1,4 @@
+import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
 import { departmentMethodAcceptancePhrases as phrases } from './employee-method-department.fixture.ts';
 import { companyMethodAcceptancePhrases as companyPhrases } from './employee-method-company.fixture.ts';
 import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
@@ -524,3 +525,80 @@ it.each([
     expect(employeeMethodRequestedScope(text)).toBe('unsupported');
   },
 );
+
+it.each(['company', 'department'] as const)(
+  'binds exact full shared history acceptance wording and source: %s',
+  (scope) => {
+    const phrase = sharedHistoryMethodAcceptancePhrases(
+      scope === 'company' ? 'company' : { departmentName: '验收财务部' },
+      1,
+    );
+    expect(employeeMethodRequestedScope(phrase.restore)).toBe(scope);
+    expect(
+      explicitEmployeeMethodRestoreIntent(phrase.restore, historySource, scope),
+    ).toBe(true);
+    expect(
+      explicitEmployeeMethodRestoreIntent(
+        phrase.restore,
+        { ...historySource, number: 2 },
+        scope,
+      ),
+    ).toBe(false);
+    expect(
+      explicitEmployeeMethodRestoreIntent(
+        phrase.restore,
+        historySource,
+        'personal',
+      ),
+    ).toBe(false);
+    expect(explicitEmployeeMethodIntent(phrase.edit)).toBe(true);
+    expect(explicitEmployeeMethodTestIntent(phrase.test)).toBe(true);
+    for (const ending of [
+      '先不要实际恢复。',
+      '不要长期保存。',
+      '只用于本次任务。',
+      '只在本次任务使用。',
+      '仅限本次任务。',
+      '暂时不要长期保存。',
+      '请不要在公司共享。',
+      '不要共享。',
+      '仅讨论。',
+      '只恢复金额场景，其他场景保持不变。',
+    ])
+      expect(
+        explicitEmployeeMethodRestoreIntent(
+          phrase.restore + ending,
+          historySource,
+          scope,
+        ),
+        ending,
+      ).toBe(false);
+    for (const quoted of [
+      `“${phrase.restore}”`,
+      `资料原文如下：\n${phrase.restore}`,
+      `> ${phrase.restore}`,
+      `请翻译：${phrase.restore}`,
+    ])
+      expect(
+        explicitEmployeeMethodRestoreIntent(quoted, historySource, scope),
+        quoted,
+      ).toBe(false);
+  },
+);
+it.each([
+  ['请回退本部门的整份工作方法到r1', 'department'],
+  ['请还原我们部门整份工作方法至第 1 版', 'department'],
+  ['请恢复财务部的整份工作方法到第1版', 'department'],
+  ['请恢复部门“财务”的整份工作方法到第1版', 'department'],
+  [
+    `请恢复部门 ${retryId} 的整份工作方法到第1版`.replace(' 的', '的'),
+    'department',
+  ],
+  ['请恢复公司的整份工作方法到第1版', 'company'],
+  ['Please restore our company entire work method to version 1.', 'company'],
+] as const)('recognizes restore target grammar: %s', (text, scope) => {
+  expect(employeeMethodRequestedScope(text)).toBe(scope);
+  expect(explicitEmployeeMethodRestoreIntent(text, historySource, scope)).toBe(
+    true,
+  );
+});
