@@ -16,3 +16,6 @@ export { resolvePublicAddress } from './public-address.js';
 
 export * from './project-preview-relay.js';
 export * from './project-logs.js';
+export * from './sandbox-network-policy.js';
+export * from './sandbox-network-session.js';
+export * from './sandbox-network-docker.js';

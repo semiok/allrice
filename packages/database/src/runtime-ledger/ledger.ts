@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto';
 
 import {
+  SandboxExecutionBudgetSpecSchema,
+  SandboxExecutionBudgetStateSchema,
+  SandboxExecutionRenewalSchema,
+  startSandboxExecutionBudget,
+  renewSandboxExecutionBudget,
+  type SandboxExecutionBudgetSpec,
+  type SandboxExecutionRenewal,
   projectPreviewHost,
   CloudProjectCommandSchema,
   localProjectResultMatchesPayload,
@@ -132,6 +139,7 @@ interface OperationRow {
   lease_token_hash: string | null;
   lease_expires_at: Date | null;
   created_at: Date;
+  execution_budget?: unknown | null;
 }
 interface BudgetRow {
   metric: RuntimeUsageObservation['metric'];
@@ -560,6 +568,12 @@ export function createRuntimeOperationLedger(options: {
     transaction: Tx;
     lease: RuntimeLedgerLease;
   }) => Promise<void>;
+  /** Resolves the immutable, authority-checked command budget. Never a model
+   * value and never an implicit permission for legacy operations. */
+  resolveSandboxExecutionBudget?: (input: {
+    transaction: Tx;
+    binding: RuntimeActionBinding;
+  }) => Promise<SandboxExecutionBudgetSpec>;
 }) {
   if (typeof options.admission !== 'function')
     throw new RuntimeLedgerError('unavailable');
@@ -1547,6 +1561,83 @@ export function createRuntimeOperationLedger(options: {
           snapshot: row.snapshot,
           leaseExpiresAt: expiresAt.toISOString(),
         };
+      });
+    },
+
+    async exchangeSandboxExecutionBudget(input: {
+      scope: RuntimeScope;
+      operationId: string;
+      leaseToken: string;
+      attempt: RuntimeAttemptRef;
+      renewal?: SandboxExecutionRenewal;
+    }) {
+      if (!options.resolveSandboxExecutionBudget)
+        throw new RuntimeLedgerError('unavailable');
+      const attempt = RuntimeAttemptRefSchema.parse(input.attempt);
+      const renewal =
+        input.renewal === undefined
+          ? undefined
+          : SandboxExecutionRenewalSchema.parse(input.renewal);
+      return db.begin(async (tx) => {
+        const { root, row } = await lockOperation(
+          tx,
+          input.scope,
+          input.operationId,
+        );
+        verifyLease(row, input.leaseToken);
+        if (!runtimeContractEqual(attempt, row.snapshot.binding.attempt))
+          throw new RuntimeLedgerError('lease_lost');
+        const at = await now(tx);
+        ensureRootAdmits(root, at);
+        await assertRun(tx, root.task, true);
+        if (
+          row.snapshot.status !== 'running' ||
+          !row.lease_expires_at ||
+          row.lease_expires_at <= at
+        )
+          throw new RuntimeLedgerError('lease_lost');
+        await admit(tx, row, 'heartbeat', at);
+        const spec = SandboxExecutionBudgetSpecSchema.parse(
+          await options.resolveSandboxExecutionBudget!({
+            transaction: tx,
+            binding: row.snapshot.binding,
+          }),
+        );
+        const beganAt = (await now(tx)).getTime();
+        const prior =
+          row.execution_budget == null
+            ? undefined
+            : SandboxExecutionBudgetStateSchema.parse(row.execution_budget);
+        if (prior && !runtimeContractEqual(prior.spec, spec))
+          throw Error('SANDBOX_EXECUTION_POLICY_CHANGED');
+        if (prior && beganAt >= prior.deadlineAt)
+          throw Error('SANDBOX_EXECUTION_DEADLINE');
+        if (renewal && !prior) throw Error('SANDBOX_EXECUTION_NOT_STARTED');
+        const state = prior
+          ? renewal
+            ? renewSandboxExecutionBudget(
+                prior,
+                renewal,
+                beganAt,
+                root.deadline_at.getTime(),
+              )
+            : prior
+          : startSandboxExecutionBudget(
+              spec,
+              beganAt,
+              root.deadline_at.getTime(),
+            );
+        await tx`update allrice_runtime_operations set execution_budget=${json(tx, state)},updated_at=clock_timestamp() where id=${row.id}`;
+        // Recheck after waits/writes just as the existing operation heartbeat.
+        await admit(tx, row, 'heartbeat', await now(tx));
+        const committedAt = await now(tx);
+        ensureRootAdmits(root, committedAt);
+        if (
+          row.lease_expires_at <= committedAt ||
+          state.deadlineAt <= committedAt.getTime()
+        )
+          throw new RuntimeLedgerError('lease_lost');
+        return state;
       });
     },
 

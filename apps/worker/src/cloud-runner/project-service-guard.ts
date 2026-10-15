@@ -4,9 +4,10 @@ import { createInterface } from 'node:readline';
 
 /** One trusted VM pipe owns the physical five-second lease. Project code
  * cannot reach this file or ingress. EOF/crash never extends the lease. */
-export async function openCloudProjectServiceGuard(
+async function openGuard(
   attempt: string,
   hardDeadlineAt: string,
+  mode: 'project-service' | 'sandbox-execution',
 ) {
   if (!/^[a-f0-9-]{36}$/.test(attempt)) throw Error('CLOUD_SERVICE_IDENTITY');
   const deadline = Date.parse(hardDeadlineAt);
@@ -18,7 +19,9 @@ export async function openCloudProjectServiceGuard(
     throw Error('CLOUD_SERVICE_DEADLINE');
   const fixed = [
     '/usr/local/lib/allrice-cloud/watchdog.py',
-    '--project-service-lease',
+    mode === 'project-service'
+      ? '--project-service-lease'
+      : '--sandbox-execution-lease',
     attempt,
     String(deadline),
   ];
@@ -114,3 +117,12 @@ export async function openCloudProjectServiceGuard(
     },
   };
 }
+
+export const openCloudProjectServiceGuard = (
+  attempt: string,
+  hardDeadlineAt: string,
+) => openGuard(attempt, hardDeadlineAt, 'project-service');
+export const openCloudSandboxExecutionGuard = (
+  attempt: string,
+  hardDeadlineAt: string,
+) => openGuard(attempt, hardDeadlineAt, 'sandbox-execution');

@@ -8,7 +8,11 @@ import {
   IconRefreshOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { classifyMcpFailure, mcpFailureCopy } from '@allrice/contracts';
+import {
+  classifyMcpFailure,
+  mcpFailureCopy,
+  sandboxNetworkErrorMessage,
+} from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 
@@ -306,6 +310,12 @@ export function CloudOperationCard({
   );
   const failure = operationFailure(op);
   const stopping = cancelPending || op.snapshot.status === 'cancel_requested';
+  const networkFailure =
+    proposal.kind === 'cloud' &&
+    proposal.network &&
+    ['failed', 'unknown', 'canceled'].includes(op.snapshot.status)
+      ? sandboxNetworkErrorMessage(op.result?.code)
+      : undefined;
   const detailsId = useId();
   const [detailsOpen, setDetailsOpen] = useState(!!pending);
   useEffect(() => {
@@ -374,6 +384,11 @@ export function CloudOperationCard({
           {mcpFailureCopy[failure].detail}
         </p>
       )}
+      {networkFailure && (
+        <p role="status" className={styles.notice}>
+          {networkFailure}
+        </p>
+      )}
     </>
   );
   const decisionReceipt = op.approval?.response && (
@@ -395,7 +410,9 @@ export function CloudOperationCard({
             : '未收到完整的执行回执。'}
           {proposal.kind === 'mcp'
             ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
-            : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
+            : proposal.kind === 'cloud' && proposal.network
+              ? '已发出的外部请求可能已经生效，请先核实原操作和外部服务记录；不会自动重跑任务。'
+              : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
         </p>
       )}
     </>
@@ -580,10 +597,31 @@ export function CloudOperationCard({
                 <DetailFields
                   rows={[
                     ['运行环境', runtime],
-                    ['执行位置', '云端 · 不联网'],
+                    [
+                      '执行位置',
+                      proposal.network ? '云端 · 按授权联网' : '云端 · 不联网',
+                    ],
                     ['文件范围', '只读本次授权的上传文件，不访问你的电脑。'],
                   ]}
                 />
+                {proposal.network && (
+                  <div
+                    className={styles.detailScope}
+                    aria-label="获准访问的外部服务"
+                  >
+                    <strong>外部服务</strong>
+                    <ul>
+                      {proposal.network.origins.map((origin) => (
+                        <li key={origin}>{origin}</li>
+                      ))}
+                    </ul>
+                    <p>
+                      {proposal.inputs.length
+                        ? '本次输入文件可发送至以上服务。'
+                        : '本次未提供输入文件。'}
+                    </p>
+                  </div>
+                )}
                 <RawDetail title="查看完整脚本" open={!!pending}>
                   <pre aria-label="云端待执行脚本">{proposal.script}</pre>
                 </RawDetail>
@@ -732,7 +770,11 @@ export function CloudOperationCard({
                 个输入文件
               </span>
               <span className={styles.cloudLocation}>仅在云端执行</span>
-              <span>不联网</span>
+              <span>
+                {proposal.kind === 'cloud' && proposal.network
+                  ? '按授权联网'
+                  : '不联网'}
+              </span>
             </>
           )}
         </p>

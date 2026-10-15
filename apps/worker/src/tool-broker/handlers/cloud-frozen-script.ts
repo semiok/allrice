@@ -78,6 +78,8 @@ export async function resolveCloudToolArguments(
   }).decode(Buffer.from(resource.contentBase64, 'base64'));
   return CloudCommandInputSchema.parse({
     script,
+    ...(args.network ? { network: args.network } : {}),
+    ...(args.execution ? { execution: args.execution } : {}),
     inputs: args.inputs,
     outputs: args.outputs,
     limits: args.limits,

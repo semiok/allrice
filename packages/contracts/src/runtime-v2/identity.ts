@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from '../common.ts';
 import { ExecutionTargetKindSchema } from '../operations.ts';
 import { ChecksumSchema } from '../runs.ts';
+import { SandboxNetworkRequestSchema } from './sandbox-network.ts';
 
 /** Product 2.0 contract revision; NOT RunEvent, ChatFlow or Bridge's version. */
 export const RuntimeContractVersionSchema = z.literal(1);
@@ -133,11 +134,21 @@ export const RuntimeDataScopeSchema = z
       'cloud_model',
       'cloud_execution',
       'local_write',
+      'external_service',
     ]),
+    externalNetwork: SandboxNetworkRequestSchema.optional(),
     authorizationId: UuidSchema,
     authorizationVersion: z.number().int().positive(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (value) =>
+      (value.destination === 'external_service') ===
+      Boolean(value.externalNetwork),
+    {
+      message: 'external transfers require exact destination origins',
+    },
+  );
 export type RuntimeDataScope = z.infer<typeof RuntimeDataScopeSchema>;
 
 /** Only digests cross the approval/event boundary; no raw env, argv secrets or paths. */

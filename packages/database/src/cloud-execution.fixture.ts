@@ -11,6 +11,8 @@ import {
   type DshNativeSkillSnapshot,
   type EmployeePromptSnapshotSchema,
   type RequestContext,
+  type SandboxNetworkGrant,
+  type SandboxExecutionPolicy,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
 import {
@@ -46,6 +48,9 @@ export async function createCloudExecutionFixture(
     localBrowser?: boolean;
     localPreview?: boolean;
     localProcess?: boolean;
+    sandboxNetwork?: SandboxNetworkGrant;
+    sandboxExecutionPolicy?: SandboxExecutionPolicy;
+    outboundCapability?: boolean;
     managedOffice?: {
       bridgeAccess?: 'none' | 'read_only' | 'read_write';
       freezeBinding?: boolean;
@@ -113,7 +118,10 @@ export async function createCloudExecutionFixture(
     ...(options.dsh ? ['model:invoke'] : []),
     'storage:read',
     'storage:write',
-    ...(options.browserControl || options.localBrowser || options.localPreview
+    ...(options.browserControl ||
+    options.localBrowser ||
+    options.localPreview ||
+    options.outboundCapability
       ? ['network:outbound']
       : []),
   ];
@@ -141,7 +149,9 @@ export async function createCloudExecutionFixture(
           : []),
       ];
   const nativeCandidate =
-    options.managedOffice || options.canonicalPython
+    options.managedOffice ||
+    options.canonicalPython ||
+    options.sandboxExecutionPolicy
       ? employeeManifest({
           key: 'p15',
           name: 'P15 synthetic Office',
@@ -149,7 +159,9 @@ export async function createCloudExecutionFixture(
           toolNames: [
             options.canonicalPython
               ? 'python.execute'
-              : 'workspace.export.create',
+              : options.sandboxExecutionPolicy
+                ? 'cloud.process.execute'
+                : 'workspace.export.create',
           ],
         })
       : null;
@@ -206,6 +218,7 @@ export async function createCloudExecutionFixture(
     : digest('p15');
   const managedPython =
     nativeManifest &&
+    (options.managedOffice || options.canonicalPython) &&
     options.managedOffice?.freezeBinding !== false &&
     options.canonicalPython?.freezeBinding !== false
       ? freezeManagedOfficeBinding({
@@ -220,6 +233,9 @@ export async function createCloudExecutionFixture(
       : undefined;
   const frozen = EmployeeExecutionSnapshotSchema.parse({
     schemaVersion: nativeManifest ? 2 : 1,
+    ...(options.sandboxExecutionPolicy
+      ? { sandboxExecutionPolicy: options.sandboxExecutionPolicy }
+      : {}),
     employee: {
       id: employee,
       versionId: version,
@@ -411,6 +427,9 @@ export async function createCloudExecutionFixture(
         runtimeChecksum:
           'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
         network: 'none',
+        ...(options.sandboxNetwork
+          ? { sandboxNetwork: options.sandboxNetwork }
+          : {}),
         maximumConcurrency: 2,
       },
     },

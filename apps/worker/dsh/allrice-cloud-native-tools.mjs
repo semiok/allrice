@@ -1,5 +1,9 @@
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { z } from 'zod';
+import {
+  SandboxNetworkRequestSchema,
+  SandboxExecutionRequestSchema,
+} from '@allrice/contracts';
 
 // The DSH DSL projects shape only. These bounds run before JSON-RPC; the
 // production Broker repeats its authoritative schema, tenant and approval checks.
@@ -27,6 +31,8 @@ const limits = z
 export const CloudNativeArgumentsSchema = z
   .object({
     language: z.enum(['javascript', 'python']).optional(),
+    network: SandboxNetworkRequestSchema.optional(),
+    execution: SandboxExecutionRequestSchema.optional(),
     script: z
       .string()
       .min(1)
@@ -127,7 +133,7 @@ export const cloudNativeTools = [
     canonicalName: 'cloud.process.execute',
     wireName: 'cloud_process_execute',
     description:
-      'Run an exact approved script in the existing no-network SaaS gVisor sandbox. Omit language to retain Node 22; language:"python" selects fixed Python 3.11, Matplotlib/Agg, pandas, openpyxl, Pillow and the configured Noto CJK default for Chinese charts. Office libraries are not guaranteed here: use workspace_export_create.python for DOCX/PPTX creation and reopen checks, or workspace_document_read for later inspection. Read only explicitly selected input/ CSV/XLSX copies, treat missing/nonnumeric values explicitly, and save actual output/ PNG bytes with format:"png" and .png path/fileName. The trusted platform decoder validates PNG before returning an immutable objectId/checksum/versionId for native preview/download or embedding through the same Office Skill. Supply exactly one of inline script or frozenScript; frozenScript:{skill,path} retains the original Run-frozen Node bytes. No Bridge, host files or network access. Approval binds exact language/script, objects/checksums, outputs and limits. A proposal is not execution success. For XLSX, do not trust declared max_row/max_column as populated data. Inspect actual populated XML cells or reset read-only worksheet dimensions, then read bounded ranges in batches; never build a list across a declared million-row sheet. Print a short summary/sample only; write full field maps and tables to declared output files within artifact limits.',
+      'Run an exact approved script in the SaaS gVisor sandbox. Offline by default. Only when the platform grants outbound access, network selects exact authorized HTTPS origins through the provided standard proxy; input transfer needs separate authorization. Never bypass a denial or switch execution targets after a failure. Optional execution requests a finite compute/install/build budget; the server freezes its cap and renews only while authorized, without resetting elapsed time. Unsupported executors retain their old limits. Omit language to retain Node 22; language:"python" selects fixed Python 3.11, Matplotlib/Agg, pandas, openpyxl, Pillow and the configured Noto CJK default for Chinese charts. Office libraries are not guaranteed here: use workspace_export_create.python for DOCX/PPTX creation and reopen checks, or workspace_document_read for later inspection. Read only explicitly selected input/ CSV/XLSX copies, treat missing/nonnumeric values explicitly, and save actual output/ PNG bytes with format:"png" and .png path/fileName. The trusted platform decoder validates PNG before returning an immutable objectId/checksum/versionId for native preview/download or embedding through the same Office Skill. Supply exactly one of inline script or frozenScript; frozenScript:{skill,path} retains the original Run-frozen Node bytes. No Bridge or host files. Approval binds exact language/script, network destinations, objects/checksums, outputs and limits. A proposal is not execution success; unknown is never replayed. Temporary installs here do not persist into another call; use workspace_project with an exact saved lock and preparation for reusable dependencies. For XLSX, do not trust declared max_row/max_column as populated data. Inspect actual populated XML cells or reset read-only worksheet dimensions, then read bounded ranges in batches; never build a list across a declared million-row sheet. Print a short summary/sample only; write full field maps and tables to declared output files within artifact limits.',
     timeoutMs: managedToolWaitTimeoutMs,
     isConcurrencySafe: false,
     validateArguments(args) {
@@ -140,6 +146,30 @@ export const cloudNativeTools = [
         enum: ['javascript', 'python'],
         description:
           'Optional runtime for inline script. Omit to preserve Node; use python for CJK charts. Frozen script references stay Node.',
+      },
+      network: {
+        type: 'object',
+        additionalProperties: false,
+        description:
+          'Optional controlled HTTPS access. Exact authorized origins only, no paths, IP addresses, credentials or wildcard. Authorization is resolved by the server, never supplied here.',
+        properties: {
+          mode: { type: 'string', enum: ['controlled_https'], required: true },
+          origins: { type: 'array', items: { type: 'string' }, required: true },
+        },
+      },
+      execution: {
+        type: 'object',
+        additionalProperties: false,
+        description:
+          'Optional finite execution budget when enabled. Select work type only; the server controls initial budget, renewal, remaining Run time and the administrator cap.',
+        properties: {
+          version: { type: 'integer', enum: [1], required: true },
+          kind: {
+            type: 'string',
+            enum: ['compute', 'install', 'build'],
+            required: true,
+          },
+        },
       },
       script: {
         type: 'string',

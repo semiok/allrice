@@ -69,6 +69,7 @@ import {
 import { getDatabase } from '../core/client.ts';
 import { freezeSessionModelSnapshot } from '../providers/model-pool.ts';
 import { freezeTaskRuntimePolicy } from '../task-runtime-policy.ts';
+import { freezeSandboxExecutionPolicy } from '../sandbox-execution-policy.ts';
 import {
   ensureDefaultEmployee,
   resolveWorkspaceId,
@@ -1515,6 +1516,13 @@ export async function prepareEmployeeRunBinding(input: {
       },
       runtimePolicy: selectedRuntimePolicy,
       ...(taskRuntimePolicy ? { taskRuntimePolicy } : {}),
+      sandboxExecutionPolicy: await freezeSandboxExecutionPolicy(
+        {
+          organizationId: input.context.organizationId,
+          userId: actorId,
+        },
+        sql,
+      ),
       modelSnapshot,
       capabilitySnapshot: {
         declaredCapabilities: manifest.data.capabilities,

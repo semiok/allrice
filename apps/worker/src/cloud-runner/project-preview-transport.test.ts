@@ -12,6 +12,7 @@ import type {
 import type { getDatabase } from '@allrice/database';
 import type * as DatabaseModule from '@allrice/database';
 import type * as ContractsModule from '@allrice/contracts';
+import type * as ProjectRuntimeModule from '@allrice/project-runtime';
 import type { CloudRunnerBackend } from './backend.js';
 const state = vi.hoisted(() => ({
   authorize: vi.fn(),
@@ -36,7 +37,8 @@ vi.mock('./project.js', () => ({
 }));
 // The private IPC lifetime is the subject; shared Docker relay ownership is
 // separately unverified. Positive native behavior uses the real integration suite.
-vi.mock('@allrice/project-runtime', () => ({
+vi.mock('@allrice/project-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof ProjectRuntimeModule>()),
   ContainerProjectPreviewRelay: class {
     receive(
       frame: unknown,

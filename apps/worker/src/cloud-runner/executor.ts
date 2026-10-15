@@ -17,12 +17,14 @@ import {
 } from '@allrice/database';
 import {
   CloudExecutionPayloadSchema,
+  SandboxNetworkLeaseSchema,
   type CloudProjectRunResult,
   RuntimeOperationSnapshotSchema,
   type StoragePort,
   type RuntimeUsageObservation,
   type RuntimeLocalServiceEvent,
   type ProjectServiceView,
+  type SandboxExecutionRenewal,
 } from '@allrice/contracts';
 import {
   CloudRunnerBackend,
@@ -30,6 +32,7 @@ import {
   type CloudRunResult,
 } from './backend.js';
 import { cloudServiceAdmissionTimeout } from './service-admission.js';
+import { unconfirmedCloudNetworkOutcome } from './network-outcome.js';
 import {
   cloudServiceStopCause,
   inFlightHeartbeat,
@@ -276,6 +279,47 @@ export async function runCloudCommandOperation(
         );
         outcome = await backend.execute(payload, files, {
           attemptId,
+          ...(!('kind' in payload) && payload.executionBudget
+            ? {
+                sandboxExecution: {
+                  spec: payload.executionBudget,
+                  exchange: (renewal?: SandboxExecutionRenewal) =>
+                    ledger.exchangeSandboxExecutionBudget({
+                      ...receipt,
+                      ...(renewal ? { renewal } : {}),
+                    }),
+                },
+              }
+            : {}),
+          ...(!('kind' in payload) && payload.network !== 'none'
+            ? {
+                networkLease: SandboxNetworkLeaseSchema.parse({
+                  version: 1,
+                  organizationId: scope.organizationId,
+                  workspaceId: scope.workspaceId,
+                  ownerId: binding.requestedBy.id,
+                  runId: binding.task.runId,
+                  operationId,
+                  attemptId,
+                  target: {
+                    kind: 'cloud',
+                    targetId: binding.execution.targetId,
+                  },
+                  grantId: binding.execution.grantId,
+                  grantVersion: binding.execution.grantVersion,
+                  policyDigest: binding.command!.networkPolicyDigest,
+                  network: payload.network,
+                  expiresAt: new Date(
+                    Math.min(
+                      Date.parse(created.deadlineAt),
+                      Date.now() + 3_600_000,
+                    ),
+                  ).toISOString(),
+                  maximumConnections: 16,
+                  maximumBytes: 64 * 1024 * 1024,
+                }),
+              }
+            : {}),
           ...(repositoryExecution ? { repositoryExecution } : {}),
           deadlineAt:
             'kind' in payload
@@ -390,13 +434,14 @@ export async function runCloudCommandOperation(
       : {}),
     stopped: outcome.stopped,
     output: outcome.output,
+    ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+    ...(outcome.network ? { network: outcome.network } : {}),
     ...('kind' in payload
       ? {
           imageDigest: outcome.imageDigest,
           ...(outcome.projectPreparation
             ? { projectPreparation: outcome.projectPreparation }
             : {}),
-          ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
         }
       : {}),
     artifacts: artifacts.map((a) => ({
@@ -411,26 +456,39 @@ export async function runCloudCommandOperation(
   // checks; the ledger correctly rejects a synthetic cancellation receipt.
   const stopped =
     outcome.reason === 'canceled' || (service && outcome.reason === 'deadline');
-  const signal = stopped
-    ? { type: 'operation.stopped' as const, evidence, effects: 'none' as const }
-    : outcome.reason === 'unknown'
+  const externalOutcomeUnknown = unconfirmedCloudNetworkOutcome(
+    payload,
+    outcome,
+  );
+  const signal = externalOutcomeUnknown
+    ? {
+        type: 'operation.uncertain' as const,
+        reason: 'receipt_missing' as const,
+      }
+    : stopped
       ? {
-          type: 'operation.uncertain' as const,
-          reason: 'receipt_missing' as const,
+          type: 'operation.stopped' as const,
+          evidence,
+          effects: 'none' as const,
         }
-      : {
-          type: 'operation.outcome' as const,
-          result: {
-            status:
-              outcome.reason === 'completed'
-                ? ('succeeded' as const)
-                : ('failed' as const),
-            effects: artifacts.length
-              ? ('applied' as const)
-              : ('none' as const),
-            evidence,
-          },
-        };
+      : outcome.reason === 'unknown'
+        ? {
+            type: 'operation.uncertain' as const,
+            reason: 'receipt_missing' as const,
+          }
+        : {
+            type: 'operation.outcome' as const,
+            result: {
+              status:
+                outcome.reason === 'completed'
+                  ? ('succeeded' as const)
+                  : ('failed' as const),
+              effects: artifacts.length
+                ? ('applied' as const)
+                : ('none' as const),
+              evidence,
+            },
+          };
   // Stable replay uses the original receipt body/time, not a fresh timestamp.
   const existing = await ledger.readReceipts(scope, operationId);
   const receiptId = cloudStableId(`${operationId}:result`);
@@ -493,6 +551,8 @@ export async function runCloudCommandOperation(
     reason: outcome.reason,
     stopped: outcome.stopped,
     cleanupConfirmed: true,
+    ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+    ...(externalOutcomeUnknown ? { externalOutcomeUnknown: true } : {}),
     ...('kind' in payload
       ? {
           project: payload.arguments.projectSource.project,

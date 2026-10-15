@@ -20,6 +20,7 @@ import { FrozenMcpToolSchema } from './mcp.ts';
 import { LocalMcpSnapshotSchema } from './local-mcp.ts';
 import { ChecksumSchema } from './runs.ts';
 import { ManagedPythonPurposeSchema } from './runtime-v2/local-python.ts';
+import { SandboxExecutionPolicySchema } from './runtime-v2/sandbox-execution.ts';
 import {
   MemoryClassSchema,
   MemoryLifecycleStateSchema,
@@ -697,6 +698,9 @@ export const EmployeeExecutionSnapshotV2Schema =
     baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
     content: EmployeeRuntimeContentSchema.optional(),
     modelSnapshot: SessionModelSnapshotSchema.optional(),
+    // Frozen once per new Run. Missing on old Runs means the old executor
+    // limit, not implicit permission to start a longer command.
+    sandboxExecutionPolicy: SandboxExecutionPolicySchema.optional(),
     taskRuntimePolicy: z
       .object({
         version: z.literal(1),

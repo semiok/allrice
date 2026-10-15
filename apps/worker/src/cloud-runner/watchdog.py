@@ -23,12 +23,27 @@ LABEL = "xyz.bplabs.allrice.backend"
 ATTEMPT = "xyz.bplabs.allrice.cloud.attempt"
 DEADLINE = "xyz.bplabs.allrice.cloud.deadline"
 SERVICE_LEASES = "/run/allrice-cloud-project-leases"
+SANDBOX_LEASES = "/run/allrice-cloud-sandbox-leases"
+SANDBOX = "xyz.bplabs.allrice.cloud.sandbox-execution"
+PYTHON_IMAGE = "sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e"
+SANDBOX_SUPERVISORS = ["925a800ef4deb97b09bae13c5f3b40f481d03f833160bb46f8760e56bd118837","062418f01144a4d2ee8267a125ba6cf230e877a1ca8600bf7f01f1c863999bbd"]
 SERVICE = "xyz.bplabs.allrice.cloud.service"
 SERVICE_ID = "xyz.bplabs.allrice.cloud.service-id"
 COMPILED_PROFILE = 'allrice.output-redaction.compiled.v1'
 COMPILED_TIMEOUT_STEP = 300_000
 COMPILED_TIMEOUT_MAX = 1_800_000
 NODE_IMAGE = 'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5'
+# Docker merges the pinned image defaults even when create receives Env=[].
+# Accept exactly those public image values, never host or caller additions.
+SANDBOX_IMAGE_ENV = {
+    NODE_IMAGE: ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                 'NODE_VERSION=22.23.2', 'YARN_VERSION=1.22.22'],
+    PYTHON_IMAGE: ['PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                   'LANG=C.UTF-8', 'GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D',
+                   'PYTHON_VERSION=3.11.13',
+                   'PYTHON_SHA256=8fb5f9fbc7609fa822cb31549884575db7fd9657cbffb89510b5d7975963a83a',
+                   'PYTHONDONTWRITEBYTECODE=1', 'MPLBACKEND=Agg'],
+}
 STATE = "/run/allrice-cloud-watchdog.json"
 CAPACITY = "/run/allrice-cloud-capacity.json"
 EXPECTED = "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a"
@@ -144,21 +159,22 @@ def service_lease_valid(labels, created, deadline, now):
         return False
 
 
-def service_lease_channel(attempt, hard_text):
+def service_lease_channel(attempt, hard_text, sandbox=False):
     # Fixed root-owned infrastructure ingress, never reachable by project code.
     hard = int(hard_text)
     if os.getuid() != 0 or not re.fullmatch(r'[a-f0-9-]{36}', attempt) or not int(time.time()*1000) < hard <= int(time.time()*1000)+3_600_000:
         return 1
-    os.makedirs(SERVICE_LEASES, mode=0o700, exist_ok=True)
-    metadata = os.lstat(SERVICE_LEASES)
+    directory = SANDBOX_LEASES if sandbox else SERVICE_LEASES
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    metadata = os.lstat(directory)
     if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != 0 or metadata.st_mode & 0o077:
         return 1
-    filename = SERVICE_LEASES + '/' + attempt + '.json'
+    filename = directory + '/' + attempt + '.json'
     # A second owner cannot replace an established physical lease channel.
     fd = os.open(filename + ".owner", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     inode = os.fstat(fd).st_ino
     def save(expiry):
-        data = json.dumps({'attempt':attempt,'hardDeadline':hard,'expiresAt':expiry}).encode()
+        data = json.dumps({'attempt':attempt,'hardDeadline':hard,'expiresAt':expiry,**({'kind':'sandbox-execution-v1'} if sandbox else {})}).encode()
         temporary = filename + '.new'
         writer = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
@@ -224,6 +240,50 @@ def project_web_container_valid(container):
     )
 
 
+def sandbox_budget():
+    return {'version':1,'maximumTimeoutMs':3600000,'physicalLeaseMs':5000}
+
+
+def live_sandbox_budget(heartbeat):
+    return sandbox_budget() if heartbeat.get('sandboxExecution') == sandbox_budget() else None
+
+
+def sandbox_lease_valid(container, created, deadline, now):
+    config,host = container['Config'],container['HostConfig']
+    labels=config['Labels'];attempt=labels.get(ATTEMPT,'')
+    try:
+        cap=int(labels.get(SANDBOX+'-limit','0'));started=int(labels.get(SANDBOX+'-started','0'))
+        cmd=config.get('Cmd',[])
+        if not (labels.get(SANDBOX)=='v1' and cap in (600000,1800000,3600000)
+            and re.fullmatch(r'[a-f0-9-]{36}',attempt)
+            and 0 < started <= created+1000 and started < deadline <= started+cap
+            and SERVICE not in labels and 'xyz.bplabs.allrice.repository.profile' not in labels
+            and 'xyz.bplabs.allrice.project.profile' not in labels
+            and config.get('Image') in (NODE_IMAGE,PYTHON_IMAGE) and config.get('User')=='65532:65532'
+            and config.get('Entrypoint')==['/usr/local/bin/node']
+            and sorted(config.get('Env') or []) == sorted(SANDBOX_IMAGE_ENV[config['Image']])
+            and len(cmd)==3 and cmd[:2]==['--input-type=module','--eval']
+            and hashlib.sha256(cmd[2].encode()).hexdigest() in SANDBOX_SUPERVISORS
+            and host.get('Runtime')=='runsc' and host.get('NetworkMode')=='none'
+            and host.get('ReadonlyRootfs') is True and not host.get('Privileged')
+            and host.get('CapDrop')==['ALL'] and not host.get('CapAdd')
+            and 'no-new-privileges' in host.get('SecurityOpt',[])
+            and not host.get('Binds') and all(m.get('Type')=='tmpfs' and m.get('Destination')=='/tmp' for m in container.get('Mounts',[]))
+            and 128*1024**2 <= host.get('Memory',0) <= 512*1024**2
+            and host.get('MemorySwap')==host.get('Memory') and host.get('PidsLimit')==64
+            and host.get('Tmpfs')=={'/tmp':'rw,nosuid,nodev,noexec,size=32m,mode=1777'}):
+            return False
+        fd=os.open(SANDBOX_LEASES+'/'+attempt+'.json',os.O_RDONLY|os.O_NOFOLLOW)
+        with os.fdopen(fd,encoding='utf8') as source:
+            metadata=os.fstat(source.fileno())
+            if metadata.st_uid!=0 or not stat.S_ISREG(metadata.st_mode) or metadata.st_size>1024 or metadata.st_mode & 0o077:
+                return False
+            lease=json.load(source)
+        return lease.get('kind')=='sandbox-execution-v1' and lease.get('attempt')==attempt and lease.get('hardDeadline')==deadline and now < lease.get('expiresAt',0) <= min(deadline,now+5500)
+    except (OSError,TypeError,ValueError,KeyError):
+        return False
+
+
 def command_deadline_valid(container, created, deadline):
     """Only the fixed private compiler profile has the operator-frozen budget.
 
@@ -233,6 +293,8 @@ def command_deadline_valid(container, created, deadline):
     """
     config, host = container['Config'], container['HostConfig']
     labels = config['Labels']
+    if SANDBOX in labels:
+        return sandbox_lease_valid(container,created,deadline,int(time.time()*1000))
     if labels.get('xyz.bplabs.allrice.project.profile') is not None:
         return deadline <= created + 601_000 and project_web_container_valid(container)
     profile = labels.get('xyz.bplabs.allrice.repository.profile')
@@ -308,6 +370,7 @@ def tick(capacity):
                 and c["HostConfig"]["NetworkMode"] == "none"
                 and deadline > int(time.time() * 1000)
                 and (labels.get('xyz.bplabs.allrice.project.profile') is None or project_web_container_valid(c))
+                and not (SERVICE in labels and SANDBOX in labels)
                 and (service_lease_valid(labels, created, deadline, int(time.time()*1000))
                      if SERVICE in labels else command_deadline_valid(c, created, deadline))
                 and reserved_units <= capacity['slots']
@@ -320,7 +383,7 @@ def tick(capacity):
     temporary = STATE + ".new"
     with open(temporary, "w", encoding="utf8") as output:
         json.dump({"at": time.time(), "running": running, 'repositoryCompiled': compiled_budget(),
-                   'projectWebDevelopment': project_web_budget(),
+                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(),
                    "availableBytes": memory_available()}, output)
     os.replace(temporary, STATE)
 
@@ -356,12 +419,15 @@ def attest():
     print(json.dumps({"ready": ready, "runtimeChecksum": checksum, "watchdog": "met166-service-v1", "projectServices": True,
                       "repositoryCompiled": live_compiled_budget(heartbeat),
                       "projectWebDevelopment": live_project_web_budget(heartbeat),
+                      "sandboxExecution": live_sandbox_budget(heartbeat),
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))
     return 0 if ready else 1
 
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == '--sandbox-execution-lease':
+        sys.exit(service_lease_channel(sys.argv[2], sys.argv[3], True))
     if len(sys.argv) == 4 and sys.argv[1] == '--project-service-lease':
         sys.exit(service_lease_channel(sys.argv[2], sys.argv[3]))
     if sys.argv[1:] == ["--attest"]:

@@ -160,6 +160,32 @@ suite(
       );
       expect(args.script).toBe('console.log(1);\n');
     });
+    it('preserves explicit network and budget requests without granting them through a frozen script', async () => {
+      const f = await fixture();
+      const network = {
+        mode: 'controlled_https',
+        origins: ['https://registry.npmjs.org'],
+      };
+      const execution = { version: 1, kind: 'install' };
+      const args = await resolveCloudToolArguments(
+        {
+          context: f.execution,
+          sessionId: f.session,
+          arguments: { ...reference, network, execution },
+        },
+        db,
+      );
+      const legacy = await resolveCloudToolArguments(
+        { context: f.execution, sessionId: f.session, arguments: reference },
+        db,
+      );
+      expect(args.script).toBe(legacy.script);
+      expect(args).toMatchObject({ network, execution });
+      expect(legacy).not.toHaveProperty('network');
+      expect(legacy).not.toHaveProperty('execution');
+      // Resolving immutable code is not authorization to execute or extend it.
+      await expect(f.create('unapproved-budget', args)).rejects.toThrow();
+    });
     it.each([
       { ...reference, script: 'conflicting' },
       {},
