@@ -5,6 +5,7 @@ import {
   recordMethodFilePublication,
 } from './employees/employee-method-file-runtime.ts';
 import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
+import { cloudInputTransferScopes } from './cloud-network-authority.ts';
 import { initializeProjectServiceLease } from './project-services.ts';
 import { isPlatformAdmin } from './platform-authority.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -540,7 +541,7 @@ async function createCloudOperation(
       backend: profile.backend,
       imageDigest: cloudRuntimeImage(profile.imageDigest, args.language),
       runtime: profile.runtime,
-      network: 'none',
+      network: args.network ?? 'none',
       ...(python ? { origin: python.origin } : {}),
     });
   // Frozen resource:read permission and current ready/owner scope; exact transfer
@@ -708,14 +709,17 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
     inputDigest: digest(payload),
     command: cloudCommandBinding(payload, repositoryProof),
     baseline: content,
-    dataScope: content.map((c) => ({
-      content: c,
-      sourceTargetId: null,
-      purpose: 'execution_input',
-      destination: 'cloud_execution',
-      authorizationId: operationId,
-      authorizationVersion: 1,
-    })),
+    dataScope: cloudInputTransferScopes(
+      content,
+      operationId,
+      'kind' in payload
+        ? undefined
+        : {
+            command: payload,
+            grantId: grant.id,
+            grantVersion: grant.version,
+          },
+    ),
   });
   await database`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload,original_arguments) values(${operationId},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},${grant.id},${ctx.jobId},${ctx.worker.id},${run.lease_token},${database.json(binding)},${database.json(payload)},${originalArguments ? database.json(originalArguments as Parameters<Database['json']>[0]) : null}) on conflict do nothing`;
   const [stored] = await database<

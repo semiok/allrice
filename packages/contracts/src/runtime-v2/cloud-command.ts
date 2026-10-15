@@ -2,6 +2,10 @@ import { z } from 'zod';
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
 import { isRuntimeRelativePath } from './policy.ts';
+import {
+  SandboxNetworkRequestSchema,
+  SandboxNetworkGrantSchema,
+} from './sandbox-network.ts';
 
 /** P15 fixed server-side runtime. Never inherited from a Bridge profile. */
 export const cloudToolchainImageV1 =
@@ -37,6 +41,7 @@ export const CloudCommandInputSchema = z
   .object({
     // Do not materialize a default: legacy command bytes/digests stay identical.
     language: CloudCommandLanguageSchema.optional(),
+    network: SandboxNetworkRequestSchema.optional(),
     script: z
       .string()
       .min(1)
@@ -132,11 +137,19 @@ export const CloudCommandSchema = z
       z.literal(cloudPythonImageV1),
     ]),
     runtime: z.literal('runsc'),
-    network: z.literal('none'),
+    network: z.union([z.literal('none'), SandboxNetworkRequestSchema]),
     origin: CloudPythonOriginSchema.optional(),
   })
   .strict()
   .superRefine((command, ctx) => {
+    if (
+      JSON.stringify(command.network) !==
+      JSON.stringify(command.arguments.network ?? 'none')
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'cloud network/request mismatch',
+      });
     if (command.origin && command.arguments.language !== 'python')
       ctx.addIssue({
         code: 'custom',
@@ -160,6 +173,7 @@ export const CloudExecutionProfileSchema = z
       'sha256:1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a',
     ),
     network: z.literal('none'),
+    sandboxNetwork: SandboxNetworkGrantSchema.optional(),
     maximumConcurrency: z.number().int().min(1).max(32),
   })
   .strict();

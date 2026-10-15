@@ -14,7 +14,11 @@ import {
   IconWarningOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { classifyMcpFailure, mcpFailureCopy } from '@allrice/contracts';
+import {
+  classifyMcpFailure,
+  mcpFailureCopy,
+  sandboxNetworkErrorMessage,
+} from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 
@@ -218,6 +222,12 @@ export function CloudOperationCard({
   );
   const failure = operationFailure(op);
   const stopping = cancelPending || op.snapshot.status === 'cancel_requested';
+  const networkFailure =
+    proposal.kind === 'cloud' &&
+    proposal.network &&
+    ['failed', 'unknown', 'canceled'].includes(op.snapshot.status)
+      ? sandboxNetworkErrorMessage(op.result?.code)
+      : undefined;
   const detailsId = useId();
   const [detailsOpen, setDetailsOpen] = useState(!!pending);
   useEffect(() => {
@@ -296,6 +306,11 @@ export function CloudOperationCard({
           {mcpFailureCopy[failure].detail}
         </p>
       )}
+      {networkFailure && (
+        <p role="status" className={styles.notice}>
+          {networkFailure}
+        </p>
+      )}
     </>
   );
   const decisionReceipt = op.approval?.response && (
@@ -318,7 +333,9 @@ export function CloudOperationCard({
             : '未收到完整的执行回执。'}
           {proposal.kind === 'mcp'
             ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
-            : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
+            : proposal.kind === 'cloud' && proposal.network
+              ? '已发出的外部请求可能已经生效，请先核实原操作和外部服务记录；不会自动重跑任务。'
+              : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
         </p>
       )}
     </>
@@ -397,7 +414,11 @@ export function CloudOperationCard({
               个输入文件
             </span>
             <span className={styles.cloudLocation}>仅在云端执行</span>
-            <span>不联网</span>
+            <span>
+              {proposal.kind === 'cloud' && proposal.network
+                ? '按授权联网'
+                : '不联网'}
+            </span>
           </p>
         )}
         <div
@@ -519,6 +540,24 @@ export function CloudOperationCard({
               </>
             ) : proposal.kind === 'cloud' ? (
               <>
+                {proposal.network && (
+                  <div
+                    className={styles.detailScope}
+                    aria-label="获准访问的外部服务"
+                  >
+                    <strong>外部服务</strong>
+                    <ul>
+                      {proposal.network.origins.map((origin) => (
+                        <li key={origin}>{origin}</li>
+                      ))}
+                    </ul>
+                    <p>
+                      {proposal.inputs.length
+                        ? '本次输入文件可发送至以上服务。'
+                        : '本次未提供输入文件。'}
+                    </p>
+                  </div>
+                )}
                 <OperationDetail
                   title="执行脚本"
                   meta={
@@ -613,7 +652,7 @@ export function CloudOperationCard({
               >
                 {op.result ? (
                   <>
-                    {compactCloud && op.result.code && (
+                    {compactCloud && op.result.code && !networkFailure && (
                       <p>返回代码：{op.result.code}</p>
                     )}
                     <pre>{op.result.output || '没有可展示的输出。'}</pre>

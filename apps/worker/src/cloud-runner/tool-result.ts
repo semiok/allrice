@@ -1,4 +1,5 @@
 import { HandlerError, confirmToolFailure } from '../errors.js';
+import { sandboxNetworkErrorMessage } from '@allrice/contracts';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 
 /** Only the executor's durable outcome and confirmed cleanup settle a tool.
@@ -12,6 +13,8 @@ export function requireSuccessfulCloudCommand(
     cleanupConfirmed?: boolean;
     exitCode?: number | null;
     output?: string;
+    errorCode?: string;
+    externalOutcomeUnknown?: boolean;
   },
 ) {
   if (result.status === 'succeeded') return;
@@ -23,11 +26,15 @@ export function requireSuccessfulCloudCommand(
   )
     throw new HandlerError(
       'CLOUD_RESULT_UNKNOWN',
-      '云端计算结果或清理尚未确认；需核对原操作，不能重放或切换到本地重跑。',
+      result.externalOutcomeUnknown
+        ? '云端进程已停止，但已发出的外部请求结果尚未确认；需核对原操作，不能重放或切换到本地重跑。'
+        : '云端计算结果或清理尚未确认；需核对原操作，不能重放或切换到本地重跑。',
       false,
     );
-  const [code, message] =
-    result.reason === 'output_limit'
+  const networkMessage = sandboxNetworkErrorMessage(result.errorCode);
+  const [code, message] = networkMessage
+    ? [result.errorCode!, `云端执行已停止：${networkMessage}`]
+    : result.reason === 'output_limit'
       ? [
           'CLOUD_OUTPUT_LIMIT',
           '云端计算已停止：标准输出超出本次 outputBytes 上限。只打印有限字段和样本，将完整数据写入声明的成果文件；不要再次输出整张表或全部表头。',

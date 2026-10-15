@@ -281,6 +281,26 @@ describe('Cloud/MCP approval presentation', () => {
     expect(html).toContain('批准这一次执行');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('第三方 MCP');
+    op.snapshot.status = 'waiting_user';
+    op.proposal.network = {
+      mode: 'controlled_https',
+      origins: ['https://registry.npmjs.org'],
+    };
+    const networkHtml = render(op);
+    expect(networkHtml).toContain('按授权联网');
+    expect(networkHtml).toContain('https://registry.npmjs.org');
+    expect(networkHtml).not.toContain('不联网');
+    op.snapshot.status = 'unknown';
+    op.result = {
+      output: '',
+      code: 'SANDBOX_NETWORK_CONNECT_FAILED',
+      trusted: false,
+    };
+    const failedHtml = render(op);
+    expect(failedHtml).toContain('与已授权服务的连接中断或建立失败');
+    expect(failedHtml).toContain('外部请求可能已经生效');
+    expect(failedHtml).not.toContain('批准这一次执行');
+    expect(failedHtml).not.toContain('SANDBOX_NETWORK_CONNECT_FAILED');
   });
 });
 

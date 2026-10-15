@@ -1,4 +1,8 @@
 import { methodFileProof } from './employees/employee-method-file-runtime.ts';
+import {
+  assertCloudNetworkAuthority,
+  cloudInputTransferScopes,
+} from './cloud-network-authority.ts';
 import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { createHash } from 'node:crypto';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
@@ -103,6 +107,9 @@ export function cloudCommandBinding(
       backend: payload.backend,
       credentials: 'none',
       user: repositoryProof ? '0' : '65532',
+      ...(payload.network !== 'none'
+        ? { sandboxNetwork: 'controlled-https-v1' }
+        : {}),
       ...(repositoryProof
         ? {
             supervisor: repositoryProof.profileId,
@@ -112,7 +119,7 @@ export function cloudCommandBinding(
           }
         : {}),
     }),
-    networkPolicyDigest: digest({ network: 'none' }),
+    networkPolicyDigest: digest({ network: payload.network }),
     toolchainDigest: digest({
       backend: payload.backend,
       imageDigest: payload.imageDigest,
@@ -402,6 +409,17 @@ export async function checkCloudBindingAuthority(
   } catch {
     throw new RuntimePolicyError('cloud_input_not_authorized');
   }
+  assertCloudNetworkAuthority(
+    payload,
+    profile,
+    snapshot.success ? snapshot.data : undefined,
+    Boolean(repositoryProof || method || origin),
+  );
+  const content = payload.arguments.inputs.map((file) => ({
+    kind: 'storage_object' as const,
+    id: file.objectId,
+    checksum: file.checksum,
+  }));
   if (
     digest(payload) !== binding.inputDigest ||
     !runtimeContractEqual(
@@ -411,7 +429,14 @@ export async function checkCloudBindingAuthority(
     payload.imageDigest !==
       cloudRuntimeImage(profile.imageDigest, payload.arguments.language) ||
     binding.baseline.length !== payload.arguments.inputs.length ||
-    binding.dataScope.length !== payload.arguments.inputs.length
+    !runtimeContractEqual(
+      binding.dataScope,
+      cloudInputTransferScopes(content, binding.attempt.operationId, {
+        command: payload,
+        grantId: binding.execution.grantId,
+        grantVersion: binding.execution.grantVersion,
+      }),
+    )
   )
     throw new RuntimePolicyError('cloud_input_changed');
   for (const [index, file] of payload.arguments.inputs.entries()) {
@@ -420,17 +445,7 @@ export async function checkCloudBindingAuthority(
       id: file.objectId,
       checksum: file.checksum,
     };
-    if (
-      !runtimeContractEqual(binding.baseline[index], content) ||
-      !runtimeContractEqual(binding.dataScope[index], {
-        content,
-        sourceTargetId: null,
-        purpose: 'execution_input',
-        destination: 'cloud_execution',
-        authorizationId: binding.attempt.operationId,
-        authorizationVersion: 1,
-      })
-    )
+    if (!runtimeContractEqual(binding.baseline[index], content))
       throw new RuntimePolicyError('cloud_transfer_scope_changed');
     const [object] = await tx<
       {

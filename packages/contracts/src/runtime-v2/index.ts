@@ -10,6 +10,7 @@ export * from './local-command.ts';
 export * from './command-candidate.ts';
 export * from './local-mcp.ts';
 export * from './cloud-command.ts';
+export * from './sandbox-network.ts';
 export * from './local-service.ts';
 export * from './local-service-http.ts';
 export * from './project-diagnostics.ts';
