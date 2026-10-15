@@ -3,6 +3,7 @@ import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
 import { EmployeeRuntimeContentSchema } from './employee-content.ts';
 import { z } from 'zod';
+import { PersonalSkillSnapshotSchema } from './personal-skills.ts';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 import {
   TaskSuggestionDisplaySchema,
@@ -701,6 +702,7 @@ export const EmployeeExecutionSnapshotV2Schema =
     // Frozen once per new Run. Missing on old Runs means the old executor
     // limit, not implicit permission to start a longer command.
     sandboxExecutionPolicy: SandboxExecutionPolicySchema.optional(),
+    personalSkills: PersonalSkillSnapshotSchema.optional(),
     taskRuntimePolicy: z
       .object({
         version: z.literal(1),

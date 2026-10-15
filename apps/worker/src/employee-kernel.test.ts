@@ -150,3 +150,29 @@ it('keeps the published general identity while applying only the frozen personal
   expect(text).not.toContain('LEGACY_');
   expect(text).not.toContain('workspace_employee_method_');
 });
+
+it.each(['general', 'custom'] as const)(
+  'routes explicit personal Skill installation separately from %s profile and method edits',
+  (kind) => {
+    const snapshot = {
+      schemaVersion: 2,
+      instance: { kind, revision: 1, profile: {} },
+      capabilitySnapshot: {
+        bindings: {
+          toolNames: [
+            'workspace.employee.profile.update',
+            'workspace.personal_skill.install',
+          ],
+        },
+      },
+    } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
+    const text = employeeInstanceInstructions(snapshot).join('\n');
+    expect(text).toContain('workspace_personal_skill_install');
+    expect(text).toContain('exact objectId from that message');
+    expect(text).toContain('available from the next task');
+    expect(text).toContain(
+      'Reading, evaluating or temporarily using a file is not installation consent',
+    );
+    expect(text).toContain('does not grant tools');
+  },
+);

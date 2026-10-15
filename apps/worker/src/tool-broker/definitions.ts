@@ -8,6 +8,7 @@ import {
   LocalFileSurveyInputSchema,
   ProjectWorkspaceToolInputSchema,
   EmployeeProfileChatInputSchema,
+  PersonalSkillInstallInputSchema,
   EmployeeMethodInspectSchema,
   EmployeeMethodPrepareActivationSchema,
   EmployeeMethodActivateSchema,
@@ -56,6 +57,12 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
+  {
+    name: 'workspace.personal_skill.install',
+    description:
+      '仅在用户随一份 SKILL.md 附件明确要求安装时，安装为本人当前 AI 员工的个人技能。仅阅读、评价、翻译或本次临时使用不代表安装。目标和身份从当前会话推导；成功后新任务采用，不授予新工具权限。设置→我的技能可停用/卸载。',
+    inputSchema: z.toJSONSchema(PersonalSkillInstallInputSchema),
+  },
   {
     name: 'workspace.employee.profile.update',
     description:

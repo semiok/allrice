@@ -15,6 +15,16 @@ const overload =
 const generic =
   'An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists.';
 const skillContent = '# Synthetic method\nFROZEN_NATIVE_SKILL_BODY_42';
+const privatePin = {
+  organizationId: 'f6ea2d79-f2d0-44ab-889f-223052f81e54',
+  ownerId: '9d55a797-b76f-444e-b2b8-ec877d846229',
+  instanceId: '85823d50-6d5c-460f-9427-0c551bb3445d',
+  installationId: 'a86d89da-9027-4b6e-bc21-b4be31624549',
+  versionId: 'c71f464e-bd67-4dd7-bc64-09cd2f78ea47',
+  bindingId: 'a85a1726-036c-4070-840e-dad1b09287db',
+  bindingEpoch: 1,
+  definitionChecksum: `sha256:${'b'.repeat(64)}`,
+};
 const sceneId = '189c8b5b-72cb-4f41-89c2-f3034c5ec0e4';
 const sceneName = `allrice-scene-${sceneId}`;
 const sceneDigest = `sha256:${'a'.repeat(64)}`;
@@ -42,6 +52,10 @@ async function scenario({
   failures = [overload],
   toolFirst = false,
   skillFirst = false,
+  personalSkill = false,
+  personalInstall = false,
+  rejectPersonalSkill = false,
+  personalSlash = false,
   sceneFirst = false,
   sceneProbe = false,
   rejectSceneAdoption = false,
@@ -83,7 +97,8 @@ async function scenario({
       const index = requests.length - 1;
       connections.push(`open:${index}`);
       res.on('close', () => connections.push(`close:${index}`));
-      const firstTool = toolFirst || skillFirst || sceneFirst;
+      const firstTool =
+        toolFirst || skillFirst || sceneFirst || personalInstall;
       const stall = stalls[index - (firstTool ? 1 : 0)];
       if (stall) {
         if (stall === 'missing_terminal') {
@@ -134,13 +149,19 @@ async function scenario({
               type: 'function_call',
               id: `fc_synthetic_${index}`,
               call_id: `call_synthetic_${index}`,
-              name: skillFirst || sceneFirst ? 'skill' : 'local_fs_list',
+              name: personalInstall
+                ? 'workspace_personal_skill_install'
+                : skillFirst || sceneFirst
+                  ? 'skill'
+                  : 'local_fs_list',
               arguments: JSON.stringify(
-                sceneFirst
-                  ? { name: sceneName }
-                  : skillFirst
-                    ? { name: 'synthetic-method' }
-                    : { path: '.' },
+                personalInstall
+                  ? { objectId: privatePin.versionId }
+                  : sceneFirst
+                    ? { name: sceneName }
+                    : skillFirst
+                      ? { name: 'synthetic-method' }
+                      : { path: '.' },
               ),
               status: 'completed',
             }
@@ -284,6 +305,11 @@ async function scenario({
             throw Error('employee_scene_adoption_denied');
           return { adopted: p };
         }
+        if (method === 'allrice/personal-skill-check') {
+          expect(p).toEqual(privatePin);
+          if (rejectPersonalSkill) throw Error('personal_skill_revoked');
+          return { allowed: true };
+        }
         if (method === 'allrice/content-check') {
           contentCalls += 1;
           if (contentCalls > contentCallsAllowed)
@@ -308,21 +334,33 @@ async function scenario({
         provider: 'openai-codex',
         model: 'gpt-5.6-luna',
         maxTokens: 64,
-        nativeTools: ['local.fs.list'],
-        nativeSkills: skillFirst
-          ? [
-              {
-                id: 'synthetic-method-id',
-                name: 'synthetic-method',
-                description:
-                  'Frozen synthetic method for the native loader regression.',
-                content: skillContent,
-                checksum: `sha256:${createHash('sha256').update(skillContent).digest('hex')}`,
-                invocation: { modelInvocable: true, userInvocable: true },
-                requiredToolRefs: ['local.fs.list'],
-              },
-            ]
-          : [],
+        nativeTools: personalInstall
+          ? ['workspace.personal_skill.install']
+          : ['local.fs.list'],
+        nativeSkills:
+          skillFirst || personalSkill
+            ? [
+                {
+                  id: personalSkill
+                    ? privatePin.versionId
+                    : 'synthetic-method-id',
+                  ...(personalSkill
+                    ? {
+                        personal: privatePin,
+                        whenToUse: 'Checking deliverables',
+                        metadata: { test: true },
+                      }
+                    : {}),
+                  name: 'synthetic-method',
+                  description:
+                    'Frozen synthetic method for the native loader regression.',
+                  content: skillContent,
+                  checksum: `sha256:${createHash('sha256').update(skillContent).digest('hex')}`,
+                  invocation: { modelInvocable: true, userInvocable: true },
+                  requiredToolRefs: personalSkill ? [] : ['local.fs.list'],
+                },
+              ]
+            : [],
         expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
         contentScenes:
           sceneFirst || sceneProbe
@@ -337,7 +375,10 @@ async function scenario({
               ]
             : [],
         requireContentGuard:
-          contentCallsAllowed !== undefined || sceneFirst || sceneProbe,
+          contentCallsAllowed !== undefined ||
+          sceneFirst ||
+          sceneProbe ||
+          personalSkill,
         requireTaskProgress: progressPause,
       });
     }
@@ -346,7 +387,9 @@ async function scenario({
     if (assistants)
       await client.assistant('bind', {
         nativeSessionId: sessionId,
-        wireTools: ['local_fs_list'],
+        wireTools: personalInstall
+          ? ['workspace_personal_skill_install']
+          : ['local_fs_list'],
       });
     const events = () =>
       notices
@@ -354,9 +397,11 @@ async function scenario({
         .map((n) => n.params.event);
     await client.prompt(
       sessionId,
-      sceneProbe
-        ? `/${sceneName} Synthetic request`
-        : 'Synthetic request: list once then answer.',
+      personalSlash
+        ? '/synthetic-method Synthetic request'
+        : sceneProbe
+          ? `/${sceneName} Synthetic request`
+          : 'Synthetic request: list once then answer.',
     );
     if (progressPause) {
       await expect
@@ -389,7 +434,9 @@ async function scenario({
       if (assistants)
         await client.assistant('bind', {
           nativeSessionId: sessionId,
-          wireTools: ['local_fs_list'],
+          wireTools: personalInstall
+            ? ['workspace_personal_skill_install']
+            : ['local_fs_list'],
         });
       await client.prompt(
         sessionId,
@@ -405,7 +452,9 @@ async function scenario({
       await client.assistant('finish', { nativeSessionId: sessionId });
       await client.assistant('bind', {
         nativeSessionId: sessionId,
-        wireTools: ['local_fs_list'],
+        wireTools: personalInstall
+          ? ['workspace_personal_skill_install']
+          : ['local_fs_list'],
       });
       await client.prompt(sessionId, 'Load the same frozen method once again.');
       await expect
@@ -775,3 +824,87 @@ it('cold native recovery reconciles the saved successful scene result before the
   ).toHaveLength(2);
   expect(JSON.stringify(r.requests[1])).toContain('SCENE_WEEKLY_ONLY_85');
 }, 45000);
+
+describe('personal Skills use the native loader with current authority', () => {
+  it('round-trips actual install tool parameters through the native Broker wire', async () => {
+    const result = await scenario({ personalInstall: true, failures: [] });
+    expect(result.requests[0].tools.map((t) => t.name)).toContain(
+      'workspace_personal_skill_install',
+    );
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls[0]).toMatchObject({
+      name: 'workspace.personal_skill.install',
+      arguments: { objectId: privatePin.versionId },
+    });
+    expect(JSON.stringify(result.requests[1])).toContain(
+      'SAVED_TOOL_RESULT_42',
+    );
+  }, 30000);
+  it('checks exact private pin before native Skill content and after rebind', async () => {
+    const result = await scenario({
+      personalSkill: true,
+      skillFirst: true,
+      rebind: true,
+      failures: [],
+    });
+    expect(
+      result.bridgeCalls.filter(
+        (c) => c.method === 'allrice/personal-skill-check',
+      ),
+    ).toHaveLength(2);
+    expect(JSON.stringify(result.requests[0])).not.toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+    expect(JSON.stringify(result.requests[1])).toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+    expect(result.requests[0].tools.map((t) => t.name)).not.toContain(
+      'workspace_personal_skill_read',
+    );
+  }, 30000);
+  it('denies native get without exposing the revoked body', async () => {
+    const result = await scenario({
+      personalSkill: true,
+      skillFirst: true,
+      rejectPersonalSkill: true,
+      failures: [],
+    });
+    expect(
+      result.bridgeCalls.some(
+        (c) => c.method === 'allrice/personal-skill-check',
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(result.requests)).not.toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+  }, 30000);
+  it('checks slash invocation through the same provider before sending the body', async () => {
+    const result = await scenario({
+      personalSkill: true,
+      personalSlash: true,
+      failures: [],
+    });
+    expect(
+      result.bridgeCalls.some(
+        (c) => c.method === 'allrice/personal-skill-check',
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(result.requests[0])).toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+  }, 30000);
+  it('blocks a revoked loaded context before another model call or compaction', async () => {
+    const result = await scenario({
+      personalSkill: true,
+      skillFirst: true,
+      contentCallsAllowed: 1,
+      failures: [],
+      compact: true,
+    });
+    expect(result.requests).toHaveLength(1);
+    expect(result.compactionRejected).toBe(true);
+    expect(JSON.stringify(result.requests)).not.toContain(
+      'FROZEN_NATIVE_SKILL_BODY_42',
+    );
+  }, 30000);
+});

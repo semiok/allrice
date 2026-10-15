@@ -6,6 +6,7 @@ import {
   IconSettingsOutlineMedium,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import { PersonalSkillsSettings } from './personal-skills-settings';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
 import native from './dsh-upstream/settings/SettingsRoot.module.css';
@@ -79,6 +80,7 @@ export function SidebarSettings({
   const rows = [
     { id: 'account', label: '账号与用量' },
     { id: 'work', label: '员工工作方式' },
+    { id: 'skills', label: '我的技能' },
     { id: 'capabilities', label: '能力与环境' },
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
@@ -250,6 +252,13 @@ export function SidebarSettings({
                       workspaceId={workspaceId}
                       sessionId={sessionId}
                       embedded
+                    />
+                  )}
+                  {row.id === 'skills' && (
+                    <PersonalSkillsSettings
+                      key={workspaceId}
+                      workspaceId={workspaceId}
+                      active={section === 'skills'}
                     />
                   )}
                   {row.id === 'work' && (

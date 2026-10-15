@@ -53,6 +53,7 @@
     "@deepseek-ai/dsh-session-reference": "0.1.5-rc.3",
     "@deepseek-ai/dsh-session-title": "0.1.5-rc.3",
     "@deepseek-ai/dsh-skill": "0.1.5-rc.3",
+    "@deepseek-ai/dsh-skill-filesystem": "0.1.5-rc.3",
     "@deepseek-ai/dsh-subagent": "0.1.5-rc.3",
     "@deepseek-ai/dsh-subagent-spawn-in-process": "0.1.5-rc.3",
     "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.3",

@@ -277,6 +277,13 @@ export class DshRuntimePool {
         name: skill.name,
         invocation: skill.invocation,
         ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
+        ...(skill.personal
+          ? {
+              personal: skill.personal,
+              whenToUse: skill.whenToUse,
+              metadata: skill.metadata,
+            }
+          : {}),
       })),
       credentialDigest: credential
         ? createHash('sha256').update(credential.apiKey).digest('hex')

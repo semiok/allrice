@@ -14,6 +14,7 @@ import {
   CompanyAssetSchema,
   WorkbenchArtifactSchema,
   EmployeeInstanceSchema,
+  type PersonalSkillItem,
   type EmployeeInstance,
   TaskNextStepsSchema,
   type MessageFeedbackItem,
@@ -220,7 +221,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   async function fixture(
     options: {
-      settingsEntry?: 'apps' | 'computer' | 'capabilities';
+      settingsEntry?: 'apps' | 'computer' | 'capabilities' | 'skills';
+      personalSkills?: boolean;
       archiveCount?: number;
       archiveActive?: boolean;
       tenantAdmin?: boolean;
@@ -275,6 +277,42 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       writes: string[] = [],
       unexpected: string[] = [];
     const state = {
+      personalSkillWrites: [] as string[],
+      personalSkills: options.personalSkills
+        ? ([
+            {
+              id: id(8500),
+              name: 'private-checklist',
+              description: '交付前核对三项',
+              revision: 1,
+              state: 'installed',
+              versionId: id(8501),
+              version: 1,
+              source: {
+                kind: 'attachment',
+                objectId: id(8502),
+                fileName: 'SKILL.md',
+                originalChecksum: `sha256:${'a'.repeat(64)}`,
+                byteLength: 100,
+              },
+              definitionChecksum: `sha256:${'b'.repeat(64)}`,
+              compatibility: 'instruction_format_checked',
+              businessVerification: 'not_verified',
+              bindings: [
+                {
+                  id: id(8503),
+                  instanceId: id(7),
+                  workspaceId: workspace,
+                  enabled: true,
+                  epoch: 1,
+                  label: 'Rice',
+                },
+              ],
+              createdAt: now,
+              updatedAt: now,
+            },
+          ] as PersonalSkillItem[])
+        : [],
       createdEmployeeInstances: [] as EmployeeInstance[],
       historyRunning: options.running ?? false,
       bridgeDevices: [] as BridgeDevice[],
@@ -485,6 +523,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
+      if (path === '/api/v1/personal-skills') {
+        if (route.request().method() === 'POST') {
+          const body = route.request().postDataJSON(),
+            skill = state.personalSkills[0]!;
+          expect(body).toMatchObject({
+            installationId: skill.id,
+            ...(body.operation === 'uninstall' ? {} : { instanceId: id(7) }),
+            workspaceId: workspace,
+            expectedRevision: skill.revision,
+          });
+          if (body.operation === 'uninstall')
+            expect(body.instanceId).toBeUndefined();
+          expect(body.requestId).toMatch(/^[a-f0-9-]{36}$/);
+          state.personalSkillWrites.push(body.operation);
+          skill.revision++;
+          for (const binding of skill.bindings) {
+            binding.epoch++;
+            binding.enabled = body.operation === 'enable';
+          }
+          if (body.operation === 'uninstall') skill.state = 'uninstalled';
+          return answer({ skill });
+        }
+        return answer({ skills: state.personalSkills });
+      }
       if (path === '/api/v1/me/preferences') {
         const viewerId = state.viewer;
         if (state.preferenceDelay) await state.preferenceDelay;
@@ -2431,6 +2493,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   }, 30_000);
+
+  for (const width of [1440, 390]) {
+    it(`manages private Skills in settings without exposing a template editor at ${width}px`, async () => {
+      const f = await fixture({
+        width,
+        settingsEntry: 'skills',
+        personalSkills: true,
+      });
+      try {
+        const dialog = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        await expect
+          .poll(() =>
+            dialog.getByText('private-checklist', { exact: false }).count(),
+          )
+          .toBe(1);
+        expect(await dialog.innerText()).toContain('业务效果尚未验证');
+        await dialog.getByRole('button', { name: '停用', exact: true }).click();
+        await dialog
+          .getByRole('button', { name: '启用', exact: true })
+          .waitFor();
+        await dialog.getByRole('button', { name: '启用', exact: true }).click();
+        await dialog
+          .getByRole('button', { name: '停用', exact: true })
+          .waitFor();
+        // The original employee can disappear while the owned library remains.
+        f.state.personalSkills[0]!.bindings = [];
+        await dialog
+          .getByRole('button', { name: '刷新技能', exact: true })
+          .click();
+        await dialog
+          .getByText('当前工作区没有可用绑定；原始安装记录保留。')
+          .waitFor();
+        await dialog
+          .getByRole('button', { name: '卸载个人技能', exact: true })
+          .click();
+        await expect.poll(() => dialog.innerText()).toContain('已卸载');
+        expect(f.state.personalSkillWrites).toEqual([
+          'disable',
+          'enable',
+          'uninstall',
+        ]);
+        expect(await dialog.getByRole('textbox').count()).toBe(0);
+        expect(
+          await dialog.evaluate((e) => e.scrollWidth <= e.clientWidth + 1),
+        ).toBe(true);
+        expect(f.errors).toEqual([]);
+        expect(f.unexpected).toEqual([]);
+      } finally {
+        await f.context.close();
+      }
+    }, 30000);
+  }
 
   async function openCapabilities(f: Awaited<ReturnType<typeof fixture>>) {
     const settings = f.page.getByRole('button', { name: '设置', exact: true });

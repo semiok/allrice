@@ -3,6 +3,7 @@ import { randomUUID, createHash } from 'node:crypto';
 
 import {
   HarnessEventSchema,
+  PersonalSkillPinSchema,
   UserQuestionRequestSchema,
   NativeQuestionCheckpointSchema,
   RuntimeNativeInputProofSchema,
@@ -204,6 +205,22 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
     };
     runtime.client.setRequestHandler(async (method, params) => {
+      if (method === 'allrice/personal-skill-check') {
+        if (!input.contentGuard) throw Error('personal_skill_guard_unbound');
+        const pin = PersonalSkillPinSchema.parse(params);
+        const skill = nativeSkills.find(
+          (s) => s.id === pin.versionId && s.personal,
+        );
+        if (
+          !skill?.personal ||
+          Object.entries(pin).some(
+            ([k, v]) => skill.personal![k as keyof typeof pin] !== v,
+          )
+        )
+          throw Error('personal_skill_frozen_identity_mismatch');
+        await checkContent();
+        return { allowed: true };
+      }
       if (
         method === 'allrice/content-scene-load' ||
         method === 'allrice/content-scene-adopt'
@@ -601,6 +618,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
                     ...event.sourcePayload,
                     skillId: skill.id,
                     skillChecksum: skill.checksum,
+                    ...(skill.personal
+                      ? { personalSkill: skill.personal }
+                      : {}),
                     ...(governance
                       ? {
                           skillVersion: governance.version,
