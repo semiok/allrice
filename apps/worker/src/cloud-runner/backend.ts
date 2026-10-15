@@ -405,7 +405,14 @@ export class CloudRunnerBackend {
     if (socketPath !== configuredSocket() || !socketPath.startsWith('/'))
       throw new CloudRunnerError('CLOUD_DEDICATED_BACKEND_REQUIRED');
   }
-  async call(method: string, path: string, body?: unknown): Promise<Buffer> {
+  async call(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs = 15_000,
+  ): Promise<Buffer> {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15_000)
+      throw new CloudRunnerError('CLOUD_DAEMON_INVALID_TIMEOUT');
     const bytes =
       body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     if ((bytes?.length ?? 0) > 32_000_000)
@@ -442,15 +449,20 @@ export class CloudRunnerBackend {
       );
       const timer = setTimeout(
         () => req.destroy(new CloudRunnerError('CLOUD_DAEMON_TIMEOUT')),
-        15_000,
+        timeoutMs,
       );
       req.once('close', () => clearTimeout(timer));
       req.once('error', reject);
       req.end(bytes);
     });
   }
-  async json<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const data = await this.call(method, path, body);
+  async json<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const data = await this.call(method, path, body, timeoutMs);
     return data.length ? (JSON.parse(data.toString()) as T) : (null as T);
   }
   async putArchive(id: string, bytes: Uint8Array, signal: AbortSignal) {
@@ -2225,6 +2237,7 @@ export class CloudRunnerBackend {
       Awaited<ReturnType<typeof openCloudProjectServiceGuard>> | undefined;
     let networkSession: SandboxNetworkSession | undefined;
     let networkError: string | undefined;
+    let networkCloseTask: Promise<void> | undefined;
     let physicalClosing = false,
       physicalTask: Promise<void> | undefined,
       physicalTimer: ReturnType<typeof setInterval> | undefined;
@@ -2237,6 +2250,7 @@ export class CloudRunnerBackend {
       ]),
     };
     const collectResult = async (reason: CloudRunResult['reason']) => {
+      await networkCloseTask;
       const result = await this.collect(
         attemptId,
         plan.command,
@@ -2336,8 +2350,32 @@ export class CloudRunnerBackend {
             onError: (code) => {
               networkError = code;
             },
-            onClosed: (code) =>
-              physicalFailure.abort(new CloudRunnerError(code)),
+            onClosed: (code) => {
+              networkCloseTask = (async () => {
+                if (code === 'SANDBOX_NETWORK_UNAVAILABLE') {
+                  // Docker tears down exec streams before its container wait
+                  // notification. Reconcile that bounded race before stopping
+                  // a command that may already have completed successfully.
+                  // No connection remains open during this wait. A lost helper
+                  // in a still-running container remains a hard failure.
+                  try {
+                    await this.json(
+                      'POST',
+                      `/containers/${c.Id}/wait?condition=not-running`,
+                      undefined,
+                      1000,
+                    );
+                    const observed = await this.inspect(attemptId);
+                    if (observed?.Id === c.Id && !observed.State.Running)
+                      return;
+                  } catch {
+                    // Missing or uncertain exit never fabricates success.
+                  }
+                }
+                if (!physicalClosing)
+                  physicalFailure.abort(new CloudRunnerError(code));
+              })();
+            },
           });
         } catch (error) {
           // No tenant input has been sent yet. Only a confirmed stop makes a
@@ -2437,6 +2475,7 @@ export class CloudRunnerBackend {
       stdin?.destroy();
       if (physicalTask)
         await serviceCall(physicalTask, 3500).catch(() => undefined);
+      await networkCloseTask;
     }
   }
 }
