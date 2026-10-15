@@ -17,7 +17,15 @@ import type { PreparedComposerDraft } from '../../lib/chatflow/composer-draft';
 import { ReferenceChips, type ReferenceDraft } from './reference-chips';
 import { SessionReferenceChips } from './session-reference-picker';
 
-import type { MutableRefObject, RefObject } from 'react';
+import {
+  useCallback,
+  useLayoutEffect,
+  useSyncExternalStore,
+  type MutableRefObject,
+  type RefObject,
+} from 'react';
+import type { ComposerDraftStore } from '../../lib/chatflow/composer-draft-store';
+import { resizeComposerTextarea } from './chatflow-utils';
 import {
   IconPlusOutlineRegular,
   IconGlobeOutlineRegular,
@@ -35,7 +43,6 @@ import {
   type BridgeConnectionState,
 } from './bridge-view';
 import type { History, PendingAttachment, Visibility } from './chatflow-types';
-import { resizeComposerTextarea } from './chatflow-utils';
 import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 
@@ -94,6 +101,22 @@ interface ChatComposerProps {
   onUploadVisibilityChange: (visibility: Visibility) => void;
 }
 
+export function DraftChatComposer({
+  draftStore,
+  ...props
+}: Omit<ChatComposerProps, 'draft' | 'onDraftChange'> & {
+  draftStore: ComposerDraftStore;
+}) {
+  const draft = useSyncExternalStore(
+    draftStore.subscribe,
+    draftStore.getSnapshot,
+    draftStore.getSnapshot,
+  );
+  return (
+    <ChatComposer {...props} draft={draft} onDraftChange={draftStore.set} />
+  );
+}
+
 export function ChatComposer({
   taskSuggestions,
   taskScope,
@@ -145,6 +168,13 @@ export function ChatComposer({
   bridgeUploadStatus,
   onUploadVisibilityChange,
 }: ChatComposerProps) {
+  useLayoutEffect(() => {
+    resizeComposerTextarea(composerInput.current);
+  }, [composerInput, draft, hero]);
+  const closeAttachments = useCallback(
+    () => onAttachmentMenuOpenChange(false),
+    [onAttachmentMenuOpenChange],
+  );
   const hasDraft = Boolean(draft.trim());
   const showStop = isRunning && !hasDraft;
   const bridgeStatus = bridgeComposerStatus(
@@ -196,7 +226,6 @@ export function ChatComposer({
           disabled={busy}
           onChange={(event) => {
             onDraftChange(event.target.value);
-            resizeComposerTextarea(event.currentTarget);
           }}
           onCompositionEnd={() => {
             window.setTimeout(() => {
@@ -249,7 +278,7 @@ export function ChatComposer({
                 align="start"
                 portal
                 listClassName={styles.composerAttachmentMenu}
-                onClose={() => onAttachmentMenuOpenChange(false)}
+                onClose={closeAttachments}
                 anchor={
                   <button
                     aria-expanded={attachmentMenuOpen && !busy}

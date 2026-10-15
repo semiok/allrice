@@ -162,7 +162,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       jsx: 'automatic',
       loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: {
-        'process.env.NODE_ENV': '"development"',
+        'process.env.NODE_ENV': JSON.stringify(
+          process.env.ALLRICE_BROWSER_PRODUCTION === '1'
+            ? 'production'
+            : 'development',
+        ),
         'process.env': '{}',
       },
     });
@@ -211,7 +215,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await browser?.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
-  });
+  }, 30_000);
 
   async function fixture(
     options: {
@@ -1295,6 +1299,97 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     };
   }
 
+  it('keeps typing and upload clicks responsive with a large JSON preview and preserves its page on hide', async () => {
+    const f = await fixture({ artifacts: true });
+    try {
+      const text = JSON.stringify(
+        Array.from({ length: 12_000 }, (_, index) => ({
+          index,
+          field: '合成字段',
+        })),
+        null,
+        2,
+      );
+      f.state.officePreview = {
+        kind: 'text',
+        text,
+        mediaType: 'application/json',
+      };
+      f.state.items.unshift(artifact(12));
+      await f.reloadList();
+      const code = f.panel.locator('code');
+      await f.panel.getByRole('navigation', { name: '文本分页' }).waitFor();
+      expect(await code.locator('*').count()).toBeLessThan(2500);
+      expect((await code.textContent())!.length).toBeLessThan(16_001);
+      await f.panel
+        .getByRole('button', { name: '下一页', exact: true })
+        .click();
+      const secondPage = await code.textContent();
+      // Detect accidental formatting of the large document during unrelated input.
+      await f.page.evaluate((text) => {
+        const parse = JSON.parse;
+        Reflect.set(window, 'previewReformats', 0);
+        JSON.parse = (...args) => {
+          if (args[0] === text)
+            Reflect.set(
+              window,
+              'previewReformats',
+              Number(Reflect.get(window, 'previewReformats')) + 1,
+            );
+          return parse(...args);
+        };
+      }, text);
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      const ascii = 'AllRice typing 123, '.repeat(8);
+      await input.pressSequentially(ascii);
+      expect(await input.inputValue()).toBe(ascii);
+      const cdp = await f.context.newCDPSession(f.page);
+      await cdp.send('Input.insertText', {
+        text: '中文输入测试，继续分析数据。',
+      });
+      await cdp.detach();
+      const draft = ascii + '中文输入测试，继续分析数据。';
+      expect(await input.inputValue()).toBe(draft);
+      await input.dispatchEvent('compositionstart');
+      await input.dispatchEvent('keydown', { key: 'Enter', isComposing: true });
+      await input.dispatchEvent('compositionend');
+      expect(f.writes).toEqual([]);
+      await f.page
+        .getByRole('button', { name: '添加文件', exact: true })
+        .click();
+      await f.page.keyboard.press('Escape');
+      expect(await input.inputValue()).toBe(draft);
+      expect(await code.textContent()).toBe(secondPage);
+      expect(
+        await f.page.evaluate(() => Reflect.get(window, 'previewReformats')),
+      ).toBe(0);
+      await f.panel
+        .getByRole('button', { name: '关闭工作台', exact: true })
+        .click();
+      expect(await f.page.locator('#artifact-workbench code').count()).toBe(0);
+      await f.entry.click();
+      await expect.poll(() => code.textContent()).toBe(secondPage);
+      expect(await input.inputValue()).toBe(draft);
+      expect(
+        await f.panel.getByRole('link', { name: '下载', exact: true }).count(),
+      ).toBeGreaterThan(0);
+      let submitted: { text: string } | undefined;
+      await f.page.route('**/api/v1/sessions/*/messages?*', (route) => {
+        submitted = route.request().postDataJSON();
+        return route.fulfill({
+          status: 503,
+          json: { error: 'temporary failure' },
+        });
+      });
+      await f.page.getByRole('button', { name: '发送', exact: true }).click();
+      await expect.poll(() => submitted?.text).toBe(draft.trim());
+      await expect.poll(() => input.inputValue()).toBe(draft.trim());
+      expect(await input.isEnabled()).toBe(true);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
   it.each(['failed', 'slow'] as const)(
     'workspace startup recovers from a %s request without an endless loading screen',
     async (startup) => {
@@ -2254,12 +2349,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .context()
           .grantPermissions(['clipboard-read', 'clipboard-write']);
+        const displayedPage = await text.locator('code').textContent();
+        expect(displayedPage).not.toBe(f.state.filePreview.text);
         await banner
-          .getByRole('button', { name: '复制文本', exact: true })
+          .getByRole('button', { name: '复制本页', exact: true })
           .click();
         await expect
           .poll(() => f.page.evaluate(() => navigator.clipboard.readText()))
-          .toBe(f.state.filePreview.text);
+          .toBe(displayedPage);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
@@ -8510,10 +8607,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         )
         .toBe(true);
       f.state.text = Array.from(
-        { length: 6001 },
+        { length: 601 },
         (_, i) => `较长的安全原文 ${i}`,
       ).join('\n');
-      f.state.textPageLines = 5000;
+      f.state.textPageLines = 400;
       f.state.items.unshift(artifact(12));
       await f.reloadList();
       const body = f.panel.getByRole('region', {
@@ -8523,13 +8620,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await body.waitFor();
       const firstLength = (await body.innerText()).length;
       expect(firstLength).toBeLessThan(f.state.text.length);
-      await f.panel.getByRole('button', { name: '加载更多内容' }).click();
+      for (let i = 0; i < 3; i++) {
+        await f.panel.getByRole('button', { name: '下一页' }).click();
+      }
       await expect
         .poll(() => body.innerText(), { timeout: 10_000 })
-        .toContain('较长的安全原文 6000');
+        .toContain('较长的安全原文 600');
       expect(
-        await f.panel.getByRole('button', { name: '加载更多内容' }).count(),
-      ).toBe(0);
+        await f.panel.getByRole('button', { name: '下一页' }).isDisabled(),
+      ).toBe(true);
     } finally {
       await f.close();
     }

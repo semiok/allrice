@@ -20,6 +20,7 @@ import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
 import { ChangesetPanel } from './changeset-panel';
 import {
+  memo,
   lazy,
   Component,
   Suspense,
@@ -99,7 +100,7 @@ type Props = {
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
-export function ArtifactWorkbench(props: Props) {
+export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   const panel = useRef<HTMLElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const close = props.onClose;
@@ -279,6 +280,11 @@ export function ArtifactWorkbench(props: Props) {
               />
             ) : tab.kind === 'file' ? (
               <WorkspaceFilePreview
+                active={
+                  props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id
+                }
                 objectId={tab.contentId}
                 title={tab.title}
                 workspaceId={props.workspaceId}
@@ -346,7 +352,7 @@ export function ArtifactWorkbench(props: Props) {
       </aside>
     </>
   );
-}
+});
 
 function ArtifactTabBody(
   props: Props & {
@@ -1139,6 +1145,7 @@ function ArtifactReview({
             ) : preview && preview.kind !== 'changeset' && view !== 'diff' ? (
               <NativeDocumentPreview
                 key={artifact.id}
+                active={active}
                 preview={preview}
                 fileName={artifact.version.fileName}
                 pageUrl={`${endpoint}/content${query}`}

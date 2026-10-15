@@ -20,6 +20,7 @@ export function WorkspaceFilePreview(props: {
   title: string;
   workspaceId: string;
   tenantHeaders: Record<string, string>;
+  active?: boolean;
   onVersion: (id: string, title: string) => void;
 }) {
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
@@ -107,6 +108,7 @@ export function WorkspaceFilePreview(props: {
           </p>
         ) : preview ? (
           <NativeDocumentPreview
+            active={props.active}
             preview={preview}
             fileName={props.title}
             pageUrl={`${base}/preview${query}`}

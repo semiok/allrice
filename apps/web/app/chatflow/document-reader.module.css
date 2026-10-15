@@ -78,6 +78,28 @@
   display: block;
   margin: 16px auto;
 }
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 12px;
+  color: var(--dsw-alias-label-secondary, #606873);
+  font-size: 12px;
+}
+.pagination button {
+  padding: 5px 10px;
+  border: 1px solid var(--dsw-alias-border-main, #e0e4ea);
+  border-radius: 6px;
+  background: var(--dsw-alias-bg-base, #fff);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.pagination button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 @media (max-width: 600px) {
   .toolbar {
     gap: 4px;

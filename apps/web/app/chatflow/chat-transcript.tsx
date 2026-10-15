@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, type RefObject } from 'react';
+import { memo, useState, useEffect, type RefObject } from 'react';
 import {
   modelGovernanceFailureText,
   nativeExecutionFailureText,
@@ -73,7 +73,7 @@ interface ChatTranscriptProps {
   onResolveArtifactLink?: (href: string, runId: string) => Promise<boolean>;
 }
 
-export function ChatTranscript({
+export const ChatTranscript = memo(function ChatTranscript({
   onOpenReference,
   messageImages,
   streamingOutput = false,
@@ -553,4 +553,4 @@ export function ChatTranscript({
       </div>
     </div>
   );
-}
+});

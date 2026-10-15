@@ -16,6 +16,7 @@ function Page() {
       interactive?: boolean;
       pageUrl?: string;
       liveSrc?: string;
+      active?: boolean;
     }[]
   >([]);
   Object.assign(window, { setPreviewItems: setItems });
@@ -49,6 +50,7 @@ function Page() {
               <NativeHtmlPreview liveSrc={item.liveSrc} />
             ) : (
               <NativeDocumentPreview
+                active={item.active}
                 preview={preview}
                 fileName={item.name}
                 source={item.source}

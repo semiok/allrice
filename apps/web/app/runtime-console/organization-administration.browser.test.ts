@@ -708,12 +708,26 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await expect
           .poll(() => preview.innerText())
           .toContain('Second immutable company version.');
-        await dialog
-          .getByRole('button', { name: '加载更多内容', exact: true })
-          .click();
+        const nextPage = dialog.getByRole('button', {
+          name: '下一页',
+          exact: true,
+        });
+        for (let pageIndex = 0; pageIndex < 30; pageIndex += 1) {
+          const text = await preview.locator('pre code').innerText();
+          expect(text.length).toBeLessThanOrEqual(16_000);
+          expect(text.split('\n').length).toBeLessThanOrEqual(201);
+          if (text.includes('LAST_NATIVE_PAGE')) break;
+          await nextPage.click();
+          await expect
+            .poll(() => preview.locator('pre code').innerText())
+            .not.toBe(text);
+        }
         await expect
           .poll(() => preview.innerText())
           .toContain('LAST_NATIVE_PAGE');
+        expect(await preview.innerText()).not.toContain(
+          'Second immutable company version.',
+        );
         await dialog.getByText('文件来源与质量', { exact: true }).click();
         await expect.poll(() => preview.innerText()).toContain(checksum);
         await dialog

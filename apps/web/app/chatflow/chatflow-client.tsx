@@ -13,6 +13,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useSyncExternalStore,
   useMemo,
   useRef,
   useState,
@@ -34,7 +35,8 @@ import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { type ReferenceDraft } from './reference-chips';
 import { SessionReferencePicker } from './session-reference-picker';
-import { ChatComposer } from './chat-composer';
+import { DraftChatComposer } from './chat-composer';
+import { createComposerDraftStore } from '../../lib/chatflow/composer-draft-store';
 import { type CompanyDraftReference } from './company-template-use';
 import {
   CompanyAssetSchema,
@@ -133,7 +135,13 @@ export function ChatFlowClient({
   assistantsEnabled?: boolean;
   taskSuggestionsEnabled?: boolean;
 }) {
-  const [draft, setDraft] = useState('');
+  const [draftStore] = useState(createComposerDraftStore);
+  const setDraft = draftStore.set;
+  const hasDraft = useSyncExternalStore(
+    draftStore.subscribe,
+    draftStore.hasDraft,
+    draftStore.hasDraft,
+  );
   const [companyReferences, setCompanyReferences] = useState<
     CompanyDraftReference[]
   >([]);
@@ -161,11 +169,11 @@ export function ChatFlowClient({
   const [referenceToView, setReferenceToView] = useState<ReferenceDraft | null>(
     null,
   );
-  function openReference(reference: ReferenceDraft) {
+  const openReference = useCallback((reference: ReferenceDraft) => {
     setRecommendedTemplates(false);
     setReferenceToView(reference);
     setReferenceLibraryOpen(true);
-  }
+  }, []);
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
   const [recommendedTemplates, setRecommendedTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -372,6 +380,15 @@ export function ChatFlowClient({
     visible: workbenchRequested,
     viewerId: workspace?.viewerId,
   });
+  const { show: showWorkbench, close: closeWorkbench } = workbench;
+  const browseWorkbench = useCallback(
+    () => showWorkbench(undefined, true),
+    [showWorkbench],
+  );
+  const dismissWorkbench = useCallback(() => {
+    closeWorkbench();
+    workbenchEntry.current?.focus();
+  }, [closeWorkbench]);
   const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
   const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
   const currentFilesRequest =
@@ -458,7 +475,7 @@ export function ChatFlowClient({
 
   useLayoutEffect(() => {
     resizeComposerTextarea(composerInput.current);
-  }, [activeId, draft, transcriptMessages.length, sidebarCollapsed, workspace]);
+  }, [activeId, transcriptMessages.length, sidebarCollapsed, workspace]);
 
   useEffect(() => {
     const textarea = composerInput.current;
@@ -522,7 +539,7 @@ export function ChatFlowClient({
     busy,
     captureSelection,
     sessionActions,
-    createSession: () => createSession(draft),
+    createSession: () => createSession(draftStore.getSnapshot()),
     setBusy,
     setError,
     tenantHeaders,
@@ -569,6 +586,16 @@ export function ChatFlowClient({
     activeId,
     workspace?.workspaceId,
     tenantHeaders,
+  );
+  const reloadInteractions = interactions.reload;
+  const continueFromWorkbench = useCallback(
+    (runId: string) => {
+      if (!activeId) return;
+      void loadHistory(activeId);
+      void streamRun(runId, activeId);
+      void reloadInteractions();
+    },
+    [activeId, loadHistory, streamRun, reloadInteractions],
   );
   const assistants = useAssistantSession({
     enabled: workbenchEnabled,
@@ -622,7 +649,7 @@ export function ChatFlowClient({
   }, [history?.session.id, history?.messages.length]);
 
   async function sendMessage() {
-    const text = draft.trim();
+    const text = draftStore.getSnapshot().trim();
     if (!workspace || !text || busy || sessionArchived) return;
     const action = sessionActions.begin('composer');
     if (!action) return;
@@ -836,7 +863,7 @@ export function ChatFlowClient({
     if (!workspace || !activeId) return;
     if (
       kind === 'edit' &&
-      (draft.trim() ||
+      (draftStore.getSnapshot().trim() ||
         pendingAttachments.length ||
         sessionReferences.length ||
         companyReferences.length ||
@@ -1023,7 +1050,7 @@ export function ChatFlowClient({
   function confirmSessionNavigation() {
     return (
       !(
-        draft.trim() ||
+        draftStore.getSnapshot().trim() ||
         pendingAttachments.length ||
         sessionReferences.length ||
         companyReferences.length ||
@@ -1174,7 +1201,7 @@ export function ChatFlowClient({
   function prepareDraft(prepared: PreparedComposerDraft) {
     if (busy || composing.current) return;
     const selection = captureSelection();
-    let insertion = appendComposerDraft(draft, prepared);
+    let insertion = appendComposerDraft(draftStore.getSnapshot(), prepared);
     setDraft((current) => {
       insertion = appendComposerDraft(current, prepared);
       return insertion.text;
@@ -1294,7 +1321,7 @@ export function ChatFlowClient({
   };
 
   const renderComposer = (hero = false) => (
-    <ChatComposer
+    <DraftChatComposer
       taskSuggestions={
         taskSuggestionsEnabled
           ? (suggestionVersion?.taskSuggestions ?? [])
@@ -1363,7 +1390,7 @@ export function ChatFlowClient({
       busy={busy}
       composerInput={composerInput}
       composing={composing}
-      draft={draft}
+      draftStore={draftStore}
       error={error}
       fileInput={fileInput}
       hero={hero}
@@ -1378,7 +1405,6 @@ export function ChatFlowClient({
       contextCompacting={contextCompacting}
       onAttachmentMenuOpenChange={setAttachmentMenuOpen}
       onCancelRun={cancelRun}
-      onDraftChange={setDraft}
       onLoadBridgeDevices={openBridgeSettings}
       onOpenAttachment={setAttachmentPreview}
       onOpenWorkspaceFiles={openWorkspaceFiles}
@@ -1477,7 +1503,7 @@ export function ChatFlowClient({
             recommendedTemplates
               ? {
                   employeeId: activeEmployee?.employeeId,
-                  taskText: draft.slice(0, 512),
+                  taskText: draftStore.getSnapshot().slice(0, 512),
                 }
               : undefined
           }
@@ -1858,9 +1884,7 @@ export function ChatFlowClient({
                     transcriptColumn={transcriptColumn}
                     workspaceId={workspace.workspaceId}
                     artifacts={workbench.artifacts}
-                    onOpenArtifact={(id) => {
-                      workbench.show(id);
-                    }}
+                    onOpenArtifact={showWorkbench}
                   />
                 </MessageFeedbackProvider>
               </div>
@@ -1880,7 +1904,7 @@ export function ChatFlowClient({
                   items={sessionArchived ? [] : queuedMessages}
                   busy={busy}
                   canEdit={
-                    !draft.trim() &&
+                    !hasDraft &&
                     pendingAttachments.length === 0 &&
                     sessionReferences.length === 0
                   }
@@ -1929,7 +1953,7 @@ export function ChatFlowClient({
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
-          onBrowseFiles={() => workbench.show(undefined, true)}
+          onBrowseFiles={browseWorkbench}
           key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
@@ -1943,18 +1967,10 @@ export function ChatFlowClient({
           listLoading={workbench.loading}
           noticeId={workbench.noticeId}
           narrow={workbenchNarrow}
-          onSelect={(id) => workbench.show(id)}
-          onClose={() => {
-            workbench.close();
-            workbenchEntry.current?.focus();
-          }}
+          onSelect={showWorkbench}
+          onClose={dismissWorkbench}
           onReload={workbench.reload}
-          onContinued={(runId) => {
-            if (!activeId) return;
-            void loadHistory(activeId);
-            void streamRun(runId, activeId);
-            void interactions.reload();
-          }}
+          onContinued={continueFromWorkbench}
         />
       ) : null}
 

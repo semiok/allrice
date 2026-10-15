@@ -146,7 +146,7 @@ suite('DSH native document previews', () => {
     await browser?.close();
     server?.closeAllConnections();
     if (server) await new Promise<void>((done) => server.close(() => done()));
-  });
+  }, 30_000);
   async function mount(items: unknown[], width = 1200) {
     const page = await browser.newPage({ viewport: { width, height: 820 } });
     const errors: string[] = [];
@@ -373,7 +373,7 @@ suite('DSH native document previews', () => {
       await page.close();
     }
   }, 30_000);
-  it('loads subsequent text pages under StrictMode without duplicating or dropping lines', async () => {
+  it('replaces text pages and reads backwards under StrictMode without accumulating lines', async () => {
     const { page, errors } = await mount([
       {
         name: 'large.txt',
@@ -391,31 +391,163 @@ suite('DSH native document previews', () => {
     try {
       await page.route('**/preview?**', async (route) => {
         const query = new URL(route.request().url()).searchParams;
-        expect(query.get('offset')).toBe('3');
+        const offset = Number(query.get('offset'));
+        expect([1, 3]).toContain(offset);
         await route.fulfill({
           json: {
             kind: 'text',
-            text: 'line 3\nline 4',
+            text: offset === 3 ? 'line 3\nline 4' : 'line 1\nline 2',
             mediaType: 'text/plain',
-            offset: 3,
+            offset,
             lines: 2,
-            eof: true,
+            eof: offset === 3,
           },
         });
       });
-      await page.getByRole('button', { name: '加载更多内容' }).click();
+      await page.getByRole('button', { name: '下一页' }).click();
       await page.getByText('line 4', { exact: false }).waitFor();
       expect(await page.locator('code').textContent()).toContain(
-        'line 1\nline 2\nline 3\nline 4',
+        'line 3\nline 4',
       );
+      expect(await page.locator('code').textContent()).not.toContain('line 1');
       expect(
-        await page.getByRole('button', { name: '加载更多内容' }).count(),
-      ).toBe(0);
+        await page.getByRole('button', { name: '下一页' }).isDisabled(),
+      ).toBe(true);
+      await page.getByRole('button', { name: '上一页' }).click();
+      await expect
+        .poll(() => page.locator('code').textContent())
+        .toContain('line 1\nline 2');
+      expect(await page.locator('code').textContent()).not.toContain('line 3');
       expect(errors).toEqual([]);
     } finally {
       await page.close();
     }
   }, 30_000);
+  it('keeps the current page on read failure and discards a late response after file replacement', async () => {
+    const item = {
+      name: 'large.txt',
+      pageUrl: '/preview?version=old',
+      preview: {
+        kind: 'text',
+        text: 'original page',
+        mediaType: 'text/plain',
+        offset: 1,
+        lines: 1,
+        eof: false,
+      },
+    };
+    const { page, errors } = await mount([item]);
+    let fail = true,
+      requested = false;
+    let release!: () => void;
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    try {
+      await page.route('**/preview?**', async (route) => {
+        if (fail) return route.fulfill({ status: 503, json: {} });
+        requested = true;
+        await gate;
+        await route
+          .fulfill({
+            json: {
+              kind: 'text',
+              text: 'obsolete response',
+              mediaType: 'text/plain',
+              offset: 2,
+              lines: 1,
+              eof: true,
+            },
+          })
+          .catch(() => {});
+      });
+      await page.getByRole('button', { name: '下一页' }).click();
+      await page.getByRole('alert').waitFor();
+      expect(await page.locator('code').textContent()).toContain(
+        'original page',
+      );
+      fail = false;
+      await page.getByRole('button', { name: '下一页' }).click();
+      await expect.poll(() => requested).toBe(true);
+      await page.evaluate(
+        (item) =>
+          Reflect.get(
+            window,
+            'setPreviewItems',
+          )([
+            {
+              ...item,
+              pageUrl: '/preview?version=new',
+              preview: {
+                kind: 'text',
+                text: 'replacement file',
+                mediaType: 'text/plain',
+              },
+            },
+          ]),
+        item,
+      );
+      release();
+      await expect
+        .poll(() => page.locator('code').textContent())
+        .toContain('replacement file');
+      expect(await page.getByRole('alert').count()).toBe(0);
+      expect(errors).toEqual([]);
+    } finally {
+      release();
+      await page.close();
+    }
+  }, 30_000);
+
+  it.each([true, false])(
+    'bounds large JSON after formatting (formatted=%s) and preserves the page when hidden',
+    async (formatted) => {
+      const text = JSON.stringify(
+        Array.from({ length: 5000 }, (_, i) => ({
+          index: i,
+          value: '合成数据',
+        })),
+        null,
+        formatted ? 2 : undefined,
+      );
+      const item = {
+        name: 'large.json',
+        preview: { kind: 'text', text, mediaType: 'application/json' },
+      };
+      const { page, errors } = await mount([item]);
+      try {
+        await page.getByRole('navigation', { name: '文本分页' }).waitFor();
+        const code = page.locator('code');
+        const first = await code.textContent();
+        expect(first!.length).toBeLessThan(16_001);
+        expect(await code.locator('*').count()).toBeLessThan(2500);
+        await page.getByRole('button', { name: '下一页' }).click();
+        const second = await code.textContent();
+        expect(second).not.toBe(first);
+        await page.evaluate(
+          (item) =>
+            Reflect.get(
+              window,
+              'setPreviewItems',
+            )([{ ...item, active: false }]),
+          item,
+        );
+        await expect.poll(() => code.count()).toBe(0);
+        await page.evaluate(
+          (item) =>
+            Reflect.get(window, 'setPreviewItems')([{ ...item, active: true }]),
+          item,
+        );
+        await expect.poll(() => code.textContent()).toBe(second);
+        await page.getByRole('button', { name: '上一页' }).click();
+        expect(await code.textContent()).toBe(first);
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+    30_000,
+  );
   it.each(['csv', 'tsv'])(
     'opens quoted %s data as a spreadsheet',
     async (format) => {
