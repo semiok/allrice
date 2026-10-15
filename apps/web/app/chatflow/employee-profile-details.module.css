@@ -1,0 +1,259 @@
+.dialog {
+  --dsw-alias-label-primary: #20242c;
+  --dsw-alias-label-secondary: #515b6b;
+  --dsw-alias-label-caption: #647084;
+  --dsw-alias-border-l2: #e2e6ec;
+  --dsw-specific-input-major: #fff;
+  width: min(780px, 100%);
+  max-height: min(860px, calc(100dvh - 48px));
+  background: #fff;
+  color: #20242c;
+}
+.body {
+  padding: 24px;
+}
+.details {
+  display: grid;
+  gap: 20px;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.details p,
+.details h3,
+.details h4 {
+  margin: 0;
+}
+.details h3 {
+  font-size: 20px;
+}
+.details h4 {
+  font-size: 15px;
+}
+.intro {
+  display: grid;
+  gap: 16px;
+}
+.identity {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.identity > div {
+  min-width: 0;
+}
+.identity p,
+.hint,
+.empty,
+.origin,
+.scene > span {
+  color: #647084;
+  font-size: 13px;
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 12px;
+  background: var(--employee-start);
+  color: var(--employee-avatar-foreground);
+  font-size: 20px;
+}
+.persona {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid #e2e6ec;
+  border-radius: 12px;
+  background: #fafbfc;
+}
+.persona dt {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-weight: 600;
+}
+.persona dd {
+  margin: 4px 0 0;
+}
+.badge {
+  display: inline-block;
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  margin-left: 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  background: #f0f1f3;
+  color: #606875;
+}
+.badge[data-maintenance='personal'] {
+  color: #17613a;
+  background: #e6f5ec;
+}
+.badge[data-maintenance='department'] {
+  color: #2458a0;
+  background: #eaf2ff;
+}
+.badge[data-maintenance='company'] {
+  color: #795500;
+  background: #fff3ce;
+}
+.scene {
+  display: grid;
+  gap: 8px;
+  font-weight: 600;
+}
+.scene select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #cdd4df;
+  border-radius: 8px;
+  background: white;
+  color: #20242c;
+  font: inherit;
+  font-weight: 400;
+}
+.scene > span {
+  font-weight: 400;
+}
+.tabs {
+  display: flex;
+  gap: 16px;
+  border-bottom: 1px solid #e2e6ec;
+}
+.tabs button {
+  flex: 1;
+  padding: 10px 0;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: #647084;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.tabs button[aria-selected='true'] {
+  border-bottom-color: #20242c;
+  color: #20242c;
+  font-weight: 600;
+}
+.content {
+  display: grid;
+  gap: 16px;
+  outline-offset: 4px;
+}
+.item {
+  min-width: 0;
+  padding: 16px 0;
+  border-bottom: 1px solid #e2e6ec;
+  display: grid;
+  gap: 8px;
+}
+.item header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+}
+.item h4 {
+  min-width: 0;
+}
+.item ul {
+  padding-left: 20px;
+  margin: 0;
+}
+.excerpt {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  white-space: pre-line;
+}
+.origin {
+  overflow-wrap: anywhere;
+}
+.origin summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.origin[open] > :not(summary) {
+  margin-top: 8px;
+}
+.origin dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+}
+.origin dd {
+  margin: 0;
+}
+.fullText {
+  white-space: pre-wrap;
+  color: #20242c;
+}
+.file,
+.back,
+.retry {
+  border: 0;
+  background: none;
+  color: #2458a0;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.file {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.notice {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f6f8fb;
+  color: #515b6b;
+}
+.preview {
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+}
+.previewContent {
+  min-width: 0;
+  min-height: 200px;
+  overflow: auto;
+  border: 1px solid #e2e6ec;
+  border-radius: 8px;
+}
+.details,
+.preview {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .dialog {
+    max-height: calc(100dvh - 24px);
+  }
+  .body {
+    padding: 16px;
+  }
+  .tabs {
+    gap: 8px;
+  }
+  .tabs button {
+    font-size: 13px;
+  }
+  .item header {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .badge {
+    margin-left: 0;
+  }
+}

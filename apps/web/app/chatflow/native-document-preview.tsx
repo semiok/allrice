@@ -37,6 +37,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   interactive = false,
   toolResult = false,
   active = true,
+  onReadFailure,
 }: {
   preview: ArtifactPreview;
   fileName: string;
@@ -46,6 +47,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   interactive?: boolean;
   toolResult?: boolean;
   active?: boolean;
+  onReadFailure?: () => void;
 }) {
   const [sourcePage, setSourcePage] = useState<TextPreview>();
   const [error, setError] = useState('');
@@ -69,11 +71,13 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
         setSourcePage(value);
       })
       .catch((e) => {
-        if (!controller.signal.aborted)
+        if (!controller.signal.aborted) {
           setError(e instanceof Error ? e.message : '源文本读取失败');
+          onReadFailure?.();
+        }
       });
     return () => controller.abort();
-  }, [sourceNeeded, pageUrl, headers]);
+  }, [sourceNeeded, pageUrl, headers, onReadFailure]);
   if (sourceNeeded) {
     if (error) return <p role="alert">{error}</p>;
     return sourcePage ? (
@@ -84,6 +88,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
         pageUrl={pageUrl}
         headers={headers}
         active={active}
+        onReadFailure={onReadFailure}
         source
       />
     ) : (
@@ -101,6 +106,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
         source={source}
         toolResult={toolResult}
         active={active}
+        onReadFailure={onReadFailure}
       />
     );
   if (preview.kind === 'spreadsheet')
@@ -132,6 +138,7 @@ function PagedDocumentText({
   source,
   toolResult,
   active,
+  onReadFailure,
 }: {
   initial: TextPreview;
   fileName: string;
@@ -140,6 +147,7 @@ function PagedDocumentText({
   source?: boolean;
   toolResult?: boolean;
   active: boolean;
+  onReadFailure?: () => void;
 }) {
   const [current, setCurrent] = useState({
     page: initial,
@@ -200,8 +208,10 @@ function PagedDocumentText({
             : [...history, { offset: page.offset ?? 1, firstPage }],
       });
     } catch (error) {
-      if (!controller.signal.aborted)
+      if (!controller.signal.aborted) {
         setError(error instanceof Error ? error.message : '文本分页读取失败');
+        onReadFailure?.();
+      }
     } finally {
       if (!controller.signal.aborted) setBusy(false);
     }

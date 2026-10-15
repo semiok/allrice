@@ -34,6 +34,7 @@ import type {
   WorkspaceFile,
   Session,
 } from './chatflow-types';
+import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import { layoutPreferenceKey } from './use-workbench-layout';
 
 const suite =
@@ -225,6 +226,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       tenantAdmin?: boolean;
       employeeCount?: number;
       employeeHistory?: boolean;
+      employeeDetails?: boolean;
       employeeHistoryCount?: number;
       officeHistoryCount?: number;
       touch?: boolean;
@@ -346,6 +348,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       preferenceError: false,
       preferenceDelay: null as Promise<void> | null,
       workspace,
+      employeeDetails: employeeDetailsFixture(),
+      employeeDetailStatus: 200,
+      employeeDetailDelay: null as Promise<void> | null,
+      employeeDetailReads: 0,
       employeeModel: 'configured-model',
       employeeReasoningEffort: 'medium',
       omitSessionA: false,
@@ -785,6 +791,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           employeeGroups: employeeId ? undefined : [...groups.values()],
         });
       }
+      if (
+        options.employeeDetails &&
+        path === `/api/v1/employee-instances/${id(7)}/content`
+      ) {
+        state.employeeDetailReads++;
+        const body = structuredClone(state.employeeDetails);
+        if (state.employeeDetailDelay) await state.employeeDetailDelay;
+        return answer(
+          state.employeeDetailStatus === 200
+            ? body
+            : { error: { message: 'No access' } },
+          state.employeeDetailStatus,
+        );
+      }
       if (path === '/api/v1/workspace' && state.startupFailure)
         return answer(
           { error: { message: 'Service temporarily unavailable' } },
@@ -864,6 +884,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       : []),
                     {
                       id: id(7),
+                      ...(options.employeeDetails ? { instanceId: id(7) } : {}),
                       employeeId: id(9),
                       isDefault: true,
                       ...(state.createdEmployeeInstances.length
@@ -3567,6 +3588,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture({
       employeeCount: 2,
       employeeHistory: true,
+      employeeDetails: true,
       employeeColor: 'violet',
     });
     try {
@@ -3832,8 +3854,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
-  it('reopening employee details refreshes the model changed after the page was loaded', async () => {
-    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+  it('reopening employee details reads the current persisted preference and hides models', async () => {
+    const f = await fixture({
+      employeeCount: 2,
+      employeeHistory: true,
+      employeeDetails: true,
+    });
     try {
       const open = f.page.getByRole('button', {
         name: '查看Rice详情',
@@ -3844,18 +3870,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: 'Rice员工详情',
         exact: true,
       });
-      await dialog.getByText('configured-model', { exact: true }).waitFor();
+      await dialog.getByText('简洁，结论优先', { exact: true }).waitFor();
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
-      f.state.employeeModel = 'gpt-6.1-sol';
-      f.state.employeeReasoningEffort = 'xhigh';
+      f.state.employeeDetails.profile.expressionStyle = 'exploratory';
+      f.state.employeeDetails.profile.revision++;
       await open.click();
-      await dialog.getByText('gpt-6.1-sol', { exact: true }).waitFor();
-      expect(await dialog.getByText('极高', { exact: true }).isVisible()).toBe(
-        true,
-      );
+      await dialog.getByText('比较方案与取舍', { exact: true }).waitFor();
+      expect(
+        await dialog.getByText('简洁，结论优先', { exact: true }).count(),
+      ).toBe(0);
       expect(
         await dialog.getByText('configured-model', { exact: true }).count(),
       ).toBe(0);
+      expect(f.state.employeeDetailReads).toBe(2);
       expect(f.writes).toEqual([]);
       expect(f.errors).toEqual([]);
     } finally {
@@ -3863,8 +3890,272 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   });
 
+  it.each([1440, 390])(
+    'MET182 readonly detail keeps effective scope, permissions and pinned files at %ipx',
+    async (width) => {
+      const f = await fixture({
+        width,
+        employeeCount: 2,
+        employeeHistory: true,
+        employeeDetails: true,
+      });
+      try {
+        let denied = false;
+        const reads: string[] = [];
+        await f.page.route(
+          '**/api/v1/references/revisions/**',
+          async (route) => {
+            reads.push(route.request().url());
+            await route.fulfill({
+              status: denied ? 403 : 200,
+              contentType: 'application/json',
+              body: JSON.stringify(
+                denied
+                  ? { error: { message: 'Denied' } }
+                  : {
+                      kind: 'text',
+                      mediaType: 'text/plain',
+                      text: 'PINNED_REFERENCE_V1',
+                    },
+              ),
+            });
+          },
+        );
+        if (width < 640)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        f.state.employeeDetails.profile.kind = 'custom';
+        f.state.employeeDetails.profile.personalFields.push('name');
+        await f.page
+          .getByRole('button', { name: '查看Rice详情', exact: true })
+          .click();
+        const dialog = f.page.getByRole('dialog', {
+          name: 'Rice员工详情',
+          exact: true,
+        });
+        await dialog
+          .getByText('公司核对标准正文', { exact: true })
+          .first()
+          .waitFor();
+        expect(
+          await dialog.evaluate(
+            (element) => getComputedStyle(element).backgroundColor,
+          ),
+        ).toBe('rgb(255, 255, 255)');
+        expect(
+          await dialog.evaluate(
+            (element) => element.scrollWidth <= element.clientWidth,
+          ),
+        ).toBe(true);
+        for (const scope of ['company', 'department', 'personal', 'readonly'])
+          expect(
+            await dialog.locator(`[data-maintenance="${scope}"]`).count(),
+          ).toBeGreaterThan(0);
+        const scenes = dialog.getByRole('combobox', {
+          name: '工作场景（可选）',
+        });
+        await scenes.selectOption(id(50));
+        await dialog
+          .getByText('每周核对正文', { exact: true })
+          .first()
+          .waitFor();
+        expect(
+          await dialog
+            .getByText('公司核对标准正文', { exact: true })
+            .first()
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await dialog.getByText('月度审计正文', { exact: true }).count(),
+        ).toBe(0);
+        await scenes.selectOption(id(51));
+        await dialog
+          .getByText('月度审计正文', { exact: true })
+          .first()
+          .waitFor();
+        expect(
+          await dialog.getByText('每周核对正文', { exact: true }).count(),
+        ).toBe(0);
+        for (const text of [
+          '未启用草稿不能显示',
+          '撤权后不应看到的标题',
+          'configured-model',
+          '保存草稿',
+        ])
+          expect(await dialog.getByText(text, { exact: false }).count()).toBe(
+            0,
+          );
+        await dialog
+          .getByRole('tab', { name: '执行流程', exact: true })
+          .click();
+        await dialog
+          .getByText('对账流程正文', { exact: true })
+          .first()
+          .waitFor();
+        await dialog
+          .getByRole('tab', { name: '经验积累', exact: true })
+          .click();
+        await dialog.getByText('暂无已引用经验。', { exact: true }).waitFor();
+        expect(
+          await dialog
+            .getByText('自动沉淀尚未启用', { exact: false })
+            .isVisible(),
+        ).toBe(true);
+        await dialog
+          .getByRole('tab', { name: '参考资料', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '核对样例.md', exact: true })
+          .click();
+        await dialog
+          .getByText('PINNED_REFERENCE_V1', { exact: true })
+          .waitFor();
+        expect(
+          await dialog
+            .getByRole('link', { name: '下载', exact: true })
+            .getAttribute('href'),
+        ).toContain(`/revisions/${id(135)}/download`);
+        expect(
+          reads.every((url) => url.includes(`/revisions/${id(135)}/`)),
+        ).toBe(true);
+        denied = true;
+        await dialog
+          .getByRole('button', { name: '更多文件操作', exact: true })
+          .click();
+        await f.page
+          .getByRole('menuitem', { name: '刷新预览', exact: true })
+          .click();
+        await dialog.getByRole('alert').waitFor();
+        expect(
+          await dialog
+            .getByText('PINNED_REFERENCE_V1', { exact: true })
+            .count(),
+        ).toBe(0);
+        expect(
+          await dialog.getByText('核对样例.md', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await dialog.getByRole('link', { name: '下载', exact: true }).count(),
+        ).toBe(0);
+        expect(f.writes).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
+  it('MET182 paged reference denial removes the old page, name and download', async () => {
+    const f = await fixture({ employeeHistory: true, employeeDetails: true });
+    try {
+      await f.page.route('**/api/v1/references/revisions/**', async (route) => {
+        const next = new URL(route.request().url()).searchParams.has('offset');
+        await route.fulfill({
+          status: next ? 403 : 200,
+          contentType: 'application/json',
+          body: JSON.stringify(
+            next
+              ? { error: { message: 'Denied' } }
+              : {
+                  kind: 'text',
+                  mediaType: 'text/plain',
+                  text: 'PRIVATE_FIRST_PAGE',
+                  offset: 1,
+                  lines: 1,
+                  eof: false,
+                },
+          ),
+        });
+      });
+      await f.page
+        .getByRole('button', { name: '查看Rice详情', exact: true })
+        .click();
+      const dialog = f.page.getByRole('dialog', {
+        name: 'Rice员工详情',
+        exact: true,
+      });
+      await dialog.getByRole('tab', { name: '参考资料', exact: true }).click();
+      await dialog
+        .getByRole('button', { name: '核对样例.md', exact: true })
+        .click();
+      await dialog.getByText('PRIVATE_FIRST_PAGE', { exact: true }).waitFor();
+      await dialog.getByRole('button', { name: '下一页', exact: true }).click();
+      await dialog.getByRole('alert').waitFor();
+      expect(
+        await dialog.getByText('PRIVATE_FIRST_PAGE', { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await dialog.getByText('核对样例.md', { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await dialog.getByRole('link', { name: '下载', exact: true }).count(),
+      ).toBe(0);
+    } finally {
+      await f.close();
+    }
+  }, 15_000);
+
+  it('MET182 late detail responses cannot replace a reopened read and revoked access clears old content', async () => {
+    const f = await fixture({
+      employeeCount: 2,
+      employeeHistory: true,
+      employeeDetails: true,
+    });
+    let release!: () => void;
+    try {
+      f.state.employeeDetailDelay = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const open = f.page.getByRole('button', {
+        name: '查看Rice详情',
+        exact: true,
+      });
+      await open.click();
+      await expect.poll(() => f.state.employeeDetailReads).toBe(1);
+      await f.page
+        .getByRole('dialog')
+        .getByRole('button', { name: '关闭', exact: true })
+        .click();
+      f.state.employeeDetailDelay = null;
+      f.state.employeeDetails.profile.expressionStyle = 'exploratory';
+      await open.click();
+      const dialog = f.page.getByRole('dialog', {
+        name: 'Rice员工详情',
+        exact: true,
+      });
+      await dialog.getByText('比较方案与取舍', { exact: true }).waitFor();
+      release();
+      await expect.poll(() => f.state.employeeDetailReads).toBe(2);
+      expect(
+        await dialog.getByText('简洁，结论优先', { exact: true }).count(),
+      ).toBe(0);
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      f.state.employeeDetailStatus = 403;
+      await open.click();
+      const denied = f.page.getByRole('dialog', {
+        name: 'AI 员工详情',
+        exact: true,
+      });
+      await denied.getByRole('alert').waitFor();
+      expect(
+        await denied.getByText('公司核对标准正文', { exact: true }).count(),
+      ).toBe(0);
+      expect(
+        await denied.getByText('比较方案与取舍', { exact: true }).count(),
+      ).toBe(0);
+    } finally {
+      release?.();
+      await f.close();
+    }
+  });
+
   it('MET160 employee hierarchy keeps historical ownership, supports direct/new picker and employee rail', async () => {
-    const f = await fixture({ employeeCount: 2, employeeHistory: true });
+    const f = await fixture({
+      employeeCount: 2,
+      employeeHistory: true,
+      employeeDetails: true,
+    });
     try {
       const rice = f.page.locator('[data-row-key="workspace:' + id(7) + '"]');
       await f.page
@@ -3877,7 +4168,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await intro
         .getByText('负责研究、分析与文件交付', { exact: true })
         .waitFor();
-      await intro.getByText('Office', { exact: true }).waitFor();
+      await intro.getByRole('tab', { name: '执行要求', exact: true }).waitFor();
+      expect(await intro.getByText('Office', { exact: true }).count()).toBe(0);
       await intro.getByRole('button', { name: '关闭', exact: true }).click();
 
       if ((await rice.getAttribute('aria-expanded')) !== 'true')
