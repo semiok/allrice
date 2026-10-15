@@ -65,7 +65,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '查看当前小白的已启用内容、候选或个人 history 历史索引。默认个人范围；明确维护部门时 scope=department，公司时 scope=company；departments 返回当前可维护部门，公司级可按用户明确名称／ID选择 departmentId，部门级只可选本部门，同名须澄清；selectionRequired 时必须先选部门。服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史尚未开放；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
+      '查看当前小白的已启用内容、候选或相应范围的 history 历史索引。默认个人范围；明确维护部门时 scope=department，公司时 scope=company；departments 返回当前可维护部门，公司级可按用户明确名称／ID选择 departmentId，部门级只可选本部门，同名须澄清；selectionRequired 时必须先选部门。服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史限定当前可维护目标；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
@@ -77,7 +77,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.restore_candidate',
     description:
-      '用户明确要求将整份个人工作方法恢复到指定历史版时，先 inspect history 核对版本号和 ID，再以当前 expectedRevision 恢复。只生成新候选，保留已启用版本、历史和来源权限；需对新候选重新测试并准确确认。不接受单场景恢复、权限或启用参数。',
+      '用户明确要求将整份个人或已授权公司／部门工作方法恢复到指定历史版时，先 inspect history 核对版本号和 ID，共享恢复还须原样携带准确 sharedTarget，用户直接请求的范围、部门及版本必须一致；再以当前 expectedRevision 恢复。只生成新候选，保留已启用版本、历史和来源权限；需对新候选重新测试并准确确认。不接受单场景恢复、权限或启用参数。',
     inputSchema: z.toJSONSchema(EmployeeMethodRestoreSchema),
   },
   {

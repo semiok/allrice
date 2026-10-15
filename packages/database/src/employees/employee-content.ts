@@ -953,9 +953,8 @@ export async function freezeEmployeeMethodActivationCandidate(
   const active = await readRevision(tx, row.active_revision_id);
   if (
     selection.sharedTarget &&
-    (revision.restored_from_revision_id ||
-      runtimePolicyDigest(revision.manifest.common) !==
-        runtimePolicyDigest(active?.manifest.common ?? []) ||
+    (runtimePolicyDigest(revision.manifest.common) !==
+      runtimePolicyDigest(active?.manifest.common ?? []) ||
       revision.manifest.scenes.some((scene) =>
         scene.references.some(
           (ref) => !['requirement', 'procedure'].includes(ref.sourceKind),
