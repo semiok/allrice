@@ -224,7 +224,8 @@ export function CloudOperationCard({
     setDetailsOpen(!!pending);
   }, [pending, op.snapshot.binding.attempt.operationId]);
   const compact = proposal.kind === 'mcp';
-  const compactCloud = proposal.kind === 'cloud';
+  // Both script and saved-project execution use the same compact receipt.
+  const compactCloud = proposal.kind !== 'mcp';
   const fullStatus = laterSuccessId
     ? '本次未成功 · 后续调用已成功'
     : cloudOperationDisplayStatus(op);
@@ -246,19 +247,7 @@ export function CloudOperationCard({
             ? '收起详情'
             : '查看详情'}
       </span>
-      {compact || compactCloud ? (
-        <IconChevronDownOutlineRegular size={14} />
-      ) : (
-        <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d={detailsOpen ? 'M3 8h10' : 'M3 8h10M8 3v10'}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-          />
-        </svg>
-      )}
+      <IconChevronDownOutlineRegular size={14} />
     </button>
   );
   const stopButton = !terminal && runActive && (
@@ -358,15 +347,7 @@ export function CloudOperationCard({
           {...projectServiceContext}
         />
       )}
-      <header
-        className={
-          compact
-            ? styles.compactHeader
-            : compactCloud
-              ? styles.cloudHeader
-              : undefined
-        }
-      >
+      <header className={compact ? styles.compactHeader : styles.cloudHeader}>
         <strong className={compact ? styles.compactTitle : styles.title}>
           <span className={styles.icon} aria-hidden="true">
             <svg
@@ -409,19 +390,18 @@ export function CloudOperationCard({
         </strong>
         {compactCloud && (
           <p className={styles.cloudScope}>
-            <span>{proposal.inputs.length} 个输入文件</span>
+            <span>
+              {proposal.kind === 'project'
+                ? proposal.files.length
+                : proposal.inputs.length}{' '}
+              个输入文件
+            </span>
             <span className={styles.cloudLocation}>仅在云端执行</span>
             <span>不联网</span>
           </p>
         )}
         <div
-          className={
-            compact
-              ? styles.compactControls
-              : compactCloud
-                ? styles.cloudControls
-                : undefined
-          }
+          className={compact ? styles.compactControls : styles.cloudControls}
         >
           <Tooltip label={fullStatus} side="top" align="end">
             <span
@@ -445,26 +425,12 @@ export function CloudOperationCard({
               {compact ? cloudOperationCompactStatus(op) : fullStatus}
             </span>
           </Tooltip>
-          {(compact || compactCloud) && detailsToggle}
+          {detailsToggle}
           {compactCloud && stopButton}
         </div>
       </header>
       {!compact && notices}
-      {proposal.kind === 'project' && (
-        <p className={styles.scope}>
-          {`${proposal.files.length} 个输入文件 · 仅在云端执行 · 不联网`}
-        </p>
-      )}
       <div className={styles.executionFooter}>
-        {!compact && !compactCloud && (
-          <div className={styles.executionToolbar}>
-            <span className={styles.executionTitle}>运行详情</span>
-            <div className={styles.executionControls}>
-              {detailsToggle}
-              {stopButton}
-            </div>
-          </div>
-        )}
         <div
           id={detailsId}
           className={styles.executionBody}
@@ -480,11 +446,7 @@ export function CloudOperationCard({
               {notices}
             </>
           )}
-          {proposal.kind === 'project' ? (
-            <p className={styles.detailScope}>
-              执行本次保存的项目副本，不访问你的电脑。
-            </p>
-          ) : proposal.kind === 'mcp' ? (
+          {proposal.kind === 'mcp' ? (
             <>
               <p className={styles.notice}>
                 批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
@@ -512,6 +474,9 @@ export function CloudOperationCard({
                   icon={<IconCodeOutlineRegular size={16} />}
                   open={!!pending}
                 >
+                  <p className={styles.detailScope}>
+                    执行本次保存的项目副本，不访问你的电脑。
+                  </p>
                   <pre aria-label="云端项目命令">
                     {JSON.stringify(
                       {
@@ -526,6 +491,7 @@ export function CloudOperationCard({
                 </OperationDetail>
                 <OperationDetail
                   title="项目版本"
+                  meta={`${proposal.files.length} 个文件`}
                   icon={<IconCopyOutlineRegular size={16} />}
                   open={!!pending}
                 >
@@ -663,9 +629,7 @@ export function CloudOperationCard({
               </OperationDetail>
             )}
           </div>
-          {proposal.kind === 'project' ? (
-            plannedOutputs
-          ) : proposal.kind === 'mcp' ? (
+          {proposal.kind === 'mcp' ? (
             <small className={styles.authorizationScope}>
               仅授权这一次调用、当前工具 schema
               和连接版本；管理员保存的服务密钥不会展示在页面上。

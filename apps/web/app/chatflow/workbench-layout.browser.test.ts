@@ -1726,6 +1726,171 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each(
+    [1440, 390].flatMap((width) =>
+      [false, true].flatMap((streamingOutput) =>
+        ['script', 'python-project', 'node-project'].map((kind) => ({
+          width,
+          streamingOutput,
+          kind,
+        })),
+      ),
+    ),
+  )(
+    'keeps $kind receipts compact at $width px streaming=$streamingOutput',
+    async ({ width, streamingOutput, kind }) => {
+      const f = await fixture({ width, streamingOutput, touch: width < 760 });
+      const project = kind !== 'script';
+      const operations = ['failed', 'succeeded'].map((status, index) => ({
+        nativeCallId: `compact-${index}`,
+        snapshot: {
+          status,
+          binding: { attempt: { operationId: id(8870 + index) } },
+        },
+        enabled: true,
+        proposal: {
+          kind: project ? 'project' : 'cloud',
+          language: 'python',
+          script: 'print("compact result")',
+          inputs: [],
+          files: [],
+          project: { projectId: 'compact-project', snapshot: { version: '1' } },
+          sourceDigest: 'sha256:' + 'a'.repeat(64),
+          executable:
+            kind === 'python-project'
+              ? '/usr/bin/python3'
+              : '/usr/local/bin/node',
+          args: ['verify'],
+          path: '.',
+          preparation: { manager: kind === 'python-project' ? 'uv' : 'pnpm' },
+          limits: {
+            timeoutMs: 30000,
+            memoryMiB: 256,
+            cpuMillis: 500,
+            pids: 64,
+          },
+          outputs: [
+            { path: 'result.json', fileName: 'result.json', format: 'json' },
+          ],
+        },
+        approval: { response: { decision: 'approved' } },
+        result: {
+          code: index ? 'OK' : 'EXECUTION_FAILED',
+          output: 'compact result',
+          trusted: false,
+        },
+      }));
+      try {
+        f.state.messages = navigationHistory(2);
+        f.state.messages.at(-1)!.runId = run;
+        f.state.messages.at(-1)!.content.text = '核对完成。';
+        f.state.events = operations.map((operation, index) => ({
+          schemaVersion: 3,
+          eventId: id(8880 + index),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          sequence: index + 1,
+          cursor: `${run}:${index + 1}`,
+          harness: 'dsh',
+          occurredAt: now,
+          sourceEvent: null,
+          type: 'tool.completed',
+          payload: {
+            toolCallId: operation.nativeCallId,
+            name: project ? 'cloud.project.run' : 'cloud.compute',
+          },
+        }));
+        await f.page.route('**/api/v1/runtime/cloud-operations?**', (route) =>
+          route.fulfill({
+            json: {
+              operations:
+                new URL(route.request().url()).searchParams.get('runId') === run
+                  ? operations
+                  : [],
+            },
+          }),
+        );
+        await f.page.reload();
+        if (width < 760) {
+          const collapse = f.page.getByRole('button', {
+            name: '收起侧边栏',
+            exact: true,
+          });
+          if (await collapse.isVisible()) await collapse.click();
+        }
+        const first = f.page.locator(`#operation-${id(8870)}`);
+        await first.waitFor({ state: 'attached' });
+        if (!(await first.isVisible())) {
+          await f.page
+            .getByRole('region', { name: '工作过程', exact: true })
+            .last()
+            .locator('[data-disclosure-row]')
+            .first()
+            .click();
+        }
+        const measure = () =>
+          f.page.evaluate(
+            ({ a, b }) => {
+              const one = document.getElementById(a)!.getBoundingClientRect();
+              const two = document.getElementById(b)!.getBoundingClientRect();
+              return {
+                height: one.height,
+                secondHeight: two.height,
+                gap: two.top - one.bottom,
+                distance: two.top - one.top,
+              };
+            },
+            { a: `operation-${id(8870)}`, b: `operation-${id(8871)}` },
+          );
+        const before = await measure();
+        expect(before).toMatchObject({ height: 72, secondHeight: 72, gap: 12 });
+        await first
+          .getByRole('button', { name: '查看详情', exact: true })
+          .click();
+        const after = await measure();
+        expect(after).toMatchObject({ height: 144, secondHeight: 72, gap: 12 });
+        expect(after.distance - before.distance).toBe(72);
+        expect(await first.locator('summary').count()).toBe(4);
+        await first
+          .locator('summary')
+          .filter({ hasText: project ? '执行命令' : '执行脚本' })
+          .click();
+        expect(
+          await first
+            .getByLabel(project ? '云端项目命令' : '云端待执行脚本')
+            .isVisible(),
+        ).toBe(true);
+        await first.locator('summary').filter({ hasText: '执行结果' }).click();
+        expect(
+          await first
+            .getByText('返回代码：EXECUTION_FAILED', { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await first
+            .getByText('你的决定：已批准本次操作', { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await first
+            .getByText('result.json (json)', { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        expect(f.writes).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it.each([1440, 390, 320])(
     'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
     async (width) => {
