@@ -2349,12 +2349,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .context()
           .grantPermissions(['clipboard-read', 'clipboard-write']);
+        const displayedPage = await text.locator('code').textContent();
+        expect(displayedPage).not.toBe(f.state.filePreview.text);
         await banner
-          .getByRole('button', { name: '复制文本', exact: true })
+          .getByRole('button', { name: '复制本页', exact: true })
           .click();
         await expect
           .poll(() => f.page.evaluate(() => navigator.clipboard.readText()))
-          .toBe(f.state.filePreview.text);
+          .toBe(displayedPage);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
