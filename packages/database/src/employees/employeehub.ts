@@ -1453,7 +1453,7 @@ export async function prepareEmployeeRunBinding(input: {
     personalSkills,
   } = await freezePersonalSkills(
     contentIdentity,
-    instance.id,
+    instance,
     await freezeEmployeeBaseSkills(originalNativeSkills),
   );
   const mcpEnabled =

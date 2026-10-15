@@ -3,6 +3,7 @@ import * as platformModels from './providers/platform-model-settings.ts';
 import * as organizationContext from './employees/organization-context.ts';
 import * as employeeInstances from './employees/employee-instances.ts';
 import * as employeeRuntimeContent from './employees/employee-runtime-content.ts';
+import * as personalSkills from './employees/personal-skills.ts';
 import * as sandboxExecutionPolicy from './sandbox-execution-policy.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
@@ -176,6 +177,15 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacyContent = vi
       .spyOn(employeeRuntimeContent, 'prepareEmployeeRuntimeContent')
       .mockResolvedValueOnce(undefined as never);
+    // A 0096-era Run has neither a personal instance nor private Skill tables.
+    // Omit only this future snapshot boundary while constructing the old seed;
+    // real admission still requires the instance and current personal tables.
+    const legacyPersonalSkills = vi
+      .spyOn(personalSkills, 'freezePersonalSkills')
+      .mockImplementationOnce(async (_context, _instance, base) => ({
+        ...base,
+        personalSkills: undefined,
+      }));
     // The 0096 seed also predates the optional sandbox budget snapshot. Keep
     // its schema historical; production must still require migration 0171.
     const legacySandboxPolicy = vi
@@ -234,6 +244,13 @@ integration('subscription incremental migration and cold SQL readers', () => {
       expect(legacyInstance).toHaveBeenCalledTimes(1);
       expect(legacyCapabilities).toHaveBeenCalledTimes(1);
       expect(legacyContent).toHaveBeenCalledTimes(1);
+      expect(legacyPersonalSkills).toHaveBeenCalledTimes(1);
+      expect(
+        JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
+      ).not.toHaveProperty('personalSkills');
+      expect(
+        task.binding.executionSnapshot.capabilitySnapshot.bindings.toolNames,
+      ).not.toContain('workspace.personal_skill.install');
       expect(legacySandboxPolicy).toHaveBeenCalledTimes(1);
       expect(
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
@@ -243,6 +260,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       legacyContext.mockRestore();
       legacyInstance.mockRestore();
       legacyContent.mockRestore();
+      legacyPersonalSkills.mockRestore();
       legacySandboxPolicy.mockRestore();
       legacyPublication.mockRestore();
       legacyModels.mockRestore();

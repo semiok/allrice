@@ -400,12 +400,13 @@ export async function managePersonalSkill(
  * grants a tool, dependency, network target or platform-review status. */
 export async function freezePersonalSkills(
   context: ContentIdentity,
-  instanceId: string,
+  instance: { id: string },
   base: {
     nativeSkills: DshNativeSkillSnapshot[];
     catalog?: EmployeeBaseSkillCatalog;
   },
 ) {
+  const instanceId = instance.id;
   return getDatabase().begin(async (tx) => {
     if (!(await readContentPrincipal(context, tx, true))) return unavailable();
     await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${context.organizationId}`},0))`;
