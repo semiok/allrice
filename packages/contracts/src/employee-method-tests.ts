@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { EmployeeMethodSharedTargetSchema } from './employee-content.ts';
 import {
   EmployeeMethodFileAssertionSchema,
   EmployeeMethodFileStageSchema,
@@ -14,6 +15,7 @@ export const EmployeeMethodTestCaseIdSchema = z.enum([
 ]);
 export const EmployeeMethodTestStartSchema = z
   .object({
+    sharedTarget: EmployeeMethodSharedTargetSchema.optional(),
     expectedRevision: z.number().int().positive(),
     candidateRevisionId: UuidSchema,
     candidateDigest: ChecksumSchema,
@@ -45,6 +47,7 @@ export const EmployeeMethodTestAssertionSchema = z.union([
 ]);
 export const EmployeeMethodTestSchema = z
   .object({
+    sharedTarget: EmployeeMethodSharedTargetSchema.optional(),
     id: UuidSchema,
     instanceId: UuidSchema,
     setId: UuidSchema,

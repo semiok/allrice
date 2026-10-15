@@ -43,11 +43,23 @@ export const EmployeeContentReferenceSchema = z
 export type EmployeeContentReference = z.infer<
   typeof EmployeeContentReferenceSchema
 >;
-/** These tools can address only the current user's custom instance. Scope,
- * source identities and activation are deliberately not model inputs. */
+/** A shared selection is returned by inspect and revalidated against live
+ * membership. It identifies content, never grants maintenance authority. */
+export const EmployeeMethodSharedTargetSchema = z
+  .object({
+    scope: z.literal('department'),
+    setId: UuidSchema,
+    employeeId: UuidSchema,
+    departmentId: UuidSchema,
+  })
+  .strict();
+export type EmployeeMethodSharedTarget = z.infer<
+  typeof EmployeeMethodSharedTargetSchema
+>;
 export const EmployeeMethodInspectSchema = z
   .object({
     view: z.enum(['effective', 'candidate', 'history']),
+    scope: z.enum(['personal', 'department']).optional(),
     beforeRevision: z.number().int().positive().optional(),
   })
   .strict()
@@ -66,6 +78,7 @@ export const EmployeeMethodRestoreSchema = z
   .strict();
 export const EmployeeMethodSaveSchema = z
   .object({
+    sharedTarget: EmployeeMethodSharedTargetSchema.optional(),
     expectedRevision: z.number().int().nonnegative(),
     operation: z.enum(['upsert', 'remove_scene']).optional(),
     section: z.enum(['common', 'scene']),

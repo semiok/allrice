@@ -9,6 +9,7 @@ import {
   PlatformEmployeeDefinitionSchema,
   UuidSchema,
   employeeContentLimits,
+  type EmployeeMethodSharedTarget,
   type RequestContext,
   type EmployeeContentMutation,
   type EmployeeContentManifest,
@@ -47,6 +48,7 @@ import {
   type ContentSetRow,
   type ContentRevisionRow,
 } from './employee-content-model.ts';
+import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
 // HTTP callers provide a login Session; Worker callers provide current Run
@@ -808,27 +810,24 @@ export async function inspectEmployeeMethodContent(
   instanceId: string,
   view: 'effective' | 'candidate',
   tx: ContentTx,
+  sharedTarget?: EmployeeMethodSharedTarget,
 ) {
-  const target = await resolveTarget(
+  const selection = await resolveEmployeeMethodTarget(
     context,
-    { kind: 'instance', instanceId },
+    instanceId,
+    sharedTarget,
     tx,
-    false,
   );
+  const shared = selection.sharedTarget
+    ? { sharedTarget: selection.sharedTarget, audience: selection.audience }
+    : {};
+  const target = await resolveTarget(context, selection.target, tx, false);
   if (view === 'effective') {
-    const result = await assemble(
-      context,
-      target,
-      {
-        scope: 'personal',
-        organizationId: context.organizationId,
-        ownerId: context.actor.id,
-      },
-      tx,
-    );
+    const result = await assemble(context, target, selection.ownership, tx);
     return {
       view,
       instanceId,
+      ...shared,
       platform: result.platform,
       common: result.common,
       scenes: result.scenes,
@@ -848,12 +847,13 @@ export async function inspectEmployeeMethodContent(
     ContentSetRow[]
   >`select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and instance_id=${instanceId} and scope='personal' and owner_id=${context.actor.id}`;
+      and id=${selection.setId}`;
   if (!row)
     return {
       view,
       instanceId,
-      setId: null,
+      ...shared,
+      setId: selection.sharedTarget ? selection.setId : null,
       revision: 0,
       candidate: null,
       active: null,
@@ -889,6 +889,7 @@ export async function inspectEmployeeMethodContent(
   return {
     view,
     instanceId,
+    ...shared,
     setId: row.id,
     revision: row.revision,
     candidate: candidate ? revisionDto(candidate) : null,
@@ -911,23 +912,25 @@ export async function freezeEmployeeMethodActivationCandidate(
   context: EmployeeContentContext,
   input: {
     instanceId: string;
+    sharedTarget?: EmployeeMethodSharedTarget;
     expectedRevision: number;
     candidateRevisionId: string;
     candidateDigest: string;
   },
   tx: ContentTx,
 ) {
-  const target = await resolveTarget(
+  const selection = await resolveEmployeeMethodTarget(
     context,
-    { kind: 'instance', instanceId: input.instanceId },
+    input.instanceId,
+    input.sharedTarget,
     tx,
-    true,
   );
+  const target = await resolveTarget(context, selection.target, tx, true);
   const [row] = await tx<
     ContentSetRow[]
   >`select * from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
-      and instance_id=${input.instanceId} and scope='personal' and owner_id=${context.actor.id} for share`;
+      and id=${selection.setId} for share`;
   if (!row) throw new DataAccessError('not_found');
   if (
     row.revision !== input.expectedRevision ||
@@ -948,7 +951,22 @@ export async function freezeEmployeeMethodActivationCandidate(
   if (!result.validation.valid)
     throw new EmployeeContentError('validation_failed');
   const active = await readRevision(tx, row.active_revision_id);
+  if (
+    selection.sharedTarget &&
+    (revision.restored_from_revision_id ||
+      runtimePolicyDigest(revision.manifest.common) !==
+        runtimePolicyDigest(active?.manifest.common ?? []) ||
+      revision.manifest.scenes.some((scene) =>
+        scene.references.some(
+          (ref) => !['requirement', 'procedure'].includes(ref.sourceKind),
+        ),
+      ))
+  )
+    throw new EmployeeContentError('validation_failed');
   return {
+    ...(selection.sharedTarget
+      ? { sharedTarget: selection.sharedTarget, audience: selection.audience }
+      : {}),
     setId: row.id,
     setRevision: row.revision,
     candidateRevisionId: revision.id,
@@ -988,6 +1006,9 @@ export async function freezeEmployeeMethodCandidate(
     selected.has(exactKey(s.reference)),
   );
   return {
+    ...(result.sharedTarget
+      ? { sharedTarget: result.sharedTarget, audience: result.audience }
+      : {}),
     setId: result.setId,
     setRevision: result.setRevision,
     candidateRevisionId: result.candidateRevisionId,

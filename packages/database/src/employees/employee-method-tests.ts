@@ -35,6 +35,7 @@ import {
   enterMethodChat,
   EmployeeMethodChatError,
   explicitEmployeeMethodTestIntent,
+  employeeMethodRequestedScope,
   explicitEmployeeMethodTestRetryIntent,
 } from './employee-method-chat.ts';
 import {
@@ -111,6 +112,9 @@ const inputFor = (b: Binding) => ({
   candidateRevisionId: b.candidate_revision_id,
   candidateDigest: b.candidate_digest,
   sceneId: b.scene_id,
+  ...(b.candidate_snapshot.content.sharedTarget
+    ? { sharedTarget: b.candidate_snapshot.content.sharedTarget }
+    : {}),
 });
 
 async function readBinding(tx: Tx, testId: string) {
@@ -196,6 +200,9 @@ async function dto(tx: Tx, context: Identity, testId: string) {
       and workspace_id=${b.workspace_id} and owner_id=${b.owner_id}`;
   return EmployeeMethodTestSchema.parse({
     id: b.test_id,
+    ...(b.candidate_snapshot.content.sharedTarget
+      ? { sharedTarget: b.candidate_snapshot.content.sharedTarget }
+      : {}),
     instanceId: b.instance_id,
     setId: b.set_id,
     candidateRevisionId: b.candidate_revision_id,
@@ -247,6 +254,13 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
           throw new EmployeeMethodChatError('explicit_test_retry_required');
       } else if (!explicitEmployeeMethodTestIntent(text))
         throw new EmployeeMethodChatError('explicit_method_request_required');
+      if (
+        (!args.retryOfTestId &&
+          employeeMethodRequestedScope(text) !==
+            (args.sharedTarget?.scope ?? 'personal')) ||
+        (args.sharedTarget && args.caseId !== 'cny-total-v1')
+      )
+        throw new DataAccessError('authorization_denied');
       await acquireDevAdmission(tx);
       const requestDigest = runtimePolicyDigest(args);
       const [replay] = await tx<
@@ -283,6 +297,10 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
           throw new DataAccessError('not_found');
         retry = await readBinding(tx, parent.id);
         if (
+          runtimePolicyDigest(args.sharedTarget ?? null) !==
+            runtimePolicyDigest(
+              retry.candidate_snapshot.content.sharedTarget ?? null,
+            ) ||
           args.expectedRevision !==
             retry.candidate_snapshot.content.setRevision ||
           args.candidateRevisionId !== retry.candidate_revision_id ||

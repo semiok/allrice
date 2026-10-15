@@ -1,3 +1,12 @@
+import { departmentMethodAcceptancePhrases } from './employee-method-department.fixture.ts';
+import {
+  createOrganizationDepartment,
+  updateOrganizationDepartment,
+} from '../organization-departments.ts';
+import {
+  listOrganizationPeople,
+  updateOrganizationPerson,
+} from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import {
   prepareEmployeeMethodActivationFromChat,
@@ -51,6 +60,7 @@ import {
 } from './employee-runtime-content.ts';
 import {
   getEmployeeContentSet,
+  getEffectiveEmployeeContent,
   getEmployeeContentHistory,
   mutateEmployeeContent,
 } from './employee-content.ts';
@@ -314,12 +324,54 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
+  async function departmentFixture(f: Awaited<ReturnType<typeof setup>>) {
+    const department = (
+      await createOrganizationDepartment(f.admin.context, f.a.organizationId, {
+        name: '验收财务部',
+        requestId: randomUUID(),
+      })
+    ).department;
+    const other = (
+      await createOrganizationDepartment(f.admin.context, f.a.organizationId, {
+        name: '验收运营部',
+        requestId: randomUUID(),
+      })
+    ).department;
+    const configure = async (
+      userId: string,
+      departmentId: string | null,
+      level: 'personal' | 'department' | 'company',
+    ) => {
+      const person = (
+        await listOrganizationPeople(f.admin.context, f.a.organizationId)
+      ).people.find((p) => p.userId === userId)!;
+      return updateOrganizationPerson(
+        f.admin.context,
+        f.a.organizationId,
+        userId,
+        {
+          username: person.username ?? `dept-${userId.slice(0, 8)}`,
+          displayName: person.displayName,
+          jobTitle: person.jobTitle,
+          responsibilities: person.responsibilities,
+          departmentId,
+          contentMaintenanceLevel: level,
+          expectedVersion: person.version,
+        },
+      );
+    };
+    await configure(f.a.user.id, department.id, 'department');
+    await configure(f.b.user.id, department.id, 'personal');
+    return { department, other, configure };
+  }
   async function retryFixture(
     caseId = 'cny-total-v1',
     inheritedCommon = false,
+    department = false,
   ) {
     const f = await setup(true),
       instance = await f.custom('重试测试');
+    const departmentInfo = department ? await departmentFixture(f) : undefined;
     if (inheritedCommon) {
       // Trusted, pre-existing company configuration; no product write bypass.
       const setId = randomUUID(),
@@ -347,14 +399,71 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await fixture.db`update allrice_employee_content_sets set revision=1,candidate_revision_id=${revisionId},active_revision_id=${revisionId} where id=${setId}`;
       await fixture.db`insert into allrice_employee_content_publications(set_id,revision_id) values(${setId},${revisionId})`;
     }
+    if (department) {
+      const privateRun = await methodRun(f, instance.id);
+      const own = await saveEmployeeMethodFromChat({
+        ...privateRun,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: '私有机密', appliesWhen: 'Private' },
+          procedure: 'PRIVATE-CONTENT-MUST-NOT-ENTER-SHARED-TEST',
+          changeSummary: 'Private fixture',
+        },
+      });
+      const base = {
+        workspaceId: f.a.workspaceId,
+        setId: own.setId,
+        ownership: {
+          scope: 'personal',
+          organizationId: f.a.organizationId,
+          ownerId: f.a.user.id,
+        },
+        target: { kind: 'instance', instanceId: instance.id },
+        candidateRevisionId: own.candidate.id,
+        candidateDigest: own.candidate.digest,
+        changeSummary: 'Pre-existing effective personal method',
+      };
+      const validated = await mutateEmployeeContent(f.a.context, {
+        ...base,
+        operation: 'validate',
+        expectedRevision: own.revision,
+        requestId: randomUUID(),
+      });
+      await mutateEmployeeContent(f.a.context, {
+        ...base,
+        operation: 'activate',
+        expectedRevision: validated.revision,
+        requestId: randomUUID(),
+      });
+      await privateRun.finish();
+    }
     if (caseId === 'cny-file-flow-v1') await methodFileCloud(f);
-    const editing = await methodRun(f, instance.id);
+    const editing = await methodRun(
+      f,
+      instance.id,
+      department ? departmentMethodAcceptancePhrases.save : undefined,
+    );
+    const inspected = department
+      ? await inspectEmployeeMethodFromChat({
+          ...editing,
+          arguments: { view: 'candidate', scope: 'department' },
+        })
+      : undefined;
+    const shared =
+      inspected && 'sharedTarget' in inspected && inspected.sharedTarget
+        ? { sharedTarget: inspected.sharedTarget }
+        : {};
     let saved = await saveEmployeeMethodFromChat({
       ...editing,
       arguments: {
+        ...shared,
         expectedRevision: 0,
         section: 'scene',
-        scene: { name: '金额汇总', appliesWhen: '固定合成数据' },
+        scene: {
+          name: department ? '金额合计' : '金额汇总',
+          appliesWhen: '固定合成数据',
+        },
         procedure: '只将整数分相加',
         changeSummary: '重试边界样例',
       },
@@ -373,6 +482,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await editing.finish();
     const content = await getEmployeeContentSet(f.a.context, saved.setId);
     const args = {
+      ...shared,
       expectedRevision: saved.revision,
       candidateRevisionId: saved.candidate.id,
       candidateDigest: saved.candidate.digest,
@@ -382,7 +492,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const run = await methodRun(
       f,
       instance.id,
-      '请测试我的工作场景候选：金额汇总。',
+      department
+        ? departmentMethodAcceptancePhrases.test
+        : '请测试我的工作场景候选：金额汇总。',
     );
     const test = await startEmployeeMethodTestFromChat({
       ...run,
@@ -410,7 +522,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         },
       });
     };
-    return { f, instance, saved, args, run, test, fail };
+    return { f, instance, saved, args, run, test, fail, departmentInfo };
   }
 
   async function passActivationTest(
@@ -459,23 +571,29 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       },
     });
   }
-  async function activationFixture() {
-    const base = await retryFixture();
+  async function activationFixture(department = false) {
+    const base = await retryFixture('cny-total-v1', false, department);
     const { f, instance, args, test } = base;
     await passActivationTest(f, test);
     const run = await methodRun(
       f,
       instance.id,
-      '请查看通过的测试并让我确认启用。',
+      department
+        ? departmentMethodAcceptancePhrases.confirm
+        : '请查看通过的测试并让我确认启用。',
     );
     const inspected = await inspectEmployeeMethodFromChat({
       ...run,
-      arguments: { view: 'candidate' },
+      arguments: {
+        view: 'candidate',
+        ...(department ? { scope: 'department' } : {}),
+      },
     });
     expect('candidateTests' in inspected && inspected.candidateTests).toEqual(
       expect.arrayContaining([expect.objectContaining({ testId: test.id })]),
     );
     const preparation = {
+      ...(args.sharedTarget ? { sharedTarget: args.sharedTarget } : {}),
       expectedRevision: args.expectedRevision,
       candidateRevisionId: args.candidateRevisionId,
       candidateDigest: args.candidateDigest,
@@ -584,6 +702,323 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
   }
 
+  it('department shared original wording completes save, test, scoped answer and peer adoption without private overlays', async () => {
+    const x = await activationFixture(true);
+    expect(x.args.sharedTarget?.scope).toBe('department');
+    expect(x.preview.question.question).toContain('验收财务部');
+    expect(x.preview.question.question).toContain(
+      x.args.sharedTarget!.employeeId,
+    );
+    expect(x.preview.question.question).not.toContain('重试测试');
+    const [binding] =
+      await fixture.db`select candidate_snapshot from allrice_employee_method_tests where test_id=${x.test.id}`;
+    expect(binding!.candidate_snapshot.content.sharedTarget).toEqual(
+      x.args.sharedTarget,
+    );
+    // The already ACTIVE private method must not contaminate the shared test.
+    const own = await getEffectiveEmployeeContent(x.f.a.context, x.instance.id);
+    expect(JSON.stringify(own)).toContain('PRIVATE-CONTENT');
+    expect(JSON.stringify(binding!.candidate_snapshot.content)).not.toContain(
+      'PRIVATE-CONTENT',
+    );
+    await x.show();
+    await x.answer();
+    const enabled = await x.activate();
+    expect(enabled.enabled).toBe(true);
+    expect((await x.activate()).replayed).toBe(true);
+    await x.run.finish();
+    const peerInstance = await createEmployeeInstance(x.f.b.context, {
+      workspaceId: x.f.b.workspaceId,
+      assignmentId: x.f.bAssignment.id,
+      requestId: randomUUID(),
+      profile: { name: '同事小白' },
+    });
+    const effective = await getEffectiveEmployeeContent(
+      x.f.b.context,
+      peerInstance.id,
+    );
+    expect(effective.scenes.map((scene) => scene.name)).toContain('金额合计');
+    expect(JSON.stringify(effective)).not.toContain('PRIVATE-CONTENT');
+    const peerSession = await createChatSession(x.f.b.context, {
+      workspaceId: x.f.b.workspaceId,
+      employeeInstanceId: peerInstance.id,
+      title: '新会话采用部门方法',
+    });
+    const adopted = await methodRun(
+      { ...x.f, a: x.f.b },
+      peerInstance.id,
+      departmentMethodAcceptancePhrases.adopt,
+      peerSession.id,
+    );
+    expect(adopted.frozen.content.layers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ setId: x.saved.setId }),
+      ]),
+    );
+    await adopted.finish();
+    await x.departmentInfo!.configure(
+      x.f.b.user.id,
+      x.departmentInfo!.other.id,
+      'personal',
+    );
+    const outside = await getEffectiveEmployeeContent(
+      x.f.b.context,
+      peerInstance.id,
+    );
+    expect(outside.scenes.map((scene) => scene.name)).not.toContain('金额合计');
+  });
+
+  it.each(['demotion', 'transfer', 'archive'] as const)(
+    'department shared pending confirmation rejects %s and retains inactive candidate',
+    async (change) => {
+      const x = await activationFixture(true);
+      await x.show();
+      await x.answer();
+      if (change === 'demotion')
+        await x.departmentInfo!.configure(
+          x.f.a.user.id,
+          x.departmentInfo!.department.id,
+          'personal',
+        );
+      else {
+        await x.departmentInfo!.configure(
+          x.f.a.user.id,
+          x.departmentInfo!.other.id,
+          'department',
+        );
+        if (change === 'archive') {
+          await x.departmentInfo!.configure(
+            x.f.b.user.id,
+            x.departmentInfo!.other.id,
+            'personal',
+          );
+          await updateOrganizationDepartment(
+            x.f.admin.context,
+            x.f.a.organizationId,
+            x.departmentInfo!.department.id,
+            {
+              name: x.departmentInfo!.department.name,
+              expectedRevision: x.departmentInfo!.department.revision,
+              active: false,
+            },
+          );
+        }
+      }
+      await expect(x.activate()).rejects.toThrow();
+      const [row] =
+        await fixture.db`select active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
+      expect(row!.active_revision_id).toBeNull();
+      await x.run.finish();
+    },
+  );
+
+  it('department shared consumed receipt cannot be replayed after maintenance revocation', async () => {
+    const x = await activationFixture(true);
+    await x.show();
+    await x.answer();
+    await x.activate();
+    await x.departmentInfo!.configure(
+      x.f.a.user.id,
+      x.departmentInfo!.department.id,
+      'personal',
+    );
+    await expect(x.activate()).rejects.toThrow('authorization_denied');
+    await x.run.finish();
+  });
+
+  it('department shared queued test rechecks authority before any model admission', async () => {
+    const x = await retryFixture('cny-total-v1', false, true);
+    await x.departmentInfo!.configure(
+      x.f.a.user.id,
+      x.departmentInfo!.department.id,
+      'personal',
+    );
+    const claim = await claimNextPlatformEmployeeTestRun(randomUUID());
+    expect(claim?.id).not.toBe(x.test.id);
+    const [test] =
+      await fixture.db`select status from allrice_platform_employee_test_runs where id=${x.test.id}`;
+    expect(test!.status).toBe('failed');
+    const routes =
+      await fixture.db`select run_id from allrice_employee_method_tests where test_id=${x.test.id}`;
+    expect(routes[0]!.run_id).toBeNull();
+  });
+
+  it('department shared selection cannot redirect after transfer or admit company/private/files/common targets', async () => {
+    const x = await retryFixture('cny-total-v1', false, true);
+    await passActivationTest(x.f, x.test);
+    const editing = await methodRun(
+      x.f,
+      x.instance.id,
+      departmentMethodAcceptancePhrases.save,
+    );
+    const args = {
+      sharedTarget: x.args.sharedTarget,
+      expectedRevision: x.saved.revision,
+      section: 'scene',
+      scene: { id: x.args.sceneId },
+      procedure: '整数分相加',
+      changeSummary: 'Same scope',
+    };
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...editing,
+        arguments: { ...args, sharedTarget: undefined },
+      }),
+    ).rejects.toThrow('explicit_method_request_required');
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...editing,
+        arguments: { ...args, section: 'common', scene: undefined },
+      }),
+    ).rejects.toThrow('authorization_denied');
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...editing,
+        arguments: {
+          ...args,
+          references: [
+            {
+              sourceKind: 'knowledge',
+              contentId: randomUUID(),
+              revisionId: randomUUID(),
+              digest: `sha256:${'1'.repeat(64)}`,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow('authorization_denied');
+    await expect(
+      inspectEmployeeMethodFromChat({
+        ...editing,
+        arguments: { view: 'history', scope: 'department' },
+      }),
+    ).rejects.toThrow('authorization_denied');
+    await x.departmentInfo!.configure(
+      x.f.a.user.id,
+      x.departmentInfo!.other.id,
+      'department',
+    );
+    await expect(
+      saveEmployeeMethodFromChat({ ...editing, arguments: args }),
+    ).rejects.toThrow('source_changed');
+    const [unchanged] =
+      await fixture.db`select revision from allrice_employee_content_sets where id=${x.saved.setId}`;
+    expect(unchanged!.revision).toBe(x.saved.revision);
+    await editing.finish();
+  });
+
+  it('department shared writes reject personal-only original wording with zero mutations', async () => {
+    const x = await retryFixture('cny-total-v1', false, true);
+    await passActivationTest(x.f, x.test);
+    const run = await methodRun(
+      x.f,
+      x.instance.id,
+      '请保存仅供我个人使用而非本部门共享的工作场景候选：金额只相加。',
+    );
+    const before =
+      await fixture.db`select revision,candidate_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`;
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...run,
+        arguments: {
+          sharedTarget: x.args.sharedTarget,
+          expectedRevision: x.saved.revision,
+          section: 'scene',
+          scene: { id: x.args.sceneId },
+          procedure: '金额只相加',
+          changeSummary: 'Must remain personal',
+        },
+      }),
+    ).rejects.toThrow('explicit_method_request_required');
+    expect(
+      await fixture.db`select revision,candidate_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`,
+    ).toEqual(before);
+    await run.finish();
+  });
+
+  it('department shared selection uses NOWAIT when publication holds deployment before assignment', async () => {
+    const x = await retryFixture('cny-total-v1', false, true);
+    await passActivationTest(x.f, x.test);
+    // Reproduce the reversed lock order without waiting for PostgreSQL to
+    // choose a deadlock victim. The existing access transaction retries 55P03.
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let locked!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const publication = fixture.db.begin(async (tx) => {
+      await tx`select tenant_employee_id from allrice_platform_employee_tenant_assignments where tenant_employee_id=${x.args.sharedTarget!.employeeId} for update`;
+      locked();
+      await blocked;
+    });
+    await ready;
+    try {
+      const { ownDepartmentMethodTarget } =
+        await import('./employee-method-target.ts');
+      await expect(
+        fixture.db.begin(async (tx) => {
+          await tx`select id from allrice_employee_assignments where id=${x.instance.assignmentId} for share`;
+          return ownDepartmentMethodTarget(x.f.a.context, x.instance.id, tx);
+        }),
+      ).rejects.toMatchObject({ code: '55P03' });
+    } finally {
+      release();
+      await publication;
+    }
+  });
+  it('department shared two maintainers share one set and reject a stale candidate write', async () => {
+    const x = await retryFixture('cny-total-v1', false, true);
+    await passActivationTest(x.f, x.test);
+    await x.departmentInfo!.configure(
+      x.f.b.user.id,
+      x.departmentInfo!.department.id,
+      'department',
+    );
+    const peer = await createEmployeeInstance(x.f.b.context, {
+      workspaceId: x.f.b.workspaceId,
+      assignmentId: x.f.bAssignment.id,
+      requestId: randomUUID(),
+      profile: { name: '另一维护人' },
+    });
+    const session = await createChatSession(x.f.b.context, {
+      workspaceId: x.f.b.workspaceId,
+      employeeInstanceId: peer.id,
+      title: '同一部门候选',
+    });
+    const run = await methodRun(
+      { ...x.f, a: x.f.b },
+      peer.id,
+      departmentMethodAcceptancePhrases.save,
+      session.id,
+    );
+    const found = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate', scope: 'department' },
+    });
+    expect('sharedTarget' in found && found.sharedTarget).toEqual(
+      x.args.sharedTarget,
+    );
+    const args = {
+      sharedTarget: x.args.sharedTarget,
+      expectedRevision: x.saved.revision,
+      section: 'scene',
+      scene: { id: x.args.sceneId },
+      procedure: '核对后将整数分相加',
+      changeSummary: '第二维护人修改',
+    };
+    await saveEmployeeMethodFromChat({ ...run, arguments: args });
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...run,
+        callId: randomUUID(),
+        arguments: args,
+      }),
+    ).rejects.toThrow('version_conflict');
+    await run.finish();
+  });
   it('restores exact chat history into a new candidate and repeatedly forks old text without altering active sources', async () => {
     const x = await activationFixture();
     await x.show();

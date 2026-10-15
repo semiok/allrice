@@ -31,6 +31,10 @@ import {
   EmployeeContentError,
   type ContentTx,
 } from './employee-content-model.ts';
+import {
+  resolveEmployeeMethodTarget,
+  ownDepartmentMethodTarget,
+} from './employee-method-target.ts';
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
 
 export class EmployeeMethodChatError extends Error {
@@ -117,7 +121,7 @@ function methodAuthoringHeader(clause: string) {
   // A quoted literal scene name is an argument to an unquoted direct request.
   // Do not unquote an entire instruction, translation or supplied document.
   const named = first.match(
-    /^(?<verb>(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:我的|这个|该|本人的)?)(?:“[^“”\r\n]{1,80}”|「[^「」\r\n]{1,80}」|『[^『』\r\n]{1,80}』|"[^"\r\n]{1,80}"|`[^`\r\n]{1,80}`)(?<target>的?(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?)$/u,
+    /^(?<verb>(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:我的|这个|该|本人的|本部门的|我们部门的)?)(?:“[^“”\r\n]{1,80}”|「[^「」\r\n]{1,80}」|『[^『』\r\n]{1,80}』|"[^"\r\n]{1,80}"|`[^`\r\n]{1,80}`)(?<target>的?(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?)$/u,
   );
   if (named?.groups)
     first = `${named.groups.verb}字面名称${named.groups.target}`;
@@ -140,14 +144,14 @@ export function explicitEmployeeMethodIntent(text: string) {
   if (
     clauses.some((clause) => {
       const affirmative = clause.replace(
-        /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)/u,
+        /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不允许|不能|不必|无需|暂不|别|勿|不)/u,
         '请',
       );
       // Quoted names have already been masked as data. Apply the same target
       // grammar to a denial, rather than requiring the type next to “我的”.
       if (affirmative !== clause && methodAuthoringHeader(affirmative))
         return true;
-      return /^(?:请)?(?:不要|无需|不必|勿|不能|不允许)(?:保存|修改|更新|持久化|重命名|移除|删除|停用)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist|rename|remove|delete|disable)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
+      return /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不允许|不能|不必|无需|暂不|别|勿|不)(?:保存|修改|更新|持久化|重命名|移除|删除|停用)(?:(?:我的)?(?:工作场景|执行要求|执行流程|工作方法|候选|草稿)|[，, ]|$)|^(?:please )?(?:do not|don't|never)\s+(?:save|update|persist|rename|remove|delete|disable)(?:\s+(?:my )?(?:method|scene|workflow|candidate|draft)|[,. ]*$)/iu.test(
         clause,
       );
     })
@@ -174,7 +178,7 @@ export function explicitEmployeeMethodRestoreIntent(
   if (
     clauses.some((clause, index) => {
       if (
-        /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不|别|暂不|无需|不必|勿|不能|不允许)(?:实际|立即|进行)?(?:恢复|还原|回退|保存|执行)|^(?:please )?(?:do not|don't|never)\s+(?:(?:actually|immediately)\s+)?(?:restore|revert|save|execute)/iu.test(
+        /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不允许|不能|不必|无需|暂不|别|勿|不)(?:实际|立即|进行)?(?:恢复|还原|回退|保存|执行)|^(?:please )?(?:do not|don't|never)\s+(?:(?:actually|immediately)\s+)?(?:restore|revert|save|execute)/iu.test(
           clause,
         )
       )
@@ -372,12 +376,56 @@ export function explicitEmployeeMethodRemovalIntent(
   });
 }
 
+/** Sharing needs explicit scope in the direct request. Candidate body, quoted
+ * source text and an employee's maintenance level cannot supply that consent. */
+export function employeeMethodRequestedScope(text: string) {
+  const request = withoutMethodRetryPreface(text).replace(
+    /^(?:[ \t]*\r?\n)+/u,
+    '',
+  );
+  const clauses = methodOperationClauses(request);
+  const leading = (clauses.find(Boolean) ?? '').split(/[：:]/u, 1)[0]!;
+  const object = leading
+    .replace(
+      /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用|测试|验证)/u,
+      '',
+    )
+    .trim();
+  // The scope is the direct grammatical target, not a keyword in an object
+  // name or an explanation that expressly excludes sharing.
+  const department =
+    /^(?:本部门|我们部门|我的部门)(?:的|\s|工作|执行|QUOTED)/u.test(object);
+  const personalOnly = clauses.some((clause) =>
+    /(?:仅供|仅限|只供|只给|只为)(?:我(?:个人|自己)?|个人)(?:使用|[，,；;]|$)|(?:而非|不是|不在)(?:本部门|我们部门|部门)(?:的)?共享/u.test(
+      clause,
+    ),
+  );
+  const noSharing = clauses.some((clause) =>
+    clause
+      .split(/[，,]/u)
+      .some((part) =>
+        /^(?:请)?(?:(?:先|暂时|这次|本次)\s*){0,2}(?:不要|不允许|不能|无需|暂不|别|勿|不)(?:(?:在|向)(?:本部门|我们部门|部门))?共享(?:[。.!]?|(?:这个|该|我的)?(?:候选|工作方法|工作场景))$/u.test(
+          part.trim(),
+        ),
+      ),
+  );
+  if (department)
+    return personalOnly || noSharing ? 'unsupported' : 'department';
+  if (/^(?:我的|个人|仅供我(?:个人|自己)?使用)/u.test(object) && personalOnly)
+    return 'personal';
+  if (/公司|全员|全公司|company|everyone/iu.test(leading)) return 'company';
+  if (/部门|department/iu.test(leading)) return 'unsupported';
+  return 'personal';
+}
+
 function assertMethodEditIntent(
   text: string,
   args: ReturnType<typeof EmployeeMethodSaveSchema.parse>,
 ) {
   if (
     !explicitEmployeeMethodIntent(text) ||
+    employeeMethodRequestedScope(text) !==
+      (args.sharedTarget?.scope ?? 'personal') ||
     (args.references?.length && !explicitEmployeeMethodReferenceIntent(text)) ||
     (args.removeReferences?.length &&
       !explicitEmployeeMethodRemovalIntent(text, 'reference')) ||
@@ -458,6 +506,12 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
     'workspace.employee.method.inspect',
     false,
     async (tx, instance) => {
+      const selected =
+        args.scope === 'department'
+          ? await ownDepartmentMethodTarget(scope, instance.id, tx)
+          : undefined;
+      if (selected && args.view === 'history')
+        throw new DataAccessError('authorization_denied');
       if (args.view === 'history') {
         const [set] = await tx<
           { id: string }[]
@@ -491,7 +545,9 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
         instance.id,
         args.view,
         tx,
+        selected?.sharedTarget,
       );
+      if (selected) return { ...content, selectedReferences: [] };
       const [run] = await tx<
         {
           employee_id: string;
@@ -609,20 +665,27 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
 export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
   const args = EmployeeMethodSaveSchema.parse(input.arguments);
   const { scope, requestId } = employeeChatIdentity(input);
-  const { instance, setId, text } = await enterMethodChat(
+  if (
+    args.sharedTarget &&
+    (args.section !== 'scene' ||
+      args.references?.length ||
+      args.removeReferences?.length)
+  )
+    throw new DataAccessError('authorization_denied');
+  const { instance, selection, text } = await enterMethodChat(
     input,
     'workspace.employee.method.save_candidate',
     true,
     async (tx, instance, text) => {
-      const [set] = await tx<
-        { id: string }[]
-      >`select id from allrice_employee_content_sets
-        where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-          and instance_id=${instance.id} and scope='personal' and owner_id=${scope.actor.id}`;
       return {
         instance,
         text,
-        setId: set?.id ?? employeeChatUuid('employee-method', instance.id),
+        selection: await resolveEmployeeMethodTarget(
+          scope,
+          instance.id,
+          args.sharedTarget,
+          tx,
+        ),
       };
     },
   );
@@ -630,14 +693,10 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
   const base: Extract<EmployeeContentMutation, { operation: 'save_draft' }> = {
     operation: 'save_draft',
     workspaceId: scope.workspaceId,
-    setId,
+    setId: selection.setId,
     requestId,
-    ownership: {
-      scope: 'personal',
-      organizationId: scope.organizationId,
-      ownerId: scope.actor.id,
-    },
-    target: { kind: 'instance', instanceId: instance.id },
+    ownership: selection.ownership,
+    target: selection.target,
     expectedRevision: args.expectedRevision,
     changeSummary: args.changeSummary,
     manifest: emptyManifest(),
@@ -659,6 +718,12 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
           current,
           'workspace.employee.method.save_candidate',
         );
+        await resolveEmployeeMethodTarget(
+          scope,
+          instance.id,
+          args.sharedTarget,
+          tx,
+        );
         assertMethodEditIntent(original, args);
       },
       buildInput: async (row) => {
@@ -675,7 +740,11 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
         const sceneId =
           args.section === 'scene'
             ? (args.scene!.id ??
-              employeeChatUuid('employee-method-scene', instance.id, requestId))
+              employeeChatUuid(
+                'employee-method-scene',
+                selection.identitySeed,
+                requestId,
+              ))
             : null;
         let scene = manifest.scenes.find((s) => s.id === sceneId);
         if (args.scene?.id && !scene)
@@ -729,7 +798,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
           if (body === undefined) continue;
           const stableContentId = employeeChatUuid(
             'employee-method-text',
-            instance.id,
+            selection.identitySeed,
             sceneId ?? 'common',
             kind,
           );
@@ -783,7 +852,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
             ? employeeChatUuid(
                 'employee-method-text-replacement',
                 requestId,
-                instance.id,
+                selection.identitySeed,
                 sceneId ?? 'common',
                 kind,
               )

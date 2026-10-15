@@ -1,6 +1,8 @@
+import { departmentMethodAcceptancePhrases as phrases } from './employee-method-department.fixture.ts';
 import { expect, it } from 'vitest';
 import {
   explicitEmployeeMethodIntent,
+  employeeMethodRequestedScope,
   explicitEmployeeMethodRestoreIntent,
   explicitEmployeeMethodReferenceIntent,
   explicitEmployeeMethodRemovalIntent,
@@ -331,5 +333,63 @@ it.each([
     expect(explicitEmployeeMethodRestoreIntent(text, historySource)).toBe(
       false,
     );
+  },
+);
+
+// These are the complete planned public-chat inputs, not shortened substitutes.
+it('admits the original multi-sentence department save and test wording', () => {
+  expect(explicitEmployeeMethodIntent(phrases.save)).toBe(true);
+  expect(explicitEmployeeMethodTestIntent(phrases.test)).toBe(true);
+  expect(employeeMethodRequestedScope(phrases.save)).toBe('department');
+  expect(employeeMethodRequestedScope(phrases.test)).toBe('department');
+});
+it.each([
+  '请创建本部门的「金额，合计」工作场景：只相加。保存候选，不启用。',
+  '请更新我们部门的“周度对账”工作场景候选。保留原始数据。',
+  '请保存本部门工作场景候选：以后使用整数分。',
+])('recognizes a direct scoped request with literal names: %s', (text) => {
+  expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  expect(employeeMethodRequestedScope(text)).toBe('department');
+});
+it.each([
+  `“${phrases.save}”`,
+  `资料原文如下：\n${phrases.save}`,
+  `请翻译：${phrases.save}`,
+  `> ${phrases.save}`,
+  `这次临时按部门流程做一次。${phrases.save}`,
+  `${phrases.save}请先别保存。`,
+  `${phrases.save}本次不要修改工作场景。`,
+  `${phrases.save}只讨论，暂不保存。`,
+])(
+  'does not convert source text or a temporary/denied operation into persistence: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(false);
+  },
+);
+it('scope in quoted names/body cannot expand the leading request', () => {
+  expect(
+    employeeMethodRequestedScope('请保存我的“本部门”工作场景：公司样本。'),
+  ).toBe('personal');
+  expect(
+    employeeMethodRequestedScope('请保存公司工作场景候选：金额汇总。'),
+  ).toBe('company');
+  expect(employeeMethodRequestedScope('请保存财务部门工作场景候选。')).toBe(
+    'unsupported',
+  );
+});
+
+it('a personal-only request mentioning department exclusion never grants sharing', () => {
+  const text = '请保存仅供我个人使用而非本部门共享的工作场景候选：金额只相加。';
+  expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  expect(employeeMethodRequestedScope(text)).toBe('personal');
+});
+it.each([
+  '请保存本部门工作场景候选：整数分相加。请不要共享。',
+  '请更新本部门的“金额合计”工作场景。仅供我个人使用。',
+  '请创建本部门工作场景候选。不要在本部门共享。',
+])(
+  'contradictory sharing instructions do not authorize a shared write: %s',
+  (text) => {
+    expect(employeeMethodRequestedScope(text)).toBe('unsupported');
   },
 );
