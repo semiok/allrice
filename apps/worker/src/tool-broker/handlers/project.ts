@@ -22,6 +22,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import { HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
 import { waitForLocalAdmission } from './local-admission.js';
+import { runProjectResolution } from './project-resolution.js';
 import { CloudRunnerBackend } from '../../cloud-runner/backend.js';
 import {
   runCloudCommandOperation,
@@ -51,6 +52,8 @@ export const runProjectWorkspace: RiceToolHandler = async ({
       },
     });
   try {
+    if (args.action === 'resolve')
+      return await runProjectResolution({ input, arguments: args });
     if (
       [
         'service_status',
@@ -320,6 +323,15 @@ export const runProjectWorkspace: RiceToolHandler = async ({
             : '已读取指定版本的项目源码',
     };
   } catch (error) {
+    if (
+      error instanceof RuntimePolicyError &&
+      error.code === 'project_resolution_requires_cloud'
+    )
+      throw new HandlerError(
+        'PROJECT_RESOLUTION_REQUIRES_CLOUD',
+        '当前任务要求仅在本地处理，因此没有启动云端依赖解析。请使用已有锁文件；不要通过其他工具绕过该限制。',
+        false,
+      );
     if (
       error instanceof RuntimePolicyError &&
       error.code === 'project_workflow_budget_exhausted'

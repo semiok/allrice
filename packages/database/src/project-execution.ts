@@ -7,6 +7,7 @@ import {
   CloudExecutionProfileSchema,
   ProjectRunnableInputSchema,
   projectWorkflowBudget,
+  bridgeProjectPackageLimit,
   ExecutionChoiceSchema,
   isLocalCommandProfileForPlatform,
   resolveExecutionChoice,
@@ -255,6 +256,10 @@ export async function selectProjectExecution(
       );
       let state = discovery.state;
       if (!c.online) state = 'offline';
+      else if (
+        args.projectPreparation.packages.length > bridgeProjectPackageLimit
+      )
+        state = 'unsupported';
       else if (
         state !== 'preparing' &&
         state !== 'busy' &&

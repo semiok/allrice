@@ -4,6 +4,7 @@ import { expect, it } from 'vitest';
 import {
   cloudNetworkBudgetSupervisor,
   cloudBudgetSupervisor,
+  cloudResolutionSupervisor,
 } from './backend.js';
 
 it('requires the exact sandbox envelope, a live private lease and current guard capability', () => {
@@ -16,8 +17,9 @@ it('requires the exact sandbox envelope, a live private lease and current guard 
         String.raw`
 import importlib.util,json,sys,copy,tempfile,os,types,hashlib,contextlib,io
 s=importlib.util.spec_from_file_location('guard',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
-supervisors=json.load(sys.stdin)
+scripts=json.load(sys.stdin);supervisors=scripts['regular'];resolver=scripts['resolver']
 assert set(hashlib.sha256(x.encode()).hexdigest() for x in supervisors)==set(m.SANDBOX_SUPERVISORS)
+assert {hashlib.sha256(resolver.encode()).hexdigest()}==set(m.RESOLUTION_SUPERVISORS)
 now=1000000;attempt='00000000-0000-4000-8000-000000000001'
 m.time.time=lambda:now/1000
 c={'Config':{'Image':m.NODE_IMAGE,'User':'65532:65532','Entrypoint':['/usr/local/bin/node'],
@@ -40,6 +42,17 @@ with tempfile.TemporaryDirectory() as tmp:
   with open(path,'w') as f:json.dump(data,f)
   os.chmod(path,0o600)
  save(lease)
+ resolution=copy.deepcopy(c)
+ resolution['Config']['Labels'].update({'xyz.bplabs.allrice.cloud.project-resolution':'v1','xyz.bplabs.allrice.cloud.network':'controlled-https-v1'})
+ resolution['Config']['Cmd'][2]=resolver
+ resolution['HostConfig']['Tmpfs']={'/tmp':'rw,nosuid,nodev,exec,size=256m,mode=1777'}
+ resolved=[m.command_deadline_valid(resolution,now,1600000)]
+ for obj,key,value in [('Labels','xyz.bplabs.allrice.cloud.project-resolution','unknown'),('Labels','xyz.bplabs.allrice.cloud.network','none'),
+ ('Config','Cmd',c['Config']['Cmd']),('HostConfig','Tmpfs',{'/tmp':'rw,size=1024m'}),('HostConfig','Memory',1024**3),('HostConfig','CapAdd',['SYS_ADMIN'])]:
+  x=copy.deepcopy(resolution);(x['Config']['Labels'] if obj=='Labels' else x[obj])[key]=value
+  resolved.append(m.command_deadline_valid(x,now,1600000))
+ # A tenant script cannot borrow the resolver executable temp directory.
+ x=copy.deepcopy(c);x['HostConfig']['Tmpfs']=resolution['HostConfig']['Tmpfs'];resolved.append(m.command_deadline_valid(x,now,1600000))
  values=[m.command_deadline_valid(c,now,1600000)]
  x=copy.deepcopy(c);x['Config']['Cmd'][2]=supervisors[1];values.append(m.command_deadline_valid(x,now,1600000))
  x=copy.deepcopy(c);x['Config']['Image']=m.PYTHON_IMAGE;x['Config']['Env']=m.SANDBOX_IMAGE_ENV[m.PYTHON_IMAGE][:];values.append(m.command_deadline_valid(x,now,1600000))
@@ -71,15 +84,15 @@ with tempfile.TemporaryDirectory() as tmp:
  with contextlib.redirect_stdout(io.StringIO()):m.tick({'slots':4})
  old=m.live_sandbox_budget({});current=m.live_sandbox_budget({'sandboxExecution':m.sandbox_budget()})
  m.os.fstat=real_fstat
-print(json.dumps({'values':values,'mixedStopped':len(killed)==1,'old':old,'current':current}))
+print(json.dumps({'values':values,'resolver':resolved,'mixedStopped':len(killed)==1,'old':old,'current':current}))
 `,
         fileURLToPath(new URL('./watchdog.py', import.meta.url)),
       ],
       {
-        input: JSON.stringify([
-          cloudBudgetSupervisor,
-          cloudNetworkBudgetSupervisor,
-        ]),
+        input: JSON.stringify({
+          regular: [cloudBudgetSupervisor, cloudNetworkBudgetSupervisor],
+          resolver: cloudResolutionSupervisor,
+        }),
         encoding: 'utf8',
       },
     ),
@@ -87,6 +100,7 @@ print(json.dumps({'values':values,'mixedStopped':len(killed)==1,'old':old,'curre
   expect(result.values.slice(0, 3)).toEqual([true, true, true]);
   expect(result.values.slice(3).every((v: boolean) => v === false)).toBe(true);
   expect(result.mixedStopped).toBe(true);
+  expect(result.resolver).toEqual([true, ...Array(7).fill(false)]);
   expect(result.old).toBeNull();
   expect(result.current).toEqual({
     version: 1,

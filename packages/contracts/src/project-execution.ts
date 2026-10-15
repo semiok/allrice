@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProjectDependencyResolveInputSchema } from './project-dependency-resolution.ts';
 import {
   ProjectVersionRefSchema,
   ProjectWorkspaceCommandSchema,
@@ -126,6 +127,7 @@ export type ProjectServiceStartInput = z.infer<
 /** Keep the source-only database command separate; avoids source/installer schema cycles. */
 export const ProjectWorkspaceToolInputSchema = z.union([
   ProjectWorkspaceCommandSchema,
+  ProjectDependencyResolveInputSchema,
   ProjectExecuteInputSchema,
   ProjectServiceStartInputSchema,
   ProjectServiceControlInputSchema,

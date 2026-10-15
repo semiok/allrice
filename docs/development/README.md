@@ -166,6 +166,21 @@ then validates durable Run submission, retry, cancellation, timeout, SSE replay
 and an ungraceful Worker crash. It finally restarts PostgreSQL and Web and
 verifies business data persistence plus delete propagation.
 
+## Managed dependency resolution
+
+Managed public dependency resolution uses the existing
+`ALLRICE_SANDBOX_NETWORK_ENABLED` and `ALLRICE_SANDBOX_EXECUTION_V1_ENABLED`
+flags, plus a scoped administrator-issued cloud network grant. It adds no port,
+credential or migration. Deploy the matching cloud watchdog while the VM is idle;
+its attestation must include `projectResolution: 1`. Only the fixed, hash-checked
+resolver may use a 256 MiB executable temporary filesystem. Ordinary scripts keep
+their existing temporary filesystem restrictions. Missing guard support fails
+closed instead of falling back to an unguarded resolver. Keep the prior guard
+for rollback and retain accepted Bridge packages: this server slice does not
+enable new client network/budget capabilities. See
+[managed dependency resolution](../architecture/met189-managed-dependencies.md)
+for the admission, installation and diagnostic boundaries.
+
 ## Branches and pull requests
 
 - Work from current `main` on a focused issue branch.

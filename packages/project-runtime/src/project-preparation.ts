@@ -463,7 +463,9 @@ export class ProjectPreparation {
     }, 1000);
     try {
       await check();
-      for (const i of indexes) {
+      // Two bounded fetches overlap registry latency without an unbounded
+      // archive/memory fan-out. Drain both on failure before releasing pins.
+      const prepareArchive = async (i: number, position: number) => {
         const pkg = spec.packages[i]!;
         signal.throwIfAborted();
         const npm = 'integrity' in pkg;
@@ -530,14 +532,38 @@ export class ProjectPreparation {
             }
           });
         }
+        await check();
         total += bytes.length;
         if (total > limits.totalArchiveBytes)
           throw new LocalCommandError('PROJECT_DEPENDENCY_LIMIT');
-        files.push({
+        files[position] = {
           path: `.allrice/archives/${npm ? i + '.tgz' : pkg.fileName}`,
           bytes,
-        });
-      }
+        };
+      };
+      let next = 0;
+      let firstFailure: unknown;
+      const consume = async () => {
+        try {
+          for (;;) {
+            signal.throwIfAborted();
+            const position = next++;
+            if (position >= indexes.length) return;
+            await prepareArchive(indexes[position]!, position);
+          }
+        } catch (error) {
+          if (!revoked.signal.aborted) {
+            firstFailure = error;
+            revoked.abort(error);
+          }
+          throw error;
+        }
+      };
+      const completed = await Promise.allSettled(
+        Array.from({ length: Math.min(2, indexes.length) }, consume),
+      );
+      if (completed.some((r) => r.status === 'rejected'))
+        throw firstFailure ?? new LocalCommandError('EXECUTION_REVOKED');
       await check();
       const lock = projectInstallLock(input.command, input.files);
       if (lock)

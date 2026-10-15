@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readResolvedProject } from '@allrice/project-runtime';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
   type createCloudCommandOperation,
@@ -400,6 +401,33 @@ export async function runCloudCommandOperation(
         }
       }
     }
+    if (
+      !('kind' in payload) &&
+      payload.origin?.toolName === 'workspace.project' &&
+      outcome.reason === 'completed' &&
+      outcome.resolution?.status === 'resolved'
+    ) {
+      try {
+        readResolvedProject(
+          payload.origin.request,
+          Buffer.from(JSON.stringify(outcome.resolution)),
+        );
+      } catch (error) {
+        // Preserve the physical zero exit and original receipt. A lock rejected
+        // by our independent installer validator is still a failed operation.
+        outcome = {
+          ...outcome,
+          reason: 'failed',
+          errorCode:
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            error.code === 'PROJECT_RESOLUTION_LIMIT'
+              ? 'PROJECT_RESOLUTION_LIMIT'
+              : 'PROJECT_RESOLUTION_LOCK_UNSUPPORTED',
+        };
+      }
+    }
     if (firstServiceStopReason)
       outcome = { ...outcome, serviceStopReason: firstServiceStopReason };
     await db`update allrice_cloud_execution_attempts set outcome=${db.json(outcome)} where operation_id=${operationId} and outcome is null`;
@@ -407,7 +435,8 @@ export async function runCloudCommandOperation(
   // No deletion until durable bytes/versions AND result receipt. Failed writes
   // leave the stopped container, daemon logs and journal available for recovery.
   const artifacts =
-    outcome.reason === 'completed'
+    outcome.reason === 'completed' &&
+    !(!('kind' in payload) && payload.origin?.toolName === 'workspace.project')
       ? await publishCloudOperationArtifacts(
           {
             context: created.context,
@@ -436,6 +465,15 @@ export async function runCloudCommandOperation(
     output: outcome.output,
     ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
     ...(outcome.network ? { network: outcome.network } : {}),
+    ...(outcome.resolution
+      ? {
+          resolution: {
+            ...outcome.resolution,
+            lock: undefined,
+            wheels: undefined,
+          },
+        }
+      : {}),
     ...('kind' in payload
       ? {
           imageDigest: outcome.imageDigest,
@@ -551,6 +589,7 @@ export async function runCloudCommandOperation(
     reason: outcome.reason,
     stopped: outcome.stopped,
     cleanupConfirmed: true,
+    ...(outcome.resolution ? { resolution: outcome.resolution } : {}),
     ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
     ...(externalOutcomeUnknown ? { externalOutcomeUnknown: true } : {}),
     ...('kind' in payload

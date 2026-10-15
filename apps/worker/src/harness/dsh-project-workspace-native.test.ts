@@ -10,6 +10,17 @@ const project = {
   },
 };
 it.each([
+  {
+    action: 'resolve',
+    manager: 'pnpm',
+    packages: [{ name: 'is-number', version: '7.0.0' }],
+    resourceProfile: 'standard',
+  },
+  {
+    action: 'resolve',
+    manager: 'uv',
+    packages: [{ name: 'six', version: '1.17.0' }],
+  },
   { action: 'open', files: [{ path: 'main.ts', text: 'const n=1;' }] },
   { action: 'open', source: project.snapshot },
   { action: 'read', project, path: 'main.ts' },

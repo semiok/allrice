@@ -84,6 +84,7 @@ export {
   type CloudOperationView,
 } from './cloud-operation-view.ts';
 export * from './cloud-execution.ts';
+export * from './project-resolution-diagnostics.ts';
 export { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 export * from './runtime-governed-bridge.ts';
 export * from './local-command-profile.ts';

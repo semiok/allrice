@@ -40,6 +40,52 @@ const render = (op: CloudOperationView, busy = false) =>
     <CloudOperationCard op={op} busy={busy} onAct={() => {}} />,
   );
 describe('Cloud/MCP approval presentation', () => {
+  it('labels dependency resolution without claiming installation success', () => {
+    const op = view();
+    op.snapshot.status = 'succeeded';
+    op.approval = null;
+    op.mcpAuthorization = null;
+    op.proposal = {
+      kind: 'cloud',
+      script: 'fixed controller',
+      inputs: [],
+      outputs: [],
+      limits: {
+        timeoutMs: 60000,
+        outputBytes: 32768,
+        artifactBytes: 512000,
+        memoryMiB: 512,
+        cpuMillis: 1000,
+        pids: 64,
+      },
+      network: {
+        mode: 'controlled_https',
+        origins: ['https://registry.npmjs.org'],
+      },
+      dependencyResolution: {
+        action: 'resolve',
+        manager: 'pnpm',
+        packages: [{ name: 'is-number', version: '7.0.0' }],
+        resourceProfile: 'standard',
+      },
+    };
+    const html = render(op);
+    expect(html).toContain('依赖准备');
+    expect(html).toContain('1 个依赖包');
+    expect(html).toContain('已解析 · 尚未安装');
+    expect(html).not.toContain('安装成功');
+    expect(html).toContain('is-number@7.0.0');
+    op.snapshot.status = 'failed';
+    op.result = {
+      output: 'Package manager diagnostic',
+      code: 'PROJECT_RESOLUTION_LIMIT',
+      trusted: false,
+    };
+    const failed = render(op);
+    expect(failed).toContain('依赖规模超过当前环境的上限，未开始安装。');
+    expect(failed).not.toContain('已解析 · 尚未安装');
+    expect(failed).not.toContain('安装成功');
+  });
   it('shows saved-project commands and versions without presenting them as scripts or third-party calls', () => {
     const op = view();
     op.snapshot.status = 'succeeded';
