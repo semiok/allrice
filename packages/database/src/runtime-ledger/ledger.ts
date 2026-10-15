@@ -594,13 +594,15 @@ export function createRuntimeOperationLedger(options: {
         throw new RuntimeLedgerError('scope_mismatch');
     }
     await assertRun(tx, row.snapshot.binding.task, true);
-    await assertTarget(tx, row.snapshot);
     const decision = await options.admission({
       transaction: tx,
       binding: row.snapshot.binding,
       phase,
       now: at,
     });
+    // Admission locks policy controls before target authority. Health refresh
+    // uses the same order; taking the target first deadlocks a live heartbeat.
+    await assertTarget(tx, row.snapshot);
     if (decision?.status === 'waiting_user')
       throw new RuntimeLedgerError('unavailable');
   }
@@ -890,13 +892,13 @@ export function createRuntimeOperationLedger(options: {
         ensureRootAdmits(root, at);
         await assertRun(tx, root.task, true);
         await assertRun(tx, snapshot.binding.task, true);
-        await assertTarget(tx, snapshot);
         const decision = await options.admission({
           transaction: tx,
           binding: snapshot.binding,
           phase: 'create',
           now: at,
         });
+        await assertTarget(tx, snapshot);
         ensureRootAdmits(root, await now(tx));
         await linkRun(tx, snapshot.binding.task);
         const budgets = await tx<
