@@ -35,6 +35,7 @@ import {
   enterMethodChat,
   EmployeeMethodChatError,
   explicitEmployeeMethodTestIntent,
+  explicitEmployeeMethodCommonTestIntent,
   employeeMethodRequestedScope,
   explicitEmployeeMethodTestRetryIntent,
   assertEmployeeMethodDepartmentRequest,
@@ -113,6 +114,9 @@ const inputFor = (b: Binding) => ({
   candidateRevisionId: b.candidate_revision_id,
   candidateDigest: b.candidate_digest,
   sceneId: b.scene_id,
+  ...(b.candidate_snapshot.content.testCoverage
+    ? { coverageDigest: b.candidate_snapshot.content.testCoverage.digest }
+    : {}),
   ...(b.candidate_snapshot.content.sharedTarget
     ? { sharedTarget: b.candidate_snapshot.content.sharedTarget }
     : {}),
@@ -172,7 +176,9 @@ async function currentBinding(tx: Tx, b: Binding, admission = false) {
     runtimePolicyDigest(current.audience ?? null) !==
       runtimePolicyDigest(b.candidate_snapshot.content.audience ?? null) ||
     runtimePolicyDigest(current.sharedTarget ?? null) !==
-      runtimePolicyDigest(b.candidate_snapshot.content.sharedTarget ?? null)
+      runtimePolicyDigest(b.candidate_snapshot.content.sharedTarget ?? null) ||
+    current.testCoverage?.digest !==
+      b.candidate_snapshot.content.testCoverage?.digest
   )
     throw new EmployeeContentError('source_changed');
   return { instance, current };
@@ -215,6 +221,9 @@ async function dto(tx: Tx, context: Identity, testId: string) {
     candidateRevisionId: b.candidate_revision_id,
     candidateDigest: b.candidate_digest,
     dependencyDigest: b.dependency_digest,
+    ...(b.candidate_snapshot.content.testCoverage
+      ? { coverageDigest: b.candidate_snapshot.content.testCoverage.digest }
+      : {}),
     sceneId: b.scene_id,
     caseId: b.case_id,
     environment: b.environment,
@@ -320,6 +329,8 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
             retry.candidate_snapshot.content.setRevision ||
           args.candidateRevisionId !== retry.candidate_revision_id ||
           args.candidateDigest !== retry.candidate_digest ||
+          args.coverageDigest !==
+            retry.candidate_snapshot.content.testCoverage?.digest ||
           args.sceneId !== retry.scene_id ||
           args.caseId !== retry.case_id
         )
@@ -355,6 +366,12 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
         snapshot.instance!.source.employeeVersionId
       )
         throw new EmployeeContentError('source_changed');
+      if (
+        content.testCoverage &&
+        !args.retryOfTestId &&
+        !explicitEmployeeMethodCommonTestIntent(text)
+      )
+        throw new EmployeeMethodChatError('explicit_method_request_required');
       const [base] = retry
         ? await tx`select employee_id,revision_id id,frozen_runtime_profile runtime_profile,frozen_definition definition
           from allrice_platform_employee_test_runs where id=${retry.test_id} and purpose='method_candidate'`
@@ -475,6 +492,7 @@ export async function readEmployeeMethodActivationTest(
     candidateRevisionId: result.candidateRevisionId,
     candidateDigest: result.candidateDigest,
     dependencyDigest: result.dependencyDigest,
+    ...(result.coverageDigest ? { coverageDigest: result.coverageDigest } : {}),
     assertion: result.assertion,
     coverage: result.coverage,
   };

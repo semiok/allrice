@@ -1,4 +1,5 @@
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
+import { departmentCommonAcceptancePhrases } from './employee-method-common.fixture.ts';
 import { departmentMethodAcceptancePhrases as phrases } from './employee-method-department.fixture.ts';
 import { companyMethodAcceptancePhrases as companyPhrases } from './employee-method-company.fixture.ts';
 import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
@@ -6,6 +7,8 @@ import { namedMethodDepartmentRequest } from './employee-method-department-inten
 import { expect, it } from 'vitest';
 import {
   explicitEmployeeMethodIntent,
+  explicitEmployeeMethodCommonIntent,
+  explicitEmployeeMethodCommonTestIntent,
   employeeMethodRequestedScope,
   explicitEmployeeMethodRestoreIntent,
   explicitEmployeeMethodReferenceIntent,
@@ -15,6 +18,67 @@ import {
 } from './employee-method-chat.ts';
 const retryId = 'abcdefab-0000-4000-8000-000000000001';
 const selectedPhrases = selectedDepartmentMethodAcceptancePhrases('验收运营部');
+const commonPhrases = departmentCommonAcceptancePhrases('验收财务部');
+it.each([
+  commonPhrases.save,
+  commonPhrases.correct,
+  '请保存本部门的共同执行要求：保留原始数据。',
+  '请修改我们部门的所有场景共用的执行要求候选。',
+  '刚才连接中断，尚未执行修改。现在只续办这一步：请更新本部门的通用执行要求：保留版本。',
+])(
+  'recognizes a direct common-layer edit, including the exact planned QA wording: %s',
+  (text) => {
+    expect(explicitEmployeeMethodCommonIntent(text)).toBe(true);
+    expect(employeeMethodRequestedScope(text)).toBe('department');
+  },
+);
+it.each([
+  `“${commonPhrases.save}”`,
+  `资料如下：\n${commonPhrases.save}`,
+  `\`\`\`\n${commonPhrases.save}\n\`\`\``,
+  `> ${commonPhrases.save}`,
+  `请翻译：${commonPhrases.save}`,
+  commonPhrases.save + '只在本次任务中使用。',
+  commonPhrases.save + '不要长期保存。',
+  '请不要保存本部门的共同执行要求。',
+  '请修改部门「验收财务部」的“共同执行要求”工作场景：只改该场景。',
+  '请更新本部门的金额汇总执行要求：本场景需要整数分。',
+  '请修改我的工作方法：改成公司通用执行要求。',
+])(
+  'does not widen a scene, source or temporary request to shared common requirements: %s',
+  (text) => {
+    expect(explicitEmployeeMethodCommonIntent(text)).toBe(false);
+  },
+);
+it('requires separate direct authorization for the planned full-coverage test', () => {
+  expect(explicitEmployeeMethodTestIntent(commonPhrases.test)).toBe(true);
+  expect(employeeMethodRequestedScope(commonPhrases.test)).toBe('department');
+  expect(explicitEmployeeMethodTestIntent(commonPhrases.save)).toBe(false);
+  expect(explicitEmployeeMethodCommonTestIntent(commonPhrases.test)).toBe(true);
+  expect(
+    explicitEmployeeMethodCommonTestIntent(
+      `刚才连接中断，尚未执行修改。现在只续办这一步：${commonPhrases.test}`,
+    ),
+  ).toBe(true);
+  expect(
+    explicitEmployeeMethodCommonTestIntent(
+      '网络中断了。请测试本部门的共同执行要求候选。',
+    ),
+  ).toBe(true);
+  expect(
+    explicitEmployeeMethodCommonTestIntent(
+      '请测试本部门的“金额合计”工作场景候选。',
+    ),
+  ).toBe(false);
+  expect(
+    explicitEmployeeMethodCommonTestIntent(
+      commonPhrases.test + '暂时不要测试。',
+    ),
+  ).toBe(false);
+  expect(
+    explicitEmployeeMethodTestIntent(commonPhrases.test + '本次不验证。'),
+  ).toBe(false);
+});
 it.each([
   selectedPhrases.save,
   '请调整部门「验收运营部」的“金额合计”工作场景候选。请保存为长期方法。',

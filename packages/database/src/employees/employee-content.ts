@@ -257,6 +257,7 @@ async function assemble(
   sql: ContentSql,
   candidate?: { row: ContentSetRow; revision: ContentRevisionRow },
   lock = false,
+  requireAllLayers = false,
 ) {
   const platform = await platformContent(context, target, sql);
   const rows = await inheritedRows(context, target, ownership, sql);
@@ -281,8 +282,10 @@ async function assemble(
     if (
       !(await getContentAccess(context, contentOwnership(row), sql, lock))
         .canRead
-    )
+    ) {
+      if (requireAllLayers) throw new DataAccessError('authorization_denied');
       continue;
+    }
     const rev =
       row.id === candidate?.row.id
         ? candidate.revision
@@ -359,6 +362,57 @@ async function assemble(
     semanticConsistency: 'not_proven',
   };
   return { platform, rows, common, scenes, resolved, validation };
+}
+
+/** A common edit affects the entire shared execution view, including scenes
+ * inherited from the company. The server owns this bounded, immutable list;
+ * neither the authoring model nor the limited test-history query defines it. */
+function departmentCommonTestCoverage(
+  selection: Awaited<ReturnType<typeof resolveEmployeeMethodTarget>>,
+  target: ResolvedTarget,
+  row: ContentSetRow,
+  candidate: ContentRevisionRow,
+  active: ContentRevisionRow | null,
+  result: Awaited<ReturnType<typeof assemble>>,
+) {
+  if (
+    selection.sharedTarget?.scope !== 'department' ||
+    runtimePolicyDigest(candidate.manifest.common) ===
+      runtimePolicyDigest(active?.manifest.common ?? [])
+  )
+    return undefined;
+  const scenes = result.scenes.map((scene) => ({
+    sceneId: scene.id,
+    name: scene.name,
+    inherited: !candidate.manifest.scenes.some((own) => own.id === scene.id),
+  }));
+  const issues = result.validation.issues.map((issue) => issue.message);
+  if (!scenes.length) issues.push('没有可验证的场景，不能启用共同执行要求。');
+  if (
+    [
+      ...result.common,
+      ...result.scenes.flatMap((scene) => scene.references),
+    ].some((ref) => !['requirement', 'procedure'].includes(ref.sourceKind))
+  )
+    issues.push('受影响场景包含当前固定文字测试不支持的资料或流程；不能跳过。');
+  return {
+    digest: runtimePolicyDigest({
+      setId: row.id,
+      setRevision: row.revision,
+      candidateRevisionId: candidate.id,
+      candidateDigest: candidate.digest,
+      employeeVersionId: target.versionId,
+      sharedTarget: selection.sharedTarget,
+      audience: selection.audience,
+      dependencyDigest: result.validation.dependencyDigest,
+      common: result.common,
+      scenes: result.scenes,
+    }),
+    scenes,
+    valid: !issues.length,
+    issues,
+    coverage: '覆盖该部门与继承公司的共享场景；不读取或验证个人定制内容。',
+  };
 }
 
 async function saveTextEdits(
@@ -886,6 +940,25 @@ export async function inspectEmployeeMethodContent(
       and t.instance_id=${instanceId} and t.set_id=${row.id} and t.candidate_revision_id=${candidate.id} and t.candidate_digest=${candidate.digest}
     order by t.created_at desc,t.test_id limit 32`
     : [];
+  const testCoverage =
+    candidate && selection.sharedTarget?.scope === 'department'
+      ? departmentCommonTestCoverage(
+          selection,
+          target,
+          row,
+          candidate,
+          active,
+          await assemble(
+            context,
+            target,
+            selection.ownership,
+            tx,
+            { row, revision: candidate },
+            false,
+            true,
+          ),
+        )
+      : undefined;
   return {
     view,
     instanceId,
@@ -895,6 +968,7 @@ export async function inspectEmployeeMethodContent(
     candidate: candidate ? revisionDto(candidate) : null,
     active: active ? { id: active.id, digest: active.digest } : null,
     sources,
+    ...(testCoverage ? { testCoverage } : {}),
     // Discovery only. test_status/activation rechecks dependency and authority;
     // a stored 'succeeded' state alone is not a current passing assertion.
     candidateTests: tests.map((t) => ({
@@ -947,14 +1021,25 @@ export async function freezeEmployeeMethodActivationCandidate(
     tx,
     { row, revision },
     true,
+    Boolean(selection.sharedTarget),
   );
   if (!result.validation.valid)
     throw new EmployeeContentError('validation_failed');
   const active = await readRevision(tx, row.active_revision_id);
+  const testCoverage = departmentCommonTestCoverage(
+    selection,
+    target,
+    row,
+    revision,
+    active,
+    result,
+  );
   if (
     selection.sharedTarget &&
-    (runtimePolicyDigest(revision.manifest.common) !==
-      runtimePolicyDigest(active?.manifest.common ?? []) ||
+    ((selection.sharedTarget.scope === 'company' &&
+      runtimePolicyDigest(revision.manifest.common) !==
+        runtimePolicyDigest(active?.manifest.common ?? [])) ||
+      (testCoverage && !testCoverage.valid) ||
       revision.manifest.scenes.some((scene) =>
         scene.references.some(
           (ref) => !['requirement', 'procedure'].includes(ref.sourceKind),
@@ -966,6 +1051,7 @@ export async function freezeEmployeeMethodActivationCandidate(
     ...(selection.sharedTarget
       ? { sharedTarget: selection.sharedTarget, audience: selection.audience }
       : {}),
+    ...(testCoverage ? { testCoverage } : {}),
     setId: row.id,
     setRevision: row.revision,
     candidateRevisionId: revision.id,
@@ -987,6 +1073,7 @@ export async function freezeEmployeeMethodCandidate(
   context: EmployeeContentContext,
   input: Parameters<typeof freezeEmployeeMethodActivationCandidate>[1] & {
     sceneId: string;
+    coverageDigest?: string;
   },
   tx: ContentTx,
 ) {
@@ -996,7 +1083,13 @@ export async function freezeEmployeeMethodCandidate(
     tx,
   );
   const scene = result.scenes.find((s) => s.id === input.sceneId);
-  if (!scene || !result.manifest.scenes.some((s) => s.id === scene.id))
+  if (
+    !scene ||
+    (result.testCoverage
+      ? input.coverageDigest !== result.testCoverage.digest
+      : input.coverageDigest !== undefined ||
+        !result.manifest.scenes.some((s) => s.id === scene.id))
+  )
     throw new EmployeeContentError('source_changed');
   const selected = new Set(
     [...result.common, ...scene.references].map(exactKey),
@@ -1008,6 +1101,7 @@ export async function freezeEmployeeMethodCandidate(
     ...(result.sharedTarget
       ? { sharedTarget: result.sharedTarget, audience: result.audience }
       : {}),
+    ...(result.testCoverage ? { testCoverage: result.testCoverage } : {}),
     setId: result.setId,
     setRevision: result.setRevision,
     candidateRevisionId: result.candidateRevisionId,

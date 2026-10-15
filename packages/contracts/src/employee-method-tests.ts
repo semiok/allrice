@@ -19,6 +19,7 @@ export const EmployeeMethodTestStartSchema = z
     expectedRevision: z.number().int().positive(),
     candidateRevisionId: UuidSchema,
     candidateDigest: ChecksumSchema,
+    coverageDigest: ChecksumSchema.optional(),
     sceneId: UuidSchema,
     caseId: EmployeeMethodTestCaseIdSchema,
     retryOfTestId: UuidSchema.optional(),
@@ -54,6 +55,7 @@ export const EmployeeMethodTestSchema = z
     candidateRevisionId: UuidSchema,
     candidateDigest: ChecksumSchema,
     dependencyDigest: ChecksumSchema,
+    coverageDigest: ChecksumSchema.optional(),
     sceneId: UuidSchema,
     caseId: EmployeeMethodTestCaseIdSchema,
     environment: z.enum([

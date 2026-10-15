@@ -24,6 +24,36 @@ const companyTarget = {
   employeeId: departmentTarget.employeeId,
 };
 
+it('roundtrips server coverage digest for a department common candidate through the native provider schema', async () => {
+  const args = {
+    sharedTarget: departmentTarget,
+    expectedRevision: 3,
+    candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+    candidateDigest: `sha256:${'a'.repeat(64)}`,
+    coverageDigest: `sha256:${'b'.repeat(64)}`,
+    sceneId: '00000000-0000-4000-8000-000000000002',
+    caseId: 'cny-total-v1',
+  };
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    args,
+    invalidArgs: { ...args, requiredSceneIds: [args.sceneId] },
+    inspectSchema(schema) {
+      expect(schema).toMatchObject({
+        properties: { coverageDigest: { type: 'string' } },
+      });
+    },
+    onToolCall: async (call) => {
+      expect(EmployeeMethodTestStartSchema.parse(call.arguments)).toEqual(args);
+      return {
+        modelContent: JSON.stringify({ coverageDigest: args.coverageDigest }),
+        summary: 'Server coverage preserved',
+      };
+    },
+  });
+}, 45000);
+
 it.each([companyTarget, departmentTarget])(
   'restoration preserves exact shared scope through native broker: %s',
   async (target) => {

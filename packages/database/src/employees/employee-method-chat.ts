@@ -183,6 +183,18 @@ export function explicitEmployeeMethodIntent(text: string) {
   return methodAuthoringHeader(withoutMethodRetryPreface(text));
 }
 
+/** A scene's own requirements never authorize editing the shared common layer.
+ * Reuse persistence/source checks, then constrain only the direct target. */
+export function explicitEmployeeMethodCommonIntent(text: string) {
+  if (!explicitEmployeeMethodIntent(text)) return false;
+  const raw = withoutMethodRetryPreface(text).replace(/^(?:[ \t]*\r?\n)+/u, '');
+  const request = namedMethodDepartmentRequest(raw)?.normalized ?? raw;
+  const header = request.split(/[。；;！!\n：:]/u, 1)[0]!.trim();
+  return /^(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制)(?:本部门|我们部门|我的部门|本公司|我们公司|公司|全公司)的(?:通用|共同|所有场景共用的)执行要求(?:候选|草稿)?$/u.test(
+    header,
+  );
+}
+
 /** Whole-method restore must name the selected immutable version in the user's
  * own leading request. A scene-only request cannot replace the whole manifest. */
 export function explicitEmployeeMethodRestoreIntent(
@@ -263,11 +275,16 @@ export function explicitEmployeeMethodRestoreIntent(
   );
 }
 
-export function explicitEmployeeMethodTestIntent(text: string) {
+function methodTestRequest(text: string) {
   const request = withoutMethodRetryPreface(text);
   const normalized = request
     .replace(/^((?:请)?(?:为我|帮我)?)(?:验证|测试)/u, '$1更新')
     .replace(/^(please )?(?:test|validate)\s+/i, '$1update ');
+  return { request, normalized };
+}
+
+export function explicitEmployeeMethodTestIntent(text: string) {
+  const { request, normalized } = methodTestRequest(text);
   return (
     normalized !== request &&
     !methodOperationClauses(request)
@@ -278,6 +295,13 @@ export function explicitEmployeeMethodTestIntent(text: string) {
         ),
       ) &&
     explicitEmployeeMethodIntent(normalized.replace(/\.(?=\s*$)/u, ''))
+  );
+}
+
+export function explicitEmployeeMethodCommonTestIntent(text: string) {
+  return (
+    explicitEmployeeMethodTestIntent(text) &&
+    explicitEmployeeMethodCommonIntent(methodTestRequest(text).normalized)
   );
 }
 
@@ -513,6 +537,9 @@ function assertMethodEditIntent(
     !explicitEmployeeMethodIntent(text) ||
     employeeMethodRequestedScope(text) !==
       (args.sharedTarget?.scope ?? 'personal') ||
+    (args.sharedTarget &&
+      args.section === 'common' &&
+      !explicitEmployeeMethodCommonIntent(text)) ||
     (args.references?.length && !explicitEmployeeMethodReferenceIntent(text)) ||
     (args.removeReferences?.length &&
       !explicitEmployeeMethodRemovalIntent(text, 'reference')) ||
@@ -812,7 +839,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
   const { scope, requestId } = employeeChatIdentity(input);
   if (
     args.sharedTarget &&
-    (args.section !== 'scene' ||
+    ((args.section !== 'scene' && args.sharedTarget.scope !== 'department') ||
       args.references?.length ||
       args.removeReferences?.length)
   )
