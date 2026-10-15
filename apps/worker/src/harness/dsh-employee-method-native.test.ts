@@ -12,7 +12,58 @@ import {
 } from '@allrice/contracts';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
 
+const departmentTarget = {
+  scope: 'department',
+  setId: '00000000-0000-4000-8000-000000000011',
+  employeeId: '00000000-0000-4000-8000-000000000012',
+  departmentId: '00000000-0000-4000-8000-000000000013',
+};
+
 it.each([
+  {
+    canonicalName: 'workspace.employee.method.inspect',
+    wireName: 'workspace_employee_method_inspect',
+    schema: EmployeeMethodInspectSchema,
+    args: { view: 'candidate', scope: 'department' },
+  },
+  {
+    canonicalName: 'workspace.employee.method.save_candidate',
+    wireName: 'workspace_employee_method_save_candidate',
+    schema: EmployeeMethodSaveSchema,
+    args: {
+      sharedTarget: departmentTarget,
+      expectedRevision: 0,
+      section: 'scene',
+      scene: { name: '金额合计', appliesWhen: '本部门金额汇总' },
+      procedure: '整数分相加',
+      changeSummary: 'Department text candidate',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.test',
+    wireName: 'workspace_employee_method_test',
+    schema: EmployeeMethodTestStartSchema,
+    args: {
+      sharedTarget: departmentTarget,
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      sceneId: '00000000-0000-4000-8000-000000000002',
+      caseId: 'cny-total-v1',
+    },
+  },
+  {
+    canonicalName: 'workspace.employee.method.prepare_activation',
+    wireName: 'workspace_employee_method_prepare_activation',
+    schema: EmployeeMethodPrepareActivationSchema,
+    args: {
+      sharedTarget: departmentTarget,
+      expectedRevision: 1,
+      candidateRevisionId: '00000000-0000-4000-8000-000000000001',
+      candidateDigest: `sha256:${'a'.repeat(64)}`,
+      testIds: ['00000000-0000-4000-8000-000000000002'],
+    },
+  },
   {
     canonicalName: 'workspace.employee.method.restore_candidate',
     wireName: 'workspace_employee_method_restore_candidate',
@@ -143,9 +194,10 @@ it('passes candidate view through actual native DSH and excludes target authorit
     args: { view: 'candidate' },
     invalidArgs: { view: 'candidate', instanceId: 'foreign' },
     inspectSchema(schema) {
-      expect(Object.keys(schema.properties as object)).toEqual([
-        'view',
+      expect(Object.keys(schema.properties as object).sort()).toEqual([
         'beforeRevision',
+        'scope',
+        'view',
       ]);
     },
     onToolCall: async (call) => {
@@ -206,6 +258,7 @@ it('roundtrips nested scene edits and pinned source references with no activatio
         'requirements',
         'scene',
         'section',
+        'sharedTarget',
       ]);
     },
     onToolCall: async (call) => {

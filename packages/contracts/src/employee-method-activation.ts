@@ -1,10 +1,13 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { EmployeeMethodSharedTargetSchema } from './employee-content.ts';
 
-/** Target and approval are derived from the live session, never model inputs. */
+/** Shared selection is checked against the live session; approval is never a
+ * model input. Omission preserves the existing personal method contract. */
 export const EmployeeMethodPrepareActivationSchema = z
   .object({
+    sharedTarget: EmployeeMethodSharedTargetSchema.optional(),
     expectedRevision: z.number().int().positive(),
     candidateRevisionId: UuidSchema,
     candidateDigest: ChecksumSchema,

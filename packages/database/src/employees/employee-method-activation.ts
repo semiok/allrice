@@ -10,6 +10,7 @@ import {
   methodActivationDecline,
   type EmployeeContentManifest,
 } from '@allrice/contracts';
+import { resolveEmployeeMethodTarget } from './employee-method-target.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { DataAccessError } from '../data.ts';
 import { enterMethodChat } from './employee-method-chat.ts';
@@ -141,7 +142,9 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
     )
     .join('\n');
   const question = [
-    `是否启用「${name}」的个人工作方法？仅影响你自己的这个 AI 员工。`,
+    s.content.sharedTarget
+      ? `是否启用「${s.content.audience!.employeeName}」的部门工作方法？范围：${s.content.audience!.departmentName}（${s.content.sharedTarget.departmentId}）。影响本部门使用该公司 AI 员工及其个人定制实例的用户；公司 AI 员工 ID：${s.content.sharedTarget.employeeId}。`
+      : `是否启用「${name}」的个人工作方法？仅影响你自己的这个 AI 员工。`,
     `候选 r${s.content.setRevision} · ${s.content.candidateRevisionId.slice(0, 8)} · ${s.content.candidateDigest.slice(7, 19)}`,
     `通用要求：${s.changes.commonChanged ? '已调整' : '保持原样'}；新增或调整场景：${s.changes.changedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}。`,
     `移除场景：${s.changes.removedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}；其他场景及原始历史保留。`,
@@ -260,6 +263,19 @@ export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
         and owner_id=${scope.actor.id} and instance_id=${instance.id} and session_id=${input.sessionId}
       for update nowait`;
       if (!r) throw new DataAccessError('not_found');
+      const prepared = r.snapshot as Snapshot;
+      if (runtimePolicyDigest(prepared) !== r.snapshot_digest)
+        throw new EmployeeContentError('source_changed');
+      // Revocation also blocks an old consumed receipt. A readback must not
+      // require the historical candidate to remain the current candidate.
+      const selection = await resolveEmployeeMethodTarget(
+        scope,
+        instance.id,
+        prepared.content.sharedTarget,
+        tx,
+      );
+      if (selection.setId !== prepared.content.setId)
+        throw new EmployeeContentError('source_changed');
       if (r.consumed_at) {
         const receipt = EmployeeContentReceiptSchema.parse(r.response);
         const [current] =
@@ -279,14 +295,14 @@ export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
         tx,
         r as Parameters<typeof requireEmployeeMethodActivationAnswer>[1],
       );
-      const prepared = r.snapshot as Snapshot;
-      if (runtimePolicyDigest(prepared) !== r.snapshot_digest)
-        throw new EmployeeContentError('source_changed');
       const current = await snapshot(
         tx,
         input,
         instance.id,
         {
+          ...(prepared.content.sharedTarget
+            ? { sharedTarget: prepared.content.sharedTarget }
+            : {}),
           expectedRevision: prepared.content.setRevision,
           candidateRevisionId: prepared.content.candidateRevisionId,
           candidateDigest: prepared.content.candidateDigest,
@@ -299,12 +315,8 @@ export async function activateEmployeeMethodFromChat(input: EmployeeChatCall) {
       const base = {
         workspaceId: scope.workspaceId,
         setId: current.content.setId,
-        ownership: {
-          scope: 'personal' as const,
-          organizationId: scope.organizationId,
-          ownerId: scope.actor.id,
-        },
-        target: { kind: 'instance' as const, instanceId: instance.id },
+        ownership: selection.ownership,
+        target: selection.target,
         candidateRevisionId: current.content.candidateRevisionId,
         candidateDigest: current.content.candidateDigest,
         changeSummary: '用户确认准确候选与固定样例结果后启用',
