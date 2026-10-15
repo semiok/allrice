@@ -35,6 +35,7 @@ COMPILED_TIMEOUT_MAX = 1_800_000
 NODE_IMAGE = 'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5'
 # Docker merges the pinned image defaults even when create receives Env=[].
 # Accept exactly those public image values, never host or caller additions.
+RESOLUTION_SUPERVISORS = {'13620fbe062f7d1ccec2bedb2db5f8278a356d3310e8784755346e14ce7637ae'}
 SANDBOX_IMAGE_ENV = {
     NODE_IMAGE: ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
                  'NODE_VERSION=22.23.2', 'YARN_VERSION=1.22.22'],
@@ -251,6 +252,7 @@ def live_sandbox_budget(heartbeat):
 def sandbox_lease_valid(container, created, deadline, now):
     config,host = container['Config'],container['HostConfig']
     labels=config['Labels'];attempt=labels.get(ATTEMPT,'')
+    resolution=labels.get('xyz.bplabs.allrice.cloud.project-resolution') == 'v1'
     try:
         cap=int(labels.get(SANDBOX+'-limit','0'));started=int(labels.get(SANDBOX+'-started','0'))
         cmd=config.get('Cmd',[])
@@ -259,11 +261,13 @@ def sandbox_lease_valid(container, created, deadline, now):
             and 0 < started <= created+1000 and started < deadline <= started+cap
             and SERVICE not in labels and 'xyz.bplabs.allrice.repository.profile' not in labels
             and 'xyz.bplabs.allrice.project.profile' not in labels
+            and labels.get('xyz.bplabs.allrice.cloud.project-resolution') in (None,'v1')
+            and (not resolution or labels.get('xyz.bplabs.allrice.cloud.network') == 'controlled-https-v1')
             and config.get('Image') in (NODE_IMAGE,PYTHON_IMAGE) and config.get('User')=='65532:65532'
             and config.get('Entrypoint')==['/usr/local/bin/node']
             and sorted(config.get('Env') or []) == sorted(SANDBOX_IMAGE_ENV[config['Image']])
             and len(cmd)==3 and cmd[:2]==['--input-type=module','--eval']
-            and hashlib.sha256(cmd[2].encode()).hexdigest() in SANDBOX_SUPERVISORS
+            and hashlib.sha256(cmd[2].encode()).hexdigest() in (RESOLUTION_SUPERVISORS if resolution else SANDBOX_SUPERVISORS)
             and host.get('Runtime')=='runsc' and host.get('NetworkMode')=='none'
             and host.get('ReadonlyRootfs') is True and not host.get('Privileged')
             and host.get('CapDrop')==['ALL'] and not host.get('CapAdd')
@@ -271,7 +275,7 @@ def sandbox_lease_valid(container, created, deadline, now):
             and not host.get('Binds') and all(m.get('Type')=='tmpfs' and m.get('Destination')=='/tmp' for m in container.get('Mounts',[]))
             and 128*1024**2 <= host.get('Memory',0) <= 512*1024**2
             and host.get('MemorySwap')==host.get('Memory') and host.get('PidsLimit')==64
-            and host.get('Tmpfs')=={'/tmp':'rw,nosuid,nodev,noexec,size=32m,mode=1777'}):
+            and host.get('Tmpfs')=={'/tmp':'rw,nosuid,nodev,exec,size=256m,mode=1777' if resolution else 'rw,nosuid,nodev,noexec,size=32m,mode=1777'}):
             return False
         fd=os.open(SANDBOX_LEASES+'/'+attempt+'.json',os.O_RDONLY|os.O_NOFOLLOW)
         with os.fdopen(fd,encoding='utf8') as source:
@@ -383,7 +387,7 @@ def tick(capacity):
     temporary = STATE + ".new"
     with open(temporary, "w", encoding="utf8") as output:
         json.dump({"at": time.time(), "running": running, 'repositoryCompiled': compiled_budget(),
-                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(),
+                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(), 'projectResolution':1,
                    "availableBytes": memory_available()}, output)
     os.replace(temporary, STATE)
 
@@ -420,6 +424,7 @@ def attest():
                       "repositoryCompiled": live_compiled_budget(heartbeat),
                       "projectWebDevelopment": live_project_web_budget(heartbeat),
                       "sandboxExecution": live_sandbox_budget(heartbeat),
+                      "projectResolution": 1 if heartbeat.get("projectResolution") == 1 else None,
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))
     return 0 if ready else 1

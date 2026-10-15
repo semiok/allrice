@@ -19,3 +19,5 @@ export * from './project-logs.js';
 export * from './sandbox-network-policy.js';
 export * from './sandbox-network-session.js';
 export * from './sandbox-network-docker.js';
+
+export * from './project-resolution.ts';

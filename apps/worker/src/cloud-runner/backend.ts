@@ -45,6 +45,8 @@ import {
   type SandboxExecutionBudgetState,
   type SandboxExecutionBudgetSpec,
   type SandboxExecutionRenewal,
+  ProjectDependencyResolutionReceiptSchema,
+  type ProjectDependencyResolutionReceipt,
 } from '@allrice/contracts';
 import {
   staticBrowserImageV1,
@@ -121,6 +123,7 @@ export class CloudProjectPreparationError extends CloudRunnerError {
   readonly notStarted = true;
 }
 export type CloudRunResult = {
+  resolution?: ProjectDependencyResolutionReceipt;
   serviceStopReason?: ProjectServiceStopCause;
   containerId: string;
   exitCode: number | null;
@@ -360,6 +363,13 @@ export const cloudNetworkBudgetSupervisor = cloudBudgetSupervisor.replace(
   'env:{PATH:',
   `env:{...${JSON.stringify(sandboxProxyEnvironment)},PATH:`,
 );
+/** Only the fixed resolver may preserve its typed diagnostic receipt on a
+ * nonzero manager exit. Ordinary tenant scripts retain their original behavior. */
+export const cloudResolutionSupervisor = cloudNetworkBudgetSupervisor.replace(
+  'if(!overflow&&code===0)for(const file of input.outputs)',
+  'if(!overflow)for(const file of input.outputs)',
+);
+const resolutionLabel = 'xyz.bplabs.allrice.cloud.project-resolution';
 const networkLabel = 'xyz.bplabs.allrice.cloud.network';
 const networkPolicyLabel = 'xyz.bplabs.allrice.cloud.network-policy';
 
@@ -711,6 +721,10 @@ export class CloudRunnerBackend {
     );
     if (
       config.Labels[networkLabel] !== 'controlled-https-v1' ||
+      (config.Labels[resolutionLabel] !== undefined &&
+        (config.Labels[resolutionLabel] !== 'v1' ||
+          config.Labels['xyz.bplabs.allrice.cloud.sandbox-execution'] !==
+            'v1')) ||
       !/^sha256:[a-f0-9]{64}$/.test(config.Labels[networkPolicyLabel] ?? '') ||
       config.Labels['xyz.bplabs.allrice.cloud.kind'] ||
       ![cloudToolchainImageV1, cloudPythonImageV1].includes(
@@ -720,9 +734,11 @@ export class CloudRunnerBackend {
       !runtimeContractEqual(config.Cmd, [
         '--input-type=module',
         '--eval',
-        config.Labels['xyz.bplabs.allrice.cloud.sandbox-execution'] === 'v1'
-          ? cloudNetworkBudgetSupervisor
-          : cloudNetworkSupervisor,
+        config.Labels[resolutionLabel] === 'v1'
+          ? cloudResolutionSupervisor
+          : config.Labels['xyz.bplabs.allrice.cloud.sandbox-execution'] === 'v1'
+            ? cloudNetworkBudgetSupervisor
+            : cloudNetworkSupervisor,
       ]) ||
       !runtimeContractEqual(config.Entrypoint, ['/usr/local/bin/node']) ||
       !runtimeContractEqual(config.Env ?? [], image.Config.Env ?? []) ||
@@ -747,7 +763,10 @@ export class CloudRunnerBackend {
       h.Memory > 512 * 1024 ** 2 ||
       h.MemorySwap !== h.Memory ||
       !runtimeContractEqual(h.Tmpfs, {
-        '/tmp': 'rw,nosuid,nodev,noexec,size=32m,mode=1777',
+        '/tmp':
+          config.Labels[resolutionLabel] === 'v1'
+            ? 'rw,nosuid,nodev,exec,size=256m,mode=1777'
+            : 'rw,nosuid,nodev,noexec,size=32m,mode=1777',
       })
     )
       throw new CloudRunnerError('SANDBOX_NETWORK_CONTAINER_CHANGED');
@@ -1040,6 +1059,22 @@ export class CloudRunnerBackend {
       artifacts.length !== command.arguments.outputs.length
     )
       reason = 'failed';
+    let resolution: ProjectDependencyResolutionReceipt | undefined;
+    if (c.Config.Labels[resolutionLabel] === 'v1') {
+      const raw = artifacts.find((a) => a.path === 'resolution.json');
+      if (raw) {
+        const parsed = ProjectDependencyResolutionReceiptSchema.safeParse(
+          JSON.parse(Buffer.from(raw.contentBase64, 'base64').toString('utf8')),
+        );
+        if (
+          !parsed.success ||
+          parsed.data.exitCode !== c.State.ExitCode ||
+          (parsed.data.status === 'resolved') !== (reason === 'completed')
+        )
+          throw new CloudRunnerError('PROJECT_RESOLUTION_RECEIPT_INVALID');
+        resolution = parsed.data;
+      } else if (reason === 'completed') reason = 'failed';
+    }
     return {
       containerId: c.Id,
       exitCode: c.State.ExitCode,
@@ -1048,7 +1083,8 @@ export class CloudRunnerBackend {
       output: redact(Buffer.concat(output).toString()),
       imageDigest: c.Config.Image,
       ...(repositoryIsolation ? { repositoryIsolation } : {}),
-      artifacts: reason === 'completed' ? artifacts : [],
+      ...(resolution ? { resolution } : {}),
+      artifacts: !resolution && reason === 'completed' ? artifacts : [],
       elapsedMs: Math.max(0, Date.now() - startedAt),
     };
   }
@@ -1145,6 +1181,7 @@ export class CloudRunnerBackend {
       options,
       false,
       command.imageDigest,
+      command.origin?.toolName === 'workspace.project',
     );
   }
 
@@ -1270,6 +1307,7 @@ export class CloudRunnerBackend {
     options: Parameters<CloudRunnerBackend['execute']>[2],
     office: boolean,
     imageDigest: string,
+    resolution = false,
   ): Promise<CloudRunResult> {
     return this.executeWithSlot(
       {
@@ -1286,6 +1324,7 @@ export class CloudRunnerBackend {
           validOptions,
           office,
           imageDigest,
+          resolution,
         ),
     );
   }
@@ -1777,6 +1816,7 @@ export class CloudRunnerBackend {
     imageDigest = office
       ? officeSandboxImage
       : cloudRuntimeImage(cloudToolchainImageV1, args.language),
+    resolution = false,
   ): Promise<CloudRunResult> {
     const command = { arguments: args },
       { attemptId } = options,
@@ -1786,13 +1826,16 @@ export class CloudRunnerBackend {
     await this.preflight(imageDigest);
     if (options.sandboxExecution) {
       const { stdout } = await attestWatchdog();
-      const guard = JSON.parse(stdout).sandboxExecution;
+      const attestation = JSON.parse(stdout),
+        guard = attestation.sandboxExecution;
       if (
         guard?.version !== 1 ||
         guard?.maximumTimeoutMs !== 3600000 ||
         guard?.physicalLeaseMs !== 5000
       )
         throw new CloudRunnerError('SANDBOX_EXECUTION_GUARD_UPGRADE_REQUIRED');
+      if (resolution && attestation.projectResolution !== 1)
+        throw new CloudRunnerError('PROJECT_RESOLUTION_GUARD_UPGRADE_REQUIRED');
     }
     if (isCompiledRepositoryExecution(options.repositoryExecution)) {
       const { stdout } = await attestWatchdog();
@@ -1894,15 +1937,17 @@ export class CloudRunnerBackend {
               : []),
             '--input-type=module',
             '--eval',
-            isCompiledRepositoryExecution(options.repositoryExecution)
-              ? repositoryCompiledSupervisor
-              : options.networkLease
-                ? executionBudget
-                  ? cloudNetworkBudgetSupervisor
-                  : cloudNetworkSupervisor
-                : executionBudget
-                  ? cloudBudgetSupervisor
-                  : cloudSupervisor,
+            resolution
+              ? cloudResolutionSupervisor
+              : isCompiledRepositoryExecution(options.repositoryExecution)
+                ? repositoryCompiledSupervisor
+                : options.networkLease
+                  ? executionBudget
+                    ? cloudNetworkBudgetSupervisor
+                    : cloudNetworkSupervisor
+                  : executionBudget
+                    ? cloudBudgetSupervisor
+                    : cloudSupervisor,
           ],
           User: options.repositoryExecution ? '0:0' : '65532:65532',
           WorkingDir: '/tmp',
@@ -1912,6 +1957,7 @@ export class CloudRunnerBackend {
           Env: [],
           Labels: {
             [attemptLabel]: attemptId,
+            ...(resolution ? { [resolutionLabel]: 'v1' } : {}),
             ...(executionBudget
               ? {
                   'xyz.bplabs.allrice.cloud.sandbox-execution': 'v1',
@@ -1978,7 +2024,9 @@ export class CloudRunnerBackend {
             CpuPeriod: 100_000,
             CpuQuota: limits.cpuMillis * 100,
             Tmpfs: {
-              '/tmp': `rw,nosuid,nodev,noexec,size=${office ? 96 : (options.repositoryExecution?.tmpfsMiB ?? 32)}m,mode=1777`,
+              '/tmp': resolution
+                ? 'rw,nosuid,nodev,exec,size=256m,mode=1777'
+                : `rw,nosuid,nodev,noexec,size=${office ? 96 : (options.repositoryExecution?.tmpfsMiB ?? 32)}m,mode=1777`,
             },
             ShmSize: 8 * 1024 * 1024,
             LogConfig: {
@@ -2642,13 +2690,15 @@ export class CloudRunnerBackend {
         startupMs: Date.now() - startedAt,
       });
       while ((await this.inspect(attemptId))?.State.Running) {
-        if (executionOptions.signal.aborted) {
-          reason = 'canceled';
+        // The preparation signal includes this same deadline. Test the clock
+        // first so its TimeoutError is not presented as a user cancellation.
+        if (Date.now() >= deadline) {
+          reason = 'deadline';
           await this.stop(attemptId);
           break;
         }
-        if (Date.now() >= deadline) {
-          reason = 'deadline';
+        if (executionOptions.signal.aborted) {
+          reason = 'canceled';
           await this.stop(attemptId);
           break;
         }

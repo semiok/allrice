@@ -67,9 +67,15 @@ export const RuntimeProjectPreparationSchema = z.discriminatedUnion('manager', [
       resourceProfile: z.enum(['standard', 'web-development']).optional(),
       lockPath: path.refine((s) => s.endsWith('pnpm-lock.yaml')),
       scripts: z.enum(['disabled', 'allow_in_isolated_copy']),
-      packages: z.array(RuntimeNpmPackageSchema).max(128),
+      packages: z.array(RuntimeNpmPackageSchema).max(256),
     })
-    .strict(),
+    .strict()
+    .refine(
+      (v) =>
+        v.packages.length <=
+        (v.resourceProfile === 'web-development' ? 256 : 128),
+      'project_package_count_exceeded',
+    ),
   z
     .object({
       version: z.literal(1),
@@ -88,6 +94,10 @@ export const RuntimeProjectPreparationSchema = z.discriminatedUnion('manager', [
 export type RuntimeProjectPreparation = z.infer<
   typeof RuntimeProjectPreparationSchema
 >;
+
+/** Existing Bridge releases advertise the v1 installer with a 128-package
+ * envelope. Larger cloud profiles must not be dispatched to those clients. */
+export const bridgeProjectPackageLimit = 128;
 
 /** Explicit bounded project profiles; the existing small-task limits stay intact. */
 export function projectPreparationLimits(spec: RuntimeProjectPreparation) {
@@ -176,9 +186,9 @@ export const RuntimeProjectPreparationEvidenceSchema = z
     managerVersion: z.string().max(32),
     platform: z.enum(['linux-amd64', 'linux-arm64']),
     runtimeImage: ChecksumSchema,
-    packageCount: z.number().int().min(0).max(128),
-    archiveHits: z.number().int().min(0).max(128),
-    downloadedArchives: z.number().int().min(0).max(128),
+    packageCount: z.number().int().min(0).max(256),
+    archiveHits: z.number().int().min(0).max(256),
+    downloadedArchives: z.number().int().min(0).max(256),
     downloadedBytes: z.number().int().min(0).max(128_000_000),
     installation: z.enum(['succeeded', 'failed', 'interrupted']),
     cacheVolume: z.string().regex(/^allrice-project-cache-[a-f0-9]{64}$/),

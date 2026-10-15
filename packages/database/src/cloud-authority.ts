@@ -1,4 +1,5 @@
 import { assertCloudExecutionBudget } from './cloud-execution-budget.ts';
+import { executionRequestConstraints } from './browser-execution-choice.ts';
 import { methodFileProof } from './employees/employee-method-file-runtime.ts';
 import {
   assertCloudNetworkAuthority,
@@ -22,6 +23,8 @@ import {
   PythonExecuteArgsSchema,
   runtimeContractEqual,
   type RuntimeActionBinding,
+  projectResolutionCloudArguments,
+  ProjectDependencyResolveInputSchema,
 } from '@allrice/contracts';
 import type postgres from 'postgres';
 import {
@@ -111,6 +114,9 @@ export function cloudCommandBinding(
       ...(payload.network !== 'none'
         ? { sandboxNetwork: 'controlled-https-v1' }
         : {}),
+      ...(payload.origin?.toolName === 'workspace.project'
+        ? { projectResolution: 'v1', tmpfsMiB: 256 }
+        : {}),
       ...(repositoryProof
         ? {
             supervisor: repositoryProof.profileId,
@@ -193,7 +199,16 @@ export async function checkCloudBindingAuthority(
   if (Boolean(origin || project) !== (stored.original_arguments !== null))
     throw new RuntimePolicyError('cloud_input_changed');
   if (origin) {
-    const normalized = normalizeCloudPythonArguments(stored.original_arguments);
+    const normalized =
+      origin.toolName === 'workspace.project'
+        ? CloudCommandInputSchema.parse(
+            projectResolutionCloudArguments(
+              ProjectDependencyResolveInputSchema.parse(
+                stored.original_arguments,
+              ),
+            ),
+          )
+        : normalizeCloudPythonArguments(stored.original_arguments);
     if (
       digest(stored.original_arguments) !== origin.argumentsDigest ||
       !runtimeContractEqual(normalized, payload.arguments)
@@ -239,7 +254,7 @@ export async function checkCloudBindingAuthority(
         'storage:write',
       ) ||
       !snapshot.data.capabilitySnapshot.bindings.toolNames.includes(
-        origin ? 'python.execute' : 'cloud.process.execute',
+        origin?.toolName ?? 'cloud.process.execute',
       ))
   )
     throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
@@ -269,25 +284,49 @@ export async function checkCloudBindingAuthority(
       !runtimeContractEqual(manifest.data, f.employee.definition)
     )
       throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
-    const [selection] = await tx<{ metadata: Record<string, unknown> }[]>`
+    if (origin.toolName === 'workspace.project') {
+      const [message] = await tx<{ text: string }[]>`
+        select coalesce(m.content->>'text','') as text from allrice_employee_runs e
+        join allrice_messages m on m.id=e.user_message_id and m.organization_id=e.organization_id
+          and m.workspace_id=e.workspace_id and m.owner_id=e.owner_id
+        where e.run_id=${binding.task.runId} and e.organization_id=${context.organizationId}
+          and e.workspace_id=${context.workspaceId} and e.owner_id=${context.actor.id} for share of m`;
+      if (!message)
+        throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+      const constraints = executionRequestConstraints(message.text);
+      if (constraints.localOnly || constraints.location === 'local')
+        throw new RuntimePolicyError('project_resolution_requires_cloud');
+      if (
+        !f.capabilitySnapshot.bindings.toolNames.includes(
+          'cloud.process.execute',
+        ) ||
+        !runtimeContractEqual(
+          origin.request,
+          ProjectDependencyResolveInputSchema.parse(stored.original_arguments),
+        )
+      )
+        throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
+    } else {
+      const [selection] = await tx<{ metadata: Record<string, unknown> }[]>`
       select metadata from allrice_audit_events where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
         and actor_id=${context.actor.id} and action='execution.location' and resource_type='managed_python'
         and metadata->>'runId'=${binding.task.runId} and metadata->>'callId'=${origin.callId} order by occurred_at limit 1`;
-    if (
-      selection?.metadata.requestDigest !==
-        digest({
-          toolName: 'python.execute',
-          arguments: stored.original_arguments,
-          purpose: 'python_charts',
-        }) ||
-      !runtimeContractEqual(
-        selection.metadata.choice &&
-          (selection.metadata.choice as { location?: string }).location,
-        'cloud',
-      ) ||
-      selection.metadata.localInputs !== false
-    )
-      throw new RuntimePolicyError('cloud_input_changed');
+      if (
+        selection?.metadata.requestDigest !==
+          digest({
+            toolName: 'python.execute',
+            arguments: stored.original_arguments,
+            purpose: 'python_charts',
+          }) ||
+        !runtimeContractEqual(
+          selection.metadata.choice &&
+            (selection.metadata.choice as { location?: string }).location,
+          'cloud',
+        ) ||
+        selection.metadata.localInputs !== false
+      )
+        throw new RuntimePolicyError('cloud_input_changed');
+    }
   }
   const [row] = await tx<
     {
@@ -418,13 +457,13 @@ export async function checkCloudBindingAuthority(
   assertCloudExecutionBudget(
     payload,
     snapshot.success ? snapshot.data : undefined,
-    Boolean(repositoryProof || method || origin),
+    Boolean(repositoryProof || method || origin?.toolName === 'python.execute'),
   );
   assertCloudNetworkAuthority(
     payload,
     profile,
     snapshot.success ? snapshot.data : undefined,
-    Boolean(repositoryProof || method || origin),
+    Boolean(repositoryProof || method || origin?.toolName === 'python.execute'),
   );
   const content = payload.arguments.inputs.map((file) => ({
     kind: 'storage_object' as const,

@@ -10,6 +10,8 @@ import {
   SandboxExecutionRequestSchema,
   SandboxExecutionBudgetSpecSchema,
 } from './sandbox-execution.ts';
+import { ProjectDependencyResolveInputSchema } from '../project-dependency-resolution.ts';
+import { projectResolutionCloudArguments } from '../project-resolution-script.ts';
 
 /** P15 fixed server-side runtime. Never inherited from a Bridge profile. */
 export const cloudToolchainImageV1 =
@@ -132,6 +134,18 @@ export const CloudPythonOriginSchema = z
   })
   .strict();
 export type CloudPythonOrigin = z.infer<typeof CloudPythonOriginSchema>;
+export const CloudProjectResolutionOriginSchema = z
+  .object({
+    toolName: z.literal('workspace.project'),
+    callId: z.string().min(1).max(255),
+    purpose: z.literal('project_dependency_resolution'),
+    argumentsDigest: ChecksumSchema,
+    request: ProjectDependencyResolveInputSchema,
+  })
+  .strict();
+export type CloudProjectResolutionOrigin = z.infer<
+  typeof CloudProjectResolutionOriginSchema
+>;
 export const CloudCommandSchema = z
   .object({
     capability: z.literal('cloud.process.execute'),
@@ -143,7 +157,9 @@ export const CloudCommandSchema = z
     ]),
     runtime: z.literal('runsc'),
     network: z.union([z.literal('none'), SandboxNetworkRequestSchema]),
-    origin: CloudPythonOriginSchema.optional(),
+    origin: z
+      .union([CloudPythonOriginSchema, CloudProjectResolutionOriginSchema])
+      .optional(),
     executionBudget: SandboxExecutionBudgetSpecSchema.optional(),
   })
   .strict()
@@ -154,7 +170,7 @@ export const CloudCommandSchema = z
       (command.arguments.execution &&
         command.executionBudget &&
         command.arguments.execution.kind !== command.executionBudget.kind) ||
-      (command.origin && command.executionBudget)
+      (command.origin?.toolName === 'python.execute' && command.executionBudget)
     )
       ctx.addIssue({
         code: 'custom',
@@ -168,10 +184,27 @@ export const CloudCommandSchema = z
         code: 'custom',
         message: 'cloud network/request mismatch',
       });
-    if (command.origin && command.arguments.language !== 'python')
+    if (
+      command.origin?.toolName === 'python.execute' &&
+      command.arguments.language !== 'python'
+    )
       ctx.addIssue({
         code: 'custom',
         message: 'canonical Python delegation requires the Python runtime',
+      });
+    if (
+      command.origin?.toolName === 'workspace.project' &&
+      (!command.executionBudget ||
+        JSON.stringify(command.arguments) !==
+          JSON.stringify(
+            CloudCommandInputSchema.parse(
+              projectResolutionCloudArguments(command.origin.request),
+            ),
+          ))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'project resolution controller changed',
       });
     if (
       command.imageDigest !==

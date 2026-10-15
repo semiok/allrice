@@ -48,6 +48,7 @@ export async function createCloudExecutionFixture(
     localBrowser?: boolean;
     localPreview?: boolean;
     localProcess?: boolean;
+    projectResolution?: boolean;
     sandboxNetwork?: SandboxNetworkGrant;
     sandboxExecutionPolicy?: SandboxExecutionPolicy;
     outboundCapability?: boolean;
@@ -139,6 +140,7 @@ export async function createCloudExecutionFixture(
           ? ['local.process.execute']
           : []),
         ...(options.frozenTool === false ? [] : ['cloud.process.execute']),
+        ...(options.projectResolution ? ['workspace.project'] : []),
         ...(options.workbench
           ? [
               ...(options.reconciliationOnly
@@ -157,6 +159,7 @@ export async function createCloudExecutionFixture(
           name: 'P15 synthetic Office',
           description: 'Synthetic only',
           toolNames: [
+            ...(options.projectResolution ? ['workspace.project'] : []),
             options.canonicalPython
               ? 'python.execute'
               : options.sandboxExecutionPolicy
