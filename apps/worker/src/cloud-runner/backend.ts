@@ -48,6 +48,7 @@ import {
   type SandboxExecutionBudgetState,
   type SandboxExecutionBudgetSpec,
   type SandboxExecutionRenewal,
+  type SandboxExecutionObservation,
   ProjectDependencyResolutionReceiptSchema,
   type ProjectDependencyResolutionReceipt,
 } from '@allrice/contracts';
@@ -179,14 +180,7 @@ export type CloudRunResult = {
     receivedBytes: number;
     openedConnections: number;
   };
-  executionBudget?: {
-    startedAt: number;
-    hardDeadlineAt: number;
-    deadlineAt: number;
-    initialBudgetMs: number;
-    maxExecutionMs: number;
-    renewalCount: number;
-  };
+  executionBudget?: SandboxExecutionObservation;
   staticVerification?: {
     report: BrowserVerificationReport;
     browserVersion: string;
