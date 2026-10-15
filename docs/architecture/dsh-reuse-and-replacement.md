@@ -332,6 +332,10 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 - 保留范围：`prompt` 只把现有 wire images 标记为原生图片片段，保留 display name；SDK 继续创建消息身份与排队。租户授权、冻结附件及校验和仍在 Allrice。SDK 覆盖名称后才考虑删除这层 wire 桥接，不开放默认工具组合。
 - 验收：`dsh-images-native.integration.test.ts` 覆盖真实存储拒绝边界、整批拒绝、名称/顺序、消息 ID 与进程重启；已纳入 `dsh:golden-replay`。实现与验证见 [PR-3 记录](dsh-upgrades/met154-rc3-reuse.md)。回退此局部替换可在相同 rc.3 构建恢复原 helper；这不授予 v3 历史降级到 rc.2 的资格。
 
+MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consumer 未将 `detail` 传给原生 `userQuestions.ask`，完整公司/部门影响说明因此被数据库精确确认校验拒绝。AllRice 的 [method question 适配](../../apps/worker/dsh/allrice-method-questions.mjs) 仅保留同一 live Agent 最近一次服务端 prepare 回执；原生问题的 ID、正文、标题、选项与单选标志完全一致时，补回唯一缺失的说明。新准备、过期、取消、关闭、恢复和首次提问会失效旧缓存；问题通知与原生等待检查点保存同一完整内容。缓存不是批准，数据库仍校验当前候选、测试、权限及真实答案采纳证明。没有更改上游包、通用问题大小或提问/等待协议。
+
+回归包含原生 prepare→ask→完整通知→落盘等待→新进程恢复→一次答案采纳与续办，以及篡改、过期、跨 Agent、迟到回执和二次使用拒绝。上游固定版本直接保留 `detail` 后，经同一回归可删除此有界补字段逻辑；不能删除 AllRice 的精确批准边界。
+
 ### dsh-admin-webui-private-entrypoint-v1
 
 - ID：`dsh-admin-webui-private-entrypoint-v1`；归属 MET-100；**保留**。

@@ -99,7 +99,8 @@ jobs:
 
   validate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Full native regressions + production builds reached the former 15m cap.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Capture actual checked-out repository identity
