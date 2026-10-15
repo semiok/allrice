@@ -2,12 +2,12 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { RiceToolHandlerContext } from '../types.js';
 const ports = vi.hoisted(() => ({ dispatch: vi.fn() }));
-vi.mock('@allrice/database', async () => {
+vi.mock('@allrice/database', async (importOriginal) => {
   const { BridgeCommandResultError } =
-    await import('../../../../../packages/database/src/bridge.ts');
+    await importOriginal<typeof import('@allrice/database')>();
   return { dispatchBridgeCommand: ports.dispatch, BridgeCommandResultError };
 });
-import { BridgeCommandResultError } from '../../../../../packages/database/src/bridge.ts';
+import { BridgeCommandResultError } from '@allrice/database';
 import { executeLocalBridgeTool } from './local.js';
 import { HandlerError } from '../../errors.js';
 function call(): RiceToolHandlerContext {
