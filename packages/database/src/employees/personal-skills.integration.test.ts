@@ -606,9 +606,9 @@ suite(
         '请安装我上传的 SKILL.md。',
         raw(),
       );
-      expect((await preparePersonalSkillImport(second.input)).instanceId).toBe(
-        x.custom.id,
-      );
+      expect(await preparePersonalSkillImport(second.input)).toMatchObject({
+        instanceId: x.custom.id,
+      });
       await f.db`update allrice_employee_assignments set active=false where id=${x.assignment.id}`;
       await expect(
         installPersonalSkillFromChat(
