@@ -45,6 +45,7 @@ import {
   type RuntimeTimelineTurn,
 } from './runtime-timeline';
 import styles from './runtime-console.module.css';
+import { RuntimeSkillGroup } from './runtime-skill-group';
 
 interface RuntimeInventoryItem {
   organization: { id: string; slug: string; name: string };
@@ -1115,6 +1116,9 @@ function RuntimeEventItem(props: { item: RuntimeTimelineItem }) {
     (props.item.type === 'group' && props.item.kind === 'compaction');
   if (props.item.type === 'event') {
     return <RuntimeEvent event={props.item.event} />;
+  }
+  if (props.item.skillPhase) {
+    return <RuntimeSkillGroup item={props.item} />;
   }
   return (
     <li

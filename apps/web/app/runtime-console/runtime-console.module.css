@@ -1236,6 +1236,41 @@
 .eventGroupContent p {
   padding: 8px 0 0;
 }
+.skillGroup {
+  --admin-font-body: 12px;
+  --admin-font-meta: 12px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.skillGroup > .eventNode {
+  margin-top: 10px;
+}
+.skillGroup summary {
+  min-height: 40px;
+  padding: 8px 0;
+}
+.skillList {
+  margin: 0;
+  padding: 0 24px 8px 0;
+  list-style: none;
+  border-top: 1px solid var(--admin-border);
+}
+.skillList > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  min-height: 28px;
+  padding: 5px 0;
+}
+.skillName {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.skillName > .eventStatus {
+  margin-left: 8px;
+}
 @media (max-width: 650px) {
   .turnHeader > div {
     flex-wrap: wrap;

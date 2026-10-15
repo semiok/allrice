@@ -5,6 +5,7 @@ import {
   projectRuntimeTimelineEvents,
   runtimeTimelineCategory,
   runtimeTimelineStatus,
+  runtimeSkillEntries,
   type RuntimeTimelineEvent,
 } from './runtime-timeline';
 
@@ -59,13 +60,105 @@ describe('runtime timeline projection', () => {
     expect(items[0]).toEqual(
       expect.objectContaining({
         type: 'group',
-        title: 'Skill 已加载 · 2 个',
+        title: '技能加载 · 2 个',
+        skillPhase: 'loaded',
         events: expect.arrayContaining([
           expect.objectContaining({ detail: 'browser-research' }),
           expect.objectContaining({ detail: 'document-analysis' }),
         ]),
       }),
     );
+  });
+
+  it('folds historical readiness records while keeping loads in a separate phase', () => {
+    const records = [
+      event(1, 'Skill 已就绪', 'browser-research', { kind: 'context' }),
+      event(2, 'Skill 已就绪', 'office', { kind: 'context' }),
+      event(3, 'Skill 已加载', 'office'),
+      event(4, 'Skill 已加载', 'browser-research'),
+    ];
+    const items = aggregateRuntimeTimelineEvents(records);
+    expect(items).toMatchObject([
+      {
+        type: 'group',
+        title: '技能已就绪 · 2 个',
+        skillPhase: 'ready',
+        events: records.slice(0, 2),
+      },
+      {
+        type: 'group',
+        title: '技能加载 · 2 个',
+        skillPhase: 'loaded',
+        events: records.slice(2),
+      },
+    ]);
+    expect(runtimeTimelineCategory(records[0]!)).toBe('prepare');
+  });
+
+  it('keeps unavailable and failed skills visible in their phase summaries', () => {
+    const items = aggregateRuntimeTimelineEvents([
+      event(1, 'Skill 已就绪', 'office'),
+      event(2, 'Skill 不可用', 'web-research 缺少工具：web.search', {
+        status: 'failed',
+      }),
+      event(3, 'Skill 已加载', 'office'),
+      event(4, 'Skill 加载失败', 'browser-research', { status: 'error' }),
+    ]);
+    expect(items).toMatchObject([
+      {
+        type: 'group',
+        skillPhase: 'ready',
+        title: '技能准备 · 2 个',
+        status: 'failed',
+      },
+      { type: 'group', skillPhase: 'loaded', status: 'error' },
+    ]);
+    expect(items[0]!.type === 'group' && items[0]!.events[1]!.detail).toContain(
+      '缺少工具',
+    );
+  });
+
+  it('folds one aggregated receipt without inventing separate source events', () => {
+    const receipt = event(
+      1,
+      'Skill 已就绪 · 3 个',
+      'office、web-research、project-development',
+      { kind: 'context' },
+    );
+    const items = aggregateRuntimeTimelineEvents([receipt]);
+    expect(items).toMatchObject([
+      {
+        type: 'group',
+        title: '技能已就绪 · 3 个',
+        skillPhase: 'ready',
+        events: [receipt],
+      },
+    ]);
+    const entries = runtimeSkillEntries(receipt);
+    expect(entries.map((entry) => entry.detail)).toEqual([
+      'office',
+      'web-research',
+      'project-development',
+    ]);
+    expect(
+      entries.every(
+        (entry) =>
+          entry.id === receipt.id && entry.occurredAt === receipt.occurredAt,
+      ),
+    ).toBe(true);
+  });
+
+  it('retains incomplete summaries and skill error details verbatim', () => {
+    for (const receipt of [
+      event(1, 'Skill 已就绪 · 3 个', 'office、web-resear'),
+      event(2, 'Skill 已就绪 · 3 个', null),
+      event(2, 'Skill 已就绪 · 2 个', `office、${'x'.repeat(993)}`),
+      event(3, 'Skill 不可用', 'office 缺少工具：file、export', {
+        status: 'failed',
+      }),
+    ]) {
+      expect(runtimeSkillEntries(receipt)).toEqual([receipt]);
+    }
   });
 
   it('does not merge skill loads across a different event', () => {

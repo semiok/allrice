@@ -48,17 +48,57 @@ export type RuntimeTimelineItem =
       status: string;
       occurredAt: string | null;
       events: RuntimeTimelineEvent[];
+      skillPhase?: 'ready' | 'loaded';
     };
 
+function skillPhase(event: Pick<RuntimeTimelineEvent, 'title'>) {
+  if (/^Skill (?:已就绪(?: · \d+ 个)?|不可用)$/.test(event.title)) {
+    return 'ready' as const;
+  }
+  if (['Skill 已加载', 'Skill 加载失败'].includes(event.title)) {
+    return 'loaded' as const;
+  }
+  return null;
+}
+
+function readinessCount(event: Pick<RuntimeTimelineEvent, 'title'>) {
+  const match = /^Skill 已就绪 · (\d+) 个$/.exec(event.title);
+  const count = match ? Number(match[1]) : null;
+  return count && Number.isSafeInteger(count) ? count : null;
+}
+
+export function runtimeSkillEntries(event: RuntimeTimelineEvent) {
+  const count = readinessCount(event);
+  const names = event.detail?.split('、').map((name) => name.trim());
+  // New Worker receipts announce a whole directory. The safe API summary can
+  // be truncated: only split a complete list; otherwise retain its exact text.
+  if (
+    count &&
+    event.detail &&
+    event.detail.length < 1_000 &&
+    names?.length === count &&
+    names.every(Boolean)
+  ) {
+    return names.map((name, index) => ({
+      ...event,
+      key: `${event.key}:skill:${index}`,
+      detail: name,
+    }));
+  }
+  return [event];
+}
+
 export function runtimeTimelineCategory(
-  event: Pick<RuntimeTimelineEvent, 'kind' | 'title'>,
+  event: Pick<RuntimeTimelineEvent, 'kind' | 'title'> & {
+    skillPhase?: 'ready' | 'loaded';
+  },
 ) {
   if (
     event.kind === 'compaction' ||
     (event.kind === 'context' && event.title.startsWith('上下文占用'))
   )
     return 'context';
-  if (event.kind === 'context' || event.title.startsWith('Skill 已加载')) {
+  if (event.kind === 'context' || event.skillPhase || skillPhase(event)) {
     return 'prepare';
   }
   return event.kind;
@@ -90,7 +130,8 @@ export function runtimeTimelineStatus(status: string) {
 }
 
 function aggregationBucket(event: RuntimeTimelineEvent) {
-  if (event.title === 'Skill 已加载') return 'skills-loaded';
+  const phase = skillPhase(event);
+  if (phase) return `skills-${phase}`;
   if (runtimeTimelineCategory(event) === 'context') return 'context-activity';
   if (event.kind === 'context' && /上下文|context/i.test(event.title)) {
     return 'context-preparation';
@@ -178,10 +219,15 @@ export function aggregateRuntimeTimelineEvents(
       cursor += 1;
     }
 
-    if (grouped.length === 1) {
+    if (grouped.length === 1 && !readinessCount(event)) {
       result.push({ type: 'event', key: event.key, event });
     } else {
       const status = groupStatus(grouped);
+      const phase = skillPhase(event);
+      const skillCount = grouped.reduce(
+        (count, item) => count + (readinessCount(item) ?? 1),
+        0,
+      );
       const runEnded = [
         'succeeded',
         'failed',
@@ -195,17 +241,17 @@ export function aggregateRuntimeTimelineEvents(
         kind: grouped.some((item) => item.kind === 'compaction')
           ? 'compaction'
           : event.kind,
-        title:
-          bucket === 'skills-loaded'
-            ? `Skill 已加载 · ${grouped.length} 个`
-            : bucket === 'context-preparation'
-              ? `上下文准备 · ${grouped.length} 项`
-              : bucket === 'context-activity'
-                ? `${grouped.some((item) => item.kind === 'compaction') ? '上下文整理' : '上下文占用'} · ${grouped.length} 条记录`
-                : `${event.title} · 连续调用 ${grouped.length} 次`,
+        title: phase
+          ? `${phase === 'ready' ? (status === 'completed' ? '技能已就绪' : '技能准备') : '技能加载'} · ${skillCount} 个`
+          : bucket === 'context-preparation'
+            ? `上下文准备 · ${grouped.length} 项`
+            : bucket === 'context-activity'
+              ? `${grouped.some((item) => item.kind === 'compaction') ? '上下文整理' : '上下文占用'} · ${grouped.length} 条记录`
+              : `${event.title} · 连续调用 ${grouped.length} 次`,
         status: status === 'running' && runEnded ? 'incomplete' : status,
         occurredAt: grouped.at(-1)?.occurredAt ?? event.occurredAt,
         events: grouped,
+        ...(phase ? { skillPhase: phase } : {}),
       });
     }
     index = cursor;
