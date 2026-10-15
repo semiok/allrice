@@ -2,16 +2,10 @@
 import { ProjectServiceCard } from './project-service-card';
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import {
-  IconCheckOutlineRegular,
   IconChevronDownOutlineRegular,
   IconChevronRightOutlineRegular,
-  IconCodeOutlineRegular,
-  IconCopyOutlineRegular,
-  IconFlatListOutlineRegular,
   IconLoadingOutlineRegular,
   IconRefreshOutlineRegular,
-  IconSlidersTwoOutlineRegular,
-  IconWarningOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
@@ -143,33 +137,127 @@ export function laterSuccessfulMcpCall(
       Date.parse(candidate.snapshot.result.evidence.recordedAt) > failedAt,
   )?.snapshot.binding.attempt.operationId;
 }
-function OperationDetail({
-  icon,
-  title,
-  meta,
-  open = false,
-  children,
-}: {
-  icon: ReactNode;
+type OperationSection = {
+  key: string;
+  label: string;
   title: string;
-  meta?: ReactNode;
-  open?: boolean;
+  value: ReactNode;
+  content: ReactNode;
+};
+
+function OperationDetails({
+  sections,
+  initialSection,
+}: {
+  sections: OperationSection[];
+  initialSection: string | null;
+}) {
+  const [selected, setSelected] = useState(initialSection);
+  const panelId = useId();
+  const section = sections.find((item) => item.key === selected);
+  return (
+    <>
+      <div className={styles.detailSections} aria-label="执行摘要">
+        {sections.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className={styles.detailChoice}
+            aria-label={item.title}
+            aria-expanded={selected === item.key}
+            aria-controls={panelId}
+            onClick={() =>
+              setSelected((current) => (current === item.key ? null : item.key))
+            }
+          >
+            <span className={styles.detailLabel}>{item.label}</span>
+            <span className={styles.detailMeta}>{item.value}</span>
+            <IconChevronDownOutlineRegular size={12} />
+          </button>
+        ))}
+      </div>
+      <div id={panelId} hidden={!section} className={styles.detailBody}>
+        {section && (
+          <>
+            <div className={styles.detailHeading}>
+              <strong>{section.title}</strong>
+              <button
+                type="button"
+                aria-label="关闭当前详情"
+                onClick={() => setSelected(null)}
+              >
+                ×
+              </button>
+            </div>
+          </>
+        )}
+        {sections.map((item) => (
+          <div
+            key={item.key}
+            hidden={item.key !== selected}
+            className={styles.detailContent}
+          >
+            {item.content}
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+function DetailFields({ rows }: { rows: [string, ReactNode][] }) {
+  return (
+    <dl className={styles.fields}>
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function RawDetail({
+  title,
+  children,
+  open = false,
+}: {
+  title: string;
   children: ReactNode;
+  open?: boolean;
 }) {
   return (
-    <details className={styles.detailSection} open={open}>
+    <details className={styles.rawDetail} open={open}>
       <summary>
-        <span className={styles.detailIcon} aria-hidden="true">
-          {icon}
-        </span>
-        <span className={styles.detailLabel}>{title}</span>
-        {meta && <span className={styles.detailMeta}>{meta}</span>}
-        <span className={styles.detailChevron} aria-hidden="true">
-          <IconChevronRightOutlineRegular size={14} />
-        </span>
+        <IconChevronRightOutlineRegular size={12} />
+        {title}
       </summary>
-      <div className={styles.detailBody}>{children}</div>
+      {children}
     </details>
+  );
+}
+
+function serviceHost(endpoint: string) {
+  try {
+    return new URL(endpoint).hostname;
+  } catch {
+    return '第三方应用';
+  }
+}
+
+function mcpRiskLabel(risk: string) {
+  return (
+    (
+      {
+        read: '读取',
+        read_only: '读取',
+        external_send: '对外发送',
+        high_risk_data: '敏感数据',
+        write: '写入',
+        destructive: '删除或破坏性操作',
+      } as Record<string, string>
+    )[risk] ?? risk
   );
 }
 function mcpAuthorizationLabel(op: CloudOperationView) {
@@ -233,9 +321,7 @@ export function CloudOperationCard({
   useEffect(() => {
     setDetailsOpen(!!pending);
   }, [pending, op.snapshot.binding.attempt.operationId]);
-  const compact = proposal.kind === 'mcp';
-  // Both script and saved-project execution use the same compact receipt.
-  const compactCloud = proposal.kind !== 'mcp';
+  const isMcp = proposal.kind === 'mcp';
   const fullStatus = laterSuccessId
     ? '本次未成功 · 后续调用已成功'
     : cloudOperationDisplayStatus(op);
@@ -248,15 +334,7 @@ export function CloudOperationCard({
       aria-controls={detailsId}
       onClick={() => setDetailsOpen((open) => !open)}
     >
-      <span>
-        {compact
-          ? detailsOpen
-            ? '收起'
-            : '详情'
-          : detailsOpen
-            ? '收起详情'
-            : '查看详情'}
-      </span>
+      <span>{detailsOpen ? '收起详情' : '查看详情'}</span>
       <IconChevronDownOutlineRegular size={14} />
     </button>
   );
@@ -324,7 +402,6 @@ export function CloudOperationCard({
   );
   const receiptNotes = (
     <>
-      {!compactCloud && decisionReceipt}
       {(op.snapshot.status === 'cancel_requested' ||
         (op.snapshot.status === 'unknown' && !failure)) && (
         <p role="status" className={styles.notice}>
@@ -352,152 +429,149 @@ export function CloudOperationCard({
         : '无'}
     </p>
   );
-  return (
-    <article
-      className={`${styles.card}${compact ? ` ${styles.compactCard}` : ''}${compactCloud ? ` ${styles.cloudCard}` : ''}`}
-      id={`operation-${op.snapshot.binding.attempt.operationId}`}
-      data-status={op.snapshot.status}
-    >
-      {op.projectService && projectServiceContext && (
-        <ProjectServiceCard
-          service={op.projectService}
-          {...projectServiceContext}
+  const resultSection: OperationSection = {
+    key: 'result',
+    label: '结果',
+    title: '执行结果',
+    value: cloudOperationCompactStatus(op),
+    content: (
+      <>
+        <DetailFields
+          rows={[
+            ['状态', fullStatus],
+            ['返回代码', op.result?.code ?? '尚无'],
+          ]}
         />
-      )}
-      <header className={compact ? styles.compactHeader : styles.cloudHeader}>
-        <strong className={compact ? styles.compactTitle : styles.title}>
-          <span className={styles.icon} aria-hidden="true">
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-            >
-              {proposal.kind !== 'mcp' ? (
-                <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
-              ) : (
-                <>
-                  <rect x="3" y="8" width="8" height="13" rx="1.5" />
-                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
-                  <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
-                </>
-              )}
-            </svg>
-          </span>
-          {proposal.kind !== 'mcp' ? (
-            proposal.kind === 'project' ? (
-              '云端项目'
-            ) : (
-              '云端计算'
-            )
-          ) : (
-            <span className={styles.toolName}>
-              {proposal.tool.startsWith('mcp__app__') ? (
-                <>
-                  <span className={styles.toolPrefix}>mcp__app__</span>
-                  {proposal.tool.slice('mcp__app__'.length)}
-                </>
-              ) : (
-                proposal.tool
-              )}
-            </span>
-          )}
-        </strong>
-        {compactCloud && (
-          <p className={styles.cloudScope}>
-            <span>
-              {proposal.kind === 'project'
-                ? proposal.files.length
-                : proposal.inputs.length}{' '}
-              个输入文件
-            </span>
-            <span className={styles.cloudLocation}>仅在云端执行</span>
-            <span>
-              {proposal.kind === 'cloud' && proposal.network
-                ? '按授权联网'
-                : '不联网'}
-            </span>
-          </p>
+        {op.result ? (
+          <>
+            <RawDetail title="查看原始返回内容">
+              <pre>{op.result.output || '没有可展示的输出。'}</pre>
+              <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
+            </RawDetail>
+          </>
+        ) : (
+          <p>尚未收到执行返回内容。</p>
         )}
-        <div
-          className={compact ? styles.compactControls : styles.cloudControls}
-        >
-          <Tooltip label={fullStatus} side="top" align="end">
-            <span
-              className={styles.status}
-              role="status"
-              aria-label={fullStatus}
-            >
-              {compact && (
-                <span className={styles.statusIcon} aria-hidden="true">
-                  {op.snapshot.status === 'running' ? (
-                    <IconLoadingOutlineRegular size={14} />
-                  ) : op.snapshot.status === 'succeeded' ? (
-                    <IconCheckOutlineRegular size={14} />
-                  ) : op.snapshot.status === 'failed' ? (
-                    <IconWarningOutlineRegular size={14} />
-                  ) : (
-                    <span className={styles.statusDot} />
-                  )}
-                </span>
-              )}
-              {compact ? cloudOperationCompactStatus(op) : fullStatus}
-            </span>
-          </Tooltip>
-          {detailsToggle}
-          {compactCloud && stopButton}
-        </div>
-      </header>
-      {!compact && notices}
-      <div className={styles.executionFooter}>
-        <div
-          id={detailsId}
-          className={styles.executionBody}
-          hidden={!detailsOpen}
-        >
-          {compact && (
-            <>
-              <div className={styles.compactDetailHeading}>
-                <span>应用工具 · 第三方应用</span>
-                {stopButton}
-              </div>
-              <p className={styles.detailScope}>{fullStatus}</p>
-              {notices}
-            </>
-          )}
-          {proposal.kind === 'mcp' ? (
-            <>
-              <p className={styles.notice}>
-                批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
-                沙箱之外运行，可能读取或修改其账号内的数据。
-              </p>
-              <p>
-                目标服务：<code>{proposal.endpoint}</code>
-              </p>
-              <p>
-                工具：<code>{proposal.tool}</code> · 权限类别：
-                <code>{proposal.risk}</code>
-              </p>
-            </>
-          ) : null}
-          <div className={styles.detailSections}>
-            {proposal.kind === 'project' ? (
+        {decisionReceipt}
+        {plannedOutputs}
+      </>
+    ),
+  };
+  let sections: OperationSection[];
+  if (proposal.kind === 'mcp') {
+    const argumentCount =
+      proposal.arguments && typeof proposal.arguments === 'object'
+        ? Object.keys(proposal.arguments).length
+        : 0;
+    const authorization = mcpUnavailable
+      ? mcpAuthorizationLabel(op)
+      : op.approval?.revokedAt
+        ? '授权已撤销'
+        : op.approval?.response?.decision === 'rejected'
+          ? '本次拒绝'
+          : request &&
+              Date.parse(request.expiresAt) <= Date.now() &&
+              !op.approval?.response
+            ? '本次授权已过期'
+            : op.approval?.response?.decision === 'approved'
+              ? '本次批准'
+              : pending
+                ? '等待批准'
+                : '按现有授权';
+    sections = [
+      {
+        key: 'app',
+        label: '应用',
+        title: '应用与工具',
+        value: serviceHost(proposal.endpoint),
+        content: (
+          <DetailFields
+            rows={[
+              ['服务', serviceHost(proposal.endpoint)],
+              ['连接', proposal.endpoint],
+              ['工具名', <code key="tool">{proposal.tool}</code>],
+            ]}
+          />
+        ),
+      },
+      {
+        key: 'arguments',
+        label: '操作',
+        title: '发送参数',
+        value: `${mcpRiskLabel(proposal.risk)} · ${argumentCount} 项`,
+        content: (
+          <>
+            <DetailFields
+              rows={[
+                ['操作类别', mcpRiskLabel(proposal.risk)],
+                ['参数数量', `${argumentCount} 项（已脱敏）`],
+              ]}
+            />
+            <RawDetail title="查看完整参数" open={!!pending}>
+              <pre aria-label="MCP 发送参数">
+                {JSON.stringify(proposal.arguments, null, 2)}
+              </pre>
+            </RawDetail>
+          </>
+        ),
+      },
+      {
+        key: 'authorization',
+        label: '授权',
+        title: '本次授权',
+        value: authorization,
+        content: (
+          <DetailFields
+            rows={[
+              ['授权', authorization],
+              ['适用范围', '仅授权这一次调用、当前工具 schema 和连接版本。'],
+              [
+                '操作影响',
+                '服务在 AllRice 沙箱之外运行，可能读取或修改其账号内的数据。',
+              ],
+              ...(request
+                ? [
+                    [
+                      '有效期',
+                      new Date(request.expiresAt).toLocaleString(),
+                    ] as [string, ReactNode],
+                  ]
+                : []),
+            ]}
+          />
+        ),
+      },
+      resultSection,
+    ];
+  } else {
+    const runtime =
+      proposal.kind === 'project'
+        ? proposal.preparation.manager === 'uv'
+          ? 'Python 3.11'
+          : 'Node.js 22'
+        : proposal.language === 'python'
+          ? 'Python 3.11'
+          : 'Node.js 22';
+    const limits = proposal.limits;
+    sections = [
+      proposal.kind === 'project'
+        ? {
+            key: 'execution',
+            label: '命令',
+            title: '执行命令',
+            value: runtime,
+            content: (
               <>
-                <OperationDetail
-                  title="执行命令"
-                  meta={
-                    proposal.preparation.manager === 'uv'
-                      ? 'Python 3.11'
-                      : 'Node.js 22'
-                  }
-                  icon={<IconCodeOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  <p className={styles.detailScope}>
-                    执行本次保存的项目副本，不访问你的电脑。
-                  </p>
+                <DetailFields
+                  rows={[
+                    ['运行环境', runtime],
+                    ['执行位置', '云端 · 不联网'],
+                    ['执行程序', proposal.executable],
+                    ['工作目录', proposal.path],
+                  ]}
+                />
+                <p>执行本次保存的项目副本，不访问你的电脑。</p>
+                <RawDetail title="查看完整命令" open={!!pending}>
                   <pre aria-label="云端项目命令">
                     {JSON.stringify(
                       {
@@ -509,37 +583,27 @@ export function CloudOperationCard({
                       2,
                     )}
                   </pre>
-                </OperationDetail>
-                <OperationDetail
-                  title="项目版本"
-                  meta={`${proposal.files.length} 个文件`}
-                  icon={<IconCopyOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  <pre>
-                    {JSON.stringify(
-                      {
-                        project: proposal.project,
-                        sourceDigest: proposal.sourceDigest,
-                        files: proposal.files,
-                        preparation: proposal.preparation,
-                      },
-                      null,
-                      2,
-                    )}
-                  </pre>
-                </OperationDetail>
-                <OperationDetail
-                  title="运行限制"
-                  meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
-                  icon={<IconSlidersTwoOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  <pre>{JSON.stringify(proposal.limits, null, 2)}</pre>
-                </OperationDetail>
+                </RawDetail>
               </>
-            ) : proposal.kind === 'cloud' ? (
+            ),
+          }
+        : {
+            key: 'execution',
+            label: '脚本',
+            title: '执行脚本',
+            value: runtime,
+            content: (
               <>
+                <DetailFields
+                  rows={[
+                    ['运行环境', runtime],
+                    [
+                      '执行位置',
+                      proposal.network ? '云端 · 按授权联网' : '云端 · 不联网',
+                    ],
+                    ['文件范围', '只读本次授权的上传文件，不访问你的电脑。'],
+                  ]}
+                />
                 {proposal.network && (
                   <div
                     className={styles.detailScope}
@@ -558,148 +622,228 @@ export function CloudOperationCard({
                     </p>
                   </div>
                 )}
-                <OperationDetail
-                  title="执行脚本"
-                  meta={
-                    proposal.language === 'python'
-                      ? 'Python 3.11'
-                      : 'Node.js 22'
-                  }
-                  icon={<IconCodeOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  <p className={styles.detailScope}>
-                    只读本次授权的上传文件，不访问你的电脑。
-                  </p>
+                <RawDetail title="查看完整脚本" open={!!pending}>
                   <pre aria-label="云端待执行脚本">{proposal.script}</pre>
-                </OperationDetail>
-                <OperationDetail
-                  title="输入文件"
-                  meta={`${proposal.inputs.length} 个`}
-                  icon={<IconCopyOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  {proposal.inputs.length ? (
-                    <ul className={styles.inputFiles}>
-                      {proposal.inputs.map((file) => (
-                        <li key={file.objectId}>
-                          <code>{file.path}</code>
-                          <small>文件 ID：{file.objectId}</small>
-                          <small>{file.checksum}</small>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p>无输入文件。</p>
-                  )}
-                </OperationDetail>
-                <OperationDetail
-                  title="运行限制"
-                  meta={`${proposal.limits.timeoutMs / 1000} 秒 · ${proposal.limits.memoryMiB} MiB`}
-                  icon={<IconSlidersTwoOutlineRegular size={16} />}
-                  open={!!pending}
-                >
-                  <dl className={styles.limits}>
-                    <div>
-                      <dt>时限</dt>
-                      <dd>{proposal.limits.timeoutMs / 1000} 秒</dd>
-                    </div>
-                    <div>
-                      <dt>内存</dt>
-                      <dd>{proposal.limits.memoryMiB} MiB</dd>
-                    </div>
-                    <div>
-                      <dt>CPU</dt>
-                      <dd>{proposal.limits.cpuMillis} 毫核</dd>
-                    </div>
-                    <div>
-                      <dt>进程数上限</dt>
-                      <dd>{proposal.limits.pids}</dd>
-                    </div>
-                    <div>
-                      <dt>输出上限</dt>
-                      <dd>{proposal.limits.outputBytes} 字节</dd>
-                    </div>
-                    <div>
-                      <dt>成果上限</dt>
-                      <dd>{proposal.limits.artifactBytes} 字节</dd>
-                    </div>
-                  </dl>
-                </OperationDetail>
+                </RawDetail>
               </>
-            ) : (
-              <OperationDetail
-                title="发送参数"
-                meta="已脱敏"
-                icon={<IconCodeOutlineRegular size={16} />}
-                open={!!pending}
-              >
-                <pre aria-label="MCP 发送参数">
-                  {JSON.stringify(proposal.arguments, null, 2)}
-                </pre>
-              </OperationDetail>
-            )}
-            {(op.result || compactCloud) && (
-              <OperationDetail
-                title={compactCloud ? '执行结果' : '执行返回内容'}
-                meta={
-                  compactCloud
-                    ? cloudOperationCompactStatus(op)
-                    : op.result?.code
-                }
-                icon={<IconFlatListOutlineRegular size={16} />}
-                open={compactCloud && !!pending}
-              >
-                {op.result ? (
-                  <>
-                    {compactCloud && op.result.code && !networkFailure && (
-                      <p>返回代码：{op.result.code}</p>
+            ),
+          },
+      proposal.kind === 'project'
+        ? {
+            key: 'inputs',
+            label: '版本',
+            title: '项目版本',
+            value: `${proposal.files.length} 个文件`,
+            content: (
+              <>
+                <DetailFields
+                  rows={[
+                    ['文件数量', `${proposal.files.length} 个`],
+                    [
+                      '版本摘要',
+                      <code key="digest">{proposal.sourceDigest}</code>,
+                    ],
+                  ]}
+                />
+                <RawDetail title="查看项目与文件记录">
+                  <pre>
+                    {JSON.stringify(
+                      {
+                        project: proposal.project,
+                        sourceDigest: proposal.sourceDigest,
+                        files: proposal.files,
+                        preparation: proposal.preparation,
+                      },
+                      null,
+                      2,
                     )}
-                    <pre>{op.result.output || '没有可展示的输出。'}</pre>
-                    <small>
-                      工具原始返回内容（不可信数据），仅作执行记录。
-                    </small>
-                  </>
-                ) : (
-                  <p>尚未收到执行返回内容。</p>
-                )}
-                {compactCloud && decisionReceipt}
-                {compactCloud && plannedOutputs}
-              </OperationDetail>
-            )}
-          </div>
+                  </pre>
+                </RawDetail>
+              </>
+            ),
+          }
+        : {
+            key: 'inputs',
+            label: '输入',
+            title: '输入文件',
+            value: `${proposal.inputs.length} 个文件`,
+            content: proposal.inputs.length ? (
+              <ul className={styles.inputFiles}>
+                {proposal.inputs.map((file) => (
+                  <li key={file.objectId}>
+                    <DetailFields
+                      rows={[
+                        ['文件路径', file.path],
+                        ['文件 ID', file.objectId],
+                        ['校验值', <code key="checksum">{file.checksum}</code>],
+                      ]}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>无输入文件。</p>
+            ),
+          },
+      {
+        key: 'limits',
+        label: '限制',
+        title: '运行限制',
+        value: `${limits.timeoutMs / 1000} 秒 · ${limits.memoryMiB} MiB`,
+        content: (
+          <DetailFields
+            rows={[
+              ['时限', `${limits.timeoutMs / 1000} 秒`],
+              ['内存', `${limits.memoryMiB} MiB`],
+              ['CPU', `${limits.cpuMillis} 毫核`],
+              ['进程数上限', limits.pids],
+              ['输出上限', `${limits.outputBytes} 字节`],
+              ...('artifactBytes' in limits
+                ? [
+                    ['成果上限', `${limits.artifactBytes} 字节`] as [
+                      string,
+                      ReactNode,
+                    ],
+                  ]
+                : []),
+            ]}
+          />
+        ),
+      },
+      resultSection,
+    ];
+  }
+  return (
+    <article
+      className={styles.card}
+      id={`operation-${op.snapshot.binding.attempt.operationId}`}
+      data-status={op.snapshot.status}
+    >
+      {op.projectService && projectServiceContext && (
+        <ProjectServiceCard
+          service={op.projectService}
+          {...projectServiceContext}
+        />
+      )}
+      <header className={styles.cloudHeader}>
+        <strong className={styles.title}>
+          <span className={styles.icon} aria-hidden="true">
+            <svg
+              width="17"
+              height="17"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.7"
+            >
+              {isMcp ? (
+                <>
+                  <rect x="3" y="8" width="8" height="13" rx="1.5" />
+                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                  <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
+                </>
+              ) : (
+                <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
+              )}
+            </svg>
+          </span>
+          {proposal.kind === 'mcp'
+            ? '应用工具'
+            : proposal.kind === 'project'
+              ? '云端项目'
+              : '云端计算'}
+        </strong>
+        <p className={styles.cloudScope}>
           {proposal.kind === 'mcp' ? (
-            <small className={styles.authorizationScope}>
-              仅授权这一次调用、当前工具 schema
-              和连接版本；管理员保存的服务密钥不会展示在页面上。
-            </small>
-          ) : null}
-          {compact && receiptNotes}
+            <>
+              <span className={styles.serviceHost} title={proposal.endpoint}>
+                {serviceHost(proposal.endpoint)}
+              </span>
+              <span>{mcpRiskLabel(proposal.risk)}</span>
+            </>
+          ) : (
+            <>
+              <span>
+                {proposal.kind === 'project'
+                  ? proposal.files.length
+                  : proposal.inputs.length}{' '}
+                个输入文件
+              </span>
+              <span className={styles.cloudLocation}>仅在云端执行</span>
+              <span>
+                {proposal.kind === 'cloud' && proposal.network
+                  ? '按授权联网'
+                  : '不联网'}
+              </span>
+            </>
+          )}
+        </p>
+        <div className={styles.cloudControls}>
+          <Tooltip label={fullStatus} side="top" align="end">
+            <span
+              className={styles.status}
+              role="status"
+              aria-label={fullStatus}
+            >
+              {isMcp &&
+              !['succeeded', 'failed', 'running'].includes(op.snapshot.status)
+                ? cloudOperationCompactStatus(op)
+                : isMcp
+                  ? labels[op.snapshot.status]
+                  : fullStatus}
+            </span>
+          </Tooltip>
+          {detailsToggle}
+          {stopButton}
         </div>
+      </header>
+      {!isMcp && notices}
+      <div id={detailsId} hidden={!detailsOpen}>
+        <OperationDetails
+          key={`${op.snapshot.binding.attempt.operationId}-${!!pending}`}
+          sections={sections}
+          initialSection={pending ? (isMcp ? 'arguments' : 'execution') : null}
+        />
+        {isMcp && (
+          <div className={styles.receiptNotes}>
+            {notices}
+            {receiptNotes}
+          </div>
+        )}
       </div>
       {pending && (
-        <div className={styles.actions}>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onAct(op, 'approved')}
-          >
-            批准这一次执行
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => onAct(op, 'rejected')}
-          >
-            拒绝
-          </button>
-          <small>
-            授权有效期至 {new Date(request.expiresAt).toLocaleString()}
-            。批准不代表已经完成。
-          </small>
+        <div className={styles.approvalReview}>
+          {isMcp && (
+            <p className={styles.notice}>
+              批准后，会将列出的参数发送给此第三方服务；服务在 AllRice
+              沙箱之外运行，可能读取或修改其账号内的数据。仅授权这一次调用、当前工具
+              schema 和连接版本；管理员保存的服务密钥不会展示在页面上。
+            </p>
+          )}
+          {plannedOutputs}
+          <div className={styles.actions}>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onAct(op, 'approved')}
+            >
+              批准这一次执行
+            </button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => onAct(op, 'rejected')}
+            >
+              拒绝
+            </button>
+            <small>
+              授权有效期至 {new Date(request.expiresAt).toLocaleString()}
+              。批准不代表已经完成。
+            </small>
+          </div>
         </div>
       )}
-      {!compact && receiptNotes}
+      {!isMcp && receiptNotes}
     </article>
   );
 }

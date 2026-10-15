@@ -243,11 +243,17 @@ async function dto(
     if (error instanceof EmployeeContentError) applicable = false;
     else throw error;
   }
-  const [test] =
-    await tx`select status,output,completed_at from allrice_platform_employee_test_runs where id=${b.test_id} and purpose='method_candidate'`;
+  // Completion commits the assertion and execution state together. Read them
+  // in one statement: the earlier authorization binding can predate that
+  // commit under READ COMMITTED, even inside this transaction.
+  const [test] = await tx`
+    select t.status,t.output,t.completed_at,m.assertion,m.run_id
+    from allrice_platform_employee_test_runs t
+    join allrice_employee_method_tests m on m.test_id=t.id
+    where t.id=${b.test_id} and t.purpose='method_candidate'`;
   if (!test) throw new DataAccessError('not_found');
-  const assertion = b.assertion
-    ? EmployeeMethodTestAssertionSchema.parse(b.assertion)
+  const assertion = test.assertion
+    ? EmployeeMethodTestAssertionSchema.parse(test.assertion)
     : null;
   const [retry] = await tx<{ test_id: string }[]>`
     select test_id from allrice_employee_method_tests
@@ -286,13 +292,13 @@ async function dto(
           : assertion?.passed
             ? 'passed'
             : 'failed',
-    runId: b.run_id,
+    runId: test.run_id,
     createdAt: b.created_at.toISOString(),
     completedAt: test.completed_at?.toISOString() ?? null,
     errorCode: test.output?.error?.code ?? null,
     retryOfTestId: b.retry_of_test_id,
     retryTestId: retry?.test_id ?? null,
-    files: await methodTestFiles(tx, b),
+    files: await methodTestFiles(tx, { ...b, run_id: test.run_id }),
     currency: 'CNY',
     amountUnit: 'cent',
     coverage:
