@@ -46,6 +46,32 @@ describe('closed-schema assistant failure diagnostics', () => {
     expect(
       parseAssistantFailureDiagnostics(input)?.failures[0]?.stream,
     ).toEqual(stream);
+    Object.assign(stream, {
+      request: {
+        phase: 'request_failed',
+        elapsedMs: 113,
+        aborted: false,
+        errorCode: 'ECONNRESET',
+      },
+    });
+    expect(
+      parseAssistantFailureDiagnostics(input)?.failures[0]?.stream,
+    ).toEqual(stream);
+    for (const extra of [
+      { url: 'https://private' },
+      { status: 999 },
+      { errorCode: 'PRIVATE_SECRET' },
+      { elapsedMs: -1 },
+      { headers: { authorization: 'secret' } },
+    ]) {
+      const bad = structuredClone(input);
+      Object.assign(
+        (bad.failures[0] as unknown as { stream: { request: object } }).stream
+          .request,
+        extra,
+      );
+      expect(parseAssistantFailureDiagnostics(bad)).toBeUndefined();
+    }
     Object.assign(stream, { responseBody: 'synthetic-private-text' });
     expect(parseAssistantFailureDiagnostics(input)).toBeUndefined();
   });
