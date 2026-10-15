@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
+import type { OrganizationSharedReader } from './organization-shared-reader.ts';
 import {
   KnowledgeRetrievalResultSchema,
   ReferenceSelectionSchema,
@@ -33,6 +34,7 @@ export async function readReferenceSelection(
   revisionId: string,
   sql: Sql,
   lock: boolean,
+  sharedReader?: OrganizationSharedReader,
 ) {
   try {
     const [locator] =
@@ -45,6 +47,8 @@ export async function readReferenceSelection(
       sql,
       false,
       lock,
+      false,
+      sharedReader,
     );
     if (source.status !== 'active') throw new ReferenceRuntimeError();
     if (legacy) await assertLegacyReferenceRevision(sql, revisionId, legacy.id);

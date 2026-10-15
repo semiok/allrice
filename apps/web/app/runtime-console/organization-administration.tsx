@@ -28,6 +28,7 @@ import {
   loadOrganizationDepartmentOptions,
 } from './organization-departments';
 import { OrganizationAiAssignments } from './organization-ai-assignments';
+import { OrganizationAiDirectory } from './organization-ai-directory';
 import { TenantResourceEditor } from './tenant-resource-editor';
 import {
   AdminButton,
@@ -39,10 +40,12 @@ import {
 import legacyStyles from './tenant-administration.module.css';
 import styles from './organization-administration.module.css';
 
-type OrganizationView = 'people' | 'employees' | 'environments' | 'quotas';
+type OrganizationView =
+  'people' | 'employees' | 'directory' | 'environments' | 'quotas';
 const companyTabs: { id: OrganizationView; label: string }[] = [
   { id: 'people', label: '员工账号' },
   { id: 'employees', label: '公司 AI 员工' },
+  { id: 'directory', label: 'AI 员工与工作沉淀' },
   { id: 'environments', label: '应用与电脑' },
   { id: 'quotas', label: '用量' },
 ];
@@ -393,6 +396,11 @@ export function OrganizationAdministration({
                     organization={selected}
                     onBusy={setPeopleBusy}
                     onChanged={() => void load()}
+                  />
+                ) : tab.id === 'directory' ? (
+                  <OrganizationAiDirectory
+                    key={selected.id}
+                    organizationId={selected.id}
                   />
                 ) : (
                   <CompanyConfiguration
@@ -1229,7 +1237,7 @@ function CompanyConfiguration({
   onDirty,
 }: {
   organization: ManagedOrganization;
-  view: Exclude<OrganizationView, 'people'>;
+  view: Exclude<OrganizationView, 'people' | 'directory'>;
   onBusy: (busy: boolean) => void;
   onDirty: (dirty: boolean) => void;
 }) {

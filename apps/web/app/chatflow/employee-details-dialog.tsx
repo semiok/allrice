@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   EmployeeDetailsSchema,
+  OrganizationAiSharedDetailsSchema,
   type EmployeeDetails,
   type ReferenceSelection,
 } from '@allrice/contracts';
@@ -25,6 +26,7 @@ interface EmployeeDetailsDialogProps {
   workspaceId: string;
   headers: Record<string, string>;
   onClose: () => void;
+  organizationView?: { organizationId: string; userId: string };
 }
 
 export function EmployeeDetailsDialog(props: EmployeeDetailsDialogProps) {
@@ -56,12 +58,23 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
       return () => controller.abort();
     }
     void workbenchJson(
-      `/api/v1/employee-instances/${encodeURIComponent(props.instanceId)}/content?workspaceId=${encodeURIComponent(props.workspaceId)}`,
+      props.organizationView
+        ? `${organizationInstanceBase(props.organizationView, props.instanceId)}/content`
+        : `/api/v1/employee-instances/${encodeURIComponent(props.instanceId)}/content?workspaceId=${encodeURIComponent(props.workspaceId)}`,
       props.headers,
       { signal: controller.signal, cache: 'no-store' },
     )
       .then((value) => {
-        const next = EmployeeDetailsSchema.parse(value);
+        const shared = props.organizationView
+          ? OrganizationAiSharedDetailsSchema.parse(value)
+          : undefined;
+        if (
+          shared &&
+          (shared.organizationId !== props.organizationView?.organizationId ||
+            shared.userId !== props.organizationView?.userId)
+        )
+          throw new Error('Organization detail target changed');
+        const next = shared?.details ?? EmployeeDetailsSchema.parse(value);
         if (
           next.profile.instanceId !== props.instanceId ||
           next.content.employeeId !== props.employeeId
@@ -83,6 +96,7 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
     props.employeeId,
     props.workspaceId,
     props.headers,
+    props.organizationView,
     attempt,
   ]);
   const refresh = () => {
@@ -114,16 +128,29 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
           workspaceId={props.workspaceId}
           headers={props.headers}
           onBack={refresh}
+          endpointBase={
+            props.organizationView && props.instanceId
+              ? `${organizationInstanceBase(props.organizationView, props.instanceId)}/references`
+              : undefined
+          }
         />
       ) : (
         <EmployeeProfileDetails
           key={attempt}
           details={data}
           onPreview={setReference}
+          view={props.organizationView ? 'shared' : 'personal'}
         />
       )}
     </DshDialog>
   );
+}
+
+function organizationInstanceBase(
+  view: { organizationId: string; userId: string },
+  instanceId: string,
+) {
+  return `/api/v1/admin/organizations/${encodeURIComponent(view.organizationId)}/people/${encodeURIComponent(view.userId)}/ai-instances/${encodeURIComponent(instanceId)}`;
 }
 
 /** Preview the pinned revision through the existing ACL-aware file endpoints.
@@ -133,11 +160,13 @@ export function EmployeeReferencePreview({
   workspaceId,
   headers,
   onBack,
+  endpointBase,
 }: {
   reference: ReferenceSelection;
   workspaceId: string;
   headers: Record<string, string>;
   onBack: () => void;
+  endpointBase?: string;
 }) {
   const [attempt, setAttempt] = useState(0);
   const [result, setResult] = useState<{
@@ -145,7 +174,7 @@ export function EmployeeReferencePreview({
     preview?: ArtifactPreview;
     failed?: boolean;
   }>();
-  const base = `/api/v1/references/revisions/${encodeURIComponent(reference.revisionId)}`;
+  const base = `${endpointBase ?? '/api/v1/references/revisions'}/${encodeURIComponent(reference.revisionId)}`;
   const query = `?workspaceId=${encodeURIComponent(workspaceId)}`;
   const key = `${workspaceId}/${reference.revisionId}/${attempt}`;
   const current = result?.key === key ? result : undefined;

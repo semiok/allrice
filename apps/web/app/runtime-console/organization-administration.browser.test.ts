@@ -38,6 +38,9 @@ import { companyAssetsHttp } from '../../lib/organization-administration/company
 import { tenantValidationHttp } from '../../lib/tenant-administration/validation-http';
 import { organizationAdministrationHttp } from '../../lib/organization-administration/http';
 import { organizationAssignmentsHttp } from '../../lib/organization-administration/assignments-http';
+import { organizationAiDirectoryHttp } from '../../lib/organization-administration/ai-directory-http';
+import { createOrganizationAiDirectoryFixture } from '../../../../packages/database/src/organization-ai-directory.fixture.ts';
+import { changeReference } from '../../../../packages/database/src/reference-library.ts';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn(), storage: vi.fn() }));
@@ -130,35 +133,49 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                       ? 'people'
                       : undefined;
           const response =
-            parts[3] === 'investment'
-              ? await investmentHttp(request)
-              : parts[6] === 'investment'
-                ? await investmentHttp(request, parts[5]!)
-                : parts[4] === 'runtime-console'
-                  ? parts[6] === 'events'
-                    ? await runtimeEventsHttp(request, {
-                        params: Promise.resolve({ sessionId: parts[5]! }),
-                      })
-                    : await runtimeInventoryHttp(request)
-                  : parts[4] === 'activity'
-                    ? await organizationActivityHttp(request)
-                    : parts[4] === 'tenants' && parts[6] === 'validation'
-                      ? await tenantValidationHttp(request, parts[5]!)
-                      : parts[6] === 'deliverables'
-                        ? await companyDeliverablesHttp(request, parts[5]!)
-                        : parts[6] === 'assets'
-                          ? await companyAssetsHttp(request, parts[5]!)
-                          : parts[6] === 'ai-employees'
-                            ? await organizationAssignmentsHttp(
-                                request,
-                                parts[5]!,
-                              )
-                            : await organizationAdministrationHttp(
-                                request,
-                                parts[5],
-                                parts[7],
-                                action,
-                              );
+            parts[6] === 'ai-directory' || parts[8] === 'ai-instances'
+              ? await organizationAiDirectoryHttp(
+                  request,
+                  parts[5]!,
+                  parts[7],
+                  parts[9],
+                  parts[10] === 'references'
+                    ? {
+                        revisionId: parts[11]!,
+                        action:
+                          parts[12] === 'download' ? 'download' : 'preview',
+                      }
+                    : undefined,
+                )
+              : parts[3] === 'investment'
+                ? await investmentHttp(request)
+                : parts[6] === 'investment'
+                  ? await investmentHttp(request, parts[5]!)
+                  : parts[4] === 'runtime-console'
+                    ? parts[6] === 'events'
+                      ? await runtimeEventsHttp(request, {
+                          params: Promise.resolve({ sessionId: parts[5]! }),
+                        })
+                      : await runtimeInventoryHttp(request)
+                    : parts[4] === 'activity'
+                      ? await organizationActivityHttp(request)
+                      : parts[4] === 'tenants' && parts[6] === 'validation'
+                        ? await tenantValidationHttp(request, parts[5]!)
+                        : parts[6] === 'deliverables'
+                          ? await companyDeliverablesHttp(request, parts[5]!)
+                          : parts[6] === 'assets'
+                            ? await companyAssetsHttp(request, parts[5]!)
+                            : parts[6] === 'ai-employees'
+                              ? await organizationAssignmentsHttp(
+                                  request,
+                                  parts[5]!,
+                                )
+                              : await organizationAdministrationHttp(
+                                  request,
+                                  parts[5],
+                                  parts[7],
+                                  action,
+                                );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -208,6 +225,131 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
   }, 30000);
+
+  it.each([1440, 390])(
+    'shows organization AI instances and exact shared detail/file boundaries (%i)',
+    async (width) => {
+      const admin = (await authenticateSession(adminToken))!;
+      const s = await createOrganizationAiDirectoryFixture(fixture.db, admin);
+      const context = await browser.newContext({
+        viewport: { width, height: 900 },
+        acceptDownloads: true,
+      });
+      await context.addCookies([
+        { name: 'fixture_session', value: adminToken, url: origin },
+      ]);
+      const page = await context.newPage(),
+        errors: string[] = [],
+        writes: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      page.on('request', (request) => {
+        if (request.url().includes('/api/') && request.method() !== 'GET')
+          writes.push(request.method() + ' ' + request.url());
+      });
+      try {
+        await page.goto(
+          `${origin}/?organizationId=${s.company.organizationId}`,
+        );
+        await page
+          .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
+          .click();
+        const statistics = page.getByLabel('当前筛选统计');
+        await expect.poll(() => statistics.innerText()).toContain('通用 3');
+        expect(await statistics.innerText()).toContain('定制 1');
+        await page.getByLabel('工作沉淀部门').selectOption(s.research.id);
+        await expect.poll(() => statistics.innerText()).toContain('1 名员工');
+        await page
+          .getByRole('button', { name: '查看研究员甲的 AI 员工', exact: true })
+          .click();
+        const instances = page.getByRole('region', {
+          name: '研究员甲的 AI 员工',
+          exact: true,
+        });
+        await instances
+          .getByRole('heading', { name: '定制 AI 员工', exact: true })
+          .waitFor();
+        expect(await instances.innerText()).not.toContain('PRIVATE_');
+        await instances
+          .locator('article')
+          .filter({
+            has: page.getByRole('heading', {
+              name: '定制 AI 员工',
+              exact: true,
+            }),
+          })
+          .getByRole('button', { name: '查看共享详情' })
+          .click();
+        const dialog = page.getByRole('dialog');
+        await dialog.getByText(/已配发基础人设与公司／部门共享内容/).waitFor();
+        await dialog
+          .getByRole('heading', { name: '公司共享场景', exact: true })
+          .waitFor();
+        expect(await dialog.innerText()).not.toMatch(
+          /PRIVATE_|CANDIDATE_|财务共享场景|个人设置 v/,
+        );
+        expect(
+          await dialog
+            .locator('[data-maintenance]:not([data-maintenance="readonly"])')
+            .count(),
+        ).toBe(0);
+        await dialog
+          .getByLabel('工作场景（可选）')
+          .selectOption({ label: '公司共享场景' });
+        await dialog
+          .getByRole('tab', { name: '参考资料', exact: true })
+          .click();
+        await dialog
+          .getByRole('button', { name: '共享资料-v1.txt', exact: true })
+          .click();
+        await dialog
+          .getByText('固定参考资料 共享资料-v1.txt', { exact: true })
+          .waitFor();
+        const downloadEvent = page.waitForEvent('download');
+        await dialog.getByRole('link', { name: /下载/ }).click();
+        const downloaded = await downloadEvent;
+        expect(downloaded.suggestedFilename()).toBe('共享资料-v1.txt');
+        const { readFile } = await import('node:fs/promises');
+        expect(
+          createHash('sha256')
+            .update(await readFile((await downloaded.path())!))
+            .digest('hex'),
+        ).toBe(s.sharedFile.object.checksum.replace('sha256:', ''));
+        const privateRead = await context.request.get(
+          `${origin}/api/v1/admin/organizations/${s.company.organizationId}/people/${s.owner.actor.id}/ai-instances/${s.custom.id}/references/${s.privateFile.revisionId}/download`,
+        );
+        expect(privateRead.status()).toBe(404);
+        await changeReference(s.owner, s.sharedFile.sourceId, {
+          workspaceId: s.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          action: 'archive',
+        });
+        await dialog.getByRole('button', { name: '更多文件操作' }).click();
+        await page.getByRole('menuitem', { name: '刷新预览' }).click();
+        await dialog.getByRole('alert').waitFor();
+        expect(await dialog.innerText()).not.toContain('共享资料-v1.txt');
+        expect(await dialog.getByRole('link', { name: /下载/ }).count()).toBe(
+          0,
+        );
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth + 1,
+          ),
+        ).toBe(true);
+        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+        await page.getByRole('tab', { name: '员工账号', exact: true }).click();
+        await page
+          .getByRole('button', { name: '研究员甲', exact: true })
+          .waitFor();
+        expect(writes).toEqual([]);
+        expect(errors).toEqual([]);
+        expect(failures).toEqual([]);
+      } finally {
+        await context.close();
+      }
+    },
+    90000,
+  );
 
   it.each([1440, 390])(
     'scopes runtime navigation by company and person, including people without sessions (%i)',

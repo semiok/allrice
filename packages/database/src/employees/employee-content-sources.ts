@@ -12,6 +12,7 @@ import {
   type ContentIdentity,
 } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import type { OrganizationSharedReader } from '../organization-shared-reader.ts';
 import {
   readReferenceSelection,
   ReferenceRuntimeError,
@@ -57,6 +58,7 @@ type ResolveInput = {
   lock: boolean;
   allowDraft: boolean;
   frozenPublication?: boolean;
+  sharedReader?: OrganizationSharedReader;
 };
 
 /** Exact source revisions are reused; neither a scene nor a content set grants
@@ -65,6 +67,11 @@ export async function resolveEmployeeContentSource(
   input: ResolveInput,
 ): Promise<ResolvedContentSource> {
   const { context, ownership, ref, sql, lock, allowDraft } = input;
+  if (
+    input.sharedReader &&
+    (lock || allowDraft || ownership.scope === 'personal')
+  )
+    return unavailable(ref);
   if (['requirement', 'procedure', 'company_rule'].includes(ref.sourceKind)) {
     const [row] = await sql<
       {
@@ -114,7 +121,9 @@ export async function resolveEmployeeContentSource(
               departmentId: row.department_id!,
             }
           : { scope: 'company', organizationId: row.organization_id };
-    const access = await getContentAccess(context, sourceOwnership, sql, lock);
+    const access = input.sharedReader
+      ? input.sharedReader.access(sourceOwnership)
+      : await getContentAccess(context, sourceOwnership, sql, lock);
     if (!access.canRead) return unavailable(ref);
     if (!canReferenceScope(ownership, sourceOwnership))
       return unavailable(ref, 'source_scope_mismatch');
@@ -169,18 +178,16 @@ export async function resolveEmployeeContentSource(
           ref.revisionId,
           sql,
           lock,
+          input.sharedReader,
         );
         if (selection.sourceId !== ref.contentId) return unavailable(ref);
         if (selection.digest !== ref.digest)
           return unavailable(ref, 'source_changed');
         if (!canReferenceScope(ownership, selection.ownership))
           return unavailable(ref, 'source_scope_mismatch');
-        const access = await getContentAccess(
-          context,
-          selection.ownership,
-          sql,
-          lock,
-        );
+        const access = input.sharedReader
+          ? input.sharedReader.access(selection.ownership)
+          : await getContentAccess(context, selection.ownership, sql, lock);
         return {
           dto: {
             reference: ref,
@@ -287,6 +294,9 @@ export async function resolveEmployeeContentSource(
       dependency: { ref, binding: row.binding_id, acl: aclDependency },
     };
   }
+  // A shared administration read never fetches personal memory, even if a
+  // malformed shared manifest contains its reference.
+  if (input.sharedReader) return unavailable(ref, 'source_scope_mismatch');
   const [memory] = await sql<
     {
       owner_id: string;

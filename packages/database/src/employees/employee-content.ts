@@ -6,6 +6,7 @@ import {
   EmployeeContentSetSchema,
   EmployeeEffectiveContentSchema,
   EmployeeDetailsSchema,
+  EmployeeDetailsProfileSchema,
   EmployeeManifestSchema,
   DefaultPartnerProfile,
   EmployeeRuntimeContentSchema,
@@ -22,7 +23,9 @@ import {
   type EmployeeContentIssue,
   type EmployeeContentValidation,
   type EmployeeContentReceipt,
+  type EmployeeInstance,
 } from '@allrice/contracts';
+import type { OrganizationSharedReader } from '../organization-shared-reader.ts';
 import { getDatabase } from '../core/client.ts';
 import { DataAccessError } from '../data.ts';
 import {
@@ -262,9 +265,18 @@ async function assemble(
   candidate?: { row: ContentSetRow; revision: ContentRevisionRow },
   lock = false,
   requireAllLayers = false,
+  sharedReader?: OrganizationSharedReader,
 ) {
+  if (sharedReader && (candidate || lock || ownership.scope === 'personal'))
+    throw new DataAccessError('authorization_denied');
   const platform = await platformContent(context, target, sql);
-  const rows = await inheritedRows(context, target, ownership, sql);
+  const rows = sharedReader
+    ? await sql<ContentSetRow[]>`select * from allrice_employee_content_sets
+        where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+          and employee_id=${target.employeeId} and active_revision_id is not null
+          and instance_id is null and (scope='company' or (scope='department' and department_id=${sharedReader.departmentId}))
+        order by case scope when 'company' then 0 else 1 end,id`
+    : await inheritedRows(context, target, ownership, sql);
   if (candidate) {
     const existing = rows.findIndex((r) => r.id === candidate.row.id);
     if (existing >= 0) rows[existing] = candidate.row;
@@ -289,10 +301,10 @@ async function assemble(
     if (!list.some((old) => exactKey(old) === exactKey(ref))) list.push(ref);
   };
   for (const row of rows) {
-    if (
-      !(await getContentAccess(context, contentOwnership(row), sql, lock))
-        .canRead
-    ) {
+    const access = sharedReader
+      ? sharedReader.access(contentOwnership(row))
+      : await getContentAccess(context, contentOwnership(row), sql, lock);
+    if (!access.canRead) {
       if (requireAllLayers) throw new DataAccessError('authorization_denied');
       continue;
     }
@@ -330,6 +342,7 @@ async function assemble(
         sql,
         lock,
         allowDraft: row.id === candidate?.row.id,
+        sharedReader,
       });
       if (resolved.issue) issues.push(resolved.issue);
       dependencies.push({ layer: row.id, source: resolved.dependency });
@@ -997,21 +1010,47 @@ async function readEffectiveContent(
   target: ResolvedTarget,
   instanceId: string,
   tx: ContentTx,
+  sharedReader?: OrganizationSharedReader,
 ) {
   const result = await assemble(
     context,
     target,
-    {
-      scope: 'personal',
-      organizationId: context.organizationId,
-      ownerId: context.actor.id,
-    },
+    sharedReader
+      ? { scope: 'company', organizationId: context.organizationId }
+      : {
+          scope: 'personal',
+          organizationId: context.organizationId,
+          ownerId: context.actor.id,
+        },
     tx,
+    undefined,
+    false,
+    false,
+    sharedReader,
   );
   const layers = [];
-  for (const row of result.rows)
-    if ((await getContentAccess(context, contentOwnership(row), tx)).canRead)
+  for (const row of result.rows) {
+    if (sharedReader) {
+      const access = sharedReader.access(contentOwnership(row));
+      if (!access.canRead) continue;
+      const active = await readRevision(tx, row.active_revision_id);
+      if (!active) continue;
+      layers.push({
+        id: row.id,
+        workspaceId: row.workspace_id,
+        ownership: contentOwnership(row),
+        target: contentTarget(row),
+        revision: active.number,
+        candidate: null,
+        active: revisionDto(active),
+        validation: null,
+        access,
+      });
+    } else if (
+      (await getContentAccess(context, contentOwnership(row), tx)).canRead
+    )
       layers.push(await setDto(context, row, tx));
+  }
   return EmployeeEffectiveContentSchema.parse({
     instanceId,
     employeeId: target.employeeId,
@@ -1021,6 +1060,101 @@ async function readEffectiveContent(
     scenes: result.scenes,
     sources: result.resolved.map((s) => s.dto),
     validation: result.validation,
+  });
+}
+
+async function readDetailsProfile(
+  context: EmployeeContentContext,
+  target: ResolvedTarget,
+  instance: Pick<
+    EmployeeInstance,
+    'id' | 'kind' | 'revision' | 'source' | 'profile'
+  >,
+  tx: ContentTx,
+  canMaintainPersonal: boolean,
+) {
+  const instanceId = instance.id;
+  const [row] = await tx<
+    { manifest: unknown; name: string; description: string }[]
+  >`
+      select manifest,name,description from allrice_employee_versions
+      where id=${target.versionId} and employee_id=${target.employeeId}
+        and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
+  if (!row) throw new DataAccessError('not_found');
+  const parsed = EmployeeManifestSchema.safeParse(row.manifest);
+  const manifest = parsed.success ? parsed.data : null;
+  const baseIdentity =
+    manifest?.schemaVersion === 2
+      ? manifest.identity
+      : {
+          role: manifest?.partnerProfile.role ?? DefaultPartnerProfile.role,
+          mission:
+            manifest?.partnerProfile.mission ?? DefaultPartnerProfile.mission,
+          workStyle:
+            manifest?.description ||
+            row.description ||
+            DefaultPartnerProfile.mission,
+          behaviorRules: [],
+          safetyBoundaries: [],
+        };
+  const personal = instance.profile;
+  const custom = instance.kind === 'custom' ? personal : {};
+  return EmployeeDetailsProfileSchema.parse({
+    instanceId,
+    kind: instance.kind,
+    revision: instance.revision,
+    source: instance.source,
+    name: custom.name ?? manifest?.name ?? row.name,
+    description: custom.description ?? manifest?.description ?? row.description,
+    appearance:
+      custom.appearance ??
+      (manifest?.schemaVersion === 2 ? manifest.appearance : undefined),
+    identity: {
+      ...baseIdentity,
+      role: custom.role ?? baseIdentity.role,
+      mission: custom.mission ?? baseIdentity.mission,
+      workStyle: custom.workStyle ?? baseIdentity.workStyle,
+    },
+    expressionStyle: personal.expressionStyle,
+    personalFields: Object.keys(
+      instance.kind === 'custom'
+        ? personal
+        : personal.expressionStyle
+          ? { expressionStyle: personal.expressionStyle }
+          : {},
+    ),
+    canMaintainPersonal: canMaintainPersonal,
+  });
+}
+
+/** Shared administration projection: actual assigned template, published
+ * company/department layers, no personal profile, candidate or private index. */
+export async function getOrganizationSharedEmployeeDetails(
+  reader: OrganizationSharedReader,
+  instance: Pick<EmployeeInstance, 'id' | 'kind' | 'revision' | 'source'>,
+  employeeId: string,
+  tx: ContentTx,
+) {
+  const target: ResolvedTarget = {
+    employeeId,
+    versionId: instance.source.employeeVersionId,
+    instanceId: null,
+  };
+  return EmployeeDetailsSchema.parse({
+    profile: await readDetailsProfile(
+      reader.context,
+      target,
+      { ...instance, profile: {} },
+      tx,
+      false,
+    ),
+    content: await readEffectiveContent(
+      reader.context,
+      target,
+      instance.id,
+      tx,
+      reader,
+    ),
   });
 }
 
@@ -1040,60 +1174,15 @@ export async function getEmployeeDetails(
       false,
     );
     const instance = await getEmployeeInstance(context, instanceId, tx);
-    const [row] = await tx<
-      { manifest: unknown; name: string; description: string }[]
-    >`
-      select manifest,name,description from allrice_employee_versions
-      where id=${target.versionId} and employee_id=${target.employeeId}
-        and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
-    if (!row) throw new DataAccessError('not_found');
-    const parsed = EmployeeManifestSchema.safeParse(row.manifest);
-    const manifest = parsed.success ? parsed.data : null;
-    const baseIdentity =
-      manifest?.schemaVersion === 2
-        ? manifest.identity
-        : {
-            role: manifest?.partnerProfile.role ?? DefaultPartnerProfile.role,
-            mission:
-              manifest?.partnerProfile.mission ?? DefaultPartnerProfile.mission,
-            workStyle:
-              manifest?.description ||
-              row.description ||
-              DefaultPartnerProfile.mission,
-            behaviorRules: [],
-            safetyBoundaries: [],
-          };
-    const personal = instance.profile;
-    const custom = instance.kind === 'custom' ? personal : {};
     const principal = await readContentPrincipal(context, tx);
     return EmployeeDetailsSchema.parse({
-      profile: {
-        instanceId,
-        kind: instance.kind,
-        revision: instance.revision,
-        source: instance.source,
-        name: custom.name ?? manifest?.name ?? row.name,
-        description:
-          custom.description ?? manifest?.description ?? row.description,
-        appearance:
-          custom.appearance ??
-          (manifest?.schemaVersion === 2 ? manifest.appearance : undefined),
-        identity: {
-          ...baseIdentity,
-          role: custom.role ?? baseIdentity.role,
-          mission: custom.mission ?? baseIdentity.mission,
-          workStyle: custom.workStyle ?? baseIdentity.workStyle,
-        },
-        expressionStyle: personal.expressionStyle,
-        personalFields: Object.keys(
-          instance.kind === 'custom'
-            ? personal
-            : personal.expressionStyle
-              ? { expressionStyle: personal.expressionStyle }
-              : {},
-        ),
-        canMaintainPersonal: principal?.writable === true,
-      },
+      profile: await readDetailsProfile(
+        context,
+        target,
+        instance,
+        tx,
+        principal?.writable === true,
+      ),
       content: await readEffectiveContent(context, target, instanceId, tx),
     });
   });
