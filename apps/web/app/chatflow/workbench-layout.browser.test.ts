@@ -229,6 +229,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       artifacts?: boolean;
       disabled?: boolean;
       taskSuggestions?: boolean;
+      localMcp?: boolean;
       noSession?: boolean;
       noStorage?: boolean;
       startup?: 'failed' | 'slow';
@@ -1223,7 +1224,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       return answer({}, 404);
     });
     await page.goto(
-      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
+      `${origin}/?session=${options.noSession ? '' : A}${options.disabled ? '&disabled=1' : ''}${options.taskSuggestions ? '&task-suggestions=1' : ''}${options.localMcp ? '&local-mcp=1' : ''}${options.settingsEntry ? `&settings=${options.settingsEntry}` : ''}`,
     );
     await (
       options.startup
@@ -5491,6 +5492,192 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ).toBeLessThan(20);
     } finally {
       await f.close();
+    }
+  });
+
+  it('does not query local MCP status or expose technical errors for ordinary and cloud-only replies', async () => {
+    for (const width of [1440, 390]) {
+      const f = await fixture({ width, localMcp: true });
+      let reads = 0;
+      try {
+        await f.page.route('**/api/v1/runtime/local-mcp?**', (route) => {
+          reads++;
+          return route.fulfill({ status: 503, json: {} });
+        });
+        f.state.reply = '付款总额 4286.30 元，剩余预算 4213.70 元。';
+        for (const cloudOnly of [false, true]) {
+          f.state.events = cloudOnly
+            ? [
+                {
+                  schemaVersion: 3,
+                  eventId: id(9400),
+                  organizationId: org,
+                  workspaceId: workspace,
+                  conversationId: A,
+                  runId: run,
+                  generation: 1,
+                  sequence: 1,
+                  cursor: `${run}:1`,
+                  harness: 'dsh',
+                  occurredAt: now,
+                  sourceEvent: null,
+                  type: 'tool.completed',
+                  payload: { name: 'cloud.mcp.call', toolCallId: 'cloud-only' },
+                },
+              ]
+            : [];
+          await Promise.all([
+            f.page.waitForResponse((response) =>
+              new URL(response.url()).pathname.endsWith('/events'),
+            ),
+            f.page.reload(),
+          ]);
+          await f.page.getByText(f.state.reply, { exact: true }).waitFor();
+          expect(reads).toBe(0);
+          expect(
+            await f.page.getByRole('region', { name: '电脑工具操作' }).count(),
+          ).toBe(0);
+          expect(await f.page.getByText('本地 MCP 状态读取失败').count()).toBe(
+            0,
+          );
+        }
+        if (process.env.ALLRICE_LOCAL_MCP_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_LOCAL_MCP_SCREENSHOT}-ordinary-${width}.png`,
+          });
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    }
+  });
+
+  it('keeps real local tool status failures readable and retains approval and stop controls', async () => {
+    for (const width of [1440, 390]) {
+      const f = await fixture({ width, localMcp: true });
+      let failing = true;
+      const decisions: string[] = [];
+      const operation = {
+        snapshot: {
+          status: 'waiting_user',
+          binding: { attempt: { operationId: id(9401) } },
+        },
+        deviceName: '测试电脑',
+        payload: {
+          capability: 'local.mcp.discover',
+          arguments: {
+            connectionId: id(9402),
+            connectionRevision: 1,
+            deviceId: id(9403),
+            path: 'tools',
+            credential: null,
+            imageDigest: `sha256:${'a'.repeat(64)}`,
+            source: {
+              name: '资料整理工具',
+              version: '1.0.0',
+              entrypoint: 'server.js',
+              files: [],
+            },
+            limits: { timeoutMs: 30000 },
+          },
+        },
+        approval: {
+          request: {
+            approvalId: id(9404),
+            requestId: id(9405),
+            version: 1,
+            requestDigest: `sha256:${'b'.repeat(64)}`,
+            task: {},
+            respondentId: user,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+          response: null as null | { decision: string },
+          revokedAt: null,
+        },
+        evidence: null,
+      };
+      try {
+        await f.page.route('**/api/v1/runtime/local-mcp?**', async (route) => {
+          if (route.request().method() === 'POST') {
+            decisions.push('cancel');
+            operation.snapshot.status = 'canceled';
+            return route.fulfill({ json: {} });
+          }
+          return failing
+            ? route.fulfill({
+                status: 503,
+                json: { code: 'LOCAL_MCP_UNAVAILABLE' },
+              })
+            : route.fulfill({ json: { operations: [operation] } });
+        });
+        await f.page.route(
+          `**/api/v1/runtime/approvals/${id(9404)}`,
+          async (route) => {
+            const { decision } = route.request().postDataJSON();
+            decisions.push(decision);
+            operation.approval.response = { decision };
+            operation.snapshot.status = 'running';
+            return route.fulfill({ json: {} });
+          },
+        );
+        f.state.reply = '正在准备电脑上的资料整理工具。';
+        f.state.events = [
+          {
+            schemaVersion: 3,
+            eventId: id(9406),
+            organizationId: org,
+            workspaceId: workspace,
+            conversationId: A,
+            runId: run,
+            generation: 1,
+            sequence: 1,
+            cursor: `${run}:1`,
+            harness: 'dsh',
+            occurredAt: now,
+            type: width === 1440 ? 'tool.started' : 'harness.native',
+            payload:
+              width === 1440
+                ? { name: 'local.mcp.discover' }
+                : { presentation: 'tool' },
+            sourceEvent:
+              width === 1440
+                ? null
+                : {
+                    id: 'native-local-tool',
+                    type: 'tool_execution_start',
+                    occurredAt: now,
+                    payload: { toolName: 'local_mcp_discover' },
+                  },
+          },
+        ];
+        await f.page.reload();
+        const panel = f.page.getByRole('region', { name: '电脑工具操作' });
+        await panel.getByRole('alert').waitFor();
+        expect(await panel.getByRole('alert').innerText()).toContain(
+          '暂时无法更新电脑操作状态，请稍后重试。',
+        );
+        expect(await f.page.getByText('本地 MCP 状态读取失败').count()).toBe(0);
+        expect(await f.page.getByText('LOCAL_MCP_UNAVAILABLE').count()).toBe(0);
+        if (process.env.ALLRICE_LOCAL_MCP_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${process.env.ALLRICE_LOCAL_MCP_SCREENSHOT}-operation-${width}.png`,
+          });
+        expect(decisions).toEqual([]);
+        failing = false;
+        await panel.getByRole('button', { name: '刷新', exact: true }).click();
+        const approve = panel.getByRole('button', {
+          name: '批准这一次启动发现',
+        });
+        await approve.waitFor();
+        expect(decisions).toEqual([]);
+        await approve.click();
+        await panel.getByRole('button', { name: '停止本轮任务' }).click();
+        await panel.getByText('已确认停止', { exact: true }).waitFor();
+        expect(decisions).toEqual(['approved', 'cancel']);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
     }
   });
 

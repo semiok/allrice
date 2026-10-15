@@ -36,6 +36,7 @@ import {
 } from './managed-browser-task-panel';
 import { LocalCommandPanel } from './local-command-panel';
 import { LocalMcpPanel } from './local-mcp-panel';
+import { hasLocalMcpEvents } from '../../lib/chatflow/local-mcp-task-presenter';
 import { CloudOperationPanel } from './cloud-operation-panel';
 import { ArtifactSummaryCards } from './artifact-workbench';
 import { AssistantRunPanel } from './assistant-run-panel';
@@ -453,14 +454,16 @@ export function ChatTranscript({
                                     runActive={messageIsRunning}
                                   />
                                 )}
-                                {localMcpEnabled && message.runId && (
-                                  <LocalMcpPanel
-                                    runId={message.runId}
-                                    workspaceId={workspaceId}
-                                    tenantHeaders={tenantHeaders}
-                                    runActive={messageIsRunning}
-                                  />
-                                )}
+                                {localMcpEnabled &&
+                                  message.runId &&
+                                  hasLocalMcpEvents(traceEvents) && (
+                                    <LocalMcpPanel
+                                      runId={message.runId}
+                                      workspaceId={workspaceId}
+                                      tenantHeaders={tenantHeaders}
+                                      runActive={messageIsRunning}
+                                    />
+                                  )}
                                 {responseText && !processParts ? (
                                   <div
                                     className={`${assistantUi.body} ${styles.assistantCopy}`}
