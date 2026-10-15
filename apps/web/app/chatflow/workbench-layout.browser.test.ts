@@ -8594,7 +8594,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
       f.state.items.push(artifact(11));
       await f.reloadList();
-      await f.selectArtifact(11);
       await f.panel
         .locator(`[data-document-id="${id(11)}"]`)
         .getByRole('heading', { name: /COIN/ })
