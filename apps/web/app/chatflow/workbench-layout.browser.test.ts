@@ -1373,6 +1373,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(
         await f.panel.getByRole('link', { name: '下载', exact: true }).count(),
       ).toBeGreaterThan(0);
+      let submitted: { text: string } | undefined;
+      await f.page.route('**/api/v1/sessions/*/messages?*', (route) => {
+        submitted = route.request().postDataJSON();
+        return route.fulfill({
+          status: 503,
+          json: { error: 'temporary failure' },
+        });
+      });
+      await f.page.getByRole('button', { name: '发送', exact: true }).click();
+      await expect.poll(() => submitted?.text).toBe(draft.trim());
+      await expect.poll(() => input.inputValue()).toBe(draft.trim());
+      expect(await input.isEnabled()).toBe(true);
     } finally {
       await f.close();
     }

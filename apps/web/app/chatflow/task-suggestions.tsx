@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Button,
   Input,
@@ -90,12 +90,12 @@ export function TaskSuggestions({
   const visible = page
     ? (snapshot ?? suggestions).slice(commonTaskCount)
     : (snapshot ?? suggestions).slice(0, commonTaskCount);
-  const close = () => {
+  const close = useCallback(() => {
     setSnapshot(null);
     setNextSnapshot(null);
     setSelected(null);
     setError('');
-  };
+  }, []);
 
   // The published Modal supplies mask/portal/Escape. This form supplies bounded
   // input focus and restoration because the native atom has no focus manager.
