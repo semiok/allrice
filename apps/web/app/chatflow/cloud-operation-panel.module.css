@@ -630,6 +630,10 @@
   padding: 0;
   border-radius: 10px;
 }
+/* A live project preview keeps its independent controls and inset. */
+.cloudCard > section {
+  padding: 12px 16px;
+}
 .cloudCard .cloudHeader {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
