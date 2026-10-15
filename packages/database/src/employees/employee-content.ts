@@ -5,6 +5,9 @@ import {
   EmployeeContentReceiptSchema,
   EmployeeContentSetSchema,
   EmployeeEffectiveContentSchema,
+  EmployeeDetailsSchema,
+  EmployeeManifestSchema,
+  DefaultPartnerProfile,
   EmployeeRuntimeContentSchema,
   PlatformEmployeeDefinitionSchema,
   UuidSchema,
@@ -985,29 +988,113 @@ export async function getEffectiveEmployeeContent(
       tx,
       false,
     );
-    const result = await assemble(
+    return readEffectiveContent(context, target, instanceId, tx);
+  });
+}
+
+async function readEffectiveContent(
+  context: EmployeeContentContext,
+  target: ResolvedTarget,
+  instanceId: string,
+  tx: ContentTx,
+) {
+  const result = await assemble(
+    context,
+    target,
+    {
+      scope: 'personal',
+      organizationId: context.organizationId,
+      ownerId: context.actor.id,
+    },
+    tx,
+  );
+  const layers = [];
+  for (const row of result.rows)
+    if ((await getContentAccess(context, contentOwnership(row), tx)).canRead)
+      layers.push(await setDto(context, row, tx));
+  return EmployeeEffectiveContentSchema.parse({
+    instanceId,
+    employeeId: target.employeeId,
+    platform: result.platform,
+    layers,
+    common: result.common,
+    scenes: result.scenes,
+    sources: result.resolved.map((s) => s.dto),
+    validation: result.validation,
+  });
+}
+
+/** Read the current persona and content in the same snapshot. Workspace lists
+ * can be stale after chat customization or publication and are not authority. */
+export async function getEmployeeDetails(
+  context: EmployeeContentContext,
+  instanceIdInput: string,
+  db = getDatabase(),
+) {
+  const instanceId = UuidSchema.parse(instanceIdInput);
+  return db.begin('isolation level repeatable read read only', async (tx) => {
+    const target = await resolveTarget(
       context,
-      target,
-      {
-        scope: 'personal',
-        organizationId: context.organizationId,
-        ownerId: context.actor.id,
-      },
+      { kind: 'instance', instanceId },
       tx,
+      false,
     );
-    const layers = [];
-    for (const row of result.rows)
-      if ((await getContentAccess(context, contentOwnership(row), tx)).canRead)
-        layers.push(await setDto(context, row, tx));
-    return EmployeeEffectiveContentSchema.parse({
-      instanceId,
-      employeeId: target.employeeId,
-      platform: result.platform,
-      layers,
-      common: result.common,
-      scenes: result.scenes,
-      sources: result.resolved.map((s) => s.dto),
-      validation: result.validation,
+    const instance = await getEmployeeInstance(context, instanceId, tx);
+    const [row] = await tx<
+      { manifest: unknown; name: string; description: string }[]
+    >`
+      select manifest,name,description from allrice_employee_versions
+      where id=${target.versionId} and employee_id=${target.employeeId}
+        and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}`;
+    if (!row) throw new DataAccessError('not_found');
+    const parsed = EmployeeManifestSchema.safeParse(row.manifest);
+    const manifest = parsed.success ? parsed.data : null;
+    const baseIdentity =
+      manifest?.schemaVersion === 2
+        ? manifest.identity
+        : {
+            role: manifest?.partnerProfile.role ?? DefaultPartnerProfile.role,
+            mission:
+              manifest?.partnerProfile.mission ?? DefaultPartnerProfile.mission,
+            workStyle:
+              manifest?.description ||
+              row.description ||
+              DefaultPartnerProfile.mission,
+            behaviorRules: [],
+            safetyBoundaries: [],
+          };
+    const personal = instance.profile;
+    const custom = instance.kind === 'custom' ? personal : {};
+    const principal = await readContentPrincipal(context, tx);
+    return EmployeeDetailsSchema.parse({
+      profile: {
+        instanceId,
+        kind: instance.kind,
+        revision: instance.revision,
+        source: instance.source,
+        name: custom.name ?? manifest?.name ?? row.name,
+        description:
+          custom.description ?? manifest?.description ?? row.description,
+        appearance:
+          custom.appearance ??
+          (manifest?.schemaVersion === 2 ? manifest.appearance : undefined),
+        identity: {
+          ...baseIdentity,
+          role: custom.role ?? baseIdentity.role,
+          mission: custom.mission ?? baseIdentity.mission,
+          workStyle: custom.workStyle ?? baseIdentity.workStyle,
+        },
+        expressionStyle: personal.expressionStyle,
+        personalFields: Object.keys(
+          instance.kind === 'custom'
+            ? personal
+            : personal.expressionStyle
+              ? { expressionStyle: personal.expressionStyle }
+              : {},
+        ),
+        canMaintainPersonal: principal?.writable === true,
+      },
+      content: await readEffectiveContent(context, target, instanceId, tx),
     });
   });
 }

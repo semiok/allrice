@@ -53,9 +53,14 @@ import {
   createChatSession,
   sendChatMessage,
 } from '../workspace/service.ts';
-import { createEmployeeInstance } from './employee-instances.ts';
+import {
+  createEmployeeInstance,
+  updateEmployeeInstance,
+  listEmployeeInstances,
+} from './employee-instances.ts';
 import {
   getEffectiveEmployeeContent,
+  getEmployeeDetails,
   getEmployeeContentSet,
   getEmployeeContentHistory,
   mutateEmployeeContent,
@@ -2673,6 +2678,80 @@ suite(
         )[0]?.revision,
       ).toBe(saved.revision);
     });
+    it('MET182 current details bind persona, general preferences and effective content to one authorized instance', async () => {
+      const s = await setup();
+      const rule = text('DETAILS_ACTIVE_RULE');
+      const input = s.draft({
+        textEdits: [rule],
+        manifest: {
+          schemaVersion: 1,
+          common: [{ sourceKind: 'draft_text', contentId: rule.contentId }],
+          scenes: [],
+          declaredConflicts: [],
+        },
+      });
+      await enable(s, input);
+      const first = await getEmployeeDetails(s.a, s.instance.id);
+      expect(first.profile).toMatchObject({
+        instanceId: s.instance.id,
+        name: 'Research assistant',
+        kind: 'custom',
+        canMaintainPersonal: true,
+      });
+      expect(
+        first.content.sources.some((item) => item.body === rule.body),
+      ).toBe(true);
+      await updateEmployeeInstance(s.a, s.instance.id, {
+        workspaceId: s.company.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: first.profile.revision,
+        profile: { name: '同名小白', expressionStyle: 'concise' },
+      });
+      const second = await createEmployeeInstance(s.a, {
+        workspaceId: s.company.workspaceId,
+        assignmentId: s.assigned.id,
+        requestId: randomUUID(),
+        profile: { name: '同名小白', expressionStyle: 'exploratory' },
+      });
+      const changed = await getEmployeeDetails(s.a, s.instance.id);
+      const peer = await getEmployeeDetails(s.a, second.id);
+      expect(changed.profile).toMatchObject({
+        name: '同名小白',
+        expressionStyle: 'concise',
+        revision: first.profile.revision + 1,
+      });
+      expect(peer.profile.expressionStyle).toBe('exploratory');
+      expect(peer.content.sources.some((item) => item.body === rule.body)).toBe(
+        false,
+      );
+      const general = (
+        await listEmployeeInstances(s.a, s.company.workspaceId)
+      ).find((item) => item.kind === 'general')!;
+      await updateEmployeeInstance(s.a, general.id, {
+        workspaceId: s.company.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: general.revision,
+        profile: { expressionStyle: 'concise' },
+      });
+      const standard = await getEmployeeDetails(s.a, general.id);
+      expect(standard.profile).toMatchObject({
+        kind: 'general',
+        expressionStyle: 'concise',
+        personalFields: ['expressionStyle'],
+      });
+      expect(standard.profile.name).not.toBe('同名小白');
+      await expect(
+        getEmployeeDetails(s.b, s.instance.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await f.db`update allrice_memberships set role='viewer' where user_id=${s.a.actor.id} and organization_id=${s.company.organizationId}`;
+      expect(
+        (await getEmployeeDetails(s.a, s.instance.id)).profile
+          .canMaintainPersonal,
+      ).toBe(false);
+      await f.db`update allrice_employee_assignments set active=false where id=${s.assigned.id}`;
+      await expect(getEmployeeDetails(s.a, s.instance.id)).rejects.toThrow();
+    });
+
     it('HTTP save→validate→activate→effective details preserves DTOs, source checks and browser write boundaries', async () => {
       // Load the Next entrypoints at runtime; the database's NodeNext typecheck
       // must not pull the Web bundler's extensionless imports into its project.
@@ -2741,7 +2820,13 @@ suite(
         );
       const actual = await read();
       expect(actual.status).toBe(200);
-      expect((await actual.json()).content.sources[0].body).toBe(rule.body);
+      expect(actual.headers.get('cache-control')).toBe('private, no-store');
+      const detail = await actual.json();
+      expect(detail.content.sources[0].body).toBe(rule.body);
+      expect(detail.profile).toMatchObject({
+        instanceId: s.instance.id,
+        name: 'Research assistant',
+      });
       browser.context = s.b;
       expect((await read()).status).toBe(404);
       browser.context = null;

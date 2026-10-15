@@ -1,7 +1,4 @@
-import {
-  DataAccessError,
-  getEffectiveEmployeeContent,
-} from '@allrice/database';
+import { DataAccessError, getEmployeeDetails } from '@allrice/database';
 import { getRequestContext } from '../../../../../../lib/identity/session';
 import { employeeHubErrorResponse } from '../../../../../../lib/employeehub/responses';
 export const runtime = 'nodejs';
@@ -15,12 +12,10 @@ export async function GET(
     const workspaceId =
       new URL(request.url).searchParams.get('workspaceId') ??
       context.workspaceId;
-    return Response.json({
-      content: await getEffectiveEmployeeContent(
-        { ...context, workspaceId },
-        (await params).id,
-      ),
-    });
+    return Response.json(
+      await getEmployeeDetails({ ...context, workspaceId }, (await params).id),
+      { headers: { 'Cache-Control': 'private, no-store' } },
+    );
   } catch (error) {
     return employeeHubErrorResponse(error);
   }
