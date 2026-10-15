@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { BridgeRefreshCoordinator } from './bridge-refresh';
+import { bridgeWorkspaceIssue } from './bridge-view';
 import type { BridgeDevice, Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
 
@@ -91,7 +92,9 @@ export function useBridge({
         if (
           result.devices.some(
             (device) =>
-              device.status === 'online' && device.folderGrants.length > 0,
+              device.status === 'online' &&
+              device.folderGrants.length > 0 &&
+              !bridgeWorkspaceIssue(device),
           )
         ) {
           setBridgeRecoveryActive(false);

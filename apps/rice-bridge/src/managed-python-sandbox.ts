@@ -14,7 +14,10 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { ManagedPythonPayloadRelease } from '@allrice/contracts';
+import type {
+  BridgePreparationProgress,
+  ManagedPythonPayloadRelease,
+} from '@allrice/contracts';
 import { managedNodePayloadForPlatform } from '@allrice/contracts';
 import { configPath, type BridgeConfig } from './config.js';
 import { LocalCommandError } from './local-command-inputs.js';
@@ -155,6 +158,92 @@ export class ManagedPythonSandbox {
   readonly vmHome: string;
   private readonly tools: string;
   private started = false;
+  private vmPreparation: Promise<void> | undefined;
+  readonly preparation = new Map<
+    BridgePreparationProgress['component'],
+    BridgePreparationProgress
+  >();
+  onPreparation?: () => void;
+  private readonly downloadFailures = new Map<
+    BridgePreparationProgress['component'],
+    unknown
+  >();
+  private lastProgressNotice = 0;
+  private progress(
+    component: BridgePreparationProgress['component'],
+    stage: BridgePreparationProgress['stage'],
+    detail: Partial<BridgePreparationProgress> = {},
+  ) {
+    const previous = this.preparation.get(component);
+    const next: BridgePreparationProgress = {
+      component,
+      stage,
+      receivedBytes: 0,
+      attempt: 0,
+      resumed: false,
+      ...previous,
+      ...detail,
+      updatedAt: new Date().toISOString(),
+    };
+    next.stage = stage;
+    this.preparation.set(component, next);
+    if (
+      stage !== 'downloading' ||
+      previous?.stage !== stage ||
+      Date.now() - this.lastProgressNotice > 500
+    ) {
+      this.lastProgressNotice = Date.now();
+      this.onPreparation?.();
+    }
+  }
+  private async prepareComponent<T>(
+    component: BridgePreparationProgress['component'],
+    prepare: () => Promise<T>,
+  ): Promise<T> {
+    // Download retries are finite. Explicit "prepare" restarts the controller
+    // with a new instance; it reuses the verified archives and saved fragments.
+    if (this.downloadFailures.has(component))
+      throw this.downloadFailures.get(component);
+    if (this.preparation.get(component)?.stage !== 'ready')
+      this.progress(component, 'preparing', { reason: undefined });
+    try {
+      const result = await prepare();
+      this.progress(component, 'ready');
+      return result;
+    } catch (error) {
+      const reason =
+        error instanceof LocalCommandError
+          ? error.code
+          : 'RUNTIME_PREPARATION_FAILED';
+      this.progress(component, 'failed', {
+        reason: /^[A-Z][A-Z0-9_]{0,79}$/.test(reason)
+          ? reason
+          : 'RUNTIME_PREPARATION_FAILED',
+      });
+      throw error;
+    }
+  }
+  private async download(
+    component: BridgePreparationProgress['component'],
+    path: string,
+    asset: Parameters<typeof downloadManagedRuntimeAsset>[1],
+    signal: AbortSignal,
+  ) {
+    try {
+      await downloadManagedRuntimeAsset(path, asset, signal, {
+        onProgress: (progress) =>
+          this.progress(component, progress.stage, progress),
+      });
+    } catch (error) {
+      this.downloadFailures.set(component, error);
+      throw error;
+    }
+    this.progress(component, 'installing', {
+      receivedBytes: asset.sizeBytes,
+      expectedBytes: asset.sizeBytes,
+      reason: undefined,
+    });
+  }
   constructor(
     readonly config: BridgeConfig,
     readonly release: ManagedPythonPayloadRelease,
@@ -189,7 +278,20 @@ export class ManagedPythonSandbox {
       maxBuffer: 4096,
     });
   }
-  async prepareManaged(signal: AbortSignal) {
+  /** VM setup is single-flight; image preparation is independent per runtime. */
+  async prepareVM(signal: AbortSignal) {
+    signal.throwIfAborted();
+    if (!this.vmPreparation) {
+      this.vmPreparation = this.prepareComponent('vm', () =>
+        this.startVM(signal),
+      ).finally(() => {
+        this.vmPreparation = undefined;
+      });
+    }
+    await this.vmPreparation;
+    signal.throwIfAborted();
+  }
+  private async startVM(signal: AbortSignal) {
     const platform =
       process.platform === 'darwin' &&
       (process.arch === 'x64' || process.arch === 'arm64')
@@ -237,7 +339,7 @@ export class ManagedPythonSandbox {
           'utf8',
         ),
       );
-      return this.runner.preflight(signal);
+      return;
     }
     const distribution = managedSandboxReleases[platform];
     const assets = [
@@ -257,7 +359,8 @@ export class ManagedPythonSandbox {
     )
       throw new LocalCommandError('RUNTIME_DISK_SPACE_REQUIRED');
     for (const asset of assets)
-      await downloadManagedRuntimeAsset(
+      await this.download(
+        'vm',
         join(this.root, 'archives', asset.fileName),
         asset,
         signal,
@@ -368,43 +471,53 @@ export class ManagedPythonSandbox {
         'utf8',
       );
       assertManagedSandboxConfiguration(yaml);
-      try {
-        return await this.runner.preflight(signal);
-      } catch (error) {
-        if (
-          !(error instanceof LocalCommandError) ||
-          error.code !== 'DAEMON_HTTP_404'
-        )
-          throw error;
-      }
-      const archive = await downloadManagedRuntimeAsset(
-        join(this.root, 'archives', this.release.archive.fileName),
-        {
-          ...this.release.archive,
-          sha256: this.release.archive.sha256.replace(/^sha256:/, ''),
-          url: new URL(
-            `/api/v1/bridge/runtime-assets/v1/linux-${this.release.architecture}/${this.release.archive.sha256.replace(/^sha256:/, '')}.docker.tar.gz`,
-            this.config.server,
-          ).toString(),
-        },
-        signal,
-      );
-      void archive;
-      await this.runner.api.loadImageArchive(
-        createReadStream(
-          join(this.root, 'archives', this.release.archive.fileName),
-        ),
-        this.release.archive.sizeBytes,
-        signal,
-      );
-      return await this.runner.preflight(signal, true);
     } catch (error) {
+      // Only failed VM startup owns this cleanup. An image download must never
+      // stop the shared VM or invalidate another already-ready runtime.
       await this.stop().catch(() => undefined);
       throw error;
     }
   }
+  async prepareManaged(signal: AbortSignal) {
+    await this.prepareVM(signal);
+    return this.prepareComponent('python', () => this.preparePython(signal));
+  }
+  private async preparePython(signal: AbortSignal) {
+    try {
+      return await this.runner.preflight(signal);
+    } catch (error) {
+      if (
+        !(error instanceof LocalCommandError) ||
+        error.code !== 'DAEMON_HTTP_404'
+      )
+        throw error;
+    }
+    const path = join(this.root, 'archives', this.release.archive.fileName);
+    await this.download(
+      'python',
+      path,
+      {
+        ...this.release.archive,
+        sha256: this.release.archive.sha256.replace(/^sha256:/, ''),
+        url: new URL(
+          `/api/v1/bridge/runtime-assets/v1/linux-${this.release.architecture}/${this.release.archive.sha256.replace(/^sha256:/, '')}.docker.tar.gz`,
+          this.config.server,
+        ).toString(),
+      },
+      signal,
+    );
+    await this.runner.api.loadImageArchive(
+      createReadStream(path),
+      this.release.archive.sizeBytes,
+      signal,
+    );
+    return this.runner.preflight(signal, true);
+  }
   async prepareNodeImage(signal: AbortSignal) {
-    signal.throwIfAborted();
+    await this.prepareVM(signal);
+    return this.prepareComponent('node', () => this.prepareNode(signal));
+  }
+  private async prepareNode(signal: AbortSignal) {
     const release = managedNodePayloadForPlatform(`macos-${process.arch}`);
     if (!this.started || !release)
       throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
@@ -432,7 +545,8 @@ export class ManagedPythonSandbox {
         throw error;
     }
     const path = join(this.root, 'archives', release.archive.fileName);
-    await downloadManagedRuntimeAsset(
+    await this.download(
+      'node',
       path,
       {
         ...release.archive,

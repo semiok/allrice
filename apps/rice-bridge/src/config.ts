@@ -1,5 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -23,6 +23,7 @@ export interface LocalGrant {
   label: string;
   rootPath: string;
   rootFingerprint: string;
+  revokedAt?: string | null;
 }
 
 export interface BridgeConfig {
@@ -187,9 +188,36 @@ export async function readConfig() {
 export async function writeConfig(config: BridgeConfig) {
   const path = configPath();
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  await writeFile(path, `${JSON.stringify(config, null, 2)}\n`, {
-    mode: 0o600,
+  const previous = await lstat(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
   });
+  if (
+    previous &&
+    (!previous.isFile() ||
+      previous.nlink !== 1 ||
+      previous.uid !== process.getuid?.())
+  )
+    throw Error('BRIDGE_CONFIG_FILE_UNSAFE');
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, 'wx', 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(config, null, 2)}\n`);
+    await handle.sync();
+    await handle.close();
+    await rename(temporary, path);
+    const directory = await open(dirname(path), 'r');
+    try {
+      await directory.sync();
+    } finally {
+      await directory.close();
+    }
+  } finally {
+    await handle.close().catch(() => undefined);
+    await unlink(temporary).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
 }
 
 export async function deleteConfig() {

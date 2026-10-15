@@ -230,7 +230,47 @@ export const UpdateBridgeSettingsSchema = z
   })
   .strict();
 
-/** Optional on protocol v2: old clients never advertise default browser access. */
+/** Optional progress facts; downloaded bytes never imply runtime readiness. */
+export const BridgePreparationProgressSchema = z
+  .object({
+    component: z.enum(['vm', 'node', 'python']),
+    stage: z.enum([
+      'preparing',
+      'downloading',
+      'verifying',
+      'retrying',
+      'installing',
+      'ready',
+      'failed',
+    ]),
+    receivedBytes: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(1024 ** 4),
+    expectedBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(1024 ** 4)
+      .optional(),
+    attempt: z.number().int().min(0).max(3),
+    resumed: z.boolean(),
+    reason: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{0,79}$/)
+      .optional(),
+    updatedAt: TimestampSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      !value.expectedBytes || value.receivedBytes <= value.expectedBytes,
+  );
+export type BridgePreparationProgress = z.infer<
+  typeof BridgePreparationProgressSchema
+>;
+
 export const BridgeEnvironmentSchema = z
   .object({
     version: z.literal(1),
@@ -253,6 +293,7 @@ export const BridgeEnvironmentSchema = z
       .enum(['preparing', 'ready', 'paused', 'unavailable'])
       .optional(),
     readiness: BridgeCapabilityReadinessListSchema.optional(),
+    preparation: z.array(BridgePreparationProgressSchema).max(3).optional(),
   })
   .strict();
 export type BridgeEnvironment = z.infer<typeof BridgeEnvironmentSchema>;

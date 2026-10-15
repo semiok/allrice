@@ -17,8 +17,9 @@ import type { BridgeConfig } from './config.js';
 
 /** Probe only the already granted roots and installed git. No scanning or writes. */
 export async function probeBridgeFiles(config: BridgeConfig) {
+  const grants = config.grants.filter((grant) => !grant.revokedAt);
   const roots = await Promise.all(
-    config.grants.map(async (grant) => {
+    grants.map(async (grant) => {
       try {
         const root = await realpath(grant.rootPath);
         if (
@@ -54,9 +55,7 @@ export async function probeBridgeFiles(config: BridgeConfig) {
   return {
     folder: roots.some((root) => root.read),
     writable: roots.some((root) => root.write),
-    folderReason: config.grants.length
-      ? 'folder_unavailable'
-      : 'folder_missing',
+    folderReason: grants.length ? 'folder_unavailable' : 'folder_missing',
     gitVersion,
   };
 }

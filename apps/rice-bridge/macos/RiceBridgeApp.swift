@@ -343,6 +343,19 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         text += "\(credential)\n\n配对后自动准备可用能力；需要选择目录或批准具体操作时，会在当前任务中提示。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
         text += "\n\n独立浏览器：\(state["browserEnabled"] as? Bool == true ? "自动准备已开启" : "已主动暂停")。使用 Chromium 自身沙箱，不是命令的 Linux VM，不读取个人 Chrome。"
         if let environment = state["environment"] as? [String: Any] {
+            if let progress = environment["preparation"] as? [[String: Any]] {
+                let phases = ["preparing": "正在准备", "downloading": "正在下载", "verifying": "正在校验", "retrying": "正在重试", "installing": "正在安装", "ready": "可用", "failed": "准备未完成"]
+                let components = ["vm": "计算环境", "node": "Node 运行包", "python": "Python 运行包"]
+                for item in progress {
+                    guard let component = item["component"] as? String, let name = components[component], let stage = item["stage"] as? String, let phase = phases[stage] else { continue }
+                    text += "\n\(name)：\(phase)"
+                    if stage != "ready", let total = item["expectedBytes"] as? Double, let received = item["receivedBytes"] as? Double, total > 0, received >= 0, received <= total {
+                        text += String(format: " · %.1f / %.1f MB", received / 1048576, total / 1048576)
+                    }
+                    if let attempt = item["attempt"] as? Int, attempt > 1 && attempt <= 3 { text += " · 第 \(attempt) 次尝试" }
+                    if stage == "failed" { text += "\n请从菜单重新检查并准备环境，将复用有效下载进度。" }
+                }
+            }
             let labels = ["ready": "可用", "preparing": "正在准备", "paused": "已暂停", "unavailable": "暂不可用，可重新检查"]
             for (key, name) in [("browser", "独立浏览器"), ("sandbox", "本地计算"), ("preview", "项目预览")] {
                 text += "\n\(name)：\(labels[environment[key] as? String ?? ""] ?? "等待检查")"
