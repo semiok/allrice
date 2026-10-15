@@ -659,7 +659,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
   }
 
-  async function passActivationTest(
+  async function claimActivationTest(
     f: Awaited<ReturnType<typeof setup>>,
     test: { id: string },
   ) {
@@ -688,6 +688,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       decisionId: method.decision.id,
       snapshot: subscription!,
     });
+    return method;
+  }
+
+  async function passActivationTest(
+    f: Awaited<ReturnType<typeof setup>>,
+    test: { id: string },
+  ) {
+    const method = await claimActivationTest(f, test);
     await completePlatformEmployeeTestRun(test.id, {
       answer: '{"totalCents":30000}',
       provider: method.modelSnapshot.provider,
@@ -1052,6 +1060,104 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await run.finish();
     return { ...base, saved, args, run, test, coverage };
   }
+
+  it.each(['passed', 'mismatch', 'execution_failed'] as const)(
+    'method test result stays coherent when %s finalization commits during its read',
+    async (outcome) => {
+      const x = await companyCommonFixture();
+      const method = await claimActivationTest(x.f, x.test);
+      const before = await getEmployeeMethodTest(x.f.a.context, x.test.id);
+      expect(before.status).toBe('running');
+      expect(before.assertion).toBeNull();
+      let locked!: (pid: number) => void, release!: () => void;
+      const ready = new Promise<number>((resolve) => {
+        locked = resolve;
+      });
+      const proceed = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const gate = fixture.db.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${x.f.a.organizationId}`},0))`;
+        const [row] = await tx`select pg_backend_pid() pid`;
+        locked(row!.pid);
+        await proceed;
+      });
+      void gate.catch(() => undefined);
+      const pid = await ready;
+      // The current-content gate is reached after reading the method binding,
+      // before reading the platform test status. Finalize through the real
+      // atomic writer while this GET is paused between those reads.
+      const reading = getEmployeeMethodTest(x.f.a.context, x.test.id);
+      void reading.catch(() => undefined);
+      try {
+        await expect
+          .poll(
+            async () => {
+              const [row] =
+                await fixture.db`select count(*)::int n from pg_stat_activity where datname=current_database() and ${pid}::int=any(pg_blocking_pids(pid))`;
+              return row!.n;
+            },
+            { timeout: 3000, interval: 20 },
+          )
+          .toBeGreaterThan(0);
+        await completePlatformEmployeeTestRun(x.test.id, {
+          answer:
+            outcome === 'execution_failed'
+              ? null
+              : JSON.stringify({
+                  totalCents: outcome === 'passed' ? 30000 : 30100,
+                }),
+          provider: method.modelSnapshot.provider,
+          model: method.modelSnapshot.model,
+          threadId: null,
+          usage: { inputTokens: 100, cachedInputTokens: 0, outputTokens: 20 },
+          events: [],
+          error:
+            outcome === 'execution_failed'
+              ? {
+                  code: 'DSH_TRANSPORT',
+                  message: 'Synthetic execution failure',
+                }
+              : null,
+          modelExecution: {
+            dispatched: true,
+            subscriptionSnapshotCreated: true,
+            usageComplete: true,
+            cacheUsageKnown: false,
+            costCents: null,
+          },
+        });
+      } finally {
+        release();
+        await gate;
+      }
+      const result = await reading;
+      expect(result).toMatchObject({
+        status: outcome === 'execution_failed' ? 'failed' : 'succeeded',
+        validationStatus:
+          outcome === 'execution_failed'
+            ? 'not_verified'
+            : outcome === 'passed'
+              ? 'passed'
+              : 'failed',
+        runId: before.runId,
+        coverageDigest: x.coverage.digest,
+        executionView: x.test.executionView,
+        sharedTarget: x.test.sharedTarget,
+        assertion: {
+          passed: outcome === 'passed',
+          actual:
+            outcome === 'execution_failed'
+              ? null
+              : outcome === 'passed'
+                ? 30000
+                : 30100,
+        },
+      });
+      expect(result.completedAt).not.toBeNull();
+    },
+    60000,
+  );
 
   it('company common maximum coverage keeps all 32 proofs in a bounded exact confirmation detail', async () => {
     const x = await activationFixture('company', false, 'max');
