@@ -1,5 +1,6 @@
 import {
   dispatchBridgeCommand,
+  BridgeCommandResultError,
   createLocalCommandOperation,
   createLocalFileOperation,
   waitLocalCommandOperation,
@@ -15,6 +16,7 @@ import {
 import type { RiceToolHandler } from '../types.js';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { waitForLocalAdmission } from './local-admission.js';
+import { HandlerError } from '../../errors.js';
 
 export const executeControlledLocalCommand: RiceToolHandler = async ({
   input,
@@ -135,6 +137,14 @@ export const executeLocalBridgeTool: RiceToolHandler = async ({
       arguments: args,
     }),
     idempotencyKey: `tool:${input.context.runId}:${input.call.id}`,
+  }).catch((error: unknown) => {
+    if (error instanceof BridgeCommandResultError)
+      throw new HandlerError(
+        error.errorCode,
+        `${error.summary}（本地操作状态：${error.status}；不可自动重试）`,
+        false,
+      );
+    throw error;
   });
   return {
     modelContent: JSON.stringify({

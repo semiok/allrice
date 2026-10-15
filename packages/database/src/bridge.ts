@@ -122,6 +122,41 @@ export class BridgeDataError extends Error {
   }
 }
 
+const bridgeCommandFailureSummaries = {
+  GRANT_NOT_FOUND: '此 Mac 缺少目录授权，请在 Bridge 重新选择工作区目录',
+  FOLDER_NOT_FOUND: '已授权目录无法读取，请恢复目录或重新选择工作区',
+  FOLDER_CHANGED: '已授权目录位置已变化，请重新确认工作区授权',
+  PATH_OUTSIDE_ROOT: '请求路径超出已授权工作区',
+  PATH_OUTSIDE_GRANT: '请求路径超出已授权工作区',
+  WRITE_CONFLICT: '文件已变化，请重新读取后确认修改',
+  FILE_RESULT_UNKNOWN: '本地操作结果待核实，不得自动重复执行',
+  LOCAL_RESULT_UNKNOWN: '本地操作结果待核实，不得自动重复执行',
+  broker_wait_timeout:
+    '未及时收到 Bridge 完成回执，结果待核实，不得自动重复执行',
+  command_timeout: 'Bridge 命令已到期，请核实本地执行状态',
+  LOCAL_EXECUTION_FAILED: '本地操作未完成，请检查 Bridge 诊断信息',
+} as const;
+
+/** Preserve typed failures at the broker boundary without exposing local paths,
+ * file contents or arbitrary client-provided messages to the model. */
+export class BridgeCommandResultError extends BridgeDataError {
+  readonly errorCode: keyof typeof bridgeCommandFailureSummaries;
+  readonly summary: string;
+  constructor(
+    public readonly status: 'failed' | 'expired' | 'canceled' | 'unknown',
+    code: string | null,
+  ) {
+    super('command_unavailable');
+    this.errorCode =
+      code && Object.hasOwn(bridgeCommandFailureSummaries, code)
+        ? (code as keyof typeof bridgeCommandFailureSummaries)
+        : status === 'unknown'
+          ? 'LOCAL_RESULT_UNKNOWN'
+          : 'LOCAL_EXECUTION_FAILED';
+    this.summary = bridgeCommandFailureSummaries[this.errorCode];
+  }
+}
+
 function sha256(value: string) {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -868,6 +903,41 @@ export async function completeBridgeWorkspaceSelection(
   const requestId = UuidSchema.parse(requestIdInput);
   const parsed = CompleteBridgeWorkspaceSelectionInputSchema.parse(input);
   const sql = getDatabase();
+  const retainLateReceipt = async () => {
+    const receipt = toJsonValue({
+      status: parsed.status,
+      grantId: parsed.grantId ?? null,
+      errorCode: parsed.errorCode ?? null,
+    });
+    const [late] = await sql<{ status: 'failed' | 'canceled' }[]>`
+      update allrice_bridge_workspace_selection_requests set
+        late_receipt=${sql.json(receipt)},late_receipt_at=coalesce(late_receipt_at,clock_timestamp())
+      where id=${requestId} and device_id=${device.id} and lease_token=${parsed.leaseToken}
+        and (status='canceled' or (status='failed' and error_code='selection_timeout'))
+        and (late_receipt is null or late_receipt=${sql.json(receipt)})
+      returning status`;
+    return late ? { status: late.status, receiptAcknowledged: true } : null;
+  };
+  const [completed] = await sql<
+    {
+      status: string;
+      lease_token: string | null;
+      selected_grant_id: string | null;
+      error_code: string | null;
+    }[]
+  >`select status,lease_token,selected_grant_id,error_code from allrice_bridge_workspace_selection_requests where id=${requestId} and device_id=${device.id} and status in ('succeeded','failed','canceled')`;
+  if (completed) {
+    if (
+      completed.lease_token === parsed.leaseToken &&
+      completed.status === parsed.status &&
+      completed.selected_grant_id === (parsed.grantId ?? null) &&
+      completed.error_code === (parsed.errorCode ?? null)
+    )
+      return { status: parsed.status };
+    const late = await retainLateReceipt();
+    if (late) return late;
+    throw new BridgeDataError('lease_lost');
+  }
   if (parsed.status === 'succeeded') {
     const grants = await sql<{ id: string }[]>`
       select id from allrice_bridge_folder_grants
@@ -887,7 +957,29 @@ export async function completeBridgeWorkspaceSelection(
       and lease_token = ${parsed.leaseToken} and status = 'claimed'
     returning id
   `;
-  if (!rows[0]) throw new BridgeDataError('lease_lost');
+  if (!rows[0]) {
+    // A lost HTTP ACK must not turn a confirmed picker/grant into failure.
+    // Only the identical terminal result with the original lease is replayable.
+    const [prior] = await sql<
+      {
+        status: string;
+        lease_token: string | null;
+        selected_grant_id: string | null;
+        error_code: string | null;
+      }[]
+    >`select status,lease_token,selected_grant_id,error_code from allrice_bridge_workspace_selection_requests where id=${requestId} and device_id=${device.id}`;
+    if (
+      prior &&
+      prior.lease_token === parsed.leaseToken &&
+      prior.status === parsed.status &&
+      prior.selected_grant_id === (parsed.grantId ?? null) &&
+      prior.error_code === (parsed.errorCode ?? null)
+    )
+      return { status: parsed.status };
+    const late = await retainLateReceipt();
+    if (late) return late;
+    throw new BridgeDataError('lease_lost');
+  }
   await audit({
     organizationId: device.organization_id,
     workspaceId: device.workspace_id,
@@ -1014,7 +1106,25 @@ export async function completeBridgeCommand(
   `;
   const row = rows[0];
   if (!row) {
-    // Durable file receipts may be redelivered after the response was lost.
+    // Late evidence is retained separately. A previous timeout/cancellation
+    // remains a historical fact; acknowledging this receipt never re-enqueues
+    // the command or lends its lease to another attempt.
+    const receipt = toJsonValue({
+      status: parsed.status,
+      output: parsed.output ?? null,
+      summary: parsed.summary,
+      errorCode: parsed.errorCode ?? null,
+    });
+    const [late] = await sql<{ id: string }[]>`
+      update allrice_bridge_commands set
+        late_receipt=${sql.json(receipt)},late_receipt_at=coalesce(late_receipt_at,clock_timestamp())
+      where id=${commandId} and device_id=${device.id} and lease_token=${parsed.leaseToken}
+        and capability not like 'local.file.%'
+        and (status in ('expired','canceled','unknown') or (status in ('claimed','running') and timeout_at<=now()))
+        and (late_receipt is null or late_receipt=${sql.json(receipt)})
+      returning id`;
+    if (late) return { status: parsed.status };
+    // Durable command receipts may be redelivered after the response was lost.
     // Exact comparison cannot change a completed command or lend its lease.
     const [prior] = await sql<
       {
@@ -1025,7 +1135,7 @@ export async function completeBridgeCommand(
       }[]
     >`
       select status,result,summary,error_code from allrice_bridge_commands where id=${commandId}
-        and device_id=${device.id} and capability like 'local.file.%' and lease_token=${parsed.leaseToken}`;
+        and device_id=${device.id} and lease_token=${parsed.leaseToken}`;
     if (
       prior &&
       prior.status === parsed.status &&
@@ -1210,8 +1320,13 @@ export async function dispatchBridgeCommand(input: {
         workspaceLabel: target.grant_label,
       };
     }
-    if (['failed', 'expired', 'canceled'].includes(command.status)) {
-      throw new BridgeDataError('command_unavailable');
+    if (
+      command.status === 'failed' ||
+      command.status === 'expired' ||
+      command.status === 'canceled' ||
+      command.status === 'unknown'
+    ) {
+      throw new BridgeCommandResultError(command.status, command.error_code);
     }
     await sleep(250);
   }
@@ -1221,5 +1336,5 @@ export async function dispatchBridgeCommand(input: {
       error_code = 'broker_wait_timeout'
     where id = ${commandId} and status in ('queued', 'claimed', 'running')
   `;
-  throw new BridgeDataError('command_unavailable');
+  throw new BridgeCommandResultError('unknown', 'broker_wait_timeout');
 }
