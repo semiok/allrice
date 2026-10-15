@@ -13,6 +13,8 @@ import {
   heartbeatBridgeDevice,
   listBridgeDevices,
   requestBridgeWorkspaceSelection,
+  completeBridgeCommand,
+  completeBridgeWorkspaceSelection,
 } from './bridge.ts';
 import type * as Client from './core/client.ts';
 
@@ -107,6 +109,91 @@ suite(
         await admin.end();
       }
     });
+    it.each(['canceled', 'failed'])(
+      'acknowledges a late picker receipt after %s without reviving the request',
+      async (status) => {
+        const f = await fixture(),
+          request = randomUUID(),
+          leaseToken = randomUUID();
+        await database`insert into allrice_bridge_workspace_selection_requests(id,organization_id,workspace_id,owner_id,device_id,status,lease_token,claimed_at,error_code) values(${request},${f.org},${f.workspace},${f.owner},${f.device},${status},${leaseToken},now()-interval '11 minutes',${status === 'failed' ? 'selection_timeout' : 'superseded'})`;
+        const receipt = {
+          leaseToken,
+          status: 'succeeded',
+          grantId: randomUUID(),
+        };
+        await expect(
+          completeBridgeWorkspaceSelection(f.token, request, receipt),
+        ).resolves.toEqual({ status, receiptAcknowledged: true });
+        const [before] =
+          await database`select status,error_code,late_receipt,late_receipt_at from allrice_bridge_workspace_selection_requests where id=${request}`;
+        await completeBridgeWorkspaceSelection(f.token, request, receipt);
+        await expect(
+          completeBridgeWorkspaceSelection(f.token, request, {
+            ...receipt,
+            leaseToken: randomUUID(),
+          }),
+        ).rejects.toMatchObject({ code: 'lease_lost' });
+        await expect(
+          completeBridgeWorkspaceSelection(f.token, request, {
+            ...receipt,
+            grantId: randomUUID(),
+          }),
+        ).rejects.toMatchObject({ code: 'lease_lost' });
+        const [after] =
+          await database`select status,error_code,late_receipt,late_receipt_at from allrice_bridge_workspace_selection_requests where id=${request}`;
+        expect(after).toEqual(before);
+        expect(after!.status).toBe(status);
+        expect(after!.late_receipt.grantId).toBe(receipt.grantId);
+      },
+    );
+    it.each(['expired', 'canceled', 'unknown'])(
+      'retains late %s receipts without changing history or accepting another lease',
+      async (status) => {
+        const f = await fixture();
+        const grant = randomUUID(),
+          command = randomUUID(),
+          lease = randomUUID();
+        await database`insert into allrice_bridge_folder_grants(id,organization_id,workspace_id,owner_id,device_id,label,root_fingerprint) values(${grant},${f.org},${f.workspace},${f.owner},${f.device},'Synthetic folder',${'a'.repeat(64)})`;
+        await database`insert into allrice_bridge_commands(id,organization_id,workspace_id,owner_id,device_id,folder_grant_id,capability,arguments,status,idempotency_key,lease_token,timeout_at,summary,error_code) values(${command},${f.org},${f.workspace},${f.owner},${f.device},${grant},'local.fs.list','{}',${status},${command},${lease},now()-interval '1 minute','original result','original_code')`;
+        const receipt = {
+          leaseToken: lease,
+          status: 'succeeded',
+          output: { entries: [] },
+          summary: 'actual receipt',
+        };
+        await expect(
+          completeBridgeCommand(f.token, command, {
+            ...receipt,
+            leaseToken: randomUUID(),
+          }),
+        ).rejects.toMatchObject({ code: 'lease_lost' });
+        await completeBridgeCommand(f.token, command, receipt);
+        const [first] =
+          await database`select status,summary,error_code,late_receipt,late_receipt_at from allrice_bridge_commands where id=${command}`;
+        expect(first).toMatchObject({
+          status,
+          summary: 'original result',
+          error_code: 'original_code',
+          late_receipt: {
+            status: 'succeeded',
+            output: { entries: [] },
+            summary: 'actual receipt',
+            errorCode: null,
+          },
+        });
+        expect(first!.late_receipt_at).toBeTruthy();
+        await completeBridgeCommand(f.token, command, receipt);
+        await expect(
+          completeBridgeCommand(f.token, command, {
+            ...receipt,
+            output: { entries: ['changed'] },
+          }),
+        ).rejects.toMatchObject({ code: 'lease_lost' });
+        const [after] =
+          await database`select status,summary,error_code,late_receipt,late_receipt_at from allrice_bridge_commands where id=${command}`;
+        expect(after).toEqual(first);
+      },
+    );
     it('persists concurrent owner switches, acknowledges actual Bridge settings, and retains local choices', async () => {
       const f = await fixture();
       const settings = {
