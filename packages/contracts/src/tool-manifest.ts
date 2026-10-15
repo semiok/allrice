@@ -25,6 +25,7 @@ export interface AllRiceToolManifestEntry {
 /** Intrinsic personal tools. Published templates cannot grant these to a
  * different instance kind or a delegated child. */
 export const employeeCustomizationTools = [
+  { name: 'workspace.personal_skill.install', capability: 'storage:write' },
   { name: 'workspace.employee.profile.update', capability: 'storage:write' },
   { name: 'workspace.employee.method.inspect', capability: 'storage:read' },
   {
@@ -51,7 +52,9 @@ export function employeeCustomizationToolsForInstance(
   return employeeCustomizationTools.filter(
     (tool) =>
       kind === 'custom' ||
-      (kind === 'general' && tool.name === 'workspace.employee.profile.update'),
+      (kind === 'general' &&
+        (tool.name === 'workspace.employee.profile.update' ||
+          tool.name === 'workspace.personal_skill.install')),
   );
 }
 
@@ -84,6 +87,13 @@ export function withEmployeeCustomizationTools(
  * and the Tool Broker remains the final validation and authorization boundary.
  */
 export const allRiceToolManifest = [
+  {
+    canonicalName: 'workspace.personal_skill.install',
+    capability: 'storage:write',
+    risk: 'managed_write',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_personal_skill_install',
+  },
   {
     canonicalName: 'workspace.employee.profile.update',
     capability: 'storage:write',

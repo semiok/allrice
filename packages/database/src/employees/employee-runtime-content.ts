@@ -1,3 +1,8 @@
+import {
+  assertPersonalSkillsReadable,
+  assertPersonalSkillPins,
+  PersonalSkillError,
+} from './personal-skills.ts';
 import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
@@ -246,7 +251,25 @@ type ContentContextRow = {
   history_from_message_id: string | null;
   invalidated_at: Date | null;
 };
-type RunRow = {
+type PersonalProvenance = {
+  personal_skills: unknown;
+  has_personal_skills: boolean;
+  personal_instance_id: string | null;
+  native_personal_pins: { id: string; personal: unknown }[] | null;
+};
+async function assertPersonalProvenance(
+  reader: ContentIdentity,
+  row: PersonalProvenance,
+  sql: ContentSql,
+) {
+  const raw = row.has_personal_skills ? row.personal_skills : undefined;
+  const pins = row.native_personal_pins ?? [];
+  if (row.has_personal_skills || pins.length) {
+    assertPersonalSkillPins(raw, pins, row.personal_instance_id ?? undefined);
+    await assertPersonalSkillsReadable(reader, raw, sql);
+  }
+}
+type RunRow = PersonalProvenance & {
   content: unknown;
   content_scene_state: unknown;
   content_generation_id: string | null;
@@ -267,7 +290,7 @@ function identity(scope: RunScope): ContentIdentity {
 async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
-  >`select er.execution_snapshot->'content' as content,
+  >`select er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
       er.content_generation_id,er.content_scene_state,er.reference_reads,er.prompt_snapshot->>'userRequest' as user_request,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
@@ -290,7 +313,9 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
     sessions = new Set([scope.sessionId]),
     messages = new Set<string>();
   const nodes = new Map<string, unknown>();
-  const add = async (row: Pick<RunRow, 'content' | 'session_references'>) => {
+  const add = async (
+    row: Pick<RunRow, 'content' | 'personal_skills' | 'session_references'>,
+  ) => {
     if (row.content) {
       const parsed = EmployeeRuntimeContentSchema.safeParse(row.content);
       if (!parsed.success) return unavailable();
@@ -322,13 +347,14 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       Pick<
         RunRow,
         | 'content'
+        | keyof PersonalProvenance
         | 'content_scene_state'
         | 'session_references'
         | 'reference_selections'
         | 'reference_reads'
       >[]
     >`
-      select distinct execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+      select distinct execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED' limit 129`;
     if (rows.length > 128) return unavailable();
@@ -420,16 +446,16 @@ async function generationIsReadable(
       and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and invalidated_at is null`;
   if (!generation) return false;
   const rows = await sql<
-    {
+    (PersonalProvenance & {
       content: unknown;
       content_scene_state: unknown;
       reference_selections: unknown;
       reference_reads: unknown;
       session_references:
         { sessionId: string; messages: { id: string }[] }[] | null;
-    }[]
+    })[]
   >`
-    select distinct execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+    select distinct execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED' limit 129`;
@@ -438,6 +464,7 @@ async function generationIsReadable(
   if (rows.length > 128) return false;
   for (const row of rows) {
     try {
+      await assertPersonalProvenance(reader, row, sql);
       await assertReferenceSelections(
         reader,
         row.reference_selections,
@@ -486,6 +513,7 @@ async function generationIsReadable(
         );
     } catch (error) {
       if (
+        error instanceof PersonalSkillError ||
         error instanceof EmployeeRuntimeContentError ||
         error instanceof ZodError ||
         error instanceof ReferenceRuntimeError
@@ -555,6 +583,7 @@ export async function assertEmployeeContentReferenceMessages(
 export async function prepareEmployeeContentContext(scope: RunScope) {
   const result = await withContentLocks(scope, async (tx) => {
     const run = await ownedRun(scope, tx);
+    await assertPersonalProvenance(identity(scope), run, tx);
     if (!run.content) {
       if (
         Array.isArray(run.reference_selections) &&
@@ -639,11 +668,12 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =
-      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (content_scene_state is not null or reference_reads is not null or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'personalSkills' is not null or content_scene_state is not null or reference_reads is not null or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,
       nativeContextKey:
+        run.personal_skills ||
         current.scenes.length ||
         current.sources.some((s) => s.referenceFile) ||
         priorScene

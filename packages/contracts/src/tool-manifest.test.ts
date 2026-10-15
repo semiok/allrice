@@ -132,7 +132,7 @@ describe('AllRice tool manifest', () => {
   });
 });
 
-it('ignores published intrinsic grants and gives general instances only their personal style tool', () => {
+it('ignores published intrinsic grants and gives general instances only private style/install tools', () => {
   const declared = [
     'workspace.file.read',
     'workspace.employee.method.activate',
@@ -144,7 +144,11 @@ it('ignores published intrinsic grants and gives general instances only their pe
       ['storage:read', 'storage:write'],
       'general',
     ),
-  ).toEqual(['workspace.file.read', 'workspace.employee.profile.update']);
+  ).toEqual([
+    'workspace.file.read',
+    'workspace.personal_skill.install',
+    'workspace.employee.profile.update',
+  ]);
   expect(
     withEmployeeCustomizationTools(declared, ['storage:read'], 'general'),
   ).toEqual(['workspace.file.read']);

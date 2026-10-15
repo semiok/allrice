@@ -1,0 +1,40 @@
+.root {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.root p {
+  margin: 0;
+  line-height: 1.6;
+}
+.root > button {
+  justify-self: start;
+}
+.skill {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--dsr-border, #e5e7eb);
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.skill h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.skill h3 span,
+.meta {
+  font-size: 13px;
+  color: var(--dsr-text-secondary, #64748b);
+  font-weight: normal;
+}
+.binding {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+.skill > button {
+  justify-self: start;
+}

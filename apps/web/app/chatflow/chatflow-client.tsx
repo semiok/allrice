@@ -306,9 +306,14 @@ export function ChatFlowClient({
     const section = url.searchParams.get('settings');
     if (
       !section ||
-      !['apps', 'computer', 'capabilities', 'work', 'experience'].includes(
-        section,
-      )
+      ![
+        'apps',
+        'computer',
+        'capabilities',
+        'work',
+        'experience',
+        'skills',
+      ].includes(section)
     )
       return;
     setSettings({ scope: settingsScope, section });

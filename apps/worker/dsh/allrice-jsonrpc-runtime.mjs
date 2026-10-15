@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { PersonalSkillPinSchema } from '@allrice/contracts';
+import { personalSkillNativeTools } from './allrice-personal-skill-native-tools.mjs';
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { methodTestNativeTools } from './allrice-method-test-native-tools.mjs';
 import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
@@ -77,6 +79,7 @@ const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
   ...employeeProfileNativeTools,
+  ...personalSkillNativeTools,
   ...employeeMethodNativeTools,
   ...methodTestNativeTools,
   ...technicalNativeTools,
@@ -768,6 +771,17 @@ function nativeSkillSnapshot(value) {
       userInvocable: value.invocation.userInvocable,
     }),
     requiredToolRefs: Object.freeze([...value.requiredToolRefs]),
+    ...(value.personal
+      ? {
+          personal: Object.freeze(PersonalSkillPinSchema.parse(value.personal)),
+        }
+      : {}),
+    ...(typeof value.whenToUse === 'string'
+      ? { whenToUse: value.whenToUse }
+      : {}),
+    ...(value.metadata
+      ? { metadata: Object.freeze(globalThis.structuredClone(value.metadata)) }
+      : {}),
   });
 }
 
@@ -982,6 +996,11 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const requestedSkills = Array.isArray(params?.nativeSkills)
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];
+    if (
+      requestedSkills.some((s) => s.personal) &&
+      (!params.requireContentGuard || !this.personalSkillBridge)
+    )
+      throw Error('personal_skill_guard_required');
     this.registerNativeSkills(requestedSkills);
     const skillRegistrationMs = performance.now() - skillRegistrationStarted;
     const scenes = Array.isArray(params?.contentScenes)
@@ -1082,6 +1101,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
           name: skill.name,
           description: skill.description,
           invocation: skill.invocation,
+          ...(skill.whenToUse ? { whenToUse: skill.whenToUse } : {}),
+          ...(skill.metadata ? { metadata: skill.metadata } : {}),
           source: 'allrice-managed',
           provider: 'allrice',
           rank: 100,
@@ -1092,17 +1113,27 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
               'Resources are managed by the tenant-scoped AllRice Skill Provider.',
           },
         })),
-      get: async (candidate) => {
+      get: async (candidate, options) => {
         const locator = candidate?.locator;
         if (!locator || typeof locator !== 'object' || Array.isArray(locator)) {
           return undefined;
         }
         const skill = byId.get(locator.id);
         if (!skill || locator.checksum !== skill.checksum) return undefined;
+        if (skill.personal) {
+          const checked = await this.personalSkillBridge(
+            skill.personal,
+            options?.signal,
+          );
+          if (checked?.allowed !== true)
+            throw Error('personal_skill_unavailable');
+        }
         return {
           name: skill.name,
           description: skill.description,
           invocation: skill.invocation,
+          ...(skill.whenToUse ? { whenToUse: skill.whenToUse } : {}),
+          ...(skill.metadata ? { metadata: skill.metadata } : {}),
           source: 'allrice-managed',
           provider: 'allrice',
           content: skill.content,
@@ -1850,6 +1881,8 @@ if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
     transport.request(`allrice/assistant/${method}`, params, signal);
 server.toolBrokerRequest = (params, signal) =>
   transport.request('allrice/tool-call', params, signal);
+server.personalSkillBridge = (params, signal) =>
+  transport.request('allrice/personal-skill-check', params, signal);
 server.contentBridge = (params, signal) =>
   transport.request('allrice/content-check', params, signal);
 server.sceneBridge = (action, params, signal) =>

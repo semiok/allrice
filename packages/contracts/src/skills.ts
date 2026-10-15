@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PersonalSkillPinSchema } from './personal-skills.ts';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
@@ -67,6 +68,9 @@ export const DshNativeSkillSnapshotSchema = z
     requiredToolRefs: z.array(z.string().trim().min(1).max(240)).max(32),
     // Deliberately optional without a default: v1 persisted checksums must not change.
     bundle: SkillBundleSchema.optional(),
+    personal: PersonalSkillPinSchema.optional(),
+    whenToUse: z.string().max(2_000).optional(),
+    metadata: z.record(z.string(), z.json()).optional(),
   })
   .strict();
 export type DshNativeSkillSnapshot = z.infer<

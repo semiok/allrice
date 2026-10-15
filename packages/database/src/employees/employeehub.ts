@@ -1,4 +1,8 @@
 import {
+  freezePersonalSkills,
+  assertFrozenPersonalSkills,
+} from './personal-skills.ts';
+import {
   cancelEmployeeAccessRuns,
   employeeAccessTransaction,
 } from './employee-access-cancellation.ts';
@@ -1443,8 +1447,15 @@ export async function prepareEmployeeRunBinding(input: {
       ...(skill.bundle ? { bundle: skill.bundle } : {}),
     }),
   );
-  const { nativeSkills, catalog: baseSkillCatalog } =
-    await freezeEmployeeBaseSkills(originalNativeSkills);
+  const {
+    nativeSkills,
+    catalog: baseSkillCatalog,
+    personalSkills,
+  } = await freezePersonalSkills(
+    contentIdentity,
+    instance.id,
+    await freezeEmployeeBaseSkills(originalNativeSkills),
+  );
   const mcpEnabled =
     runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
     manifest.data.schemaVersion === 2 &&
@@ -1498,6 +1509,7 @@ export async function prepareEmployeeRunBinding(input: {
       instance,
       content,
       ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
+      ...(personalSkills ? { personalSkills } : {}),
       ...(mcpEnabled ? { mcpTools } : {}),
       ...(localMcp.connections.length ? { localMcp } : {}),
       employee: {
@@ -1636,6 +1648,24 @@ export async function resolveEmployeeExecution(input: {
     assertFrozenBaseSkillCatalog(
       executionSnapshot.data.baseSkillCatalog,
       nativeSkills,
+    );
+  }
+  if (
+    (row.execution_snapshot &&
+      typeof row.execution_snapshot === 'object' &&
+      'personalSkills' in row.execution_snapshot) ||
+    nativeSkills.some((s) => s.personal)
+  ) {
+    if (
+      !executionSnapshot.success ||
+      executionSnapshot.data.schemaVersion !== 2 ||
+      !executionSnapshot.data.personalSkills
+    )
+      throw Error('personal_skill_snapshot_invalid');
+    assertFrozenPersonalSkills(
+      executionSnapshot.data.personalSkills,
+      nativeSkills,
+      executionSnapshot.data.instance?.id,
     );
   }
   const manifest = EmployeeManifestSchema.parse(

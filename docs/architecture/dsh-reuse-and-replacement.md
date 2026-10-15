@@ -567,3 +567,7 @@ Run `9620a5c1` 的本地五分钟等待截止只能证明没有新的归一化�
 且能证明取消后旧请求停止，才移除重复的等待保护。业务诊断与结算确认仍由 AllRice
 负责。原生运行时的本地 SSE 三种故障、WebSocket 关闭、限次、取消和无 ACK 测试
 分别在 `allrice-model-errors-native.test.mjs`、`allrice-codex-output-bound-wire.test.mjs`。
+
+## MET187 PR1：个人 Skill 安装与原生采用
+
+复用公开 `FileSystemSkillProvider` 解析独立附件、现有 AllRice frozen Provider 和 DSH `skill`/slash 加载；不增加 DSH 核心补丁。原始来源与解析正文各自固定，个人版本不进入平台审核目录。`allrice-jsonrpc-lifecycle-v1` 内部窄 RPC 在返回个人正文前核对精确绑定，继续由 `allrice-employee-content-authorization-v1` 的 generation/llm-stream 检查守住重试、压缩与历史撤权。普通执行权限在个人 Skill 装配之前计算，现有 catalog 摘要覆盖组合后全部正文。详见 [个人技能](../features/personal-skills.md)。
