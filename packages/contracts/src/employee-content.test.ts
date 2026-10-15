@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   EmployeeContentMutationSchema,
   EmployeeMethodSaveSchema,
+  EmployeeMethodSharedTargetSchema,
 } from './employee-content.ts';
 function input() {
   return {
@@ -28,6 +29,32 @@ function input() {
   };
 }
 describe('employee content input boundaries', () => {
+  it('requires an exact department target and forbids department identity on company scope', () => {
+    const company = {
+      scope: 'company',
+      setId: randomUUID(),
+      employeeId: randomUUID(),
+    };
+    const department = {
+      ...company,
+      scope: 'department',
+      departmentId: randomUUID(),
+    };
+    expect(EmployeeMethodSharedTargetSchema.parse(company)).toEqual(company);
+    expect(EmployeeMethodSharedTargetSchema.parse(department)).toEqual(
+      department,
+    );
+    for (const target of [
+      { ...company, departmentId: department.departmentId },
+      { ...company, departmentId: null },
+      { ...company, scope: 'department' },
+      { ...company, organizationId: randomUUID() },
+      { ...company, ownerId: randomUUID() },
+    ])
+      expect(EmployeeMethodSharedTargetSchema.safeParse(target).success).toBe(
+        false,
+      );
+  });
   it('requires new text and exact, distinct replacement pins, without source re-addition', () => {
     const ref = {
       sourceKind: 'procedure',
