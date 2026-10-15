@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { memo, useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   CodeBlock,
   FileTypeIcon,
@@ -15,6 +15,7 @@ import {
 import type { DeliverableVersion } from '@allrice/contracts';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { searchResultDocument } from '../../lib/chatflow/document-reader-model';
+import { documentTextWindows } from '../../lib/chatflow/document-text-window';
 import { AssistantMarkdown } from './assistant-markdown';
 import native from './dsh-upstream/document/TextPreview.module.css';
 import styles from './document-reader.module.css';
@@ -162,50 +163,111 @@ export function DocumentVersions(props: {
   );
 }
 
-export function DocumentText(props: {
+export const DocumentText = memo(function DocumentText(props: {
   text: string;
   fileName: string;
   mediaType: string;
   source?: boolean;
   toolResult?: boolean;
   streaming?: boolean;
+  active?: boolean;
+  pagination?: {
+    firstPage: number;
+    fromEnd?: boolean;
+    busy: boolean;
+    previous?: () => void;
+    next?: (pages: number) => void;
+  };
 }) {
-  const search = props.toolResult ? searchResultDocument(props.text) : null;
-  let text = !props.source && search ? search.body : props.text;
-  let language = languageForPath(props.fileName);
-  if (props.source || (props.mediaType === 'application/json' && !search)) {
-    try {
-      text = JSON.stringify(JSON.parse(props.text), null, 2);
-      language = 'json';
-    } catch {
-      /* Plain text stays plain. */
+  const { search, language, pages, text } = useMemo(() => {
+    const search = props.toolResult ? searchResultDocument(props.text) : null;
+    let text = !props.source && search ? search.body : props.text;
+    let language = languageForPath(props.fileName);
+    if (props.source || (props.mediaType === 'application/json' && !search)) {
+      try {
+        text = JSON.stringify(JSON.parse(props.text), null, 2);
+        language = 'json';
+      } catch {
+        /* Partial pages and plain text stay unchanged. */
+      }
     }
-  }
+    return { search, language, text, pages: documentTextWindows(text) };
+  }, [
+    props.text,
+    props.fileName,
+    props.mediaType,
+    props.source,
+    props.toolResult,
+  ]);
+  const [selection, setSelection] = useState<{ text: string; index: number }>();
+  const index = Math.min(
+    selection?.text === text
+      ? selection.index
+      : props.pagination?.fromEnd
+        ? pages.length - 1
+        : 0,
+    pages.length - 1,
+  );
+  const paginated = pages.length > 1 || !!props.pagination;
   const rendered =
     !props.source && (props.mediaType === 'text/markdown' || !!search);
+  // Keep the page selection, but remove hidden token/Markdown nodes.
+  if (props.active === false) return null;
   return (
     <section
       className={styles.text}
       aria-label={props.source ? '源文本' : '文件正文'}
     >
+      {paginated && (
+        <nav className={styles.pagination} aria-label="文本分页">
+          <button
+            type="button"
+            disabled={
+              props.pagination?.busy || (!index && !props.pagination?.previous)
+            }
+            onClick={() =>
+              index
+                ? setSelection({ text, index: index - 1 })
+                : props.pagination?.previous?.()
+            }
+          >
+            上一页
+          </button>
+          <span>第 {(props.pagination?.firstPage ?? 1) + index} 页</span>
+          <button
+            type="button"
+            disabled={
+              props.pagination?.busy ||
+              (index === pages.length - 1 && !props.pagination?.next)
+            }
+            onClick={() =>
+              index < pages.length - 1
+                ? setSelection({ text, index: index + 1 })
+                : props.pagination?.next?.(pages.length)
+            }
+          >
+            {props.pagination?.busy ? '正在加载…' : '下一页'}
+          </button>
+        </nav>
+      )}
       {search && !props.source ? (
         <p className={styles.sourceNotice}>搜索资料 · {search.query}</p>
       ) : null}
       {rendered ? (
         <AssistantMarkdown
-          text={text}
+          text={pages[index]!}
           allowRemoteImages
           streaming={props.streaming}
         />
       ) : (
         <CodeBlock
           className={styles.code}
-          code={text}
+          code={pages[index]!}
           streaming={props.streaming}
           lang={language}
           lineNumbers
           wrap
-          copyLabel="复制文本"
+          copyLabel={paginated ? '复制本页' : '复制文本'}
           copiedLabel="已复制"
           toolbarLabels={{
             codeLabel: '代码',
@@ -216,4 +278,4 @@ export function DocumentText(props: {
       )}
     </section>
   );
-}
+});

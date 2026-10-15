@@ -161,11 +161,11 @@ export function ChatFlowClient({
   const [referenceToView, setReferenceToView] = useState<ReferenceDraft | null>(
     null,
   );
-  function openReference(reference: ReferenceDraft) {
+  const openReference = useCallback((reference: ReferenceDraft) => {
     setRecommendedTemplates(false);
     setReferenceToView(reference);
     setReferenceLibraryOpen(true);
-  }
+  }, []);
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
   const [recommendedTemplates, setRecommendedTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -372,6 +372,15 @@ export function ChatFlowClient({
     visible: workbenchRequested,
     viewerId: workspace?.viewerId,
   });
+  const { show: showWorkbench, close: closeWorkbench } = workbench;
+  const browseWorkbench = useCallback(
+    () => showWorkbench(undefined, true),
+    [showWorkbench],
+  );
+  const dismissWorkbench = useCallback(() => {
+    closeWorkbench();
+    workbenchEntry.current?.focus();
+  }, [closeWorkbench]);
   const [filesRequest, setFilesRequest] = useState({ scope: '', revision: 0 });
   const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
   const currentFilesRequest =
@@ -569,6 +578,16 @@ export function ChatFlowClient({
     activeId,
     workspace?.workspaceId,
     tenantHeaders,
+  );
+  const reloadInteractions = interactions.reload;
+  const continueFromWorkbench = useCallback(
+    (runId: string) => {
+      if (!activeId) return;
+      void loadHistory(activeId);
+      void streamRun(runId, activeId);
+      void reloadInteractions();
+    },
+    [activeId, loadHistory, streamRun, reloadInteractions],
   );
   const assistants = useAssistantSession({
     enabled: workbenchEnabled,
@@ -1858,9 +1877,7 @@ export function ChatFlowClient({
                     transcriptColumn={transcriptColumn}
                     workspaceId={workspace.workspaceId}
                     artifacts={workbench.artifacts}
-                    onOpenArtifact={(id) => {
-                      workbench.show(id);
-                    }}
+                    onOpenArtifact={showWorkbench}
                   />
                 </MessageFeedbackProvider>
               </div>
@@ -1929,7 +1946,7 @@ export function ChatFlowClient({
           open={workbenchOpen}
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
-          onBrowseFiles={() => workbench.show(undefined, true)}
+          onBrowseFiles={browseWorkbench}
           key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
           dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
@@ -1943,18 +1960,10 @@ export function ChatFlowClient({
           listLoading={workbench.loading}
           noticeId={workbench.noticeId}
           narrow={workbenchNarrow}
-          onSelect={(id) => workbench.show(id)}
-          onClose={() => {
-            workbench.close();
-            workbenchEntry.current?.focus();
-          }}
+          onSelect={showWorkbench}
+          onClose={dismissWorkbench}
           onReload={workbench.reload}
-          onContinued={(runId) => {
-            if (!activeId) return;
-            void loadHistory(activeId);
-            void streamRun(runId, activeId);
-            void interactions.reload();
-          }}
+          onContinued={continueFromWorkbench}
         />
       ) : null}
 

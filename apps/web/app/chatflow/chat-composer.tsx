@@ -35,7 +35,6 @@ import {
   type BridgeConnectionState,
 } from './bridge-view';
 import type { History, PendingAttachment, Visibility } from './chatflow-types';
-import { resizeComposerTextarea } from './chatflow-utils';
 import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 
@@ -196,7 +195,6 @@ export function ChatComposer({
           disabled={busy}
           onChange={(event) => {
             onDraftChange(event.target.value);
-            resizeComposerTextarea(event.currentTarget);
           }}
           onCompositionEnd={() => {
             window.setTimeout(() => {

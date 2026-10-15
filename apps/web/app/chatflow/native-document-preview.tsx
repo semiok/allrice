@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import {
   parseArtifactPreview,
   workbenchJson,
@@ -28,7 +28,7 @@ export function hasNativeViewport(preview: ArtifactPreview | null) {
     ['pdf', 'office', 'spreadsheet', 'html', 'image'].includes(preview.kind)
   );
 }
-export function NativeDocumentPreview({
+export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   preview,
   fileName,
   pageUrl,
@@ -36,6 +36,7 @@ export function NativeDocumentPreview({
   source = false,
   interactive = false,
   toolResult = false,
+  active = true,
 }: {
   preview: ArtifactPreview;
   fileName: string;
@@ -44,6 +45,7 @@ export function NativeDocumentPreview({
   source?: boolean;
   interactive?: boolean;
   toolResult?: boolean;
+  active?: boolean;
 }) {
   const [sourcePage, setSourcePage] = useState<TextPreview>();
   const [error, setError] = useState('');
@@ -81,6 +83,7 @@ export function NativeDocumentPreview({
         fileName={fileName}
         pageUrl={pageUrl}
         headers={headers}
+        active={active}
         source
       />
     ) : (
@@ -97,6 +100,7 @@ export function NativeDocumentPreview({
         headers={headers}
         source={source}
         toolResult={toolResult}
+        active={active}
       />
     );
   if (preview.kind === 'spreadsheet')
@@ -119,7 +123,7 @@ export function NativeDocumentPreview({
   if (preview.kind === 'office') return <OfficePreview preview={preview} />;
   if (preview.kind === 'download_only') return <p>{preview.reason}</p>;
   return null;
-}
+});
 function PagedDocumentText({
   initial,
   fileName,
@@ -127,6 +131,7 @@ function PagedDocumentText({
   headers,
   source,
   toolResult,
+  active,
 }: {
   initial: TextPreview;
   fileName: string;
@@ -134,65 +139,101 @@ function PagedDocumentText({
   headers: Record<string, string>;
   source?: boolean;
   toolResult?: boolean;
+  active: boolean;
 }) {
-  const [page, setPage] = useState(initial);
+  const [current, setCurrent] = useState({
+    page: initial,
+    firstPage: 1,
+    fromEnd: false,
+    history: [] as { offset: number; firstPage: number }[],
+  });
+  const { page, firstPage, history, fromEnd } = current;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const lifetime = useRef(new AbortController());
+  const request = useRef<AbortController | null>(null);
   useEffect(() => {
-    setPage(initial);
+    setCurrent({ page: initial, firstPage: 1, fromEnd: false, history: [] });
     setError('');
-  }, [initial]);
-  useEffect(() => {
+    setBusy(false);
+    return () => request.current?.abort();
+  }, [initial, pageUrl, headers]);
+  async function load(direction: 'previous' | 'next', displayedPages = 0) {
+    if (!pageUrl || busy) return;
+    const previous = history.at(-1);
+    if (direction === 'previous' && !previous) return;
+    if (direction === 'next' && (page.eof !== false || !page.lines)) return;
+    request.current?.abort();
     const controller = new AbortController();
-    lifetime.current = controller;
-    return () => controller.abort();
-  }, []);
-  async function more() {
-    if (!pageUrl || busy || page.eof !== false || !page.lines) return;
+    request.current = controller;
     setBusy(true);
     setError('');
     try {
-      const nextOffset = (page.offset ?? 1) + page.lines;
+      const nextOffset =
+        direction === 'previous'
+          ? previous!.offset
+          : (page.offset ?? 1) + page.lines!;
       const next = parseArtifactPreview(
         await workbenchJson(
           `${pageUrl}&source=1&offset=${nextOffset}`,
           headers,
-          { signal: lifetime.current.signal },
+          { signal: controller.signal },
         ),
       );
+      if (controller.signal.aborted) return;
       if (next.kind !== 'text')
         throw Error(
           next.kind === 'download_only' ? next.reason : '文本分页读取失败',
         );
       if (next.offset !== nextOffset) throw Error('文本版本已变化，请刷新预览');
-      setPage({
-        ...next,
-        text: page.text + (next.lines ? '\n' : '') + next.text,
+      // Keep only one authenticated read in memory and one small display page
+      // in the DOM. Back navigation re-reads the same immutable version.
+      setCurrent({
+        page: next,
+        firstPage:
+          direction === 'previous'
+            ? previous!.firstPage
+            : firstPage + displayedPages,
+        fromEnd: direction === 'previous',
+        history:
+          direction === 'previous'
+            ? history.slice(0, -1)
+            : [...history, { offset: page.offset ?? 1, firstPage }],
       });
     } catch (error) {
-      if (!lifetime.current.signal.aborted)
+      if (!controller.signal.aborted)
         setError(error instanceof Error ? error.message : '文本分页读取失败');
     } finally {
-      if (!lifetime.current.signal.aborted) setBusy(false);
+      if (!controller.signal.aborted) setBusy(false);
     }
   }
   return (
     <>
       <DocumentText
+        key={`${page.offset ?? 1}/${source ? 'source' : 'preview'}`}
         text={page.text}
         fileName={fileName}
         mediaType={page.mediaType}
         source={source}
         toolResult={toolResult}
-        streaming={page.eof === false}
+        active={active}
+        pagination={
+          pageUrl && (history.length || page.eof === false)
+            ? {
+                firstPage,
+                fromEnd,
+                busy,
+                previous: history.length
+                  ? () => void load('previous')
+                  : undefined,
+                next:
+                  page.eof === false && page.lines
+                    ? (pages) => void load('next', pages)
+                    : undefined,
+              }
+            : undefined
+        }
       />
       {error && <p role="alert">{error}</p>}
-      {page.eof === false && pageUrl && (
-        <button type="button" disabled={busy} onClick={() => void more()}>
-          {busy ? '正在加载…' : error ? '重试加载' : '加载更多内容'}
-        </button>
-      )}
     </>
   );
 }
