@@ -4,6 +4,7 @@ import {
   EmployeeContentMutationSchema,
   EmployeeMethodSaveSchema,
   EmployeeMethodSharedTargetSchema,
+  EmployeeMethodInspectSchema,
 } from './employee-content.ts';
 function input() {
   return {
@@ -29,6 +30,24 @@ function input() {
   };
 }
 describe('employee content input boundaries', () => {
+  it('accepts an exact candidate-test cursor only for candidate discovery', () => {
+    const args = {
+      view: 'candidate',
+      scope: 'company',
+      beforeTestId: randomUUID(),
+    };
+    expect(EmployeeMethodInspectSchema.parse(args)).toEqual(args);
+    for (const invalid of [
+      { ...args, view: 'effective' },
+      { ...args, view: 'history' },
+      { ...args, beforeRevision: 2 },
+      { ...args, ownerId: randomUUID() },
+      { ...args, beforeTestId: 'latest' },
+    ])
+      expect(EmployeeMethodInspectSchema.safeParse(invalid).success).toBe(
+        false,
+      );
+  });
   it('requires an exact department target and forbids department identity on company scope', () => {
     const company = {
       scope: 'company',

@@ -104,24 +104,47 @@ async function snapshot(
       instanceId,
       id,
       model,
+      content.testCoverage?.views ? content : undefined,
+    );
+    const view = content.testCoverage?.views?.find(
+      (v) =>
+        runtimePolicyDigest(v.executionView) ===
+        runtimePolicyDigest(proof.executionView ?? null),
     );
     if (
       proof.candidateRevisionId !== content.candidateRevisionId ||
       proof.candidateDigest !== content.candidateDigest ||
-      proof.dependencyDigest !== content.dependencyDigest ||
+      Boolean(content.testCoverage?.views) !== Boolean(proof.executionView) ||
+      (content.testCoverage?.views && !view) ||
+      proof.dependencyDigest !==
+        (view?.dependencyDigest ?? content.dependencyDigest) ||
       proof.coverageDigest !== content.testCoverage?.digest
     )
       throw new EmployeeContentError('source_changed');
     tests.push(proof);
   }
+  const missingCommonProof = content.testCoverage
+    ? content.testCoverage.scenes.some(
+        (scene) =>
+          !tests.some(
+            (test) =>
+              test.sceneId === scene.sceneId &&
+              runtimePolicyDigest(test.executionView ?? null) ===
+                runtimePolicyDigest(scene.executionView ?? null),
+          ),
+      )
+    : content.scenes.some(
+        (scene) => !tests.some((test) => test.sceneId === scene.id),
+      );
   if (
     (changes.commonChanged
-      ? content.scenes
-      : content.restoredFromRevisionId
-        ? content.manifest.scenes
-        : changes.changedScenes
-    ).some((s) => !tests.some((t) => t.sceneId === s.id)) ||
-    (changes.commonChanged && !content.scenes.length) ||
+      ? missingCommonProof
+      : (content.restoredFromRevisionId
+          ? content.manifest.scenes
+          : changes.changedScenes
+        ).some((s) => !tests.some((t) => t.sceneId === s.id))) ||
+    (changes.commonChanged &&
+      !(content.testCoverage?.scenes.length ?? content.scenes.length)) ||
     (content.sharedTarget &&
       content.restoredFromRevisionId &&
       !content.manifest.scenes.length &&
@@ -133,6 +156,35 @@ async function snapshot(
 type Snapshot = Awaited<ReturnType<typeof snapshot>>;
 
 function confirmationQuestion(id: string, name: string, s: Snapshot) {
+  const companyCoverage = s.content.testCoverage?.views
+    ? s.content.testCoverage
+    : undefined;
+  const sceneChanges = `通用要求：${s.changes.commonChanged ? '已调整' : '保持原样'}；新增或调整场景：${s.changes.changedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}。`;
+  const sceneRemovals = `移除场景：${s.changes.removedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}；其他场景及原始历史保留。`;
+  const companyDetail = companyCoverage
+    ? [
+        sceneChanges,
+        sceneRemovals,
+        `共同要求的受影响共享场景（${companyCoverage.scenes.length} 项）全部已测：`,
+        ...companyCoverage.views!.map((view) =>
+          [
+            `${view.name}${view.executionView.scope === 'department' ? `（${view.executionView.departmentId}）` : ''}：`,
+            ...companyCoverage.scenes
+              .filter(
+                (scene) =>
+                  runtimePolicyDigest(scene.executionView) ===
+                  runtimePolicyDigest(view.executionView),
+              )
+              .map(
+                (scene) => `• ${scene.name.slice(0, 80)}（${scene.sceneId}）`,
+              ),
+            ...(view.sceneIds.length
+              ? []
+              : ['无独有或继承场景；已核对当前共享内容。']),
+          ].join('\n'),
+        ),
+      ].join('\n')
+    : undefined;
   const changedPins = new Set(
     [
       ...(s.changes.commonChanged ? s.content.manifest.common : []),
@@ -153,8 +205,10 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
         : `是否启用「${s.content.audience!.employeeName}」的部门工作方法？范围：${s.content.audience!.departmentName}（${s.content.sharedTarget.departmentId}）。影响该目标部门使用该公司 AI 员工及其个人定制实例的用户；公司 AI 员工 ID：${s.content.sharedTarget.employeeId}。`
       : `是否启用「${name}」的个人工作方法？仅影响你自己的这个 AI 员工。`,
     `候选 r${s.content.setRevision} · ${s.content.candidateRevisionId.slice(0, 8)} · ${s.content.candidateDigest.slice(7, 19)}`,
-    `通用要求：${s.changes.commonChanged ? '已调整' : '保持原样'}；新增或调整场景：${s.changes.changedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}。`,
-    `移除场景：${s.changes.removedScenes.map((scene) => scene.name.slice(0, 40)).join('、') || '无'}；其他场景及原始历史保留。`,
+    companyCoverage
+      ? `通用要求已调整；新增或调整 ${s.changes.changedScenes.length} 个场景，移除 ${s.changes.removedScenes.length} 个场景。完整清单见详情。其他场景及原始历史保留。`
+      : sceneChanges,
+    ...(companyCoverage ? [] : [sceneRemovals]),
     descriptions.slice(0, 1400) +
       (descriptions.length > 1400
         ? '\n（文字节选，完整内容可在当前候选中查看。）'
@@ -162,7 +216,9 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
     `测试：${s.tests.length ? `${s.tests.length} 项固定样例原断言通过（${[...new Set(s.tests.map((t) => t.caseId))].join('、')}）` : '本次仅移除已有场景，没有新增执行内容'}。`,
     ...(s.content.testCoverage
       ? [
-          `共同要求的受影响共享场景（${s.content.testCoverage.scenes.length} 项）全部已测：${s.content.testCoverage.scenes.map((scene) => `${scene.name.slice(0, 40)}${scene.inherited ? '（继承公司）' : '（本部门）'}`).join('、')}。`,
+          companyCoverage
+            ? `公司基础及 ${companyCoverage.views!.length - 1} 个部门的 ${companyCoverage.scenes.length} 项共享场景全部已测，完整范围见详情。`
+            : `共同要求的受影响共享场景（${s.content.testCoverage.scenes.length} 项）全部已测：${s.content.testCoverage.scenes.map((scene) => `${scene.name.slice(0, 40)}${scene.inherited ? '（继承公司）' : '（本部门）'}`).join('、')}。`,
           s.content.testCoverage.coverage,
         ]
       : []),
@@ -173,6 +229,7 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
     id: methodActivationQuestionPrefix + id,
     header: '启用工作方法',
     question,
+    ...(companyDetail ? { detail: companyDetail } : {}),
     multiSelect: false,
     options: [
       { label: methodActivationApprove },

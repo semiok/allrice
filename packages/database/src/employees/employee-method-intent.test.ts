@@ -1,5 +1,8 @@
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
-import { departmentCommonAcceptancePhrases } from './employee-method-common.fixture.ts';
+import {
+  departmentCommonAcceptancePhrases,
+  companyCommonAcceptancePhrases,
+} from './employee-method-common.fixture.ts';
 import { departmentMethodAcceptancePhrases as phrases } from './employee-method-department.fixture.ts';
 import { companyMethodAcceptancePhrases as companyPhrases } from './employee-method-company.fixture.ts';
 import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
@@ -19,6 +22,49 @@ import {
 const retryId = 'abcdefab-0000-4000-8000-000000000001';
 const selectedPhrases = selectedDepartmentMethodAcceptancePhrases('验收运营部');
 const commonPhrases = departmentCommonAcceptancePhrases('验收财务部');
+it.each([
+  companyCommonAcceptancePhrases.save,
+  '请保存公司的通用执行要求：保留原始输入。请作为长期要求。',
+  '网络断了，刚才没有保存。请更新公司共同执行要求：先核对口径，再计算。',
+])(
+  'recognizes company common intent across sentences, quoted content and punctuation: %s',
+  (text) => {
+    expect(explicitEmployeeMethodCommonIntent(text)).toBe(true);
+    expect(employeeMethodRequestedScope(text)).toBe('company');
+  },
+);
+it.each([
+  `“${companyCommonAcceptancePhrases.save}”`,
+  `资料原文如下：\n${companyCommonAcceptancePhrases.save}`,
+  `> ${companyCommonAcceptancePhrases.save}`,
+  companyCommonAcceptancePhrases.save + '只用于本次任务，不要长期保存。',
+  '请修改公司的“共同执行要求”工作场景，只改该场景。',
+  '请修改我的工作方法：按公司通用执行要求处理。',
+])(
+  'does not treat a quote, temporary request or scene name as company common authority: %s',
+  (text) => {
+    expect(explicitEmployeeMethodCommonIntent(text)).toBe(false);
+  },
+);
+it('keeps company common save, separately authorized full testing and activation distinct', () => {
+  expect(
+    explicitEmployeeMethodTestIntent(companyCommonAcceptancePhrases.save),
+  ).toBe(false);
+  expect(
+    explicitEmployeeMethodCommonTestIntent(companyCommonAcceptancePhrases.test),
+  ).toBe(true);
+  expect(
+    employeeMethodRequestedScope(companyCommonAcceptancePhrases.test),
+  ).toBe('company');
+  expect(
+    explicitEmployeeMethodCommonTestIntent(
+      companyCommonAcceptancePhrases.test + '本次先不要测试。',
+    ),
+  ).toBe(false);
+  expect(explicitEmployeeMethodCommonTestIntent(companyPhrases.test)).toBe(
+    false,
+  );
+});
 it.each([
   commonPhrases.save,
   commonPhrases.correct,

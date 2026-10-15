@@ -65,12 +65,23 @@ export const EmployeeMethodSharedTargetSchema = z.discriminatedUnion('scope', [
 export type EmployeeMethodSharedTarget = z.infer<
   typeof EmployeeMethodSharedTargetSchema
 >;
+/** A test execution view never changes the company publication target. */
+export const EmployeeMethodExecutionViewSchema = z.discriminatedUnion('scope', [
+  z.object({ scope: z.literal('company') }).strict(),
+  z
+    .object({ scope: z.literal('department'), departmentId: UuidSchema })
+    .strict(),
+]);
+export type EmployeeMethodExecutionView = z.infer<
+  typeof EmployeeMethodExecutionViewSchema
+>;
 export const EmployeeMethodInspectSchema = z
   .object({
     view: z.enum(['effective', 'candidate', 'history']),
     scope: z.enum(['personal', 'department', 'company']).optional(),
     departmentId: UuidSchema.optional(),
     beforeRevision: z.number().int().positive().optional(),
+    beforeTestId: UuidSchema.optional(),
   })
   .strict()
   .refine(
@@ -82,6 +93,10 @@ export const EmployeeMethodInspectSchema = z
     {
       message: 'Only history supports a revision cursor.',
     },
+  )
+  .refine(
+    (input) => input.beforeTestId === undefined || input.view === 'candidate',
+    { message: 'Only candidate tests support a test cursor.' },
   );
 export const EmployeeMethodRestoreSchema = z
   .object({

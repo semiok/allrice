@@ -29,7 +29,10 @@ import {
   getEmployeeInstance,
   EmployeeInstanceError,
 } from './employee-instances.ts';
-import { freezeEmployeeMethodCandidate } from './employee-content.ts';
+import {
+  freezeEmployeeMethodCandidate,
+  type freezeEmployeeMethodActivationCandidate,
+} from './employee-content.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 import {
   enterMethodChat,
@@ -68,6 +71,9 @@ type Identity = Pick<
   'actor' | 'organizationId' | 'workspaceId' | 'requestId'
 >;
 type Candidate = Awaited<ReturnType<typeof freezeEmployeeMethodCandidate>>;
+type ActivationContent = Awaited<
+  ReturnType<typeof freezeEmployeeMethodActivationCandidate>
+>;
 export type EmployeeMethodTestBinding = {
   case_id: string;
   environment: string;
@@ -117,6 +123,9 @@ const inputFor = (b: Binding) => ({
   ...(b.candidate_snapshot.content.testCoverage
     ? { coverageDigest: b.candidate_snapshot.content.testCoverage.digest }
     : {}),
+  ...(b.candidate_snapshot.content.executionView
+    ? { executionView: b.candidate_snapshot.content.executionView }
+    : {}),
   ...(b.candidate_snapshot.content.sharedTarget
     ? { sharedTarget: b.candidate_snapshot.content.sharedTarget }
     : {}),
@@ -137,7 +146,12 @@ async function readBinding(tx: Tx, testId: string) {
   return b;
 }
 
-async function currentBinding(tx: Tx, b: Binding, admission = false) {
+async function currentBinding(
+  tx: Tx,
+  b: Binding,
+  admission = false,
+  lockedCompanyContent?: ActivationContent,
+) {
   const context = contextFor(b);
   if (b.case_id === employeeMethodFileCase.id) {
     try {
@@ -170,9 +184,32 @@ async function currentBinding(tx: Tx, b: Binding, admission = false) {
     instance.source.employeeVersionId !== b.employee_version_id
   )
     throw new EmployeeContentError('source_changed');
-  const current = await freezeEmployeeMethodCandidate(context, inputFor(b), tx);
+  // Only activation supplies the full company coverage it just resolved and
+  // locked in this very transaction. Reuse it per proof, never across requests.
+  const current =
+    lockedCompanyContent ??
+    (await freezeEmployeeMethodCandidate(context, inputFor(b), tx));
+  const oldContent = b.candidate_snapshot.content;
+  const view = lockedCompanyContent?.testCoverage?.views?.find(
+    (v) =>
+      runtimePolicyDigest(v.executionView) ===
+      runtimePolicyDigest(oldContent.executionView ?? null),
+  );
   if (
-    current.dependencyDigest !== b.dependency_digest ||
+    lockedCompanyContent &&
+    (!view ||
+      !view.sceneIds.includes(b.scene_id) ||
+      current.setId !== b.set_id ||
+      current.setRevision !== oldContent.setRevision ||
+      current.candidateRevisionId !== b.candidate_revision_id ||
+      current.candidateDigest !== b.candidate_digest ||
+      current.employeeId !== b.employee_id ||
+      current.employeeVersionId !== b.employee_version_id)
+  )
+    throw new EmployeeContentError('source_changed');
+  if (
+    (view?.dependencyDigest ?? current.dependencyDigest) !==
+      b.dependency_digest ||
     runtimePolicyDigest(current.audience ?? null) !==
       runtimePolicyDigest(b.candidate_snapshot.content.audience ?? null) ||
     runtimePolicyDigest(current.sharedTarget ?? null) !==
@@ -184,7 +221,12 @@ async function currentBinding(tx: Tx, b: Binding, admission = false) {
   return { instance, current };
 }
 
-async function dto(tx: Tx, context: Identity, testId: string) {
+async function dto(
+  tx: Tx,
+  context: Identity,
+  testId: string,
+  lockedCompanyContent?: ActivationContent,
+) {
   const b = await readBinding(tx, testId);
   if (
     context.actor.type !== 'user' ||
@@ -196,7 +238,7 @@ async function dto(tx: Tx, context: Identity, testId: string) {
   await getEmployeeInstance(context, b.instance_id, tx);
   let applicable = true;
   try {
-    await currentBinding(tx, b);
+    await currentBinding(tx, b, false, lockedCompanyContent);
   } catch (error) {
     if (error instanceof EmployeeContentError) applicable = false;
     else throw error;
@@ -223,6 +265,9 @@ async function dto(tx: Tx, context: Identity, testId: string) {
     dependencyDigest: b.dependency_digest,
     ...(b.candidate_snapshot.content.testCoverage
       ? { coverageDigest: b.candidate_snapshot.content.testCoverage.digest }
+      : {}),
+    ...(b.candidate_snapshot.content.executionView
+      ? { executionView: b.candidate_snapshot.content.executionView }
       : {}),
     sceneId: b.scene_id,
     caseId: b.case_id,
@@ -331,6 +376,10 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
           args.candidateDigest !== retry.candidate_digest ||
           args.coverageDigest !==
             retry.candidate_snapshot.content.testCoverage?.digest ||
+          runtimePolicyDigest(args.executionView ?? null) !==
+            runtimePolicyDigest(
+              retry.candidate_snapshot.content.executionView ?? null,
+            ) ||
           args.sceneId !== retry.scene_id ||
           args.caseId !== retry.case_id
         )
@@ -467,8 +516,9 @@ export async function readEmployeeMethodActivationTest(
   instanceId: string,
   testId: string,
   modelInput: unknown,
+  lockedCompanyContent?: ActivationContent,
 ) {
-  const result = await dto(tx, context, testId);
+  const result = await dto(tx, context, testId, lockedCompanyContent);
   if (result.instanceId !== instanceId) throw new DataAccessError('not_found');
   if (
     !result.applicable ||
@@ -493,6 +543,7 @@ export async function readEmployeeMethodActivationTest(
     candidateDigest: result.candidateDigest,
     dependencyDigest: result.dependencyDigest,
     ...(result.coverageDigest ? { coverageDigest: result.coverageDigest } : {}),
+    ...(result.executionView ? { executionView: result.executionView } : {}),
     assertion: result.assertion,
     coverage: result.coverage,
   };

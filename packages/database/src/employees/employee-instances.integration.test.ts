@@ -1,5 +1,8 @@
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
-import { departmentCommonAcceptancePhrases } from './employee-method-common.fixture.ts';
+import {
+  departmentCommonAcceptancePhrases,
+  companyCommonAcceptancePhrases,
+} from './employee-method-common.fixture.ts';
 import { companyMethodAcceptancePhrases } from './employee-method-company.fixture.ts';
 import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
 import { departmentMethodAcceptancePhrases } from './employee-method-department.fixture.ts';
@@ -32,6 +35,7 @@ import {
 import {
   ExecutionContextSchema,
   cloudToolchainImageV1,
+  EmployeeContentMutationSchema,
 } from '@allrice/contracts';
 import {
   createEmployeeMethodFileOperation,
@@ -67,7 +71,9 @@ import {
   getEffectiveEmployeeContent,
   getEmployeeContentHistory,
   mutateEmployeeContent,
+  mutateEmployeeContentInTransaction,
 } from './employee-content.ts';
+import type { ContentTx } from './employee-content-model.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   prepareReferenceUpload,
@@ -702,28 +708,43 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   async function activationFixture(
     department: boolean | 'company' | 'selected' = false,
     inheritedCommon = false,
+    companyCommon: boolean | 'max' = false,
   ) {
-    const base = await retryFixture(
-      'cny-total-v1',
-      inheritedCommon,
-      department,
-    );
+    const base = companyCommon
+      ? await companyCommonFixture(companyCommon === 'max')
+      : await retryFixture('cny-total-v1', inheritedCommon, department);
     const { f, instance, args, test } = base;
     if (department === 'company')
       await base.departmentInfo!.configure(f.a.user.id, null, 'company');
     await passActivationTest(f, test);
     const testIds = [test.id];
     for (const scene of base.coverage?.scenes ?? []) {
-      if (scene.sceneId === args.sceneId) continue;
+      if (
+        scene.sceneId === args.sceneId &&
+        runtimePolicyDigest(scene.executionView ?? null) ===
+          runtimePolicyDigest(
+            'executionView' in args ? args.executionView : null,
+          )
+      )
+        continue;
       const testing = await methodRun(
         f,
         instance.id,
-        departmentCommonAcceptancePhrases(base.departmentInfo!.department.name)
-          .test,
+        companyCommon
+          ? companyCommonAcceptancePhrases.test
+          : departmentCommonAcceptancePhrases(
+              base.departmentInfo!.department.name,
+            ).test,
       );
       const inheritedTest = await startEmployeeMethodTestFromChat({
         ...testing,
-        arguments: { ...args, sceneId: scene.sceneId },
+        arguments: {
+          ...args,
+          sceneId: scene.sceneId,
+          ...(scene.executionView
+            ? { executionView: scene.executionView }
+            : {}),
+        },
       });
       await testing.finish();
       await passActivationTest(f, inheritedTest);
@@ -732,16 +753,18 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const run = await methodRun(
       f,
       instance.id,
-      department
-        ? (department === 'company'
-            ? companyMethodAcceptancePhrases
-            : department === 'selected'
-              ? selectedDepartmentMethodAcceptancePhrases(
-                  base.departmentInfo!.other.name,
-                )
-              : departmentMethodAcceptancePhrases
-          ).confirm
-        : '请查看通过的测试并让我确认启用。',
+      companyCommon
+        ? companyCommonAcceptancePhrases.confirm
+        : department
+          ? (department === 'company'
+              ? companyMethodAcceptancePhrases
+              : department === 'selected'
+                ? selectedDepartmentMethodAcceptancePhrases(
+                    base.departmentInfo!.other.name,
+                  )
+                : departmentMethodAcceptancePhrases
+            ).confirm
+          : '请查看通过的测试并让我确认启用。',
     );
     const inspected = await inspectEmployeeMethodFromChat({
       ...run,
@@ -867,6 +890,624 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       activate,
     };
   }
+
+  async function publishDepartmentOverlay(
+    x: Awaited<ReturnType<typeof retryFixture>>,
+    departmentId: string,
+    count = 1,
+    tx?: ContentTx,
+  ) {
+    const sql = tx ?? fixture.db;
+    const mutate = (input: unknown) =>
+      tx
+        ? mutateEmployeeContentInTransaction(
+            x.f.a.context,
+            EmployeeContentMutationSchema.parse(input),
+            tx,
+          )
+        : mutateEmployeeContent(x.f.a.context, input);
+    const [assignment] =
+      await sql`select employee_id from allrice_employee_assignments where id=${x.instance.assignmentId}`;
+    const [old] =
+      await sql`select s.*, r.manifest from allrice_employee_content_sets s
+      left join allrice_employee_content_revisions r on r.id=s.active_revision_id
+      where s.organization_id=${x.f.a.organizationId} and s.workspace_id=${x.f.a.workspaceId}
+        and s.scope='department' and s.department_id=${departmentId} and s.employee_id=${assignment!.employee_id}`;
+    const base = {
+      workspaceId: x.f.a.workspaceId,
+      setId: old?.id ?? randomUUID(),
+      ownership: {
+        scope: 'department',
+        organizationId: x.f.a.organizationId,
+        departmentId,
+      },
+      target: { kind: 'employee', employeeId: assignment!.employee_id },
+      changeSummary: 'Existing departmental overlay',
+    };
+    const saved = await mutate({
+      ...base,
+      operation: 'save_draft',
+      expectedRevision: old?.revision ?? 0,
+      requestId: randomUUID(),
+      textEdits: [],
+      manifest: {
+        schemaVersion: 1,
+        common: old?.manifest?.common ?? [],
+        declaredConflicts: [],
+        scenes: Array.from({ length: count }, (_, i) => ({
+          id: randomUUID(),
+          name: `部门独有金额场景 ${i + 1}`,
+          appliesWhen: 'Synthetic fixed cents',
+          references: [],
+        })),
+      },
+    });
+    const pin = {
+      candidateRevisionId: saved.candidate.id,
+      candidateDigest: saved.candidate.digest,
+    };
+    const validated = await mutate({
+      ...base,
+      ...pin,
+      operation: 'validate',
+      expectedRevision: saved.revision,
+      requestId: randomUUID(),
+    });
+    await mutate({
+      ...base,
+      ...pin,
+      operation: 'activate',
+      expectedRevision: validated.revision,
+      requestId: randomUUID(),
+    });
+    return saved;
+  }
+
+  async function companyCommonFixture(full32 = false) {
+    const base = await retryFixture('cny-total-v1', false, 'company');
+    await passActivationTest(base.f, base.test);
+    if (full32) {
+      const content = await getEmployeeContentSet(
+        base.f.a.context,
+        base.saved.setId,
+      );
+      const manifest = content.set.candidate!.manifest;
+      base.saved = await mutateEmployeeContent(base.f.a.context, {
+        workspaceId: base.f.a.workspaceId,
+        setId: base.saved.setId,
+        ownership: {
+          scope: 'company',
+          organizationId: base.f.a.organizationId,
+        },
+        target: {
+          kind: 'employee',
+          employeeId: base.args.sharedTarget!.employeeId,
+        },
+        operation: 'save_draft',
+        requestId: randomUUID(),
+        expectedRevision: base.saved.revision,
+        changeSummary: 'Maximum complete coverage fixture',
+        textEdits: [],
+        manifest: {
+          ...manifest,
+          scenes: Array.from({ length: 16 }, (_, i) => ({
+            ...manifest.scenes[0]!,
+            id: i ? randomUUID() : base.args.sceneId,
+            name: `${i + 1}：${'完整长名称金额场景'.repeat(5)}`,
+          })),
+        },
+      });
+    }
+    await publishDepartmentOverlay(
+      base,
+      base.departmentInfo!.department.id,
+      full32 ? 0 : 1,
+    );
+    if (!full32)
+      await publishDepartmentOverlay(base, base.departmentInfo!.other.id);
+    const edit = await methodRun(
+      base.f,
+      base.instance.id,
+      companyCommonAcceptancePhrases.save,
+    );
+    const saved = await saveEmployeeMethodFromChat({
+      ...edit,
+      arguments: {
+        sharedTarget: base.args.sharedTarget,
+        expectedRevision: base.saved.revision,
+        section: 'common',
+        requirements:
+          '金额一律使用人民币整数分；只将输入金额相加，不增加其他金额。' +
+          (full32 ? '保留依据及原始记录。'.repeat(160) : ''),
+        changeSummary: 'Company requirements for all shared execution views',
+      },
+    });
+    await edit.finish();
+    const run = await methodRun(
+      base.f,
+      base.instance.id,
+      companyCommonAcceptancePhrases.test,
+    );
+    const plan = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate', scope: 'company' },
+    });
+    if (!('testCoverage' in plan) || !plan.testCoverage)
+      throw Error('company coverage missing');
+    const coverage = plan.testCoverage;
+    expect(coverage.valid).toBe(true);
+    expect(coverage.scenes).toHaveLength(full32 ? 32 : 5);
+    const args = {
+      ...base.args,
+      expectedRevision: saved.revision,
+      candidateRevisionId: saved.candidate.id,
+      candidateDigest: saved.candidate.digest,
+      coverageDigest: coverage.digest,
+      executionView: { scope: 'company' as const },
+    };
+    const test = await startEmployeeMethodTestFromChat({
+      ...run,
+      arguments: args,
+    });
+    await run.finish();
+    return { ...base, saved, args, run, test, coverage };
+  }
+
+  it('company common maximum coverage keeps all 32 proofs in a bounded exact confirmation detail', async () => {
+    const x = await activationFixture('company', false, 'max');
+    expect(x.preparation.testIds).toHaveLength(32);
+    expect(x.preview.question.question.length).toBeLessThanOrEqual(4000);
+    expect(x.preview.question.detail!.length).toBeLessThanOrEqual(20000);
+    for (const scene of x.coverage!.scenes)
+      expect(x.preview.question.detail).toContain(scene.sceneId);
+    await x.show();
+    await x.answer();
+    expect((await x.activate()).enabled).toBe(true);
+    await x.run.finish();
+  }, 120000);
+
+  it.each(['scenes', 'views'] as const)(
+    'company common coverage overflow in %s rejects the complete plan without queuing partial paid tests',
+    async (kind) => {
+      const x = await companyCommonFixture(kind === 'scenes');
+      await passActivationTest(x.f, x.test);
+      if (kind === 'scenes')
+        await publishDepartmentOverlay(x, x.departmentInfo!.other.id, 0);
+      else
+        for (let i = 0; i < 30; i++) {
+          const d = (
+            await createOrganizationDepartment(
+              x.f.admin.context,
+              x.f.a.organizationId,
+              { name: `上限测试部门 ${i}`, requestId: randomUUID() },
+            )
+          ).department;
+          await publishDepartmentOverlay(x, d.id, 0);
+        }
+      const run = await methodRun(
+        x.f,
+        x.instance.id,
+        companyCommonAcceptancePhrases.test,
+      );
+      const plan = await inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate', scope: 'company' },
+      });
+      expect('testCoverage' in plan && plan.testCoverage).toMatchObject({
+        valid: false,
+        scenes: [],
+        issues: expect.arrayContaining([expect.stringContaining('32')]),
+      });
+      const before =
+        await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id}`;
+      await expect(
+        startEmployeeMethodTestFromChat({ ...run, arguments: x.args }),
+      ).rejects.toThrow('validation_failed');
+      expect(
+        await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id}`,
+      ).toEqual(before);
+      await run.finish();
+    },
+    60000,
+  );
+
+  it('company common activation serializes behind a concurrent new department publication and rejects stale coverage', async () => {
+    const x = await activationFixture('company', false, true);
+    await x.show();
+    await x.answer();
+    const added = (
+      await createOrganizationDepartment(
+        x.f.admin.context,
+        x.f.a.organizationId,
+        { name: '并发新增部门', requestId: randomUUID() },
+      )
+    ).department;
+    let locked!: (pid: number) => void, release!: () => void;
+    const ready = new Promise<number>((resolve) => {
+      locked = resolve;
+    });
+    const proceed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const publication = fixture.db.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${x.f.a.organizationId}`},0))`;
+      const [row] = await tx`select pg_backend_pid() pid`;
+      locked(row!.pid);
+      await proceed;
+      await publishDepartmentOverlay(x, added.id, 1, tx);
+    });
+    void publication.catch(() => undefined);
+    const pid = await ready,
+      activation = x.activate();
+    void activation.catch(() => undefined);
+    try {
+      await expect
+        .poll(
+          async () => {
+            const [row] =
+              await fixture.db`select count(*)::int n from pg_stat_activity where datname=current_database() and ${pid}::int=any(pg_blocking_pids(pid))`;
+            return row!.n;
+          },
+          { timeout: 3000, interval: 20 },
+        )
+        .toBeGreaterThan(0);
+    } finally {
+      release();
+    }
+    await publication;
+    await expect(activation).rejects.toThrow('validation_required');
+    expect(
+      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+    ).toBeNull();
+    await x.run.finish();
+  }, 60000);
+
+  it('candidate test pagination is exact at sub-millisecond timestamps and rejects foreign or stale candidate anchors', async () => {
+    const x = await companyCommonFixture();
+    await passActivationTest(x.f, x.test);
+    const [method] =
+      await fixture.db`select to_jsonb(t) data from allrice_employee_method_tests t where test_id=${x.test.id}`;
+    const [platform] =
+      await fixture.db`select to_jsonb(t) data from allrice_platform_employee_test_runs t where id=${x.test.id}`;
+    const clone = async (owner = x.f.a.user.id, index = 0) => {
+      const id = randomUUID(),
+        requestId = randomUUID();
+      const created = `2027-01-01T00:00:00.${index % 2 ? '000001' : '000002'}Z`;
+      // Synthetic persisted history, not extra executions. All rows remain in
+      // this isolated schema; copying complete records preserves table invariants.
+      await fixture.db`insert into allrice_platform_employee_test_runs select (jsonb_populate_record(null::allrice_platform_employee_test_runs,${fixture.db.json({ ...platform!.data, id, created_at: created })})).*`;
+      await fixture.db`insert into allrice_employee_method_tests select (jsonb_populate_record(null::allrice_employee_method_tests,${fixture.db.json({ ...method!.data, test_id: id, owner_id: owner, request_id: requestId, binding_digest: `synthetic:${id}`, created_at: created, run_id: null, route_decision_id: null })})).*`;
+      return id;
+    };
+    for (let i = 0; i < 35; i++) await clone(x.f.a.user.id, i);
+    const foreign = await clone(x.f.b.user.id);
+    const run = await methodRun(x.f, x.instance.id, '请查看公司候选测试记录。');
+    const first = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate', scope: 'company' },
+    });
+    if (!('candidateTests' in first)) throw Error('tests missing');
+    expect(first.candidateTests).toHaveLength(32);
+    expect(first.candidateTests[0]).toMatchObject({
+      executionView: { scope: 'company' },
+      coverageDigest: x.coverage.digest,
+    });
+    const second = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: {
+        view: 'candidate',
+        scope: 'company',
+        beforeTestId: first.nextBeforeTestId,
+      },
+    });
+    if (!('candidateTests' in second)) throw Error('second page missing');
+    expect(second.nextBeforeTestId).toBeNull();
+    const expected =
+      await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id} and owner_id=${x.f.a.user.id} and candidate_revision_id=${x.saved.candidate.id} order by created_at desc,test_id desc`;
+    expect(
+      [...first.candidateTests, ...second.candidateTests].map((t) => t.testId),
+    ).toEqual(expected.map((t) => t.test_id));
+    const [old] =
+      await fixture.db`select test_id from allrice_employee_method_tests where instance_id=${x.instance.id} and candidate_revision_id<>${x.saved.candidate.id} limit 1`;
+    for (const beforeTestId of [foreign, old!.test_id, randomUUID()])
+      await expect(
+        inspectEmployeeMethodFromChat({
+          ...run,
+          arguments: { view: 'candidate', scope: 'company', beforeTestId },
+        }),
+      ).rejects.toThrow('not_found');
+    await run.finish();
+  }, 60000);
+
+  it.each(['rename', 'archive', 'withdraw-source', 'downgrade'] as const)(
+    'company common evidence rechecks a covered department change: %s',
+    async (change) => {
+      const x = await companyCommonFixture();
+      await passActivationTest(x.f, x.test);
+      if (change === 'rename' || change === 'archive') {
+        const target = x.departmentInfo!.other;
+        await updateOrganizationDepartment(
+          x.f.admin.context,
+          x.f.a.organizationId,
+          target.id,
+          {
+            expectedRevision: target.revision,
+            name: change === 'rename' ? '改名后的运营部' : target.name,
+            active: change !== 'archive',
+          },
+        );
+      } else if (change === 'withdraw-source') {
+        await fixture.db`update allrice_company_assets set state='archived' where organization_id=${x.f.a.organizationId} and content_scope='department'`;
+      } else
+        await x.departmentInfo!.configure(
+          x.f.a.user.id,
+          x.departmentInfo!.department.id,
+          'department',
+        );
+      if (change === 'downgrade')
+        await expect(
+          getEmployeeMethodTest(x.f.a.context, x.test.id),
+        ).rejects.toThrow('authorization_denied');
+      else
+        expect(
+          (await getEmployeeMethodTest(x.f.a.context, x.test.id)).applicable,
+        ).toBe(false);
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      ).toBeNull();
+    },
+    60000,
+  );
+
+  it('company common coverage keeps an empty base view without inventing a test and rejects a globally empty plan', async () => {
+    const x = await companyCommonFixture();
+    await passActivationTest(x.f, x.test);
+    const edit = await methodRun(
+      x.f,
+      x.instance.id,
+      '请移除公司的“金额合计”工作场景。',
+    );
+    const saved = await saveEmployeeMethodFromChat({
+      ...edit,
+      arguments: {
+        sharedTarget: x.args.sharedTarget,
+        expectedRevision: x.saved.revision,
+        section: 'scene',
+        operation: 'remove_scene',
+        scene: { id: x.args.sceneId },
+        changeSummary: 'Only department scenes remain',
+      },
+    });
+    await edit.finish();
+    const run = await methodRun(
+      x.f,
+      x.instance.id,
+      companyCommonAcceptancePhrases.test,
+    );
+    const plan = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate', scope: 'company' },
+    });
+    if (!('testCoverage' in plan) || !plan.testCoverage)
+      throw Error('coverage missing');
+    expect(plan.testCoverage).toMatchObject({
+      valid: true,
+      views: expect.arrayContaining([
+        expect.objectContaining({
+          executionView: { scope: 'company' },
+          sceneIds: [],
+        }),
+      ]),
+    });
+    expect(plan.testCoverage.scenes).toHaveLength(2);
+    await run.finish();
+    const ids: string[] = [];
+    for (const scene of plan.testCoverage.scenes) {
+      const testing = await methodRun(
+        x.f,
+        x.instance.id,
+        companyCommonAcceptancePhrases.test,
+      );
+      const test = await startEmployeeMethodTestFromChat({
+        ...testing,
+        callId: randomUUID(),
+        arguments: {
+          ...x.args,
+          expectedRevision: saved.revision,
+          candidateRevisionId: saved.candidate.id,
+          candidateDigest: saved.candidate.digest,
+          sceneId: scene.sceneId,
+          executionView: scene.executionView,
+          coverageDigest: plan.testCoverage.digest,
+        },
+      });
+      await testing.finish();
+      await passActivationTest(x.f, test);
+      ids.push(test.id);
+    }
+    const confirm = await methodRun(
+      x.f,
+      x.instance.id,
+      companyCommonAcceptancePhrases.confirm,
+    );
+    const prepared = await prepareEmployeeMethodActivationFromChat({
+      ...confirm,
+      callId: randomUUID(),
+      arguments: {
+        sharedTarget: x.args.sharedTarget,
+        expectedRevision: saved.revision,
+        candidateRevisionId: saved.candidate.id,
+        candidateDigest: saved.candidate.digest,
+        testIds: ids,
+      },
+    });
+    expect(prepared.question.detail).toContain('无独有或继承场景');
+    await publishDepartmentOverlay(x, x.departmentInfo!.department.id, 0);
+    await publishDepartmentOverlay(x, x.departmentInfo!.other.id, 0);
+    const empty = await inspectEmployeeMethodFromChat({
+      ...confirm,
+      arguments: { view: 'candidate', scope: 'company' },
+    });
+    expect('testCoverage' in empty && empty.testCoverage).toMatchObject({
+      valid: false,
+      scenes: [],
+    });
+    await confirm.finish();
+  }, 60000);
+
+  it('company common requirements validate every execution view before exact confirmation and fresh department adoption', async () => {
+    const x = await activationFixture('company', false, true);
+    expect(x.coverage?.views).toHaveLength(3);
+    expect(x.preparation.testIds).toHaveLength(5);
+    expect(
+      x.coverage?.scenes.filter((s) => s.sceneId === x.args.sceneId),
+    ).toHaveLength(3);
+    const bindings =
+      await fixture.db`select candidate_snapshot from allrice_employee_method_tests where test_id=any(${x.preparation.testIds}::uuid[])`;
+    for (const { candidate_snapshot: binding } of bindings) {
+      expect(binding.content.sharedTarget.scope).toBe('company');
+      expect(JSON.stringify(binding.content)).not.toContain('PRIVATE-CONTENT');
+      const bodies = binding.content.sources.map(
+        (s: { body?: string }) => s.body,
+      );
+      expect(bodies.join('\n')).toContain('金额一律使用人民币整数分');
+      if (
+        binding.content.executionView.departmentId ===
+        x.departmentInfo!.department.id
+      ) {
+        expect(bodies.join('\n')).toContain('DEPARTMENT-ONLY');
+        expect(
+          binding.content.sources.find(
+            (s: { reference: { revisionId: string } }) =>
+              s.reference.revisionId === binding.content.common[0].revisionId,
+          ).body,
+        ).toContain('金额一律使用人民币整数分');
+      } else expect(bodies.join('\n')).not.toContain('DEPARTMENT-ONLY');
+    }
+    expect(x.preview.question.question).toContain(
+      '公司基础及 2 个部门的 5 项共享场景全部已测',
+    );
+    expect(x.preview.question.detail).toContain(
+      x.departmentInfo!.department.name,
+    );
+    expect(x.preview.question.detail).toContain(x.departmentInfo!.other.name);
+    expect(x.preview.askUserQuestion.questions[0]?.detail).toBe(
+      x.preview.question.detail,
+    );
+    await expect(
+      x.show({ ...x.preview.question, detail: 'Changed scope' }),
+    ).rejects.toThrow('activation_question_invalid');
+    await x.show();
+    await x.answer();
+    expect((await x.activate()).enabled).toBe(true);
+    await x.run.finish();
+    for (const department of [
+      x.departmentInfo!.department,
+      x.departmentInfo!.other,
+    ]) {
+      await x.departmentInfo!.configure(
+        x.f.a.user.id,
+        department.id,
+        'personal',
+      );
+      const next = await methodRun(x.f, x.instance.id, '普通金额任务');
+      expect(JSON.stringify(next.runtime.snapshot)).toContain(
+        x.saved.candidate.id,
+      );
+      const effective = await getEffectiveEmployeeContent(
+        x.f.a.context,
+        x.instance.id,
+      );
+      expect(
+        effective.sources.some((s) =>
+          s.body?.includes('金额一律使用人民币整数分'),
+        ),
+      ).toBe(true);
+      expect(
+        effective.scenes.some((s) => s.name === '部门独有金额场景 1'),
+      ).toBe(true);
+      await next.finish();
+    }
+  }, 60000);
+
+  it('company common coverage rejects partial proof, forged or omitted execution views, and scene-only authorization', async () => {
+    const x = await companyCommonFixture();
+    await passActivationTest(x.f, x.test);
+    const run = await methodRun(
+      x.f,
+      x.instance.id,
+      companyCommonAcceptancePhrases.test,
+    );
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...run,
+        arguments: {
+          sharedTarget: x.args.sharedTarget,
+          expectedRevision: x.args.expectedRevision,
+          candidateRevisionId: x.args.candidateRevisionId,
+          candidateDigest: x.args.candidateDigest,
+          testIds: [x.test.id],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'activation_test_coverage' });
+    for (const delta of [
+      { executionView: undefined },
+      { executionView: { scope: 'department', departmentId: randomUUID() } },
+      { coverageDigest: `sha256:${'0'.repeat(64)}` },
+    ])
+      await expect(
+        startEmployeeMethodTestFromChat({
+          ...run,
+          callId: randomUUID(),
+          arguments: JSON.parse(JSON.stringify({ ...x.args, ...delta })),
+        }),
+      ).rejects.toMatchObject({ code: 'source_changed' });
+    await run.finish();
+    const sceneOnly = await methodRun(
+      x.f,
+      x.instance.id,
+      companyMethodAcceptancePhrases.test,
+    );
+    await expect(
+      startEmployeeMethodTestFromChat({ ...sceneOnly, arguments: x.args }),
+    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+    await sceneOnly.finish();
+  }, 60000);
+
+  it.each(['queued', 'after-question'] as const)(
+    'company common proofs expire when a new department overlay is published %s',
+    async (stage) => {
+      const x =
+        stage === 'queued'
+          ? await companyCommonFixture()
+          : await activationFixture('company', false, true);
+      if (stage === 'after-question' && 'show' in x) {
+        await x.show();
+        await x.answer();
+      }
+      const added = (
+        await createOrganizationDepartment(
+          x.f.admin.context,
+          x.f.a.organizationId,
+          { name: '新测试部门', requestId: randomUUID() },
+        )
+      ).department;
+      await publishDepartmentOverlay(x, added.id);
+      expect(
+        (await getEmployeeMethodTest(x.f.a.context, x.test.id)).applicable,
+      ).toBe(false);
+      if (stage === 'queued')
+        expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+      else if ('activate' in x) {
+        await expect(x.activate()).rejects.toThrow('validation_required');
+        await x.run.finish();
+      }
+      expect(
+        (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+      ).toBeNull();
+    },
+    60000,
+  );
 
   it('company maintainer selects another department through the full save/test/confirmation/new-session chain', async () => {
     const x = await activationFixture('selected');
@@ -1351,7 +1992,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ...run,
         arguments: { ...args, section: 'common', scene: undefined },
       }),
-    ).rejects.toThrow('authorization_denied');
+    ).rejects.toThrow('explicit_method_request_required');
     expect(
       await fixture.db`select revision,candidate_revision_id,active_revision_id from allrice_employee_content_sets where id=${x.saved.setId}`,
     ).toEqual(before);
