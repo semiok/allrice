@@ -27,6 +27,7 @@ import {
 import { createMcpStore } from './mcp-connections.ts';
 import { createLocalMcpStore } from './local-mcp-connections.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { freezeSandboxExecutionPolicy } from './sandbox-execution-policy.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -216,6 +217,146 @@ suite('MET-151 PR3 tenant resources (isolated PostgreSQL)', () => {
         await f.db`select monthly_cost_limit_cents from allrice_organization_model_quotas where organization_id=${t.target.organizationId}`
       )[0]?.monthly_cost_limit_cents,
     ).toBe('123');
+  });
+  it('composes sandbox caps, preserves omitted values and isolates platform/tenant inheritance', async () => {
+    const t = await setup();
+    const policy = () =>
+      freezeSandboxExecutionPolicy(
+        { organizationId: t.target.organizationId, userId: t.target.subjectId },
+        f.db,
+      );
+    const save = async (
+      scope: 'tenant' | 'user',
+      cap?: 600000 | 1800000 | 3600000,
+      reset = false,
+    ) => {
+      const before = (
+        await getAdminTenantQuotas(t.admin.context, t.target, f.db)
+      ).quotas.find((q) => q.scope === scope)!;
+      const limits = { ...before.effective };
+      delete limits.maxSandboxExecutionMs;
+      return updateAdminTenantQuota(
+        t.admin.context,
+        t.target.organizationId,
+        {
+          workspaceId: t.target.workspaceId,
+          subjectId: t.target.subjectId,
+          scope,
+          expectedVersion: before.version,
+          limits: reset
+            ? null
+            : {
+                ...limits,
+                ...(cap === undefined ? {} : { maxSandboxExecutionMs: cap }),
+              },
+          reason: 'Synthetic sandbox cap administration',
+        },
+        f.db,
+      );
+    };
+    expect((await policy()).maxExecutionMs).toBe(600000);
+    await save('tenant', 1800000);
+    await save('user'); // Older form changing another quota must not add a 10-minute cap.
+    expect((await policy()).maxExecutionMs).toBe(1800000);
+    await save('user', 3600000);
+    expect((await policy()).maxExecutionMs).toBe(1800000);
+    await save('user', 600000);
+    await save('user');
+    expect((await policy()).maxExecutionMs).toBe(600000);
+    const [audit] =
+      await f.db`select metadata from allrice_audit_events where action='tenant.quota.updated' and resource_id=${t.target.subjectId} order by occurred_at desc limit 1`;
+    expect(audit!.metadata.after.effective.maxSandboxExecutionMs).toBe(600000);
+    await save('user', undefined, true);
+    expect((await policy()).maxExecutionMs).toBe(1800000);
+    expect(
+      (
+        await freezeSandboxExecutionPolicy(
+          {
+            organizationId: t.other.organizationId,
+            userId: t.target.subjectId,
+          },
+          f.db,
+        )
+      ).maxExecutionMs,
+    ).toBe(600000);
+    await f.db`insert into allrice_model_resource_limits(id,scope_type,scope_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms,max_sandbox_execution_ms)
+      values(${randomUUID()},'user',${t.target.subjectId},2000,2000000,3,3600000,3600000)`;
+    await save('user'); // NULL field inherits the platform row despite this other local quota row.
+    const inherited = await policy();
+    expect(inherited.sources.find((s) => s.scope === 'user')?.source).toBe(
+      'platform_override',
+    );
+    expect(inherited.maxExecutionMs).toBe(1800000);
+    await save('tenant', undefined, true);
+    expect((await policy()).maxExecutionMs).toBe(3600000);
+    await save('user', 600000);
+    expect((await policy()).maxExecutionMs).toBe(600000);
+    expect(
+      (
+        await freezeSandboxExecutionPolicy(
+          {
+            organizationId: t.other.organizationId,
+            userId: t.target.subjectId,
+          },
+          f.db,
+        )
+      ).maxExecutionMs,
+    ).toBe(3600000);
+  });
+  it('rejects unauthorized and invalid sandbox caps without writing quota or audit rows', async () => {
+    const t = await setup();
+    const input = {
+      workspaceId: t.target.workspaceId,
+      subjectId: t.target.subjectId,
+      scope: 'user',
+      expectedVersion: null,
+      limits: {
+        monthlyRunLimit: 2000,
+        monthlyTokenLimit: 2000000,
+        concurrentRunLimit: 3,
+        maxRuntimeMs: 0,
+        maxSandboxExecutionMs: 1800000,
+      },
+      reason: 'Synthetic sandbox authorization',
+    };
+    await expect(
+      updateAdminTenantQuota(
+        t.user.context,
+        t.target.organizationId,
+        input,
+        f.db,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      updateAdminTenantQuota(
+        t.admin.context,
+        t.target.organizationId,
+        { ...input, limits: { ...input.limits, maxSandboxExecutionMs: 0 } },
+        f.db,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      updateAdminTenantQuota(
+        t.admin.context,
+        t.target.organizationId,
+        { ...input, workspaceId: t.other.workspaceId },
+        f.db,
+      ),
+    ).rejects.toThrow();
+    await expect(
+      updateAdminTenantQuota(
+        t.admin.context,
+        t.target.organizationId,
+        { ...input, scope: 'organization' },
+        f.db,
+      ),
+    ).rejects.toThrow();
+    expect(
+      await f.db`select id from allrice_model_resource_limits where organization_id=${t.target.organizationId}`,
+    ).toHaveLength(0);
+    expect(
+      await f.db`select id from allrice_audit_events where organization_id=${t.target.organizationId} and action='tenant.quota.updated'`,
+    ).toHaveLength(0);
   });
   it('uses cache-inclusive receipts; unknown is not zero and old periods are excluded', async () => {
     vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');

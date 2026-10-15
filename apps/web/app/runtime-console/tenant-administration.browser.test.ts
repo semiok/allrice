@@ -570,6 +570,17 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
       expect(
         await page.getByLabel('月 Token 上限', { exact: true }).isEditable(),
       ).toBe(false);
+      const sandboxLimit = page.getByLabel('单次沙箱执行上限', { exact: true });
+      expect(await sandboxLimit.inputValue()).toBe('600000');
+      expect(await sandboxLimit.locator('option').allTextContents()).toEqual([
+        '10 分钟（默认）',
+        '30 分钟',
+        '1 小时',
+      ]);
+      expect(
+        await page.getByLabel('任务活跃时限', { exact: true }).inputValue(),
+      ).toBe('3600000');
+      await sandboxLimit.selectOption('1800000');
       await page
         .getByLabel('月路由请求次数上限（API）', { exact: true })
         .fill('5000');
@@ -584,8 +595,13 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         )
         .waitFor();
       const [row] =
-        await fixture.db`select monthly_run_limit from allrice_model_resource_limits where organization_id=${snow.organizationId} and scope_type='user' and scope_id=${snow.user.id}`;
+        await fixture.db`select monthly_run_limit,max_runtime_ms,max_sandbox_execution_ms from allrice_model_resource_limits where organization_id=${snow.organizationId} and scope_type='user' and scope_id=${snow.user.id}`;
       expect(row?.monthly_run_limit).toBe(5000);
+      expect(row?.max_sandbox_execution_ms).toBe(1800000);
+      expect(row?.max_runtime_ms).toBe(3600000);
+      expect(await page.getByLabel('单次沙箱生效上限').textContent()).toContain(
+        '30 分钟',
+      );
       expect(
         await page
           .locator('table td')
@@ -650,6 +666,7 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           ),
         )
         .toBe(2000);
+      expect(await sandboxLimit.inputValue()).toBe('600000');
     } finally {
       await context.close();
     }

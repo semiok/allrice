@@ -238,6 +238,7 @@ function Quotas({
   const [data, setData] = useState<AdminTenantQuotas | null>(null),
     [scope, setScope] = useState<AdminTenantQuota['scope']>('user'),
     [limits, setLimits] = useState<TenantQuotaLimits | null>(null),
+    [sandboxLimitDirty, setSandboxLimitDirty] = useState(false),
     [reason, setReason] = useState(''),
     [inherit, setInherit] = useState(false),
     [error, setError] = useState(''),
@@ -274,6 +275,7 @@ function Quotas({
       if (c.signal.aborted) return;
       setData(next);
       setLimits({ ...next.quotas.find((q) => q.scope === scope)!.effective });
+      setSandboxLimitDirty(false);
       setReason('');
       setInherit(false);
       setDirty(false);
@@ -303,6 +305,9 @@ function Quotas({
   };
   async function save() {
     if (!row || !limits || busy) return;
+    // Saving another quota does not silently make the displayed inherited
+    // sandbox limit explicit. Old clients also omit this field.
+    const { maxSandboxExecutionMs, ...otherLimits } = limits;
     setBusy(true);
     setError('');
     setNotice('');
@@ -317,7 +322,12 @@ function Quotas({
               subjectId,
               scope,
               expectedVersion: row.version,
-              limits: inherit ? null : limits,
+              limits: inherit
+                ? null
+                : {
+                    ...otherLimits,
+                    ...(sandboxLimitDirty ? { maxSandboxExecutionMs } : {}),
+                  },
               reason,
             }),
           }),
@@ -325,6 +335,7 @@ function Quotas({
       );
       setData(value);
       setLimits({ ...value.quotas.find((q) => q.scope === scope)!.effective });
+      setSandboxLimitDirty(false);
       setDirty(false);
       setReason('');
       setInherit(false);
@@ -403,6 +414,9 @@ function Quotas({
                     <th>未知用量 / 风险预留</th>
                     <th>月路由请求数（非原生模型调用数）</th>
                     <th>本层任务活跃时限</th>
+                    {data.sandboxExecutionPolicy ? (
+                      <th>本层单次沙箱上限</th>
+                    ) : null}
                   </tr>
                 </thead>
                 <tbody>
@@ -445,11 +459,45 @@ function Quotas({
                               ? '不限制'
                               : `${q.effective.maxRuntimeMs / 60000} 分钟`}
                       </td>
+                      {data.sandboxExecutionPolicy ? (
+                        <td>
+                          {q.scope === 'organization' ? (
+                            '不设置单次上限'
+                          ) : (
+                            <>
+                              {q.sandboxExecutionSource === 'tenant_override'
+                                ? '显式覆盖'
+                                : q.sandboxExecutionSource ===
+                                    'platform_override'
+                                  ? '继承平台对象配置'
+                                  : '继承（无显式策略时默认 10 分钟）'}
+                              {q.sandboxExecutionSource !==
+                              'platform_default' ? (
+                                <small>
+                                  {(q.effective.maxSandboxExecutionMs ??
+                                    600000) / 60000}{' '}
+                                  分钟
+                                </small>
+                              ) : null}
+                            </>
+                          )}
+                        </td>
+                      ) : null}
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            {data.sandboxExecutionPolicy ? (
+              <p aria-label="单次沙箱生效上限">
+                所选用户新任务的单次沙箱上限：
+                {data.sandboxExecutionPolicy.maxExecutionMs / 60000} 分钟
+                {data.sandboxExecutionPolicy.sources.length
+                  ? '（适用的显式上限取最严格值）'
+                  : '（平台默认）'}
+                。
+              </p>
+            ) : null}
             <label>
               调整对象
               <select
@@ -468,6 +516,7 @@ function Quotas({
                     ...data.quotas.find((q) => q.scope === v)!.effective,
                   });
                   setInherit(false);
+                  setSandboxLimitDirty(false);
                   setReason('');
                   setDirty(false);
                 }}
@@ -536,6 +585,32 @@ function Quotas({
                       </small>
                     </label>
                   ) : null}
+                  {scope !== 'organization' && data.sandboxExecutionPolicy ? (
+                    <label>
+                      单次沙箱执行上限（新任务生效）
+                      <select
+                        aria-label="单次沙箱执行上限"
+                        value={limits.maxSandboxExecutionMs ?? 600000}
+                        disabled={inherit}
+                        onChange={(e) => {
+                          setLimits({
+                            ...limits,
+                            maxSandboxExecutionMs: Number(e.target.value) as
+                              600000 | 1800000 | 3600000,
+                          });
+                          setSandboxLimitDirty(true);
+                          setDirty(true);
+                        }}
+                      >
+                        <option value={600000}>10 分钟（默认）</option>
+                        <option value={1800000}>30 分钟</option>
+                        <option value={3600000}>1 小时</option>
+                      </select>
+                      <small>
+                        单次沙箱操作允许执行的最长时间。系统按需分配和续期，累计不超过此上限及整轮任务剩余时间。新任务生效；旧版执行端仍受其实际支持的时限约束。
+                      </small>
+                    </label>
+                  ) : null}
                   {(
                     [
                       'monthlyTokenLimit',
@@ -543,7 +618,11 @@ function Quotas({
                       ...(scope === 'organization'
                         ? []
                         : ['concurrentRunLimit']),
-                    ] as (keyof TenantQuotaLimits)[]
+                    ] as (
+                      | 'monthlyTokenLimit'
+                      | 'monthlyRunLimit'
+                      | 'concurrentRunLimit'
+                    )[]
                   ).map((key) => (
                     <label key={key}>
                       {
@@ -551,7 +630,6 @@ function Quotas({
                           monthlyTokenLimit: '月 Token 上限',
                           monthlyRunLimit: '月路由请求次数上限（API）',
                           concurrentRunLimit: '并发运行上限',
-                          maxRuntimeMs: '单次运行最长毫秒数',
                         }[key]
                       }
                       <input
@@ -560,7 +638,6 @@ function Quotas({
                             monthlyTokenLimit: '月 Token 上限',
                             monthlyRunLimit: '月路由请求次数上限（API）',
                             concurrentRunLimit: '并发运行上限',
-                            maxRuntimeMs: '单次运行最长毫秒数',
                           }[key]
                         }
                         type="number"
@@ -569,7 +646,7 @@ function Quotas({
                           data.subscription.tokenPolicy === 'observe'
                         }
                         required
-                        min={key === 'maxRuntimeMs' ? 1000 : 1}
+                        min={1}
                         step="1"
                         value={limits[key]}
                         disabled={inherit}

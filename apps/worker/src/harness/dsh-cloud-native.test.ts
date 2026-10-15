@@ -61,3 +61,26 @@ it('preserves controlled network requests through the actual native JSON-RPC sch
     },
   });
 }, 45000);
+
+it('preserves controlled network and finite budget requests through the actual native JSON-RPC schema', async () => {
+  await nativeBrokerRoundtrip({
+    canonicalName: 'cloud.process.execute',
+    wireName: 'cloud_process_execute',
+    args: {
+      script: 'console.log("synthetic only")',
+      network: {
+        mode: 'controlled_https',
+        origins: ['https://registry.npmjs.org'],
+      },
+      execution: { version: 1, kind: 'install' },
+    },
+    invalidArgs: {
+      script: 'not executed',
+      network: {
+        mode: 'controlled_https',
+        origins: ['https://registry.npmjs.org'],
+      },
+      execution: { version: 1, kind: 'install', maxExecutionMs: 3600000 },
+    },
+  });
+}, 45000);

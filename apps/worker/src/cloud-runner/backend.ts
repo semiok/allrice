@@ -1,12 +1,15 @@
 import { request } from 'node:http';
-import { openCloudProjectServiceGuard } from './project-service-guard.js';
+import {
+  openCloudProjectServiceGuard,
+  openCloudSandboxExecutionGuard,
+} from './project-service-guard.js';
 import { sendCloudInput } from './input-transfer.js';
 import { cloudServiceStopCause } from './service-diagnostics.js';
 import { lstat, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Duplex } from 'node:stream';
@@ -37,6 +40,11 @@ import {
   SandboxNetworkLeaseSchema,
   SandboxNetworkErrorCodeSchema,
   type SandboxNetworkLease,
+  SandboxExecutionBudgetStateSchema,
+  SandboxExecutionProgressSchema,
+  type SandboxExecutionBudgetState,
+  type SandboxExecutionBudgetSpec,
+  type SandboxExecutionRenewal,
 } from '@allrice/contracts';
 import {
   staticBrowserImageV1,
@@ -153,6 +161,14 @@ export type CloudRunResult = {
     sentBytes: number;
     receivedBytes: number;
     openedConnections: number;
+  };
+  executionBudget?: {
+    startedAt: number;
+    hardDeadlineAt: number;
+    deadlineAt: number;
+    initialBudgetMs: number;
+    maxExecutionMs: number;
+    renewalCount: number;
   };
   staticVerification?: {
     report: BrowserVerificationReport;
@@ -325,6 +341,22 @@ child.on('close',(code,signal)=>{try{
 
 /** Separate opt-in supervisor. Preserve the deployed offline/repository bytes. */
 export const cloudNetworkSupervisor = cloudSupervisor.replace(
+  'env:{PATH:',
+  `env:{...${JSON.stringify(sandboxProxyEnvironment)},PATH:`,
+);
+/** The input handshake has its own timeout. Once input arrives only the
+ * authorized execution deadline may terminate a budgeted command. Keep the
+ * existing offline/network supervisor bytes for frozen pre-budget attempts. */
+export const cloudBudgetSupervisor = cloudSupervisor
+  .replace(
+    'process.stdin.pause();try{resolve',
+    'process.stdin.pause();clearTimeout(inputTimer);try{resolve',
+  )
+  .replace(
+    'setTimeout(()=>process.exit(124),65000).unref()',
+    'const inputTimer=setTimeout(()=>process.exit(124),65000);inputTimer.unref()',
+  );
+export const cloudNetworkBudgetSupervisor = cloudBudgetSupervisor.replace(
   'env:{PATH:',
   `env:{...${JSON.stringify(sandboxProxyEnvironment)},PATH:`,
 );
@@ -688,7 +720,9 @@ export class CloudRunnerBackend {
       !runtimeContractEqual(config.Cmd, [
         '--input-type=module',
         '--eval',
-        cloudNetworkSupervisor,
+        config.Labels['xyz.bplabs.allrice.cloud.sandbox-execution'] === 'v1'
+          ? cloudNetworkBudgetSupervisor
+          : cloudNetworkSupervisor,
       ]) ||
       !runtimeContractEqual(config.Entrypoint, ['/usr/local/bin/node']) ||
       !runtimeContractEqual(config.Env ?? [], image.Config.Env ?? []) ||
@@ -1036,9 +1070,24 @@ export class CloudRunnerBackend {
       repositoryExecution?: RepositoryExecutionProof;
       /** Authority-created for this exact operation; never accepted in tool input. */
       networkLease?: SandboxNetworkLease;
+      sandboxExecution?: {
+        spec: SandboxExecutionBudgetSpec;
+        exchange: (
+          renewal?: SandboxExecutionRenewal,
+        ) => Promise<SandboxExecutionBudgetState>;
+      };
     },
   ): Promise<CloudRunResult> {
     const command = CloudExecutionPayloadSchema.parse(commandInput);
+    const budget = 'kind' in command ? undefined : command.executionBudget;
+    if (
+      Boolean(budget) !== Boolean(options.sandboxExecution) ||
+      (budget &&
+        (options.repositoryExecution ||
+          options.projectService ||
+          !runtimeContractEqual(budget, options.sandboxExecution?.spec)))
+    )
+      throw new CloudRunnerError('SANDBOX_EXECUTION_POLICY_CHANGED');
     const network = 'kind' in command ? 'none' : command.network;
     if (network !== 'none') {
       const lease = SandboxNetworkLeaseSchema.parse(options.networkLease);
@@ -1109,6 +1158,8 @@ export class CloudRunnerBackend {
   ) {
     if (args.network || options.networkLease)
       throw new CloudRunnerError('SANDBOX_NETWORK_DENIED');
+    if (args.execution || options.sandboxExecution)
+      throw new CloudRunnerError('SANDBOX_EXECUTION_UNSUPPORTED');
     const parsed = CloudCommandInputSchema.parse(args);
     parsed.limits.artifactBytes = 8_000_000;
     return this.executeScript(parsed, files, options, true, officeSandboxImage);
@@ -1123,6 +1174,8 @@ export class CloudRunnerBackend {
   ) {
     if (options.networkLease)
       throw new CloudRunnerError('SANDBOX_NETWORK_DENIED');
+    if (options.sandboxExecution)
+      throw new CloudRunnerError('SANDBOX_EXECUTION_UNSUPPORTED');
     const document = StaticBrowserDocumentSchema.parse(documentInput),
       plan = BrowserVerificationPlanSchema.parse(planInput);
     return this.executeWithSlot(
@@ -1731,6 +1784,16 @@ export class CloudRunnerBackend {
     if (!uuid.test(attemptId))
       throw new CloudRunnerError('CLOUD_INVALID_ATTEMPT');
     await this.preflight(imageDigest);
+    if (options.sandboxExecution) {
+      const { stdout } = await attestWatchdog();
+      const guard = JSON.parse(stdout).sandboxExecution;
+      if (
+        guard?.version !== 1 ||
+        guard?.maximumTimeoutMs !== 3600000 ||
+        guard?.physicalLeaseMs !== 5000
+      )
+        throw new CloudRunnerError('SANDBOX_EXECUTION_GUARD_UPGRADE_REQUIRED');
+    }
     if (isCompiledRepositoryExecution(options.repositoryExecution)) {
       const { stdout } = await attestWatchdog();
       const guard = JSON.parse(stdout).repositoryCompiled;
@@ -1765,15 +1828,30 @@ export class CloudRunnerBackend {
           : (options.repositoryExecution?.inputLimit ?? 2_000_000))
     )
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
+    const executionBudget = options.sandboxExecution
+      ? SandboxExecutionBudgetStateSchema.parse(
+          await options.sandboxExecution.exchange(),
+        )
+      : undefined;
+    if (
+      executionBudget &&
+      (!runtimeContractEqual(
+        executionBudget.spec,
+        options.sandboxExecution!.spec,
+      ) ||
+        executionBudget.deadlineAt <= Date.now())
+    )
+      throw new CloudRunnerError('SANDBOX_EXECUTION_POLICY_CHANGED');
     const deadline = Math.min(
       Date.parse(options.deadlineAt),
       options.networkLease
         ? Date.parse(options.networkLease.expiresAt)
         : Infinity,
-      Date.now() +
-        (isCompiledRepositoryExecution(options.repositoryExecution)
-          ? options.repositoryExecution.timeoutMs
-          : command.arguments.limits.timeoutMs),
+      executionBudget?.hardDeadlineAt ??
+        Date.now() +
+          (isCompiledRepositoryExecution(options.repositoryExecution)
+            ? options.repositoryExecution.timeoutMs
+            : command.arguments.limits.timeoutMs),
     );
     if (
       !Number.isFinite(deadline) ||
@@ -1806,6 +1884,7 @@ export class CloudRunnerBackend {
       {
         command,
         encoded,
+        executionBudget,
         config: {
           Image: imageDigest,
           Entrypoint: ['/usr/local/bin/node'],
@@ -1818,8 +1897,12 @@ export class CloudRunnerBackend {
             isCompiledRepositoryExecution(options.repositoryExecution)
               ? repositoryCompiledSupervisor
               : options.networkLease
-                ? cloudNetworkSupervisor
-                : cloudSupervisor,
+                ? executionBudget
+                  ? cloudNetworkBudgetSupervisor
+                  : cloudNetworkSupervisor
+                : executionBudget
+                  ? cloudBudgetSupervisor
+                  : cloudSupervisor,
           ],
           User: options.repositoryExecution ? '0:0' : '65532:65532',
           WorkingDir: '/tmp',
@@ -1829,6 +1912,17 @@ export class CloudRunnerBackend {
           Env: [],
           Labels: {
             [attemptLabel]: attemptId,
+            ...(executionBudget
+              ? {
+                  'xyz.bplabs.allrice.cloud.sandbox-execution': 'v1',
+                  'xyz.bplabs.allrice.cloud.sandbox-execution-limit': String(
+                    executionBudget.spec.policy.maxExecutionMs,
+                  ),
+                  'xyz.bplabs.allrice.cloud.sandbox-execution-started': String(
+                    executionBudget.startedAt,
+                  ),
+                }
+              : {}),
             ...(options.networkLease
               ? {
                   [networkLabel]: 'controlled-https-v1',
@@ -2193,6 +2287,7 @@ export class CloudRunnerBackend {
       config: Record<string, unknown>;
       encoded?: string;
       afterStart?: (id: string) => Promise<void>;
+      executionBudget?: SandboxExecutionBudgetState;
     },
     options: Parameters<CloudRunnerBackend['execute']>[2],
     startedAt: number,
@@ -2238,6 +2333,8 @@ export class CloudRunnerBackend {
     let networkSession: SandboxNetworkSession | undefined;
     let networkError: string | undefined;
     let networkCloseTask: Promise<void> | undefined;
+    let executionBudget = plan.executionBudget;
+    let pendingRenewal: SandboxExecutionRenewal | undefined;
     let physicalClosing = false,
       physicalTask: Promise<void> | undefined,
       physicalTimer: ReturnType<typeof setInterval> | undefined;
@@ -2261,6 +2358,18 @@ export class CloudRunnerBackend {
       if (cause instanceof CloudRunnerError) {
         result.errorCode = cause.message;
         if (
+          cause.message.startsWith('SANDBOX_EXECUTION_') &&
+          !options.signal?.aborted
+        )
+          result.reason = [
+            'SANDBOX_EXECUTION_DEADLINE',
+            'SANDBOX_EXECUTION_LIMIT',
+          ].includes(cause.message)
+            ? 'deadline'
+            : cause.message === 'SANDBOX_EXECUTION_REVOKED'
+              ? 'canceled'
+              : 'failed';
+        if (
           cause.message.startsWith('SANDBOX_NETWORK_') &&
           cause.message !== 'SANDBOX_NETWORK_REVOKED' &&
           result.reason === 'canceled' &&
@@ -2270,6 +2379,15 @@ export class CloudRunnerBackend {
       } else if (networkError && result.reason !== 'completed')
         result.errorCode = networkError;
       if (networkSession) result.network = networkSession.observation;
+      if (executionBudget)
+        result.executionBudget = {
+          startedAt: executionBudget.startedAt,
+          hardDeadlineAt: executionBudget.hardDeadlineAt,
+          deadlineAt: executionBudget.deadlineAt,
+          initialBudgetMs: executionBudget.spec.initialBudgetMs,
+          maxExecutionMs: executionBudget.spec.policy.maxExecutionMs,
+          renewalCount: executionBudget.sequence,
+        };
       return result;
     };
     try {
@@ -2280,8 +2398,81 @@ export class CloudRunnerBackend {
           attemptId,
           options.projectService.hardDeadlineAt,
         );
+      else if (executionBudget)
+        serviceGuard = await openCloudSandboxExecutionGuard(
+          attemptId,
+          new Date(deadline).toISOString(),
+        );
       if (serviceGuard) {
         const beat = async () => {
+          if (executionBudget) {
+            if (physicalClosing) return;
+            executionOptions.signal.throwIfAborted();
+            if (Date.now() >= executionBudget.deadlineAt)
+              throw new CloudRunnerError('SANDBOX_EXECUTION_DEADLINE');
+            if (!(await serviceCall(options.maintainLease(), 2000)))
+              throw new CloudRunnerError('SANDBOX_EXECUTION_REVOKED');
+            await serviceGuard!.renew(
+              Math.min(executionBudget.deadlineAt, deadline, Date.now() + 5000),
+            );
+            if (
+              executionBudget.deadlineAt - Date.now() <= 15000 &&
+              executionBudget.deadlineAt < executionBudget.hardDeadlineAt
+            ) {
+              if (!pendingRenewal) {
+                const stats = await serviceCall(
+                  this.json<{
+                    cpu_stats?: { cpu_usage?: { total_usage?: number } };
+                    blkio_stats?: {
+                      io_service_bytes_recursive?: {
+                        op: string;
+                        value: number;
+                      }[];
+                    };
+                  }>(
+                    'GET',
+                    `/containers/${c.Id}/stats?stream=false&one-shot=true`,
+                  ),
+                  2000,
+                );
+                const io = stats.blkio_stats?.io_service_bytes_recursive ?? [];
+                const sum = (op: string) =>
+                  io
+                    .filter((x) => x.op.toLowerCase() === op)
+                    .reduce((a, x) => a + x.value, 0);
+                const network = networkSession?.observation;
+                pendingRenewal = {
+                  requestId: randomUUID(),
+                  sequence: executionBudget.sequence + 1,
+                  progress: SandboxExecutionProgressSchema.parse({
+                    cpuNanos: stats.cpu_stats?.cpu_usage?.total_usage ?? 0,
+                    readBytes: sum('read') + (network?.receivedBytes ?? 0),
+                    writtenBytes: sum('write') + (network?.sentBytes ?? 0),
+                  }),
+                };
+              }
+              const renewed = SandboxExecutionBudgetStateSchema.parse(
+                await serviceCall(
+                  options.sandboxExecution!.exchange(pendingRenewal),
+                  2500,
+                ),
+              );
+              if (
+                !runtimeContractEqual(renewed.spec, executionBudget.spec) ||
+                renewed.startedAt !== executionBudget.startedAt ||
+                renewed.hardDeadlineAt !== executionBudget.hardDeadlineAt ||
+                renewed.sequence !== pendingRenewal.sequence ||
+                renewed.deadlineAt <= Date.now()
+              )
+                throw new CloudRunnerError('SANDBOX_EXECUTION_POLICY_CHANGED');
+              executionBudget = renewed;
+              pendingRenewal = undefined;
+              await serviceGuard!.renew(
+                Math.min(renewed.deadlineAt, deadline, Date.now() + 5000),
+              );
+            }
+            return;
+          }
           const lease = await serviceCall(options.projectService!.exchange());
           if (physicalClosing) return;
           executionOptions.signal.throwIfAborted();
@@ -2311,7 +2502,16 @@ export class CloudRunnerBackend {
                   cloudServiceStopCause(error),
                 );
                 serviceGuard?.close();
-                physicalFailure.abort(error);
+                physicalFailure.abort(
+                  executionBudget && !(error instanceof CloudRunnerError)
+                    ? new CloudRunnerError(
+                        error instanceof Error &&
+                          /^SANDBOX_EXECUTION_[A-Z_]+$/.test(error.message)
+                          ? error.message
+                          : 'SANDBOX_EXECUTION_RENEWAL_UNCONFIRMED',
+                      )
+                    : error,
+                );
                 stdin?.destroy();
               })
               .finally(() => {

@@ -12,6 +12,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
 import {
   CloudCommandInputSchema,
+  SandboxExecutionPolicySchema,
+  sandboxExecutionBudgetSpec,
   EmployeeMethodFileStepSchema,
   CloudCommandSchema,
   CloudProjectCommandSchema,
@@ -247,6 +249,14 @@ export function createCloudOperationLedger(
           lease.snapshot,
           CloudProjectCommandSchema.parse(input.payload),
         );
+    },
+    resolveSandboxExecutionBudget: async ({ transaction, binding }) => {
+      const [stored] =
+        await transaction`select payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId}`;
+      const payload = CloudCommandSchema.parse(stored?.payload);
+      if (!payload.executionBudget)
+        throw new RuntimePolicyError('sandbox_execution_not_enabled');
+      return payload.executionBudget;
     },
     admission: async (input) => {
       // Physical capacity is acquired in the shared Office/cloud executor.
@@ -519,6 +529,7 @@ async function createCloudOperation(
   const [run] = await database<
     {
       execution_spec: unknown;
+      execution_snapshot: { sandboxExecutionPolicy?: unknown };
       policy_snapshot_id: string;
       payload: unknown;
       session_id: string;
@@ -527,9 +538,20 @@ async function createCloudOperation(
       timeout_at: Date;
       lease_token: string;
     }[]
-  >`select r.execution_spec,r.policy_snapshot_id,p.payload,e.session_id,e.employee_version_id,c.thread_generation,j.timeout_at,j.lease_token::text from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id and c.active_run_id=r.id and c.state='running' where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${owner} and r.state='running' and j.status='running' and j.worker_id=${ctx.worker.id} and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
+  >`select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload,e.session_id,e.employee_version_id,c.thread_generation,j.timeout_at,j.lease_token::text from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id and c.active_run_id=r.id and c.state='running' where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${owner} and r.state='running' and j.status='running' and j.worker_id=${ctx.worker.id} and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!run || run.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+  if (args.execution) {
+    if (process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1')
+      throw new RuntimePolicyError('sandbox_execution_not_enabled');
+    if (
+      python ||
+      !SandboxExecutionPolicySchema.safeParse(
+        run.execution_snapshot?.sandboxExecutionPolicy,
+      ).success
+    )
+      throw new RuntimePolicyError('sandbox_execution_upgrade_required');
+  }
   const [grant] = await database<
     { id: string; version: number; target_id: string; profile: unknown }[]
   >`select g.id,g.version,g.target_id,g.profile from allrice_cloud_execution_grants g join allrice_execution_targets t on t.id=g.target_id and t.organization_id=g.organization_id and t.workspace_id=g.workspace_id where g.organization_id=${ctx.organizationId} and g.workspace_id=${ctx.workspaceId} and g.owner_id=${owner} and g.enabled and g.revoked_at is null and t.state='online' and t.kind='cloud_sandbox' and (t.metadata->>'healthManaged' is distinct from 'true' or t.last_heartbeat_at between clock_timestamp()-interval '120 seconds' and clock_timestamp()) order by g.created_at desc limit 1`;
@@ -543,6 +565,16 @@ async function createCloudOperation(
       runtime: profile.runtime,
       network: args.network ?? 'none',
       ...(python ? { origin: python.origin } : {}),
+      ...(args.execution
+        ? {
+            executionBudget: sandboxExecutionBudgetSpec(
+              args.execution,
+              SandboxExecutionPolicySchema.parse(
+                run.execution_snapshot.sandboxExecutionPolicy,
+              ),
+            ),
+          }
+        : {}),
     });
   // Frozen resource:read permission and current ready/owner scope; exact transfer
   // itself additionally requires the approval binding's dataScope below.
@@ -778,7 +810,9 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
           : b.metric === 'wall_time'
             ? isCompiledRepositoryExecution(repositoryProof)
               ? repositoryProof.timeoutMs
-              : payload.arguments.limits.timeoutMs
+              : !('kind' in payload) && payload.executionBudget
+                ? payload.executionBudget.policy.maxExecutionMs
+                : payload.arguments.limits.timeoutMs
             : b.metric === 'output_bytes'
               ? ('kind' in payload
                   ? payload.arguments.outputs?.length

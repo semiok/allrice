@@ -189,7 +189,7 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.process.execute',
     description:
-      '提交后按成员工作方式自动执行或请求确认，在隔离云端运行脚本。不传 language 时保持 Node 22；language:"python" 使用固定 Python 3.11、Matplotlib、pandas、openpyxl、Pillow、Noto CJK 字体和 Agg，可读取 input/ 下的已授权 CSV/XLSX 数据并将中文图表保存到 output/ 下。script 与 frozenScript 二选一；frozenScript:{skill,path} 保持当前 Run 冻结的 Node 脚本原始字节。只读取显式选定的已上传文件，不操作客户端文件；默认不联网。平台已启用并授权时可传 network:{mode:"controlled_https",origins:["https://精确域名"]} 请求指定 HTTPS 目的地，输入文件外发需要额外授权；拒绝时不得改目的地或改用其他工具绕过。使用标准 HTTPS 代理环境；unknown 不自动重跑。可交付 JSON/CSV/TXT，Python 还可声明 format:"png"、.png path/fileName，平台完整检查后返回真实 PNG 的 objectId/checksum/versionId，供原生成果预览下载或同一个 Office Skill 嵌入 Word/PPT。缺失数据应显式处理，不伪造数值。执行前显示精确脚本、输入、输出和联网范围。',
+      '提交后按成员工作方式自动执行或请求确认，在隔离云端运行脚本。不传 language 时保持 Node 22；language:"python" 使用固定 Python 3.11、Matplotlib、pandas、openpyxl、Pillow、Noto CJK 字体和 Agg，可读取 input/ 下的已授权 CSV/XLSX 数据并将中文图表保存到 output/ 下。script 与 frozenScript 二选一；frozenScript:{skill,path} 保持当前 Run 冻结的 Node 脚本原始字节。只读取显式选定的已上传文件，不操作客户端文件；默认不联网。平台已启用并授权时可传 network:{mode:"controlled_https",origins:["https://精确域名"]} 请求指定 HTTPS 目的地，输入文件外发需要额外授权；拒绝时不得改目的地或改用其他工具绕过。使用标准 HTTPS 代理环境；unknown 不自动重跑。平台启用新执行协议时，可用 execution:{version:1,kind:"compute"|"install"|"build"} 申请有限续期；初始预算和累计上限由服务端冻结，续期不重置起点。不支持时保留旧限制并明确报告，禁止反复重发来绕过上限。可交付 JSON/CSV/TXT，Python 还可声明 format:"png"、.png path/fileName，平台完整检查后返回真实 PNG 的 objectId/checksum/versionId，供原生成果预览下载或同一个 Office Skill 嵌入 Word/PPT。缺失数据应显式处理，不伪造数值。执行前显示精确脚本、输入、输出和联网范围。',
     inputSchema: z.toJSONSchema(CloudToolInputSchema, {
       unrepresentable: 'any',
     }),

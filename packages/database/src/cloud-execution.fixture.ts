@@ -12,6 +12,7 @@ import {
   type EmployeePromptSnapshotSchema,
   type RequestContext,
   type SandboxNetworkGrant,
+  type SandboxExecutionPolicy,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '../../storage/src/local.ts';
 import {
@@ -48,6 +49,7 @@ export async function createCloudExecutionFixture(
     localPreview?: boolean;
     localProcess?: boolean;
     sandboxNetwork?: SandboxNetworkGrant;
+    sandboxExecutionPolicy?: SandboxExecutionPolicy;
     outboundCapability?: boolean;
     managedOffice?: {
       bridgeAccess?: 'none' | 'read_only' | 'read_write';
@@ -147,7 +149,9 @@ export async function createCloudExecutionFixture(
           : []),
       ];
   const nativeCandidate =
-    options.managedOffice || options.canonicalPython
+    options.managedOffice ||
+    options.canonicalPython ||
+    options.sandboxExecutionPolicy
       ? employeeManifest({
           key: 'p15',
           name: 'P15 synthetic Office',
@@ -155,7 +159,9 @@ export async function createCloudExecutionFixture(
           toolNames: [
             options.canonicalPython
               ? 'python.execute'
-              : 'workspace.export.create',
+              : options.sandboxExecutionPolicy
+                ? 'cloud.process.execute'
+                : 'workspace.export.create',
           ],
         })
       : null;
@@ -212,6 +218,7 @@ export async function createCloudExecutionFixture(
     : digest('p15');
   const managedPython =
     nativeManifest &&
+    (options.managedOffice || options.canonicalPython) &&
     options.managedOffice?.freezeBinding !== false &&
     options.canonicalPython?.freezeBinding !== false
       ? freezeManagedOfficeBinding({
@@ -226,6 +233,9 @@ export async function createCloudExecutionFixture(
       : undefined;
   const frozen = EmployeeExecutionSnapshotSchema.parse({
     schemaVersion: nativeManifest ? 2 : 1,
+    ...(options.sandboxExecutionPolicy
+      ? { sandboxExecutionPolicy: options.sandboxExecutionPolicy }
+      : {}),
     employee: {
       id: employee,
       versionId: version,

@@ -24,6 +24,7 @@ import {
   type RuntimeUsageObservation,
   type RuntimeLocalServiceEvent,
   type ProjectServiceView,
+  type SandboxExecutionRenewal,
 } from '@allrice/contracts';
 import {
   CloudRunnerBackend,
@@ -278,6 +279,18 @@ export async function runCloudCommandOperation(
         );
         outcome = await backend.execute(payload, files, {
           attemptId,
+          ...(!('kind' in payload) && payload.executionBudget
+            ? {
+                sandboxExecution: {
+                  spec: payload.executionBudget,
+                  exchange: (renewal?: SandboxExecutionRenewal) =>
+                    ledger.exchangeSandboxExecutionBudget({
+                      ...receipt,
+                      ...(renewal ? { renewal } : {}),
+                    }),
+                },
+              }
+            : {}),
           ...(!('kind' in payload) && payload.network !== 'none'
             ? {
                 networkLease: SandboxNetworkLeaseSchema.parse({
