@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
 import { type DshExecutionSnapshot } from '@allrice/contracts';
@@ -217,11 +217,17 @@ export class DshRuntimePool {
             ownerId,
             route: input.snapshot.route,
           });
-    const codexGrantMetadata =
+    // DSH owns credential parsing, watching and OAuth refresh. A no-op atomic
+    // rewrite changes file metadata without changing its grant. Conversely,
+    // replacing a grant can preserve size/mtime. Use the document bytes only
+    // for invalidation; never retain or emit the document or its digest.
+    const codexGrantDigest =
       input.snapshot.route === 'openai-codex'
-        ? await stat(dshCredentialsPath).catch(() => null)
+        ? await readFile(dshCredentialsPath)
+            .then((bytes) => createHash('sha256').update(bytes).digest('hex'))
+            .catch(() => null)
         : null;
-    if (input.snapshot.route === 'openai-codex' && !codexGrantMetadata) {
+    if (input.snapshot.route === 'openai-codex' && !codexGrantDigest) {
       throw new HandlerError(
         'CODEX_SUBSCRIPTION_AUTH_REQUIRED',
         'The platform Codex subscription must be authorized before DSH can use it',
@@ -233,8 +239,8 @@ export class DshRuntimePool {
       input.input.assistants?.maxOutputTokens ??
       input.input.maxOutputTokens ??
       (input.input.assistants ? 16_000 : undefined);
-    // Keep the reuse key unchanged. Store only per-field hashes in memory so
-    // diagnostics can name changed configuration without recording its values.
+    // Store only per-field hashes in memory so diagnostics can name changed
+    // configuration without recording its values.
     const fingerprintInput = {
       snapshot: input.snapshot,
       codexSubscriptionHome: dshPlatformHome,
@@ -274,7 +280,7 @@ export class DshRuntimePool {
       })),
       credentialDigest: credential
         ? createHash('sha256').update(credential.apiKey).digest('hex')
-        : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
+        : `codex-grant:${codexGrantDigest}`,
     };
     const fingerprint = createHash('sha256')
       .update(JSON.stringify(fingerprintInput))

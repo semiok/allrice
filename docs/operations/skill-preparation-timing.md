@@ -19,7 +19,7 @@ attempt, generation and native thread correlation and a `runtimeId`.
 | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `cache` / `reason`                             | `hit/reused`, `miss/not_resident`, or `miss/configuration_changed`                                                                        |
 | `changedFields`                                | Names of changed reuse-key fields; never their values or hashes                                                                           |
-| `credentialResolutionMs`                       | Platform credential location/resolution and grant metadata lookup                                                                         |
+| `credentialResolutionMs`                       | Platform credential location/resolution and grant document fingerprinting                                                                 |
 | `previousRuntimeCloseMs`                       | Waiting for a mismatched existing runtime to close                                                                                        |
 | `initializeMs`                                 | Child startup and initialize RPC, including Skill registration                                                                            |
 | `skillRegistrationMs`                          | Native snapshot validation and provider registration inside the AllRice DSH host wrapper; excludes later directory listing and body reads |
@@ -46,7 +46,16 @@ valid. This includes the native tool execution interval, not model thinking or
 AllRice's subsequent event-persistence time. Raw Skill contents, arguments,
 results, credential material and hidden model reasoning remain excluded.
 
-The reuse fingerprint and lifecycle policy are unchanged. This step neither
-shares processes between native contexts nor changes DSH dependencies. Compare
+Codex credential invalidation compares the credential document's contents,
+not its file size or modification time. Replacing the file with identical
+bytes preserves the warm host; different bytes require a rebuild even when
+size and modification time are preserved. This deliberately remains a
+conservative whole-document comparison: formatting changes and OAuth token
+refreshes still invalidate it. DSH retains ownership of parsing, watching and
+refreshing credentials. Neither credential bytes nor their digest are emitted
+in timing records. A missing or unreadable document blocks acquisition.
+
+Other reuse fields and the lifecycle policy are unchanged. Processes are not
+shared between native contexts, and DSH dependencies are unchanged. Compare
 cold, ordinary continuation and necessary-rebuild runs separately; fewer
 readiness rows alone do not establish a whole-Run latency improvement.

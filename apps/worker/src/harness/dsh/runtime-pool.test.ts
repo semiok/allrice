@@ -1,10 +1,20 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
+import * as CodexSubscription from '../../codex-subscription-home.js';
 import { DshRuntimePool } from './runtime-pool.js';
 
 let root: string;
@@ -15,6 +25,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await Promise.all(pools.splice(0).map((pool) => pool.close()));
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
 });
@@ -104,6 +115,129 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
     nativeSkills: [],
   };
 }
+
+async function codexRequest() {
+  const platform = join(root, 'platform');
+  await mkdir(platform, { recursive: true });
+  vi.spyOn(CodexSubscription, 'activeCodexSubscriptionHome').mockResolvedValue(
+    platform,
+  );
+  const path = join(platform, '.credentials.yaml');
+  const document = `version: 1
+refs: {}
+records:
+  llm-pi-ai/openai-codex:
+    kind: grant
+    payload:
+      type: oauth
+      access: synthetic-only-one
+      refresh: synthetic-refresh
+      expires: 4102444800000
+      accountId: synthetic-account
+`;
+  const timestamp = new Date('2026-01-01T00:00:00Z');
+  await writeFile(path, document, { mode: 0o600 });
+  await utimes(path, timestamp, timestamp);
+  const input = request();
+  input.snapshot = {
+    ...input.snapshot,
+    route: 'openai-codex',
+    authMode: 'platform_subscription',
+    credentialReference: 'test:codex',
+    model: 'gpt-6.1-sol',
+  };
+  input.input.providerSnapshot = input.snapshot;
+  return { input, path, document, timestamp };
+}
+
+it.each([false, true])(
+  'keeps a warm Codex runtime when the credential file is replaced with identical bytes (native=%s)',
+  async (native) => {
+    const { input, path, document, timestamp } = await codexRequest();
+    const runtimes = pool(native);
+    const cold = await runtimes.acquire(input);
+    const close = vi.spyOn(cold.runtime.client, 'close');
+    await writeFile(path + '.replacement', document, { mode: 0o600 });
+    await rename(path + '.replacement', path);
+    const rewrittenAt = new Date(timestamp.getTime() + 1000);
+    await utimes(path, rewrittenAt, rewrittenAt);
+
+    const warm = await runtimes.acquire(input);
+    expect(warm.fresh).toBe(false);
+    expect(warm.runtime).toBe(cold.runtime);
+    expect(warm.preparation).toMatchObject({
+      cache: 'hit',
+      reason: 'reused',
+      changedFields: [],
+      initializeMs: 0,
+    });
+    expect(close).not.toHaveBeenCalled();
+    if (native)
+      await expect(warm.runtime.client.providerStatus()).resolves.toMatchObject(
+        {
+          configured: true,
+        },
+      );
+  },
+  30_000,
+);
+
+it.each([false, true])(
+  'rebuilds a Codex runtime when credential bytes change even if file size and mtime are preserved (native=%s)',
+  async (native) => {
+    const { input, path, document, timestamp } = await codexRequest();
+    const runtimes = pool(native);
+    const cold = await runtimes.acquire(input);
+    const close = vi.spyOn(cold.runtime.client, 'close');
+    const original = await stat(path);
+    await writeFile(path, document.replace('one', 'two'));
+    await utimes(path, timestamp, timestamp);
+    const changedMetadata = await stat(path);
+    expect(changedMetadata.size).toBe(original.size);
+    expect(changedMetadata.mtimeMs).toBe(original.mtimeMs);
+
+    const changed = await runtimes.acquire(input);
+    expect(changed.fresh).toBe(true);
+    expect(changed.runtime).not.toBe(cold.runtime);
+    expect(changed.preparation).toMatchObject({
+      cache: 'miss',
+      reason: 'configuration_changed',
+      changedFields: ['credentialDigest'],
+    });
+    expect(close).toHaveBeenCalledOnce();
+    expect(JSON.stringify(changed.preparation)).not.toContain('synthetic-only');
+  },
+  30_000,
+);
+
+it('refuses warm Codex reuse after the credential file is removed', async () => {
+  const { input, path } = await codexRequest();
+  const runtimes = pool();
+  await runtimes.acquire(input);
+  await rm(path);
+  await expect(runtimes.acquire(input)).rejects.toMatchObject({
+    code: 'CODEX_SUBSCRIPTION_AUTH_REQUIRED',
+  });
+});
+
+it('rebuilds after switching subscription slots even with identical credential bytes', async () => {
+  const { input, document } = await codexRequest();
+  const runtimes = pool();
+  const cold = await runtimes.acquire(input);
+  const otherHome = join(root, 'platform', 'codex-subscriptions', '2');
+  await mkdir(otherHome, { recursive: true });
+  await writeFile(join(otherHome, '.credentials.yaml'), document, {
+    mode: 0o600,
+  });
+  vi.mocked(CodexSubscription.activeCodexSubscriptionHome).mockResolvedValue(
+    otherHome,
+  );
+
+  const switched = await runtimes.acquire(input);
+  expect(switched.fresh).toBe(true);
+  expect(switched.runtime).not.toBe(cold.runtime);
+  expect(switched.preparation.changedFields).toEqual(['codexSubscriptionHome']);
+});
 
 it.each([false, true])(
   'scopes the actual DSH startup prompt without granting managed Office (office supplied=%s)',
