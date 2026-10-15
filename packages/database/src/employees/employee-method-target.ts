@@ -53,6 +53,7 @@ export async function resolveEmployeeMethodTarget(
     instanceId,
     requested.scope,
     tx,
+    requested.scope === 'department' ? requested.departmentId : undefined,
   );
   if (
     Object.keys(requested).some(
@@ -80,13 +81,12 @@ export async function sharedEmployeeMethodTarget(
   instanceId: string,
   scope: 'company' | 'department',
   tx: ContentTx,
+  selectedDepartmentId?: string,
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const principal = await readContentPrincipal(context, tx, true);
-  if (
-    !principal?.writable ||
-    (scope === 'department' && !principal.departmentId)
-  )
+  const departmentId = selectedDepartmentId ?? principal?.departmentId ?? null;
+  if (!principal?.writable || (scope === 'department' && !departmentId))
     throw new DataAccessError('authorization_denied');
   const ownership =
     scope === 'company'
@@ -97,7 +97,7 @@ export async function sharedEmployeeMethodTarget(
       : {
           scope: 'department' as const,
           organizationId: context.organizationId,
-          departmentId: principal.departmentId!,
+          departmentId: departmentId!,
         };
   await requireContentMaintenance(context, ownership, tx);
   const instance = await getEmployeeInstance(context, instanceId, tx);
@@ -122,7 +122,7 @@ export async function sharedEmployeeMethodTarget(
     scope === 'department'
       ? (
           await tx<{ name: string }[]>`select name from allrice_departments
-    where id=${principal.departmentId} and organization_id=${context.organizationId} and archived_at is null for share`
+    where id=${departmentId} and organization_id=${context.organizationId} and archived_at is null for share`
         )[0]
       : undefined;
   if (scope === 'department' && !department)
@@ -132,7 +132,7 @@ export async function sharedEmployeeMethodTarget(
   >`select id from allrice_employee_content_sets
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and employee_id=${assignment.employee_id} and scope=${scope}
-      and department_id is not distinct from ${scope === 'department' ? principal.departmentId : null}::uuid`;
+      and department_id is not distinct from ${scope === 'department' ? departmentId : null}::uuid`;
   const setId =
     row?.id ??
     employeeChatUuid(
@@ -140,15 +140,13 @@ export async function sharedEmployeeMethodTarget(
       context.organizationId,
       context.workspaceId,
       assignment.employee_id,
-      ...(scope === 'department' ? [principal.departmentId!] : []),
+      ...(scope === 'department' ? [departmentId!] : []),
     );
   const sharedTarget = EmployeeMethodSharedTargetSchema.parse({
     scope,
     setId,
     employeeId: assignment.employee_id,
-    ...(scope === 'department'
-      ? { departmentId: principal.departmentId! }
-      : {}),
+    ...(scope === 'department' ? { departmentId: departmentId! } : {}),
   });
   return {
     setId,
@@ -169,5 +167,31 @@ export async function sharedEmployeeMethodTarget(
             employeeName: assignment.name,
             departmentName: department!.name,
           },
+  };
+}
+
+/** Choices are live authority, not a new grant. Company maintainers may select
+ * any active department of this company; department maintainers only their own. */
+export async function employeeMethodDepartmentChoices(
+  context: Context,
+  tx: ContentTx,
+) {
+  const principal = await readContentPrincipal(context, tx, true);
+  if (!principal?.writable) throw new DataAccessError('authorization_denied');
+  const departments =
+    principal.maintenanceLevel === 'company'
+      ? await tx<
+          { id: string; name: string }[]
+        >`select id,name from allrice_departments
+        where organization_id=${context.organizationId} and archived_at is null order by name,id for share`
+      : principal.maintenanceLevel === 'department' && principal.departmentId
+        ? await tx<
+            { id: string; name: string }[]
+          >`select id,name from allrice_departments
+          where id=${principal.departmentId} and organization_id=${context.organizationId} and archived_at is null for share`
+        : [];
+  return {
+    departments: [...departments],
+    ownDepartmentId: principal.departmentId,
   };
 }

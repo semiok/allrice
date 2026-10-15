@@ -1,5 +1,7 @@
 import { departmentMethodAcceptancePhrases as phrases } from './employee-method-department.fixture.ts';
 import { companyMethodAcceptancePhrases as companyPhrases } from './employee-method-company.fixture.ts';
+import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
+import { namedMethodDepartmentRequest } from './employee-method-department-intent.ts';
 import { expect, it } from 'vitest';
 import {
   explicitEmployeeMethodIntent,
@@ -11,6 +13,81 @@ import {
   explicitEmployeeMethodTestRetryIntent,
 } from './employee-method-chat.ts';
 const retryId = 'abcdefab-0000-4000-8000-000000000001';
+const selectedPhrases = selectedDepartmentMethodAcceptancePhrases('验收运营部');
+it.each([
+  selectedPhrases.save,
+  '请调整部门「验收运营部」的“金额合计”工作场景候选。请保存为长期方法。',
+  '请更新“验收运营部”部门的执行流程：逐笔核对。',
+  '请保存验收运营部的工作方法候选：保留来源。',
+  '请保存部门 Sales的工作方法候选。',
+  `请保存部门 ${retryId} 的工作方法候选。`.replace(' 的', '的'),
+])('accepts a named department as the direct target: %s', (text) => {
+  expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  expect(employeeMethodRequestedScope(text)).toBe('department');
+  expect(explicitEmployeeMethodTestIntent(text)).toBe(false);
+});
+it('uses the planned original wording for a separately authorized department test', () => {
+  expect(explicitEmployeeMethodTestIntent(selectedPhrases.test)).toBe(true);
+  expect(employeeMethodRequestedScope(selectedPhrases.test)).toBe('department');
+  expect(namedMethodDepartmentRequest(selectedPhrases.test)?.value).toBe(
+    '验收运营部',
+  );
+});
+it.each([
+  '不要向部门「验收运营部」共享。',
+  '暂时不要向验收运营部共享。',
+  '不要向“验收运营部”部门共享这个候选。',
+  '不要向部门 Sales共享。',
+  `不要向部门 ${retryId}共享。`,
+])('a named sharing denial overrides the shared target: %s', (denial) => {
+  expect(employeeMethodRequestedScope(selectedPhrases.save + denial)).toBe(
+    'unsupported',
+  );
+});
+it.each(['Sales', retryId])(
+  'a bare department target preserves an explicit sharing denial: %s',
+  (target) => {
+    const request = `请保存部门 ${target}的工作方法候选。`;
+    expect(employeeMethodRequestedScope(request)).toBe('department');
+    expect(
+      employeeMethodRequestedScope(`${request}不要向部门 ${target}共享。`),
+    ).toBe('unsupported');
+  },
+);
+it.each([
+  '先不要测试部门「验收运营部」的工作场景候选。',
+  '暂不测试。',
+  '先展示差异，别测试。',
+  '本次不验证。',
+  '请暂时不要测试。',
+])('a later test denial prevents a paid candidate test: %s', (denial) => {
+  expect(explicitEmployeeMethodTestIntent(selectedPhrases.test + denial)).toBe(
+    false,
+  );
+});
+it.each([
+  `“${selectedPhrases.save}”`,
+  `资料原文如下：\n${selectedPhrases.save}`,
+  `> ${selectedPhrases.save}`,
+  `\`\`\`\n${selectedPhrases.save}\n\`\`\``,
+  `请翻译：${selectedPhrases.save}`,
+  '请不要保存部门“验收运营部”的工作方法候选。',
+  selectedPhrases.save + '不要保存部门“验收运营部”的工作方法候选。',
+  selectedPhrases.save + '仅供本次任务使用。',
+  selectedPhrases.save + '不要长期保存。',
+])(
+  'keeps document/negated/temporary named targets out of durable writes: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(false);
+    expect(explicitEmployeeMethodTestIntent(text)).toBe(false);
+  },
+);
+it('does not infer a department target from the body or a quoted scene name', () => {
+  const text = '请保存我的“验收运营部”工作场景：资料来自部门“验收财务部”。';
+  expect(employeeMethodRequestedScope(text)).toBe('personal');
+  expect(namedMethodDepartmentRequest(text)).toBeNull();
+  expect(namedMethodDepartmentRequest(phrases.save)).toBeNull();
+});
 it.each([
   `请重试测试 ${retryId}。`,
   `帮我重跑专项测试：${retryId}`,

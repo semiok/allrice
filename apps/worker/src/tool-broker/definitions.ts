@@ -65,13 +65,13 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '查看当前小白的已启用内容、候选或个人 history 历史索引。默认个人范围；明确维护本部门时 scope=department，公司时 scope=company，服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史尚未开放；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
+      '查看当前小白的已启用内容、候选或个人 history 历史索引。默认个人范围；明确维护部门时 scope=department，公司时 scope=company；departments 返回当前可维护部门，公司级可按用户明确名称／ID选择 departmentId，部门级只可选本部门，同名须澄清；selectionRequired 时必须先选部门。服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史尚未开放；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
     name: 'workspace.employee.method.save_candidate',
     description:
-      '用户明确要求保存或调整工作方法时，保存当前小白的个人候选，或明确请求并有维护权限的公司或本部门文字场景候选。共享模式必须带 inspect 返回的 sharedTarget；不支持共享通用要求或资料绑定，不能转存个人假装完成。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用或修改权限；范围必须匹配用户直接请求和返回的准确目标，不得声称已生效。',
+      '用户明确要求保存或调整工作方法时，保存当前小白的个人候选，或明确请求并有维护权限的公司或明确目标部门的文字场景候选。共享模式必须带 inspect 返回的 sharedTarget；不支持共享通用要求或资料绑定，不能转存个人假装完成。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用或修改权限；范围必须匹配用户直接请求和返回的准确目标，不得声称已生效。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
   },
   {
