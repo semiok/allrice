@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import {
   TenantQuotaChangeSchema,
+  defaultSandboxExecutionMs,
   type AdminTenantQuota,
   type AdminTenantQuotas,
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
+import { freezeSandboxExecutionPolicy } from './sandbox-execution-policy.ts';
 import {
   defaultResourceLimits,
   getOrganizationModelQuota,
@@ -28,6 +30,10 @@ async function snapshot(
     { start: Date; end: Date }[]
   >`select date_trunc('month',now()) as start,date_trunc('month',now())+interval '1 month' as end`;
   const quotas: AdminTenantQuota[] = [];
+  const sandboxExecutionPolicy = await freezeSandboxExecutionPolicy(
+    { organizationId, userId: subjectId },
+    sql,
+  );
   for (const scope of ['organization', 'tenant', 'user'] as const) {
     const scopeId = scope === 'user' ? subjectId : organizationId;
     const [row] =
@@ -55,6 +61,9 @@ async function snapshot(
         and (${scope}='organization' or l.workspace_id=${workspaceId}) and (${scope}<>'user' or d.actor_id=${subjectId})`;
     const defaults =
       defaultResourceLimits[scope === 'organization' ? 'tenant' : scope];
+    const sandboxSource = sandboxExecutionPolicy.sources.find(
+      (s) => s.scope === scope,
+    );
     quotas.push({
       scope,
       scopeId,
@@ -75,7 +84,18 @@ async function snapshot(
           'maxRuntimeMs' in actual
             ? actual.maxRuntimeMs
             : defaults.maxRuntimeMs,
+        ...(scope === 'organization'
+          ? {}
+          : {
+              maxSandboxExecutionMs:
+                sandboxSource?.maxExecutionMs ?? defaultSandboxExecutionMs,
+            }),
       },
+      ...(scope === 'organization'
+        ? {}
+        : {
+            sandboxExecutionSource: sandboxSource?.source ?? 'platform_default',
+          }),
       usedRuns: actual.usedRuns,
       usedTokens: actual.usedTokens,
       cachedInputTokens: usage!.cached === null ? null : Number(usage!.cached),
@@ -90,6 +110,7 @@ async function snapshot(
     periodStart: period!.start.toISOString(),
     resetsAt: period!.end.toISOString(),
     quotas,
+    sandboxExecutionPolicy,
     subscription: {
       status: 'not_queried',
       tokenPolicy: codexTokenPolicy(),
@@ -145,6 +166,8 @@ export async function updateAdminTenantQuota(
       throw new TenantQuotaConflict('quota_conflict');
     if (change.scope === 'organization') {
       if (!change.limits) throw new DataAccessError('grant_invalid');
+      if (change.limits.maxSandboxExecutionMs !== undefined)
+        throw new DataAccessError('grant_invalid');
       await sql`insert into allrice_organization_model_quotas(organization_id,monthly_run_limit,monthly_token_limit,updated_by)
         values(${organizationId},${change.limits.monthlyRunLimit},${change.limits.monthlyTokenLimit},${context.actor.id})
         on conflict(organization_id) do update set monthly_run_limit=excluded.monthly_run_limit,monthly_token_limit=excluded.monthly_token_limit,updated_by=excluded.updated_by,updated_at=clock_timestamp()`;
@@ -152,10 +175,12 @@ export async function updateAdminTenantQuota(
       await sql`delete from allrice_model_resource_limits where organization_id=${organizationId} and scope_type=${change.scope} and scope_id=${scopeId}`;
     } else {
       const l = change.limits;
-      await sql`insert into allrice_model_resource_limits(id,organization_id,scope_type,scope_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms,updated_by)
-        values(${randomUUID()},${organizationId},${change.scope},${scopeId},${l.monthlyRunLimit},${l.monthlyTokenLimit},${l.concurrentRunLimit},${l.maxRuntimeMs},${context.actor.id})
+      await sql`insert into allrice_model_resource_limits(id,organization_id,scope_type,scope_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms,max_sandbox_execution_ms,updated_by)
+        values(${randomUUID()},${organizationId},${change.scope},${scopeId},${l.monthlyRunLimit},${l.monthlyTokenLimit},${l.concurrentRunLimit},${l.maxRuntimeMs},${l.maxSandboxExecutionMs ?? null},${context.actor.id})
         on conflict(organization_id,scope_type,scope_id) where organization_id is not null do update set
-          monthly_run_limit=excluded.monthly_run_limit,monthly_token_limit=excluded.monthly_token_limit,concurrent_run_limit=excluded.concurrent_run_limit,max_runtime_ms=excluded.max_runtime_ms,updated_by=excluded.updated_by,updated_at=clock_timestamp()`;
+          monthly_run_limit=excluded.monthly_run_limit,monthly_token_limit=excluded.monthly_token_limit,concurrent_run_limit=excluded.concurrent_run_limit,max_runtime_ms=excluded.max_runtime_ms,
+          max_sandbox_execution_ms=case when ${l.maxSandboxExecutionMs !== undefined} then excluded.max_sandbox_execution_ms else allrice_model_resource_limits.max_sandbox_execution_ms end,
+          updated_by=excluded.updated_by,updated_at=clock_timestamp()`;
     }
     const after = await snapshot(target, sql);
     await sql`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)

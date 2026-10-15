@@ -334,6 +334,33 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     };
     return { ...input, scope, runtime: runtime!, finish };
   }
+  it('freezes sandbox caps per new Run in the same session without rewriting old execution snapshots', async () => {
+    const f = await setup(),
+      instance = await f.custom('Sandbox budget fixture');
+    const first = await methodRun(f, instance.id, 'Synthetic first task');
+    expect(first.frozen.sandboxExecutionPolicy).toEqual({
+      version: 1,
+      maxExecutionMs: 600000,
+      sources: [],
+    });
+    const frozenBytes = JSON.stringify(first.frozen);
+    await first.finish();
+    await fixture.db`insert into allrice_model_resource_limits(id,organization_id,scope_type,scope_id,monthly_run_limit,monthly_token_limit,concurrent_run_limit,max_runtime_ms,max_sandbox_execution_ms)
+      values(${randomUUID()},${f.a.organizationId},'user',${f.a.user.id},2000,2000000,3,0,1800000)`;
+    const second = await methodRun(
+      f,
+      instance.id,
+      'Synthetic second task',
+      first.sessionId,
+    );
+    expect(second.frozen.sandboxExecutionPolicy.maxExecutionMs).toBe(1800000);
+    expect(second.frozen.taskRuntimePolicy.timeoutMs).toBe(0);
+    const [old] =
+      await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${first.context.runId}`;
+    expect(JSON.stringify(old!.execution_snapshot)).toBe(frozenBytes);
+    await second.finish();
+  });
+
   async function departmentFixture(f: Awaited<ReturnType<typeof setup>>) {
     const department = (
       await createOrganizationDepartment(f.admin.context, f.a.organizationId, {

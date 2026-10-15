@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
+import {
+  SandboxExecutionLimitMsSchema,
+  type SandboxExecutionPolicy,
+} from './runtime-v2/sandbox-execution.ts';
 
 export const TenantQuotaScopeSchema = z.enum([
   'organization',
@@ -15,6 +19,9 @@ export const TenantQuotaLimitsSchema = z
       z.literal(0),
       z.number().int().min(1000).max(86400000),
     ]),
+    // Omission preserves the stored value for older clients; never inject a
+    // default here, since that would turn inheritance into a hidden override.
+    maxSandboxExecutionMs: SandboxExecutionLimitMsSchema.optional(),
   })
   .strict();
 export const TenantQuotaChangeSchema = z
@@ -37,6 +44,8 @@ export interface AdminTenantQuota {
   version: string | null;
   source: 'tenant_override' | 'platform_override' | 'platform_default';
   effective: TenantQuotaLimits;
+  sandboxExecutionSource?:
+    'tenant_override' | 'platform_override' | 'platform_default';
   usedRuns: number;
   usedTokens: number;
   cachedInputTokens: number | null;
@@ -52,6 +61,7 @@ export interface AdminTenantQuotas {
   periodStart: string;
   resetsAt: string;
   quotas: AdminTenantQuota[];
+  sandboxExecutionPolicy?: SandboxExecutionPolicy;
   subscription: {
     status: 'not_queried';
     message: string;
