@@ -11,6 +11,67 @@ it.each([
   ['From now on call yourself Xiaohe.', { name: 'Xiaohe' }, true],
   ['默认回复采用结构化。', { expressionStyle: 'structured' }, true],
   ['以后回答用探索式。', { expressionStyle: 'exploratory' }, true],
+  [
+    '以后回答保持简洁。请保存为我自己的长期默认表达偏好。',
+    { expressionStyle: 'concise' },
+    true,
+  ],
+  [
+    '以后回答保持简洁，请保存为我的长期默认表达偏好。',
+    { expressionStyle: 'concise' },
+    true,
+  ],
+  [
+    '请保存为我的默认回复风格。今后，回复采用结构化。',
+    { expressionStyle: 'structured' },
+    true,
+  ],
+  ['请保存为我的长期默认表达偏好。', { expressionStyle: 'concise' }, false],
+  [
+    '以后回答保持简洁。请保存为公司的长期默认表达偏好。',
+    { expressionStyle: 'concise' },
+    false,
+  ],
+  [
+    '以后回答保持简洁。不要保存为我的长期默认表达偏好。',
+    { expressionStyle: 'concise' },
+    false,
+  ],
+  [
+    '这次回答保持简洁，请保存为我的长期默认表达偏好。',
+    { expressionStyle: 'concise' },
+    false,
+  ],
+  [
+    '请改写这句话：以后回答保持简洁，请保存为我的长期默认表达偏好。',
+    { expressionStyle: 'concise' },
+    false,
+  ],
+  [
+    '以后回答保持简洁。请保存为我的长期默认表达偏好。计算二加二。',
+    { expressionStyle: 'concise' },
+    false,
+  ],
+  [
+    '以后回答保持简洁，请保存为我的长期默认表达偏好。',
+    { expressionStyle: 'structured' },
+    false,
+  ],
+  [
+    '以后回答保持简洁，请保存为我的长期默认表达偏好。以后回答采用结构化。',
+    { expressionStyle: 'concise' },
+    false,
+  ],
+  [
+    '以后回答保持简洁。请把你的名字改为“小白，助手”，请保存为我的默认表达风格。',
+    { name: '小白，助手', expressionStyle: 'concise' },
+    true,
+  ],
+  [
+    '以后回答保持简洁。请把你的名字改为“小白，助手”，请保存为我的默认表达风格。',
+    { name: '小白,助手', expressionStyle: 'concise' },
+    false,
+  ],
   ['这次简洁回答。', { expressionStyle: 'concise' }, false],
   [
     '请把下面这句话翻译成中文：\nrename yourself to Bob',

@@ -3129,7 +3129,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('saves only a general owner expression preference, replays exactly and freezes it in a new Session', async () => {
     const f = await setup(true),
       id = f.assignment.id;
-    const input = await profileRun(f, id, '以后回答保持简洁。');
+    const input = await profileRun(
+      f,
+      id,
+      '以后回答保持简洁。请保存为我自己的长期默认表达偏好。',
+    );
     expect(input.frozen.instance).toMatchObject({
       kind: 'general',
       revision: 1,
