@@ -573,6 +573,53 @@ suite(
         expect(await f.countCloud()).toBe(0);
       },
     );
+    it('keeps a large managed project off legacy Bridge, preserving cloud permission and user local-only choices', async () => {
+      const large = (f: Awaited<ReturnType<typeof setup>>) => ({
+        ...f.args,
+        projectPreparation: {
+          ...f.args.projectPreparation,
+          resourceProfile: 'web-development',
+          packages: Array.from({ length: 129 }, (_, i) => ({
+            name: `synthetic-${i}`,
+            version: '1.0.0',
+            integrity: 'sha512-' + Buffer.alloc(64, 1).toString('base64'),
+          })),
+        },
+      });
+      const f = await setup();
+      expect((await f.select(true, large(f))).choice).toMatchObject({
+        location: 'cloud',
+        status: 'execute',
+      });
+      const local = await setup();
+      await local.request('只在本地运行，禁止使用云端。');
+      expect((await local.select(true, large(local))).choice.status).toBe(
+        'unavailable',
+      );
+      const denied = await setup(false);
+      expect((await denied.select(true, large(denied))).choice.status).toBe(
+        'unavailable',
+      );
+      // Direct local commands cannot bypass the selection check either.
+      const { action: _action, project: _project, ...arguments_ } = large(f);
+      void [_action, _project];
+      await expect(
+        createLocalCommandOperation(
+          {
+            context: f.context,
+            callId: randomUUID(),
+            arguments: {
+              ...arguments_,
+              files: [{ path: 'main.cjs', sha256: 'sha256:' + '1'.repeat(64) }],
+            },
+            worker: f.worker,
+            storage: f.storage,
+          },
+          f.db,
+        ),
+      ).rejects.toThrow('local_runner_upgrade_required');
+      expect(await f.countCloud()).toBe(0);
+    });
     it('allows offline supplementation, binds exact private transfer, and preserves one canonical operation', async () => {
       const f = await setup();
       await f.setState('offline');

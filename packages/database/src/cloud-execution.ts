@@ -43,6 +43,10 @@ import {
   type StorageObject,
   type CloudCommand,
   type CloudPythonOrigin,
+  type CloudProjectResolutionOrigin,
+  ProjectDependencyResolveInputSchema,
+  projectResolutionCloudArguments,
+  ProjectDependencyResolutionReceiptSchema,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import {
@@ -171,13 +175,60 @@ export function createCloudOperationLedger(
         await transaction`select payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId}`;
       const [method] =
         await transaction`select id from allrice_runs where id=${binding.task.runId} and execution_spec ? 'employeeMethodSnapshotDigest'`;
-      if (stored?.payload?.kind === 'project' || method)
+      if (
+        stored?.payload?.kind === 'project' ||
+        stored?.payload?.origin?.toolName === 'workspace.project' ||
+        method
+      )
         await checkCloudBindingAuthority(transaction, context, binding);
     },
     assertReceiptEvidence: async ({ transaction, binding, receipt }) => {
       const [stored] =
         await transaction`select i.payload,a.outcome,a.artifacts from allrice_cloud_execution_inputs i
         left join allrice_cloud_execution_attempts a on a.operation_id=i.operation_id where i.operation_id=${binding.attempt.operationId}`;
+      if (
+        stored?.payload?.origin?.toolName === 'workspace.project' &&
+        ['operation.outcome', 'operation.stopped'].includes(receipt.signal.type)
+      ) {
+        const result = stored.outcome;
+        const typed = ProjectDependencyResolutionReceiptSchema.safeParse(
+          result?.resolution,
+        );
+        const evidence = receipt.evidence as Record<string, unknown> | null;
+        const success =
+          receipt.signal.type === 'operation.outcome' &&
+          receipt.signal.result.status === 'succeeded';
+        const effects =
+          receipt.signal.type === 'operation.outcome'
+            ? receipt.signal.result.effects
+            : receipt.signal.type === 'operation.stopped'
+              ? receipt.signal.effects
+              : 'none';
+        if (
+          !result?.stopped ||
+          effects !== 'none' ||
+          !runtimeContractEqual(evidence?.artifacts, []) ||
+          evidence?.reason !== result.reason ||
+          evidence?.exitCode !== result.exitCode ||
+          evidence?.stopped !== true ||
+          evidence?.errorCode !== result.errorCode ||
+          !runtimeContractEqual(
+            evidence?.resolution,
+            typed.success
+              ? { ...typed.data, lock: undefined, wheels: undefined }
+              : undefined,
+          ) ||
+          (result.resolution &&
+            (!typed.success || typed.data.exitCode !== result.exitCode)) ||
+          (success &&
+            (result.reason !== 'completed' ||
+              result.exitCode !== 0 ||
+              !typed.success ||
+              typed.data.status !== 'resolved'))
+        )
+          throw new RuntimePolicyError('cloud_resolution_receipt_changed');
+        return;
+      }
       if (
         stored?.payload?.kind !== 'project' ||
         !['operation.outcome', 'operation.stopped'].includes(
@@ -274,6 +325,32 @@ export async function createCloudCommandOperation(
   database: Database = getDatabase(),
 ) {
   return createCloudOperation(input, database);
+}
+
+/** Canonical managed resolver. No model supplied script/resource profile is
+ * accepted; the ordinary scoped cloud grant and frozen tools still authorize it. */
+export async function createCloudProjectResolutionOperation(
+  input: { context: ExecutionContext; arguments: unknown; callId: string },
+  database: Database = getDatabase(),
+) {
+  const request = ProjectDependencyResolveInputSchema.parse(input.arguments);
+  const originalArguments = JSON.parse(
+    JSON.stringify(input.arguments),
+  ) as Record<string, unknown>;
+  return createCloudOperation(
+    { ...input, arguments: projectResolutionCloudArguments(request) },
+    database,
+    {
+      origin: {
+        toolName: 'workspace.project',
+        callId: input.callId,
+        purpose: 'project_dependency_resolution',
+        argumentsDigest: digest(originalArguments),
+        request,
+      },
+      originalArguments,
+    },
+  );
 }
 
 /** Preserve the canonical call; managed-local authorization is not cloud authority. */
@@ -514,8 +591,8 @@ export async function createCloudProjectOperation(
 async function createCloudOperation(
   input: { context: ExecutionContext; arguments: unknown; callId: string },
   database: Database,
-  python?: {
-    origin: CloudPythonOrigin;
+  canonical?: {
+    origin: CloudPythonOrigin | CloudProjectResolutionOrigin;
     originalArguments: Record<string, unknown>;
   },
 ) {
@@ -545,7 +622,7 @@ async function createCloudOperation(
     if (process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1')
       throw new RuntimePolicyError('sandbox_execution_not_enabled');
     if (
-      python ||
+      canonical?.origin.toolName === 'python.execute' ||
       !SandboxExecutionPolicySchema.safeParse(
         run.execution_snapshot?.sandboxExecutionPolicy,
       ).success
@@ -564,7 +641,7 @@ async function createCloudOperation(
       imageDigest: cloudRuntimeImage(profile.imageDigest, args.language),
       runtime: profile.runtime,
       network: args.network ?? 'none',
-      ...(python ? { origin: python.origin } : {}),
+      ...(canonical ? { origin: canonical.origin } : {}),
       ...(args.execution
         ? {
             executionBudget: sandboxExecutionBudgetSpec(
@@ -583,7 +660,7 @@ async function createCloudOperation(
     if (authorized.object.checksum !== file.checksum)
       throw new RuntimePolicyError('cloud_input_changed');
   }
-  const key = `${python ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`,
+  const key = `${canonical?.origin.toolName === 'workspace.project' ? 'cloud-project-resolution' : canonical ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`,
     operationId = cloudStableId(key);
   return finishCloudOperation({
     input,
@@ -599,7 +676,7 @@ async function createCloudOperation(
       id: f.objectId,
       checksum: f.checksum,
     })),
-    originalArguments: python?.originalArguments,
+    originalArguments: canonical?.originalArguments,
   });
 }
 

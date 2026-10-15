@@ -31,6 +31,7 @@ import {
   type RuntimeOperationSnapshot,
   type StoragePort,
   resolveExecutionChoice,
+  bridgeProjectPackageLimit,
 } from '@allrice/contracts';
 import {
   assertSavedProjectAuthority,
@@ -333,6 +334,11 @@ async function createLocalBridgeToolOperation(
   if (args?.diagnostics && !profile?.features?.includes('project_diagnostics'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args?.dependencies && !profile?.features?.includes('npm_dependencies'))
+    throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (
+    args?.projectPreparation &&
+    args.projectPreparation.packages.length > bridgeProjectPackageLimit
+  )
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (
     args?.projectPreparation &&

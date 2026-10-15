@@ -12,6 +12,8 @@ import {
   type RuntimeActionApprovalSnapshot,
   type RuntimeOperationSnapshot,
   type CloudCommand,
+  type ProjectDependencyResolveInput,
+  ProjectDependencyResolutionReceiptSchema,
   type CloudProjectCommand,
   type ProjectServiceView,
   type McpExecutionPayload,
@@ -48,6 +50,7 @@ export type CloudOperationView = {
   proposal:
     | {
         kind: 'cloud';
+        dependencyResolution?: ProjectDependencyResolveInput;
         network?: Exclude<CloudCommand['network'], 'none'>;
         language?: CloudCommand['arguments']['language'];
         script: string;
@@ -163,6 +166,7 @@ export async function listCloudRuntimeOperations(
           output: string;
           reason: string;
           errorCode?: string;
+          resolution?: unknown;
         } | null;
         endpoint: string | null;
         connection_enabled: boolean | null;
@@ -240,6 +244,12 @@ export async function listCloudRuntimeOperations(
       });
     } else {
       const payload = CloudExecutionPayloadSchema.parse(row.cloud_payload);
+      const resolution =
+        !('kind' in payload) && payload.origin?.toolName === 'workspace.project'
+          ? ProjectDependencyResolutionReceiptSchema.safeParse(
+              row.cloud_outcome?.resolution,
+            ).data
+          : undefined;
       const projectService =
         'kind' in payload && payload.arguments.background?.projectService
           ? await readProjectService(
@@ -276,6 +286,9 @@ export async function listCloudRuntimeOperations(
               }
             : {
                 kind: 'cloud',
+                ...(payload.origin?.toolName === 'workspace.project'
+                  ? { dependencyResolution: payload.origin.request }
+                  : {}),
                 ...(payload.network !== 'none'
                   ? { network: payload.network }
                   : {}),
@@ -290,8 +303,13 @@ export async function listCloudRuntimeOperations(
         approval,
         result: row.cloud_outcome
           ? {
-              output: row.cloud_outcome.output,
-              code: row.cloud_outcome.errorCode ?? row.cloud_outcome.reason,
+              output: [row.cloud_outcome.output, resolution?.diagnostics]
+                .filter(Boolean)
+                .join('\n'),
+              code:
+                row.cloud_outcome.errorCode ??
+                resolution?.errorCode ??
+                row.cloud_outcome.reason,
               trusted: false,
             }
           : null,

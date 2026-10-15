@@ -12,6 +12,7 @@ import {
   classifyMcpFailure,
   mcpFailureCopy,
   sandboxNetworkErrorMessage,
+  projectResolutionErrorMessage,
 } from '@allrice/contracts';
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
@@ -316,6 +317,12 @@ export function CloudOperationCard({
     ['failed', 'unknown', 'canceled'].includes(op.snapshot.status)
       ? sandboxNetworkErrorMessage(op.result?.code)
       : undefined;
+  const resolutionFailure =
+    proposal.kind === 'cloud' &&
+    proposal.dependencyResolution &&
+    op.snapshot.status === 'failed'
+      ? projectResolutionErrorMessage(op.result?.code)
+      : undefined;
   const detailsId = useId();
   const [detailsOpen, setDetailsOpen] = useState(!!pending);
   useEffect(() => {
@@ -324,7 +331,11 @@ export function CloudOperationCard({
   const isMcp = proposal.kind === 'mcp';
   const fullStatus = laterSuccessId
     ? '本次未成功 · 后续调用已成功'
-    : cloudOperationDisplayStatus(op);
+    : proposal.kind === 'cloud' &&
+        proposal.dependencyResolution &&
+        op.snapshot.status === 'succeeded'
+      ? '已解析 · 尚未安装'
+      : cloudOperationDisplayStatus(op);
   const detailsToggle = (
     <button
       type="button"
@@ -360,6 +371,11 @@ export function CloudOperationCard({
   );
   const notices = (
     <>
+      {resolutionFailure && (
+        <p role="status" className={styles.notice}>
+          {resolutionFailure}
+        </p>
+      )}
       {laterSuccessId && (
         <p className={styles.notice}>
           同一应用工具的后续调用已成功，本次失败记录仍保留。
@@ -589,8 +605,8 @@ export function CloudOperationCard({
           }
         : {
             key: 'execution',
-            label: '脚本',
-            title: '执行脚本',
+            label: proposal.dependencyResolution ? '依赖' : '脚本',
+            title: proposal.dependencyResolution ? '准备依赖' : '执行脚本',
             value: runtime,
             content: (
               <>
@@ -601,7 +617,12 @@ export function CloudOperationCard({
                       '执行位置',
                       proposal.network ? '云端 · 按授权联网' : '云端 · 不联网',
                     ],
-                    ['文件范围', '只读本次授权的上传文件，不访问你的电脑。'],
+                    [
+                      '文件范围',
+                      proposal.dependencyResolution
+                        ? '仅查询公开依赖，不读取或发送你的文件。'
+                        : '只读本次授权的上传文件，不访问你的电脑。',
+                    ],
                   ]}
                 />
                 {proposal.network && (
@@ -622,7 +643,21 @@ export function CloudOperationCard({
                     </p>
                   </div>
                 )}
-                <RawDetail title="查看完整脚本" open={!!pending}>
+                {proposal.dependencyResolution && (
+                  <ul aria-label="请求的依赖版本">
+                    {proposal.dependencyResolution.packages.map((p) => (
+                      <li key={p.name}>
+                        <code>
+                          {p.name}@{p.version}
+                        </code>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <RawDetail
+                  title="查看完整脚本"
+                  open={!!pending && !proposal.dependencyResolution}
+                >
                   <pre aria-label="云端待执行脚本">{proposal.script}</pre>
                 </RawDetail>
               </>
@@ -751,7 +786,9 @@ export function CloudOperationCard({
             ? '应用工具'
             : proposal.kind === 'project'
               ? '云端项目'
-              : '云端计算'}
+              : proposal.dependencyResolution
+                ? '依赖准备'
+                : '云端计算'}
         </strong>
         <p className={styles.cloudScope}>
           {proposal.kind === 'mcp' ? (
@@ -764,10 +801,13 @@ export function CloudOperationCard({
           ) : (
             <>
               <span>
-                {proposal.kind === 'project'
-                  ? proposal.files.length
-                  : proposal.inputs.length}{' '}
-                个输入文件
+                {proposal.kind === 'cloud' && proposal.dependencyResolution
+                  ? `${proposal.dependencyResolution.packages.length} 个依赖包`
+                  : `${
+                      proposal.kind === 'project'
+                        ? proposal.files.length
+                        : proposal.inputs.length
+                    } 个输入文件`}
               </span>
               <span className={styles.cloudLocation}>仅在云端执行</span>
               <span>

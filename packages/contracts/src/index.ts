@@ -136,3 +136,8 @@ export * from './reference-library.ts';
 
 export * from './employee-method-tests.ts';
 export * from './employee-method-file-case.ts';
+
+export * from './project-dependency-resolution.ts';
+export * from './project-tool-releases.ts';
+
+export * from './project-resolution-script.ts';
