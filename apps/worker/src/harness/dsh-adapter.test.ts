@@ -593,6 +593,16 @@ describe('DshHarnessAdapter', () => {
       vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
         runtime,
         fresh,
+        preparation: {
+          cache: fresh ? 'miss' : 'hit',
+          reason: fresh ? 'not_resident' : 'reused',
+          changedFields: [],
+          credentialResolutionMs: 0,
+          previousRuntimeCloseMs: 0,
+          initializeMs: 0,
+          skillRegistrationMs: null,
+          acquireMs: 0,
+        },
       });
       const drop = vi
         .spyOn(DshRuntimePool.prototype, 'drop')
@@ -878,7 +888,7 @@ describe('DshHarnessAdapter', () => {
       expect.arrayContaining([
         expect.objectContaining({
           type: 'native.event',
-          label: 'Skill 已就绪',
+          label: 'Skill 已就绪 · 1 个',
           summary: 'web-research',
           sourcePayload: expect.objectContaining({ status: 'registered' }),
         }),
@@ -931,7 +941,7 @@ describe('DshHarnessAdapter', () => {
     expect(events).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: 'Skill 已就绪',
+          label: 'Skill 已就绪 · 1 个',
           summary: 'workflow-automation',
         }),
       ]),
@@ -980,7 +990,7 @@ describe('DshHarnessAdapter', () => {
       };
       await adapter.execute(input);
       expect(events.find((e) => e.type === 'native.event')).toMatchObject({
-        label: 'Skill 已就绪',
+        label: 'Skill 已就绪 · 1 个',
         sourcePayload: { status: 'registered' },
       });
       expect(
@@ -996,6 +1006,7 @@ describe('DshHarnessAdapter', () => {
           skillVersion: '1.2.3',
           skillCatalogChecksum: checksum,
           skillStatus: failed ? 'failed' : 'loaded',
+          skillLoadMs: expect.any(Number),
         },
       });
       expect(JSON.stringify(events)).not.toContain('private skill text');
@@ -1071,6 +1082,81 @@ describe('DshHarnessAdapter', () => {
     ]);
   });
 
+  it('persists one frozen directory and measures its write, then reuses it on the next Run', async () => {
+    const adapter = createAdapter(),
+      events: HarnessEvent[] = [];
+    const input = executionInput({ prompt: 'first', events });
+    input.nativeSkills = Array.from({ length: 13 }, (_, i) => ({
+      id: randomUUID(),
+      name: `method-${i}`,
+      description: 'Synthetic method',
+      content: 'private skill instructions',
+      checksum: `sha256:${'a'.repeat(64)}`,
+      invocation: { modelInvocable: true, userInvocable: true },
+      requiredToolRefs: [],
+    }));
+    const readyWrites: HarnessEvent[] = [];
+    input.onEvent = async (event) => {
+      if (event.sourceEventType === 'allrice/skill-readiness') {
+        readyWrites.push(event);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+      }
+      events.push(event);
+    };
+    const first = await adapter.execute(input);
+    expect(readyWrites).toHaveLength(1);
+    expect(readyWrites[0]).toMatchObject({
+      label: 'Skill 已就绪 · 13 个',
+      sourcePayload: {
+        status: 'registered',
+        count: 13,
+        skills: input.nativeSkills.map((s) => ({
+          skillId: s.id,
+          skillName: s.name,
+          skillChecksum: s.checksum,
+        })),
+      },
+    });
+    const prep = () =>
+      events.find((e) => e.sourceEventType === 'allrice/runtime-preparation')!
+        .sourcePayload!;
+    expect(prep()).toMatchObject({
+      cache: 'miss',
+      reason: 'not_resident',
+      registeredSkillCount: 13,
+      skillEventCount: 1,
+    });
+    expect(prep().skillEventsPersistenceMs).toBeGreaterThanOrEqual(25);
+    expect(prep().preparationMs).toBeGreaterThanOrEqual(
+      Number(prep().skillEventsPersistenceMs),
+    );
+    expect(JSON.stringify(events)).not.toContain('private skill instructions');
+    expect(JSON.stringify(events)).not.toContain('test-secret');
+    const runtimeId = prep().runtimeId;
+    events.length = 0;
+    input.threadId = first.threadId;
+    await adapter.execute(input);
+    expect(readyWrites).toHaveLength(1);
+    expect(prep()).toMatchObject({
+      runtimeId,
+      cache: 'hit',
+      reason: 'reused',
+      initializeMs: 0,
+      skillRegistrationMs: 0,
+      skillEventCount: 0,
+    });
+    input.nativeSkills[0]!.checksum = `sha256:${'b'.repeat(64)}`;
+    events.length = 0;
+    await adapter.execute(input);
+    expect(readyWrites).toHaveLength(2);
+    expect(prep()).toMatchObject({
+      cache: 'miss',
+      reason: 'configuration_changed',
+      changedFields: ['nativeSkills'],
+    });
+    expect(prep().runtimeId).not.toBe(runtimeId);
+  });
+
   it('announces Skills only on cold load, including a changed Skill version', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];
@@ -1089,7 +1175,8 @@ describe('DshHarnessAdapter', () => {
     const loaded = () =>
       events.filter(
         (event) =>
-          event.type === 'native.event' && event.label === 'Skill 已就绪',
+          event.type === 'native.event' &&
+          event.label.startsWith('Skill 已就绪 ·'),
       );
     const first = await adapter.execute(input);
     expect(loaded()).toHaveLength(1);
@@ -1139,7 +1226,7 @@ describe('DshHarnessAdapter', () => {
     expect(events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          label: 'Skill 已就绪',
+          label: 'Skill 已就绪 · 1 个',
           summary: 'workflow-automation',
           sourcePayload: expect.objectContaining({ status: 'registered' }),
         }),

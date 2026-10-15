@@ -158,6 +158,16 @@ function fixture(options: {
   vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
     runtime,
     fresh: true,
+    preparation: {
+      cache: 'miss',
+      reason: 'not_resident',
+      changedFields: [],
+      credentialResolutionMs: 0,
+      previousRuntimeCloseMs: 0,
+      initializeMs: 0,
+      skillRegistrationMs: null,
+      acquireMs: 0,
+    },
   });
   vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
   vi.spyOn(DshRuntimePool.prototype, 'drop').mockImplementation(async () => {

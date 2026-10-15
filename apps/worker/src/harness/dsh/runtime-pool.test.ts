@@ -153,7 +153,20 @@ it('reuses the session process across business Runs with assistants enabled', as
     },
   });
   expect(cold.fresh).toBe(true);
+  expect(cold.preparation).toMatchObject({
+    cache: 'miss',
+    reason: 'not_resident',
+    changedFields: [],
+    skillRegistrationMs: null,
+  });
   expect(warm.fresh).toBe(false);
+  expect(warm.preparation).toMatchObject({
+    cache: 'hit',
+    reason: 'reused',
+    changedFields: [],
+    initializeMs: 0,
+    skillRegistrationMs: 0,
+  });
   expect(warm.runtime).toBe(cold.runtime);
   expect(close).not.toHaveBeenCalled();
 });
@@ -172,6 +185,14 @@ it.each(['assistant mode', 'assistant output cap', 'ordinary output cap'])(
     else first.input.maxOutputTokens = 500;
     const changed = await runtimes.acquire(first);
     expect(changed.fresh).toBe(true);
+    expect(changed.preparation).toMatchObject({
+      cache: 'miss',
+      reason: 'configuration_changed',
+      changedFields: [
+        change === 'assistant mode' ? 'assistantsEnabled' : 'maxTokens',
+      ],
+    });
+    expect(JSON.stringify(changed.preparation)).not.toContain('synthetic-only');
     expect(changed.runtime).not.toBe(cold.runtime);
     expect(close).toHaveBeenCalledOnce();
   },
@@ -181,6 +202,7 @@ it('the actual DSH host releases the old Run binding and accepts a new Run on th
   const runtimes = pool(true);
   const first = request();
   const cold = await runtimes.acquire(first);
+  expect(cold.preparation.skillRegistrationMs).toBeGreaterThanOrEqual(0);
   const bind = () => ({
     nativeSessionId: first.threadId,
     runId: first.input.assistants!.rootRunId,

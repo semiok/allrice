@@ -249,6 +249,7 @@ describe('AllRice DSH protocol runtime', () => {
     ).resolves.toEqual({
       name: 'deepseek-harness-sdk-runtime',
       version: DSH_DISTRIBUTION_CURRENT_VERSION,
+      skillRegistrationMs: expect.any(Number),
     });
     await expect(client.interrupt('dsh-not-live')).resolves.toMatchObject({
       interrupted: false,

@@ -194,7 +194,19 @@ export class DshProtocolClient {
         'DSH runtime does not support durable question waits',
         false,
       );
-    return { name: serverInfo.name, version: serverInfo.version };
+    const timing = record(result.preparation);
+    const skillRegistrationMs = timing?.skillRegistrationMs;
+    return {
+      name: serverInfo.name,
+      version: serverInfo.version,
+      skillRegistrationMs:
+        typeof skillRegistrationMs === 'number' &&
+        Number.isFinite(skillRegistrationMs) &&
+        skillRegistrationMs >= 0 &&
+        skillRegistrationMs <= this.launch.requestTimeoutMs
+          ? skillRegistrationMs
+          : null,
+    };
   }
 
   async prompt(
