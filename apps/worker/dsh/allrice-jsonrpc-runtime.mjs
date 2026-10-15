@@ -4,6 +4,7 @@ import { methodTestNativeTools } from './allrice-method-test-native-tools.mjs';
 import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
 import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
+import { preparedMethodQuestions } from './allrice-method-questions.mjs';
 import {
   nativeContextProjection,
   installNativeContextProjection,
@@ -779,13 +780,24 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   nativeToolsRegistered = new Set();
   nativeSkillsRegistered = false;
   pendingUserQuestions = new Map();
+  preparedMethodQuestions = preparedMethodQuestions();
   managedConnectionWaits = new Set();
   userQuestionNotify = () => undefined;
   toolBrokerRequest = async () => {
     throw new Error('AllRice Tool Broker transport is unavailable');
   };
 
-  async waitForApplicationConnection(tool, response, agent, signal) {
+  async waitForApplicationConnection(
+    tool,
+    response,
+    agent,
+    signal,
+    preparation,
+  ) {
+    if (tool === 'workspace.employee.method.prepare_activation') {
+      signal?.throwIfAborted();
+      this.preparedMethodQuestions.complete(agent, preparation, response);
+    }
     if (tool !== 'cloud.mcp.call') return { content: response.modelContent };
     let result;
     try {
@@ -863,7 +875,12 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         });
       }
       request.signal?.throwIfAborted();
-      if (!this.sessions.has(sessionId)) throw Error('INPUT_SESSION_NOT_LIVE');
+      if (this.sessions.get(sessionId)?.handle.agent !== request.agent)
+        throw Error('INPUT_SESSION_NOT_LIVE');
+      const questions = this.preparedMethodQuestions.take(
+        request.agent,
+        request.questions,
+      );
       const questionId = `question-${randomUUID()}`;
       let markDone;
       const done = new Promise((resolveDone) => {
@@ -881,7 +898,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         this.pendingUserQuestions.set(sessionId, {
           done,
           questionId,
-          questions: request.questions,
+          questions,
           resolve: (answer) => {
             request.signal?.removeEventListener('abort', abort);
             markDone();
@@ -896,7 +913,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         this.userQuestionNotify({
           sessionId,
           questionId,
-          questions: request.questions.map((question) => ({
+          questions: questions.map((question) => ({
             id: question.id,
             question: question.question,
             ...(typeof question.detail === 'string'
@@ -1337,8 +1354,13 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             tool.isConcurrencySafe ??
             tool.canonicalName !== 'local.process.execute',
           execute: async (args, exec) => {
-            tool.validateArguments?.(args);
             const agent = this.ctx.agents.requireInitiator();
+            const preparation =
+              tool.canonicalName ===
+              'workspace.employee.method.prepare_activation'
+                ? this.preparedMethodQuestions.begin(agent)
+                : undefined;
+            tool.validateArguments?.(args);
             if (this.governedAssistants) {
               const response = await this.assistantBridge(
                 'tool',
@@ -1357,6 +1379,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
                 response,
                 agent,
                 exec.signal,
+                preparation,
               );
             }
             const response = await this.toolBrokerRequest(
@@ -1379,6 +1402,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
               response,
               agent,
               exec.signal,
+              preparation,
             );
           },
           presentCall: (args) => ({
@@ -1429,6 +1453,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     const record = this.sessions.get(sessionId);
     if (!record) return { interrupted: false };
+    this.preparedMethodQuestions.clear(record.handle.agent);
     discardPendingDshInputs(record.handle.agent);
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
     if (pendingQuestion) {
@@ -1540,6 +1565,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     const current = this.sessions.get(sessionId);
     if (current) {
+      this.preparedMethodQuestions.clear(current.handle.agent);
       this.sessions.delete(sessionId);
       await current.handle.dispose();
     }
@@ -1554,6 +1580,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     const sessionId = requiredSessionId(params);
     const record = this.sessions.get(sessionId);
     if (!record) return { closed: false };
+    this.preparedMethodQuestions.clear(record.handle.agent);
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
     if (pendingQuestion) {
       this.pendingUserQuestions.delete(sessionId);

@@ -71,8 +71,8 @@
       var(--cloud-accent) 17%,
       var(--dsw-alias-border-primary, #e6e9ee)
     );
-  border-radius: 14px;
-  padding: 16px 18px;
+  border-radius: 10px;
+  padding: 0;
   background: color-mix(
     in srgb,
     var(--cloud-accent) 5%,
@@ -176,135 +176,6 @@
 .card summary::marker {
   content: '';
 }
-.executionFooter {
-  border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
-}
-.executionToolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 48px;
-  padding: 7px 0;
-}
-.executionTitle {
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.executionControls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-  margin-left: auto;
-}
-.executionBody {
-  padding-bottom: 3px;
-}
-.card .detailScope {
-  color: var(--dsw-alias-label-secondary, #68717e);
-  margin: 0 0 14px;
-}
-.detailSections {
-  border: 1px solid var(--dsw-alias-border-l2, #e1e6ed);
-  border-radius: 11px;
-  background: var(--dsw-alias-bg-layer-2, #fff);
-}
-.detailSection + .detailSection {
-  border-top: 1px solid var(--dsw-alias-border-l2, #e1e6ed);
-}
-.detailSection > summary {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 11px 14px;
-  min-height: 48px;
-  font-size: 13px;
-}
-.detailSection:first-child > summary {
-  border-radius: 10px 10px 0 0;
-}
-.detailSection:last-child:not([open]) > summary {
-  border-radius: 0 0 10px 10px;
-}
-.detailSection:only-child:not([open]) > summary {
-  border-radius: 10px;
-}
-.detailSection > summary:hover {
-  background: var(--allrice-employee-bg, #f0f2f5);
-}
-.detailIcon,
-.detailChevron {
-  display: flex;
-  flex: none;
-  color: var(--dsw-alias-label-secondary, #68717e);
-}
-.detailLabel {
-  flex: 1;
-  min-width: 0;
-}
-.detailMeta {
-  max-width: 50%;
-  color: var(--dsw-alias-label-secondary, #68717e);
-  font-size: 12px;
-}
-.detailChevron {
-  transition: transform 140ms ease;
-}
-.detailSection[open] > summary .detailChevron {
-  transform: rotate(90deg);
-}
-.detailBody {
-  padding: 0 14px 15px 40px;
-  font-size: 12px;
-  min-width: 0;
-}
-.detailBody > small {
-  margin-top: 7px;
-}
-.inputFiles {
-  display: grid;
-  gap: 12px;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.inputFiles code {
-  font-size: 12px;
-}
-.limits {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 18px;
-  margin: 0;
-}
-.limits div {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-}
-.limits dt {
-  color: var(--dsw-alias-label-secondary, #68717e);
-}
-.limits dd {
-  margin: 0;
-  max-width: 55%;
-}
-.card .plannedOutputs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 5px 10px;
-  color: var(--dsw-alias-label-secondary, #68717e);
-  margin: 14px 0 0;
-}
-.plannedOutputs code {
-  font-size: 11px;
-}
-.authorizationScope {
-  margin-top: 12px;
-}
 .root button,
 .card button {
   cursor: pointer;
@@ -334,7 +205,7 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  margin-top: 14px;
+  margin-top: 12px;
 }
 .actions button:first-child {
   background: #303640;
@@ -393,72 +264,6 @@
 .stopLabel {
   display: inline;
 }
-@container (max-width: 300px) {
-  .executionToolbar,
-  .executionControls {
-    gap: 6px;
-  }
-  .card .stopButton {
-    width: 32px;
-    padding: 0;
-  }
-  .stopLabel {
-    display: none;
-  }
-}
-@container (max-width: 220px) {
-  .executionTitle {
-    display: none;
-  }
-}
-.card .stopButton:hover:not(:disabled) {
-  color: #bd5149;
-  background: #fff1ef;
-  border-color: #efd2cf;
-}
-.card .stopButton:disabled {
-  opacity: 0.65;
-  cursor: default;
-}
-.notice {
-  color: #a36b27;
-}
-@media (max-width: 600px) {
-  .card {
-    padding: 14px;
-  }
-  .actions button {
-    flex: 1 1 auto;
-  }
-  .detailSection > summary {
-    padding-inline: 11px;
-    gap: 8px;
-  }
-  .detailBody {
-    padding-inline: 13px;
-  }
-  .detailMeta {
-    font-size: 11px;
-  }
-  .limits {
-    grid-template-columns: 1fr;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .detailChevron,
-  .card .detailsToggle,
-  .card .stopButton {
-    transition: none;
-  }
-}
-@media (pointer: coarse) {
-  .card .detailsToggle,
-  .card .stopButton {
-    min-height: 44px;
-    min-width: 44px;
-  }
-}
-
 :global(body[data-ds-dark-theme]) .card .stopButton:hover:not(:disabled) {
   color: #f0918c;
   background: #422b2d;
@@ -482,159 +287,22 @@
   color: #f0918c;
 }
 
-/* Frequent application calls stay one line tall until details are requested. */
-.compactCard {
-  padding: 0;
-  border-radius: 10px;
-  border-color: var(--dsw-alias-border-l2, #e9edf2);
-  background: color-mix(
-    in srgb,
-    var(--dsw-alias-label-primary, #272c34) 3%,
-    var(--dsw-alias-bg-layer-2, #fff)
-  );
-}
-.compactCard .compactHeader {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  min-height: 50px;
-  padding: 0 14px;
-}
-.compactTitle {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  font-size: 15px;
-  font-weight: 400;
-  line-height: 1.5;
-}
-.compactCard .icon {
-  width: 20px;
-  height: 20px;
-  background: transparent;
-  flex: none;
-}
-.toolName {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.toolPrefix {
-  color: var(--dsw-alias-label-secondary, #6f7986);
-}
-.compactControls {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-}
-.compactControls .status {
-  min-width: 64px;
-  justify-content: flex-end;
-  font-size: 15px;
-  font-weight: 400;
-  line-height: 1.5;
-}
-.compactControls .status::before {
-  display: none;
-}
-.statusIcon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: none;
-  width: 14px;
-  height: 14px;
-}
-.compactCard[data-status='running'] .statusIcon {
-  animation: statusSpin 1s linear infinite;
-}
 @keyframes statusSpin {
   to {
     transform: rotate(360deg);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .compactCard[data-status='running'] .statusIcon {
-    animation: none;
-  }
+.notice {
+  color: #a36b27;
 }
-.statusDot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
+.card > .notice {
+  margin: 0;
+  padding: 0 16px 12px;
 }
-.compactCard .detailsToggle {
-  width: 64px;
-  min-height: 36px;
-  padding: 0;
-  gap: 4px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  font-size: 15px;
-  font-weight: 400;
-  line-height: 1.5;
-}
-.compactCard .detailsToggle[aria-expanded='true'] svg {
-  transform: rotate(180deg);
-}
-.compactCard .executionFooter {
-  border: 0;
-}
-.compactCard .executionBody {
-  margin: 0 14px;
-  padding: 14px 0;
-  border-top: 1px solid var(--dsw-alias-border-l2, #e9edf2);
-}
-.compactDetailHeading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 10px;
-  color: var(--dsw-alias-label-secondary, #6f7986);
-  font-size: 12px;
-}
-.compactCard .actions {
-  padding: 0 14px 14px;
-}
-@container (max-width: 520px) {
-  .compactCard .compactHeader {
-    min-height: 76px;
-    gap: 2px 8px;
-    padding: 8px 10px;
-  }
-  .compactTitle {
-    grid-column: 1 / -1;
-  }
-  .compactControls {
-    grid-column: 1 / -1;
-    justify-content: flex-end;
-  }
-  .compactCard .detailsToggle {
-    min-height: 32px;
-    width: 52px;
-  }
-}
-@media (pointer: coarse) {
-  .compactCard .detailsToggle {
-    min-height: 44px;
-  }
-}
-
-/* Cloud receipts keep a 72px summary and a 72px first-level detail grid.
- * Opening an individual record or reviewing an approval may grow naturally. */
-.cloudCard {
-  padding: 0;
-  border-radius: 10px;
-}
-/* A live project preview keeps its independent controls and inset. */
-.cloudCard > section {
+.card > section {
   padding: 12px 16px;
 }
-.cloudCard .cloudHeader {
+.card .cloudHeader {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 14px;
@@ -642,18 +310,18 @@
   box-sizing: border-box;
   padding: 8px 16px;
 }
-.cloudCard .title {
+.title {
   gap: 8px;
   white-space: nowrap;
   line-height: 20px;
 }
-.cloudCard .icon {
+.icon {
   width: 26px;
   height: 26px;
   border-radius: 7px;
   flex: none;
 }
-.cloudCard .cloudScope {
+.card .cloudScope {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -667,89 +335,188 @@
   content: '·';
   margin-right: 8px;
 }
+.serviceHost {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
 .cloudControls {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 .cloudControls .status {
   font-size: 12px;
   line-height: 18px;
 }
-.cloudCard .detailsToggle {
+.card .detailsToggle {
   padding: 0 4px;
   gap: 5px;
   border: 0;
   background: transparent;
 }
-.cloudCard .detailsToggle[aria-expanded='true'] svg {
+.card .detailsToggle[aria-expanded='true'] svg {
   transform: rotate(180deg);
 }
-.cloudCard .executionFooter {
-  border: 0;
-}
-.cloudCard .executionBody {
-  padding: 3px 12px 4px;
-  border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
-}
-.cloudCard .detailSections {
+/* The four summary choices never move when any detail is opened. */
+.detailSections {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 16px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-.cloudCard .detailSection {
-  min-width: 0;
-  border: 0;
-}
-.cloudCard .detailSection[open] {
-  grid-column: 1 / -1;
-}
-.cloudCard .detailSection > summary {
   box-sizing: border-box;
-  min-height: 32px;
-  padding: 5px 4px;
-  gap: 6px;
+  padding: 3px 12px 4px;
+  border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
+}
+.card .detailChoice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 32px;
+  min-width: 0;
+  padding: 5px 6px;
+  border: 0;
   border-radius: 5px;
+  background: transparent;
   font-size: 12px;
   line-height: 22px;
+  text-align: left;
 }
-.cloudCard .detailLabel {
+.card .detailChoice[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--cloud-accent) 11%, transparent);
+}
+.detailChoice > svg {
   flex: none;
-  white-space: nowrap;
+  color: var(--dsw-alias-label-secondary, #68717e);
 }
-.cloudCard .detailMeta {
-  margin-left: auto;
+.detailChoice[aria-expanded='true'] > svg {
+  transform: rotate(180deg);
+}
+.detailLabel {
+  flex: 0 0 32px;
+  color: var(--dsw-alias-label-secondary, #68717e);
+}
+.detailMeta {
+  flex: 1;
   min-width: 0;
-  max-width: none;
-  font-size: 12px;
-  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.cloudCard .detailBody {
-  padding: 6px 4px 12px;
+/* Natural height: only the content plus 12px bottom padding, no reserved space. */
+.detailBody {
+  padding: 12px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-bg-layer-2, #fff) 35%,
+    transparent
+  );
+  font-size: 12px;
+  line-height: 20px;
 }
-.cloudCard > .notice {
+.detailHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.detailHeading strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.card .detailHeading button {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  width: 24px;
+  height: 24px;
+  font-size: 18px;
+  line-height: 24px;
+}
+.fields {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+.fields > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+}
+.fields dt {
+  color: var(--dsw-alias-label-secondary, #68717e);
+}
+.fields dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fields code {
+  font-size: inherit;
+}
+.detailContent > p {
+  margin: 8px 0 0;
+}
+.rawDetail {
+  margin-top: 12px;
+}
+.rawDetail > summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--dsw-alias-label-secondary, #68717e);
+  line-height: 24px;
+}
+.rawDetail[open] > summary svg {
+  transform: rotate(90deg);
+}
+.rawDetail > pre {
+  margin-top: 8px;
+}
+.rawDetail > small {
+  margin-top: 6px;
+}
+.inputFiles {
+  display: grid;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.card .plannedOutputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 10px;
+  margin: 8px 0 0;
+}
+.plannedOutputs code {
+  font-size: 12px;
+}
+.receiptNotes > p {
   margin: 0;
   padding: 0 16px 12px;
 }
-.cloudCard .actions {
-  margin-top: 0;
+.approvalReview {
   padding: 12px 16px;
+  border-top: 1px solid color-mix(in srgb, var(--cloud-accent) 12%, transparent);
+}
+.approvalReview > p {
+  margin: 0;
 }
 @container (max-width: 650px) {
-  .cloudCard .cloudHeader {
+  .card .cloudHeader {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 0 8px;
     padding: 4px 12px;
   }
-  .cloudCard .title {
+  .title {
     grid-column: 1;
   }
-  .cloudCard .cloudScope {
+  .card .cloudScope {
     grid-column: 1;
     font-size: 11px;
     gap: 6px;
@@ -771,18 +538,70 @@
   .cloudControls .status {
     flex-basis: 100%;
     justify-content: flex-end;
+    font-size: 11px;
   }
-  .cloudCard .stopButton {
+  .card .stopButton {
     width: 32px;
     padding: 0;
   }
-  .cloudCard .stopLabel {
+  .stopLabel {
     display: none;
   }
-  .cloudCard .detailSections {
+  .detailSections {
     column-gap: 8px;
   }
-  .cloudCard .detailIcon {
+}
+@container (max-width: 380px) {
+  .card .detailChoice {
+    gap: 4px;
+  }
+  .detailLabel {
+    flex-basis: 26px;
+  }
+  .detailChoice > svg {
     display: none;
+  }
+  .fields > div {
+    grid-template-columns: 60px minmax(0, 1fr);
+    gap: 10px;
+  }
+}
+@media (pointer: coarse) {
+  .card .detailsToggle,
+  .card .stopButton {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .actions button {
+    flex: 1 1 auto;
+  }
+}
+
+@container (max-width: 280px) {
+  .title {
+    font-size: 12px;
+  }
+  .title .icon {
+    display: none;
+  }
+  .cloudControls {
+    max-width: 96px;
+    gap: 0 4px;
+  }
+  .card .detailsToggle {
+    width: 44px;
+  }
+  .detailsToggle > span {
+    display: none;
+  }
+  .cloudControls .status {
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .cloudScope > span:last-child:not(:first-child) {
+    display: none;
+  }
+  .cloudScope .serviceHost {
+    display: block;
   }
 }
