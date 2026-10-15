@@ -1,10 +1,10 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import type { RiceToolHandlerContext } from '../types.js';
+import type * as Database from '@allrice/database';
 const ports = vi.hoisted(() => ({ dispatch: vi.fn() }));
 vi.mock('@allrice/database', async (importOriginal) => {
-  const { BridgeCommandResultError } =
-    await importOriginal<typeof import('@allrice/database')>();
+  const { BridgeCommandResultError } = await importOriginal<typeof Database>();
   return { dispatchBridgeCommand: ports.dispatch, BridgeCommandResultError };
 });
 import { BridgeCommandResultError } from '@allrice/database';
