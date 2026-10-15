@@ -65,13 +65,13 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '查看当前小白的已启用内容、候选或相应范围的 history 历史索引。默认个人范围；明确维护部门时 scope=department，公司时 scope=company；departments 返回当前可维护部门，公司级可按用户明确名称／ID选择 departmentId，部门级只可选本部门，同名须澄清；selectionRequired 时必须先选部门。服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史限定当前可维护目标；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
+      '查看当前小白的已启用内容、候选或相应范围的 history 历史索引。默认个人范围；明确维护部门时 scope=department，公司时 scope=company；departments 返回当前可维护部门，公司级可按用户明确名称／ID选择 departmentId，部门级只可选本部门，同名须澄清；selectionRequired 时必须先选部门。服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史限定当前可维护目标；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。部门共同要求变化时，testCoverage 提供完整受影响场景及摘要，不能用自有场景或测试历史代替全清单。candidateTests 仅提供准确当前候选的测试 ID，再通过 test_status 核对实际原断言与适用性。effective 只返回已启用内容，不含上游维护草稿。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
     name: 'workspace.employee.method.save_candidate',
     description:
-      '用户明确要求保存或调整工作方法时，保存当前小白的个人候选，或明确请求并有维护权限的公司或明确目标部门的文字场景候选。共享模式必须带 inspect 返回的 sharedTarget；不支持共享通用要求或资料绑定，不能转存个人假装完成。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用或修改权限；范围必须匹配用户直接请求和返回的准确目标，不得声称已生效。',
+      '用户明确要求保存或调整工作方法时，保存当前小白的个人候选，或明确请求并有维护权限的公司或明确目标部门的文字场景候选。共享模式必须带 inspect 返回的 sharedTarget；部门通用执行要求仅在用户直接明确要求修改该共同部分时可用 section=common；单场景请求不授权共同部分。公司通用要求及共享资料绑定仍不支持，不能转存个人假装完成。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用或修改权限；范围必须匹配用户直接请求和返回的准确目标，不得声称已生效。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
   },
   {
@@ -83,7 +83,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.test',
     description:
-      '用户明确要求验证候选时，针对当前小白的准确候选版本和场景排队执行固定合成金额测试。共享候选原样传入 sharedTarget，只支持文本样例；公司测试排除部门与私人方法，部门测试排除私人方法。先读取候选取得 revision、digest 和 sceneId。cny-total-v1 验证文本金额；cny-file-flow-v1 在已有授权的隔离云环境验证固定两步文件流程和实际文件字节。不读取公司文件、不启用方法。返回同一测试 ID；排队不等于失败，不重复提交。只有用户明确指定执行失败且 not_verified 的测试 ID 才可用 retryOfTestId 重试；沿用原冻结候选、模型和断言。同一父测试只创建一个后续测试，结果未知先回读，不自动重试。',
+      '用户明确要求验证候选时，针对当前小白的准确候选版本和场景排队执行固定合成金额测试。共享候选原样传入 sharedTarget，只支持文本样例；公司测试排除部门与私人方法，部门测试排除私人方法。先读取候选取得 revision、digest 和 sceneId。部门共同要求变化时，以服务端 testCoverage 全清单为准，包括继承公司场景；用户须明确要求测试共同要求，每项原样传入 coverageDigest=testCoverage.digest，不从单场景请求扩展付费范围。清单无效不能跳过场景测试或启用。cny-total-v1 验证文本金额；cny-file-flow-v1 在已有授权的隔离云环境验证固定两步文件流程和实际文件字节。不读取公司文件、不启用方法。返回同一测试 ID；排队不等于失败，不重复提交。只有用户明确指定执行失败且 not_verified 的测试 ID 才可用 retryOfTestId 重试；沿用原冻结候选、模型和断言。同一父测试只创建一个后续测试，结果未知先回读，不自动重试。',
     inputSchema: z.toJSONSchema(EmployeeMethodTestStartSchema),
   },
   {

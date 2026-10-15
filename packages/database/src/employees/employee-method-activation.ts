@@ -108,7 +108,8 @@ async function snapshot(
     if (
       proof.candidateRevisionId !== content.candidateRevisionId ||
       proof.candidateDigest !== content.candidateDigest ||
-      proof.dependencyDigest !== content.dependencyDigest
+      proof.dependencyDigest !== content.dependencyDigest ||
+      proof.coverageDigest !== content.testCoverage?.digest
     )
       throw new EmployeeContentError('source_changed');
     tests.push(proof);
@@ -123,7 +124,8 @@ async function snapshot(
     (changes.commonChanged && !content.scenes.length) ||
     (content.sharedTarget &&
       content.restoredFromRevisionId &&
-      !content.manifest.scenes.length)
+      !content.manifest.scenes.length &&
+      !content.testCoverage?.scenes.length)
   )
     throw new EmployeeMethodActivationError('activation_test_coverage');
   return { content, changes, tests, modelSettings: currentModelSettings };
@@ -158,6 +160,12 @@ function confirmationQuestion(id: string, name: string, s: Snapshot) {
         ? '\n（文字节选，完整内容可在当前候选中查看。）'
         : ''),
     `测试：${s.tests.length ? `${s.tests.length} 项固定样例原断言通过（${[...new Set(s.tests.map((t) => t.caseId))].join('、')}）` : '本次仅移除已有场景，没有新增执行内容'}。`,
+    ...(s.content.testCoverage
+      ? [
+          `共同要求的受影响共享场景（${s.content.testCoverage.scenes.length} 项）全部已测：${s.content.testCoverage.scenes.map((scene) => `${scene.name.slice(0, 40)}${scene.inherited ? '（继承公司）' : '（本部门）'}`).join('、')}。`,
+          s.content.testCoverage.coverage,
+        ]
+      : []),
     '固定合成样例通过不代表所有真实业务已验证。当前任务保留原快照，启用后新的独立任务采用新版本。',
     '确认有效期 30 分钟；候选、依赖或授权变化时需重新查看并确认。',
   ].join('\n');

@@ -1,4 +1,5 @@
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
+import { departmentCommonAcceptancePhrases } from './employee-method-common.fixture.ts';
 import { companyMethodAcceptancePhrases } from './employee-method-company.fixture.ts';
 import { selectedDepartmentMethodAcceptancePhrases } from './employee-method-selected-department.fixture.ts';
 import { departmentMethodAcceptancePhrases } from './employee-method-department.fixture.ts';
@@ -554,32 +555,65 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         changeSummary: '重试边界样例',
       },
     });
-    if (inheritedCommon)
+    await editing.finish();
+    if (inheritedCommon) {
+      const commonRun = await methodRun(
+        f,
+        instance.id,
+        department
+          ? departmentCommonAcceptancePhrases(
+              (department === 'selected'
+                ? departmentInfo!.other
+                : departmentInfo!.department
+              ).name,
+            ).correct
+          : '请保存我的通用执行要求：所有场景均增加固定校验。',
+      );
       saved = await saveEmployeeMethodFromChat({
-        ...editing,
+        ...commonRun,
         callId: randomUUID(),
         arguments: {
+          ...shared,
           expectedRevision: saved.revision,
           section: 'common',
           requirements: '所有场景均增加固定校验',
           changeSummary: '改变通用要求',
         },
       });
-    await editing.finish();
+      await commonRun.finish();
+    }
     const content = await getEmployeeContentSet(f.a.context, saved.setId);
+    const testingText =
+      inheritedCommon && department
+        ? departmentCommonAcceptancePhrases(
+            (department === 'selected'
+              ? departmentInfo!.other
+              : departmentInfo!.department
+            ).name,
+          ).test
+        : department
+          ? phrases.test
+          : '请测试我的工作场景候选：金额汇总。';
+    const run = await methodRun(f, instance.id, testingText);
+    const plan =
+      inheritedCommon && department
+        ? await inspectEmployeeMethodFromChat({
+            ...run,
+            arguments: { view: 'candidate', scope: 'department' },
+          })
+        : undefined;
+    const coverage =
+      plan && 'testCoverage' in plan ? plan.testCoverage : undefined;
+    if (inheritedCommon && department) expect(coverage?.valid).toBe(true);
     const args = {
       ...shared,
       expectedRevision: saved.revision,
       candidateRevisionId: saved.candidate.id,
       candidateDigest: saved.candidate.digest,
+      ...(coverage ? { coverageDigest: coverage.digest } : {}),
       sceneId: content.set.candidate!.manifest.scenes[0]!.id,
       caseId,
     };
-    const run = await methodRun(
-      f,
-      instance.id,
-      department ? phrases.test : '请测试我的工作场景候选：金额汇总。',
-    );
     const test = await startEmployeeMethodTestFromChat({
       ...run,
       arguments: args,
@@ -606,7 +640,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         },
       });
     };
-    return { f, instance, saved, args, run, test, fail, departmentInfo };
+    return {
+      f,
+      instance,
+      saved,
+      args,
+      run,
+      test,
+      fail,
+      departmentInfo,
+      coverage,
+    };
   }
 
   async function passActivationTest(
@@ -657,12 +701,34 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   }
   async function activationFixture(
     department: boolean | 'company' | 'selected' = false,
+    inheritedCommon = false,
   ) {
-    const base = await retryFixture('cny-total-v1', false, department);
+    const base = await retryFixture(
+      'cny-total-v1',
+      inheritedCommon,
+      department,
+    );
     const { f, instance, args, test } = base;
     if (department === 'company')
       await base.departmentInfo!.configure(f.a.user.id, null, 'company');
     await passActivationTest(f, test);
+    const testIds = [test.id];
+    for (const scene of base.coverage?.scenes ?? []) {
+      if (scene.sceneId === args.sceneId) continue;
+      const testing = await methodRun(
+        f,
+        instance.id,
+        departmentCommonAcceptancePhrases(base.departmentInfo!.department.name)
+          .test,
+      );
+      const inheritedTest = await startEmployeeMethodTestFromChat({
+        ...testing,
+        arguments: { ...args, sceneId: scene.sceneId },
+      });
+      await testing.finish();
+      await passActivationTest(f, inheritedTest);
+      testIds.push(inheritedTest.id);
+    }
     const run = await methodRun(
       f,
       instance.id,
@@ -697,7 +763,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       expectedRevision: args.expectedRevision,
       candidateRevisionId: args.candidateRevisionId,
       candidateDigest: args.candidateDigest,
-      testIds: [test.id],
+      testIds,
     };
     const preview = await prepareEmployeeMethodActivationFromChat({
       ...run,
@@ -1511,7 +1577,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         ...editing,
         arguments: { ...args, section: 'common', scene: undefined },
       }),
-    ).rejects.toThrow('authorization_denied');
+    ).rejects.toThrow('explicit_method_request_required');
     await expect(
       saveEmployeeMethodFromChat({
         ...editing,
@@ -2453,6 +2519,276 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     });
     await next.finish();
   }, 60000);
+
+  it('department common requirements test inherited and own scenes before exact confirmation and fresh adoption', async () => {
+    const x = await activationFixture(true, true);
+    expect(x.coverage?.scenes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: '公司继承场景', inherited: true }),
+        expect.objectContaining({ name: '金额合计', inherited: false }),
+      ]),
+    );
+    expect(x.coverage?.scenes).toHaveLength(2);
+    expect(x.preparation.testIds).toHaveLength(2);
+    const [test] =
+      await fixture.db`select candidate_snapshot from allrice_employee_method_tests where test_id=${x.test.id}`;
+    expect(JSON.stringify(test!.candidate_snapshot.content)).not.toContain(
+      'PRIVATE-CONTENT',
+    );
+    expect(x.preview.question.question).toContain('公司继承场景（继承公司）');
+    expect(x.preview.question.question).toContain('金额合计（本部门）');
+    expect(x.preview.question.question).toContain('不读取或验证个人定制内容');
+    await x.show();
+    await x.answer();
+    expect(await x.activate()).toMatchObject({ enabled: true });
+    await x.run.finish();
+    const next = await methodRun(x.f, x.instance.id, '普通金额任务');
+    expect(JSON.stringify(next.runtime.snapshot)).toContain(
+      x.saved.candidate.id,
+    );
+    expect(
+      (
+        await getEffectiveEmployeeContent(x.f.a.context, x.instance.id)
+      ).sources.some((source) => source.body === '所有场景均增加固定校验'),
+    ).toBe(true);
+    await next.finish();
+  }, 60000);
+
+  it('department common coverage cannot use only its own proof, a substituted digest or a scene-only test request', async () => {
+    const x = await retryFixture('cny-total-v1', true, true);
+    await passActivationTest(x.f, x.test);
+    const run = await methodRun(
+      x.f,
+      x.instance.id,
+      departmentCommonAcceptancePhrases(x.departmentInfo!.department.name).test,
+    );
+    await expect(
+      prepareEmployeeMethodActivationFromChat({
+        ...run,
+        arguments: {
+          sharedTarget: x.args.sharedTarget,
+          expectedRevision: x.args.expectedRevision,
+          candidateRevisionId: x.args.candidateRevisionId,
+          candidateDigest: x.args.candidateDigest,
+          testIds: [x.test.id],
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'activation_test_coverage' });
+    const inherited = x.coverage!.scenes.find((scene) => scene.inherited)!;
+    for (const digest of [undefined, `sha256:${'0'.repeat(64)}`])
+      await expect(
+        startEmployeeMethodTestFromChat({
+          ...run,
+          callId: randomUUID(),
+          arguments: JSON.parse(
+            JSON.stringify({
+              ...x.args,
+              sceneId: inherited.sceneId,
+              coverageDigest: digest,
+            }),
+          ),
+        }),
+      ).rejects.toMatchObject({ code: 'source_changed' });
+    await run.finish();
+    const sceneOnly = await methodRun(
+      x.f,
+      x.instance.id,
+      departmentMethodAcceptancePhrases.test,
+    );
+    await expect(
+      startEmployeeMethodTestFromChat({
+        ...sceneOnly,
+        arguments: { ...x.args, sceneId: inherited.sceneId },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+    await sceneOnly.finish();
+    expect(
+      (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set.active,
+    ).toBeNull();
+  }, 60000);
+
+  it('department common-only candidate can test its inherited scene without inventing an own scene', async () => {
+    const x = await retryFixture('cny-total-v1', true, true);
+    await passActivationTest(x.f, x.test);
+    const edit = await methodRun(
+      x.f,
+      x.instance.id,
+      '请移除本部门的“金额合计”工作场景。',
+    );
+    const saved = await saveEmployeeMethodFromChat({
+      ...edit,
+      arguments: {
+        sharedTarget: x.args.sharedTarget,
+        expectedRevision: x.saved.revision,
+        section: 'scene',
+        operation: 'remove_scene',
+        scene: { id: x.args.sceneId },
+        changeSummary: 'Only inherited scene remains',
+      },
+    });
+    await edit.finish();
+    const run = await methodRun(
+      x.f,
+      x.instance.id,
+      departmentCommonAcceptancePhrases(x.departmentInfo!.department.name).test,
+    );
+    const plan = await inspectEmployeeMethodFromChat({
+      ...run,
+      arguments: { view: 'candidate', scope: 'department' },
+    });
+    if (!('testCoverage' in plan) || !plan.testCoverage)
+      throw Error('coverage missing');
+    expect(plan.testCoverage.scenes).toHaveLength(1);
+    expect(plan.testCoverage.scenes[0]!.inherited).toBe(true);
+    expect('candidate' in plan && plan.candidate?.manifest.scenes).toEqual([]);
+    const args = {
+      ...x.args,
+      expectedRevision: saved.revision,
+      candidateRevisionId: saved.candidate.id,
+      candidateDigest: saved.candidate.digest,
+      sceneId: plan.testCoverage.scenes[0]!.sceneId,
+      coverageDigest: plan.testCoverage.digest,
+    };
+    const test = await startEmployeeMethodTestFromChat({
+      ...run,
+      arguments: args,
+    });
+    expect(
+      (
+        await startEmployeeMethodTestFromChat({
+          ...run,
+          callId: randomUUID(),
+          arguments: args,
+        })
+      ).id,
+    ).toBe(test.id);
+    await run.finish();
+    await passActivationTest(x.f, test);
+    const confirm = await methodRun(
+      x.f,
+      x.instance.id,
+      '请查看部门共同要求并确认启用。',
+    );
+    const preview = await prepareEmployeeMethodActivationFromChat({
+      ...confirm,
+      arguments: {
+        sharedTarget: args.sharedTarget,
+        expectedRevision: saved.revision,
+        candidateRevisionId: saved.candidate.id,
+        candidateDigest: saved.candidate.digest,
+        testIds: [test.id],
+      },
+    });
+    expect(preview.question.question).toContain('公司继承场景（继承公司）');
+    await confirm.finish();
+  }, 60000);
+
+  async function changeInheritedCompany(
+    x: Awaited<ReturnType<typeof retryFixture>>,
+  ) {
+    await x.departmentInfo!.configure(
+      x.f.b.user.id,
+      x.departmentInfo!.department.id,
+      'company',
+    );
+    const [company] =
+      await fixture.db`select s.*,r.manifest from allrice_employee_content_sets s
+      join allrice_employee_content_revisions r on r.id=s.active_revision_id
+      where s.organization_id=${x.f.a.organizationId} and s.scope='company'`;
+    const base = {
+      workspaceId: x.f.a.workspaceId,
+      setId: company!.id,
+      ownership: { scope: 'company', organizationId: x.f.a.organizationId },
+      target: { kind: 'employee', employeeId: company!.employee_id },
+      changeSummary: 'Upstream coverage changes',
+    };
+    const saved = await mutateEmployeeContent(x.f.b.context, {
+      ...base,
+      operation: 'save_draft',
+      requestId: randomUUID(),
+      expectedRevision: company!.revision,
+      textEdits: [],
+      manifest: {
+        ...company!.manifest,
+        scenes: [
+          ...company!.manifest.scenes,
+          {
+            id: randomUUID(),
+            name: '新增公司场景',
+            appliesWhen: 'Additional synthetic case',
+            references: [],
+          },
+        ],
+      },
+    });
+    const pins = {
+      candidateRevisionId: saved.candidate.id,
+      candidateDigest: saved.candidate.digest,
+    };
+    const validated = await mutateEmployeeContent(x.f.b.context, {
+      ...base,
+      ...pins,
+      operation: 'validate',
+      requestId: randomUUID(),
+      expectedRevision: saved.revision,
+    });
+    await mutateEmployeeContent(x.f.b.context, {
+      ...base,
+      ...pins,
+      operation: 'activate',
+      requestId: randomUUID(),
+      expectedRevision: validated.revision,
+    });
+  }
+
+  it.each(['queued', 'between-tests', 'after-question'] as const)(
+    'department common coverage rejects an upstream change %s',
+    async (stage) => {
+      if (stage === 'after-question') {
+        const x = await activationFixture(true, true);
+        await x.show();
+        await x.answer();
+        await changeInheritedCompany(x);
+        await expect(x.activate()).rejects.toThrow('validation_required');
+        expect(
+          (await getEmployeeContentSet(x.f.a.context, x.saved.setId)).set
+            .active,
+        ).toBeNull();
+        await x.run.finish();
+        return;
+      }
+      const x = await retryFixture('cny-total-v1', true, true);
+      if (stage === 'between-tests') await passActivationTest(x.f, x.test);
+      await changeInheritedCompany(x);
+      expect(
+        (await getEmployeeMethodTest(x.f.a.context, x.test.id)).applicable,
+      ).toBe(false);
+      if (stage === 'queued') {
+        expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+        const [row] =
+          await fixture.db`select run_id from allrice_employee_method_tests where test_id=${x.test.id}`;
+        expect(row!.run_id).toBeNull();
+      }
+      const run = await methodRun(
+        x.f,
+        x.instance.id,
+        departmentCommonAcceptancePhrases(x.departmentInfo!.department.name)
+          .test,
+      );
+      await expect(
+        startEmployeeMethodTestFromChat({
+          ...run,
+          arguments: {
+            ...x.args,
+            sceneId: x.coverage!.scenes.find((scene) => scene.inherited)!
+              .sceneId,
+          },
+        }),
+      ).rejects.toThrow('source_changed');
+      await run.finish();
+    },
+    60000,
+  );
 
   it('does not approve changed common requirements with only a private scene test while an inherited scene is affected', async () => {
     const x = await retryFixture('cny-total-v1', true);
