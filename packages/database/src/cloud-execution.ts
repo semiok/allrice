@@ -46,6 +46,7 @@ import {
   type CloudProjectResolutionOrigin,
   ProjectDependencyResolveInputSchema,
   projectResolutionCloudArguments,
+  projectResolutionReceiptSummary,
   ProjectDependencyResolutionReceiptSchema,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
@@ -215,7 +216,7 @@ export function createCloudOperationLedger(
           !runtimeContractEqual(
             evidence?.resolution,
             typed.success
-              ? { ...typed.data, lock: undefined, wheels: undefined }
+              ? projectResolutionReceiptSummary(typed.data)
               : undefined,
           ) ||
           (result.resolution &&

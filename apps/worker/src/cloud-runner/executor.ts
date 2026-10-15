@@ -19,6 +19,7 @@ import {
 import {
   CloudExecutionPayloadSchema,
   SandboxNetworkLeaseSchema,
+  projectResolutionReceiptSummary,
   type CloudProjectRunResult,
   RuntimeOperationSnapshotSchema,
   type StoragePort,
@@ -201,7 +202,7 @@ export async function runCloudCommandOperation(
           sourceReceipts,
         })
       : heartbeat();
-  const maintainLease = async () => {
+  const maintainLease = inFlightHeartbeat(async () => {
     if (
       options.signal?.aborted ||
       (!service && !(await currentWorker(created, db)))
@@ -222,7 +223,7 @@ export async function runCloudCommandOperation(
     } catch {
       return false;
     }
-  };
+  });
   let outcome = prior?.outcome;
   if (!outcome) {
     const started = await ledger
@@ -467,11 +468,7 @@ export async function runCloudCommandOperation(
     ...(outcome.network ? { network: outcome.network } : {}),
     ...(outcome.resolution
       ? {
-          resolution: {
-            ...outcome.resolution,
-            lock: undefined,
-            wheels: undefined,
-          },
+          resolution: projectResolutionReceiptSummary(outcome.resolution),
         }
       : {}),
     ...('kind' in payload
@@ -539,7 +536,7 @@ export async function runCloudCommandOperation(
     });
   // Only settle an actually measured meter. Unknown work keeps reservations;
   // bytes/time/cost lacking an authoritative measurement are not invented zeros.
-  if (outcome.reason !== 'unknown') {
+  if (outcome.reason !== 'unknown' && !externalOutcomeUnknown) {
     const [meter] = await db<
       {
         accounting_id: string;
