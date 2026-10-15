@@ -21,6 +21,14 @@ import {
   updateOrganizationPerson,
 } from './organization-administration.ts';
 import { changeReference } from './reference-library.ts';
+import {
+  listPlatformEmployeeHistoryDirectory,
+  readPlatformEmployeeHistory,
+  readPlatformEmployeeHistoryRevision,
+} from './platform-employee-history.ts';
+import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
+import { changeAdminTenantEmployee } from './tenant-employees.ts';
+import { getEmployeeWorkspace } from './workspace/service.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -62,6 +70,186 @@ suite(
         s.owner.actor.id,
         s.custom.id,
       );
+
+    it('filters people, counts and instance pages by actual source version and general/custom kind', async () => {
+      const s = await setup();
+      const second = await createEmployeeAdministrationFixture(fixture.db, {
+        name: '另一个来源模板',
+      });
+      await second.preview();
+      expect((await second.publish()).valid).toBe(true);
+      await changeAdminTenantEmployee(admin, s.company.organizationId, {
+        workspaceId: s.workspaceId,
+        employeeId: second.employeeId,
+        revisionId: second.revisionId,
+        action: 'assign',
+        expectedVersion: null,
+      });
+      for (const context of s.contexts)
+        await getEmployeeWorkspace(context, s.workspaceId);
+      const filter = {
+        sourceTemplate: s.publication.employeeId,
+        kind: 'custom' as const,
+      };
+      const directory = await listOrganizationAiDirectory(
+        admin,
+        s.company.organizationId,
+        filter,
+      );
+      expect(directory.totals).toMatchObject({
+        people: 1,
+        general: 0,
+        custom: 1,
+        pendingAssignments: 0,
+      });
+      const instances = await listOrganizationPersonAiInstances(
+        admin,
+        s.company.organizationId,
+        s.owner.actor.id,
+        filter,
+      );
+      expect(instances.instances.map((i) => i.id)).toEqual([s.custom.id]);
+      expect(instances.person.counts).toEqual(directory.people[0]!.counts);
+      expect(
+        (
+          await listOrganizationAiDirectory(admin, s.company.organizationId, {
+            sourceTemplate: second.employeeId,
+          })
+        ).totals,
+      ).toMatchObject({ people: 3, general: 3, custom: 0 });
+      expect(
+        (
+          await listOrganizationAiDirectory(admin, s.company.organizationId, {
+            sourceTemplate: randomUUID(),
+          })
+        ).totals.people,
+      ).toBe(0);
+      await fixture.db`update allrice_employee_instances set archived_at=now() where id=${s.custom.id}`;
+      expect(
+        (
+          await listOrganizationAiDirectory(
+            admin,
+            s.company.organizationId,
+            filter,
+          )
+        ).totals,
+      ).toMatchObject({ people: 1, custom: 0, archived: 1 });
+      await fixture.db`delete from allrice_employee_version_sources where employee_version_id=${s.general.source.employeeVersionId}`;
+      expect(
+        (
+          await listOrganizationAiDirectory(admin, s.company.organizationId, {
+            sourceTemplate: s.publication.employeeId,
+          })
+        ).totals.people,
+      ).toBe(0);
+      expect(
+        (
+          await listOrganizationAiDirectory(admin, s.company.organizationId, {
+            sourceTemplate: 'legacy',
+          })
+        ).totals,
+      ).toMatchObject({ people: 3, general: 3, archived: 1 });
+      const legacy = await listOrganizationPersonAiInstances(
+        admin,
+        s.company.organizationId,
+        s.owner.actor.id,
+        { sourceTemplate: 'legacy' },
+      );
+      expect(legacy.instances).toHaveLength(2);
+      expect(
+        legacy.instances.every((i) => i.source.kind === 'tenant_version'),
+      ).toBe(true);
+    });
+
+    it('reads saved and archived template history without replacing frozen skills or changing assignments', async () => {
+      const s = await setup(),
+        original = await s.publication.revision();
+      const before =
+        await fixture.db`select to_jsonb(d) as value from allrice_platform_employee_tenant_assignments d where employee_id=${s.publication.employeeId} order by id`;
+      await s.publication.catalog(s.publication.b);
+      await fixture.db`update allrice_platform_employees set status='archived' where id=${s.publication.employeeId}`;
+      const catalog = await listPlatformEmployeeHistoryDirectory(admin, {
+        search: s.publication.definition.name,
+      });
+      expect(
+        catalog.employees.find((e) => e.id === s.publication.employeeId)
+          ?.status,
+      ).toBe('archived');
+      const history = await readPlatformEmployeeHistory(
+        admin,
+        s.publication.employeeId,
+      );
+      expect(history.revisions[0]?.id).toBe(s.publication.revisionId);
+      const saved = await readPlatformEmployeeHistoryRevision(
+        admin,
+        s.publication.employeeId,
+        s.publication.revisionId,
+      );
+      expect(saved.definition).toEqual(original.definition);
+      expect(saved.runtimeProfile).toEqual(original.runtime_profile);
+      expect(
+        saved.runtimeProfile?.runtimePackage?.skills[0]?.bundle?.version,
+      ).toBe('1.0.0');
+      expect(saved.checksum).toBe(original.checksum);
+      expect(
+        await fixture.db`select to_jsonb(d) as value from allrice_platform_employee_tenant_assignments d where employee_id=${s.publication.employeeId} order by id`,
+      ).toEqual(before);
+      await expect(
+        readPlatformEmployeeHistoryRevision(
+          admin,
+          randomUUID(),
+          s.publication.revisionId,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      for (const read of [
+        () => listPlatformEmployeeHistoryDirectory(s.owner),
+        () => readPlatformEmployeeHistory(s.owner, s.publication.employeeId),
+        () =>
+          readPlatformEmployeeHistoryRevision(
+            s.owner,
+            s.publication.employeeId,
+            s.publication.revisionId,
+          ),
+      ])
+        await expect(read()).rejects.toMatchObject({
+          code: 'authorization_denied',
+        });
+    });
+
+    it('paginates historical revisions without duplicates and rejects a revoked administrator session', async () => {
+      const s = await setup();
+      for (let revision = 2; revision <= 53; revision++)
+        await fixture.db`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,checksum)
+        select ${randomUUID()},employee_id,${revision},'draft',definition,checksum from allrice_platform_employee_revisions where id=${s.publication.revisionId}`;
+      const first = await readPlatformEmployeeHistory(
+          admin,
+          s.publication.employeeId,
+        ),
+        second = await readPlatformEmployeeHistory(
+          admin,
+          s.publication.employeeId,
+          { before: first.nextBefore },
+        );
+      expect(first.revisions).toHaveLength(50);
+      expect(second.revisions).toHaveLength(3);
+      expect(
+        new Set([...first.revisions, ...second.revisions].map((r) => r.id))
+          .size,
+      ).toBe(53);
+      expect(first.revisions[0]?.revision).toBe(53);
+      expect(second.revisions.at(-1)?.id).toBe(s.publication.revisionId);
+      const context = (await authenticateSession(
+        (await createSession(admin.actor.id)).token,
+      ))!;
+      await fixture.db`update allrice_sessions set revoked_at=now() where id=${context.sessionId}`;
+      await expect(
+        readPlatformEmployeeHistoryRevision(
+          context,
+          s.publication.employeeId,
+          s.publication.revisionId,
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    });
 
     it('counts actual instances once and never includes private profiles or source names in directory metadata', async () => {
       const s = await setup();
@@ -308,6 +496,32 @@ suite(
         await listOrganizationAiDirectory(admin, s.company.organizationId)
       ).totals;
       expect(totals).toMatchObject({ general: 3, pendingAssignments: 1 });
+      expect(
+        (
+          await listOrganizationAiDirectory(admin, s.company.organizationId, {
+            sourceTemplate: s.publication.employeeId,
+            kind: 'general',
+          })
+        ).totals,
+      ).toMatchObject({
+        people: 4,
+        general: 3,
+        custom: 0,
+        pendingAssignments: 1,
+      });
+      expect(
+        (
+          await listOrganizationAiDirectory(admin, s.company.organizationId, {
+            sourceTemplate: s.publication.employeeId,
+            kind: 'custom',
+          })
+        ).totals,
+      ).toMatchObject({
+        people: 1,
+        general: 0,
+        custom: 1,
+        pendingAssignments: 0,
+      });
       expect(
         (
           await listOrganizationPersonAiInstances(

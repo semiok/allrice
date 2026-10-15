@@ -28,6 +28,11 @@ import {
 import { EmployeeSkills } from './employee-skills';
 import { PlatformReferenceLibrary } from './platform-reference-library';
 import { EmployeeTaskSuggestions } from './employee-task-suggestions';
+import {
+  EmployeeInstanceDirectory,
+  EmployeeTemplateHistory,
+} from './employee-admin-directory';
+import directoryStyles from './employee-admin-directory.module.css';
 
 type Employee = PlatformEmployeeSummary;
 
@@ -101,6 +106,7 @@ const tabs = [
   ['skills', '技能'],
   ['workflows', 'Workflow'],
   ['knowledge', 'Knowledge'],
+  ['experience', '经验沉淀'],
   ['model', '模型'],
   ['debug', '测试'],
   ['publish', '发布更新'],
@@ -212,6 +218,82 @@ export function EmployeeProduction({
   onNavigationStateChange,
 }: {
   onNavigationStateChange?: (state: { busy: boolean; dirty: boolean }) => void;
+}) {
+  const [mode, setMode] = useState<'templates' | 'instances' | 'history'>(
+    'templates',
+  );
+  const [source, setSource] = useState('');
+  const [navigation, setNavigation] = useState({ busy: false, dirty: false });
+  const trackNavigation = useCallback(
+    (value: { busy: boolean; dirty: boolean }) => {
+      setNavigation((old) =>
+        old.busy === value.busy && old.dirty === value.dirty ? old : value,
+      );
+      onNavigationStateChange?.(value);
+    },
+    [onNavigationStateChange],
+  );
+  function changeMode(next: typeof mode, template = '') {
+    if (
+      navigation.busy ||
+      (navigation.dirty && !window.confirm('放弃尚未保存的修改？'))
+    )
+      return;
+    trackNavigation({ busy: false, dirty: false });
+    setSource(template);
+    setMode(next);
+  }
+  return (
+    <>
+      <nav
+        className={directoryStyles.modes}
+        role="tablist"
+        aria-label="AI 员工目录视图"
+      >
+        {(
+          [
+            ['templates', '模板与发布'],
+            ['instances', '员工实例'],
+            ['history', '模板历史'],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={mode === id}
+            disabled={navigation.busy}
+            onClick={() => {
+              if (id !== mode) changeMode(id);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      {mode === 'templates' ? (
+        <EmployeeTemplateEditor
+          onNavigationStateChange={trackNavigation}
+          onInspectInstances={(id) => changeMode('instances', id)}
+          onInspectHistory={(id) => changeMode('history', id)}
+        />
+      ) : mode === 'instances' ? (
+        <EmployeeInstanceDirectory key={source} initialSource={source} />
+      ) : (
+        <EmployeeTemplateHistory key={source} initialTemplate={source} />
+      )}
+    </>
+  );
+}
+
+function EmployeeTemplateEditor({
+  onNavigationStateChange,
+  onInspectInstances,
+  onInspectHistory,
+}: {
+  onNavigationStateChange: (state: { busy: boolean; dirty: boolean }) => void;
+  onInspectInstances: (id: string) => void;
+  onInspectHistory: (id: string) => void;
 }) {
   const [review, setReview] = useState<PublicationReview | null>(null),
     [confirmed, setConfirmed] = useState(false);
@@ -1261,13 +1343,48 @@ export function EmployeeProduction({
     );
   } else if (tab === 'workflows') {
     panel = (
-      <p className={styles.notice}>
-        Workflow 是独立的确定性流程能力，不伪装成 Skill。平台级 Workflow
-        发布目录尚未启用，因此当前草稿不能引用租户 Workflow。
-      </p>
+      <div className={styles.notice}>
+        <h3>查看员工的执行流程</h3>
+        <p>
+          公司和部门已启用的执行流程、工作场景，保存在实际使用的员工实例中。
+        </p>
+        <AdminButton onClick={() => onInspectInstances(selected.id)}>
+          查看此模板的实例与流程
+        </AdminButton>
+        <p>
+          平台模板暂不绑定独立 Workflow
+          发布版本。历史配置可在模板历史中只读核对。
+        </p>
+      </div>
     );
   } else if (tab === 'knowledge') {
-    panel = <PlatformReferenceLibrary />;
+    panel = (
+      <>
+        <div className={styles.notice}>
+          <h3>平台参考资料库</h3>
+          <p>
+            下方管理平台公共资料。每名员工实际引用的资料与固定版本，请进入对应实例查看。
+          </p>
+          <AdminButton onClick={() => onInspectInstances(selected.id)}>
+            查看此模板实例的参考资料
+          </AdminButton>
+        </div>
+        <PlatformReferenceLibrary />
+      </>
+    );
+  } else if (tab === 'experience') {
+    panel = (
+      <div className={styles.notice}>
+        <h3>经验沉淀</h3>
+        <p>自动经验沉淀尚未启用。</p>
+        <p>
+          个人经验仅本人可见，不汇入平台模板。公司和部门已共享的工作内容，可在员工实例详情中查看。
+        </p>
+        <AdminButton onClick={() => onInspectInstances(selected.id)}>
+          查看此模板的共享工作内容
+        </AdminButton>
+      </div>
+    );
   } else if (tab === 'model') {
     panel = (
       <div className={styles.notice}>
@@ -1880,6 +1997,12 @@ export function EmployeeProduction({
               <span>草稿 r{selected.currentDraft.revision}</span>
             )}
             {dirty && <span className={styles.pending}>有未保存修改</span>}
+            <AdminButton
+              disabled={busy}
+              onClick={() => onInspectHistory(selected.id)}
+            >
+              查看模板历史
+            </AdminButton>
           </div>
           <nav className={styles.tabs} aria-label="员工配置">
             {tabs.map(([id, label]) => (

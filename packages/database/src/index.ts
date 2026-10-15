@@ -10,6 +10,7 @@ export * from './user-preferences.ts';
 export * from './tenant-administration.ts';
 export * from './organization-administration.ts';
 export * from './organization-ai-directory.ts';
+export * from './platform-employee-history.ts';
 export * from './content-maintenance.ts';
 export * from './employees/employee-content.ts';
 export {

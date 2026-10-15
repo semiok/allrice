@@ -8,41 +8,16 @@ import {
   type OrganizationAiInstance,
   type OrganizationAiPerson,
   type OrganizationDepartment,
+  type OrganizationAiDirectoryQuery,
 } from '@allrice/contracts';
 import { AdminButton } from '../../components/admin/admin-ui';
-import { organizationApi, organizationErrorMessage } from './organization-api';
+import { organizationErrorMessage } from './organization-api';
+import { useAdminRead as useRead } from './admin-read';
 import { loadOrganizationDepartmentOptions } from './organization-departments';
 import { EmployeeDetailsDialog } from '../chatflow/employee-details-dialog';
 import css from './organization-ai-directory.module.css';
 
 const headers: Record<string, string> = {};
-function useRead<T>(path: string, schema: { parse(value: unknown): T }) {
-  const [attempt, setAttempt] = useState(0);
-  const key = `${path}/${attempt}`;
-  const [result, setResult] = useState<{
-    key: string;
-    data?: T;
-    error?: string;
-  }>();
-  useEffect(() => {
-    const controller = new AbortController();
-    void organizationApi(path, 'GET', undefined, controller.signal)
-      .then(schema.parse)
-      .then((data) => {
-        if (!controller.signal.aborted) setResult({ key, data });
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted)
-          setResult({ key, error: organizationErrorMessage(error) });
-      });
-    return () => controller.abort();
-  }, [path, key, schema]);
-  return {
-    data: result?.key === key ? result.data : undefined,
-    error: result?.key === key ? result.error : undefined,
-    refresh: () => setAttempt((value) => value + 1),
-  };
-}
 
 function Counts({ counts }: { counts: OrganizationAiPerson['counts'] }) {
   return (
@@ -60,8 +35,10 @@ function Counts({ counts }: { counts: OrganizationAiPerson['counts'] }) {
 
 export function OrganizationAiDirectory({
   organizationId,
+  filters = {},
 }: {
   organizationId: string;
+  filters?: Pick<OrganizationAiDirectoryQuery, 'kind' | 'sourceTemplate'>;
 }) {
   const [departments, setDepartments] = useState<OrganizationDepartment[]>([]);
   const [departmentError, setDepartmentError] = useState('');
@@ -74,6 +51,9 @@ export function OrganizationAiDirectory({
   const params = new URLSearchParams();
   if (departmentId) params.set('departmentId', departmentId);
   if (search) params.set('search', search);
+  if (filters.kind) params.set('kind', filters.kind);
+  if (filters.sourceTemplate)
+    params.set('sourceTemplate', filters.sourceTemplate);
   if (cursors.length) params.set('after', cursors.at(-1)!);
   const { data, error, refresh } = useRead(
     `/api/v1/admin/organizations/${organizationId}/ai-directory?${params}`,
@@ -216,9 +196,10 @@ export function OrganizationAiDirectory({
             {selected &&
             data.people.some((person) => person.userId === selected) ? (
               <PersonInstances
-                key={`${organizationId}/${selected}/${generation}`}
+                key={`${organizationId}/${selected}/${generation}/${filters.kind}/${filters.sourceTemplate}`}
                 organizationId={organizationId}
                 userId={selected}
+                filters={filters}
               />
             ) : (
               <p className={css.empty}>
@@ -235,9 +216,11 @@ export function OrganizationAiDirectory({
 function PersonInstances({
   organizationId,
   userId,
+  filters,
 }: {
   organizationId: string;
   userId: string;
+  filters: Pick<OrganizationAiDirectoryQuery, 'kind' | 'sourceTemplate'>;
 }) {
   const [cursors, setCursors] = useState<string[]>([]);
   const [selected, setSelected] = useState<OrganizationAiInstance | null>(null);
@@ -245,8 +228,13 @@ function PersonInstances({
     () => ({ organizationId, userId }),
     [organizationId, userId],
   );
+  const params = new URLSearchParams();
+  if (filters.kind) params.set('kind', filters.kind);
+  if (filters.sourceTemplate)
+    params.set('sourceTemplate', filters.sourceTemplate);
+  if (cursors.length) params.set('after', cursors.at(-1)!);
   const { data, error, refresh } = useRead(
-    `/api/v1/admin/organizations/${organizationId}/people/${userId}/ai-instances${cursors.length ? `?after=${cursors.at(-1)}` : ''}`,
+    `/api/v1/admin/organizations/${organizationId}/people/${userId}/ai-instances?${params}`,
     OrganizationPersonAiInstancesSchema,
   );
   if (error)

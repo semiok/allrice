@@ -8,6 +8,8 @@ export const OrganizationAiDirectoryQuerySchema = z
   .object({
     search: z.string().trim().max(160).optional(),
     departmentId: z.union([UuidSchema, z.literal('unassigned')]).optional(),
+    kind: z.enum(['general', 'custom']).optional(),
+    sourceTemplate: z.union([UuidSchema, z.literal('legacy')]).optional(),
     after: UuidSchema.optional(),
   })
   .strict();

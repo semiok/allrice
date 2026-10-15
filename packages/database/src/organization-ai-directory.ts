@@ -34,6 +34,10 @@ function directoryRows(
       ? query.departmentId
       : null;
   const search = query.search?.toLowerCase() || null;
+  const sourceTemplate =
+    query.sourceTemplate && query.sourceTemplate !== 'legacy'
+      ? query.sourceTemplate
+      : null;
   return sql`people as (
     select u.id as user_id,u.username,coalesce(p.display_name,u.display_name) as display_name,
       coalesce(p.job_title,'') as job_title,p.department_id,d.name as department_name,
@@ -66,7 +70,11 @@ function directoryRows(
       and a.workspace_id=i.workspace_id and a.user_id=i.owner_id
     join allrice_employees e on e.id=a.employee_id and e.organization_id=i.organization_id and e.workspace_id=i.workspace_id
     join allrice_workspaces w on w.id=i.workspace_id and w.organization_id=i.organization_id
+    left join allrice_employee_version_sources source on source.employee_version_id=a.employee_version_id
     where i.organization_id=${organizationId}
+      and (${query.kind ?? null}::text is null or i.kind=${query.kind ?? null})
+      and (${query.sourceTemplate !== 'legacy'} or source.platform_revision_id is null)
+      and (${sourceTemplate}::uuid is null or (source.platform_employee_id=${sourceTemplate} and source.platform_revision_id is not null))
   ), instance_counts as (
     select owner_id,
       count(*) filter(where kind='general' and state='active')::integer as general,
@@ -79,7 +87,11 @@ function directoryRows(
     from allrice_employee_assignments a join people p on p.user_id=a.user_id and p.active
     join allrice_employees e on e.id=a.employee_id and e.status='active'
     join allrice_workspaces w on w.id=a.workspace_id and w.archived_at is null
+    left join allrice_employee_version_sources source on source.employee_version_id=a.employee_version_id
     where a.organization_id=${organizationId} and a.active
+      and ${query.kind !== 'custom'}
+      and (${query.sourceTemplate !== 'legacy'} or source.platform_revision_id is null)
+      and (${sourceTemplate}::uuid is null or (source.platform_employee_id=${sourceTemplate} and source.platform_revision_id is not null))
       and exists(select 1 from allrice_memberships m where m.organization_id=a.organization_id
         and m.user_id=a.user_id and m.active and (m.workspace_id is null or m.workspace_id=a.workspace_id))
       and not exists(select 1 from allrice_platform_employee_tenant_assignments d
@@ -90,6 +102,11 @@ function directoryRows(
     select p.user_id as owner_id,c.general,c.custom,c.inactive,c.archived,a.pending_assignments
     from people p left join instance_counts c on c.owner_id=p.user_id
     left join pending a on a.user_id=p.user_id
+  ), visible_people as (
+    select p.*,c.general,c.custom,c.inactive,c.archived,c.pending_assignments
+    from people p left join counts c on c.owner_id=p.user_id
+    where (${!query.kind && !query.sourceTemplate} or
+      coalesce(c.general,0)+coalesce(c.custom,0)+coalesce(c.inactive,0)+coalesce(c.archived,0)+coalesce(c.pending_assignments,0)>0)
   )`;
 }
 
@@ -127,19 +144,18 @@ export async function listOrganizationAiDirectory(
       await requireTenantAdministrationAuthority(context, sql);
       await requireTenantAdministrationTarget(sql, organizationId, null);
       const rows = await sql`with ${directoryRows(sql, organizationId, query)}
-        select p.*,c.general,c.custom,c.inactive,c.archived,c.pending_assignments from people p
-        left join counts c on c.owner_id=p.user_id
+        select p.* from visible_people p
         where (${query.after ?? null}::uuid is null or p.user_id>${query.after ?? null})
         order by p.user_id limit 51`;
       const [totals] =
         await sql`with ${directoryRows(sql, organizationId, query)}
         select count(*)::integer as people,
-          coalesce(sum(c.general),0)::integer as general,
-          coalesce(sum(c.custom),0)::integer as custom,
-          coalesce(sum(c.inactive),0)::integer as inactive,
-          coalesce(sum(c.archived),0)::integer as archived,
-          coalesce(sum(c.pending_assignments),0)::integer as "pendingAssignments"
-        from people p left join counts c on c.owner_id=p.user_id`;
+          coalesce(sum(p.general),0)::integer as general,
+          coalesce(sum(p.custom),0)::integer as custom,
+          coalesce(sum(p.inactive),0)::integer as inactive,
+          coalesce(sum(p.archived),0)::integer as archived,
+          coalesce(sum(p.pending_assignments),0)::integer as "pendingAssignments"
+        from visible_people p`;
       return OrganizationAiDirectorySchema.parse({
         organizationId,
         totals,
@@ -154,21 +170,29 @@ export async function listOrganizationPersonAiInstances(
   context: RequestContext,
   organizationInput: string,
   userInput: string,
-  afterInput?: string,
+  queryInput: OrganizationAiDirectoryQuery = {},
 ) {
   const organizationId = UuidSchema.parse(organizationInput);
   const userId = UuidSchema.parse(userInput);
-  const after = afterInput ? UuidSchema.parse(afterInput) : null;
+  const query = OrganizationAiDirectoryQuerySchema.parse(queryInput);
   return getDatabase().begin(
     'isolation level repeatable read read only',
     async (sql) => {
       await requireTenantAdministrationAuthority(context, sql);
       await requireTenantAdministrationTarget(sql, organizationId, null);
-      const [owner] = await sql`with ${directoryRows(sql, organizationId)}
+      const [owner] =
+        await sql`with ${directoryRows(sql, organizationId, query)}
         select p.*,c.general,c.custom,c.inactive,c.archived,c.pending_assignments from people p
         left join counts c on c.owner_id=p.user_id where p.user_id=${userId}`;
       if (!owner) throw new DataAccessError('not_found');
-      const rows = await instanceRows(sql, organizationId, userId, after);
+      const rows = await instanceRows(
+        sql,
+        organizationId,
+        userId,
+        query.after ?? null,
+        null,
+        query,
+      );
       return OrganizationPersonAiInstancesSchema.parse({
         organizationId,
         person: person(owner),
@@ -185,8 +209,9 @@ function instanceRows(
   userId: string,
   after: string | null = null,
   instanceId: string | null = null,
+  query: OrganizationAiDirectoryQuery = {},
 ) {
-  return sql`with ${directoryRows(sql, organizationId)}, shared_layers as (
+  return sql`with ${directoryRows(sql, organizationId, query)}, shared_layers as (
     select s.employee_id,s.workspace_id,r.manifest from allrice_employee_content_sets s
     join allrice_employee_content_revisions r on r.id=s.active_revision_id
     where s.organization_id=${organizationId} and s.instance_id is null
