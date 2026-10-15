@@ -1950,7 +1950,10 @@ div.composerAttachmentMenu,
 .processReceipts {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
+}
+.operationReceipt:empty {
+  display: none;
 }
 .processFlow {
   display: flex;

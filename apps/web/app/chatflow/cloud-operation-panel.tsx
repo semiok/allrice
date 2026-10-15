@@ -224,6 +224,7 @@ export function CloudOperationCard({
     setDetailsOpen(!!pending);
   }, [pending, op.snapshot.binding.attempt.operationId]);
   const compact = proposal.kind === 'mcp';
+  const compactCloud = proposal.kind === 'cloud';
   const fullStatus = laterSuccessId
     ? '本次未成功 · 后续调用已成功'
     : cloudOperationDisplayStatus(op);
@@ -245,7 +246,7 @@ export function CloudOperationCard({
             ? '收起详情'
             : '查看详情'}
       </span>
-      {compact ? (
+      {compact || compactCloud ? (
         <IconChevronDownOutlineRegular size={14} />
       ) : (
         <svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true">
@@ -308,17 +309,18 @@ export function CloudOperationCard({
       )}
     </>
   );
+  const decisionReceipt = op.approval?.response && (
+    <p>
+      你的决定：
+      {op.approval.response.decision === 'approved'
+        ? '已批准本次操作'
+        : '已拒绝本次操作'}
+      {op.approval.revokedAt ? ' · 后续已撤销' : ''}
+    </p>
+  );
   const receiptNotes = (
     <>
-      {op.approval?.response && (
-        <p>
-          你的决定：
-          {op.approval.response.decision === 'approved'
-            ? '已批准本次操作'
-            : '已拒绝本次操作'}
-          {op.approval.revokedAt ? ' · 后续已撤销' : ''}
-        </p>
-      )}
+      {!compactCloud && decisionReceipt}
       {(op.snapshot.status === 'cancel_requested' ||
         (op.snapshot.status === 'unknown' && !failure)) && (
         <p role="status" className={styles.notice}>
@@ -332,9 +334,21 @@ export function CloudOperationCard({
       )}
     </>
   );
+  const plannedOutputs = proposal.kind !== 'mcp' && (
+    <p className={styles.plannedOutputs}>
+      <span>计划输出：</span>
+      {proposal.outputs?.length
+        ? proposal.outputs.map((output) => (
+            <code key={output.path}>
+              {output.fileName} ({output.format})
+            </code>
+          ))
+        : '无'}
+    </p>
+  );
   return (
     <article
-      className={`${styles.card}${compact ? ` ${styles.compactCard}` : ''}`}
+      className={`${styles.card}${compact ? ` ${styles.compactCard}` : ''}${compactCloud ? ` ${styles.cloudCard}` : ''}`}
       id={`operation-${op.snapshot.binding.attempt.operationId}`}
       data-status={op.snapshot.status}
     >
@@ -344,7 +358,15 @@ export function CloudOperationCard({
           {...projectServiceContext}
         />
       )}
-      <header className={compact ? styles.compactHeader : undefined}>
+      <header
+        className={
+          compact
+            ? styles.compactHeader
+            : compactCloud
+              ? styles.cloudHeader
+              : undefined
+        }
+      >
         <strong className={compact ? styles.compactTitle : styles.title}>
           <span className={styles.icon} aria-hidden="true">
             <svg
@@ -385,7 +407,22 @@ export function CloudOperationCard({
             </span>
           )}
         </strong>
-        <div className={compact ? styles.compactControls : undefined}>
+        {compactCloud && (
+          <p className={styles.cloudScope}>
+            <span>{proposal.inputs.length} 个输入文件</span>
+            <span className={styles.cloudLocation}>仅在云端执行</span>
+            <span>不联网</span>
+          </p>
+        )}
+        <div
+          className={
+            compact
+              ? styles.compactControls
+              : compactCloud
+                ? styles.cloudControls
+                : undefined
+          }
+        >
           <Tooltip label={fullStatus} side="top" align="end">
             <span
               className={styles.status}
@@ -408,17 +445,18 @@ export function CloudOperationCard({
               {compact ? cloudOperationCompactStatus(op) : fullStatus}
             </span>
           </Tooltip>
-          {compact && detailsToggle}
+          {(compact || compactCloud) && detailsToggle}
+          {compactCloud && stopButton}
         </div>
       </header>
       {!compact && notices}
-      {proposal.kind !== 'mcp' && (
+      {proposal.kind === 'project' && (
         <p className={styles.scope}>
-          {`${proposal.kind === 'project' ? proposal.files.length : proposal.inputs.length} 个输入文件 · 仅在云端执行 · 不联网`}
+          {`${proposal.files.length} 个输入文件 · 仅在云端执行 · 不联网`}
         </p>
       )}
       <div className={styles.executionFooter}>
-        {!compact && (
+        {!compact && !compactCloud && (
           <div className={styles.executionToolbar}>
             <span className={styles.executionTitle}>运行详情</span>
             <div className={styles.executionControls}>
@@ -442,13 +480,11 @@ export function CloudOperationCard({
               {notices}
             </>
           )}
-          {proposal.kind !== 'mcp' ? (
+          {proposal.kind === 'project' ? (
             <p className={styles.detailScope}>
-              {proposal.kind === 'project'
-                ? '执行本次保存的项目副本，不访问你的电脑。'
-                : '只读本次授权的上传文件，不访问你的电脑。'}
+              执行本次保存的项目副本，不访问你的电脑。
             </p>
-          ) : (
+          ) : proposal.kind === 'mcp' ? (
             <>
               <p className={styles.notice}>
                 批准后，会将下面列出的参数发送给此第三方服务；服务在 AllRice
@@ -462,7 +498,7 @@ export function CloudOperationCard({
                 <code>{proposal.risk}</code>
               </p>
             </>
-          )}
+          ) : null}
           <div className={styles.detailSections}>
             {proposal.kind === 'project' ? (
               <>
@@ -527,6 +563,9 @@ export function CloudOperationCard({
                   icon={<IconCodeOutlineRegular size={16} />}
                   open={!!pending}
                 >
+                  <p className={styles.detailScope}>
+                    只读本次授权的上传文件，不访问你的电脑。
+                  </p>
                   <pre aria-label="云端待执行脚本">{proposal.script}</pre>
                 </OperationDetail>
                 <OperationDetail
@@ -595,28 +634,37 @@ export function CloudOperationCard({
                 </pre>
               </OperationDetail>
             )}
-            {op.result && (
+            {(op.result || compactCloud) && (
               <OperationDetail
-                title="执行返回内容"
-                meta={op.result.code}
+                title={compactCloud ? '执行结果' : '执行返回内容'}
+                meta={
+                  compactCloud
+                    ? cloudOperationCompactStatus(op)
+                    : op.result?.code
+                }
                 icon={<IconFlatListOutlineRegular size={16} />}
+                open={compactCloud && !!pending}
               >
-                <pre>{op.result.output || '没有可展示的输出。'}</pre>
-                <small>工具原始返回内容（不可信数据），仅作执行记录。</small>
+                {op.result ? (
+                  <>
+                    {compactCloud && op.result.code && (
+                      <p>返回代码：{op.result.code}</p>
+                    )}
+                    <pre>{op.result.output || '没有可展示的输出。'}</pre>
+                    <small>
+                      工具原始返回内容（不可信数据），仅作执行记录。
+                    </small>
+                  </>
+                ) : (
+                  <p>尚未收到执行返回内容。</p>
+                )}
+                {compactCloud && decisionReceipt}
+                {compactCloud && plannedOutputs}
               </OperationDetail>
             )}
           </div>
-          {proposal.kind !== 'mcp' ? (
-            <p className={styles.plannedOutputs}>
-              <span>计划输出：</span>
-              {proposal.outputs?.length
-                ? proposal.outputs.map((output) => (
-                    <code key={output.path}>
-                      {output.fileName} ({output.format})
-                    </code>
-                  ))
-                : '无'}
-            </p>
+          {proposal.kind === 'project' ? (
+            plannedOutputs
           ) : proposal.kind === 'mcp' ? (
             <small className={styles.authorizationScope}>
               仅授权这一次调用、当前工具 schema
