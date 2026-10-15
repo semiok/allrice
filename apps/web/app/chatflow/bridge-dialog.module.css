@@ -469,6 +469,26 @@
     text-align: left;
   }
 }
+.preparation {
+  margin: 16px 12px;
+  font-size: 13px;
+  color: var(--dsr-text-2);
+}
+.preparation > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 6px 0;
+}
+.preparation strong {
+  font-size: inherit;
+  font-weight: 500;
+}
+.preparation small {
+  flex-basis: 100%;
+  font-size: 12px;
+}
 @media (pointer: coarse) {
   .textButton,
   .refreshButton,

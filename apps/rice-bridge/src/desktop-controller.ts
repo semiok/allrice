@@ -95,8 +95,14 @@ export async function runDesktopController() {
   };
   // The old CLI logger is intentionally NOT a desktop output protocol or export.
   console.info = console.log = () => note('CORE_NOTICE');
-  console.warn = () => note('CORE_WARNING');
-  console.error = () => note('CORE_ERROR');
+  const diagnostic = (value: unknown, fallback: string) => {
+    const code = desktopSafeError(
+      typeof value === 'string' ? Error(value) : value,
+    );
+    note(code === 'BRIDGE_ACTION_FAILED' ? fallback : code);
+  };
+  console.warn = (value) => diagnostic(value, 'CORE_WARNING');
+  console.error = (value) => diagnostic(value, 'CORE_ERROR');
   const send = (value: object) => {
     if (outputClosed) return;
     const data = JSON.stringify({ v: 1, ...value }) + '\n';
@@ -152,7 +158,7 @@ export async function runDesktopController() {
     });
   const cancelPicker = () => {
     if (picker) send({ type: 'pickerCancel', pickerId: picker.id });
-    picker?.reject(Error('DESKTOP_PICKER_CANCELED'));
+    picker?.reject(Error('DESKTOP_PICKER_INTERRUPTED'));
     picker = null;
   };
   const refresh = async () => {
@@ -261,16 +267,18 @@ export async function runDesktopController() {
       onNotice: note,
       chooseWorkspace: () =>
         new Promise<string>((resolve, reject) => {
-          if (closing || abort?.signal.aborted || picker)
-            return reject(Error('DESKTOP_PICKER_CANCELED'));
+          if (closing || abort?.signal.aborted)
+            return reject(Error('DESKTOP_PICKER_INTERRUPTED'));
+          if (picker) return reject(Error('DESKTOP_BUSY'));
           const id = randomUUID();
           picker = { id, resolve, reject };
           send({ type: 'picker', pickerId: id });
         }),
       chooseFile: (root, signal) =>
         new Promise<string>((resolve, reject) => {
-          if (closing || abort?.signal.aborted || signal?.aborted || picker)
-            return reject(Error('DESKTOP_PICKER_CANCELED'));
+          if (closing || abort?.signal.aborted || signal?.aborted)
+            return reject(Error('DESKTOP_PICKER_INTERRUPTED'));
+          if (picker) return reject(Error('DESKTOP_BUSY'));
           const id = randomUUID();
           const cancel = () => {
             if (picker?.id === id) cancelPicker();
@@ -288,7 +296,16 @@ export async function runDesktopController() {
           };
           signal?.addEventListener('abort', cancel, { once: true });
           send({ type: 'picker', pickerId: id, kind: 'file', root });
-        }).catch(() => null),
+        }).catch((error: unknown) => {
+          if (
+            error instanceof Error &&
+            ['DESKTOP_PICKER_CANCELED', 'DESKTOP_PICKER_INTERRUPTED'].includes(
+              error.message,
+            )
+          )
+            return null;
+          throw error;
+        }),
     })
       .catch((error: unknown) => {
         runtimeFailed = true;

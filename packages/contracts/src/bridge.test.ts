@@ -2,11 +2,45 @@ import { describe, expect, it } from 'vitest';
 
 import {
   BridgeCommandPayloadSchema,
+  BridgeEnvironmentSchema,
+  BridgePreparationProgressSchema,
   CompleteBridgeCommandInputSchema,
   CompleteBridgeWorkspaceSelectionInputSchema,
 } from './bridge.js';
 
 describe('Rice Bridge contracts', () => {
+  it('keeps old environment bytes and validates bounded preparation facts', () => {
+    const old = {
+      version: 1,
+      clientVersion: '0.6.0-dev.45',
+      paused: false,
+      browser: 'paused',
+      sandbox: 'ready',
+      preview: 'ready',
+    };
+    expect(BridgeEnvironmentSchema.parse(old)).toEqual(old);
+    const progress = {
+      component: 'python',
+      stage: 'downloading',
+      receivedBytes: 10,
+      expectedBytes: 100,
+      attempt: 2,
+      resumed: true,
+      updatedAt: '2026-10-15T12:00:00.000Z',
+    };
+    expect(BridgePreparationProgressSchema.parse(progress)).toEqual(progress);
+    for (const change of [
+      { receivedBytes: 101 },
+      { receivedBytes: -1 },
+      { attempt: 4 },
+      { reason: 'https://private.invalid/token' },
+      { rootPath: '/private' },
+    ])
+      expect(
+        BridgePreparationProgressSchema.safeParse({ ...progress, ...change })
+          .success,
+      ).toBe(false);
+  });
   it('accepts structured local capabilities and rejects arbitrary shell', () => {
     expect(
       BridgeCommandPayloadSchema.parse({

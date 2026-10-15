@@ -24,7 +24,11 @@ import {
 } from './bridge-releases';
 import type { useBridge } from './use-bridge';
 import css from './bridge-dialog.module.css';
-import { bridgeCapabilityRows } from './bridge-view';
+import {
+  bridgeCapabilityRows,
+  bridgeWorkspaceIssue,
+  bridgePreparationLabel,
+} from './bridge-view';
 
 export function BridgeSettings({
   bridge,
@@ -91,6 +95,7 @@ export function BridgeSettings({
       <div className={css.devices}>
         {devices.map((device) => {
           const online = bridge.bridgeStatusKnown && device.status === 'online';
+          const workspaceIssue = bridgeWorkspaceIssue(device);
           const rows = bridgeCapabilityRows(device);
           const available = online
             ? rows.filter((row) => row.state === 'ready').length
@@ -156,7 +161,9 @@ export function BridgeSettings({
                   <div className={css.folderSection} data-bridge-folder>
                     <div
                       className={css.folder}
-                      data-connected={device.folderGrants.length > 0}
+                      data-connected={
+                        device.folderGrants.length > 0 && !workspaceIssue
+                      }
                     >
                       <span className={css.computerIcon} aria-hidden="true">
                         <IconFolderOpenOutlineRegular size={20} />
@@ -170,12 +177,13 @@ export function BridgeSettings({
                             : '未连接文件夹'}
                         </strong>
                         <span>
-                          {device.folderGrants.length
-                            ? '授权文件夹 · 员工仅可访问此文件夹。'
-                            : '选择一个文件夹，授权员工访问。'}
+                          {workspaceIssue ??
+                            (device.folderGrants.length
+                              ? '授权文件夹 · 员工仅可访问此文件夹。'
+                              : '选择一个文件夹，授权员工访问。')}
                         </span>
                       </div>
-                      {device.folderGrants.length ? (
+                      {device.folderGrants.length && !workspaceIssue ? (
                         <button
                           data-computer-control
                           className={css.folderActionButton}
@@ -196,7 +204,9 @@ export function BridgeSettings({
                           }
                           type="button"
                         >
-                          连接文件夹
+                          {workspaceIssue && device.folderGrants.length
+                            ? '重新选择文件夹'
+                            : '连接文件夹'}
                         </button>
                       )}
                     </div>
@@ -247,6 +257,35 @@ export function BridgeSettings({
                   </div>
                 )}
               </div>
+              {online &&
+                device.preparation?.some((item) => item.stage !== 'ready') && (
+                  <div
+                    className={css.preparation}
+                    aria-label="运行环境准备进度"
+                    role="status"
+                  >
+                    {device.preparation.map((item) => (
+                      <div key={item.component}>
+                        <strong>
+                          {
+                            {
+                              vm: '计算环境',
+                              node: 'Node 运行包',
+                              python: 'Python 运行包',
+                            }[item.component]
+                          }
+                        </strong>
+                        <span>{bridgePreparationLabel(item)}</span>
+                        {item.stage === 'failed' && (
+                          <small>
+                            在 Rice Bridge
+                            菜单中选择“重新检查并准备环境”继续，将复用有效下载进度。
+                          </small>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               {bridge.bridgeStatusKnown && device.readiness ? (
                 <details
                   className={css.capabilities}

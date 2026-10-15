@@ -546,6 +546,9 @@ export async function listBridgeDevices(
     return {
       ...device,
       folderGrants: grantsByDevice.get(row.id) ?? [],
+      preparation:
+        BridgeEnvironmentSchema.safeParse(row.metadata?.environment).data
+          ?.preparation ?? [],
       readiness: BridgeReadinessCapabilitySchema.options.map((capability) => {
         const observed = bridgeCapabilityReadinessView(
           row.metadata ?? {},

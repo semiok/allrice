@@ -11,6 +11,7 @@ import {
   BridgeCapabilities,
   BridgeProtocolVersion,
   BridgeCommandSchema,
+  BridgeFolderGrantSchema,
   BridgeWorkspaceSelectionRequestSchema,
   managedPythonPayloadForPlatform,
   pdfReadReleaseForPlatform,
@@ -177,17 +178,44 @@ export async function createFolderGrant(path: string, name?: string) {
     method: 'POST',
     token,
     body: { label, rootFingerprint },
+  }).catch(() => {
+    throw new LocalExecutionError(
+      'WORKSPACE_GRANT_CREATE_FAILED',
+      '目录授权未能保存到服务端，请重试',
+    );
   });
-  const next: BridgeConfig = {
-    ...config,
-    grants: [
-      ...config.grants.filter(
-        (candidate) => candidate.id !== response.grant.id,
-      ),
-      { ...response.grant, rootPath },
-    ],
-  };
-  await writeConfig(next);
+  const grant = BridgeFolderGrantSchema.parse(response.grant);
+  if (
+    grant.deviceId !== config.deviceId ||
+    grant.rootFingerprint !== rootFingerprint ||
+    grant.revokedAt
+  )
+    throw new LocalExecutionError(
+      'WORKSPACE_GRANT_INVALID',
+      '服务端目录授权与当前设备不一致',
+    );
+  // Merge with the latest local grants; a slow response must not replace a
+  // grant that another local action persisted while this request was in flight.
+  try {
+    const latest = await readConfig();
+    if (latest.deviceId !== config.deviceId || latest.server !== config.server)
+      throw Error('PAIRING_CHANGED');
+    const next: BridgeConfig = {
+      ...latest,
+      grants: [
+        ...latest.grants.filter(
+          (candidate) => candidate.id !== response.grant.id,
+        ),
+        { ...response.grant, rootPath },
+      ],
+    };
+    await writeConfig(next);
+  } catch {
+    throw new LocalExecutionError(
+      'WORKSPACE_GRANT_PERSIST_FAILED',
+      '目录授权未能保存到此 Mac；请检查本地存储后重新选择目录',
+    );
+  }
   console.info(`已授权文件夹：${label}`);
   return response.grant;
 }
@@ -211,51 +239,93 @@ export async function status() {
   console.info(JSON.stringify(response, null, 2));
 }
 
-async function complete(
+export async function completeLegacyCommand(
   config: BridgeConfig,
   token: string,
   command: BridgeCommand,
+  journal: BridgeJournal | null,
+  signal?: AbortSignal,
 ) {
-  const grant = config.grants.find(
-    (candidate) => candidate.id === command.folderGrantId,
-  );
-  if (!grant) {
-    throw new LocalExecutionError(
-      'GRANT_NOT_FOUND',
-      'The command references a folder that is not authorized on this Mac',
-    );
-  }
-  try {
-    await assertWorkspaceExcludesBridgeState(await realpath(grant.rootPath));
-    const result = await executeLocalCommand(grant.rootPath, command.payload);
-    await bridgeRequest({
+  const { flushLocalFileCommands } = await import('./local-file-client.js');
+  if (journal && !(await journal.beginCommand(command))) {
+    await flushLocalFileCommands({
       server: config.server,
-      path: `/api/v1/bridge/device/commands/${command.id}/complete`,
-      method: 'POST',
       token,
-      body: {
-        leaseToken: command.leaseToken,
-        status: 'succeeded',
-        output: result.output,
-        summary: result.summary,
-      },
+      journal,
+      signal,
     });
+    return;
+  }
+  let receipt;
+  // Execution and delivery are separate: a lost success ACK must never be
+  // rewritten as execution failure or cause a write to run again.
+  try {
+    const grant = config.grants.find(
+      (candidate) => candidate.id === command.folderGrantId,
+    );
+    if (!grant || grant.revokedAt)
+      throw new LocalExecutionError(
+        'GRANT_NOT_FOUND',
+        '此 Mac 缺少有效的目录授权；请重新选择该工作区目录',
+      );
+    let root: string;
+    try {
+      root = await realpath(grant.rootPath);
+    } catch {
+      throw new LocalExecutionError(
+        'FOLDER_NOT_FOUND',
+        '已授权目录无法读取；请恢复目录或重新选择工作区',
+      );
+    }
+    if (
+      createHash('sha256').update(root).digest('hex') !== grant.rootFingerprint
+    )
+      throw new LocalExecutionError(
+        'FOLDER_CHANGED',
+        '目录位置已变化；请重新选择工作区确认授权',
+      );
+    await assertWorkspaceExcludesBridgeState(root);
+    journal?.assertWorkspace(root);
+    signal?.throwIfAborted();
+    const result = await executeLocalCommand(root, command.payload);
+    receipt = {
+      leaseToken: command.leaseToken,
+      status: 'succeeded' as const,
+      output: result.output,
+      summary: result.summary,
+    };
   } catch (error) {
     const code =
       error instanceof LocalExecutionError
         ? error.code
         : 'LOCAL_EXECUTION_FAILED';
+    receipt = {
+      leaseToken: command.leaseToken,
+      status: 'failed' as const,
+      summary:
+        error instanceof LocalExecutionError
+          ? error.message.slice(0, 500)
+          : '本地操作未完成，请检查 Bridge 的诊断信息',
+      errorCode: code,
+    };
+  }
+  if (journal) {
+    await journal.completeFileCommand(command, receipt);
+    await flushLocalFileCommands({
+      server: config.server,
+      token,
+      journal,
+      signal,
+    });
+  } else {
     await bridgeRequest({
       server: config.server,
       path: `/api/v1/bridge/device/commands/${command.id}/complete`,
       method: 'POST',
       token,
-      body: {
-        leaseToken: command.leaseToken,
-        status: 'failed',
-        summary: error instanceof Error ? error.message.slice(0, 500) : code,
-        errorCode: code,
-      },
+      body: receipt,
+      signal,
+      maximumResponseBytes: 4096,
     });
   }
 }
@@ -347,10 +417,19 @@ async function chooseLocalFile(root: string, signal?: AbortSignal) {
   }
 }
 
+export function workspacePickerCanceled(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.message === 'DESKTOP_PICKER_CANCELED' ||
+      error.message === 'NATIVE_PICKER_CANCELED' ||
+      ('stderr' in error &&
+        typeof error.stderr === 'string' &&
+        /\(-128\)/.test(error.stderr)))
+  );
+}
+
 async function chooseWorkspaceFolder() {
-  if (platform() !== 'darwin') {
-    throw new Error('Native workspace selection requires macOS');
-  }
+  if (platform() !== 'darwin') throw new Error('NATIVE_PICKER_UNAVAILABLE');
   const result = await execFileAsync('/usr/bin/osascript', [
     '-e',
     'POSIX path of (choose folder with prompt "选择 Rice 的本地工作区")',
@@ -358,43 +437,109 @@ async function chooseWorkspaceFolder() {
   return result.stdout.trim();
 }
 
-async function completeWorkspaceSelection(
+export async function flushWorkspaceSelections(
+  config: BridgeConfig,
+  token: string,
+  journal: BridgeJournal,
+  signal?: AbortSignal,
+) {
+  const statuses = new Map<string, string>();
+  for (const selection of await journal.pendingWorkspaceSelections()) {
+    const response = await bridgeRequest<{
+      status: string;
+      receiptAcknowledged?: boolean;
+    }>({
+      server: config.server,
+      path: `/api/v1/bridge/device/workspace-selections/${selection.id}/complete`,
+      method: 'POST',
+      token,
+      body: selection.receipt,
+      signal,
+      maximumResponseBytes: 4096,
+    });
+    if (
+      !response ||
+      !['succeeded', 'failed', 'canceled'].includes(response.status) ||
+      (response.status !== selection.receipt.status &&
+        response.receiptAcknowledged !== true)
+    )
+      throw Error('WORKSPACE_RECEIPT_PENDING');
+    await journal.acknowledgeWorkspaceSelection(selection.id);
+    statuses.set(selection.id, response.status);
+  }
+  return statuses;
+}
+
+export async function completeWorkspaceSelection(
   config: BridgeConfig,
   token: string,
   request: BridgeWorkspaceSelectionRequest,
   picker = chooseWorkspaceFolder,
   beforeGrant?: () => Promise<void>,
+  journal?: BridgeJournal | null,
+  signal?: AbortSignal,
+  onNotice?: StartOptions['onNotice'],
 ) {
+  if (journal && !(await journal.beginWorkspaceSelection(request))) {
+    await flushWorkspaceSelections(config, token, journal, signal);
+    return;
+  }
+  let stage: 'picker' | 'prepare' | 'grant' = 'picker';
+  let receipt;
   try {
     const rootPath = await picker();
+    if (!rootPath.trim()) throw Error('NATIVE_PICKER_CANCELED');
+    stage = 'prepare';
     await beforeGrant?.();
+    stage = 'grant';
     const grant = await createFolderGrant(rootPath);
-    await bridgeRequest({
-      server: config.server,
-      path: `/api/v1/bridge/device/workspace-selections/${request.id}/complete`,
-      method: 'POST',
-      token,
-      body: {
-        leaseToken: request.leaseToken,
-        status: 'succeeded',
-        grantId: grant.id,
-      },
-    });
-    console.info(`✓ 本地工作区已切换为：${grant.label}`);
-  } catch {
-    await bridgeRequest({
-      server: config.server,
-      path: `/api/v1/bridge/device/workspace-selections/${request.id}/complete`,
-      method: 'POST',
-      token,
-      body: {
-        leaseToken: request.leaseToken,
-        status: 'failed',
-        errorCode: 'NATIVE_PICKER_CANCELED',
-      },
-    }).catch(() => undefined);
-    console.info('未选择新的本地工作区。');
+    receipt = {
+      leaseToken: request.leaseToken,
+      status: 'succeeded' as const,
+      grantId: grant.id,
+    };
+  } catch (error) {
+    const code =
+      stage === 'picker'
+        ? workspacePickerCanceled(error)
+          ? 'NATIVE_PICKER_CANCELED'
+          : 'NATIVE_PICKER_FAILED'
+        : stage === 'prepare'
+          ? 'WORKSPACE_PREPARE_FAILED'
+          : error instanceof LocalExecutionError
+            ? error.code
+            : 'WORKSPACE_GRANT_FAILED';
+    receipt = {
+      leaseToken: request.leaseToken,
+      status: 'failed' as const,
+      errorCode: code,
+    };
+    onNotice?.(code);
   }
+  if (journal) await journal.completeWorkspaceSelection(request, receipt);
+  let confirmedStatus: string | undefined;
+  try {
+    if (journal)
+      confirmedStatus = (
+        await flushWorkspaceSelections(config, token, journal, signal)
+      ).get(request.id);
+    else
+      confirmedStatus = (
+        await bridgeRequest<{ status: string }>({
+          server: config.server,
+          path: `/api/v1/bridge/device/workspace-selections/${request.id}/complete`,
+          method: 'POST',
+          token,
+          body: receipt,
+          signal,
+          maximumResponseBytes: 4096,
+        })
+      ).status;
+  } catch (error) {
+    onNotice?.('WORKSPACE_RECEIPT_PENDING');
+    throw error;
+  }
+  if (confirmedStatus === 'succeeded') onNotice?.('WORKSPACE_CHANGED');
 }
 
 export interface BridgeRuntimeState {
@@ -941,6 +1086,12 @@ type StartOptions = {
       | 'CONNECTION_UNAVAILABLE'
       | 'SANDBOX_UNAVAILABLE'
       | 'WORKSPACE_CHANGED'
+      | LocalExecutionError['code']
+      | 'NATIVE_PICKER_CANCELED'
+      | 'NATIVE_PICKER_FAILED'
+      | 'WORKSPACE_PREPARE_FAILED'
+      | 'WORKSPACE_GRANT_FAILED'
+      | 'WORKSPACE_RECEIPT_PENDING'
       | 'BRIDGE_STOPPED',
   ) => void;
   chooseWorkspace?: () => Promise<string>;
@@ -1172,11 +1323,14 @@ async function startSession(
       state.environment!.documentTransformsVersion = 1;
     else delete state.environment!.documentTransformsVersion;
     state.environment!.readiness = capabilityReadiness();
+    if (managedSandbox)
+      state.environment!.preparation = [...managedSandbox.preparation.values()];
     options.onState?.({
       ...state,
       workspaceLabels: [...state.workspaceLabels],
     });
   };
+  if (managedSandbox) managedSandbox.onPreparation = publish;
   const updateFacts = async () => {
     if (journal) {
       const facts = await journal.diagnosticCounts();
@@ -1341,10 +1495,6 @@ async function startSession(
                     managedSandbox &&
                     !process.env.ALLRICE_LOCAL_DOCKER_SOCKET
                   ) {
-                    await prepareLocalSandbox(
-                      managedSandbox,
-                      commandAbort.signal,
-                    );
                     await managedSandbox.prepareNodeImage(commandAbort.signal);
                   }
                   try {
@@ -1416,63 +1566,66 @@ async function startSession(
           }
           publish();
         })(),
-      ]);
-      // Same preparation lifecycle; this fixed private VM is separate from
-      // the existing Node VM and never inherits business folder mounts.
-      if (managedSandbox && capabilitySettings.settings.localCommand) {
-        pythonAvailable = false;
-        try {
-          if (state.activeForeground) {
-            if (pythonProfile) {
-              await managedSandbox.runner.preflight(commandAbort.signal, false);
-              await bridgeRequest({
-                server: config.server,
-                path: '/api/v1/bridge/device/runtime-profile',
-                method: 'POST',
-                token,
-                body: pythonProfile,
-                maximumResponseBytes: 4096,
-                timeoutMs: 5000,
-                signal: commandAbort.signal,
-              });
-              pythonAvailable = true;
-              pythonState = 'ready';
-              pythonReason = 'ready';
+        (async () => {
+          if (managedSandbox && capabilitySettings.settings.localCommand) {
+            pythonAvailable = false;
+            try {
+              if (state.activeForeground) {
+                if (pythonProfile) {
+                  await managedSandbox.runner.preflight(
+                    commandAbort.signal,
+                    false,
+                  );
+                  await bridgeRequest({
+                    server: config.server,
+                    path: '/api/v1/bridge/device/runtime-profile',
+                    method: 'POST',
+                    token,
+                    body: pythonProfile,
+                    maximumResponseBytes: 4096,
+                    timeoutMs: 5000,
+                    signal: commandAbort.signal,
+                  });
+                  pythonAvailable = true;
+                  pythonState = 'ready';
+                  pythonReason = 'ready';
+                }
+              } else {
+                if (!pythonProfile) {
+                  pythonState = 'preparing';
+                  pythonReason = 'runtime_preparing';
+                  publish();
+                }
+                const profile = await prepareLocalSandbox(
+                  managedSandbox,
+                  commandAbort.signal,
+                );
+                commandAbort.signal.throwIfAborted();
+                await bridgeRequest({
+                  server: config.server,
+                  path: '/api/v1/bridge/device/runtime-profile',
+                  method: 'POST',
+                  token,
+                  body: profile,
+                  maximumResponseBytes: 4096,
+                  timeoutMs: 5000,
+                  signal: commandAbort.signal,
+                });
+                pythonProfile = profile;
+                pythonAvailable = true;
+                pythonState = 'ready';
+                pythonReason = 'ready';
+              }
+            } catch (error) {
+              pythonState = 'unsupported';
+              pythonReason = readinessErrorCode(
+                error,
+                'managed_python_unavailable',
+              );
             }
-          } else {
-            if (!pythonProfile) {
-              pythonState = 'preparing';
-              pythonReason = 'runtime_preparing';
-              publish();
-            }
-            const profile = await prepareLocalSandbox(
-              managedSandbox,
-              commandAbort.signal,
-            );
-            commandAbort.signal.throwIfAborted();
-            await bridgeRequest({
-              server: config.server,
-              path: '/api/v1/bridge/device/runtime-profile',
-              method: 'POST',
-              token,
-              body: profile,
-              maximumResponseBytes: 4096,
-              timeoutMs: 5000,
-              signal: commandAbort.signal,
-            });
-            pythonProfile = profile;
-            pythonAvailable = true;
-            pythonState = 'ready';
-            pythonReason = 'ready';
           }
-        } catch (error) {
-          pythonState = 'unsupported';
-          pythonReason = readinessErrorCode(
-            error,
-            'managed_python_unavailable',
-          );
-        }
-      }
+        })(),
+      ]);
       environment.preview = await bridgePreviewState(config, environment).catch(
         () => 'unavailable',
       );
@@ -1613,6 +1766,22 @@ async function startSession(
         if (Date.now() - lastHeartbeatAt >= 30_000) {
           await heartbeat();
         }
+        if (journal) {
+          const { flushLocalFileCommands } =
+            await import('./local-file-client.js');
+          await flushLocalFileCommands({
+            server: config.server,
+            token,
+            journal,
+            signal: commandAbort.signal,
+          });
+          await flushWorkspaceSelections(
+            config,
+            token,
+            journal,
+            commandAbort.signal,
+          );
+        }
         const selection = await bridgeRequest<{ request: unknown }>({
           server: config.server,
           path: '/api/v1/bridge/device/workspace-selections/next',
@@ -1633,10 +1802,12 @@ async function startSession(
                     await import('./local-process-manager.js')
                   ).stopLocalProcesses(journal)
               : undefined,
+            journal,
+            commandAbort.signal,
+            options.onNotice,
           );
           ({ config, token } = await credentials(await readConfig()));
           await folderTriggers?.checkScope().catch(() => undefined);
-          options.onNotice?.('WORKSPACE_CHANGED');
           await updateFacts();
           reconnectDelayMs = 1_000;
           continue;
@@ -1713,7 +1884,14 @@ async function startSession(
               options,
               commandAbort.signal,
             );
-          } else await complete(config, token, command);
+          } else
+            await completeLegacyCommand(
+              config,
+              token,
+              command,
+              journal,
+              commandAbort.signal,
+            );
           state.activeForeground = 0;
           await updateFacts();
         } else {
@@ -1723,6 +1901,7 @@ async function startSession(
         }
         reconnectDelayMs = 1_000;
       } catch (error) {
+        state.activeForeground = 0;
         if (stopping) break;
         if (options.drainSignal?.aborted) continue;
         state.phase = 'offline';

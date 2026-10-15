@@ -16,6 +16,9 @@ import {
   RuntimeBridgeDispatchSchema,
   BridgeCommandSchema,
   CompleteBridgeCommandInputSchema,
+  BridgeWorkspaceSelectionRequestSchema,
+  CompleteBridgeWorkspaceSelectionInputSchema,
+  type BridgeWorkspaceSelectionRequest,
   LocalFileResultSchema,
   type BridgeCommand,
   type LocalFileResult,
@@ -214,6 +217,10 @@ export class BridgeJournal {
           state TEXT NOT NULL CHECK(state IN ('executing','completed','unknown')),
           receipt TEXT, delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))
         );
+        CREATE TABLE IF NOT EXISTS workspace_selections (
+          request_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, request TEXT NOT NULL,
+          receipt TEXT, delivered INTEGER NOT NULL DEFAULT 0 CHECK(delivered IN (0,1))
+        );
         CREATE TABLE IF NOT EXISTS entries (
           operation_id TEXT PRIMARY KEY,
           fingerprint TEXT NOT NULL,
@@ -292,7 +299,7 @@ export class BridgeJournal {
           { server, deviceId: input.deviceId },
           input.limits ?? { entries: 1_000, bytes: 128 * 1024 * 1024 },
         );
-        // A lost direct-user file action is never executed again. Only known
+        // A lost legacy/file action is never executed again. Only known
         // durable receipts are redelivered after restart.
         for (const row of database
           .prepare(
@@ -310,10 +317,33 @@ export class BridgeJournal {
               JSON.stringify({
                 leaseToken: command.leaseToken,
                 status: 'unknown',
-                summary: 'Bridge 已重启，文件操作结果待核实，不自动重做',
-                errorCode: 'FILE_RESULT_UNKNOWN',
+                summary: 'Bridge 已重启，操作结果待核实，不自动重做',
+                errorCode: command.payload.capability.startsWith('local.file.')
+                  ? 'FILE_RESULT_UNKNOWN'
+                  : 'LOCAL_RESULT_UNKNOWN',
               }),
               String(row.command_id),
+            );
+        }
+        for (const row of database
+          .prepare(
+            'SELECT request_id,request FROM workspace_selections WHERE receipt IS NULL',
+          )
+          .all()) {
+          const request = BridgeWorkspaceSelectionRequestSchema.parse(
+            JSON.parse(String(row.request)),
+          );
+          database
+            .prepare(
+              'UPDATE workspace_selections SET receipt=? WHERE request_id=?',
+            )
+            .run(
+              JSON.stringify({
+                leaseToken: request.leaseToken,
+                status: 'failed',
+                errorCode: 'WORKSPACE_SELECTION_RESULT_UNKNOWN',
+              }),
+              String(row.request_id),
             );
         }
         // The exclusive OS lock proves a previous live owner cannot still be using
@@ -430,6 +460,14 @@ export class BridgeJournal {
     this.assertIdentity(this.identity.server, command.deviceId);
     if (!command.payload.capability.startsWith('local.file.'))
       throw new BridgeJournalError('JOURNAL_INVALID_DISPATCH');
+    return this.beginCommand(command);
+  }
+
+  /** The legacy queue shares the same durable command/outbox identity. */
+  async beginCommand(input: BridgeCommand) {
+    await this.guard();
+    const command = BridgeCommandSchema.parse(input);
+    this.assertIdentity(this.identity.server, command.deviceId);
     const fingerprint = bridgeDigest(command);
     return this.transaction(() => {
       const prior = this.database
@@ -445,7 +483,10 @@ export class BridgeJournal {
           .prepare('SELECT count(*) AS count FROM file_commands')
           .get()?.count ?? 0,
       );
-      if (count >= this.limits.entries)
+      if (
+        count >= this.limits.entries ||
+        (count + 1) * reservePerEntry > this.limits.bytes
+      )
         throw new BridgeJournalError('JOURNAL_FULL');
       this.database
         .prepare(
@@ -461,7 +502,10 @@ export class BridgeJournal {
     const receipt = CompleteBridgeCommandInputSchema.parse(input);
     if (
       receipt.leaseToken !== command.leaseToken ||
-      Buffer.byteLength(JSON.stringify(receipt)) > 16_384
+      Buffer.byteLength(JSON.stringify(receipt)) >
+        (command.payload.capability.startsWith('local.file.')
+          ? 16_384
+          : maximumReceiptBytes)
     )
       throw new BridgeJournalError('JOURNAL_RESULT_TOO_LARGE');
     this.transaction(() => {
@@ -536,6 +580,96 @@ export class BridgeJournal {
           "DELETE FROM file_commands WHERE delivered=1 AND state='completed' AND rowid NOT IN (SELECT rowid FROM file_commands WHERE delivered=1 AND state='completed' ORDER BY rowid DESC LIMIT ?)",
         )
         .run(retain);
+    });
+  }
+
+  async beginWorkspaceSelection(input: BridgeWorkspaceSelectionRequest) {
+    await this.guard();
+    const request = BridgeWorkspaceSelectionRequestSchema.parse(input);
+    this.assertIdentity(this.identity.server, request.deviceId);
+    const fingerprint = bridgeDigest(request);
+    return this.transaction(() => {
+      const prior = this.database
+        .prepare(
+          'SELECT fingerprint FROM workspace_selections WHERE request_id=?',
+        )
+        .get(request.id);
+      if (prior) {
+        if (prior.fingerprint !== fingerprint)
+          throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
+        return false;
+      }
+      const count = Number(
+        this.database
+          .prepare('SELECT count(*) AS n FROM workspace_selections')
+          .get()?.n ?? 0,
+      );
+      if (count >= this.limits.entries)
+        throw new BridgeJournalError('JOURNAL_FULL');
+      this.database
+        .prepare(
+          'INSERT INTO workspace_selections(request_id,fingerprint,request) VALUES(?,?,?)',
+        )
+        .run(request.id, fingerprint, JSON.stringify(request));
+      return true;
+    });
+  }
+
+  async completeWorkspaceSelection(
+    request: BridgeWorkspaceSelectionRequest,
+    input: unknown,
+  ) {
+    await this.guard();
+    const receipt = CompleteBridgeWorkspaceSelectionInputSchema.parse(input);
+    if (receipt.leaseToken !== request.leaseToken)
+      throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
+    this.transaction(() => {
+      const row = this.database
+        .prepare(
+          'SELECT fingerprint,receipt FROM workspace_selections WHERE request_id=?',
+        )
+        .get(request.id);
+      const body = JSON.stringify(receipt);
+      if (
+        !row ||
+        row.fingerprint !== bridgeDigest(request) ||
+        (row.receipt && row.receipt !== body)
+      )
+        throw new BridgeJournalError('JOURNAL_IDENTITY_MISMATCH');
+      this.database
+        .prepare('UPDATE workspace_selections SET receipt=? WHERE request_id=?')
+        .run(body, request.id);
+    });
+  }
+
+  async pendingWorkspaceSelections() {
+    await this.guard();
+    return this.database
+      .prepare(
+        'SELECT request_id,receipt FROM workspace_selections WHERE delivered=0 AND receipt IS NOT NULL ORDER BY rowid LIMIT 16',
+      )
+      .all()
+      .map((row) => ({
+        id: String(row.request_id),
+        receipt: CompleteBridgeWorkspaceSelectionInputSchema.parse(
+          JSON.parse(String(row.receipt)),
+        ),
+      }));
+  }
+
+  async acknowledgeWorkspaceSelection(id: string) {
+    await this.guard();
+    this.transaction(() => {
+      this.database
+        .prepare(
+          'UPDATE workspace_selections SET delivered=1 WHERE request_id=? AND receipt IS NOT NULL',
+        )
+        .run(id);
+      this.database
+        .prepare(
+          'DELETE FROM workspace_selections WHERE delivered=1 AND rowid NOT IN (SELECT rowid FROM workspace_selections WHERE delivered=1 ORDER BY rowid DESC LIMIT 100)',
+        )
+        .run();
     });
   }
 
@@ -805,7 +939,7 @@ export class BridgeJournal {
       pendingReceipts: Number(
         this.database
           .prepare(
-            'SELECT (SELECT count(*) FROM outbox WHERE delivered=0)+(SELECT count(*) FROM file_commands WHERE delivered=0 AND receipt IS NOT NULL) AS n',
+            'SELECT (SELECT count(*) FROM outbox WHERE delivered=0)+(SELECT count(*) FROM file_commands WHERE delivered=0 AND receipt IS NOT NULL)+(SELECT count(*) FROM workspace_selections WHERE delivered=0 AND receipt IS NOT NULL) AS n',
           )
           .get()?.n ?? 0,
       ),

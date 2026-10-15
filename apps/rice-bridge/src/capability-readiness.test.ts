@@ -290,6 +290,19 @@ describe('Bridge per-capability facts', () => {
         folder: true,
         writable: true,
       });
+      expect(
+        await probeBridgeFiles({
+          ...config,
+          grants: config.grants.map((grant) => ({
+            ...grant,
+            revokedAt: new Date().toISOString(),
+          })),
+        }),
+      ).toMatchObject({
+        folder: false,
+        writable: false,
+        folderReason: 'folder_missing',
+      });
       await rename(root, `${root}-中文资料`);
       expect(await probeBridgeFiles(config)).toMatchObject({
         folder: false,

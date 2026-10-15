@@ -14,6 +14,7 @@ import type {
   WorkMethod,
   BridgeReadinessCapability,
   BridgeReadinessState,
+  BridgePreparationProgress,
   TaskSuggestionDisplay,
 } from '@allrice/contracts';
 
@@ -183,6 +184,7 @@ export interface BridgeDevice {
   name: string;
   platform: 'macos-arm64' | 'macos-x64';
   clientVersion?: string | null;
+  preparation?: BridgePreparationProgress[];
   status: 'online' | 'offline' | 'revoked';
   lastSeenAt: string | null;
   readiness?: Array<{
