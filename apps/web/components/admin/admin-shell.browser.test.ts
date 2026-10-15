@@ -133,4 +133,48 @@ integration('shared administration shell and dialogs', () => {
       await page.close();
     }
   });
+  it.each([1440, 390])(
+    'folds skill history and exposes arriving failures at %ipx',
+    async (width) => {
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      try {
+        await page.goto(`${origin}?skills=1`);
+        const group = page.locator('[data-skill-phase="ready"]');
+        const summary = group.locator('summary');
+        const rows = group.locator('ol > li');
+        await summary.waitFor();
+        expect(await summary.getAttribute('aria-expanded')).toBe('false');
+        expect(await rows.first().isVisible()).toBe(false);
+        await summary.press('Enter');
+        expect(await rows.count()).toBe(13);
+        expect(await rows.first().isVisible()).toBe(true);
+        const measured = await rows.first().evaluate((element) => ({
+          height: element.getBoundingClientRect().height,
+          font: getComputedStyle(element).fontSize,
+          overflow:
+            document.documentElement.scrollWidth >
+            document.documentElement.clientWidth,
+        }));
+        expect(measured).toEqual({ height: 28, font: '12px', overflow: false });
+        expect(
+          await group.getByText('Skill 已就绪', { exact: true }).count(),
+        ).toBe(0);
+        await summary.click();
+        await page.getByRole('button', { name: '切换失败记录' }).click();
+        expect(await summary.getAttribute('aria-expanded')).toBe('true');
+        expect(await summary.innerText()).toContain('1 项失败');
+        await summary.click();
+        expect(await summary.innerText()).toContain('1 项失败');
+        expect(await rows.first().isVisible()).toBe(false);
+        await page.getByRole('button', { name: '切换汇总格式' }).click();
+        expect(await summary.innerText()).toContain('技能已就绪 · 13 个');
+        expect(await rows.first().isVisible()).toBe(false);
+        await summary.click();
+        expect(await rows.count()).toBe(13);
+        expect(await rows.last().innerText()).toContain('workspace-briefing');
+      } finally {
+        await page.close();
+      }
+    },
+  );
 });

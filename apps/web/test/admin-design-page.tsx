@@ -6,6 +6,76 @@ import {
   AdminDialog,
   AdminMenu,
 } from '../components/admin/admin-ui';
+import { RuntimeSkillGroup } from '../app/runtime-console/runtime-skill-group';
+import {
+  aggregateRuntimeTimelineEvents,
+  type RuntimeTimelineEvent,
+} from '../app/runtime-console/runtime-timeline';
+import runtimeStyles from '../app/runtime-console/runtime-console.module.css';
+
+function SkillTimelineFixture() {
+  const [bundled, setBundled] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const names = [
+    'browser-research',
+    'business-reconciliation',
+    'development-cooperation',
+    'governed-memory',
+    'market-data',
+    'office',
+    'operations-review',
+    'project-development',
+    'research-synthesis',
+    'scientific-analysis',
+    'web-research',
+    'wechat-research',
+    'workspace-briefing',
+  ];
+  const records: RuntimeTimelineEvent[] = names.map((name, index) => ({
+    id: `run:${index}`,
+    key: `run:${index}`,
+    runId: 'run',
+    sequence: index,
+    kind: 'context',
+    status: failed && index === 5 ? 'failed' : 'completed',
+    title: failed && index === 5 ? 'Skill 不可用' : 'Skill 已就绪',
+    detail: name,
+    occurredAt: '2026-10-15T06:12:14.000Z',
+  }));
+  const events = bundled
+    ? [
+        {
+          ...records[0]!,
+          title: 'Skill 已就绪 · 13 个',
+          detail: names.join('、'),
+        },
+      ]
+    : records;
+  return (
+    <AdminShell items={[]}>
+      <section className={runtimeStyles.detail}>
+        <AdminButton onClick={() => setFailed(!failed)}>
+          切换失败记录
+        </AdminButton>
+        <AdminButton
+          onClick={() => {
+            setFailed(false);
+            setBundled(!bundled);
+          }}
+        >
+          切换汇总格式
+        </AdminButton>
+        <ol className={runtimeStyles.eventList}>
+          {aggregateRuntimeTimelineEvents(events).map((item) =>
+            item.type === 'group' ? (
+              <RuntimeSkillGroup key={item.key} item={item} />
+            ) : null,
+          )}
+        </ol>
+      </section>
+    </AdminShell>
+  );
+}
 
 function DesignFixture() {
   const [open, setOpen] = useState(false);
@@ -60,4 +130,10 @@ function DesignFixture() {
     </>
   );
 }
-createRoot(document.getElementById('root')!).render(<DesignFixture />);
+createRoot(document.getElementById('root')!).render(
+  new URLSearchParams(window.location.search).has('skills') ? (
+    <SkillTimelineFixture />
+  ) : (
+    <DesignFixture />
+  ),
+);
