@@ -1,7 +1,10 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
-import { cloudNetworkSupervisor, cloudSupervisor } from './backend.js';
+import {
+  cloudNetworkBudgetSupervisor,
+  cloudBudgetSupervisor,
+} from './backend.js';
 
 it('requires the exact sandbox envelope, a live private lease and current guard capability', () => {
   const result = JSON.parse(
@@ -70,7 +73,10 @@ print(json.dumps({'values':values,'mixedStopped':len(killed)==1,'old':old,'curre
         fileURLToPath(new URL('./watchdog.py', import.meta.url)),
       ],
       {
-        input: JSON.stringify([cloudSupervisor, cloudNetworkSupervisor]),
+        input: JSON.stringify([
+          cloudBudgetSupervisor,
+          cloudNetworkBudgetSupervisor,
+        ]),
         encoding: 'utf8',
       },
     ),

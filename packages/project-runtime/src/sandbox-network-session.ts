@@ -112,7 +112,9 @@ export class SandboxNetworkSession {
     );
     if (code) {
       try {
-        this.options.onError?.(code);
+        // The owner reconciles transport EOF with the physical container's
+        // exit. A normal container exit also closes this helper; it is not a
+        // per-request network failure and must not overwrite one.
         this.options.onClosed?.(code);
       } catch {
         /* reporting cannot retain sockets */
