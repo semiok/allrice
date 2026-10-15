@@ -1659,7 +1659,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           else await toggle.click();
           await settle();
           const after = await geometry();
-          expect(after.height).toBeGreaterThan(before.height + 100);
+          expect(after.height - before.height).toBe(72);
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
           expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
           expect(
@@ -1697,9 +1697,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '回到底部', exact: true })
           .click();
         await settle();
-        const result = last
-          .locator('summary')
-          .filter({ hasText: '执行返回内容' });
+        const result = last.getByRole('button', {
+          name: '执行结果',
+          exact: true,
+        });
         const resultTop = (await result.boundingBox())!.y;
         const lastHeight = (await last.boundingBox())!.height;
         const scrollTop = await scroll.evaluate((node) => node.scrollTop);
@@ -1725,7 +1726,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each(
     [1440, 390].flatMap((width) =>
       [false, true].flatMap((streamingOutput) =>
-        ['script', 'python-project', 'node-project'].map((kind) => ({
+        ['script', 'python-project', 'node-project', 'mcp'].map((kind) => ({
           width,
           streamingOutput,
           kind,
@@ -1736,7 +1737,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     'keeps $kind receipts compact at $width px streaming=$streamingOutput',
     async ({ width, streamingOutput, kind }) => {
       const f = await fixture({ width, streamingOutput, touch: width < 760 });
-      const project = kind !== 'script';
+      const project = kind === 'python-project' || kind === 'node-project';
+      const mcp = kind === 'mcp';
       const operations = ['failed', 'succeeded'].map((status, index) => ({
         nativeCallId: `compact-${index}`,
         snapshot: {
@@ -1744,8 +1746,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           binding: { attempt: { operationId: id(8870 + index) } },
         },
         enabled: true,
+        mcpAuthorization: { available: true, reason: 'available' },
         proposal: {
-          kind: project ? 'project' : 'cloud',
+          kind: mcp ? 'mcp' : project ? 'project' : 'cloud',
+          endpoint: 'https://example.test/mcp',
+          tool: 'mcp__app__list_pull_requests',
+          arguments: { query: 'existing' },
+          risk: 'read',
           language: 'python',
           script: 'print("compact result")',
           inputs: [],
@@ -1849,32 +1856,98 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const after = await measure();
         expect(after).toMatchObject({ height: 144, secondHeight: 72, gap: 12 });
         expect(after.distance - before.distance).toBe(72);
-        expect(await first.locator('summary').count()).toBe(4);
+        const choices = first.getByLabel('执行摘要').getByRole('button');
+        expect(await choices.count()).toBe(4);
+        const positions = () =>
+          choices.evaluateAll((nodes) => {
+            const origin = nodes[0]!
+              .closest('article')!
+              .getBoundingClientRect();
+            return nodes.map((node) => {
+              const box = node.getBoundingClientRect();
+              return {
+                x: box.x - origin.x,
+                y: box.y - origin.y,
+                width: box.width,
+                height: box.height,
+              };
+            });
+          });
+        const fixed = await positions();
+        for (const choice of await choices.all()) {
+          await choice.click();
+          expect(await positions()).toEqual(fixed);
+          expect(
+            await first
+              .getByRole('button', { name: '关闭当前详情', exact: true })
+              .count(),
+          ).toBe(1);
+        }
+        // The shared detail panel grows with its fields, without a minimum height.
+        const shortTitle = mcp
+          ? '应用与工具'
+          : project
+            ? '项目版本'
+            : '输入文件';
         await first
-          .locator('summary')
-          .filter({ hasText: project ? '执行命令' : '执行脚本' })
+          .getByRole('button', { name: shortTitle, exact: true })
+          .click();
+        const panelId = await choices.first().getAttribute('aria-controls');
+        const bottomGap = await first
+          .locator(`[id="${panelId}"]`)
+          .evaluate((node) => {
+            const last = Array.from(node.children)
+              .filter((child) => child.getClientRects().length)
+              .at(-1)!;
+            return (
+              node.getBoundingClientRect().bottom -
+              last.getBoundingClientRect().bottom
+            );
+          });
+        expect(bottomGap).toBe(12);
+        if (mcp)
+          expect(
+            await first
+              .getByText('mcp__app__list_pull_requests', { exact: true })
+              .isVisible(),
+          ).toBe(true);
+        else {
+          await first
+            .getByRole('button', {
+              name: project ? '执行命令' : '执行脚本',
+              exact: true,
+            })
+            .click();
+          await first
+            .locator('summary')
+            .filter({ hasText: project ? '查看完整命令' : '查看完整脚本' })
+            .click();
+          expect(
+            await first
+              .getByLabel(project ? '云端项目命令' : '云端待执行脚本')
+              .isVisible(),
+          ).toBe(true);
+        }
+        await first
+          .getByRole('button', { name: '执行结果', exact: true })
           .click();
         expect(
           await first
-            .getByLabel(project ? '云端项目命令' : '云端待执行脚本')
-            .isVisible(),
-        ).toBe(true);
-        await first.locator('summary').filter({ hasText: '执行结果' }).click();
-        expect(
-          await first
-            .getByText('返回代码：EXECUTION_FAILED', { exact: true })
+            .getByText('EXECUTION_FAILED', { exact: true })
             .isVisible(),
         ).toBe(true);
         expect(
           await first
             .getByText('你的决定：已批准本次操作', { exact: true })
+            .first()
             .isVisible(),
         ).toBe(true);
-        expect(
-          await first
-            .getByText('result.json (json)', { exact: true })
-            .isVisible(),
-        ).toBe(true);
+        if (!mcp)
+          expect(
+            await first
+              .getByText('result.json (json)', { exact: true })
+              .isVisible(),
+          ).toBe(true);
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= innerWidth,
@@ -1952,28 +2025,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         await detail.waitFor();
         const runningHeight = (await card.boundingBox())!.height;
-        if (width === 1440) expect(runningHeight).toBeLessThanOrEqual(56);
+        expect(runningHeight).toBe(72);
         const label = card
           .locator('header')
-          .getByText('mcp__app__list_pull_requests', { exact: true });
+          .getByText('应用工具', { exact: true });
         const labelBox = (await label.boundingBox())!;
         expect(
           await card.locator('header').getByRole('status').innerText(),
-        ).toBe('执行中');
-        for (const item of [
-          label,
-          card.locator('header').getByRole('status'),
-          detail,
-        ]) {
-          expect(
-            await item.evaluate((node) => ({
-              font: getComputedStyle(node).fontSize,
-              weight: getComputedStyle(node).fontWeight,
-            })),
-          ).toEqual({ font: '15px', weight: '400' });
-        }
+        ).toBe('正在执行');
+        expect(
+          await card
+            .locator('header')
+            .getByRole('status')
+            .evaluate((node) => getComputedStyle(node).fontSize),
+        ).toBe(width === 1440 ? '12px' : '11px');
         const detailBox = (await detail.boundingBox())!;
-        expect(detailBox.width).toBeLessThanOrEqual(64);
+        expect(detailBox.width).toBeLessThanOrEqual(80);
         const cardBox = (await card.boundingBox())!;
         expect(detailBox.x + detailBox.width).toBeLessThan(
           cardBox.x + cardBox.width,
@@ -2030,8 +2097,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await collapse.getAttribute('aria-expanded')).toBe('true');
         expect(await content.isVisible()).toBe(true);
         await content
+          .getByRole('button', { name: '发送参数', exact: true })
+          .click();
+        await content
           .locator('summary')
-          .filter({ hasText: '发送参数' })
+          .filter({ hasText: '查看完整参数' })
           .click();
         expect(await content.getByLabel('MCP 发送参数').isVisible()).toBe(true);
         await collapse.focus();
@@ -2059,10 +2129,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await stopping.isDisabled()).toBe(true);
         expect(
           await card.locator('header').getByRole('status').innerText(),
-        ).toBe('执行中');
+        ).toBe('正在执行');
         operation.snapshot.status = 'cancel_requested';
         await card
-          .getByText('停止意图已记录，结果待确认', { exact: true })
+          .locator('header')
+          .getByRole('status', {
+            name: '停止意图已记录，结果待确认',
+            exact: true,
+          })
           .waitFor();
         expect(await stopping.isDisabled()).toBe(true);
         // Completion can race with a stop request; display the real result.
@@ -2074,7 +2148,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('成功', { exact: true })
+          .getByText('执行成功', { exact: true })
           .waitFor();
         expect(await stopping.count()).toBe(0);
         await collapse.click();
@@ -2087,12 +2161,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('失败', { exact: true })
+          .getByText('执行未成功', { exact: true })
           .waitFor();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
         await detail.click();
+        await content
+          .getByRole('button', { name: '应用与工具', exact: true })
+          .click();
         expect(
-          await content.getByText('工具：', { exact: false }).isVisible(),
+          await content
+            .getByText('mcp__app__list_pull_requests', { exact: true })
+            .isVisible(),
         ).toBe(true);
         await collapse.click();
         operation.snapshot.status = 'unknown';
@@ -2103,7 +2182,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await card
             .locator('header')
-            .getByText('失败', { exact: true })
+            .getByText('执行未成功', { exact: true })
             .count(),
         ).toBe(0);
         expect(requests).toHaveLength(2);
@@ -5454,7 +5533,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       const first = f.page.locator(`#operation-${id(8990)}`),
         second = f.page.locator(`#operation-${id(8991)}`);
-      await second.getByText('执行中', { exact: true }).waitFor();
+      await second
+        .locator('header')
+        .getByRole('status', { name: '正在执行', exact: true })
+        .waitFor();
       await push('assistant.text.delta', {
         replyId: 'final',
         text: '两页记录核对结束，最终结论在这里。',
@@ -5494,7 +5576,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '查看详情', exact: true })
         .click();
       expect(
-        await second.getByText('发送参数', { exact: true }).isVisible(),
+        await second
+          .getByRole('button', { name: '发送参数', exact: true })
+          .isVisible(),
       ).toBe(true);
       operations[1]!.snapshot.status = 'succeeded';
       await push('tool.completed', {
