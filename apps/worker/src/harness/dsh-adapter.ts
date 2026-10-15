@@ -111,6 +111,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
   }
 
   async execute(input: HarnessExecutionInput): Promise<HarnessExecutionResult> {
+    const preparationStarted = performance.now();
     assertAssistantProviderOutputBound(
       input.providerSnapshot,
       !!input.assistants,
@@ -127,6 +128,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         ? input.threadId
         : expectedThreadId;
     const existing = this.runtimePool.get(threadId);
+    const eligibilityStarted = performance.now();
     const callableToolNames = new Set(input.tools.map((tool) => tool.name));
     const authorizedToolNames = new Set(
       input.authorizedToolNames ?? input.tools.map((tool) => tool.name),
@@ -146,8 +148,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
           entry.missingTools.length === 0 && entry.inactiveTools.length === 0,
       )
       .map((entry) => entry.skill);
+    const skillEligibilityMs = performance.now() - eligibilityStarted;
     const systemInstructions = input.kernel.systemInstructions;
     let generation = input.generation;
+    const threadBindingStarted = performance.now();
     if (!input.threadId || input.threadId !== threadId) {
       const bound = await input.onThreadBound?.({
         threadId,
@@ -156,13 +160,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
       });
       generation = bound?.generation ?? generation;
     }
-    const { runtime, fresh } = await this.runtimePool.acquire({
+    const threadBindingMs = performance.now() - threadBindingStarted;
+    const { runtime, fresh, preparation } = await this.runtimePool.acquire({
       input,
       snapshot,
       threadId,
       systemInstructions,
       nativeSkills,
     });
+    const runtimeBindingStarted = performance.now();
     this.runtimePool.touch(runtime);
     const assistant = await input.assistants
       ?.bind(threadId, generation, input.onToolCall, (nativeSessionId) =>
@@ -391,24 +397,48 @@ export class DshHarnessAdapter implements HarnessAdapter {
       fallbackGuard?.observe(parsed);
       await input.onEvent(parsed);
     };
+    const runtimeBindingMs = performance.now() - runtimeBindingStarted;
+    const skillEventsStarted = performance.now();
+    let skillEventCount = 0;
+    // One durable announcement for the frozen directory, not one transaction
+    // per Skill. A warm session already has these exact versions registered.
+    if (fresh && nativeSkills.length) {
+      await emit({
+        type: 'native.event',
+        presentation: 'context',
+        status: 'completed',
+        label: `Skill 已就绪 · ${nativeSkills.length} 个`,
+        summary: nativeSkills
+          .map((skill) => skill.name)
+          .join('、')
+          .slice(0, 1_000),
+        sourceEventType: 'allrice/skill-readiness',
+        sourcePayload: {
+          status: 'registered',
+          count: nativeSkills.length,
+          skills: nativeSkills.map((skill) => {
+            const governed = input.baseSkillCatalog?.skills.find(
+              (s) => s.id === skill.id,
+            );
+            return {
+              skillId: skill.id,
+              skillName: skill.name,
+              skillChecksum: skill.checksum,
+              ...(governed
+                ? {
+                    skillVersion: governed.version,
+                    skillCatalogChecksum:
+                      input.baseSkillCatalog!.snapshotChecksum,
+                  }
+                : {}),
+            };
+          }),
+        },
+      });
+      skillEventCount++;
+    }
     for (const entry of skillEligibility) {
-      if (entry.missingTools.length === 0 && entry.inactiveTools.length === 0) {
-        // A warm session already has these exact Skill versions registered.
-        if (!fresh) continue;
-        await emit({
-          type: 'native.event',
-          presentation: 'context',
-          status: 'completed',
-          label: 'Skill 已就绪',
-          summary: entry.skill.name,
-          sourcePayload: {
-            skillId: entry.skill.id,
-            skillName: entry.skill.name,
-            skillChecksum: entry.skill.checksum,
-            status: 'registered',
-          },
-        });
-      } else if (
+      if (
         entry.missingTools.length > 0 &&
         !input.baseSkillCatalog?.skills.some((s) => s.id === entry.skill.id)
       ) {
@@ -428,12 +458,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
             missingTools: entry.missingTools,
           },
         });
+        skillEventCount++;
       }
       // An authorized side-effect tool may intentionally be absent from the
       // callable set until the capability router selects it for this turn.
       // That makes the Skill inactive, not broken, so it must not surface as
       // a red tenant-facing failure.
     }
+    const skillEventsPersistenceMs = skillEventCount
+      ? performance.now() - skillEventsStarted
+      : 0;
     const initialPrompt = [
       dshToolBridgeInstructions(input),
       fresh && input.kernel.bootstrapConversation
@@ -469,6 +503,29 @@ export class DshHarnessAdapter implements HarnessAdapter {
         >
       | undefined;
     try {
+      const preparationMs = performance.now() - preparationStarted;
+      // This receipt measures preparation before prompting. Its own write is
+      // excluded; native Skill body loads are measured on their tool receipts.
+      await emit({
+        type: 'native.event',
+        presentation: 'context',
+        status: 'completed',
+        label: '运行准备完成',
+        summary: `${fresh ? '新建运行环境' : '复用已有环境'} · ${Math.round(preparationMs)} ms · Skill 记录写入 ${Math.round(skillEventsPersistenceMs)} ms`,
+        sourceEventType: 'allrice/runtime-preparation',
+        sourcePayload: {
+          schemaVersion: 1,
+          runtimeId: runtime.id,
+          ...preparation,
+          skillEligibilityMs,
+          threadBindingMs,
+          runtimeBindingMs,
+          skillEventsPersistenceMs,
+          skillEventCount,
+          registeredSkillCount: nativeSkills.length,
+          preparationMs,
+        },
+      });
       for (let callIndex = 0; ; callIndex++) {
         if (executionSignal.aborted)
           throw new HandlerError(
@@ -1015,7 +1072,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const assistantStream = new DshAssistantStream();
     const activeNativeTools = new Map<
       string,
-      { name: string; query?: string }
+      { name: string; query?: string; sourceStartedAt: number }
     >();
     const processNotification = async (notification: DshNotification) => {
       if (notification.params.sessionId !== input.runtime.sessionId) return;
@@ -1238,6 +1295,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             : undefined;
         activeNativeTools.set(callId, {
           name,
+          sourceStartedAt: Date.parse(source.sourceOccurredAt),
           ...(query ? { query } : skillName ? { query: skillName } : {}),
         });
         await input.onNative({
@@ -1271,6 +1329,10 @@ export class DshHarnessAdapter implements HarnessAdapter {
         const active = activeNativeTools.get(callId);
         const name = active?.name ?? 'tool';
         const skillName = name === 'skill' ? active?.query : undefined;
+        const skillLoadMs =
+          active && skillName
+            ? Date.parse(source.sourceOccurredAt) - active.sourceStartedAt
+            : undefined;
         // Pinned DSH's ToolResultMessage carries the authoritative outcome on
         // its single tool-result block; event.error is optional diagnostics.
         // Keep legacy event errors, but never infer status from result text or
@@ -1310,6 +1372,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
               ? {
                   skillName,
                   skillStatus: failed ? 'failed' : 'loaded',
+                  ...(skillLoadMs !== undefined &&
+                  Number.isFinite(skillLoadMs) &&
+                  skillLoadMs >= 0
+                    ? { skillLoadMs }
+                    : {}),
                   ...(failed ? { reason: 'dsh_skill_load_failed' } : {}),
                 }
               : {}),

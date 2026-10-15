@@ -32,6 +32,7 @@ export interface DshRuntime {
   client: DshProtocolClient;
   id: string;
   fingerprint: string;
+  fingerprintParts: Record<string, string>;
   sessionId: string;
   organizationId: string;
   workspaceId: string;
@@ -162,6 +163,7 @@ export class DshRuntimePool {
     systemInstructions: string;
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
   }) {
+    const acquireStarted = performance.now();
     const frozenGeneration = input.input.kernel.runtimeDistributionGeneration;
     if (
       frozenGeneration !== undefined &&
@@ -199,6 +201,7 @@ export class DshRuntimePool {
         false,
       );
     }
+    const credentialStarted = performance.now();
     const dshPlatformHome =
       input.snapshot.route === 'openai-codex'
         ? await activeCodexSubscriptionHome()
@@ -225,60 +228,101 @@ export class DshRuntimePool {
         false,
       );
     }
+    const credentialResolutionMs = performance.now() - credentialStarted;
     const maxTokens =
       input.input.assistants?.maxOutputTokens ??
       input.input.maxOutputTokens ??
       (input.input.assistants ? 16_000 : undefined);
+    // Keep the reuse key unchanged. Store only per-field hashes in memory so
+    // diagnostics can name changed configuration without recording its values.
+    const fingerprintInput = {
+      snapshot: input.snapshot,
+      codexSubscriptionHome: dshPlatformHome,
+      runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
+      ...(input.input.baseSkillCatalog
+        ? {
+            baseSkillCatalogChecksum:
+              input.input.baseSkillCatalog.snapshotChecksum,
+          }
+        : {}),
+      systemInstructions: input.systemInstructions,
+      taskProgress: !!input.input.progress,
+      contentGuard: !!input.input.contentGuard,
+      ...(input.input.contentGuard?.nativeContextKey &&
+      input.input.contentGuard.nativeContextKey !==
+        input.input.contentGuard.generationId
+        ? {
+            contentScenes: input.input.contentGuard.scenes,
+            nativeContentContext: input.input.contentGuard.nativeContextKey,
+          }
+        : {}),
+      durableQuestions: !!input.input.questionWait,
+      // Run authority is rebound by the adapter and released by finish.
+      // Only process configuration belongs in the session reuse key.
+      assistantsEnabled: !!input.input.assistants,
+      maxTokens,
+      nativeTools: input.input.tools
+        .map((tool) => tool.name)
+        .filter(isDshNativeTool)
+        .sort(),
+      nativeSkills: input.nativeSkills.map((skill) => ({
+        id: skill.id,
+        checksum: skill.checksum,
+        name: skill.name,
+        invocation: skill.invocation,
+        ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
+      })),
+      credentialDigest: credential
+        ? createHash('sha256').update(credential.apiKey).digest('hex')
+        : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
+    };
     const fingerprint = createHash('sha256')
-      .update(
-        JSON.stringify({
-          snapshot: input.snapshot,
-          codexSubscriptionHome: dshPlatformHome,
-          runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
-          ...(input.input.baseSkillCatalog
-            ? {
-                baseSkillCatalogChecksum:
-                  input.input.baseSkillCatalog.snapshotChecksum,
-              }
-            : {}),
-          systemInstructions: input.systemInstructions,
-          taskProgress: !!input.input.progress,
-          contentGuard: !!input.input.contentGuard,
-          ...(input.input.contentGuard?.nativeContextKey &&
-          input.input.contentGuard.nativeContextKey !==
-            input.input.contentGuard.generationId
-            ? {
-                contentScenes: input.input.contentGuard.scenes,
-                nativeContentContext: input.input.contentGuard.nativeContextKey,
-              }
-            : {}),
-          durableQuestions: !!input.input.questionWait,
-          // Run authority is rebound by the adapter and released by finish.
-          // Only process configuration belongs in the session reuse key.
-          assistantsEnabled: !!input.input.assistants,
-          maxTokens,
-          nativeTools: input.input.tools
-            .map((tool) => tool.name)
-            .filter(isDshNativeTool)
-            .sort(),
-          nativeSkills: input.nativeSkills.map((skill) => ({
-            id: skill.id,
-            checksum: skill.checksum,
-            name: skill.name,
-            invocation: skill.invocation,
-            ...(skill.bundle ? { bundleChecksum: skill.bundle.checksum } : {}),
-          })),
-          credentialDigest: credential
-            ? createHash('sha256').update(credential.apiKey).digest('hex')
-            : `codex-grant:${codexGrantMetadata?.mtimeMs ?? 0}:${codexGrantMetadata?.size ?? 0}`,
-        }),
-      )
+      .update(JSON.stringify(fingerprintInput))
       .digest('hex');
+    const fingerprintParts = Object.fromEntries(
+      Object.entries(fingerprintInput).map(([key, value]) => [
+        key,
+        createHash('sha256')
+          .update(JSON.stringify(value) ?? 'undefined')
+          .digest('hex'),
+      ]),
+    );
     const existing = this.runtimes.get(input.threadId);
+    const preparation = {
+      cache: existing?.fingerprint === fingerprint ? 'hit' : 'miss',
+      reason: existing
+        ? existing.fingerprint === fingerprint
+          ? 'reused'
+          : 'configuration_changed'
+        : 'not_resident',
+      changedFields: existing
+        ? [
+            ...new Set([
+              ...Object.keys(existing.fingerprintParts),
+              ...Object.keys(fingerprintParts),
+            ]),
+          ].filter(
+            (key) => existing.fingerprintParts[key] !== fingerprintParts[key],
+          )
+        : [],
+      credentialResolutionMs,
+      previousRuntimeCloseMs: 0,
+      initializeMs: 0,
+      // Null means unmeasured (e.g. an older host), zero means no registration
+      // was needed on this acquisition. These are not Skill body load times.
+      skillRegistrationMs:
+        existing?.fingerprint === fingerprint ? 0 : (null as number | null),
+      acquireMs: 0,
+    };
     if (existing?.fingerprint === fingerprint) {
-      return { runtime: existing, fresh: false };
+      preparation.acquireMs = performance.now() - acquireStarted;
+      return { runtime: existing, fresh: false, preparation };
     }
-    if (existing) await this.drop(input.threadId);
+    if (existing) {
+      const closeStarted = performance.now();
+      await this.drop(input.threadId);
+      preparation.previousRuntimeCloseMs = performance.now() - closeStarted;
+    }
     const tenantRoot = resolve(
       this.runtimeRoot,
       organizationId,
@@ -365,6 +409,7 @@ export class DshRuntimePool {
       }),
       id: randomUUID(),
       fingerprint,
+      fingerprintParts,
       sessionId: input.threadId,
       organizationId,
       workspaceId,
@@ -378,7 +423,8 @@ export class DshRuntimePool {
       lastActivityAt: startedAt,
     };
     try {
-      await runtime.client.initialize({
+      const initializeStarted = performance.now();
+      const initialized = await runtime.client.initialize({
         cwd: tenantRoot,
         provider: input.snapshot.route,
         model: input.snapshot.model,
@@ -391,8 +437,11 @@ export class DshRuntimePool {
         requireDurableQuestions: !!input.input.questionWait,
         requireContentGuard: !!input.input.contentGuard,
       });
+      preparation.initializeMs = performance.now() - initializeStarted;
+      preparation.skillRegistrationMs = initialized.skillRegistrationMs;
+      preparation.acquireMs = performance.now() - acquireStarted;
       this.runtimes.set(input.threadId, runtime);
-      return { runtime, fresh: true };
+      return { runtime, fresh: true, preparation };
     } catch (error) {
       await runtime.client.close();
       throw error;

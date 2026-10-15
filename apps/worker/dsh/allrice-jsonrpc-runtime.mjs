@@ -11,6 +11,7 @@ import {
 /* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
 import { URL } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
@@ -960,10 +961,12 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       ? params.nativeTools.filter((name) => typeof name === 'string')
       : [];
     this.nativeTools = new Set(requestedTools);
+    const skillRegistrationStarted = performance.now();
     const requestedSkills = Array.isArray(params?.nativeSkills)
       ? params.nativeSkills.map(nativeSkillSnapshot)
       : [];
     this.registerNativeSkills(requestedSkills);
+    const skillRegistrationMs = performance.now() - skillRegistrationStarted;
     const scenes = Array.isArray(params?.contentScenes)
       ? params.contentScenes
       : [];
@@ -1026,6 +1029,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     if (!this.modelErrorNormalization)
       this.modelErrorNormalization = installModelErrorNormalization(this.ctx);
     return {
+      preparation: { skillRegistrationMs },
       serverInfo: {
         name: 'deepseek-harness-sdk-runtime',
         version:
