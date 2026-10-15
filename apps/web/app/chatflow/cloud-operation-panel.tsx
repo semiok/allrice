@@ -321,7 +321,7 @@ export function CloudOperationCard({
     proposal.kind === 'cloud' &&
     proposal.dependencyResolution &&
     op.snapshot.status === 'failed'
-      ? projectResolutionErrorMessage(op.result?.code)
+      ? projectResolutionErrorMessage(op.result?.code ?? undefined)
       : undefined;
   const detailsId = useId();
   const [detailsOpen, setDetailsOpen] = useState(!!pending);

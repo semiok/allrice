@@ -64,7 +64,7 @@ async function fixture() {
     ),
   );
   const spec = resolved.forProject!(randomUUID());
-  const input = {
+  const input: Parameters<ProjectPreparation['archives']>[0] = {
     command: {
       arguments: {
         executable: '/usr/local/bin/node',
