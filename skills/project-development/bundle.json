@@ -1,10 +1,10 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.3",
+  "version": "1.0.4",
   "contentChecksum": "sha256:c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
   "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/project-development?content-sha256=c3e3af137176bb68b64393b6ba0f9ea5bb7fb1e5d24ac7bb3af651121edf014e",
   "license": "Apache-2.0",
-  "reviewedBy": "MET-189 managed dependency resolution review",
+  "reviewedBy": "MET-189 saved project network and execution budget review",
   "resources": [
     {
       "path": "references/delivery.md",
@@ -15,8 +15,8 @@
     {
       "path": "references/workflow.md",
       "mediaType": "text/markdown",
-      "byteLength": 7557,
-      "checksum": "sha256:a300b2d1ee4ef4e5b2e65d10d4ec043e9cb03fd23503d0c8d4a612f79d36fe1e"
+      "byteLength": 8688,
+      "checksum": "sha256:1020b08cb55b2d3aeee409abf1351b15e7514268f56f406b5a4dae59b2a2ad9a"
     }
   ],
   "dependencies": [
@@ -29,5 +29,5 @@
       "name": "workspace.skill.read"
     }
   ],
-  "checksum": "sha256:da2ad34da9384a0e1cff425a925f288ca283fbc7c4a87572de6e22f57fdd55e2"
+  "checksum": "sha256:5be10cc6a0b20a2cb5a2fb275148268c7bf56d769a3488fc3e3e376a1f92fc00"
 }
