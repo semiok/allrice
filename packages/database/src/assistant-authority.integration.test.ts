@@ -130,10 +130,18 @@ integration(
         }),
       });
 
-    it.each([false, true])(
-      'keeps personal profile edits root-only even if declared=%s',
-      async (declared) => {
-        const f = await profileFixture({ declared });
+    it.each([
+      ['custom', false],
+      ['custom', true],
+      ['general', false],
+      ['general', true],
+    ] as const)(
+      'keeps %s personal profile edits root-only even if declared=%s',
+      async (kind, declared) => {
+        const f = await profileFixture({
+          declared,
+          general: kind === 'general',
+        });
         await expect(f.configure()).resolves.toBeDefined();
         await expect(
           f.authorize('tool', [profileTool]),
@@ -185,17 +193,14 @@ integration(
       },
     );
 
-    it('rejects a profile tool on a general employee even when declared', async () => {
-      const f = await profileFixture({ declared: true, general: true });
-      await expect(f.configure()).rejects.toThrow('assistant_authority_denied');
-    });
-
     it.each([
       'workspace.employee.method.inspect',
       'workspace.employee.method.save_candidate',
       'workspace.employee.method.restore_candidate',
       'workspace.employee.method.test',
       'workspace.employee.method.test_status',
+      'workspace.employee.method.prepare_activation',
+      'workspace.employee.method.activate',
     ])(
       'keeps intrinsic method tool %s on the exact root and denies delegation',
       async (tool) => {

@@ -406,6 +406,17 @@ integration(
                     }),
                   ).rejects.toThrow('assistant_tool_unknown_no_replay');
                 }
+              } else if (mode === 'image_generation_with_assistants') {
+                // This general employee has storage:write. It can persist its
+                // owner's expression preference but cannot edit work methods.
+                expect(input.tools?.map((tool) => tool.name)).toContain(
+                  profileTool,
+                );
+                expect(
+                  input.tools?.filter((tool) =>
+                    tool.name.startsWith('workspace.employee.method.'),
+                  ),
+                ).toEqual([]);
               } else if (mode !== 'personal_method_with_assistants') {
                 expect(input.tools?.map((tool) => tool.name)).not.toContain(
                   profileTool,

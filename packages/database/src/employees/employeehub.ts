@@ -17,7 +17,7 @@ import { randomUUID } from 'node:crypto';
 import {
   AssignEmployeeVersionInputSchema,
   allRiceToolManifest,
-  employeeCustomizationTools,
+  withEmployeeCustomizationTools,
   CreateEmployeeInputSchema,
   DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
@@ -1523,18 +1523,11 @@ export async function prepareEmployeeRunBinding(input: {
           ...capabilityBindings(manifest.data),
           // Exact intrinsic bindings are computed from existing grants, never
           // widened by the guidance Skill or shared employee publication.
-          ...(instance?.kind === 'custom'
-            ? {
-                toolNames: [
-                  ...new Set([
-                    ...capabilityBindings(manifest.data).toolNames,
-                    ...employeeCustomizationTools
-                      .filter((t) => grantedCapabilities.includes(t.capability))
-                      .map((t) => t.name),
-                  ]),
-                ],
-              }
-            : {}),
+          toolNames: withEmployeeCustomizationTools(
+            capabilityBindings(manifest.data).toolNames,
+            grantedCapabilities,
+            instance?.kind,
+          ),
           ...(managedPython ? { managedPython } : {}),
           ...(managedPdf ? { managedPdf } : {}),
           skillVersionIds,

@@ -4,6 +4,7 @@ import {
   ExecutionContextSchema,
   EmployeeExecutionSnapshotSchema,
   UuidSchema,
+  employeeCustomizationToolsForInstance,
   type ExecutionContext,
   type EmployeeInstance,
 } from '@allrice/contracts';
@@ -70,7 +71,10 @@ export async function assertEmployeeChatExecution(
   },
 ) {
   const { ctx, scope } = employeeChatIdentity(input, fail);
-  if (before.kind !== 'custom' || before.ownerId !== scope.actor.id) fail();
+  const operation = employeeCustomizationToolsForInstance(before.kind).find(
+    (entry) => entry.name === tool,
+  );
+  if (!operation || before.ownerId !== scope.actor.id) fail();
   await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
   // Cancellation takes root/job locks before employee authority. NOWAIT
   // uses the existing bounded transaction retry instead of deadlocking.
@@ -107,15 +111,10 @@ export async function assertEmployeeChatExecution(
   if (
     frozen.schemaVersion !== 2 ||
     frozen.instance?.id !== before.id ||
-    frozen.instance.kind !== 'custom'
+    frozen.instance.kind !== before.kind
   )
     fail();
-  const capability = [
-    'workspace.employee.method.inspect',
-    'workspace.employee.method.test_status',
-  ].includes(tool)
-    ? 'storage:read'
-    : 'storage:write';
+  const capability = operation.capability;
   if (
     frozen.tenantContext.organizationId !== ctx.organizationId ||
     frozen.tenantContext.workspaceId !== ctx.workspaceId ||

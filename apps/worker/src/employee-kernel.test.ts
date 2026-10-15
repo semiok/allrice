@@ -126,3 +126,27 @@ describe('Employee Kernel checkpoint recovery', () => {
     expect(bootstrap).not.toContain('已覆盖消息');
   });
 });
+
+it('keeps the published general identity while applying only the frozen personal expression style', () => {
+  const snapshot = {
+    schemaVersion: 2,
+    instance: {
+      kind: 'general',
+      revision: 2,
+      profile: {
+        name: 'LEGACY_NAME',
+        mission: 'LEGACY_MISSION',
+        expressionStyle: 'concise',
+      },
+    },
+    capabilitySnapshot: {
+      bindings: { toolNames: ['workspace.employee.profile.update'] },
+    },
+  } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
+  const text = employeeInstanceInstructions(snapshot).join('\n');
+  expect(text).toContain('Keep answers concise');
+  expect(text).toContain('expectedRevision=2');
+  expect(text).toContain('do not send name or edit business methods');
+  expect(text).not.toContain('LEGACY_');
+  expect(text).not.toContain('workspace_employee_method_');
+});

@@ -365,7 +365,24 @@ export async function updateEmployeeInstance(
     value = UpdateEmployeeInstanceInputSchema.parse(input),
     scope = { ...context, workspaceId: value.workspaceId };
   return getDatabase().begin((tx) =>
-    writeInstanceProfile(tx, scope, id, value, () => value.profile),
+    writeInstanceProfile(
+      tx,
+      scope,
+      id,
+      value,
+      (current, before) =>
+        before.kind === 'general'
+          ? { ...current, ...value.profile }
+          : value.profile,
+      async (before) => {
+        if (
+          before.kind === 'general' &&
+          (value.profile.expressionStyle === undefined ||
+            Object.keys(value.profile).some((key) => key !== 'expressionStyle'))
+        )
+          throw new DataAccessError('authorization_denied');
+      },
+    ),
   );
 }
 
@@ -376,7 +393,10 @@ async function writeInstanceProfile(
   scope: Identity & Pick<RequestContext, 'requestId'>,
   id: string,
   value: { requestId: string; expectedRevision: number } & postgres.JSONValue,
-  profileFor: (current: EmployeeInstanceProfile) => EmployeeInstanceProfile,
+  profileFor: (
+    current: EmployeeInstanceProfile,
+    before: EmployeeInstance,
+  ) => EmployeeInstanceProfile,
   authorize?: (before: EmployeeInstance) => Promise<void>,
 ) {
   await authority(scope, tx, true);
@@ -400,7 +420,7 @@ async function writeInstanceProfile(
     throw new EmployeeInstanceError('instance_conflict');
   const revision = row.revision + 1;
   const profile = EmployeeInstanceProfileSchema.parse(
-    profileFor(EmployeeInstanceProfileSchema.parse(row.profile)),
+    profileFor(EmployeeInstanceProfileSchema.parse(row.profile), before),
   );
   await tx`insert into allrice_employee_instance_revisions(instance_id,revision,profile,request_id,request_input)
       values(${id},${revision},${tx.json(profile)},${value.requestId},${tx.json(value)})`;
@@ -414,7 +434,9 @@ async function writeInstanceProfile(
 export class EmployeeProfileChatError extends Error {
   constructor(
     public readonly code:
-      'explicit_profile_request_required' | 'profile_run_unavailable',
+      | 'explicit_profile_request_required'
+      | 'profile_run_unavailable'
+      | 'general_profile_style_only',
   ) {
     super(code);
   }
@@ -490,7 +512,8 @@ export async function updateEmployeeProfileFromChat(input: {
       },
       (current) => ({ ...current, ...patch }),
       async (before) => {
-        if (before.kind !== 'custom') fail();
+        if (before.kind === 'general' && args.name !== undefined)
+          throw new EmployeeProfileChatError('general_profile_style_only');
         const text = await assertEmployeeChatRun(
           tx,
           input,
@@ -537,7 +560,18 @@ export async function changeEmployeeInstanceLifecycle(
       const [source] =
         await tx`select profile from allrice_employee_instance_revisions where instance_id=${id} and revision=${value.sourceRevision}`;
       if (!source) throw new DataAccessError('not_found');
-      profile = source.profile;
+      if (before.kind === 'general') {
+        const current = EmployeeInstanceProfileSchema.parse(row.profile);
+        const sourceStyle = EmployeeInstanceProfileSchema.parse(
+          source.profile,
+        ).expressionStyle;
+        const retained = { ...current };
+        delete retained.expressionStyle;
+        profile = {
+          ...retained,
+          ...(sourceStyle ? { expressionStyle: sourceStyle } : {}),
+        };
+      } else profile = source.profile;
     } else if (row.archived_at)
       throw new EmployeeInstanceError('instance_conflict');
     const [updated] =

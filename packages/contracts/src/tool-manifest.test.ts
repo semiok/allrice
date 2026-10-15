@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { allRiceToolManifest } from './tool-manifest.ts';
+import {
+  allRiceToolManifest,
+  withEmployeeCustomizationTools,
+} from './tool-manifest.ts';
 
 describe('AllRice tool manifest', () => {
   it('registers native reconciliation, frozen resources, MCP and cloud execution', () => {
@@ -127,4 +130,32 @@ describe('AllRice tool manifest', () => {
       }
     }
   });
+});
+
+it('ignores published intrinsic grants and gives general instances only their personal style tool', () => {
+  const declared = [
+    'workspace.file.read',
+    'workspace.employee.method.activate',
+    'workspace.employee.profile.update',
+  ];
+  expect(
+    withEmployeeCustomizationTools(
+      declared,
+      ['storage:read', 'storage:write'],
+      'general',
+    ),
+  ).toEqual(['workspace.file.read', 'workspace.employee.profile.update']);
+  expect(
+    withEmployeeCustomizationTools(declared, ['storage:read'], 'general'),
+  ).toEqual(['workspace.file.read']);
+  expect(
+    withEmployeeCustomizationTools(declared, ['storage:read', 'storage:write']),
+  ).toEqual(['workspace.file.read']);
+  expect(
+    withEmployeeCustomizationTools(
+      declared,
+      ['storage:read', 'storage:write'],
+      'custom',
+    ),
+  ).toContain('workspace.employee.method.activate');
 });

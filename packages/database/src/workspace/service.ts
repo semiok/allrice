@@ -689,7 +689,7 @@ export async function listChatSessions(
   >`
     select *, to_char(updated_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_updated_at,
       coalesce(case when owner_id=${requireUser(context)} then
-        (select i.profile->>'name' from allrice_employee_instances i where i.id=coalesce(allrice_chat_sessions.employee_instance_id,allrice_chat_sessions.employee_assignment_id)) end,
+        (select i.profile->>'name' from allrice_employee_instances i where i.id=coalesce(allrice_chat_sessions.employee_instance_id,allrice_chat_sessions.employee_assignment_id) and i.kind='custom') end,
         (select v.name from allrice_employee_versions v where v.id=allrice_chat_sessions.employee_version_id)) as employee_name from allrice_chat_sessions
     where organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
@@ -722,7 +722,7 @@ export async function listChatSessions(
       >`
         select s.employee_assignment_id as "employeeAssignmentId",
           coalesce(s.employee_instance_id,s.employee_assignment_id) as "employeeInstanceId",
-          (array_agg(coalesce(case when s.owner_id=${requireUser(context)} then i.profile->>'name' end,v.name) order by s.updated_at desc, s.id desc))[1] as "employeeName",
+          (array_agg(coalesce(case when s.owner_id=${requireUser(context)} and i.kind='custom' then i.profile->>'name' end,v.name) order by s.updated_at desc, s.id desc))[1] as "employeeName",
           count(*)::integer as count
         from allrice_chat_sessions s
         join allrice_employee_versions v on v.id = s.employee_version_id

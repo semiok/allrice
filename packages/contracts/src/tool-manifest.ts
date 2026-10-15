@@ -22,8 +22,8 @@ export interface AllRiceToolManifestEntry {
   dshWireName?: string;
 }
 
-/** Frozen intrinsic tools for a personal custom employee. A Skill or published
- * template never grants these to another instance or delegated child. */
+/** Intrinsic personal tools. Published templates cannot grant these to a
+ * different instance kind or a delegated child. */
 export const employeeCustomizationTools = [
   { name: 'workspace.employee.profile.update', capability: 'storage:write' },
   { name: 'workspace.employee.method.inspect', capability: 'storage:read' },
@@ -43,6 +43,37 @@ export const employeeCustomizationTools = [
   },
   { name: 'workspace.employee.method.activate', capability: 'storage:write' },
 ] as const;
+
+/** The same kind-specific boundary is used when freezing and authorizing tools. */
+export function employeeCustomizationToolsForInstance(
+  kind?: 'general' | 'custom',
+) {
+  return employeeCustomizationTools.filter(
+    (tool) =>
+      kind === 'custom' ||
+      (kind === 'general' && tool.name === 'workspace.employee.profile.update'),
+  );
+}
+
+/** Remove intrinsic names from publication input before adding the server's
+ * bounded instance selection, so a template cannot opt general users into methods. */
+export function withEmployeeCustomizationTools(
+  toolNames: readonly string[],
+  capabilities: readonly SkillCapability[],
+  kind?: 'general' | 'custom',
+) {
+  return [
+    ...new Set([
+      ...toolNames.filter(
+        (name) =>
+          !employeeCustomizationTools.some((tool) => tool.name === name),
+      ),
+      ...employeeCustomizationToolsForInstance(kind)
+        .filter((tool) => capabilities.includes(tool.capability))
+        .map((tool) => tool.name),
+    ]),
+  ];
+}
 
 /**
  * Metadata-only single source of truth for the governed AllRice tool surface.

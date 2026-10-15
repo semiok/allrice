@@ -9,6 +9,7 @@ import { EmployeeInstanceSchema } from '@allrice/contracts';
 import {
   employeeChoice,
   employeeChoiceId,
+  employeeChoiceProfile,
   employeeChoices,
 } from './employee-instances';
 
@@ -200,5 +201,61 @@ describe('Allrice employee projection into the native DSH tree', () => {
       employeePreferenceKey({ ...workspace, workspaceId: 'other' }),
     );
     expect(employeePreferenceKey({ ...workspace, viewerId: null })).toBeNull();
+  });
+});
+
+it('keeps general employee list and details on published identity despite legacy personal fields', () => {
+  const id = '00000000-0000-4000-8000-000000000001';
+  const source = { kind: 'tenant_version', employeeVersionId: id };
+  const instance = EmployeeInstanceSchema.parse({
+    id,
+    assignmentId: id,
+    organizationId: id,
+    workspaceId: id,
+    ownerId: id,
+    kind: 'general',
+    revision: 2,
+    profile: {
+      name: 'Legacy name',
+      description: 'Legacy description',
+      role: 'Legacy role',
+      expressionStyle: 'concise',
+    },
+    creationSource: source,
+    source,
+    createdAt: '2026-10-13T00:00:00Z',
+    updatedAt: '2026-10-13T00:00:00Z',
+  });
+  const base = {
+    assignmentId: id,
+    name: 'Published name',
+    description: 'Published description',
+    identity: { role: 'Published role' },
+  } as Workspace['employeeProfiles'][number];
+  const view: Workspace = {
+    ...workspace,
+    employeeProfiles: [base],
+    employees: [
+      {
+        ...employee(id),
+        currentVersion: {
+          id: 'published',
+          manifest: { name: 'Published name' },
+        },
+        instances: [instance],
+      },
+    ],
+  };
+  expect(employeeChoice(view, id)?.currentVersion.manifest.name).toBe(
+    'Published name',
+  );
+  expect(employeeChoiceProfile(view, id)).toEqual(base);
+  view.employees[0]!.instances![0] = { ...instance, kind: 'custom' };
+  expect(employeeChoice(view, id)?.currentVersion.manifest.name).toBe(
+    'Legacy name',
+  );
+  expect(employeeChoiceProfile(view, id)).toMatchObject({
+    name: 'Legacy name',
+    identity: { role: 'Legacy role' },
   });
 });
