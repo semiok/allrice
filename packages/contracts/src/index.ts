@@ -36,6 +36,7 @@ export * from './folder-trigger.ts';
 export * from './authorization.ts';
 export * from './tenant-administration.ts';
 export * from './organization-administration.ts';
+export * from './organization-ai-directory.ts';
 export * from './content-maintenance.ts';
 export * from './employee-tool-catalog.ts';
 export * from './bridge.ts';

@@ -1,0 +1,157 @@
+.view {
+  padding-top: 22px;
+  min-width: 0;
+}
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.heading h3,
+.instances h4 {
+  margin: 0;
+  font-size: var(--admin-font-body);
+  font-weight: 500;
+}
+.heading p,
+.instances p,
+.note {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+  line-height: 1.6;
+}
+.filters {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: end;
+  margin: 18px 0;
+}
+.filters label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--admin-font-meta);
+}
+.filters input,
+.filters select {
+  min-width: 0;
+  width: 240px;
+  max-width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--admin-control-border);
+  border-radius: var(--admin-control-radius);
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  font: inherit;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  padding: 16px 0;
+  border-block: 1px solid var(--admin-border);
+}
+.summary small {
+  flex-basis: 100%;
+  color: var(--admin-muted);
+}
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  font-size: var(--admin-font-meta);
+}
+.layout {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.5fr);
+  gap: 24px;
+  margin-top: 20px;
+}
+.people {
+  display: grid;
+  gap: 6px;
+}
+.people > button {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--admin-border);
+  border-radius: 8px;
+  color: var(--admin-text);
+  background: var(--admin-canvas);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.people > button[aria-pressed='true'] {
+  background: var(--admin-selected);
+  border-color: var(--admin-text);
+}
+.people > button > span {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+  font-size: var(--admin-font-meta);
+}
+.empty {
+  padding: 36px 16px;
+  text-align: center;
+  color: var(--admin-muted);
+}
+.instances {
+  min-width: 0;
+}
+.instance {
+  display: grid;
+  gap: 7px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--admin-border);
+  overflow-wrap: anywhere;
+}
+.instanceHeading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+.instanceHeading h5 {
+  margin: 0;
+  font-size: var(--admin-font-body);
+  font-weight: 500;
+}
+.instanceHeading span,
+.instance small {
+  color: var(--admin-muted);
+  font-size: var(--admin-font-meta);
+}
+.instance p {
+  margin: 0;
+}
+.instance > button {
+  justify-self: start;
+  margin-top: 6px;
+}
+@media (max-width: 750px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .heading {
+    flex-wrap: wrap;
+  }
+  .filters label {
+    flex: 1 1 160px;
+  }
+  .filters input,
+  .filters select {
+    width: 100%;
+  }
+}

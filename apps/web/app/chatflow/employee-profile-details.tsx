@@ -104,9 +104,11 @@ function ProfileSource({
 export function EmployeeProfileDetails({
   details,
   onPreview,
+  view = 'personal',
 }: {
   details: EmployeeDetails;
   onPreview: (reference: ReferenceSelection) => void;
+  view?: 'personal' | 'shared';
 }) {
   const { profile, content } = details;
   const [section, setSection] = useState<Section>('requirements');
@@ -143,6 +145,11 @@ export function EmployeeProfileDetails({
       : '已配发版本';
   return (
     <div className={css.details}>
+      {view === 'shared' && (
+        <p className={css.notice}>
+          已配发基础人设与公司／部门共享内容。个人名称、人设、偏好、场景和资料由本人查看，不在组织视图中展示。
+        </p>
+      )}
       <section
         className={css.intro}
         aria-label="基础与人设"
@@ -163,7 +170,10 @@ export function EmployeeProfileDetails({
             <h3>{profile.name}</h3>
             <p>
               {profile.kind === 'custom' ? '定制 AI 员工' : '通用 AI 员工'} ·{' '}
-              {version} · 个人设置 v{profile.revision}
+              {version}
+              {view === 'personal'
+                ? ` · 个人设置 v${profile.revision}`
+                : ' · 共享只读视图'}
             </p>
           </div>
         </div>
@@ -213,7 +223,7 @@ export function EmployeeProfileDetails({
             <ProfileSource profile={profile} field="description" />
           </p>
           <p>当前配发版本：{profile.source.employeeVersionId}</p>
-          <p>个人设置版本：v{profile.revision}</p>
+          {view === 'personal' && <p>个人设置版本：v{profile.revision}</p>}
         </details>
       </section>
       {content.scenes.length > 0 && (
@@ -280,7 +290,9 @@ export function EmployeeProfileDetails({
       >
         <p className={css.hint}>
           {scene ? '通用内容与当前场景共同采用。' : '当前已生效的长期内容。'}
-          维护标记表示你的权限，调整请在聊天中说明。
+          {view === 'personal'
+            ? '维护标记表示你的权限，调整请在聊天中说明。'
+            : '本视图仅供查看共享内容。'}
         </p>
         {section === 'experience' && (
           <p className={css.notice}>

@@ -14,6 +14,7 @@ import { skillBundleChecksum, skillBytesChecksum } from './skill-bundles.ts';
 import type { getDatabase } from './core/client.ts';
 export async function createEmployeeAdministrationFixture(
   db: ReturnType<typeof getDatabase>,
+  options: { name?: string } = {},
 ) {
   const organizationId = randomUUID(),
     workspaceId = randomUUID(),
@@ -30,7 +31,7 @@ export async function createEmployeeAdministrationFixture(
   const definition: PlatformEmployeeDefinition = {
     schemaVersion: 1,
     key,
-    name: 'Synthetic publication',
+    name: options.name ?? 'Synthetic publication',
     description: 'Only synthetic package authority checks',
     appearance: { avatarType: 'initials', avatarValue: 'P' },
     identity: {
@@ -100,7 +101,7 @@ export async function createEmployeeAdministrationFixture(
       values(${skillId},${value.version},${value.checksum},${db.json(value)}) on conflict do nothing`;
   }
   await catalog(a);
-  await db`insert into allrice_platform_employees(id,employee_key,name,description,status) values(${employeeId},${key},'Synthetic publication','Synthetic only','draft')`;
+  await db`insert into allrice_platform_employees(id,employee_key,name,description,status) values(${employeeId},${key},${definition.name},'Synthetic only','draft')`;
   await db`insert into allrice_platform_employee_revisions(id,employee_id,revision,status,definition,checksum)
     values(${revisionId},${employeeId},1,'draft',${db.json(definition)},${skillBytesChecksum(JSON.stringify(definition))})`;
   await db`update allrice_platform_employees set current_draft_revision_id=${revisionId} where id=${employeeId}`;

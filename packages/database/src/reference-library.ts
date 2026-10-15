@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
+import type { OrganizationSharedReader } from './organization-shared-reader.ts';
 import {
   ContentOwnershipSchema,
   ReferenceActionSchema,
@@ -145,7 +146,10 @@ export async function referenceSourceAccess(
   maintain = false,
   lockRead = false,
   allowLegacyProcessing = false,
+  sharedReader?: OrganizationSharedReader,
 ) {
+  if (sharedReader && (maintain || lockRead || allowLegacyProcessing))
+    throw new DataAccessError('authorization_denied');
   if (maintain || lockRead) await readContentPrincipal(context, sql, true);
   const legacy = await legacyReferenceAuthority(
     sql,
@@ -163,13 +167,9 @@ export async function referenceSourceAccess(
     ${maintain ? sql`for update` : lockRead ? sql`for share` : sql``}`;
   if (!s) throw new DataAccessError('not_found');
   const ownership = ContentOwnershipSchema.parse(s.ownership);
-  const access = await referenceAccess(
-    context,
-    ownership,
-    sql,
-    maintain,
-    lockRead,
-  );
+  const access = sharedReader
+    ? sharedReader.access(ownership)
+    : await referenceAccess(context, ownership, sql, maintain, lockRead);
   if (!access.canRead || (maintain && !access.canMaintain))
     throw new DataAccessError('not_found');
   return {
@@ -260,6 +260,7 @@ export async function getReferenceFile(
   workspaceId: string,
   revisionId: string,
   sql: Sql = getDatabase(),
+  sharedReader?: OrganizationSharedReader,
 ) {
   const context = scoped(contextInput, workspaceId);
   const [r] = await sql<
@@ -271,6 +272,10 @@ export async function getReferenceFile(
     context,
     r.knowledge_source_id,
     sql,
+    false,
+    false,
+    false,
+    sharedReader,
   );
   if (source.status !== 'active') throw new DataAccessError('not_found');
   if (legacy) await assertLegacyReferenceRevision(sql, revisionId, legacy.id);
