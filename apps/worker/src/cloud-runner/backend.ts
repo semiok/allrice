@@ -437,7 +437,14 @@ export class CloudRunnerBackend {
     if (socketPath !== configuredSocket() || !socketPath.startsWith('/'))
       throw new CloudRunnerError('CLOUD_DEDICATED_BACKEND_REQUIRED');
   }
-  async call(method: string, path: string, body?: unknown): Promise<Buffer> {
+  async call(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs = 15_000,
+  ): Promise<Buffer> {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 15_000)
+      throw new CloudRunnerError('CLOUD_DAEMON_INVALID_TIMEOUT');
     const bytes =
       body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     if ((bytes?.length ?? 0) > 32_000_000)
@@ -474,15 +481,20 @@ export class CloudRunnerBackend {
       );
       const timer = setTimeout(
         () => req.destroy(new CloudRunnerError('CLOUD_DAEMON_TIMEOUT')),
-        15_000,
+        timeoutMs,
       );
       req.once('close', () => clearTimeout(timer));
       req.once('error', reject);
       req.end(bytes);
     });
   }
-  async json<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const data = await this.call(method, path, body);
+  async json<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs?: number,
+  ): Promise<T> {
+    const data = await this.call(method, path, body, timeoutMs);
     return data.length ? (JSON.parse(data.toString()) as T) : (null as T);
   }
   async putArchive(id: string, bytes: Uint8Array, signal: AbortSignal) {

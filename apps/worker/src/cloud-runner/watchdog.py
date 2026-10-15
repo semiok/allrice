@@ -33,6 +33,17 @@ COMPILED_PROFILE = 'allrice.output-redaction.compiled.v1'
 COMPILED_TIMEOUT_STEP = 300_000
 COMPILED_TIMEOUT_MAX = 1_800_000
 NODE_IMAGE = 'sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5'
+# Docker merges the pinned image defaults even when create receives Env=[].
+# Accept exactly those public image values, never host or caller additions.
+SANDBOX_IMAGE_ENV = {
+    NODE_IMAGE: ['PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                 'NODE_VERSION=22.23.2', 'YARN_VERSION=1.22.22'],
+    PYTHON_IMAGE: ['PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+                   'LANG=C.UTF-8', 'GPG_KEY=A035C8C19219BA821ECEA86B64E628F8D684696D',
+                   'PYTHON_VERSION=3.11.13',
+                   'PYTHON_SHA256=8fb5f9fbc7609fa822cb31549884575db7fd9657cbffb89510b5d7975963a83a',
+                   'PYTHONDONTWRITEBYTECODE=1', 'MPLBACKEND=Agg'],
+}
 STATE = "/run/allrice-cloud-watchdog.json"
 CAPACITY = "/run/allrice-cloud-capacity.json"
 EXPECTED = "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a"
@@ -249,7 +260,8 @@ def sandbox_lease_valid(container, created, deadline, now):
             and SERVICE not in labels and 'xyz.bplabs.allrice.repository.profile' not in labels
             and 'xyz.bplabs.allrice.project.profile' not in labels
             and config.get('Image') in (NODE_IMAGE,PYTHON_IMAGE) and config.get('User')=='65532:65532'
-            and config.get('Entrypoint')==['/usr/local/bin/node'] and not config.get('Env')
+            and config.get('Entrypoint')==['/usr/local/bin/node']
+            and sorted(config.get('Env') or []) == sorted(SANDBOX_IMAGE_ENV[config['Image']])
             and len(cmd)==3 and cmd[:2]==['--input-type=module','--eval']
             and hashlib.sha256(cmd[2].encode()).hexdigest() in SANDBOX_SUPERVISORS
             and host.get('Runtime')=='runsc' and host.get('NetworkMode')=='none'

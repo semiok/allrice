@@ -21,7 +21,7 @@ assert set(hashlib.sha256(x.encode()).hexdigest() for x in supervisors)==set(m.S
 now=1000000;attempt='00000000-0000-4000-8000-000000000001'
 m.time.time=lambda:now/1000
 c={'Config':{'Image':m.NODE_IMAGE,'User':'65532:65532','Entrypoint':['/usr/local/bin/node'],
- 'Cmd':['--input-type=module','--eval',supervisors[0]],'Env':[],
+ 'Cmd':['--input-type=module','--eval',supervisors[0]],'Env':m.SANDBOX_IMAGE_ENV[m.NODE_IMAGE][:],
  'Labels':{m.ATTEMPT:attempt,m.DEADLINE:'1600000',m.SANDBOX:'v1',m.SANDBOX+'-limit':'600000',m.SANDBOX+'-started':str(now)}},
  'HostConfig':{'Runtime':'runsc','NetworkMode':'none','ReadonlyRootfs':True,'Privileged':False,
  'CapDrop':['ALL'],'CapAdd':[],'SecurityOpt':['no-new-privileges'],'Memory':256*1024**2,
@@ -42,6 +42,7 @@ with tempfile.TemporaryDirectory() as tmp:
  save(lease)
  values=[m.command_deadline_valid(c,now,1600000)]
  x=copy.deepcopy(c);x['Config']['Cmd'][2]=supervisors[1];values.append(m.command_deadline_valid(x,now,1600000))
+ x=copy.deepcopy(c);x['Config']['Image']=m.PYTHON_IMAGE;x['Config']['Env']=m.SANDBOX_IMAGE_ENV[m.PYTHON_IMAGE][:];values.append(m.command_deadline_valid(x,now,1600000))
  for obj,key,value in [('Config','Image','unknown'),('Config','User','0:0'),('Config','Cmd',['--eval','untrusted']),
  ('Config','Env',['TOKEN=synthetic']),('HostConfig','NetworkMode','bridge'),('HostConfig','Privileged',True),
  ('HostConfig','Binds',['/host:/tmp']),('HostConfig','CapAdd',['SYS_ADMIN']),('HostConfig','MemorySwap',1024**3),
@@ -49,6 +50,8 @@ with tempfile.TemporaryDirectory() as tmp:
  ('Labels',m.SERVICE,'project-v1')]:
   x=copy.deepcopy(c);(x['Config']['Labels'] if obj=='Labels' else x[obj])[key]=value
   values.append(m.command_deadline_valid(x,now,1600000))
+ for env in [[],c['Config']['Env']+['TOKEN=synthetic'],c['Config']['Env']+['PATH=/untrusted'],m.SANDBOX_IMAGE_ENV[m.PYTHON_IMAGE]]:
+  x=copy.deepcopy(c);x['Config']['Env']=env;values.append(m.command_deadline_valid(x,now,1600000))
  values.append(m.command_deadline_valid(c,now,1600001))
  for key,value in [('expiresAt',now),('expiresAt',now+5501),('hardDeadline',1600001),('attempt','other'),('kind','project-v1')]:
   save({**lease,key:value});values.append(m.command_deadline_valid(c,now,1600000))
@@ -81,8 +84,8 @@ print(json.dumps({'values':values,'mixedStopped':len(killed)==1,'old':old,'curre
       },
     ),
   );
-  expect(result.values.slice(0, 2)).toEqual([true, true]);
-  expect(result.values.slice(2).every((v: boolean) => v === false)).toBe(true);
+  expect(result.values.slice(0, 3)).toEqual([true, true, true]);
+  expect(result.values.slice(3).every((v: boolean) => v === false)).toBe(true);
   expect(result.mixedStopped).toBe(true);
   expect(result.old).toBeNull();
   expect(result.current).toEqual({

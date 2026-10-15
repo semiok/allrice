@@ -102,6 +102,7 @@ async function execute(name: string, duration: number, revoke = false) {
   } finally {
     if (timer) clearTimeout(timer);
     const observed = await backend.inspect(attemptId);
+    await save(name + '-container', observed);
     if (observed?.State.Running) await backend.stop(attemptId);
     await backend.cleanup(attemptId);
     assert.equal(await backend.inspect(attemptId), null);
