@@ -14,6 +14,7 @@ createRoot(document.getElementById('root')!).render(
     <ChatFlowClient
       workbenchEnabled={!location.search.includes('disabled')}
       taskSuggestionsEnabled={location.search.includes('task-suggestions')}
+      localMcpEnabled={location.search.includes('local-mcp')}
     />
   ),
 );

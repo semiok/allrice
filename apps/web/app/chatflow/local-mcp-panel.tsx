@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { LocalMcpOperationView } from '@allrice/database';
 import styles from './local-command-panel.module.css';
+const statusReadFailure = '暂时无法更新电脑操作状态，请稍后重试。';
 const labels: Record<string, string> = {
   planned: '准备中',
   waiting_user: '等待这一次操作授权',
@@ -52,15 +53,14 @@ export function LocalMcpPanel({
           signal: abort.signal,
         });
         if (response.status === 404) return;
-        if (!response.ok) throw Error('本地 MCP 状态读取失败');
+        if (!response.ok) throw Error(statusReadFailure);
         const body = await response.json();
         if (!abort.signal.aborted) {
           setOperations(body.operations);
           setError('');
         }
-      } catch (e) {
-        if (!abort.signal.aborted)
-          setError(e instanceof Error ? e.message : '读取失败');
+      } catch {
+        if (!abort.signal.aborted) setError(statusReadFailure);
       }
       if (active && !abort.signal.aborted)
         timer = setTimeout(() => void load(), 1500);
@@ -126,7 +126,7 @@ export function LocalMcpPanel({
   }
   if (!operations.length && !error) return null;
   return (
-    <section className={styles.root} aria-label="本地 MCP 审批与执行">
+    <section className={styles.root} aria-label="电脑工具操作">
       {error && (
         <p role="alert">
           {error}{' '}
