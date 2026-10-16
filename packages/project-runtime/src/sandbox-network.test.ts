@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import * as tls from 'node:tls';
 import { Duplex, PassThrough } from 'node:stream';
 import { createServer, connect } from 'node:net';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SandboxHttpsOriginSchema,
   SandboxNetworkLeaseSchema,
@@ -46,6 +46,7 @@ function startRelay(
 }
 afterEach(() => {
   while (closers.length) closers.pop()!();
+  vi.useRealTimers();
 });
 const lease = () =>
   SandboxNetworkLeaseSchema.parse({
@@ -505,4 +506,64 @@ describe('sandbox outbound boundary', () => {
     },
     20_000,
   );
+});
+
+function delayedAuthorityFixture(timeoutMs?: number, expiryMs = 30000) {
+  vi.useFakeTimers();
+  const stream = new Duplex({
+    read() {},
+    write(_chunk, _encoding, done) {
+      done();
+    },
+  });
+  let resolve!: () => void;
+  const check = vi.fn(
+    () =>
+      new Promise<void>((r) => {
+        resolve = r;
+      }),
+  );
+  const onClosed = vi.fn();
+  const session = new SandboxNetworkSession(stream, {
+    lease: {
+      ...lease(),
+      expiresAt: new Date(Date.now() + expiryMs).toISOString(),
+    },
+    assertCurrent: check,
+    authorityTimeoutMs: timeoutMs,
+    onClosed,
+  });
+  closers.push(() => session.close());
+  stream.push(Buffer.from('{"type":"ready"}\n'));
+  return { stream, session, check, onClosed, resolve: () => resolve() };
+}
+it('allows a slow healthy Bridge authority check without concurrent checks', async () => {
+  const f = delayedAuthorityFixture(8000);
+  await vi.advanceTimersByTimeAsync(6500);
+  expect(f.stream.destroyed).toBe(false);
+  expect(f.check).toHaveBeenCalledTimes(1);
+  f.resolve();
+  await vi.advanceTimersByTimeAsync(1);
+  expect(f.onClosed).not.toHaveBeenCalled();
+});
+it.each([undefined, 8000])(
+  'bounds stalled authority and ignores late ACK (timeout %s)',
+  async (timeout) => {
+    const f = delayedAuthorityFixture(timeout);
+    await vi.advanceTimersByTimeAsync((timeout ?? 2000) + 600);
+    expect(f.stream.destroyed).toBe(true);
+    expect(f.onClosed).toHaveBeenCalledExactlyOnceWith(
+      'SANDBOX_NETWORK_REVOKED',
+    );
+    f.resolve();
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(f.check).toHaveBeenCalledTimes(1);
+  },
+);
+it('does not let the slower Bridge check outlive its network grant', async () => {
+  const f = delayedAuthorityFixture(8000, 3000);
+  await vi.advanceTimersByTimeAsync(3100);
+  expect(f.stream.destroyed).toBe(true);
+  expect(f.onClosed).toHaveBeenCalledWith('SANDBOX_NETWORK_REVOKED');
+  f.resolve();
 });

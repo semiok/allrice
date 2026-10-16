@@ -12,6 +12,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   RuntimeBridgeDispatchSchema,
+  sandboxExecutionBudgetSpec,
+  resolveSandboxExecutionPolicy,
+  startSandboxExecutionBudget,
   RuntimeLocalPdfPayloadSchema,
   RuntimeLocalPdfResultSchema,
   RuntimeLocalPythonPayloadSchema,
@@ -37,6 +40,7 @@ import { LocalPythonInputDownloadError } from './local-python-download-error.js'
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const action of cleanup.splice(0).reverse()) await action();
+  vi.unstubAllEnvs();
 });
 
 async function serve(
@@ -68,6 +72,7 @@ async function createFixture(
     cancelStart?: boolean;
     pdf?: boolean;
     python?: boolean;
+    controlDelayMs?: number;
   } = {},
 ) {
   const temporary = await realpath(
@@ -111,13 +116,23 @@ async function createFixture(
   const pythonFingerprint = createHash('sha256')
     .update(`allrice-managed-python-v1:${fixtureId(11)}`)
     .digest('hex');
+  const budgetSpec = sandboxExecutionBudgetSpec(
+    { version: 1, kind: 'compute' },
+    resolveSandboxExecutionPolicy([]),
+  );
   const pythonPayload = RuntimeLocalPythonPayloadSchema.parse({
+    ...(options.controlDelayMs ? { executionBudget: budgetSpec } : {}),
     capability: 'local.python.execute',
     arguments: {
+      ...(options.controlDelayMs
+        ? { execution: { version: 1, kind: 'compute' } }
+        : {}),
       path: '.',
-      purpose: 'office',
+      purpose: options.controlDelayMs ? 'python_charts' : 'office',
       origin: {
-        toolName: 'workspace.export.create',
+        toolName: options.controlDelayMs
+          ? 'python.execute'
+          : 'workspace.export.create',
         callId: 'fixed-download-call',
         argumentsDigest: `sha256:${'1'.repeat(64)}`,
       },
@@ -125,11 +140,12 @@ async function createFixture(
       inputs: [],
       outputs: [
         {
-          path: 'result.docx',
-          fileName: 'result.docx',
-          format: 'docx',
-          mediaType:
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          path: options.controlDelayMs ? 'result.json' : 'result.docx',
+          fileName: options.controlDelayMs ? 'result.json' : 'result.docx',
+          format: options.controlDelayMs ? 'json' : 'docx',
+          mediaType: options.controlDelayMs
+            ? 'application/json'
+            : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
           objectId: fixtureId(43),
         },
       ],
@@ -140,8 +156,8 @@ async function createFixture(
       network: 'none',
       limits: {
         timeoutMs: 1000,
-        inputBytes: 20_000_000,
-        artifactBytes: 8_000_000,
+        inputBytes: options.controlDelayMs ? 2_000_000 : 20_000_000,
+        artifactBytes: options.controlDelayMs ? 4_000_000 : 8_000_000,
         outputBytes: 8192,
         memoryMiB: 512,
         cpuMillis: 1000,
@@ -211,6 +227,19 @@ async function createFixture(
         cancelRequestId: options.cancelStart ? fixtureId(99) : null,
       };
       return { snapshot, mayExecute };
+    },
+    async exchangeSandboxExecutionBudget() {
+      return startSandboxExecutionBudget(
+        budgetSpec,
+        Date.now(),
+        Date.now() + 600000,
+      );
+    },
+    async heartbeat() {
+      return {
+        snapshot,
+        leaseExpiresAt: new Date(Date.now() + 120000).toISOString(),
+      };
     },
     async recordReceipt(input) {
       // Match the existing server gate: an unknown process result cannot be
@@ -305,9 +334,13 @@ async function createFixture(
     const pathname = new URL(request.url ?? '/', 'http://local').pathname;
     const action = pathname.endsWith('/next')
       ? 'next'
-      : pathname.endsWith('/start')
-        ? 'start'
-        : 'receipts';
+      : pathname.endsWith('/budget')
+        ? 'budget'
+        : pathname.endsWith('/heartbeat')
+          ? 'heartbeat'
+          : pathname.endsWith('/start')
+            ? 'start'
+            : 'receipts';
     const webRequest = new Request(`http://local${pathname}`, {
       method: 'POST',
       headers: {
@@ -327,6 +360,11 @@ async function createFixture(
       response.destroy();
       return;
     }
+    if (
+      options.controlDelayMs &&
+      (action === 'budget' || action === 'heartbeat')
+    )
+      await new Promise((r) => setTimeout(r, options.controlDelayMs));
     response.statusCode = result.status;
     response.setHeader('content-type', 'application/json');
     response.end(
@@ -750,3 +788,37 @@ describe('HTTP device journal adapter', () => {
     );
   });
 });
+
+it('waits for a real slow budget/heartbeat response without replaying Python', async () => {
+  vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+  const f = await createFixture({ python: true, controlDelayMs: 3200 });
+  const executed = vi.fn(async (_payload, options) => {
+    expect(options.executionBudget.state.spec.kind).toBe('compute');
+    expect(await options.maintainLease()).toBe(true);
+    // No process is launched by this transport fixture.
+    throw new LocalPythonInputDownloadError('INPUT_DOWNLOAD_UNAVAILABLE', {
+      objectId: fixtureId(42),
+      stage: 'body',
+      reason: 'UND_ERR_SOCKET',
+      httpStatus: 200,
+      expectedBytes: 1024,
+      receivedBytes: 0,
+      elapsedMs: 0,
+    });
+  });
+  const client = new RuntimeBridgeOperationClient({
+    config: f.config,
+    token: 'fixture-device-token',
+    journal: f.journal,
+    pythonRunner: {
+      execute: executed,
+      cleanup: vi.fn(),
+    } as unknown as LocalPythonRunner,
+  });
+  await expect(client.pollOnce()).resolves.toBe(true);
+  expect(executed).toHaveBeenCalledOnce();
+  expect(f.accepted.some((r) => r.signal.type === 'operation.outcome')).toBe(
+    true,
+  );
+  expect(await client.pollOnce()).toBe(false);
+}, 15000);

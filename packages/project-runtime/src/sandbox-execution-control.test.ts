@@ -135,7 +135,7 @@ it.each(
     ].map((mode) => ({ runtime, mode })),
   ),
 )('$runtime rejects $mode on private control', async ({ runtime, mode }) => {
-  const f = await fixture(runtime, 3000, 10000);
+  const f = await fixture(runtime, 3000, 40000);
   f.send();
   if (mode === 'wrong-attempt') f.send({ attemptId: randomUUID() });
   if (mode === 'replay') f.send({ sequence: 1 });
@@ -144,7 +144,7 @@ it.each(
   if (mode === 'long-lease')
     f.send({
       deadlineAt: f.config.executionControl.hardDeadlineAt,
-      leaseDeadlineAt: Date.now() + 9000,
+      leaseDeadlineAt: Date.now() + 30000,
     });
   if (mode === 'output-spoof') f.send({ type: 'stdout', data: 'renew' });
   if (mode === 'ungranted-network') f.send({ networkReady: true });
@@ -170,4 +170,23 @@ it.each(['node', 'python'] as const)(
     const [code] = await f.exited;
     expect(code).toBe(124);
   },
+);
+
+it.each(['node', 'python'] as const)(
+  '%s tolerates a healthy six-second control roundtrip then still stops on channel loss',
+  async (runtime) => {
+    const f = await fixture(runtime, 30000, 40000);
+    f.send({ leaseDeadlineAt: Date.now() + 20000 });
+    await new Promise((r) => setTimeout(r, 6000));
+    expect(f.child.exitCode).toBeNull();
+    f.send({
+      leaseDeadlineAt: Math.min(Date.now() + 20000, f.config.deadlineUnixMs),
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(f.child.exitCode).toBeNull();
+    f.child.stdin!.end();
+    const [code] = await f.exited;
+    expect(code).toBe(124);
+  },
+  10000,
 );
