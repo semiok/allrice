@@ -6,6 +6,7 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import type { BridgeStopPhase } from './desktop-shutdown.js';
 
 import {
   BridgeCapabilities,
@@ -1080,6 +1081,8 @@ type StartOptions = {
   /** Native update handshake: local initialization precedes acquisition. */
   onReady?: () => Promise<void>;
   onState?: (state: BridgeRuntimeState) => void;
+  /** Read-only shutdown progress. It cannot release ownership or confirm an effect. */
+  onStopPhase?: (phase: BridgeStopPhase) => void;
   onNotice?: (
     code:
       | 'BRIDGE_CONNECTED'
@@ -1345,6 +1348,7 @@ async function startSession(
     publish();
   };
   const stop = () => {
+    if (!stopping) options.onStopPhase?.('foreground');
     stopping = true;
     state.phase = 'stopping';
     publish();
@@ -1920,26 +1924,35 @@ async function startSession(
   } finally {
     clearInterval(heartbeatTimer);
     commandAbort.abort();
+    options.onStopPhase?.('browser');
     await browserTask;
+    options.onStopPhase?.('preparation');
     await preparing;
+    options.onStopPhase?.('heartbeat');
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
+    options.onStopPhase?.('folder_watchers');
     await folderTriggers?.close().catch(() => {
       folderStopUnconfirmed = true;
       console.warn('FOLDER_TRIGGER_STOP_UNCONFIRMED');
     });
     state.environment = initialBridgeEnvironment(true);
+    options.onStopPhase?.('heartbeat');
     await heartbeat().catch(() => undefined);
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
     options.signal?.removeEventListener('abort', stop);
     (transport as BridgeDualTransport | null)?.close();
     await (heartbeatInFlight as Promise<void> | null)?.catch(() => undefined);
-    if (journal)
+    if (journal) {
+      options.onStopPhase?.('local_processes');
       await (
         await import('./local-process-manager.js')
       ).stopLocalProcesses(journal);
+    }
+    options.onStopPhase?.('sandbox');
     await managedSandbox?.stop();
     if (journal) {
+      options.onStopPhase?.('receipts');
       const flushSignal = AbortSignal.timeout(5000);
       await new (
         await import('./operation-client.js')
@@ -1959,7 +1972,10 @@ async function startSession(
         .catch(() => undefined);
       await updateFacts().catch(() => undefined);
     }
-    if (!folderStopUnconfirmed) await journal?.close();
+    if (!folderStopUnconfirmed) {
+      options.onStopPhase?.('journal');
+      await journal?.close();
+    }
     state.phase =
       browserStopUnconfirmed || folderStopUnconfirmed ? 'stopping' : 'stopped';
     state.activeForeground = 0;
