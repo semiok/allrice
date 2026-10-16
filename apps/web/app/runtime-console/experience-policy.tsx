@@ -17,6 +17,9 @@ export function ExperiencePolicyPanel({
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [notice, setNotice] = useState('');
+  const [validationMode, setValidationMode] = useState<
+    'off' | 'supported_cases'
+  >('off');
   const url = `/api/v1/admin/organizations/${organizationId}/experience-policy`;
   async function load() {
     setBusy(true);
@@ -29,6 +32,9 @@ export function ExperiencePolicyPanel({
       );
       setSettings(experiencePolicySchedule(policy));
       setRevision(policy.revision);
+      setValidationMode(
+        policy.schemaVersion === 3 ? policy.validationMode : 'off',
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : '读取失败');
     } finally {
@@ -44,7 +50,11 @@ export function ExperiencePolicyPanel({
       const response = await fetch(url, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...settings, expectedRevision: revision }),
+        body: JSON.stringify({
+          ...settings,
+          validationMode,
+          expectedRevision: revision,
+        }),
       });
       if (!response.ok)
         throw Error(
@@ -57,7 +67,12 @@ export function ExperiencePolicyPanel({
       );
       setSettings(experiencePolicySchedule(policy));
       setRevision(policy.revision);
-      setNotice('已保存。从下一个整理周期开始执行，不补跑错过的周期。');
+      setValidationMode(
+        policy.schemaVersion === 3 ? policy.validationMode : 'off',
+      );
+      setNotice(
+        '已保存。整理按下一周期执行，不补跑错过周期；开启专项验证后，也会检查已有待验证草稿。',
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : '保存失败');
     } finally {
@@ -166,6 +181,18 @@ export function ExperiencePolicyPanel({
               )}
             </>
           )}
+          <label>
+            <input
+              type="checkbox"
+              aria-label="自动专项验证"
+              disabled={busy}
+              checked={validationMode === 'supported_cases'}
+              onChange={(e) =>
+                setValidationMode(e.target.checked ? 'supported_cases' : 'off')
+              }
+            />
+            自动验证支持的合成样例（消耗模型用量，结果暂不启用）
+          </label>
           <AdminButton disabled={busy} onClick={() => void save()}>
             保存整理设置
           </AdminButton>
@@ -175,10 +202,15 @@ export function ExperiencePolicyPanel({
         </div>
       )}
       <p className={css.note}>
-        没有新增反馈时不会调用模型。每次最多 16 条，最多 5 分钟；每人每个 AI
+        整理没有新增反馈时不会调用模型。每次最多 16 条，最多 5 分钟；每人每个 AI
         员工每天最多整理一次。本公司每天最多 8 次，平台每天最多 64
         次，后台最多同时执行 1
         次，并为聊天保留执行空位。每月日期超出当月天数时按月底执行。
+      </p>
+      <p className={css.note}>
+        专项验证默认关闭。开启后每份支持的草稿最多验证一次，单次最多 5
+        分钟；验证另限本公司每天 8 次、平台每天 64
+        次，与整理共用一个后台执行空位。验证通过也不会自动启用，不支持的业务仍待验证。
       </p>
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}

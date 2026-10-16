@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { MemoryClassSchema } from './operations.ts';
 import { PersonalSkillPinSchema } from './personal-skills.ts';
+import { ExperienceValidationViewSchema } from './experience-validation.ts';
 
 /** Platform Skills keep their separate source/license/test/publication gate. */
 export const ExperienceScopeSchema = z.enum([
@@ -52,12 +53,17 @@ export const ExperienceCollectionPolicySchema = z.discriminatedUnion(
       schemaVersion: z.literal(2),
       ...ExperiencePolicySettingsSchema.shape,
     }).strict(),
+    LegacyExperienceCollectionPolicySchema.extend({
+      schemaVersion: z.literal(3),
+      ...ExperiencePolicySettingsSchema.shape,
+      validationMode: z.enum(['off', 'supported_cases']),
+    }).strict(),
   ],
 );
 export function experiencePolicySchedule(
   policy: z.infer<typeof ExperienceCollectionPolicySchema>,
 ) {
-  return policy.schemaVersion === 2
+  return policy.schemaVersion !== 1
     ? {
         frequency: policy.frequency,
         timezone: policy.timezone,
@@ -121,6 +127,8 @@ export const ExperienceDraftBatchSchema = z
     errorCode: z.string().nullable(),
     sourceIds: z.array(UuidSchema).max(16),
     drafts: ExperienceDraftOutputSchema.shape.drafts,
+    validations: z.array(ExperienceValidationViewSchema).max(8).default([]),
+    validationNotes: z.array(z.string().max(500)).max(8).default([]),
   })
   .strict();
 export type ExperienceDraftBatch = z.infer<typeof ExperienceDraftBatchSchema>;

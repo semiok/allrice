@@ -184,7 +184,9 @@ export function ExperienceDraftCard({
     <article className={styles.card} data-experience-batch={batch.id}>
       <strong>
         {batch.state === 'pending_validation'
-          ? '经验草稿 · 待验证'
+          ? batch.validations?.length
+            ? '经验草稿 · 尚未启用'
+            : '经验草稿 · 待验证'
           : batch.status === 'failed' || batch.status === 'canceled'
             ? '本次整理未完成'
             : batch.status === 'succeeded'
@@ -199,6 +201,35 @@ export function ExperienceDraftCard({
         <section key={index}>
           <p className={styles.rule}>{draft.rule}</p>
           <p>适用范围：{draft.applicability}</p>
+          {batch.validations
+            .filter((v) => v.draftIndex === index)
+            .map((v) => (
+              <div key={v.id} data-experience-validation={v.id}>
+                <p>
+                  {v.validationStatus === 'passed'
+                    ? '专项样例通过 · 尚未启用'
+                    : v.validationStatus === 'failed'
+                      ? '专项验证未通过 · 未启用'
+                      : v.validationStatus === 'not_verified'
+                        ? '验证未完成 · 未启用'
+                        : '专项验证中 · 未启用'}
+                </p>
+                <p>{v.coverage}</p>
+                <details>
+                  <summary>查看验证依据</summary>
+                  <p>
+                    验证任务：{v.runId ?? '等待执行'}；原稿版本：
+                    {batch.revision}
+                  </p>
+                  <p>原稿校验值：{v.outputDigest}</p>
+                  {v.assertion?.checks.map((c) => (
+                    <p key={c.id}>
+                      {c.id}：{c.passed ? '通过' : '未通过'}
+                    </p>
+                  ))}
+                </details>
+              </div>
+            ))}
           <details>
             <summary>查看整理依据</summary>
             <p>{draft.reason}</p>
@@ -210,6 +241,9 @@ export function ExperienceDraftCard({
             <small>来源：{draft.sourceIds.join('、')}</small>
           </details>
         </section>
+      ))}
+      {batch.validationNotes.map((note, index) => (
+        <p key={index}>{note}</p>
       ))}
       {batch.state === 'pending_validation' && batch.drafts.length === 0 && (
         <p>本批反馈暂不适合形成长期经验，原始记录已保留。</p>
