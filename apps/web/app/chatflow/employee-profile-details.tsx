@@ -1,5 +1,5 @@
 'use client';
-import { useId, useState } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import type {
   EmployeeAccentColor,
   EmployeeDetails,
@@ -105,10 +105,12 @@ export function EmployeeProfileDetails({
   details,
   onPreview,
   view = 'personal',
+  experienceContent,
 }: {
   details: EmployeeDetails;
   onPreview: (reference: ReferenceSelection) => void;
   view?: 'personal' | 'shared';
+  experienceContent?: ReactNode;
 }) {
   const { profile, content } = details;
   const [section, setSection] = useState<Section>('requirements');
@@ -309,11 +311,12 @@ export function EmployeeProfileDetails({
             ? '维护标记表示你的权限，调整请在聊天中说明。'
             : '本视图仅供查看共享内容。'}
         </p>
-        {section === 'experience' && (
-          <p className={css.notice}>
-            自动沉淀尚未启用；这里展示当前已引用的经验。
-          </p>
-        )}
+        {section === 'experience' &&
+          (experienceContent ?? (
+            <p className={css.notice}>
+              经验整理按生效策略执行；当前未读取到整理状态。
+            </p>
+          ))}
         {section === 'requirements' && publishedRules.length > 0 && (
           <article className={css.item}>
             <header>

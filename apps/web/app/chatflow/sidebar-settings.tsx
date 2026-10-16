@@ -84,7 +84,7 @@ export function SidebarSettings({
     { id: 'capabilities', label: '能力与环境' },
     { id: 'apps', label: '已连接应用' },
     { id: 'computer', label: '我的电脑' },
-    ...(experienceEnabled ? [{ id: 'experience', label: '记忆与经验' }] : []),
+    ...(experienceEnabled ? [{ id: 'experience', label: '经验记录' }] : []),
     { id: 'preferences', label: '个人偏好' },
   ];
   const close = () => onSectionChange(null);

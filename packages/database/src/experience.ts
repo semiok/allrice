@@ -58,6 +58,7 @@ interface ReviewRow {
   origin_kind: 'manual' | 'incremental' | 'derived';
   instance_id: string | null;
   evidence: unknown;
+  consolidated_at: Date | null;
 }
 function principal(context: RequestContext) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
@@ -156,6 +157,7 @@ function view(row: ReviewRow, user: string, admin: boolean) {
     reviewReason: row.review_reason,
     originKind: row.origin_kind,
     instanceId: row.instance_id,
+    consolidatedAt: row.consolidated_at?.toISOString() ?? null,
     evidence:
       row.origin_kind === 'incremental' && row.owner_id === user
         ? ExperienceEvidenceSchema.parse(row.evidence)
@@ -221,14 +223,9 @@ export function createExperienceStore(options: { database?: Db } = {}) {
             and (e.owner_id=${p.user} or (${p.admin} and e.requested_scope='workspace' and e.share_acknowledged))
             and (${instanceId ?? null}::uuid is null or e.instance_id=${instanceId ?? null})
             and (e.origin_kind='manual' or exists(select 1 from allrice_employee_instances i
-              join allrice_employee_assignments a on a.id=i.assignment_id and a.user_id=i.owner_id
-              join allrice_employees em on em.id=a.employee_id
               where i.id=e.instance_id and i.organization_id=e.organization_id and i.workspace_id=e.workspace_id
-                and i.owner_id=${p.user} and i.archived_at is null and a.active and em.status='active'
-                and not exists(select 1 from allrice_platform_employee_tenant_assignments d
-                  where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
-                    and d.tenant_employee_id=a.employee_id and not d.active)))
-          order by (e.status='pending' and m.archived_at is null) desc,e.created_at desc,e.memory_id limit 100`;
+                and i.owner_id=${p.user}))
+          order by (e.status='pending' and m.archived_at is null and e.consolidation_occurrence_id is null) desc,e.created_at desc,e.memory_id limit 100`;
         return rows.map((r) => view(r, p.user, p.admin));
       });
     },

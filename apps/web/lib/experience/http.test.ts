@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
-import { ExperienceError } from '@allrice/database';
+import { ExperienceError, DataAccessError } from '@allrice/database';
 import { experienceHttp } from './http';
 const ports = vi.hoisted(() => ({
   enabled: vi.fn(),
   context: vi.fn(),
   list: vi.fn(),
   drafts: vi.fn(),
+  overview: vi.fn(),
   sources: vi.fn(),
   create: vi.fn(),
   review: vi.fn(),
@@ -17,6 +18,7 @@ vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   experienceReviewEnabled: ports.enabled,
   listExperienceDrafts: ports.drafts,
+  getExperienceOverview: ports.overview,
   createExperienceStore: () => ports,
 }));
 const context = {
@@ -59,20 +61,51 @@ describe('P20 HTTP boundary', () => {
     ).toBe(403);
     expect(ports.review).not.toHaveBeenCalled();
   });
-  it('delegates exact authenticated workspace and persists through the store only', async () => {
-    const response = await experienceHttp(
-      request({ content: 'rule' }),
-      'create',
+  it.each(['create', 'review'] as const)(
+    'retires legacy %s without parsing or mutating a candidate',
+    async (action) => {
+      const result = await experienceHttp(
+        request({ content: 'rule' }),
+        action,
+        action === 'review' ? randomUUID() : undefined,
+      );
+      expect(result.status).toBe(410);
+      expect(await result.json()).toEqual({
+        code: 'LEGACY_EXPERIENCE_WRITE_RETIRED',
+      });
+      expect(ports.create).not.toHaveBeenCalled();
+      expect(ports.review).not.toHaveBeenCalled();
+      expect(result.headers.get('cache-control')).toContain('no-store');
+    },
+  );
+  it('reads only the authenticated owner instance before returning private history', async () => {
+    const instanceId = randomUUID();
+    ports.overview.mockResolvedValue({
+      visibility: 'owner',
+      instanceId,
+      workspaceId: context.workspaceId,
+    });
+    const result = await experienceHttp(
+      new Request(`http://localhost/experiences?instanceId=${instanceId}`),
+      'list',
     );
-    expect(response.status).toBe(201);
-    expect(ports.create).toHaveBeenCalledWith(context, { content: 'rule' });
-    expect(response.headers.get('cache-control')).toContain('no-store');
-    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(result.status).toBe(200);
+    expect(ports.overview).toHaveBeenCalledWith(context, instanceId);
+    expect(ports.list).toHaveBeenCalledWith(context, instanceId);
   });
-  it('bounds JSON and validates route identity before mutation', async () => {
+  it('does not fetch history when exact instance ownership is denied', async () => {
+    ports.overview.mockRejectedValue(new DataAccessError('not_found'));
+    const result = await experienceHttp(
+      new Request(`http://localhost/experiences?instanceId=${randomUUID()}`),
+      'list',
+    );
+    expect(result.status).toBe(404);
+    expect(ports.list).not.toHaveBeenCalled();
+  });
+  it('does not parse retired bodies and still validates route identity', async () => {
     expect(
       (await experienceHttp(request('x'.repeat(40_001)), 'create')).status,
-    ).toBe(400);
+    ).toBe(410);
     expect((await experienceHttp(request({}), 'review', 'wrong')).status).toBe(
       400,
     );
@@ -95,8 +128,8 @@ describe('P20 HTTP boundary', () => {
     ['not_found', 404],
     ['invalid_source', 400],
   ] as const)('maps %s without leaking record data', async (code, status) => {
-    ports.review.mockRejectedValue(new ExperienceError(code));
-    const response = await experienceHttp(request({}), 'review', randomUUID());
+    ports.list.mockRejectedValue(new ExperienceError(code));
+    const response = await experienceHttp(request(), 'list');
     expect(response.status).toBe(status);
     expect(await response.json()).toEqual({ code });
   });
@@ -117,6 +150,10 @@ it('reads private drafts with the authenticated scope, preserving the old candid
   ports.drafts.mockResolvedValue([]);
   const r = await experienceHttp(request(), 'list');
   expect(r.status).toBe(200);
-  expect(await r.json()).toEqual({ candidates: [], draftBatches: [] });
+  expect(await r.json()).toEqual({
+    overview: null,
+    candidates: [],
+    draftBatches: [],
+  });
   expect(ports.drafts).toHaveBeenCalledWith(context, undefined);
 });

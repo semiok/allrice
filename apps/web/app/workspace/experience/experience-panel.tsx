@@ -1,59 +1,49 @@
 'use client';
 import Link from 'next/link';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ExperienceCandidateSchema,
   ExperienceDraftBatchSchema,
+  ExperienceOverviewSchema,
+  type ExperienceOverview,
+  type ExperienceSummary,
   type ExperienceCandidate,
   type ExperienceDraftBatch,
 } from '@allrice/contracts';
 import styles from './experience.module.css';
 
-type Source = {
-  runId: string;
-  messageId: string;
-  role: string;
-  text: string;
-  completedAt: string;
-};
 const scopeNames = {
   private: '仅我自己',
-  workspace: '当前租户工作区',
-  platform: '平台 Skill 人工转交（不发布）',
-};
-const errors: Record<string, string> = {
-  conflict: '候选版本已改变或已处理，请刷新后重新核对。',
-  source_changed: '原始消息已改变，本次审核未生效；请重新选取来源。',
-  identity_denied: '当前身份没有此范围的审核权限。',
-  invalid_source: '请选择已结束任务中的原始对话片段。',
-  platform_publication_required:
-    '租户审核不能发布平台 Skill，请走来源、许可证、测试和发布流程。',
+  workspace: '原工作区共享',
+  platform: '历史平台建议 · 未发布',
 };
 async function response(request: Promise<Response>) {
   const r = await request;
   const v = await r.json().catch(() => ({}));
   if (!r.ok)
-    throw Error(errors[v.code] ?? '操作未完成，请检查权限和输入后重试。');
+    throw Error(
+      r.status === 404
+        ? '当前经验记录不可用，请重新打开或核对访问权限。'
+        : '读取或撤回未完成，请稍后重试。',
+    );
   return v;
 }
 export function ExperienceReviewCard({
   candidate,
-  onReview,
+  onWithdraw,
 }: {
   candidate: ExperienceCandidate;
-  onReview: (decision: 'approve' | 'reject', reason: string) => Promise<void>;
+  onWithdraw?: () => Promise<void>;
 }) {
-  const [reason, setReason] = useState(''),
-    [busy, setBusy] = useState(false),
-    [error, setError] = useState(''),
-    [copied, setCopied] = useState(false);
-  const review = async (decision: 'approve' | 'reject') => {
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  const withdraw = async () => {
     setBusy(true);
     setError('');
     try {
-      await onReview(decision, reason);
+      await onWithdraw?.();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '审核失败');
+      setError(e instanceof Error ? e.message : '撤回失败');
     } finally {
       setBusy(false);
     }
@@ -63,24 +53,28 @@ export function ExperienceReviewCard({
       <div className={styles.heading}>
         <strong>{scopeNames[candidate.scope]}</strong>
         <span>
-          {candidate.archived && candidate.status !== 'rejected'
-            ? '已归档 · 不再召回'
-            : candidate.scope === 'platform' && candidate.status === 'pending'
-              ? '待人工转交 · 未发布'
-              : candidate.status === 'pending'
-                ? candidate.originKind === 'incremental'
-                  ? '工作反馈 · 待自动整理'
-                  : '待明确审核'
+          {candidate.archived
+            ? '已归档 · 不再采用'
+            : candidate.status === 'rejected'
+              ? '已拒绝'
+              : candidate.originKind === 'incremental'
+                ? candidate.consolidatedAt
+                  ? '工作反馈 · 已整理'
+                  : '工作反馈 · 待整理'
                 : candidate.status === 'approved'
-                  ? '已确认长期记忆'
-                  : '已拒绝'}{' '}
+                  ? '历史经验 · 已启用'
+                  : '历史候选 · 未启用'}{' '}
           · v{candidate.revision}
         </span>
       </div>
       <p className={styles.rule}>{candidate.content}</p>
-      {candidate.originKind === 'incremental' ? (
-        <p>已保存原始反馈，尚未整理成经验，不会作为长期要求影响后续任务。</p>
-      ) : null}
+      {candidate.originKind === 'incremental' && (
+        <p>
+          {candidate.consolidatedAt
+            ? '已用于自动整理，实际形成的经验及生效状态见整理记录。'
+            : '这是原始反馈，尚未形成可采用的经验。'}
+        </p>
+      )}
       {candidate.source ? (
         <details>
           <summary>查看私密来源</summary>
@@ -88,90 +82,32 @@ export function ExperienceReviewCard({
           <small>
             Run {candidate.source.runId} · 消息 {candidate.source.messageId}
           </small>
-          {candidate.evidence ? (
+          {candidate.evidence && (
             <p>
-              已记录 {candidate.evidence.artifacts.length} 份成果版本和{' '}
-              {candidate.evidence.skills.length} 项实际加载的个人技能版本。
-              {candidate.evidence.truncated
-                ? '来源较多，仅保留有界索引，可回到原任务核查。'
-                : ''}
+              保留 {candidate.evidence.artifacts.length} 份成果版本和{' '}
+              {candidate.evidence.skills.length} 项实际技能加载依据。
             </p>
-          ) : null}
+          )}
         </details>
       ) : (
-        <p>来源已核验；原始私密对话未共享给审核人。</p>
+        <p>原始私密对话未共享给查看人。</p>
       )}
-      {candidate.scope === 'platform' ? (
+      {candidate.status === 'approved' && !candidate.archived && (
         <p>
-          这只是你私密保存的脱敏建议，不会进入任何
-          Run，也未传给平台。平台维护者须核对来源许可，并通过现有 Skill
-          版本、编译、试用和发布门禁。
-          <br />
-          <Link href="/runtime-console">
-            查看现有发布工作台（仍需相应权限）
-          </Link>{' '}
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                await navigator.clipboard.writeText(candidate.content);
-                setCopied(true);
-              } catch {
-                setError('复制失败，请手动复制已脱敏的规则。');
-              }
-            }}
-          >
-            {copied ? '已复制' : '复制脱敏建议'}
-          </button>
+          后续相关新任务可采用 v{candidate.revision}；正在执行的快照不会改写。
         </p>
-      ) : null}
-      {candidate.status === 'approved' && !candidate.archived ? (
-        <p>
-          后续相关新任务可召回 v{candidate.revision}
-          ；已排队或正在运行的快照不会改写。不保证每个无关任务都采用。
-        </p>
-      ) : null}
-      {candidate.reviewReason ? (
-        <p>审核说明：{candidate.reviewReason}</p>
-      ) : null}
-      {candidate.status === 'pending' &&
-      !candidate.archived &&
-      (candidate.canReview || candidate.ownedByMe) ? (
-        <div className={styles.actions}>
-          <label>
-            审核或撤回说明
-            <textarea
-              value={reason}
-              maxLength={500}
-              onChange={(e) => setReason(e.target.value)}
-            />
-          </label>
-          {candidate.canReview ? (
-            <button
-              type="button"
-              disabled={busy || !reason.trim()}
-              onClick={() => void review('approve')}
-            >
-              明确批准为
-              {candidate.scope === 'private'
-                ? '我的长期记忆'
-                : '工作区长期记忆'}
-            </button>
-          ) : null}
-          <button
-            type="button"
-            disabled={busy || !reason.trim()}
-            onClick={() => void review('reject')}
-          >
-            {candidate.originKind === 'incremental'
+      )}
+      {candidate.reviewReason && <p>历史处理说明：{candidate.reviewReason}</p>}
+      {candidate.ownedByMe && !candidate.archived && onWithdraw && (
+        <button type="button" disabled={busy} onClick={() => void withdraw()}>
+          {busy
+            ? '正在撤回…'
+            : candidate.originKind === 'incremental'
               ? '忘掉这条反馈'
-              : candidate.ownedByMe
-                ? '拒绝／撤回候选'
-                : '拒绝候选'}
-          </button>
-        </div>
-      ) : null}
-      {error ? <p role="alert">{error}</p> : null}
+              : '撤回这条记录'}
+        </button>
+      )}
+      {error && <p role="alert">{error}</p>}
     </article>
   );
 }
@@ -187,20 +123,29 @@ export function ExperienceDraftCard({
           ? '私人经验 · 已采用'
           : batch.adoptions?.length
             ? '私人经验 · 已停用'
-            : batch.state === 'pending_validation'
-              ? batch.validations?.length
-                ? '经验草稿 · 尚未启用'
-                : '经验草稿 · 待验证'
-              : batch.status === 'failed' || batch.status === 'canceled'
-                ? '本次整理未完成'
-                : batch.status === 'succeeded'
-                  ? '本次没有新增反馈'
-                  : '正在整理'}
+            : batch.status === 'succeeded' && batch.drafts.length === 0
+              ? batch.sourceIds.length
+                ? '未形成新经验'
+                : '本次没有新增反馈'
+              : batch.state === 'pending_validation'
+                ? batch.validations?.length
+                  ? '经验草稿 · 尚未启用'
+                  : '经验草稿 · 待验证'
+                : batch.status === 'failed' || batch.status === 'canceled'
+                  ? '本次整理未完成'
+                  : batch.status === 'succeeded'
+                    ? batch.sourceIds.length
+                      ? '未形成新经验'
+                      : '本次没有新增反馈'
+                    : '正在整理'}
       </strong>
       <p>
         {new Date(batch.createdAt).toLocaleString('zh-CN')} ·{' '}
         {batch.sourceIds.length} 条私有反馈
       </p>
+      {batch.sourceState === 'unavailable' && (
+        <p>来源或访问权限已变化，仅保留历史；不会据此新增采用。</p>
+      )}
       {batch.drafts.map((draft, index) => (
         <section key={index}>
           <p className={styles.rule}>{draft.rule}</p>
@@ -271,6 +216,13 @@ export function ExperienceDraftCard({
                 : '初步提炼；采用状态以验证结果为准。'}
             </p>
             <small>来源：{draft.sourceIds.join('、')}</small>
+            {(batch.skillDependencies ?? []).map((pin) => (
+              <p key={`${pin.bindingId}/${pin.versionId}`}>
+                本批来源使用的个人技能版本：{pin.versionId}；校验值：
+                {pin.packageChecksum ?? pin.definitionChecksum}
+                。仅当前仍有权限且版本匹配时可采用。
+              </p>
+            ))}
           </details>
         </section>
       ))}
@@ -286,254 +238,267 @@ export function ExperienceDraftCard({
     </article>
   );
 }
-export function ExperiencePanel({
-  workspaceId,
-  sessionId,
-  embedded = false,
+const frequencyNames = {
+  off: '已关闭',
+  daily: '每天',
+  weekly: '每周',
+  monthly: '每月',
+};
+const outcomeNames = {
+  queued: '等待整理',
+  running: '正在整理',
+  failed: '整理未完成',
+  canceled: '整理已停止',
+  no_sources: '没有新增反馈',
+  no_draft: '未形成新经验',
+  drafted: '已形成经验草稿',
+};
+const dateText = (value: string | null, timezone: string) =>
+  value
+    ? new Intl.DateTimeFormat('zh-CN', {
+        dateStyle: 'short',
+        timeStyle: 'short',
+        timeZone: timezone,
+      }).format(new Date(value))
+    : '暂无';
+export function ExperienceSummaryCard({
+  summary,
+  shared = false,
 }: {
+  summary: ExperienceSummary;
+  shared?: boolean;
+}) {
+  const { policy, schedule, counts } = summary;
+  const frequency = frequencyNames[policy.frequency];
+  const scheduleText = {
+    off: '自动整理已关闭',
+    not_scheduled: counts.pendingSources ? '等待后台安排' : '等待新增反馈',
+    scheduled: '已安排自动整理',
+    paused: '自动整理已暂停',
+    unavailable: '员工暂不可用，保留历史记录',
+  }[schedule.state];
+  return (
+    <section className={styles.card} aria-label="经验整理概况">
+      <div className={styles.heading}>
+        <strong>经验整理</strong>
+        <span>{scheduleText}</span>
+      </div>
+      <dl className={styles.summary}>
+        <div>
+          <dt>整理频率</dt>
+          <dd>
+            {frequency}
+            {policy.frequency !== 'off' && (
+              <>
+                {' '}
+                ·{' '}
+                {policy.frequency === 'weekly'
+                  ? ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][
+                      policy.weekday
+                    ]
+                  : policy.frequency === 'monthly'
+                    ? `${policy.monthDay} 日（不足则月底）`
+                    : ''}{' '}
+                {policy.time}
+              </>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>配置来源</dt>
+          <dd>
+            {policy.source === 'company' ? '公司设置' : '平台默认'} · v
+            {policy.revision}
+          </dd>
+        </div>
+        <div>
+          <dt>最近整理记录</dt>
+          <dd>
+            {schedule.lastOccurrence
+              ? `${outcomeNames[schedule.lastOccurrence.outcome]} · ${dateText(schedule.lastOccurrence.createdAt, policy.timezone)}`
+              : '尚无整理记录'}
+          </dd>
+        </div>
+        <div>
+          <dt>下次整理</dt>
+          <dd>
+            {schedule.nextRunAt
+              ? dateText(schedule.nextRunAt, policy.timezone)
+              : scheduleText}
+          </dd>
+        </div>
+        <div>
+          <dt>待整理反馈</dt>
+          <dd>{counts.pendingSources} 条</dd>
+        </div>
+        <div>
+          <dt>待验证草稿</dt>
+          <dd>{counts.awaitingValidation} 条</dd>
+        </div>
+        <div>
+          <dt>累计采用</dt>
+          <dd>{counts.adoptedTotal} 条</dd>
+        </div>
+      </dl>
+      <p>按 {policy.timezone} 显示。没有新增反馈时不会调用模型整理。</p>
+      <p>
+        {policy.adoptionMode === 'supported_private'
+          ? '通过支持的验证后可自动采用，具体生效状态见每条经验。'
+          : '当前保留整理草稿，未开启自动采用。'}
+        累计采用包含后来停用或撤回的记录。
+      </p>
+      {shared && (
+        <p>仅显示整理配置和汇总；私人反馈、经验内容及技能版本仅本人可见。</p>
+      )}
+      <details>
+        <summary>查看调度信息</summary>
+        <p>
+          最近调度检查：{dateText(schedule.lastCheckedAt, policy.timezone)}
+          ；检查不代表已调用模型或整理成功。
+        </p>
+      </details>
+    </section>
+  );
+}
+
+type ExperiencePanelProps = {
   workspaceId: string;
   sessionId?: string;
+  instanceId?: string;
+  scopeId?: string;
+  headers?: Record<string, string>;
   embedded?: boolean;
-}) {
-  const [sources, setSources] = useState<Source[]>([]),
-    [candidates, setCandidates] = useState<ExperienceCandidate[]>([]),
-    [draftBatches, setDraftBatches] = useState<ExperienceDraftBatch[]>([]),
-    [selected, setSelected] = useState(''),
-    [excerpt, setExcerpt] = useState(''),
-    [content, setContent] = useState(''),
-    [scope, setScope] = useState<'private' | 'workspace' | 'platform'>(
-      'private',
-    ),
-    [ack, setAck] = useState(false),
-    [error, setError] = useState(''),
-    [notice, setNotice] = useState(''),
-    [busy, setBusy] = useState(false);
-  const attempt = useRef<{ payload: string; id: string } | null>(null);
-  const suffix = `?workspaceId=${encodeURIComponent(workspaceId)}`;
-  const reload = useCallback(async () => {
-    const result = await response(
-      fetch(`/api/v1/experiences${suffix}`, { cache: 'no-store' }),
-    );
-    setCandidates(ExperienceCandidateSchema.array().parse(result.candidates));
-    setDraftBatches(
-      ExperienceDraftBatchSchema.array().parse(result.draftBatches ?? []),
-    );
-  }, [suffix]);
+  readOnly?: boolean;
+};
+export function ExperiencePanel(props: ExperiencePanelProps) {
+  return (
+    <ExperienceReader
+      key={`${props.scopeId ?? props.workspaceId}/${props.instanceId ?? props.sessionId ?? 'history'}`}
+      {...props}
+    />
+  );
+}
+function ExperienceReader({
+  workspaceId,
+  instanceId,
+  headers,
+  embedded = false,
+  readOnly = false,
+}: ExperiencePanelProps) {
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{
+    attempt: number;
+    candidates?: ExperienceCandidate[];
+    batches?: ExperienceDraftBatch[];
+    overview?: ExperienceOverview | null;
+    error?: string;
+  }>();
+  const suffix = `?workspaceId=${encodeURIComponent(workspaceId)}${instanceId ? `&instanceId=${encodeURIComponent(instanceId)}` : ''}`;
+  const current = result?.attempt === attempt ? result : undefined;
   useEffect(() => {
-    let active = true;
-    void reload().catch((e) => {
-      if (active) setError(e.message);
-    });
-    if (sessionId)
-      void response(
-        fetch(
-          `/api/v1/experiences/sources${suffix}&sessionId=${encodeURIComponent(sessionId)}`,
-          { cache: 'no-store' },
-        ),
-      )
-        .then((result) => {
-          if (active) setSources(result.sources);
-        })
-        .catch((e) => {
-          if (active) setError(e.message);
-        });
-    return () => {
-      active = false;
-    };
-  }, [reload, sessionId, suffix]);
-  const submit = async () => {
-    const origin = sources.find((s) => s.messageId === selected);
-    if (!origin) return;
-    setBusy(true);
-    setError('');
-    setNotice('');
-    const input = {
-      runId: origin.runId,
-      messageId: origin.messageId,
-      sourceExcerpt: excerpt,
-      content,
-      memoryClass: 'work_note',
-      scope,
-      shareAcknowledged: ack,
-    };
-    const payload = JSON.stringify(input);
-    if (attempt.current?.payload !== payload)
-      attempt.current = { payload, id: crypto.randomUUID() };
-    try {
-      await response(
-        fetch(`/api/v1/experiences${suffix}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...input,
-            clientRequestId: attempt.current.id,
-          }),
-        }),
-      );
-      await reload();
-      setContent('');
-      setNotice('候选已保存，尚未批准或发布。');
-      attempt.current = null;
-    } catch (e) {
-      setError(e instanceof Error ? e.message : '保存失败');
-    } finally {
-      setBusy(false);
-    }
-  };
+    const controller = new AbortController();
+    void response(
+      fetch(`/api/v1/experiences${suffix}`, {
+        cache: 'no-store',
+        signal: controller.signal,
+        headers,
+      }),
+    )
+      .then((value) => {
+        const overview = value.overview
+          ? ExperienceOverviewSchema.parse(value.overview)
+          : null;
+        if (
+          instanceId &&
+          (!overview ||
+            overview.workspaceId !== workspaceId ||
+            overview.instanceId !== instanceId)
+        )
+          throw Error('员工经验读取目标已变化，请重新打开。');
+        const candidates = ExperienceCandidateSchema.array().parse(
+          value.candidates,
+        );
+        const batches = ExperienceDraftBatchSchema.array().parse(
+          value.draftBatches ?? [],
+        );
+        if (
+          instanceId &&
+          (candidates.some((c) => c.instanceId !== instanceId) ||
+            batches.some((b) => b.instanceId !== instanceId))
+        )
+          throw Error('员工经验读取目标已变化，请重新打开。');
+        if (!controller.signal.aborted)
+          setResult({ attempt, candidates, batches, overview });
+      })
+      .catch((e) => {
+        if (!controller.signal.aborted)
+          setResult({ attempt, error: e.message });
+      });
+    return () => controller.abort();
+  }, [attempt, suffix, headers, instanceId, workspaceId]);
+  const refresh = () => setAttempt((value) => value + 1);
   return (
     <section className={`${styles.page} ${embedded ? styles.embedded : ''}`}>
       {!embedded && (
         <>
           <Link href="/chatflow">← 返回工作台</Link>
-          <h1>记忆与经验</h1>
+          <h1>经验积累</h1>
         </>
       )}
       <p>
-        从已结束任务人工选取、改写纠偏或规则。普通聊天、Ask User
-        回答或计划认可都不代表批准；这里的明确审核才会生成长期记忆新版本。
+        根据有依据的工作反馈自动整理。需要纠正或忘掉经验时，直接在聊天中说明；一次性要求不会自动成为长期规则。
       </p>
-      {sessionId ? (
-        <section className={styles.card}>
-          <fieldset disabled={busy}>
-            <h2>从当前会话沉淀经验</h2>
-            <p>
-              列出最近 100
-              条已结束任务的消息；只选取对话正文，不含隐藏推理和工具日志。
-            </p>
-            <label>
-              已结束任务的对话
-              <select
-                value={selected}
-                onChange={(e) => {
-                  setSelected(e.target.value);
-                  setExcerpt('');
-                }}
-              >
-                <option value="">请选择来源消息</option>
-                {sources.map((s) => (
-                  <option key={s.messageId} value={s.messageId}>
-                    {s.role === 'user' ? '你' : 'Rice'} · {s.text.slice(0, 75)}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {selected ? (
-              <>
-                <pre className={styles.source}>
-                  {sources.find((s) => s.messageId === selected)?.text}
-                </pre>
-                <label>
-                  粘贴要引用的原文片段（仅你可见）
-                  <textarea
-                    value={excerpt}
-                    maxLength={4000}
-                    onChange={(e) => setExcerpt(e.target.value)}
-                  />
-                </label>
-              </>
-            ) : null}
-            <label>
-              改写后的经验规则
-              <textarea
-                value={content}
-                maxLength={4000}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="去除姓名、客户数据、密钥等无关信息，只保留可复用规则。"
-              />
-            </label>
-            <label>
-              目标范围
-              <select
-                value={scope}
-                onChange={(e) => {
-                  setScope(e.target.value as typeof scope);
-                  setAck(false);
-                }}
-              >
-                {Object.entries(scopeNames).map(([key, name]) => (
-                  <option key={key} value={key}>
-                    {name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {scope !== 'private' ? (
-              <label className={styles.consent}>
-                <input
-                  type="checkbox"
-                  checked={ack}
-                  onChange={(e) => setAck(e.target.checked)}
-                />
-                {scope === 'workspace'
-                  ? '我确认以上改写规则可以交给当前工作区管理员审核并供本工作区使用；原始对话不共享。'
-                  : '我确认以上建议已去敏；目前只私密保存，复制和人工转交不等于平台发布。'}
-              </label>
-            ) : null}
-            <button
-              type="button"
-              disabled={
-                busy ||
-                !selected ||
-                !excerpt.trim() ||
-                !content.trim() ||
-                (scope !== 'private' && !ack)
-              }
-              onClick={() => void submit()}
-            >
-              {busy ? '正在保存…' : '保存待审核候选'}
-            </button>
-            {!sources.length ? (
-              <p>尚无可选的已结束任务消息；运行中的任务不能作为已完成来源。</p>
-            ) : null}
-          </fieldset>
-        </section>
+      {current?.error ? (
+        <p role="alert">{current.error}</p>
+      ) : !current ? (
+        <p role="status">正在读取经验记录…</p>
       ) : (
-        <p>从聊天页的“经验沉淀”入口选择来源；这里也可处理现有候选。</p>
+        <>
+          {current.overview && (
+            <ExperienceSummaryCard summary={current.overview.summary} />
+          )}
+          <section aria-label="自动整理记录">
+            <h2>自动整理记录</h2>
+            <p>最近 50 次整理，保留来源、验证结果和当前采用状态。</p>
+            {current.batches?.map((batch) => (
+              <ExperienceDraftCard key={batch.id} batch={batch} />
+            ))}
+            {!current.batches?.length && (
+              <p>尚无整理记录。有新增且符合策略的反馈后，会按生效频率安排。</p>
+            )}
+          </section>
+          <section aria-label="反馈与历史记录">
+            <h2>反馈与历史记录</h2>
+            <p>
+              显示最近的 100
+              条记录，未处理反馈优先。旧人工候选保留为历史，不会自动启用。
+            </p>
+            {current.candidates?.map((candidate) => (
+              <ExperienceReviewCard
+                key={`${candidate.id}/${candidate.revision}/${candidate.archived}`}
+                candidate={candidate}
+                onWithdraw={
+                  readOnly
+                    ? undefined
+                    : async () => {
+                        const response = await fetch(
+                          `/api/v1/memories/${encodeURIComponent(candidate.id)}?workspaceId=${encodeURIComponent(workspaceId)}`,
+                          { method: 'DELETE', headers },
+                        );
+                        if (!response.ok)
+                          throw Error('撤回未完成，请重新读取后确认。');
+                        refresh();
+                      }
+                }
+              />
+            ))}
+            {!current.candidates?.length && <p>暂无反馈与历史记录。</p>}
+          </section>
+        </>
       )}
-      {error ? <p role="alert">{error}</p> : null}
-      {notice ? <p role="status">{notice}</p> : null}
-      {draftBatches.length > 0 && (
-        <section aria-label="自动整理记录">
-          <h2>自动整理记录</h2>
-          <p>
-            根据新增反馈整理的经验草稿。验证与采纳完成前，不会用于后续工作。
-          </p>
-          {draftBatches.map((batch) => (
-            <ExperienceDraftCard key={batch.id} batch={batch} />
-          ))}
-        </section>
-      )}
-      <div className={styles.heading}>
-        <h2>候选与审核记录（最多 100 条，待审核优先）</h2>
-        <button
-          type="button"
-          onClick={() => void reload().catch((e) => setError(e.message))}
-        >
-          刷新
-        </button>
-      </div>
-      {candidates.map((c) => (
-        <ExperienceReviewCard
-          key={`${c.id}:${c.revision}`}
-          candidate={c}
-          onReview={async (decision, reason) => {
-            await response(
-              fetch(`/api/v1/experiences/${c.id}/review${suffix}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  decision,
-                  reason,
-                  expectedRevision: c.revision,
-                  expectedDigest: c.digest,
-                }),
-              }),
-            );
-            await reload();
-          }}
-        />
-      ))}
-      {!candidates.length ? <p>暂无你可以查看的经验候选。</p> : null}
+      <button type="button" onClick={refresh}>
+        重新读取
+      </button>
     </section>
   );
 }

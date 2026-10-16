@@ -6,9 +6,14 @@ import {
   OrganizationAiSharedDetailsSchema,
   type EmployeeDetails,
   type ReferenceSelection,
+  type ExperienceSummary,
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { EmployeeProfileDetails } from './employee-profile-details';
+import {
+  ExperiencePanel,
+  ExperienceSummaryCard,
+} from '../workspace/experience/experience-panel';
 import { NativeDocumentPreview } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
 import {
@@ -46,6 +51,7 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
   const [result, setResult] = useState<{
     attempt: number;
     data?: EmployeeDetails;
+    experienceSummary?: ExperienceSummary;
     error?: string;
   }>();
   const [reference, setReference] = useState<ReferenceSelection | null>(null);
@@ -80,7 +86,12 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
           next.content.employeeId !== props.employeeId
         )
           throw new Error('Employee detail target changed');
-        if (!controller.signal.aborted) setResult({ attempt, data: next });
+        if (!controller.signal.aborted)
+          setResult({
+            attempt,
+            data: next,
+            experienceSummary: shared?.experienceSummary,
+          });
       })
       .catch(() => {
         if (!controller.signal.aborted)
@@ -140,6 +151,25 @@ function EmployeeDetailsReader(props: EmployeeDetailsDialogProps) {
           details={data}
           onPreview={setReference}
           view={props.organizationView ? 'shared' : 'personal'}
+          experienceContent={
+            props.organizationView
+              ? result?.experienceSummary && (
+                  <ExperienceSummaryCard
+                    summary={result.experienceSummary}
+                    shared
+                  />
+                )
+              : props.instanceId && (
+                  <ExperiencePanel
+                    workspaceId={props.workspaceId}
+                    instanceId={props.instanceId}
+                    scopeId={props.scopeId}
+                    headers={props.headers}
+                    embedded
+                    readOnly
+                  />
+                )
+          }
         />
       )}
     </DshDialog>

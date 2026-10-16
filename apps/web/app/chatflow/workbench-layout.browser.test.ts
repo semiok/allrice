@@ -12,6 +12,8 @@ import type {
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   CompanyAssetSchema,
+  type ExperienceCandidate,
+  ExperienceOverviewSchema,
   WorkbenchArtifactSchema,
   EmployeeInstanceSchema,
   type PersonalSkillItem,
@@ -390,6 +392,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeDetailStatus: 200,
       employeeDetailDelay: null as Promise<void> | null,
       employeeDetailReads: 0,
+      experienceReads: 0,
+      experienceDelay: null as Promise<void> | null,
+      experienceStatus: 200,
+      experienceCandidates: [] as ExperienceCandidate[],
       employeeModel: 'configured-model',
       employeeReasoningEffort: 'medium',
       omitSessionA: false,
@@ -890,6 +896,46 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             : { error: { message: 'No access' } },
           state.employeeDetailStatus,
         );
+      }
+      if (path === '/api/v1/experiences') {
+        state.experienceReads++;
+        const body = {
+          overview: ExperienceOverviewSchema.parse({
+            visibility: 'owner',
+            workspaceId: state.workspace,
+            instanceId: id(7),
+            summary: {
+              enabled: true,
+              policy: {
+                frequency: 'weekly',
+                timezone: 'Asia/Shanghai',
+                time: '03:00',
+                weekday: 1,
+                monthDay: 1,
+                source: 'platform',
+                revision: 2,
+                validationMode: 'supported_cases',
+                adoptionMode: 'supported_private',
+              },
+              schedule: {
+                state: 'not_scheduled',
+                lastCheckedAt: null,
+                nextRunAt: null,
+                lastOccurrence: null,
+              },
+              counts: {
+                pendingSources: 2,
+                awaitingValidation: 0,
+                adoptedTotal: 1,
+              },
+            },
+          }),
+          candidates: structuredClone(state.experienceCandidates),
+          draftBatches: [],
+        };
+        const status = state.experienceStatus;
+        if (state.experienceDelay) await state.experienceDelay;
+        return answer(status === 200 ? body : { code: 'not_found' }, status);
       }
       if (path === '/api/v1/workspace' && state.startupFailure)
         return answer(
@@ -4184,15 +4230,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByText('对账流程正文', { exact: true })
           .first()
           .waitFor();
+        expect(f.state.experienceReads).toBe(0);
         await dialog
           .getByRole('tab', { name: '经验积累', exact: true })
           .click();
         await dialog.getByText('暂无已引用经验。', { exact: true }).waitFor();
+        await dialog
+          .getByRole('region', { name: '经验整理概况', exact: true })
+          .waitFor();
+        expect(
+          await dialog.getByText('等待后台安排', { exact: true }).count(),
+        ).toBe(2);
+        expect(f.state.experienceReads).toBe(1);
         expect(
           await dialog
-            .getByText('自动沉淀尚未启用', { exact: false })
-            .isVisible(),
-        ).toBe(true);
+            .getByRole('button', { name: /忘掉|撤回|批准|保存/ })
+            .count(),
+        ).toBe(0);
         await dialog
           .getByRole('tab', { name: '参考资料', exact: true })
           .click();
@@ -4236,6 +4290,95 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
     30_000,
   );
+
+  it('MET183 ignores late private experience responses after reopen and clears revoked history', async () => {
+    const f = await fixture({ employeeHistory: true, employeeDetails: true });
+    let release!: () => void;
+    const open = () =>
+      f.page.getByRole('button', { name: '查看Rice详情', exact: true }).click();
+    const dialog = f.page.getByRole('dialog', {
+      name: 'Rice员工详情',
+      exact: true,
+    });
+    const tab = () =>
+      dialog.getByRole('tab', { name: '经验积累', exact: true }).click();
+    try {
+      f.state.experienceCandidates = [
+        {
+          id: id(990),
+          content: 'PRIVATE_OLD_EXPERIENCE',
+          memoryClass: 'work_note',
+          scope: 'private',
+          status: 'pending',
+          archived: false,
+          revision: 1,
+          digest: 'sha256:' + 'a'.repeat(64),
+          source: null,
+          ownedByMe: true,
+          canReview: false,
+          createdAt: now,
+          reviewedAt: null,
+          reviewReason: null,
+          originKind: 'incremental',
+          instanceId: id(7),
+          consolidatedAt: null,
+        },
+      ];
+      f.state.experienceDelay = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      await open();
+      await tab();
+      await expect.poll(() => f.state.experienceReads).toBe(1);
+      await dialog.getByRole('button', { name: '关闭', exact: true }).click();
+      f.state.experienceDelay = null;
+      f.state.experienceCandidates = [];
+      await open();
+      await tab();
+      await dialog.getByText('暂无反馈与历史记录。', { exact: true }).waitFor();
+      release();
+      expect(await dialog.getByText('PRIVATE_OLD_EXPERIENCE').count()).toBe(0);
+      f.state.experienceCandidates = [
+        {
+          id: id(991),
+          content: 'PRIVATE_CURRENT',
+          memoryClass: 'work_note',
+          scope: 'private',
+          status: 'pending',
+          archived: false,
+          revision: 1,
+          digest: 'sha256:' + 'b'.repeat(64),
+          source: null,
+          ownedByMe: true,
+          canReview: false,
+          createdAt: now,
+          reviewedAt: null,
+          reviewReason: null,
+          originKind: 'incremental',
+          instanceId: id(7),
+          consolidatedAt: null,
+        },
+      ];
+      await dialog
+        .getByRole('button', { name: '重新读取', exact: true })
+        .click();
+      await dialog.getByText('PRIVATE_CURRENT', { exact: true }).waitFor();
+      f.state.experienceStatus = 404;
+      await dialog
+        .getByRole('button', { name: '重新读取', exact: true })
+        .click();
+      await dialog.getByRole('alert').waitFor();
+      expect(await dialog.getByText('PRIVATE_CURRENT').count()).toBe(0);
+      expect(
+        await dialog.getByRole('region', { name: '经验整理概况' }).count(),
+      ).toBe(0);
+      expect(f.writes).toEqual([]);
+      expect(f.errors).toEqual([]);
+    } finally {
+      release?.();
+      await f.close();
+    }
+  }, 30_000);
 
   it('MET182 paged reference denial removes the old page, name and download', async () => {
     const f = await fixture({ employeeHistory: true, employeeDetails: true });

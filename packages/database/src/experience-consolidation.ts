@@ -23,6 +23,7 @@ import {
   resolveEmployeeSessionInstance,
   EmployeeInstanceError,
   readEmployeeVersionPublication,
+  getEmployeeInstanceForHistory,
 } from './employees/employee-instances.ts';
 import { freezeEmployeeRuntimeContent } from './employees/employee-content.ts';
 import { resolveEmployeeContentSource } from './employees/employee-content-sources.ts';
@@ -813,6 +814,9 @@ export async function listExperienceDrafts(
       const occurrence = ExperienceOccurrenceSchema.parse(
         row.experience_occurrence,
       );
+      // Historical reading does not grant current execution or adoption.
+      await getEmployeeInstanceForHistory(context, occurrence.instanceId, tx);
+      let sourceState: 'current' | 'unavailable' = 'current';
       try {
         await assertCurrent(tx, occurrence, false, {
           checkSkills: !row.experience_receipt,
@@ -824,8 +828,8 @@ export async function listExperienceDrafts(
           error instanceof EmployeeInstanceError ||
           error instanceof PersonalSkillError
         )
-          continue;
-        throw error;
+          sourceState = 'unavailable';
+        else throw error;
       }
       const receipt = row.experience_receipt
         ? ExperienceReceiptSchema.parse(row.experience_receipt)
@@ -854,6 +858,14 @@ export async function listExperienceDrafts(
         revision: receipt?.revision ?? null,
         digest: receipt?.outputDigest ?? null,
         sourceIds: occurrence.sources.map((s) => s.id),
+        sourceState,
+        skillDependencies: [
+          ...new Map(
+            occurrence.sources
+              .flatMap((s) => s.evidence.skills)
+              .map((s) => [runtimePolicyDigest(s.pin), s.pin]),
+          ).values(),
+        ],
         drafts: receipt?.output.drafts ?? [],
         validations,
         validationNotes: Array.isArray(row.experience_validation_plan)
