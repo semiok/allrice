@@ -46,6 +46,7 @@ try {
       authority,
       spec,
       async (request) => {
+        if (mode === 'renewed') await new Promise((r) => setTimeout(r, 6500));
         authority = renewSandboxExecutionBudget(
           authority,
           request,
@@ -111,8 +112,10 @@ print('managed Python complete')
     const result = await runner.execute(payload, {
       attemptId,
       ...(mode === 'legacy' ? {} : { executionBudget: budget }),
-      maintainLease: async () =>
-        mode !== 'revoked' || Date.now() - started < 3000,
+      maintainLease: async () => {
+        if (mode === 'renewed') await new Promise((r) => setTimeout(r, 3500));
+        return mode !== 'revoked' || Date.now() - started < 3000;
+      },
       transport: {
         download: async () => {
           throw Error('unexpected input');

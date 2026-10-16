@@ -66,6 +66,7 @@ try {
       authority,
       spec,
       async (request) => {
+        if (mode === 'renewed') await new Promise((r) => setTimeout(r, 6500));
         authority = renewSandboxExecutionBudget(
           authority,
           request,
@@ -109,7 +110,10 @@ try {
     const result = await runner.execute(root, command, {
       attemptId,
       ...(mode === 'legacy' ? {} : { executionBudget: budget }),
-      maintainLease: async () => mode !== 'revoked' || Date.now() - now < 3000,
+      maintainLease: async () => {
+        if (mode === 'renewed') await new Promise((r) => setTimeout(r, 3500));
+        return mode !== 'revoked' || Date.now() - now < 3000;
+      },
     });
     attempts.set(attemptId, result.containerId);
     const elapsedMs = Date.now() - now;
@@ -127,7 +131,12 @@ try {
         assert.equal(result.execution?.hardDeadlineAt, rootDeadline);
       } else assert.equal(result.execution, undefined);
     }
-    checks[mode] = { elapsedMs, result, renewals };
+    checks[mode] = {
+      elapsedMs,
+      result,
+      renewals,
+      simulatedAuthorityDelayMs: mode === 'renewed' ? 6500 : 0,
+    };
     await runner.cleanup(attemptId, result.containerId);
     attempts.delete(attemptId);
   }
