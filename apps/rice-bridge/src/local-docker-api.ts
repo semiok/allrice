@@ -42,6 +42,31 @@ export class LocalDockerApi {
     );
   }
 
+  async putInputArchive(
+    id: string,
+    archive: { stream: Readable; size: number },
+    signal: AbortSignal,
+  ) {
+    if (
+      !/^[a-f0-9]{64}$/.test(id) ||
+      !Number.isSafeInteger(archive.size) ||
+      archive.size < 0
+    )
+      throw new LocalCommandError('INVALID_ARCHIVE_TARGET');
+    try {
+      await this.streamRequest(
+        'PUT',
+        `/containers/${id}/archive?path=%2Ftmp%2Fwork&noOverwriteDirNonDir=1`,
+        archive.stream,
+        archive.size,
+        signal,
+        4096,
+      );
+    } finally {
+      archive.stream.destroy();
+    }
+  }
+
   async loadImageArchive(stream: Readable, size: number, signal: AbortSignal) {
     if (!Number.isSafeInteger(size) || size < 1 || size > 2_000_000_000)
       throw new LocalCommandError('RUNNER_INPUT_LIMIT');
@@ -100,6 +125,7 @@ export class LocalDockerApi {
     signal.throwIfAborted();
     const bound = AbortSignal.any([signal, AbortSignal.timeout(180_000)]);
     return new Promise<Buffer>((resolve, reject) => {
+      let sending: Promise<void> = Promise.resolve();
       const req = request(
         {
           socketPath: this.socketPath,
@@ -129,16 +155,19 @@ export class LocalDockerApi {
               reject(
                 new LocalCommandError(`DAEMON_HTTP_${res.statusCode ?? 0}`),
               );
-            else resolve(Buffer.concat(chunks));
+            else
+              void sending.then(() => resolve(Buffer.concat(chunks)), reject);
           });
         },
       );
       req.once('error', reject);
-      if (body)
-        void pipeline(body, req, { signal: bound }).catch((error) =>
-          req.destroy(error),
-        );
-      else req.end();
+      if (body) {
+        sending = pipeline(body, req, { signal: bound });
+        void sending.catch((error) => {
+          reject(error);
+          req.destroy(error);
+        });
+      } else req.end();
     });
   }
 

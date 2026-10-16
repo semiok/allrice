@@ -11,6 +11,7 @@ import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 
 const ports = vi.hoisted(() => ({
   select: vi.fn(),
+  notDispatched: vi.fn(async () => true),
   create: vi.fn(),
   wait: vi.fn(),
   publish: vi.fn(),
@@ -24,6 +25,7 @@ const ports = vi.hoisted(() => ({
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   selectManagedPythonExecution: ports.select,
+  managedPythonCallNotDispatched: ports.notDispatched,
   createLocalPythonOperation: ports.create,
   waitLocalPythonOperation: ports.wait,
   publishLocalPythonArtifacts: ports.publish,
@@ -101,6 +103,7 @@ function selection() {
       officePreview: false,
       stopConfirmed: true,
       pythonChartsContractVersion: 1,
+      inputStreamingVersion: 1,
     }),
   };
 }
@@ -304,7 +307,7 @@ describe('canonical Python original-call execution adapter', () => {
       ),
     );
     expect(lastPayload.arguments.limits).toMatchObject({
-      inputBytes: 2_000_000,
+      inputBytes: source.length,
       artifactBytes: 1_000_000,
       timeoutMs: 30_000,
     });
@@ -464,29 +467,73 @@ describe('canonical Python original-call execution adapter', () => {
       expect(ports.cloud).not.toHaveBeenCalled();
     },
   );
-  it.each(['changed', 'oversize', 'aggregate'])(
-    'authorizes exact actual input metadata and rejects %s inputs before selecting any backend',
-    async (problem) => {
+  it('confirms rejected changed inputs only for this invocation and only without a prior operation', async () => {
+    const request = input(argumentsForPng());
+    ports.file.mockResolvedValue({
+      object: {
+        id: objectId,
+        checksum: hash(Buffer.from('changed')),
+        sizeBytes: source.length,
+        mediaType: 'text/csv',
+      },
+    });
+    const failure = await run(request).catch((e) => e);
+    const identity = {
+      runId: request.context.runId,
+      callId: request.call.id,
+      toolName: request.call.name,
+    };
+    expect(failure.code).toBe('PYTHON_INPUT_CHANGED');
+    expect(isConfirmedToolFailure(failure, identity)).toBe(true);
+    expect(
+      isConfirmedToolFailure(failure, { ...identity, callId: 'other' }),
+    ).toBe(false);
+    expect(ports.select).not.toHaveBeenCalled();
+    ports.notDispatched.mockResolvedValueOnce(false);
+    const oldAttemptFailure = await run(request).catch((e) => e);
+    expect(isConfirmedToolFailure(oldAttemptFailure, identity)).toBe(false);
+  });
+  it.each(['local', 'cloud'])(
+    'accepts the original two-file 3145326-byte manifest in %s',
+    async (location) => {
       const args = argumentsForPng();
-      if (problem === 'aggregate')
-        args.inputs = [
-          { path: 'a.csv', objectId, checksum: hash(source) },
-          { path: 'b.csv', objectId: randomUUID(), checksum: hash(source) },
-        ];
-      ports.file.mockResolvedValue({
-        object: {
-          id: objectId,
-          checksum:
-            problem === 'changed' ? hash(Buffer.from('changed')) : hash(source),
-          sizeBytes: problem === 'oversize' ? 2_000_001 : 1_000_001,
-          mediaType: 'text/csv',
-        },
-      });
-      await expect(run(input(args))).rejects.toMatchObject({
-        retryable: false,
-      });
-      expect(ports.select).not.toHaveBeenCalled();
-      expect(ports.cloud).not.toHaveBeenCalled();
+      args.inputs = [
+        { path: 'a.xlsx', objectId, checksum: hash(source) },
+        { path: 'b.xlsx', objectId: randomUUID(), checksum: hash(source) },
+      ];
+      ports.file
+        .mockResolvedValueOnce({
+          object: {
+            id: objectId,
+            checksum: hash(source),
+            sizeBytes: 1651149,
+            mediaType: 'application/octet-stream',
+          },
+        })
+        .mockResolvedValueOnce({
+          object: {
+            id: randomUUID(),
+            checksum: hash(source),
+            sizeBytes: 1494177,
+            mediaType: 'application/octet-stream',
+          },
+        });
+      if (location === 'cloud')
+        ports.select.mockResolvedValue({
+          ...selection(),
+          choice: {
+            location: 'cloud',
+            status: 'execute',
+            reason: 'cloud_requested',
+          },
+          selectionReason: 'cloud_requested',
+        });
+      await run(input(args));
+      expect(ports.select).toHaveBeenCalledOnce();
+      if (location === 'local') {
+        expect(lastPayload.arguments.inputTransfer).toBe('stream-v1');
+        expect(lastPayload.arguments.limits.inputBytes).toBe(3145326);
+      } else expect(ports.runCloud).toHaveBeenCalledOnce();
     },
   );
   it('supports stdout-only Python with no output objects or Office validator', async () => {

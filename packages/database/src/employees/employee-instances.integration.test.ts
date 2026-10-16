@@ -3933,22 +3933,30 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     await expect(
       f.create('normalize', 'console.log("changed");'),
     ).rejects.toThrow('method_test_step_already_recorded');
+    const readInput = async (
+      file: Awaited<ReturnType<typeof loadCloudCommandInputs>>[number],
+    ) =>
+      'contentBase64' in file
+        ? Buffer.from(file.contentBase64, 'base64')
+        : Buffer.from(
+            await new Response(
+              await file.open(new AbortController().signal),
+            ).arrayBuffer(),
+          );
     const source = await loadCloudCommandInputs(
       f.context,
       first.payload,
       f.storage,
       fixture.db,
     );
+    const sourceBytes = await Promise.all(source.map(readInput));
     expect(
-      source.map((i) => [
-        i.path,
-        Buffer.from(i.contentBase64, 'base64').toString(),
-      ]),
+      source.map((file, index) => [file.path, sourceBytes[index]!.toString()]),
     ).toEqual([['amounts.csv', 'entryId,amountCents\none,10000\ntwo,20000\n']]);
     expect(first.payload.arguments.inputs).toHaveLength(1);
     expect(first.payload.arguments.inputs[0]!.path).toBe(source[0]!.path);
     expect(first.payload.arguments.inputs[0]!.checksum).toBe(
-      `sha256:${createHash('sha256').update(Buffer.from(source[0]!.contentBase64, 'base64')).digest('hex')}`,
+      `sha256:${createHash('sha256').update(sourceBytes[0]!).digest('hex')}`,
     );
     const body = JSON.stringify({
       currency: 'CNY',
@@ -3964,16 +3972,17 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       normalized[0]!.object.id,
     );
     expect(
-      Buffer.from(
-        (
-          await loadCloudCommandInputs(
-            f.context,
-            second.payload,
-            f.storage,
-            fixture.db,
-          )
-        )[0]!.contentBase64,
-        'base64',
+      (
+        await readInput(
+          (
+            await loadCloudCommandInputs(
+              f.context,
+              second.payload,
+              f.storage,
+              fixture.db,
+            )
+          )[0]!,
+        )
       ).toString(),
     ).toBe(body);
     const csv = 'currency,amountUnit,totalCents\nCNY,cent,30000\n';

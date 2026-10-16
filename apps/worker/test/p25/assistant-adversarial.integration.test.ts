@@ -10,6 +10,10 @@ import {
 } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 import { confirmToolFailure } from '../../src/errors.js';
+import { executeManagedCharts } from '../../src/python/managed-charts.js';
+import { PythonExecuteArgsSchema } from '@allrice/contracts';
+import type { RiceToolExecutionInput } from '../../src/tool-broker/types.js';
+import * as databaseClient from '../../../../packages/database/src/core/client.ts';
 import * as employeeDatabase from '@allrice/database';
 import { updateEmployeeProfile } from '../../src/tool-broker/handlers/employee-profile.js';
 import type { HarnessToolResult } from '../../src/harness/adapter.js';
@@ -134,6 +138,82 @@ integration(
         });
       },
     );
+
+    it('finalizes a real Python pre-dispatch refusal followed by correction without unresolved usage', async () => {
+      const f = await assistantFixture(database.db);
+      await database.db`update allrice_assistant_instances set allowed_tools=allowed_tools||'["python.execute"]'::jsonb where run_id=${f.task.runId}`;
+      const db = vi
+        .spyOn(databaseClient, 'getDatabase')
+        .mockReturnValue(database.db);
+      let corrected = false;
+      try {
+        const bridge = createAssistantWorkerBridge({
+          runtime: f.runtime,
+          task: f.task,
+          context: f.context,
+          worker: f.worker,
+          wireNames: {},
+          readOnlyTools: new Set(),
+          onRootTool: async (call) => {
+            if (corrected)
+              return {
+                modelContent: 'corrected computation',
+                summary: 'corrected computation',
+              };
+            await executeManagedCharts(
+              {
+                context: {
+                  executionId: randomUUID(),
+                  runId: f.task.runId,
+                  jobId: f.worker.jobId,
+                  worker: { type: 'worker', id: f.worker.workerId },
+                  delegatedBy: { type: 'user', id: f.context.actor.id },
+                  organizationId: f.context.organizationId,
+                  workspaceId: f.context.workspaceId,
+                  startedAt: new Date().toISOString(),
+                  policySnapshot: {
+                    id: randomUUID(),
+                    organizationId: f.context.organizationId,
+                    subjectId: f.context.actor.id,
+                    version: 1,
+                    issuedAt: new Date().toISOString(),
+                    expiresAt: new Date(Date.now() + 600000).toISOString(),
+                    memberships: f.context.memberships,
+                    grants: [],
+                  },
+                },
+                capabilities: [],
+                storageRoot: database.storageRoot,
+                call,
+              } satisfies RiceToolExecutionInput,
+              PythonExecuteArgsSchema.parse(call.arguments),
+            );
+            throw Error('missing lease must reject');
+          },
+        });
+        const request = {
+          nativeSessionId: f.nativeSessionId,
+          callId: randomUUID(),
+          name: 'python.execute',
+          arguments: { script: 'print(1)' },
+        };
+        await expect(bridge.handle('tool', request)).rejects.toMatchObject({
+          code: 'PYTHON_EXECUTION_UNAVAILABLE',
+        });
+        corrected = true;
+        await bridge.handle('tool', { ...request, callId: randomUUID() });
+        const rows =
+          await database.db`select metric,settled_amount from allrice_assistant_usage where root_run_id=${f.task.runId}`;
+        expect(rows).toHaveLength(8);
+        expect(rows.every((r) => r.settled_amount !== null)).toBe(true);
+        expect(await f.runtime.finalizeRoot(f.base)).toMatchObject({
+          status: 'completed',
+          usageComplete: true,
+        });
+      } finally {
+        db.mockRestore();
+      }
+    });
 
     it.each(['conflict', 'intent', 'unknown-commit'] as const)(
       'settles only confirmed personal-profile refusal through the real governed bridge: %s',

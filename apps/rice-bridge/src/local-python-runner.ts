@@ -1,3 +1,10 @@
+import { mkdtemp, open, rm } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Readable } from 'node:stream';
+import { createInputArchive, bufferedInput } from '@allrice/project-runtime';
+import type { RuntimeInputSource } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -18,10 +25,7 @@ import {
   inputDownloadAbortReason,
   LocalPythonInputDownloadError,
 } from './local-python-download-error.js';
-import {
-  createLocalPythonArchive,
-  readLocalPythonArchive,
-} from './local-python-archive.js';
+import { readLocalPythonArchive } from './local-python-archive.js';
 import { localPythonSupervisor } from './local-python-supervisor.js';
 import type { LocalPythonTransport } from './local-python-client.js';
 
@@ -199,6 +203,7 @@ export class LocalPythonRunner {
       officePreview: false,
       stopConfirmed: true,
       pythonChartsContractVersion: 1,
+      inputStreamingVersion: 1,
     });
   }
   private async removeProbe(id: string, attempt: string) {
@@ -292,19 +297,70 @@ export class LocalPythonRunner {
           checking = false;
         });
     }, 500);
+    let directory: string | undefined;
     try {
-      const files = [];
-      for (const file of payload.arguments.inputs)
+      directory = await mkdtemp(join(tmpdir(), 'allrice-python-input-'));
+      const files: RuntimeInputSource[] = [];
+      for (const [index, file] of payload.arguments.inputs.entries()) {
+        const path = join(directory, String(index));
+        const handle = await open(path, 'wx', 0o600);
+        let received = 0;
+        const hash = createHash('sha256');
+        const write = async (chunk: Uint8Array) => {
+          bounded.throwIfAborted();
+          received += chunk.length;
+          if (received > file.sizeBytes)
+            throw new LocalCommandError('INPUT_VERSION_CHANGED');
+          hash.update(chunk);
+          let offset = 0;
+          while (offset < chunk.length) {
+            const { bytesWritten } = await handle
+              .write(chunk, offset, chunk.length - offset)
+              .catch((error) => {
+                if (error.code === 'ENOSPC' || error.code === 'EDQUOT')
+                  throw new LocalCommandError('INPUT_STORAGE_FULL');
+                throw error;
+              });
+            if (!bytesWritten)
+              throw new LocalCommandError('INPUT_DOWNLOAD_UNAVAILABLE');
+            offset += bytesWritten;
+          }
+        };
+        try {
+          const legacy = await transport.download(file, bounded, write);
+          if (legacy.length) await write(legacy);
+          if (
+            received !== file.sizeBytes ||
+            `sha256:${hash.digest('hex')}` !== file.checksum
+          )
+            throw new LocalCommandError('INPUT_VERSION_CHANGED');
+        } finally {
+          await handle.close();
+        }
         files.push({
           path: `input/${file.path}`,
-          bytes: await transport.download(file, bounded),
-          mode: 0o444,
+          sizeBytes: file.sizeBytes,
+          checksum: file.checksum,
+          async open(signal) {
+            signal.throwIfAborted();
+            return Readable.toWeb(createReadStream(path, { signal }), {
+              strategy: {
+                highWaterMark: 65536,
+                size: (chunk) => chunk.byteLength,
+              },
+            }) as ReadableStream<Uint8Array>;
+          },
         });
+      }
       bounded.throwIfAborted();
       if (!(await maintainLease()))
         throw new LocalCommandError('EXECUTION_REVOKED');
-      return files;
+      return {
+        files,
+        cleanup: () => rm(directory!, { recursive: true, force: true }),
+      };
     } catch (error) {
+      if (directory) await rm(directory, { recursive: true, force: true });
       if (bounded.aborted) {
         if (error instanceof LocalPythonInputDownloadError)
           throw new LocalPythonInputDownloadError('EXECUTION_REVOKED', {
@@ -314,6 +370,13 @@ export class LocalPythonRunner {
         throw new LocalCommandError('EXECUTION_REVOKED');
       }
       if (error instanceof LocalCommandError) throw error;
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        ['ENOSPC', 'EDQUOT'].includes(String(error.code))
+      )
+        throw new LocalCommandError('INPUT_STORAGE_FULL');
       throw new LocalCommandError('INPUT_DOWNLOAD_UNAVAILABLE');
     } finally {
       clearInterval(timer);
@@ -352,6 +415,26 @@ export class LocalPythonRunner {
       signal,
       options.maintainLease,
     );
+    try {
+      return await this.executeStaged(
+        payload,
+        options,
+        aborted,
+        signal,
+        files.files,
+      );
+    } finally {
+      await files.cleanup();
+    }
+  }
+  private async executeStaged(
+    payload: RuntimeLocalPythonPayload,
+    options: Parameters<LocalPythonRunner['execute']>[1],
+    aborted: AbortController,
+    signal: AbortSignal,
+    files: RuntimeInputSource[],
+  ) {
+    const a = payload.arguments;
     const volumeName = `allrice-python-${options.attemptId}`;
     const labels = {
       [attemptLabel]: options.attemptId,
@@ -440,19 +523,19 @@ export class LocalPythonRunner {
       void stop('timeout').catch(() => undefined);
     }, a.limits.timeoutMs + 22_000);
     try {
-      await this.api.putArchive(
+      await this.api.putInputArchive(
         id,
-        '/tmp/work',
-        createLocalPythonArchive([
-          ...files,
-          { path: 'main.py', bytes: Buffer.from(a.script), mode: 0o444 },
-          {
-            path: '.allrice/config.json',
-            bytes: Buffer.from(
-              JSON.stringify({ arguments: a, deadlineUnixMs }),
+        createInputArchive(
+          [
+            ...files,
+            bufferedInput('main.py', Buffer.from(a.script)),
+            bufferedInput(
+              '.allrice/config.json',
+              Buffer.from(JSON.stringify({ arguments: a, deadlineUnixMs })),
             ),
-          },
-        ]),
+          ],
+          signal,
+        ),
         signal,
       );
       if (signal.aborted || !(await options.maintainLease())) {

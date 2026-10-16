@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { mkdir, open, rename, rm, stat } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
+import { Readable } from 'node:stream';
 
 import {
   ObjectKeySchema,
@@ -62,13 +63,10 @@ export class LocalStorageAdapter implements StoragePort {
 
   async get(objectInput: StorageObject) {
     const object = StorageObjectSchema.parse(objectInput);
-    const content = await readFile(objectPath(this.root, object.key));
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(content);
-        controller.close();
-      },
-    });
+    const handle = await open(objectPath(this.root, object.key), 'r');
+    return Readable.toWeb(handle.createReadStream({ highWaterMark: 65536 }), {
+      strategy: { highWaterMark: 65536, size: (chunk) => chunk.byteLength },
+    }) as ReadableStream<Uint8Array>;
   }
 
   async delete(objectInput: StorageObject) {

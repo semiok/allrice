@@ -949,6 +949,7 @@ export class RuntimeBridgeOperationClient {
           'INPUT_VERSION_CHANGED',
           'INPUT_LIMIT',
           'INPUT_DOWNLOAD_UNAVAILABLE',
+          'INPUT_STORAGE_FULL',
           'EXECUTION_REVOKED',
         ].includes(error.code);
       if (notExecuted)

@@ -7,6 +7,7 @@ import {
 } from '@allrice/contracts';
 import {
   selectManagedPythonExecution,
+  managedPythonCallNotDispatched,
   createLocalPythonOperation,
   waitLocalPythonOperation,
   publishLocalPythonArtifacts,
@@ -45,6 +46,38 @@ export async function executeManagedCharts(
   input: RiceToolExecutionInput,
   args: PythonExecuteArgs,
 ) {
+  let dispatchAttempted = false;
+  try {
+    return await executeManagedChartsAttempt(input, args, () => {
+      dispatchAttempted = true;
+    });
+  } catch (error) {
+    if (
+      !dispatchAttempted &&
+      error instanceof Error &&
+      !(
+        error instanceof HandlerError &&
+        error.code === 'PYTHON_LOCAL_RESULT_UNKNOWN'
+      ) &&
+      (await managedPythonCallNotDispatched(input.context, input.call.id).catch(
+        () => false,
+      ))
+    ) {
+      confirmToolFailure(error, {
+        runId: input.context.runId,
+        callId: input.call.id,
+        toolName: input.call.name,
+      });
+    }
+    throw error;
+  }
+}
+
+async function executeManagedChartsAttempt(
+  input: RiceToolExecutionInput,
+  args: PythonExecuteArgs,
+  onDispatch: () => void,
+) {
   if (!input.managedBrowserJobLeaseToken || !input.managedBrowserJobAttempt)
     throw new HandlerError(
       'PYTHON_EXECUTION_UNAVAILABLE',
@@ -62,12 +95,6 @@ export async function executeManagedCharts(
         false,
       );
     inputBytes += file.object.sizeBytes;
-    if (inputBytes > 2_000_000)
-      throw new HandlerError(
-        'TOOL_FILE_TOO_LARGE',
-        'Python 输入合计超过 2 MB。',
-        false,
-      );
     inputs.push({
       ...requested,
       sizeBytes: file.object.sizeBytes,
@@ -93,7 +120,11 @@ export async function executeManagedCharts(
     if (selection.choice.status === 'unavailable')
       throw new HandlerError(
         'PYTHON_LOCAL_UNAVAILABLE',
-        `Python 执行环境不可用（${selection.choice.reason}）；本次未执行或换端。`,
+        inputBytes > 2_000_000 &&
+          selection.profile &&
+          selection.profile.inputStreamingVersion !== 1
+          ? '当前 Rice Bridge 尚不支持流式文件输入，请更新 Bridge 后重试；本次未执行，也未改用云端。'
+          : `Python 执行环境不可用（${selection.choice.reason}）；本次未执行或换端。`,
         false,
       );
     if (selection.choice.status === 'wait')
@@ -131,6 +162,9 @@ export async function executeManagedCharts(
           callId: input.call.id,
           argumentsDigest: runtimePolicyDigest(input.call.arguments),
         },
+        ...(selection.profile.inputStreamingVersion === 1
+          ? { inputTransfer: 'stream-v1' }
+          : {}),
         script: args.script,
         inputs,
         outputs: args.outputs.map((file, index) => ({
@@ -145,9 +179,16 @@ export async function executeManagedCharts(
         architecture: selection.profile.architecture,
         isolation: 'local-vm-container-v1',
         network: 'none',
-        limits: { ...args.limits, inputBytes: 2_000_000 },
+        limits: {
+          ...args.limits,
+          inputBytes:
+            selection.profile.inputStreamingVersion === 1
+              ? Math.max(1, inputBytes)
+              : 2_000_000,
+        },
       },
     });
+    onDispatch();
     return createLocalPythonOperation({
       context: input.context,
       selection,
@@ -157,6 +198,7 @@ export async function executeManagedCharts(
   });
   const storage = new LocalStorageAdapter(input.storageRoot);
   if (!created) {
+    onDispatch();
     const cloud = await createCloudPythonOperation({
       context: input.context,
       callId: input.call.id,
