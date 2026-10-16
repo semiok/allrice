@@ -314,7 +314,9 @@ export async function resolveEmployeeContentSource(
       and m.lifecycle_state='durable' and m.trust_level in ('user_confirmed','platform_verified')
       and (m.expires_at is null or m.expires_at>clock_timestamp())
       and (m.visibility<>'private' or m.owner_id=${context.actor.id})
-      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id and e.status<>'approved')
+      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id
+        and (e.origin_kind='incremental' or e.status<>'approved'
+          or exists(select 1 from allrice_employee_runs origin where origin.run_id=e.run_id and origin.method_authoring)))
     ${lock ? sql`for share of m,r` : sql``}`;
   if (!memory) return unavailable(ref);
   // Workspace memory is not a new company/department publication. MET183

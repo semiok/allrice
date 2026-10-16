@@ -15,6 +15,7 @@ import {
   claimNextJob,
   closeDatabase,
   maintainQueue,
+  collectPendingExperienceEvidence,
   pingDatabase,
   queueSummary,
   recoverCodexAuthorizationFlows,
@@ -386,6 +387,9 @@ async function automationTick() {
       if (claimed > 0) {
         console.info('[M6] queued automation runs', { count: claimed });
       }
+      // Reuse this background producer, keeping collection off the foreground
+      // claim/completion path. It persists evidence without any model calls.
+      if (!stopping) await collectPendingExperienceEvidence();
     });
   } catch (error) {
     console.error('[M6] automation scheduler failed', {

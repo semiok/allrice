@@ -728,12 +728,18 @@ export async function searchToolBrokerMemories(
   >`
     select id, organization_id, workspace_id, owner_id, visibility,
       content, updated_at, trust_level, confidence, source_label
-    from allrice_memories
+    from allrice_memories m
     where organization_id = ${context.organizationId}
       and workspace_id = ${context.workspaceId} and archived_at is null
       and (owner_id = ${context.policySnapshot.subjectId}
         or visibility <> 'private')
       and (expires_at is null or expires_at > now())
+      and not exists(select 1 from allrice_experience_reviews er
+        where er.memory_id=m.id and (er.origin_kind='incremental' or er.status<>'approved'
+          or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
+      and not exists(select 1 from allrice_employee_runs er
+        where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
+          and m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
       and content ilike ${pattern}
     order by updated_at desc
     limit ${Math.min(Math.max(limit, 1), 20)}

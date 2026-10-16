@@ -58,7 +58,12 @@ export async function experienceHttp(
     const store = createExperienceStore();
     if (action === 'list')
       return Response.json(
-        { candidates: await store.list(context) },
+        {
+          candidates: await store.list(
+            context,
+            url.searchParams.get('instanceId') ?? undefined,
+          ),
+        },
         { headers },
       );
     if (action === 'sources')
@@ -93,6 +98,7 @@ export async function experienceHttp(
         : code === 'conflict' || code === 'source_changed'
           ? 409
           : code === 'identity_denied' ||
+              code === 'validation_required' ||
               code === 'platform_publication_required'
             ? 403
             : code === 'invalid_request' || code === 'invalid_source'

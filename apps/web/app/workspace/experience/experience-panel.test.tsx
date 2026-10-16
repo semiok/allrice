@@ -34,6 +34,14 @@ const render = (input: Partial<ExperienceCandidate> = {}) =>
     />,
   );
 describe('P20 explicit review presentation', () => {
+  it('shows automatic evidence as pending and offers no legacy approval shortcut', () => {
+    const html = render({ originKind: 'incremental', canReview: false });
+    expect(html).toContain('待自动整理');
+    expect(html).toContain('不会作为长期要求影响后续任务');
+    expect(html).toContain('忘掉这条反馈');
+    expect(html).not.toContain('明确批准为');
+    expect(html).not.toContain('已确认长期记忆');
+  });
   it('escapes untrusted rule and separates saved from explicitly approved', () => {
     const html = render();
     expect(html).toContain('&lt;script&gt;');

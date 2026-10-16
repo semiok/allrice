@@ -68,6 +68,7 @@ import {
   authorizeExecution,
   modelGovernanceFailureText,
   nativeExecutionDiagnosticFailureText,
+  runtimeFeatureEnabled,
   type ExecutionContext,
   type EmployeeExecutionSnapshot,
   type Job,
@@ -1622,7 +1623,11 @@ async function transitionTerminal(
   >`
     update allrice_employee_runs
     set status = ${input.runStatus}, error_code = ${input.code ?? null},
-        error_message = ${input.message ?? null}, completed_at = now()
+        error_message = ${input.message ?? null}, completed_at = now(),
+        experience_capture_state = case
+          when experience_capture_state is null and not method_authoring
+            and ${runtimeFeatureEnabled('ALLRICE_EXPERIENCE_REVIEW_ENABLED')}
+          then 'pending' else experience_capture_state end
     where run_id = ${job.run_id}
     returning assistant_message_id, prompt_snapshot
   `;

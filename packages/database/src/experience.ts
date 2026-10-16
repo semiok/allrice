@@ -5,6 +5,7 @@ import {
   runtimeFeatureEnabled,
   CreateExperienceInputSchema,
   ExperienceCandidateSchema,
+  ExperienceEvidenceSchema,
   ReviewExperienceInputSchema,
   UuidSchema,
   type RequestContext,
@@ -23,6 +24,7 @@ export class ExperienceError extends Error {
       | 'source_changed'
       | 'conflict'
       | 'invalid_source'
+      | 'validation_required'
       | 'platform_publication_required',
   ) {
     super(code);
@@ -53,6 +55,9 @@ interface ReviewRow {
   created_at: Date;
   reviewed_at: Date | null;
   review_reason: string | null;
+  origin_kind: 'manual' | 'incremental';
+  instance_id: string | null;
+  evidence: unknown;
 }
 function principal(context: RequestContext) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
@@ -111,6 +116,7 @@ async function source(
     where er.run_id=${runId} and er.organization_id=${context.organizationId} and er.workspace_id=${context.workspaceId!}
       and er.owner_id=${owner} and s.owner_id=${owner} and m.owner_id=${owner} and s.archived_at is null
       and er.status in ('succeeded','failed','canceled') and er.completed_at is not null
+      and not er.method_authoring
       and m.id in (er.user_message_id,er.assistant_message_id) and m.role in ('user','assistant')
       and m.content->>'text' is not null and m.status='completed'
     for share of er,s,m,a`;
@@ -141,12 +147,19 @@ function view(row: ReviewRow, user: string, admin: boolean) {
     ownedByMe: row.owner_id === user,
     canReview:
       row.status === 'pending' &&
+      row.origin_kind !== 'incremental' &&
       row.archived_at === null &&
       row.requested_scope !== 'platform' &&
       (row.requested_scope === 'private' ? row.owner_id === user : admin),
     createdAt: row.created_at.toISOString(),
     reviewedAt: row.reviewed_at?.toISOString() ?? null,
     reviewReason: row.review_reason,
+    originKind: row.origin_kind,
+    instanceId: row.instance_id,
+    evidence:
+      row.origin_kind === 'incremental' && row.owner_id === user
+        ? ExperienceEvidenceSchema.parse(row.evidence)
+        : null,
   });
 }
 async function audit(
@@ -183,6 +196,7 @@ export function createExperienceStore(options: { database?: Db } = {}) {
           where er.organization_id=${p.organization} and er.workspace_id=${p.workspace} and er.session_id=${sessionId}
             and er.owner_id=${p.user} and s.owner_id=${p.user} and m.owner_id=${p.user} and s.archived_at is null
             and er.status in ('succeeded','failed','canceled') and er.completed_at is not null
+            and not er.method_authoring
             and m.role in ('user','assistant') and m.status='completed' and length(m.content->>'text')>0
           order by er.completed_at desc,m.id limit 100`;
         return rows.map((r) => ({
@@ -194,7 +208,8 @@ export function createExperienceStore(options: { database?: Db } = {}) {
         }));
       });
     },
-    async list(context: RequestContext) {
+    async list(context: RequestContext, instanceId?: string) {
+      if (instanceId) UuidSchema.parse(instanceId);
       return database().begin(async (tx) => {
         const p = await identity(tx, context, false);
         const rows = await tx<
@@ -203,6 +218,15 @@ export function createExperienceStore(options: { database?: Db } = {}) {
           join allrice_memories m on m.id=e.memory_id and m.organization_id=e.organization_id and m.workspace_id=e.workspace_id
           where e.organization_id=${p.organization} and e.workspace_id=${p.workspace}
             and (e.owner_id=${p.user} or (${p.admin} and e.requested_scope='workspace' and e.share_acknowledged))
+            and (${instanceId ?? null}::uuid is null or e.instance_id=${instanceId ?? null})
+            and (e.origin_kind='manual' or exists(select 1 from allrice_employee_instances i
+              join allrice_employee_assignments a on a.id=i.assignment_id and a.user_id=i.owner_id
+              join allrice_employees em on em.id=a.employee_id
+              where i.id=e.instance_id and i.organization_id=e.organization_id and i.workspace_id=e.workspace_id
+                and i.owner_id=${p.user} and i.archived_at is null and a.active and em.status='active'
+                and not exists(select 1 from allrice_platform_employee_tenant_assignments d
+                  where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
+                    and d.tenant_employee_id=a.employee_id and not d.active)))
           order by (e.status='pending' and m.archived_at is null) desc,e.created_at desc,e.memory_id limit 100`;
         return rows.map((r) => view(r, p.user, p.admin));
       });
@@ -268,6 +292,11 @@ export function createExperienceStore(options: { database?: Db } = {}) {
           where e.memory_id=${id} and e.organization_id=${p.organization} and e.workspace_id=${p.workspace} and m.archived_at is null
             and (e.owner_id=${p.user} or (${p.admin} and e.requested_scope='workspace' and e.share_acknowledged)) for update of e,m`;
         if (!current) throw new ExperienceError('not_found');
+        if (
+          current.origin_kind === 'incremental' &&
+          request.decision === 'approve'
+        )
+          throw new ExperienceError('validation_required');
         if (
           current.requested_scope === 'platform' &&
           request.decision === 'approve'
