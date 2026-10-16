@@ -1,4 +1,5 @@
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import { markExperienceCapturePending } from '../experience-capture.ts';
 import { MaintenanceRepositoryBindingSchema } from '../platform-maintenance-publication-contracts.ts';
 import { assertMaintenanceReconciliation } from '../platform-maintenance-authority.ts';
 import { assertMaintenanceGrant } from '../platform-maintenance-authority.ts';
@@ -1626,6 +1627,7 @@ async function transitionTerminal(
     where run_id = ${job.run_id}
     returning assistant_message_id, prompt_snapshot
   `;
+  await markExperienceCapturePending(transaction, job.run_id);
   const employeeRun = employeeRuns[0];
   if (employeeRun) {
     const result =

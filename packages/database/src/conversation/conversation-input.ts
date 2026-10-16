@@ -1,6 +1,7 @@
 import {
   UuidSchema,
   RuntimeNativeInputProofSchema,
+  runtimeFeatureEnabled,
   type RuntimeNativeInputProof,
 } from '@allrice/contracts';
 import { z } from 'zod';
@@ -168,7 +169,7 @@ export async function consumeConversationSteer(input: {
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const live =
-      await transaction`select cr.session_id,j.id as job_id from allrice_conversation_runtimes cr
+      await transaction`select cr.session_id,cr.active_run_id,j.id as job_id from allrice_conversation_runtimes cr
       join allrice_conversation_commands c on c.session_id=cr.session_id
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
       where c.id=${values.commandId} and cr.worker_id=${values.workerId} and cr.state='running'
@@ -208,6 +209,9 @@ export async function consumeConversationSteer(input: {
       )
         throw new Error('INPUT_ADOPTION_PROOF_REQUIRED');
     }
+    const captureAdoptedFeedback =
+      command.input_kind === 'steer_current' &&
+      runtimeFeatureEnabled('ALLRICE_EXPERIENCE_REVIEW_ENABLED');
     await transaction`
       update allrice_conversation_commands
       set state = 'consumed', consumed_at = now(), updated_at = now(),
@@ -238,6 +242,12 @@ export async function consumeConversationSteer(input: {
       set status = 'canceled', error_code = 'STEER_CONSUMED',
           error_message = 'Input was consumed by the active turn',
           completed_at = now(),
+          experience_capture_state=case
+            when ${captureAdoptedFeedback} and not method_authoring and experience_capture_state is null
+            then 'pending' else experience_capture_state end,
+          experience_execution_run_id=case
+            when ${captureAdoptedFeedback} then ${live[0]!.active_run_id}::uuid
+            else experience_execution_run_id end,
           content_generation_id=coalesce(content_generation_id,(
             select active.content_generation_id from allrice_conversation_runtimes cr
             join allrice_employee_runs active on active.run_id=cr.active_run_id

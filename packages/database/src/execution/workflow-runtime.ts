@@ -17,6 +17,7 @@ import {
 import type postgres from 'postgres';
 
 import { DataAccessError } from '../data.ts';
+import { markExperienceCapturePending } from '../experience-capture.ts';
 import { getDatabase } from '../core/client.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { enqueueRun } from './queue.ts';
@@ -803,6 +804,7 @@ export async function decideWorkflowApproval(
         returning assistant_message_id
       `;
       if (employeeRuns[0]) {
+        await markExperienceCapturePending(transaction, run.run_id);
         await transaction`
           update allrice_messages set
             content = ${transaction.json(

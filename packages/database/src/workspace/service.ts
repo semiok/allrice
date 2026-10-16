@@ -1139,6 +1139,9 @@ async function loadWorkspaceMemoryRecallCandidates(input: {
     where c.organization_id = ${input.context.organizationId}
       and c.workspace_id = ${input.workspaceId}
       and m.archived_at is null
+      and not exists(select 1 from allrice_experience_reviews er
+        where er.memory_id=m.id and (er.origin_kind='incremental' or er.status<>'approved'
+          or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
           and ((m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))

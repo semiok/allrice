@@ -66,7 +66,9 @@ export function ExperienceReviewCard({
             : candidate.scope === 'platform' && candidate.status === 'pending'
               ? '待人工转交 · 未发布'
               : candidate.status === 'pending'
-                ? '待明确审核'
+                ? candidate.originKind === 'incremental'
+                  ? '工作反馈 · 待自动整理'
+                  : '待明确审核'
                 : candidate.status === 'approved'
                   ? '已确认长期记忆'
                   : '已拒绝'}{' '}
@@ -74,6 +76,9 @@ export function ExperienceReviewCard({
         </span>
       </div>
       <p className={styles.rule}>{candidate.content}</p>
+      {candidate.originKind === 'incremental' ? (
+        <p>已保存原始反馈，尚未整理成经验，不会作为长期要求影响后续任务。</p>
+      ) : null}
       {candidate.source ? (
         <details>
           <summary>查看私密来源</summary>
@@ -81,6 +86,15 @@ export function ExperienceReviewCard({
           <small>
             Run {candidate.source.runId} · 消息 {candidate.source.messageId}
           </small>
+          {candidate.evidence ? (
+            <p>
+              已记录 {candidate.evidence.artifacts.length} 份成果版本和{' '}
+              {candidate.evidence.skills.length} 项实际加载的个人技能版本。
+              {candidate.evidence.truncated
+                ? '来源较多，仅保留有界索引，可回到原任务核查。'
+                : ''}
+            </p>
+          ) : null}
         </details>
       ) : (
         <p>来源已核验；原始私密对话未共享给审核人。</p>
@@ -147,7 +161,11 @@ export function ExperienceReviewCard({
             disabled={busy || !reason.trim()}
             onClick={() => void review('reject')}
           >
-            {candidate.ownedByMe ? '拒绝／撤回候选' : '拒绝候选'}
+            {candidate.originKind === 'incremental'
+              ? '忘掉这条反馈'
+              : candidate.ownedByMe
+                ? '拒绝／撤回候选'
+                : '拒绝候选'}
           </button>
         </div>
       ) : null}
