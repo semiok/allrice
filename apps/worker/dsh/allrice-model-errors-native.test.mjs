@@ -54,6 +54,7 @@ async function scenario({
   skillFirst = false,
   personalSkill = false,
   personalInstall = false,
+  personalInstallArguments,
   rejectPersonalSkill = false,
   personalSlash = false,
   sceneFirst = false,
@@ -156,7 +157,9 @@ async function scenario({
                   : 'local_fs_list',
               arguments: JSON.stringify(
                 personalInstall
-                  ? { objectId: privatePin.versionId }
+                  ? (personalInstallArguments ?? {
+                      objectId: privatePin.versionId,
+                    })
                   : sceneFirst
                     ? { name: sceneName }
                     : skillFirst
@@ -826,6 +829,28 @@ it('cold native recovery reconciles the saved successful scene result before the
 }, 45000);
 
 describe('personal Skills use the native loader with current authority', () => {
+  it.each([
+    { importId: privatePin.installationId, candidatePath: 'weekly/SKILL.md' },
+    { importId: privatePin.installationId, operation: 'cancel' },
+  ])(
+    'round-trips pending selection/cancellation through actual native schema: %j',
+    async (args) => {
+      const result = await scenario({
+        personalInstall: true,
+        personalInstallArguments: args,
+        failures: [],
+      });
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0]).toMatchObject({
+        name: 'workspace.personal_skill.install',
+        arguments: args,
+      });
+      expect(JSON.stringify(result.requests[1])).toContain(
+        'SAVED_TOOL_RESULT_42',
+      );
+    },
+    30000,
+  );
   it('round-trips actual install tool parameters through the native Broker wire', async () => {
     const result = await scenario({ personalInstall: true, failures: [] });
     expect(result.requests[0].tools.map((t) => t.name)).toContain(

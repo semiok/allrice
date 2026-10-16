@@ -80,7 +80,8 @@
     "pptxgenjs": "4.0.1",
     "zod": "^4.4.3",
     "@allrice/project-runtime": "workspace:*",
-    "ws": "8.21.3"
+    "ws": "8.21.3",
+    "@allrice/file-archives": "workspace:*"
   },
   "devDependencies": {
     "@types/pdfkit": "0.17.4",

@@ -7,7 +7,7 @@ import {
   FileArchiveError,
   fileArchiveMaximumBytes,
   readFileArchive,
-} from './file-archives.js';
+} from './index.js';
 
 // Independent Python stdlib zipfile fixture, with UTF-8 names and DEFLATE:
 // 中文 目录/说明.txt = "中文 😀\n00123,-200.00\n", raw.bin = 00 ff 80 50 4b 03 04.

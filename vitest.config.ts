@@ -17,6 +17,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/file-archives': fileURLToPath(
+        new URL('./packages/file-archives/src/index.ts', import.meta.url),
+      ),
       '@allrice/project-runtime': fileURLToPath(
         new URL('./packages/project-runtime/src/index.ts', import.meta.url),
       ),

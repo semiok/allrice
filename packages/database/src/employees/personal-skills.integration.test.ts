@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
@@ -41,6 +43,9 @@ import {
 } from './personal-skills.ts';
 import { parsePersonalSkill } from '../../../../apps/worker/src/personal-skill-import.js';
 import { installPersonalSkill } from '../../../../apps/worker/src/tool-broker/handlers/personal-skills.js';
+import { readSkillResource } from '../../../../apps/worker/src/tool-broker/handlers/skill.js';
+import { resolveCloudToolArguments } from '../../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
+import { createFileArchive } from '../../../file-archives/src/index.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -60,14 +65,18 @@ suite(
       vi.unstubAllEnvs();
       await f?.close();
     });
-    async function setup() {
+    async function setup(cloud = false) {
       const source = await createEmployeeAdministrationFixture(f.db);
       await savePlatformEmployeeDraft(source.employeeId, {
         definition: {
           ...source.definition,
           capabilities: {
             ...source.definition.capabilities,
-            toolNames: ['workspace.skill.read', 'workspace.export.create'],
+            toolNames: [
+              'workspace.skill.read',
+              'workspace.export.create',
+              ...(cloud ? ['cloud.process.execute'] : []),
+            ],
           },
         },
         expectedRevisionId: source.revisionId,
@@ -94,7 +103,7 @@ suite(
       const run = async (
         instanceId: string,
         text: string,
-        raw?: string,
+        raw?: string | { bytes: Uint8Array; fileName: string },
         existingSession?: string,
       ) => {
         const session = existingSession
@@ -106,21 +115,24 @@ suite(
             });
         let objectId: string | undefined;
         if (raw !== undefined) {
+          const bytes =
+            typeof raw === 'string' ? Buffer.from(raw) : Buffer.from(raw.bytes);
           objectId = randomUUID();
           const pending = await createStorageMetadata(context, {
             id: objectId,
             workspaceId: source.workspaceId,
             category: 'uploads',
-            mediaType: 'text/markdown',
-            sizeBytes: Buffer.byteLength(raw),
-            checksum: skillBytesChecksum(raw),
+            mediaType:
+              typeof raw === 'string' ? 'text/markdown' : 'application/zip',
+            sizeBytes: bytes.byteLength,
+            checksum: skillBytesChecksum(bytes),
             visibility: 'private',
             retentionUntil: null,
             immutable: false,
           });
           await assistantFixtureStorage(f.db).put(
             pending.object,
-            new Blob([raw]).stream(),
+            new Blob([bytes]).stream(),
           );
           await markStorageReady(context, objectId);
           await linkFileToSession({
@@ -128,7 +140,7 @@ suite(
             workspaceId: source.workspaceId,
             sessionId: session.id,
             objectId,
-            fileName: 'SKILL.md',
+            fileName: typeof raw === 'string' ? 'SKILL.md' : raw.fileName,
           });
         }
         const sent = await sendChatMessage(
@@ -181,6 +193,182 @@ suite(
     }
     const raw = (name = 'private-checklist') =>
       `---\nname: ${name}\ndescription: Private three item checklist\nmetadata:\n  test: true\n---\nUse three items: source, calculation, delivery.\n`;
+    async function broker(
+      task: Awaited<ReturnType<Awaited<ReturnType<typeof setup>>['run']>>,
+      args: Record<string, unknown> = task.input.arguments,
+    ) {
+      const result = await installPersonalSkill({
+        arguments: args,
+        input: {
+          context: task.input.context,
+          sessionId: task.input.sessionId,
+          userMessageId: task.input.userMessageId,
+          storageRoot: f.storageRoot,
+          capabilities: ['storage:read', 'storage:write'],
+          call: {
+            id: randomUUID(),
+            name: 'workspace.personal_skill.install',
+            arguments: args,
+          },
+          managedBrowserJobAttempt: task.input.worker.attempt,
+          managedBrowserJobLeaseToken: task.input.worker.leaseToken,
+        },
+      });
+      return JSON.parse(result.modelContent);
+    }
+    const zip = async (multiple = false) => ({
+      fileName: 'weekly.zip',
+      bytes: await createFileArchive([
+        {
+          path: 'weekly/SKILL.md',
+          bytes: Buffer.from(
+            raw('weekly') +
+              'Read references/checklist.md and assets/report.md.\n',
+          ),
+        },
+        {
+          path: 'weekly/references/checklist.md',
+          bytes: Buffer.from('Confirm source, count, delivery. 私有参考。'),
+        },
+        {
+          path: 'weekly/assets/report.md',
+          bytes: Buffer.from('# Report\n## Data\n## Findings\n'),
+        },
+        ...(multiple
+          ? [{ path: 'monthly/SKILL.md', bytes: Buffer.from(raw('monthly')) }]
+          : []),
+      ]),
+    });
+    it('installs a ZIP through the real handler, retains private exact resources independently of the source, and revokes reads', async () => {
+      const x = await setup();
+      const task = await x.run(
+        x.custom.id,
+        '请把我上传的“weekly.zip”安装到当前 AI 员工。以后使用这个技能。',
+        await zip(),
+      );
+      const first = await broker(task);
+      expect(first.status).toBe('installed');
+      expect(first.skill.resourceCount).toBe(2);
+      expect((await broker(task)).skill.versionId).toBe(first.skill.versionId);
+      const [stored] =
+        await f.db`select o.* from allrice_personal_skill_imports i join allrice_storage_objects o on o.id=i.archive_object_id where i.instance_id=${x.custom.id}`;
+      expect(stored).toMatchObject({
+        visibility: 'private',
+        immutable: true,
+        state: 'ready',
+        category: 'memory',
+      });
+      await f.db`update allrice_storage_objects set state='deleted',deleted_at=now() where id=${task.input.arguments.objectId}`;
+      await task.finish();
+      const next = await x.run(x.custom.id, '请用 weekly 的参考和模板写报告。');
+      const resolved = await resolveEmployeeExecution(next.scope);
+      const args = { skill: 'weekly', path: 'references/checklist.md' };
+      const request = {
+        context: next.input.context,
+        sessionId: next.scope.sessionId,
+        storageRoot: f.storageRoot,
+        nativeSkills: resolved.nativeSkills,
+        capabilities: ['storage:read' as const],
+        call: {
+          id: randomUUID(),
+          name: 'workspace.skill.read',
+          arguments: args,
+        },
+      };
+      const resource = JSON.parse(
+        (await readSkillResource({ input: request, arguments: args }))
+          .modelContent,
+      );
+      expect(resource).toMatchObject({
+        text: 'Confirm source, count, delivery. 私有参考。',
+        source: 'personal',
+        versionId: first.skill.versionId,
+        executionPermission: false,
+      });
+      expect(JSON.stringify(resolved.nativeSkills)).not.toContain(
+        'Confirm source, count, delivery. 私有参考。',
+      );
+      const other = await x.run(x.assignment.id, 'Unbound');
+      await expect(
+        readSkillResource({
+          input: {
+            ...request,
+            context: other.input.context,
+            sessionId: other.scope.sessionId,
+          },
+          arguments: args,
+        }),
+      ).rejects.toThrow();
+      await other.finish();
+      await managePersonalSkill(x.context, {
+        workspaceId: x.source.workspaceId,
+        instanceId: x.custom.id,
+        installationId: first.skill.id,
+        expectedRevision: first.skill.revision,
+        requestId: randomUUID(),
+        operation: 'disable',
+      });
+      await expect(
+        readSkillResource({ input: request, arguments: args }),
+      ).rejects.toThrow();
+      await next.finish();
+    });
+    it('persists multi-package choices without installing, then requires one fresh explicit selection in the same session', async () => {
+      const x = await setup();
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的技能包。',
+        await zip(true),
+      );
+      const pending = await broker(first);
+      expect(pending.status).toBe('selection_required');
+      expect(
+        pending.candidates.map((c: { name: string }) => c.name).sort(),
+      ).toEqual(['monthly', 'weekly']);
+      expect(await listPersonalSkills(x.context)).toEqual([]);
+      expect((await broker(first)).importId).toBe(pending.importId);
+      const args = {
+        importId: pending.importId,
+        candidatePath: 'weekly/SKILL.md',
+      };
+      await expect(broker(first, args)).rejects.toThrow();
+      await first.finish();
+      const wrongSession = await x.run(x.custom.id, '请选择“weekly”并安装。');
+      await expect(broker(wrongSession, args)).rejects.toThrow();
+      await wrongSession.finish();
+      const quoted = await x.run(
+        x.custom.id,
+        '请翻译：“安装 weekly”。',
+        undefined,
+        first.scope.sessionId,
+      );
+      await expect(broker(quoted, args)).rejects.toThrow();
+      await quoted.finish();
+      const chosen = await x.run(
+        x.custom.id,
+        '请选择“weekly”并安装。',
+        undefined,
+        first.scope.sessionId,
+      );
+      const installed = await broker(chosen, args);
+      expect(installed.status).toBe('installed');
+      expect(installed.skill.name).toBe('weekly');
+      expect((await broker(chosen, args)).skill.id).toBe(installed.skill.id);
+      expect(
+        (await listPersonalSkills(x.context)).map((skill) => skill.name),
+      ).toEqual(['weekly']);
+      await chosen.finish();
+      const replay = await x.run(
+        x.custom.id,
+        '安装 monthly。',
+        undefined,
+        first.scope.sessionId,
+      );
+      await expect(
+        broker(replay, { ...args, candidatePath: 'monthly/SKILL.md' }),
+      ).rejects.toThrow();
+      await replay.finish();
+    });
     async function install(
       x: Awaited<ReturnType<typeof setup>>,
       instanceId: string,
@@ -214,6 +402,340 @@ suite(
       await task.finish();
       return { task, item };
     }
+    it.each(['cancel', 'expire'] as const)(
+      'does not install or revive %s pending imports',
+      async (operation) => {
+        const x = await setup();
+        const first = await x.run(
+          x.custom.id,
+          '请安装这个 ZIP 里的技能。如果有多个，先让我选一个。',
+          await zip(true),
+        );
+        const pending = await broker(first);
+        expect(pending.status).toBe('selection_required');
+        await first.finish();
+        if (operation === 'cancel') {
+          const canceled = await x.run(
+            x.custom.id,
+            '刚才那个 ZIP 先不装了。',
+            undefined,
+            first.scope.sessionId,
+          );
+          const args = { importId: pending.importId, operation: 'cancel' };
+          expect(await broker(canceled, args)).toMatchObject({
+            status: 'canceled',
+            installed: false,
+          });
+          expect(await broker(canceled, args)).toMatchObject({
+            status: 'canceled',
+          });
+          await canceled.finish();
+        } else
+          await f.db`update allrice_personal_skill_imports set expires_at=clock_timestamp()-interval '1 second' where id=${pending.importId}`;
+        const replay = await x.run(
+          x.custom.id,
+          '我选 weekly，请安装到当前员工。',
+          undefined,
+          first.scope.sessionId,
+        );
+        await expect(
+          broker(replay, {
+            importId: pending.importId,
+            candidatePath: 'weekly/SKILL.md',
+          }),
+        ).rejects.toThrow();
+        expect(await listPersonalSkills(x.context)).toEqual([]);
+        await replay.finish();
+      },
+    );
+    it.each(['expired', 'canceled'] as const)(
+      'reclaims 32 %s imports and their private bytes before accepting another package',
+      async (state) => {
+        const x = await setup();
+        const archive = await zip(true);
+        const first = await x.run(
+          x.custom.id,
+          '请安装我上传的技能包。',
+          archive,
+        );
+        const pending = await broker(first);
+        await first.finish();
+        const [original] =
+          await f.db`select * from allrice_personal_skill_imports where id=${pending.importId}`;
+        for (let index = 1; index < 32; index++) {
+          const stored = await createStorageMetadata(x.context, {
+            id: randomUUID(),
+            workspaceId: x.source.workspaceId,
+            category: 'memory',
+            mediaType: 'application/zip',
+            sizeBytes: archive.bytes.byteLength,
+            checksum: skillBytesChecksum(archive.bytes),
+            visibility: 'private',
+            retentionUntil: null,
+            immutable: false,
+          });
+          await assistantFixtureStorage(f.db).put(
+            stored.object,
+            new Blob([Buffer.from(archive.bytes)]).stream(),
+          );
+          await markStorageReady(x.context, stored.object.id);
+          await f.db`insert into allrice_personal_skill_imports(id,organization_id,workspace_id,owner_id,instance_id,session_id,user_message_id,source,archive_object_id,candidates,state)
+            values(${randomUUID()},${x.source.organizationId},${x.source.workspaceId},${x.source.ownerId},${x.custom.id},${first.scope.sessionId},${first.input.userMessageId},${f.db.json(original!.source)},${stored.object.id},${f.db.json(original!.candidates)},'ready')`;
+        }
+        const objects =
+          await f.db`select object_key from allrice_storage_objects where owner_id=${x.source.ownerId} and category='memory'`;
+        expect(objects).toHaveLength(32);
+        if (state === 'expired')
+          await f.db`update allrice_personal_skill_imports set expires_at=clock_timestamp()-interval '1 second' where owner_id=${x.source.ownerId}`;
+        else
+          await f.db`update allrice_personal_skill_imports set state='canceled' where owner_id=${x.source.ownerId}`;
+        const next = await x.run(
+          x.custom.id,
+          '请安装我上传的技能包。',
+          archive,
+        );
+        expect((await broker(next)).status).toBe('selection_required');
+        const [count] =
+          await f.db`select count(*)::int n from allrice_personal_skill_imports where owner_id=${x.source.ownerId} and state in ('ready','staging')`;
+        expect(count!.n).toBe(1);
+        const [quota] =
+          await f.db`select sum(size_bytes)::int bytes from allrice_storage_objects where owner_id=${x.source.ownerId} and category='memory' and state<>'deleted'`;
+        expect(quota!.bytes).toBe(archive.bytes.byteLength);
+        for (const object of objects)
+          await expect(
+            access(join(f.storageRoot, object.object_key)),
+          ).rejects.toThrow();
+        await next.finish();
+      },
+      60000,
+    );
+    it('supersedes an older pending package before accepting a path shared by two imports', async () => {
+      const x = await setup();
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的技能包。',
+        await zip(true),
+      );
+      const older = await broker(first);
+      await first.finish();
+      const bytes = await createFileArchive([
+        { path: 'weekly/SKILL.md', bytes: Buffer.from(raw('weekly-updated')) },
+        {
+          path: 'monthly/SKILL.md',
+          bytes: Buffer.from(raw('monthly-updated')),
+        },
+      ]);
+      const second = await x.run(
+        x.custom.id,
+        '请安装我上传的技能包。',
+        { bytes, fileName: 'weekly.zip' },
+        first.scope.sessionId,
+      );
+      const latest = await broker(second);
+      await second.finish();
+      const chosen = await x.run(
+        x.custom.id,
+        '安装 weekly/SKILL.md。',
+        undefined,
+        first.scope.sessionId,
+      );
+      await expect(
+        broker(chosen, {
+          importId: older.importId,
+          candidatePath: 'weekly/SKILL.md',
+        }),
+      ).rejects.toThrow();
+      expect(
+        (
+          await broker(chosen, {
+            importId: latest.importId,
+            candidatePath: 'weekly/SKILL.md',
+          })
+        ).skill.name,
+      ).toBe('weekly-updated');
+      expect((await listPersonalSkills(x.context)).map((s) => s.name)).toEqual([
+        'weekly-updated',
+      ]);
+      await chosen.finish();
+    });
+    it('reuses one immutable archive across fresh uploads and employee bindings', async () => {
+      const x = await setup();
+      const archive = await zip();
+      let versionId: string | undefined;
+      for (const instanceId of [x.custom.id, x.custom.id, x.assignment.id]) {
+        const task = await x.run(instanceId, '请安装我上传的技能包。', archive);
+        const result = await broker(task);
+        versionId ??= result.skill.versionId;
+        expect(result.skill.versionId).toBe(versionId);
+        await task.finish();
+      }
+      const objects =
+        await f.db`select o.* from allrice_storage_objects o where owner_id=${x.source.ownerId} and category='memory'`;
+      expect(objects).toHaveLength(1);
+      expect(objects[0]).toMatchObject({ state: 'ready', immutable: true });
+      const imports =
+        await f.db`select archive_object_id,state from allrice_personal_skill_imports where owner_id=${x.source.ownerId}`;
+      expect(imports).toHaveLength(3);
+      expect(
+        imports.every(
+          (row) =>
+            row.archive_object_id === objects[0]!.id &&
+            row.state === 'consumed',
+        ),
+      ).toBe(true);
+      expect((await listPersonalSkills(x.context))[0]!.bindings).toHaveLength(
+        2,
+      );
+    });
+    it.each(['python', 'javascript'] as const)(
+      'resolves exact private %s bytes only from a current authorized Run',
+      async (language) => {
+        const x = await setup(true);
+        const path =
+          language === 'python' ? 'scripts/count.py' : 'scripts/count.mjs';
+        const code =
+          language === 'python'
+            ? 'import json\nprint(json.dumps({"count":3}))\n'
+            : 'console.log(JSON.stringify({count:3}));\n';
+        const bytes = await createFileArchive([
+          { path: 'SKILL.md', bytes: Buffer.from(raw('private-code')) },
+          { path, bytes: Buffer.from(code) },
+        ]);
+        const first = await x.run(x.custom.id, '请安装我上传的技能包。', {
+          bytes,
+          fileName: 'compute.zip',
+        });
+        const installed = await broker(first);
+        await first.finish();
+        const next = await x.run(
+          x.custom.id,
+          '请运行 private-code 的固定脚本。',
+        );
+        const input = {
+          context: next.input.context,
+          sessionId: next.scope.sessionId,
+          storageRoot: f.storageRoot,
+          arguments: { frozenScript: { skill: 'private-code', path } },
+        };
+        expect(await resolveCloudToolArguments(input)).toMatchObject({
+          language,
+          script: code,
+        });
+        const [version] =
+          await f.db`select definition from allrice_personal_skill_versions where id=${installed.skill.versionId}`;
+        expect(version!.definition).not.toHaveProperty('requiredToolRefs');
+        await expect(
+          resolveCloudToolArguments({ ...input, sessionId: randomUUID() }),
+        ).rejects.toThrow();
+        await expect(
+          resolveCloudToolArguments({
+            ...input,
+            arguments: {
+              frozenScript: { skill: 'private-code', path },
+              language: 'python',
+            },
+          }),
+        ).rejects.toThrow();
+        await expect(
+          resolveCloudToolArguments({
+            ...input,
+            arguments: {
+              frozenScript: {
+                skill: 'private-code',
+                path: 'references/count.py',
+              },
+            },
+          }),
+        ).rejects.toThrow();
+        await managePersonalSkill(x.context, {
+          workspaceId: x.source.workspaceId,
+          instanceId: x.custom.id,
+          installationId: installed.skill.id,
+          expectedRevision: installed.skill.revision,
+          requestId: randomUUID(),
+          operation: 'disable',
+        });
+        await expect(resolveCloudToolArguments(input)).rejects.toThrow();
+        await next.finish();
+      },
+    );
+    it('retires the unused copy when two sessions stage the same ZIP before either installs', async () => {
+      const x = await setup();
+      const archive = await zip(true);
+      const pending = [];
+      for (let index = 0; index < 2; index++) {
+        const task = await x.run(
+          x.custom.id,
+          '请安装我上传的技能包。',
+          archive,
+        );
+        pending.push({
+          ...(await broker(task)),
+          sessionId: task.scope.sessionId,
+        });
+        await task.finish();
+      }
+      const before =
+        await f.db`select object_key from allrice_storage_objects where owner_id=${x.source.ownerId} and category='memory'`;
+      expect(before).toHaveLength(2);
+      for (const entry of pending) {
+        const task = await x.run(
+          x.custom.id,
+          '我选 weekly，请安装到当前员工。',
+          undefined,
+          entry.sessionId,
+        );
+        expect(
+          await broker(task, {
+            importId: entry.importId,
+            candidatePath: 'weekly/SKILL.md',
+          }),
+        ).toMatchObject({ status: 'installed', cleanupPending: false });
+        await task.finish();
+      }
+      const after =
+        await f.db`select object_key,state,immutable from allrice_storage_objects where owner_id=${x.source.ownerId} and category='memory'`;
+      expect(
+        after.filter((row) => row.state === 'ready' && row.immutable),
+      ).toHaveLength(1);
+      const deleted = after.find((row) => row.state === 'deleted');
+      expect(deleted).toBeDefined();
+      await expect(
+        access(join(f.storageRoot, deleted!.object_key)),
+      ).rejects.toThrow();
+      expect(await listPersonalSkills(x.context)).toHaveLength(1);
+    });
+    it('reports missing resources without an enabled or staged installation', async () => {
+      const x = await setup();
+      const bytes = await createFileArchive([
+        {
+          path: 'SKILL.md',
+          bytes: Buffer.from(raw('incomplete') + 'Read references/missing.md.'),
+        },
+      ]);
+      const task = await x.run(
+        x.custom.id,
+        '请安装我上传的 ZIP 里的技能，给当前 AI 员工使用。',
+        { bytes, fileName: 'incomplete.zip' },
+      );
+      const result = await broker(task);
+      expect(result).toMatchObject({
+        status: 'incompatible',
+        installed: false,
+        candidates: [
+          {
+            issues: [
+              { code: 'missing_resource', path: 'references/missing.md' },
+            ],
+          },
+        ],
+      });
+      const [count] =
+        await f.db`select count(*)::int n from allrice_personal_skill_imports where owner_id=${x.source.ownerId}`;
+      expect(count!.n).toBe(0);
+      expect(await listPersonalSkills(x.context)).toEqual([]);
+      await task.finish();
+    });
     it.each(['general', 'custom'] as const)(
       'installs through the real Broker handler for %s and freezes exact provenance without new grants',
       async (kind) => {

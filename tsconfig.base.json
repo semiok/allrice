@@ -27,7 +27,8 @@
       "@allrice/project-runtime": ["packages/project-runtime/src/index.ts"],
       "@allrice/database/technical-contracts": [
         "packages/database/src/platform-technical-contracts.ts"
-      ]
+      ],
+      "@allrice/file-archives": ["packages/file-archives/src/index.ts"]
     },
     "resolveJsonModule": true,
     "rewriteRelativeImportExtensions": true,

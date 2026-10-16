@@ -11,9 +11,20 @@ export function explicitPersonalSkillInstallIntent(
   if (
     !text.trim() ||
     text.length > 2_000 ||
-    fileName.toLowerCase() !== 'skill.md'
+    !/^(?:SKILL\.md|[^\r\n“”「」"'`]+\.zip)$/iu.test(fileName)
   )
     return false;
+  // Treat the actual attachment name as an argument, never as arbitrary prose.
+  // All clauses still need to match the complete direct-request grammar.
+  if (/\.zip$/iu.test(fileName)) {
+    text = text
+      .replaceAll(fileName, 'SKILL.md')
+      .replace(
+        /\bZIP\s*(?:(?:里|中|里面)的?\s*(?:技能|Skill))?/giu,
+        'SKILL.md',
+      );
+  }
+  text = text.replaceAll('技能包', '技能文件');
   const clauses = text
     .trim()
     .split(/[。；;！!\n]/u)
@@ -27,7 +38,7 @@ export function explicitPersonalSkillInstallIntent(
       /^(?:请|麻烦)?(?:帮我|为我)?(?:把|将)?(?:我(?:刚)?上传的|这个|该|附件(?:里|中)的)?\s*(?:SKILL\.md|技能文件)\s*(?:安装|装)(?:到|给)(?:你|当前\s*(?:这个)?(?:AI\s*)?员工)(?:的个人技能)?(?:中|里)?(?:[，,]\s*(?:以后|后续|今后)(?:的任务)?(?:都)?(?:可以|请|需要时)?(?:使用|用它|按它执行))?[.]?$/iu.test(
         clause,
       ) ||
-      /^(?:请|麻烦)?(?:帮我|为我)?安装(?:我(?:刚)?上传的|这个|该|附件(?:里|中)的)?\s*(?:SKILL\.md|技能文件)(?:[，,]\s*(?:绑定到|用于)(?:你|当前\s*(?:AI\s*)?员工))?[.]?$/iu.test(
+      /^(?:请|麻烦)?(?:帮我|为我)?安装(?:我(?:刚)?上传的|这个|该|附件(?:里|中)的)?\s*(?:SKILL\.md|技能文件)(?:[，,]\s*(?:(?:绑定到|用于)(?:你|当前\s*(?:AI\s*)?员工)|给当前\s*(?:AI\s*)?员工使用))?[.]?$/iu.test(
         clause,
       ) ||
       /^(?:please\s+)?install\s+(?:the\s+)?(?:attached\s+)?SKILL\.md(?:\s+(?:for|in)\s+(?:this|the current)\s+(?:AI\s+)?employee)?\.?$/i.test(
@@ -43,10 +54,75 @@ export function explicitPersonalSkillInstallIntent(
       ) ||
       /^(?:以后|后续|今后)(?:的任务)?(?:都)?(?:可以|请|需要时)?(?:使用这个技能|使用它|用它|按它执行)[.]?$/u.test(
         clause,
-      )
+      ) ||
+      /^(?:如果|若)有多个[，,]\s*(?:请)?先让我选(?:择)?一个[.]?$/u.test(clause)
     )
       continue;
     return false;
   }
   return install;
+}
+
+/** A fresh user message must select one exact candidate from this session's
+ * pending import. Model-provided path/name never supplies this authority. */
+export function explicitPersonalSkillSelectionIntent(
+  text: string,
+  candidates: readonly { sourcePath: string; definition?: { name: string } }[],
+) {
+  if (text.length > 2_000 || /(?:^|\n)(?: {4}| {0,3}\t)/u.test(text))
+    return null;
+  const clauses = text
+    .trim()
+    .split(/[。；;！!\n]/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  let selected: string | null = null;
+  for (const original of clauses) {
+    const clause = original
+      .replace(/^我选(?:择)?/u, '选择')
+      .replace(/[，,]\s*(?:请)?安装到当前\s*(?:AI\s*)?员工[.]?$/u, '');
+    if (
+      /^(?:以后|后续|今后)(?:的任务)?(?:都)?(?:可以|请|需要时)?(?:使用这个技能|使用它|用它|按它执行)[.]?$/u.test(
+        clause,
+      )
+    )
+      continue;
+    const match =
+      clause.match(
+        /^(?:请)?(?:选择|选|安装)(?:并安装)?\s*(.+?)(?:\s*(?:这个技能|并安装|安装到当前\s*(?:AI\s*)?员工))?[.]?$/u,
+      ) ??
+      clause.match(
+        /^(?:please\s+)?(?:select|install)\s+(.+?)(?:\s+and install)?[.]?$/iu,
+      );
+    if (!match) return null;
+    const label = match[1]!
+      .replace(
+        /^(?:“([^“”]+)”|「([^「」]+)」|"([^"\n]+)"|`([^`\n]+)`)$/u,
+        (_all, a, b, c, d) => a ?? b ?? c ?? d,
+      )
+      .trim();
+    const choices = candidates.filter(
+      (candidate) =>
+        candidate.sourcePath === label || candidate.definition?.name === label,
+    );
+    if (
+      choices.length !== 1 ||
+      (selected && selected !== choices[0]!.sourcePath)
+    )
+      return null;
+    selected = choices[0]!.sourcePath;
+  }
+  return selected;
+}
+
+export function explicitPersonalSkillCancelIntent(
+  text: string,
+  fileName: string,
+) {
+  if (text.length > 2_000 || /(?:^|\n)(?: {4}| {0,3}\t)/u.test(text))
+    return false;
+  const clause = text.trim().replaceAll(fileName, 'ZIP');
+  return /^(?:(?:请)?取消\s*(?:这个|该|刚才的)?(?:ZIP|技能包|导入)\s*(?:的)?(?:安装|导入)?|(?:刚才|之前)?(?:那个|这个)?\s*(?:ZIP|技能包)\s*(?:先|暂时)?(?:不要|不|别)装(?:了)?)[。.!！]?$/iu.test(
+    clause,
+  );
 }

@@ -282,6 +282,7 @@ export function useAttachments({
           Object.keys(officeMediaTypes) as Array<keyof typeof officeMediaTypes>
         ).find((format) => lowerName.endsWith(`.${format}`));
         const mediaType =
+          (lowerName.endsWith('.zip') ? 'application/zip' : '') ||
           (file.type && file.type !== 'application/octet-stream'
             ? file.type
             : '') ||
@@ -310,12 +311,13 @@ export function useAttachments({
           'text/csv',
           'text/markdown',
           'application/json',
+          'application/zip',
           'application/pdf',
           ...Object.values(officeMediaTypes),
         ].includes(mediaType);
         if (!supportedImage && !supportedDocument) {
           rejection =
-            '支持 Word（DOCX）、Excel（XLSX）、CSV、PPT（PPTX）、PDF、图片、TXT、MD 和 JSON。';
+            '支持 Word（DOCX）、Excel（XLSX）、CSV、PPT（PPTX）、PDF、图片、TXT、MD、JSON 和 ZIP 技能包。';
           continue;
         }
         const sizeLimit = supportedImage ? 20 * 1024 * 1024 : 8_000_000;

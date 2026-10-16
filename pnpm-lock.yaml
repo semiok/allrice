@@ -112,6 +112,9 @@ importers:
 
   apps/rice-bridge:
     dependencies:
+      '@allrice/file-archives':
+        specifier: workspace:*
+        version: link:../../packages/file-archives
       chokidar:
         specifier: 4.0.3
         version: 4.0.3
@@ -130,12 +133,6 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.30.0
         version: 1.30.0(zod@4.4.3)
-      crc-32:
-        specifier: 1.2.2
-        version: 1.2.2
-      fflate:
-        specifier: 0.8.3
-        version: 0.8.3
       pdf-lib:
         specifier: 1.17.1
         version: 1.17.1
@@ -151,19 +148,16 @@ importers:
       yaml:
         specifier: 2.9.0
         version: 2.9.0
-      yauzl:
-        specifier: 3.2.0
-        version: 3.2.0
       zod:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
-      '@types/yauzl':
-        specifier: 2.10.3
-        version: 2.10.3
       tsx:
         specifier: ^4.21.0
         version: 4.23.5
@@ -315,6 +309,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@allrice/file-archives':
+        specifier: workspace:*
+        version: link:../../packages/file-archives
       '@allrice/browser-control':
         specifier: workspace:*
         version: link:../../packages/browser-control
@@ -634,6 +631,22 @@ importers:
       react:
         specifier: ^19.2.0
         version: 19.2.0
+
+  packages/file-archives:
+    dependencies:
+      crc-32:
+        specifier: 1.2.2
+        version: 1.2.2
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
+      yauzl:
+        specifier: 3.2.0
+        version: 3.2.0
+    devDependencies:
+      '@types/yauzl':
+        specifier: 2.10.3
+        version: 2.10.3
 
 packages:
 

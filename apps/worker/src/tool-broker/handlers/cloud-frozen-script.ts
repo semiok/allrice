@@ -9,6 +9,7 @@ import {
   validateFrozenSkill,
 } from '@allrice/database';
 import { CloudToolInputSchema } from '../../cloud-runner/tool-input.js';
+import { readPrivateSkillResource } from '../../personal-skill-storage.js';
 
 /** Resolve only from the immutable, scoped persisted Run; no catalog/host read.
  * Resolving grants nothing: caller still obtains the normal exact cloud approval. */
@@ -17,6 +18,8 @@ export async function resolveCloudToolArguments(
     context: ExecutionContext;
     sessionId?: string;
     arguments: unknown;
+    storageRoot?: string;
+    signal?: AbortSignal;
   },
   db = getDatabase(),
 ) {
@@ -51,6 +54,37 @@ export async function resolveCloudToolArguments(
   const selected = skills.find(
     (skill) => skill.name === args.frozenScript.skill,
   );
+  if (selected?.personal) {
+    if (!input.storageRoot) throw Error('frozen_script_storage_unavailable');
+    const resource = await readPrivateSkillResource({
+      context: c,
+      sessionId: input.sessionId,
+      skill: args.frozenScript.skill,
+      path: args.frozenScript.path,
+      storageRoot: input.storageRoot,
+      ...(input.signal ? { signal: input.signal } : {}),
+    });
+    const language = resource.path.endsWith('.py') ? 'python' : 'javascript';
+    if (
+      language === 'python'
+        ? resource.mediaType !== 'text/x-python'
+        : !['text/javascript', 'application/javascript'].includes(
+            resource.mediaType,
+          )
+    )
+      throw Error('frozen_script_media_type_invalid');
+    // No grant, dependency installation, host path or platform review is inferred
+    // from a private package. The normal cloud proposal binds these exact bytes.
+    return CloudCommandInputSchema.parse({
+      language,
+      script: decodeScript(resource.contentBase64),
+      ...(args.network ? { network: args.network } : {}),
+      ...(args.execution ? { execution: args.execution } : {}),
+      inputs: args.inputs,
+      outputs: args.outputs,
+      limits: args.limits,
+    });
+  }
   if (
     !selected ||
     !requiredTools.every((tool) => selected.requiredToolRefs.includes(tool))
@@ -72,10 +106,7 @@ export async function resolveCloudToolArguments(
     !['text/javascript', 'application/javascript'].includes(resource.mediaType)
   )
     throw Error('frozen_script_media_type_invalid');
-  const script = new TextDecoder('utf-8', {
-    fatal: true,
-    ignoreBOM: true,
-  }).decode(Buffer.from(resource.contentBase64, 'base64'));
+  const script = decodeScript(resource.contentBase64);
   return CloudCommandInputSchema.parse({
     script,
     ...(args.network ? { network: args.network } : {}),
@@ -84,4 +115,10 @@ export async function resolveCloudToolArguments(
     outputs: args.outputs,
     limits: args.limits,
   });
+}
+
+function decodeScript(contentBase64: string) {
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+    Buffer.from(contentBase64, 'base64'),
+  );
 }

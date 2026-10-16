@@ -99,8 +99,9 @@ export function PersonalSkillsSettings({
   return (
     <div className={styles.root}>
       <p>
-        在与 AI 员工的聊天中上传一份 SKILL.md，再说“请安装我上传的
-        SKILL.md”。技能只为你安装，并绑定当时的 AI
+        在与 AI 员工的聊天中上传 SKILL.md 或 ZIP
+        技能包，再说“请安装我上传的技能包”。
+        包含多个技能时，先选择一个。技能只为你安装，并绑定当时的 AI
         员工；不会改变公司的共享内容。
       </p>
       <p>安装时检查文件格式。是否适合你的业务，需要通过实际任务试用。</p>
@@ -130,6 +131,10 @@ export function PersonalSkillsSettings({
           <p>{skill.description}</p>
           <p className={styles.meta}>
             来源：{skill.source.fileName} · 格式已检查 · 业务效果尚未验证
+            {skill.source.candidatePath && <> · {skill.source.candidatePath}</>}
+            {skill.resourceCount !== undefined && (
+              <> · {skill.resourceCount} 份包内资源</>
+            )}
           </p>
           {skill.bindings.map((binding) => {
             return (
