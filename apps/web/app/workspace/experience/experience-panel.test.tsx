@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import type { ExperienceCandidate } from '@allrice/contracts';
-import { ExperienceReviewCard } from './experience-panel';
+import { ExperienceReviewCard, ExperienceDraftCard } from './experience-panel';
 const candidate: ExperienceCandidate = {
   id: randomUUID(),
   content: '<script>not executable</script>',
@@ -83,4 +83,42 @@ describe('P20 explicit review presentation', () => {
     expect(html).not.toContain('后续相关新任务可召回');
     expect(html).not.toContain('明确批准为');
   });
+});
+
+it('keeps an automatically organized draft read-only and escapes model text', () => {
+  const html = renderToStaticMarkup(
+    <ExperienceDraftCard
+      batch={{
+        id: randomUUID(),
+        runId: randomUUID(),
+        instanceId: randomUUID(),
+        status: 'succeeded',
+        state: 'pending_validation',
+        revision: 1,
+        digest: 'sha256:' + 'a'.repeat(64),
+        createdAt: new Date().toISOString(),
+        errorCode: null,
+        sourceIds: [candidate.id],
+        drafts: [
+          {
+            sourceIds: [candidate.id],
+            rule: '<script>draft</script>',
+            reason: '原始反馈',
+            applicability: '退款对账',
+            confidence: 'tentative',
+            validation: {
+              kind: 'calculation',
+              check: '含退款的样本独立复算净回款。',
+            },
+          },
+        ],
+      }}
+    />,
+  );
+  expect(html).toContain('经验草稿 · 待验证');
+  expect(html).toContain('适用范围：');
+  expect(html).toContain('&lt;script&gt;');
+  expect(html).not.toContain('<script>');
+  expect(html).not.toContain('<button');
+  expect(html).not.toContain('已确认长期记忆');
 });

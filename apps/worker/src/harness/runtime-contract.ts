@@ -16,6 +16,7 @@ export function normalizeHarnessRunEvent(
     turnId: event.turnId,
     conversationId: event.sessionId,
     messageId: event.messageId,
+    ...(event.internalTask ? { internalTask: event.internalTask } : {}),
     attempt: event.attempt,
     order: event.order,
     ...(event.sourceEventId ? { sourceEventId: event.sourceEventId } : {}),

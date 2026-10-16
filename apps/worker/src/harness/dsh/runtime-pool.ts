@@ -2,7 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 
-import { type DshExecutionSnapshot } from '@allrice/contracts';
+import {
+  harnessContextKey,
+  type DshExecutionSnapshot,
+  type InternalKernelRequest,
+} from '@allrice/contracts';
 
 import { HandlerError } from '../../errors.js';
 import {
@@ -36,7 +40,8 @@ export interface DshRuntime {
   sessionId: string;
   organizationId: string;
   workspaceId: string;
-  productSessionId: string;
+  productSessionId: string | null;
+  internalTask?: InternalKernelRequest['internalTask'];
   ownerId: string;
   providerRoute: string;
   model: string;
@@ -341,7 +346,7 @@ export class DshRuntimePool {
       organizationId,
       workspaceId,
       ownerId,
-      input.input.kernel.sessionId,
+      harnessContextKey(input.input.kernel),
     );
     if (!tenantRoot.startsWith(`${this.runtimeRoot}${sep}`)) {
       throw new HandlerError(
@@ -427,6 +432,9 @@ export class DshRuntimePool {
       organizationId,
       workspaceId,
       productSessionId: input.input.kernel.sessionId,
+      ...('internalTask' in input.input.kernel
+        ? { internalTask: input.input.kernel.internalTask }
+        : {}),
       ownerId,
       providerRoute: input.snapshot.route,
       model: input.snapshot.model,
@@ -505,6 +513,7 @@ export class DshRuntimePool {
       organizationId: runtime.organizationId,
       workspaceId: runtime.workspaceId,
       sessionId: runtime.productSessionId,
+      ...(runtime.internalTask ? { internalTask: runtime.internalTask } : {}),
       ownerId: runtime.ownerId,
       threadId: runtime.sessionId,
       providerRoute: runtime.providerRoute,

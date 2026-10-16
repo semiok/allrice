@@ -242,7 +242,12 @@ integration(
           };
         };
         try {
-          const executionInput: HarnessExecutionInput = {
+          const executionInput: HarnessExecutionInput & {
+            kernel: Extract<
+              HarnessExecutionInput['kernel'],
+              { sessionId: string }
+            >;
+          } = {
             kernel: {
               schemaVersion: 1,
               harness: 'dsh',

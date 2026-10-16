@@ -1,5 +1,11 @@
 import type { ResourcePrincipal } from '../resource-principal.ts';
 import { markExperienceCapturePending } from '../experience-capture.ts';
+import { experienceConsolidationJobType } from '../experience-consolidation-contracts.ts';
+import {
+  experienceOccurrencePrincipal,
+  bindExperienceRun,
+  completeExperienceConsolidation,
+} from '../experience-consolidation.ts';
 import { MaintenanceRepositoryBindingSchema } from '../platform-maintenance-publication-contracts.ts';
 import { assertMaintenanceReconciliation } from '../platform-maintenance-authority.ts';
 import { assertMaintenanceGrant } from '../platform-maintenance-authority.ts';
@@ -381,6 +387,7 @@ type EnqueueOptions = {
 };
 type RunAdmission =
   | { kind: 'browser'; context: RequestContext }
+  | { kind: 'experience'; context: ResourcePrincipal; occurrenceId: string }
   | { kind: 'maintenance_repair'; context: ResourcePrincipal }
   | { kind: 'maintenance_repository'; context: ResourcePrincipal };
 export async function enqueueRun(
@@ -394,6 +401,23 @@ export async function enqueueRun(
   )
     throw new QueueError('policy_denied');
   return enqueueRunCore({ kind: 'browser', context }, input, options);
+}
+/** Internal-only entry: all scope and input come from the reserved occurrence. */
+export async function enqueueExperienceConsolidationRun(occurrenceId: string) {
+  const principal = await experienceOccurrencePrincipal(occurrenceId);
+  return enqueueRunCore(
+    { kind: 'experience', context: principal, occurrenceId },
+    {
+      workspaceId: principal.workspaceId,
+      type: experienceConsolidationJobType,
+      idempotencyKey: `experience:${occurrenceId}`,
+      input: { occurrenceId },
+      priority: -100,
+      maxAttempts: 1,
+      timeoutMs: 300000,
+    },
+    {},
+  );
 }
 /** Server-only lane. Scope is reconstructed from the persisted grant, never
  * from a browser/model principal, and revalidated inside the enqueue Tx. */
@@ -504,6 +528,11 @@ async function enqueueRunCore(
     return admission.context;
   };
   const submission = CreateRunInputSchema.parse(input);
+  if (
+    (submission.type === experienceConsolidationJobType) !==
+    (admission.kind === 'experience')
+  )
+    throw new QueueError('policy_denied');
   // A browser, model or ordinary privileged caller cannot turn a generic Run
   // into host authority. The future supervisor uses a separately bound lane.
   if (isDevReleaseControlType(submission.type))
@@ -674,7 +703,10 @@ async function enqueueRunCore(
         );
   const sql = getDatabase();
   const result = await sql.begin(async (transaction) => {
-    if (admission.kind !== 'browser') {
+    if (
+      admission.kind === 'maintenance_repair' ||
+      admission.kind === 'maintenance_repository'
+    ) {
       // Serialize before taking issuer/grant/attempt locks. In particular a
       // second start must never hold issuer SHARE while awaiting this mutex.
       await transaction`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
@@ -724,7 +756,8 @@ async function enqueueRunCore(
         existing[0].workspace_id !== workspaceId ||
         existing[0].owner_id !== ownerId ||
         existing[0].payload.type !== submission.type ||
-        (submission.type === platformTechnicalJobType ||
+        (submission.type === experienceConsolidationJobType ||
+        submission.type === platformTechnicalJobType ||
         submission.type === repositoryPublicationJobType ||
         submission.type === repositoryMergeJobType ||
         options.qualityBinding ||
@@ -1111,6 +1144,13 @@ async function enqueueRunCore(
     `;
     const job = jobs[0];
     if (!job) throw new Error('job creation failed');
+    if (admission.kind === 'experience')
+      await bindExperienceRun(
+        transaction,
+        admission.occurrenceId,
+        run.id,
+        ownerId,
+      );
     if (options.repositoryMergeBinding) {
       await bindRepositoryMerge(
         transaction,
@@ -1497,7 +1537,11 @@ async function requestCancellationTransaction(
   });
 }
 
-export async function claimNextJob(workerIdInput: string, leaseMs: number) {
+export async function claimNextJob(
+  workerIdInput: string,
+  leaseMs: number,
+  options: { allowBackground?: boolean } = {},
+) {
   const workerId = UuidSchema.parse(workerIdInput);
   const leaseToken = randomUUID();
   const sql = getDatabase();
@@ -1510,6 +1554,7 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     const rows = await transaction<JobRow[]>`
       select candidate.* from allrice_jobs candidate
       where candidate.status = 'queued'
+        and (${options.allowBackground === true} or candidate.payload->>'type'<>${experienceConsolidationJobType})
         and coalesce(candidate.payload->>'type','') not like 'allrice.platform.dev.%'
         and (candidate.available_at <= ${scanNow} or exists (
           -- A startup failure/cancellation can finish before any runtime was
@@ -1533,7 +1578,7 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
         and candidate.timeout_at > ${scanNow}
         and candidate.cancel_requested_at is null
         and not exists (select 1 from allrice_conversation_followups f where f.run_id=candidate.run_id and f.mode='steer_only')
-      order by (
+      order by (candidate.payload->>'type'=${experienceConsolidationJobType}) asc, (
         select count(*) from allrice_jobs active
         where active.organization_id = candidate.organization_id
           and active.status in ('claimed', 'running', 'waiting_approval')
@@ -1545,6 +1590,18 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     `;
     const job = rows[0];
     if (!job) return null;
+    if (
+      (job.payload as { type?: string }).type === experienceConsolidationJobType
+    ) {
+      const [mutex] = await transaction<
+        { locked: boolean }[]
+      >`select pg_try_advisory_xact_lock(hashtext('experience-background-slot')) locked`;
+      if (!mutex?.locked) return null;
+      const [active] =
+        await transaction`select id from allrice_jobs where payload->>'type'=${experienceConsolidationJobType}
+        and status in ('claimed','running','waiting_approval') limit 1`;
+      if (active) return null;
+    }
     await transaction`update allrice_conversation_followups
       set state='released',released_at=now() where run_id=${job.run_id} and mode='follow_up' and state='queued'`;
     const [claimClock] = await transaction<
@@ -2315,13 +2372,32 @@ export async function completeJob(input: {
         return;
       }
     }
+    const result =
+      (job.payload as { type?: string }).type === experienceConsolidationJobType
+        ? await completeExperienceConsolidation(transaction, job, input.result)
+        : input.result;
     await transitionTerminal(transaction, job, {
       jobStatus: 'succeeded',
       runStatus: 'succeeded',
       eventType: 'run.succeeded',
-      result: input.result,
-      payload: { result: input.result },
+      result,
+      payload: { result },
     });
+    if (
+      (job.payload as { type?: string }).type === experienceConsolidationJobType
+    ) {
+      // Source progress and terminal transitions can themselves wait for locks.
+      // Check after the last write so expiration rolls back the entire receipt.
+      const [clock] = await transaction<
+        { now: Date }[]
+      >`select clock_timestamp() as now`;
+      if (
+        !job.lease_expires_at ||
+        job.lease_expires_at <= clock!.now ||
+        job.timeout_at <= clock!.now
+      )
+        throw new QueueError('lease_lost');
+    }
   });
 }
 

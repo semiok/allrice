@@ -16,6 +16,7 @@ import {
   closeDatabase,
   maintainQueue,
   collectPendingExperienceEvidence,
+  syncExperienceConsolidationSchedules,
   pingDatabase,
   queueSummary,
   recoverCodexAuthorizationFlows,
@@ -248,7 +249,15 @@ function refreshDshRuntimeInventory() {
     ),
     replaceWorkerDshRuntimeInventory({
       workerId,
-      runtimes: getHarnessRouter().runtimeInventory(),
+      // This registry owns chat sessions. Private background adapters are
+      // scoped to their leased Job and closed with its isolated directory.
+      runtimes: getHarnessRouter()
+        .runtimeInventory()
+        .flatMap((runtime) =>
+          runtime.sessionId === null
+            ? []
+            : [{ ...runtime, sessionId: runtime.sessionId }],
+        ),
     }),
   ])
     .then((results) => {
@@ -347,7 +356,10 @@ async function tick() {
         while (!stopping && activeExecutions.size < concurrency) {
           if ((process.availableMemory?.() ?? Infinity) < 256 * 1024 ** 2)
             break;
-          const job = await claimNextJob(workerId, leaseMs);
+          const job = await claimNextJob(workerId, leaseMs, {
+            allowBackground:
+              concurrency > 1 && activeExecutions.size < concurrency - 1,
+          });
           const leaseToken = job?.lease?.token;
           if (!job || !leaseToken) break;
           const execution = scope
@@ -389,7 +401,10 @@ async function automationTick() {
       }
       // Reuse this background producer, keeping collection off the foreground
       // claim/completion path. It persists evidence without any model calls.
-      if (!stopping) await collectPendingExperienceEvidence();
+      if (!stopping) {
+        await collectPendingExperienceEvidence();
+        await syncExperienceConsolidationSchedules();
+      }
     });
   } catch (error) {
     console.error('[M6] automation scheduler failed', {

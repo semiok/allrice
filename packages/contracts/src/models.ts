@@ -282,6 +282,15 @@ export const SessionModelSnapshotSchema = z
   .strict();
 export type SessionModelSnapshot = z.infer<typeof SessionModelSnapshotSchema>;
 
+export const ExperienceModelSnapshotSchema = SessionModelSnapshotSchema.extend({
+  schemaVersion: z.literal(2),
+  sessionId: z.null(),
+  occurrenceId: UuidSchema,
+}).strict();
+export type ExperienceModelSnapshot = z.infer<
+  typeof ExperienceModelSnapshotSchema
+>;
+
 export const UpsertEmployeeModelPolicyInputSchema = z
   .object({
     connectionId: UuidSchema,

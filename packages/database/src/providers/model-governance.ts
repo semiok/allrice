@@ -465,7 +465,11 @@ export async function resourceStatus(
                   and (e.execution_snapshot -> 'employee' ->> 'id')::uuid = ${input.scopeId})
                   or exists(select 1 from allrice_employee_method_tests t where t.run_id=j.run_id
                     and t.organization_id=j.organization_id and t.workspace_id=j.workspace_id
-                    and t.owner_id=j.owner_id and t.employee_id=${input.scopeId}))
+                    and t.owner_id=j.owner_id and t.employee_id=${input.scopeId})
+                  or exists(select 1 from allrice_automation_runs a where a.run_id=j.run_id
+                    and a.organization_id=j.organization_id and a.workspace_id=j.workspace_id
+                    and a.experience_occurrence->>'ownerId'=j.owner_id::text
+                    and a.experience_occurrence->>'employeeId'=${input.scopeId}))
                 and j.status in ('claimed', 'running', 'waiting_approval')
                 and (${input.excludingRunId ?? null}::uuid is null or j.run_id<>${input.excludingRunId ?? null})
             `
