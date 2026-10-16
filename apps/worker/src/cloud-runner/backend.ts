@@ -108,14 +108,18 @@ export type CloudProjectServiceHooks = {
   onStopCause?: (cause: ProjectServiceStopCause) => void;
 };
 export class CloudRunnerError extends Error {}
-async function serviceCall<T>(task: Promise<T>, timeoutMs = 3000): Promise<T> {
+async function serviceCall<T>(
+  task: Promise<T>,
+  timeoutMs = 3000,
+  timeoutCode = 'CLOUD_SERVICE_CONTROL_TIMEOUT',
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   try {
     return await Promise.race([
       task,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () => reject(new CloudRunnerError('CLOUD_SERVICE_CONTROL_TIMEOUT')),
+          () => reject(new CloudRunnerError(timeoutCode)),
           timeoutMs,
         );
       }),
@@ -1979,12 +1983,15 @@ export class CloudRunnerBackend {
           config: staged.config,
           budgetController: budget,
           preparationReadBytes,
-          afterStart: async (id) => {
+          afterStart: async (id, executionSignal) => {
+            executionSignal.throwIfAborted();
+            if (budget) staged.handoffHeartbeat();
             await staged.releaseServiceCacheFence();
             for (const bytes of staged.archives)
-              await this.putArchive(id, bytes, staged.signal);
+              await this.putArchive(id, bytes, executionSignal);
             if (!(await staged.maintainLease()))
               throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+            executionSignal.throwIfAborted();
             await this.putArchive(
               id,
               createLocalPythonArchive([
@@ -1994,7 +2001,7 @@ export class CloudRunnerBackend {
                   mode: 0o444,
                 },
               ]),
-              staged.signal,
+              executionSignal,
             );
           },
         },
@@ -2262,7 +2269,7 @@ export class CloudRunnerBackend {
     stdin: Duplex,
     startedAt: number,
     deadline: number,
-    stage: ((id: string) => Promise<void>) | undefined,
+    stage: ((id: string, signal: AbortSignal) => Promise<void>) | undefined,
     guard: Awaited<ReturnType<typeof openCloudProjectServiceGuard>>,
   ): Promise<CloudRunResult> {
     const service = options.projectService!;
@@ -2494,7 +2501,15 @@ export class CloudRunnerBackend {
             tickTask = undefined;
           });
       }, 1000);
-      await stage?.(id);
+      await stage?.(
+        id,
+        AbortSignal.any([
+          controlAbort.signal,
+          ...(options.signal ? [options.signal] : []),
+        ]),
+      );
+      controlAbort.signal.throwIfAborted();
+      options.signal?.throwIfAborted();
       controlReady = true;
       if (!tickTask)
         tickTask = tick().finally(() => {
@@ -2541,7 +2556,7 @@ export class CloudRunnerBackend {
       command: CollectCommand;
       config: Record<string, unknown>;
       encoded?: string;
-      afterStart?: (id: string) => Promise<void>;
+      afterStart?: (id: string, signal: AbortSignal) => Promise<void>;
       executionBudget?: SandboxExecutionBudgetState;
       budgetController?: CloudExecutionBudget;
       preparationReadBytes?: number;
@@ -2676,12 +2691,30 @@ export class CloudRunnerBackend {
             executionOptions.signal.throwIfAborted();
             if (Date.now() >= budget.state.deadlineAt)
               throw new CloudRunnerError('SANDBOX_EXECUTION_DEADLINE');
-            if (!(await serviceCall(options.maintainLease(), 2000)))
+            if (
+              !(await serviceCall(
+                options.maintainLease(),
+                2000,
+                'SANDBOX_EXECUTION_AUTHORITY_UNCONFIRMED',
+              ))
+            )
               throw new CloudRunnerError('SANDBOX_EXECUTION_REVOKED');
             await serviceGuard!.renew(
               Math.min(budget.state.deadlineAt, deadline, Date.now() + 5000),
             );
             await budget.renew(async () => {
+              const exited = async () => {
+                const current = await serviceCall(
+                  this.inspect(attemptId),
+                  1000,
+                  'SANDBOX_EXECUTION_PROGRESS_UNCONFIRMED',
+                );
+                return (
+                  current?.Id === c.Id &&
+                  !current.State.Running &&
+                  current.State.Status === 'exited'
+                );
+              };
               const stats = await serviceCall(
                 this.json<{
                   cpu_stats?: { cpu_usage?: { total_usage?: number } };
@@ -2696,14 +2729,22 @@ export class CloudRunnerBackend {
                   `/containers/${c.Id}/stats?stream=false&one-shot=true`,
                 ),
                 2000,
-              );
+                'SANDBOX_EXECUTION_PROGRESS_UNCONFIRMED',
+              ).catch(async (error: unknown) => {
+                if (await exited()) return null;
+                throw error;
+              });
+              // Docker can return empty/reset cgroup counters as the process
+              // exits. Reconcile the immutable container, not a zero sample or
+              // a guessed successful outcome; collect still checks its exit code.
+              if (!stats) return null;
               const io = stats.blkio_stats?.io_service_bytes_recursive ?? [];
               const sum = (op: string) =>
                 io
                   .filter((x) => x.op.toLowerCase() === op)
                   .reduce((a, x) => a + x.value, 0);
               const network = networkSession?.observation;
-              return {
+              const measured = {
                 cpuNanos: stats.cpu_stats?.cpu_usage?.total_usage ?? 0,
                 readBytes:
                   (plan.preparationReadBytes ?? 0) +
@@ -2711,6 +2752,22 @@ export class CloudRunnerBackend {
                   (network?.receivedBytes ?? 0),
                 writtenBytes: sum('write') + (network?.sentBytes ?? 0),
               };
+              const missingCpu =
+                stats.cpu_stats?.cpu_usage?.total_usage === undefined;
+              if (
+                missingCpu ||
+                measured.cpuNanos < budget.state.progress.cpuNanos ||
+                measured.readBytes < budget.state.progress.readBytes ||
+                measured.writtenBytes < budget.state.progress.writtenBytes
+              ) {
+                if (await exited()) return null;
+                throw new CloudRunnerError(
+                  missingCpu
+                    ? 'SANDBOX_EXECUTION_PROGRESS_UNCONFIRMED'
+                    : 'SANDBOX_EXECUTION_PROGRESS_CHANGED',
+                );
+              }
+              return measured;
             });
             await serviceGuard!.renew(
               Math.min(budget.state.deadlineAt, deadline, Date.now() + 5000),
@@ -2864,7 +2921,16 @@ export class CloudRunnerBackend {
           serviceGuard,
         );
       }
-      await plan.afterStart?.(c.Id);
+      try {
+        await plan.afterStart?.(c.Id, executionOptions.signal);
+        executionOptions.signal.throwIfAborted();
+      } catch (error) {
+        if (!executionOptions.signal.aborted) throw error;
+        // A lost relay/physical lease must cancel staging as well as execution.
+        // Never release the tenant start marker after the controller has stopped.
+        await this.stop(attemptId);
+        return collectResult(Date.now() >= deadline ? 'deadline' : 'canceled');
+      }
       let reason: CloudRunResult['reason'] = 'completed';
       if (stdin) {
         const sent = await sendCloudInput(stdin, plan.encoded!, {
@@ -2901,16 +2967,21 @@ export class CloudRunnerBackend {
           await this.stop(attemptId);
           break;
         }
-        let valid = false;
-        try {
-          valid = await options.maintainLease();
-        } catch {
-          /* An unreachable authority never extends execution. */
-        }
-        if (!valid) {
-          reason = 'canceled';
-          await this.stop(attemptId);
-          break;
+        // Budgeted runs already have a bounded authority check in the physical
+        // controller. Polling Docker exits must not add a second DB heartbeat
+        // every 150ms; the independent five-second guard remains authoritative.
+        if (!budget) {
+          let valid = false;
+          try {
+            valid = await options.maintainLease();
+          } catch {
+            /* An unreachable authority never extends execution. */
+          }
+          if (!valid) {
+            reason = 'canceled';
+            await this.stop(attemptId);
+            break;
+          }
         }
         await delay(150);
       }
