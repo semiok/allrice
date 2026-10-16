@@ -1,4 +1,7 @@
-import { installPersonalSkill } from './handlers/personal-skills.js';
+import {
+  installPersonalSkill,
+  versionPersonalSkill,
+} from './handlers/personal-skills.js';
 import {
   inspectEmployeeMethod,
   prepareEmployeeMethodActivation,
@@ -103,6 +106,10 @@ export const riceToolHandlerRegistry = Object.freeze({
   'workspace.employee.method.save_candidate': registration(
     'workspace',
     saveEmployeeMethod,
+  ),
+  'workspace.personal_skill.version': registration(
+    'workspace',
+    versionPersonalSkill,
   ),
   'workspace.personal_skill.install': registration(
     'workspace',

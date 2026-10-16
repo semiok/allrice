@@ -7,6 +7,7 @@ import {
 } from '@allrice/contracts';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import styles from './personal-skills-settings.module.css';
+import { PersonalSkillHistory } from './personal-skill-history';
 
 export function PersonalSkillsSettings({
   workspaceId,
@@ -124,7 +125,7 @@ export function PersonalSkillsSettings({
           <h3>
             {skill.name}{' '}
             <span>
-              v{skill.version} ·{' '}
+              个人库当前版本 v{skill.version} ·{' '}
               {skill.state === 'installed' ? '已安装' : '已卸载'}
             </span>
           </h3>
@@ -154,6 +155,14 @@ export function PersonalSkillsSettings({
                 ? '未提供'
                 : `${skill.source.license.identifier}（GitHub 标注）`}
             </p>
+          )}
+          <PersonalSkillHistory
+            key={`${workspaceId}:${skill.id}`}
+            workspaceId={workspaceId}
+            skill={skill}
+          />
+          {!!skill.bindings.length && (
+            <p className={styles.meta}>当前工作区的绑定</p>
           )}
           {skill.bindings.map((binding) => {
             return (

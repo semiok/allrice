@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
+import { PersonalSkillItemSchema } from '@allrice/contracts';
+import { employeeChatUuid } from './employee-chat-authority.ts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
 import {
@@ -21,7 +23,10 @@ import {
   linkFileToSession,
 } from '../workspace/service.ts';
 import { createStorageMetadata, markStorageReady } from '../data.ts';
-import { savePlatformEmployeeDraft } from './platform-employees.ts';
+import {
+  savePlatformEmployeeDraft,
+  assignPublishedPlatformEmployeeToWorkspace,
+} from './platform-employees.ts';
 import { createEmployeeInstance } from './employee-instances.ts';
 import { skillBytesChecksum } from '../skill-bundles.ts';
 import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
@@ -208,7 +213,10 @@ suite(
           capabilities: ['storage:read', 'storage:write'],
           call: {
             id: randomUUID(),
-            name: 'workspace.personal_skill.install',
+            name:
+              'operation' in args && !('importId' in args)
+                ? 'workspace.personal_skill.version'
+                : 'workspace.personal_skill.install',
             arguments: args,
           },
           managedBrowserJobAttempt: task.input.worker.attempt,
@@ -217,6 +225,662 @@ suite(
       });
       return JSON.parse(result.modelContent);
     }
+    it('updates original bytes through the Broker, confirms next-task adoption, and rolls back without altering old Run pins', async () => {
+      const x = await setup();
+      const initial = await x.run(
+        x.custom.id,
+        '请安装我上传的 SKILL.md。',
+        raw('weekly'),
+      );
+      const v1 = (await broker(initial)).skill;
+      await initial.finish();
+      const old = await x.run(x.custom.id, '按 weekly 检查。');
+      const oldFrozen = await resolveEmployeeExecution(old.scope);
+      await old.finish();
+      const second = raw('weekly').replace(
+        'Use three items: source, calculation, delivery.',
+        'Use four items: source, calculation, delivery, owner.',
+      );
+      const updating = await x.run(
+        x.custom.id,
+        '请将 weekly 更新为我上传的 SKILL.md。后续任务请使用新版本。',
+        second,
+      );
+      const args = {
+        operation: 'update',
+        installationId: v1.id,
+        expectedRevision: v1.revision,
+        objectId: updating.input.arguments.objectId,
+      };
+      const preview = await broker(updating, args);
+      expect(preview).toMatchObject({
+        status: 'confirmation_required',
+        fromVersion: 1,
+        targetVersion: 2,
+        bindings: [{ enabled: true, epoch: 1 }],
+      });
+      expect((await listPersonalSkills(x.context))[0]!.version).toBe(1);
+      expect((await broker(updating, args)).operationId).toBe(
+        preview.operationId,
+      );
+      const confirmation = {
+        operation: 'confirm',
+        operationId: preview.operationId,
+        digest: preview.digest,
+      };
+      await expect(broker(updating, confirmation)).rejects.toThrow();
+      await updating.finish();
+      const approved = await x.run(
+        x.custom.id,
+        preview.confirmationText,
+        undefined,
+        updating.scope.sessionId,
+      );
+      const applied = await broker(approved, confirmation);
+      expect(applied).toMatchObject({
+        status: 'applied',
+        targetVersion: 2,
+        appliedRevision: 2,
+      });
+      expect(await broker(approved, confirmation)).toEqual(applied);
+      expect((await listPersonalSkills(x.context))[0]).toMatchObject({
+        version: 2,
+        bindings: [{ epoch: 1, enabled: true }],
+      });
+      await approved.finish();
+      const next = await x.run(x.custom.id, '按 weekly 新版本检查。');
+      const updated = await resolveEmployeeExecution(next.scope);
+      expect(
+        updated.nativeSkills.find((s) => s.name === 'weekly')?.content,
+      ).toContain('four items');
+      expect(
+        oldFrozen.nativeSkills.find((s) => s.name === 'weekly')?.content,
+      ).toContain('three items');
+      await next.finish();
+      const restoring = await x.run(x.custom.id, '请将 weekly 回退到 v1。');
+      const restore = await broker(restoring, {
+        operation: 'rollback',
+        installationId: v1.id,
+        expectedRevision: 2,
+        version: 1,
+      });
+      expect(restore).toMatchObject({
+        status: 'confirmation_required',
+        fromVersion: 2,
+        targetVersion: 1,
+      });
+      await restoring.finish();
+      const confirm = await x.run(
+        x.custom.id,
+        restore.confirmationText,
+        undefined,
+        restoring.scope.sessionId,
+      );
+      expect(
+        await broker(confirm, {
+          operation: 'confirm',
+          operationId: restore.operationId,
+          digest: restore.digest,
+        }),
+      ).toMatchObject({
+        status: 'applied',
+        targetVersion: 1,
+        appliedRevision: 3,
+      });
+      await confirm.finish();
+      const back = await x.run(x.custom.id, '按 weekly 再次检查。');
+      expect(
+        (await resolveEmployeeExecution(back.scope)).nativeSkills.find(
+          (s) => s.name === 'weekly',
+        )?.content,
+      ).toContain('three items');
+      const history = await broker(back, {
+        operation: 'inspect',
+        installationId: v1.id,
+      });
+      expect(
+        history.versions.map((v: { version: number; current: boolean }) => [
+          v.version,
+          v.current,
+        ]),
+      ).toEqual([
+        [2, false],
+        [1, true],
+      ]);
+      expect(
+        (
+          await f.db`select count(*)::int n from allrice_personal_skill_versions where installation_id=${v1.id}`
+        )[0]!.n,
+      ).toBe(2);
+      await back.finish();
+    });
+    it('keeps disabled bindings disabled, rejects a stale impact and exposes original install receipts after a later update', async () => {
+      const x = await setup();
+      const original = await x.run(
+        x.custom.id,
+        '请安装我上传的 SKILL.md。',
+        raw('weekly'),
+      );
+      const first = (await broker(original)).skill;
+      // Keep this real leased root active to exercise unknown-outcome readback.
+      const pending = await x.run(
+        x.custom.id,
+        '请将 weekly 更新为 SKILL.md。',
+        raw('weekly') + 'Check owner.',
+      );
+      const preview = await broker(pending, {
+        operation: 'update',
+        installationId: first.id,
+        expectedRevision: first.revision,
+        objectId: pending.input.arguments.objectId,
+      });
+      await pending.finish();
+      const another = await createEmployeeInstance(x.context, {
+        workspaceId: x.source.workspaceId,
+        assignmentId: x.assignment.id,
+        requestId: randomUUID(),
+        profile: { name: 'Second tester' },
+      });
+      const binding = await x.run(
+        another.id,
+        '请把个人技能 weekly 启用给当前 AI 员工。',
+      );
+      const bound = await broker(binding, {
+        operation: 'bind',
+        installationId: first.id,
+        expectedRevision: first.revision,
+        versionId: first.versionId,
+      });
+      expect(bound.status).toBe('bound');
+      await binding.finish();
+      const stale = await x.run(
+        x.custom.id,
+        preview.confirmationText,
+        undefined,
+        pending.scope.sessionId,
+      );
+      await expect(
+        broker(stale, {
+          operation: 'confirm',
+          operationId: preview.operationId,
+          digest: preview.digest,
+        }),
+      ).rejects.toThrow();
+      expect((await listPersonalSkills(x.context))[0]!.version).toBe(1);
+      await stale.finish();
+      const disabled = await managePersonalSkill(x.context, {
+        workspaceId: x.source.workspaceId,
+        instanceId: another.id,
+        installationId: first.id,
+        expectedRevision: bound.current.revision,
+        requestId: randomUUID(),
+        operation: 'disable',
+      });
+      const update = await x.run(
+        x.custom.id,
+        '请将 weekly 更新为 SKILL.md。',
+        raw('weekly') + 'Check owner.',
+      );
+      const second = await broker(update, {
+        operation: 'update',
+        installationId: first.id,
+        expectedRevision: disabled.revision,
+        objectId: update.input.arguments.objectId,
+      });
+      expect(second.bindings).toHaveLength(2);
+      expect(
+        second.bindings.find(
+          (b: { instanceId: string }) => b.instanceId === another.id,
+        ),
+      ).toMatchObject({ enabled: false, epoch: 2 });
+      await update.finish();
+      const wrongSession = await x.run(x.custom.id, second.confirmationText);
+      await expect(
+        broker(wrongSession, {
+          operation: 'confirm',
+          operationId: second.operationId,
+          digest: second.digest,
+        }),
+      ).rejects.toThrow();
+      await wrongSession.finish();
+      const yes = await x.run(
+        x.custom.id,
+        second.confirmationText,
+        undefined,
+        update.scope.sessionId,
+      );
+      const result = await broker(yes, {
+        operation: 'confirm',
+        operationId: second.operationId,
+        digest: second.digest,
+      });
+      expect(result.status).toBe('applied');
+      expect(
+        (await listPersonalSkills(x.context))[0]!.bindings.find(
+          (b) => b.instanceId === another.id,
+        ),
+      ).toMatchObject({ enabled: false, epoch: 2 });
+      const readback = await broker(original);
+      expect(readback.skill.versionId).toBe(first.versionId);
+      expect(readback.currentSkill.version).toBe(2);
+      expect(
+        (
+          await f.db`select count(*)::int n from allrice_personal_skill_versions where installation_id=${first.id}`
+        )[0]!.n,
+      ).toBe(2);
+      await yes.finish();
+      await original.finish();
+    });
+    it('retains exact ZIP versions, checks bytes before rollback, and leaves the current version on missing archive', async () => {
+      const x = await setup();
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的技能包。',
+        await zip(),
+      );
+      const installed = (await broker(first)).skill;
+      await first.finish();
+      const second = await x.run(
+        x.custom.id,
+        '请将 weekly 更新为 weekly.zip。',
+        {
+          fileName: 'weekly.zip',
+          bytes: await createFileArchive([
+            {
+              path: 'weekly/SKILL.md',
+              bytes: Buffer.from(raw('weekly') + 'Read references/check.md.'),
+            },
+            {
+              path: 'weekly/references/check.md',
+              bytes: Buffer.from('V2 exact private reference'),
+            },
+          ]),
+        },
+      );
+      const update = await broker(second, {
+        operation: 'update',
+        installationId: installed.id,
+        expectedRevision: installed.revision,
+        objectId: second.input.arguments.objectId,
+      });
+      await second.finish();
+      const yes = await x.run(
+        x.custom.id,
+        update.confirmationText,
+        undefined,
+        second.scope.sessionId,
+      );
+      const applied = await broker(yes, {
+        operation: 'confirm',
+        operationId: update.operationId,
+        digest: update.digest,
+      });
+      expect(applied.status).toBe('applied');
+      await yes.finish();
+      const rollback = await x.run(x.custom.id, '请将 weekly 回退到 v1。');
+      const back = await broker(rollback, {
+        operation: 'rollback',
+        installationId: installed.id,
+        expectedRevision: applied.appliedRevision,
+        version: 1,
+      });
+      await rollback.finish();
+      const [stored] =
+        await f.db`select o.object_key from allrice_personal_skill_versions v join allrice_storage_objects o on o.id=(v.resource_manifest->>'archiveObjectId')::uuid where v.id=${installed.versionId}`;
+      await unlink(join(f.storageRoot, stored!.object_key));
+      const confirm = await x.run(
+        x.custom.id,
+        back.confirmationText,
+        undefined,
+        rollback.scope.sessionId,
+      );
+      await expect(
+        broker(confirm, {
+          operation: 'confirm',
+          operationId: back.operationId,
+          digest: back.digest,
+        }),
+      ).rejects.toThrow();
+      expect((await listPersonalSkills(x.context))[0]!.version).toBe(2);
+      await confirm.finish();
+    });
+    it('includes disabled bindings in another authorized workspace and refuses incomplete scope after access removal', async () => {
+      const x = await setup();
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的 SKILL.md。',
+        raw('weekly'),
+      );
+      const skill = (await broker(first)).skill;
+      await first.finish();
+      const workspaceId = randomUUID();
+      await f.db`insert into allrice_workspaces(id,organization_id,slug,name) values(${workspaceId},${x.source.organizationId},'second','Second authorized workspace')`;
+      await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${x.source.organizationId},${workspaceId},${x.source.ownerId},'member')`;
+      const [platform] =
+        await f.db`select employee_key from allrice_platform_employees where id=${x.source.employeeId}`;
+      await assignPublishedPlatformEmployeeToWorkspace(
+        platform!.employee_key,
+        workspaceId,
+      );
+      const context = (await authenticateSession(
+        (await createSession(x.source.ownerId)).token,
+        { organizationId: x.source.organizationId, workspaceId },
+      ))!;
+      const assigned = (await getEmployeeWorkspace(context, workspaceId))
+        .employees[0]!;
+      const other = await createEmployeeInstance(context, {
+        workspaceId,
+        assignmentId: assigned.id,
+        requestId: randomUUID(),
+        profile: { name: 'Other workspace tester' },
+      });
+      await f.db`insert into allrice_personal_skill_bindings(organization_id,workspace_id,owner_id,instance_id,installation_id,enabled)
+        values(${x.source.organizationId},${workspaceId},${x.source.ownerId},${other.id},${skill.id},false)`;
+      const update = await x.run(
+        x.custom.id,
+        '请将 weekly 更新为 SKILL.md。',
+        raw('weekly') + 'Verify totals.',
+      );
+      const preview = await broker(update, {
+        operation: 'update',
+        installationId: skill.id,
+        expectedRevision: skill.revision,
+        objectId: update.input.arguments.objectId,
+      });
+      expect(preview.bindings).toHaveLength(2);
+      expect(
+        preview.bindings.find(
+          (b: { workspaceId: string }) => b.workspaceId === workspaceId,
+        ),
+      ).toMatchObject({
+        enabled: false,
+        workspaceLabel: 'Second authorized workspace',
+      });
+      expect((await listPersonalSkills(x.context))[0]!.bindings).toHaveLength(
+        1,
+      );
+      await update.finish();
+      await f.db`delete from allrice_memberships where organization_id=${x.source.organizationId} and workspace_id=${workspaceId} and user_id=${x.source.ownerId}`;
+      const confirm = await x.run(
+        x.custom.id,
+        preview.confirmationText,
+        undefined,
+        update.scope.sessionId,
+      );
+      await expect(
+        broker(confirm, {
+          operation: 'confirm',
+          operationId: preview.operationId,
+          digest: preview.digest,
+        }),
+      ).rejects.toThrow();
+      expect((await listPersonalSkills(x.context))[0]!.version).toBe(1);
+      await confirm.finish();
+    });
+    it('requires fresh bind authority after revocation even if an old Run refreshes revision', async () => {
+      const x = await setup();
+      const { item } = await install(x, x.custom.id);
+      const other = await createEmployeeInstance(x.context, {
+        workspaceId: x.source.workspaceId,
+        assignmentId: x.assignment.id,
+        requestId: randomUUID(),
+        profile: { name: 'Bind tester' },
+      });
+      const old = await x.run(
+        other.id,
+        '请把技能 private-checklist 绑定给你。',
+      );
+      const args = {
+        operation: 'bind',
+        installationId: item.id,
+        expectedRevision: item.revision,
+        versionId: item.versionId,
+      };
+      const applied = await broker(old, args);
+      const stopped = await managePersonalSkill(x.context, {
+        workspaceId: x.source.workspaceId,
+        instanceId: other.id,
+        installationId: item.id,
+        expectedRevision: applied.current.revision,
+        requestId: randomUUID(),
+        operation: 'disable',
+      });
+      const readback = await broker(old, args);
+      expect(
+        readback.current.bindings.find(
+          (b: { instanceId: string }) => b.instanceId === other.id,
+        ).enabled,
+      ).toBe(false);
+      await expect(
+        broker(old, { ...args, expectedRevision: stopped.revision }),
+      ).rejects.toThrow();
+      expect(
+        (await listPersonalSkills(x.context))[0]!.bindings.find(
+          (b) => b.instanceId === other.id,
+        )?.enabled,
+      ).toBe(false);
+      await old.finish();
+      const fresh = await x.run(
+        other.id,
+        '请把技能 private-checklist 绑定给你。',
+      );
+      expect(
+        (
+          await broker(fresh, { ...args, expectedRevision: stopped.revision })
+        ).current.bindings.find(
+          (b: { instanceId: string }) => b.instanceId === other.id,
+        ).enabled,
+      ).toBe(true);
+      await fresh.finish();
+    });
+    it('lets only the most recent same-session candidate consume a generic fixed-version confirmation', async () => {
+      const x = await setup();
+      const { item } = await install(x, x.custom.id);
+      const first = await x.run(
+        x.custom.id,
+        '请将 private-checklist 更新为 SKILL.md。',
+        raw() + 'Candidate A.',
+      );
+      const a = await broker(first, {
+        operation: 'update',
+        installationId: item.id,
+        expectedRevision: item.revision,
+        objectId: first.input.arguments.objectId,
+      });
+      await first.finish();
+      const second = await x.run(
+        x.custom.id,
+        '请将 private-checklist 更新为 SKILL.md。',
+        raw() + 'Candidate B.',
+        first.scope.sessionId,
+      );
+      const b = await broker(second, {
+        operation: 'update',
+        installationId: item.id,
+        expectedRevision: item.revision,
+        objectId: second.input.arguments.objectId,
+      });
+      await second.finish();
+      const yes = await x.run(
+        x.custom.id,
+        b.confirmationText,
+        undefined,
+        second.scope.sessionId,
+      );
+      expect(
+        (
+          await broker(yes, {
+            operation: 'confirm',
+            operationId: a.operationId,
+            digest: a.digest,
+          })
+        ).status,
+      ).toBe('canceled');
+      expect((await listPersonalSkills(x.context))[0]!.version).toBe(1);
+      const applied = await broker(yes, {
+        operation: 'confirm',
+        operationId: b.operationId,
+        digest: b.digest,
+      });
+      expect(applied.status).toBe('applied');
+      const [v] =
+        await f.db`select original_text from allrice_personal_skill_versions where id=${applied.appliedVersionId}`;
+      expect(v!.original_text).toContain('Candidate B.');
+      await yes.finish();
+    });
+    it('keeps pre-version-management installation and staging keys stable', async () => {
+      const x = await setup();
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的 SKILL.md。',
+        raw(),
+      );
+      const installed = (await broker(first)).skill;
+      const oldId = employeeChatUuid(
+        'personal-skill-install',
+        x.source.organizationId,
+        x.source.ownerId,
+        first.input.userMessageId,
+        first.input.arguments.objectId,
+        x.custom.id,
+      );
+      const [receipt] =
+        await f.db`select response from allrice_personal_skill_receipts where request_id=${oldId}`;
+      expect(receipt!.response.versionId).toBe(installed.versionId);
+      expect((await broker(first)).skill.versionId).toBe(installed.versionId);
+      await first.finish();
+      const url = 'https://github.com/acme/skills';
+      const pending = await x.run(x.custom.id, `请安装 ${url} 里的技能。`);
+      const source = publicGitHub(true);
+      try {
+        const result = await broker(pending, { url });
+        const key = employeeChatUuid(
+          'personal-skill-install',
+          x.source.organizationId,
+          x.source.ownerId,
+          pending.input.userMessageId,
+          `url:${url}`,
+          x.custom.id,
+        );
+        expect(result.importId).toBe(key);
+        const count = source.fetch.mock.calls.length;
+        source.move();
+        expect((await broker(pending, { url })).importId).toBe(key);
+        expect(source.fetch).toHaveBeenCalledTimes(count);
+        await pending.finish();
+      } finally {
+        source.fetch.mockRestore();
+      }
+    });
+    it('rejects a new binding that would collide with that employee native platform skill', async () => {
+      const x = await setup();
+      const different = await createEmployeeAdministrationFixture(f.db);
+      await different.preview();
+      expect((await different.publish()).valid).toBe(true);
+      const [skill] =
+        await f.db`select name from allrice_platform_dsh_skills where id=${different.skillId}`;
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的 SKILL.md。',
+        raw(skill!.name),
+      );
+      const item = (await broker(first)).skill;
+      await first.finish();
+      const [platform] =
+        await f.db`select employee_key from allrice_platform_employees where id=${different.employeeId}`;
+      await assignPublishedPlatformEmployeeToWorkspace(
+        platform!.employee_key,
+        x.source.workspaceId,
+      );
+      const employees = (
+        await getEmployeeWorkspace(x.context, x.source.workspaceId)
+      ).employees;
+      const assignment = employees.find((e) => e.id !== x.assignment.id)!;
+      const task = await x.run(
+        assignment.id,
+        `请把技能 ${skill!.name} 绑定给你。`,
+      );
+      await expect(
+        broker(task, {
+          operation: 'bind',
+          installationId: item.id,
+          expectedRevision: item.revision,
+          versionId: item.versionId,
+        }),
+      ).rejects.toThrow();
+      expect((await listPersonalSkills(x.context))[0]!.bindings).toHaveLength(
+        1,
+      );
+      await task.finish();
+    });
+    it('does not publish through a concurrent archive of another affected employee', async () => {
+      const x = await setup();
+      const { item } = await install(x, x.custom.id);
+      const other = await createEmployeeInstance(x.context, {
+        workspaceId: x.source.workspaceId,
+        assignmentId: x.assignment.id,
+        requestId: randomUUID(),
+        profile: { name: 'Concurrent archive target' },
+      });
+      const bind = await x.run(
+        other.id,
+        '请把技能 private-checklist 绑定给你。',
+      );
+      const bound = await broker(bind, {
+        operation: 'bind',
+        installationId: item.id,
+        expectedRevision: item.revision,
+        versionId: item.versionId,
+      });
+      await bind.finish();
+      const update = await x.run(
+        x.custom.id,
+        '请将 private-checklist 更新为 SKILL.md。',
+        raw() + 'Locked scope.',
+      );
+      const preview = await broker(update, {
+        operation: 'update',
+        installationId: item.id,
+        expectedRevision: bound.current.revision,
+        objectId: update.input.arguments.objectId,
+      });
+      await update.finish();
+      const confirm = await x.run(
+        x.custom.id,
+        preview.confirmationText,
+        undefined,
+        update.scope.sessionId,
+      );
+      let release!: () => void, ready!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const acquired = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const archive = f.db.begin(async (tx) => {
+        await tx`update allrice_employee_instances set archived_at=clock_timestamp(),revision=revision+1 where id=${other.id}`;
+        ready();
+        await gate;
+      });
+      await acquired;
+      const args = {
+        operation: 'confirm',
+        operationId: preview.operationId,
+        digest: preview.digest,
+      };
+      try {
+        await expect(broker(confirm, args)).rejects.toThrow();
+      } finally {
+        release();
+        await archive;
+      }
+      await expect(broker(confirm, args)).rejects.toThrow();
+      expect((await listPersonalSkills(x.context))[0]!.versionId).toBe(
+        item.versionId,
+      );
+      await confirm.finish();
+    });
     const zip = async (multiple = false) => ({
       fileName: 'weekly.zip',
       bytes: await createFileArchive([
@@ -330,6 +994,66 @@ suite(
         },
       };
     }
+    it('stages a fixed public update by exact installed name and never refetches it after source movement', async () => {
+      const x = await setup();
+      const first = await x.run(
+        x.custom.id,
+        '请安装我上传的 SKILL.md。',
+        raw('weekly'),
+      );
+      const skill = (await broker(first)).skill;
+      await first.finish();
+      const url = 'https://github.com/acme/skills';
+      const task = await x.run(x.custom.id, `请将 weekly 更新为 ${url}。`);
+      const source = publicGitHub(true);
+      try {
+        const args = {
+          operation: 'update',
+          installationId: skill.id,
+          expectedRevision: skill.revision,
+          url,
+        };
+        const preview = await broker(task, args);
+        expect(preview).toMatchObject({
+          status: 'confirmation_required',
+          source: {
+            commitSha: source.commit,
+            candidatePath: 'weekly/SKILL.md',
+          },
+        });
+        const requests = source.fetch.mock.calls.length;
+        source.move();
+        expect((await broker(task, args)).operationId).toBe(
+          preview.operationId,
+        );
+        expect(source.fetch).toHaveBeenCalledTimes(requests);
+        await task.finish();
+        const yes = await x.run(
+          x.custom.id,
+          preview.confirmationText,
+          undefined,
+          task.scope.sessionId,
+        );
+        const result = await broker(yes, {
+          operation: 'confirm',
+          operationId: preview.operationId,
+          digest: preview.digest,
+        });
+        expect(result).toMatchObject({
+          status: 'applied',
+          targetVersion: 2,
+          source: { commitSha: source.commit },
+        });
+        expect(source.fetch).toHaveBeenCalledTimes(requests);
+        const [v] =
+          await f.db`select original_text,source from allrice_personal_skill_versions where id=${result.appliedVersionId}`;
+        expect(v!.original_text).toBe(source.files.get('weekly/SKILL.md'));
+        expect(v!.source.commitSha).toBe(source.commit);
+        await yes.finish();
+      } finally {
+        source.fetch.mockRestore();
+      }
+    });
     it('imports a pinned public source through the real Broker and native parser, then reuses private resources without another download', async () => {
       const x = await setup(),
         url = 'https://github.com/acme/skills/tree/main/weekly';
@@ -666,7 +1390,7 @@ suite(
         },
       });
       const item = JSON.parse(result.modelContent).skill;
-      expect(await preparePersonalSkillImport(task.input)).toEqual({
+      expect(await preparePersonalSkillImport(task.input)).toMatchObject({
         prior: item,
       });
       await task.finish();
@@ -1254,11 +1978,15 @@ suite(
           raw(),
         );
         const parsed = await parsePersonalSkill(Buffer.from(raw()));
-        const item = await installPersonalSkillFromChat(task.input, parsed);
-        const retry = { ...task.input, callId: randomUUID() };
-        expect((await installPersonalSkillFromChat(retry, parsed)).id).toBe(
-          item.id,
+        const item = PersonalSkillItemSchema.parse(
+          await installPersonalSkillFromChat(task.input, parsed),
         );
+        const retry = { ...task.input, callId: randomUUID() };
+        expect(
+          PersonalSkillItemSchema.parse(
+            await installPersonalSkillFromChat(retry, parsed),
+          ).id,
+        ).toBe(item.id);
         await managePersonalSkill(x.context, {
           workspaceId: x.source.workspaceId,
           instanceId: x.custom.id,

@@ -545,6 +545,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           if (body.operation === 'uninstall') skill.state = 'uninstalled';
           return answer({ skill });
         }
+        if (url.searchParams.has('installationId')) {
+          const skill = state.personalSkills[0]!;
+          return answer({
+            skill,
+            versions: [
+              {
+                id: skill.versionId,
+                version: skill.version,
+                source: skill.source,
+                definitionChecksum: skill.definitionChecksum,
+                current: true,
+                createdAt: skill.createdAt,
+              },
+              {
+                id: id(194),
+                version: 2,
+                source: skill.source,
+                definitionChecksum: skill.definitionChecksum,
+                current: false,
+                createdAt: skill.createdAt,
+              },
+            ],
+          });
+        }
         return answer({ skills: state.personalSkills });
       }
       if (path === '/api/v1/me/preferences') {
@@ -2541,6 +2565,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await dialog.innerText()).toContain('许可：未提供');
         expect(await dialog.innerText()).toContain('acme/skills');
         expect(await dialog.innerText()).toContain('weekly/SKILL.md');
+        await dialog.getByText('版本历史与更新', { exact: true }).click();
+        await dialog
+          .getByRole('button', { name: '复制回退到 v2 的指令', exact: true })
+          .waitFor();
+        expect(await dialog.innerText()).toContain('个人库当前版本 v1');
+        expect(await dialog.innerText()).toContain('已经开始的任务保留原版本');
+        expect(await dialog.innerText()).toContain(
+          '所有已绑定员工的启停状态保持原样',
+        );
+        await dialog.getByText('版本历史与更新', { exact: true }).click();
+
         await dialog.getByRole('button', { name: '停用', exact: true }).click();
         await dialog
           .getByRole('button', { name: '启用', exact: true })

@@ -15,6 +15,7 @@ export const personalSkillLimits = {
   installations: 32,
   retainedInstallations: 128,
   enabledPerInstance: 8,
+  retainedVersions: 32,
 } as const;
 
 export const PersonalSkillDefinitionSchema = z
@@ -287,3 +288,97 @@ export const PersonalSkillItemSchema = z
   })
   .strict();
 export type PersonalSkillItem = z.infer<typeof PersonalSkillItemSchema>;
+
+/** Inspection never changes the current version. Updates/rollback first freeze
+ * a preview, then require a new direct confirmation of its complete scope. */
+export const PersonalSkillVersionInputSchema = z.union([
+  z
+    .object({
+      operation: z.literal('inspect'),
+      installationId: UuidSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('update'),
+      installationId: UuidSchema,
+      expectedRevision: z.number().int().positive(),
+      objectId: UuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('update'),
+      installationId: UuidSchema,
+      expectedRevision: z.number().int().positive(),
+      url: PersonalSkillGitHubUrlSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('rollback'),
+      installationId: UuidSchema,
+      expectedRevision: z.number().int().positive(),
+      version: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('bind'),
+      installationId: UuidSchema,
+      expectedRevision: z.number().int().positive(),
+      versionId: UuidSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.enum(['confirm', 'cancel']),
+      operationId: UuidSchema,
+      digest: ChecksumSchema,
+    })
+    .strict(),
+]);
+
+export const PersonalSkillVersionSchema = z
+  .object({
+    id: UuidSchema,
+    version: z.number().int().positive(),
+    source: PersonalSkillSourceSchema,
+    definitionChecksum: ChecksumSchema,
+    packageChecksum: ChecksumSchema.optional(),
+    current: z.boolean(),
+    createdAt: TimestampSchema,
+  })
+  .strict();
+export const PersonalSkillVersionPreviewSchema = z
+  .object({
+    status: z.enum([
+      'confirmation_required',
+      'applied',
+      'unchanged',
+      'canceled',
+    ]),
+    operationId: UuidSchema,
+    operation: z.enum(['update', 'rollback']),
+    digest: ChecksumSchema,
+    installationId: UuidSchema,
+    name: z.string(),
+    fromVersion: z.number().int().positive(),
+    targetVersion: z.number().int().positive(),
+    expectedRevision: z.number().int().positive(),
+    source: PersonalSkillSourceSchema,
+    bindings: z.array(
+      PersonalSkillItemSchema.shape.bindings.element.extend({
+        workspaceLabel: z.string(),
+      }),
+    ),
+    expiresAt: TimestampSchema,
+    confirmationText: z.string(),
+    appliedVersionId: UuidSchema.optional(),
+    appliedRevision: z.number().int().positive().optional(),
+    effectiveFrom: z.literal('next_task'),
+  })
+  .strict();
+export type PersonalSkillVersionPreview = z.infer<
+  typeof PersonalSkillVersionPreviewSchema
+>;
