@@ -3,6 +3,7 @@ import { UuidSchema } from './common.ts';
 import { ContentMaintenanceLevelSchema } from './content-maintenance.ts';
 import { EmployeeVersionSourceSchema } from './employees.ts';
 import { EmployeeDetailsSchema } from './employee-details.ts';
+import { ExperienceSummarySchema } from './experience.ts';
 
 export const OrganizationAiDirectoryQuerySchema = z
   .object({
@@ -74,7 +75,7 @@ export const OrganizationAiInstanceSchema = z
       .object({
         sceneCount: count,
         referenceCount: count,
-        automaticExperience: z.literal('not_enabled'),
+        automaticExperience: z.enum(['not_enabled', 'policy_managed']),
       })
       .strict()
       .nullable(),
@@ -105,5 +106,6 @@ export const OrganizationAiSharedDetailsSchema = z
     userId: UuidSchema,
     visibility: z.literal('shared_only'),
     details: EmployeeDetailsSchema,
+    experienceSummary: ExperienceSummarySchema.optional(),
   })
   .strict();

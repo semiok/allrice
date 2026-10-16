@@ -1,3 +1,4 @@
+import { getExperienceOverview } from './experience-overview.ts';
 import { experienceSkillFixture } from './experience-skill.fixture.ts';
 import { freezePersonalSkills } from './employees/personal-skills.ts';
 import {
@@ -731,7 +732,18 @@ suite(
     );
     it('records a newly revoked source once without scheduling or retrying it', async () => {
       const f = await legacyCoverage();
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.counts
+          .awaitingValidation,
+      ).toBe(1);
       await changeSkill(f, 'disable');
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.counts
+          .awaitingValidation,
+      ).toBe(0);
+      expect(
+        (await listExperienceDrafts(f.owner, f.instance.id))[0]!.drafts,
+      ).toEqual(f.output.drafts);
       await syncExperienceValidations();
       await syncExperienceValidations();
       const records =
@@ -1219,6 +1231,9 @@ suite(
       const f = await adoptedFixture();
       expect(f.memory.reviewed_by).toBeNull();
       expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.counts,
+      ).toEqual({ pendingSources: 0, awaitingValidation: 0, adoptedTotal: 1 });
+      expect(
         (await createExperienceStore().list(f.owner)).some(
           (m) => m.id === f.memory.id,
         ),
@@ -1292,6 +1307,10 @@ suite(
         memoryId: f.memory.id,
       });
       expect(forgotten.memories).toEqual([]);
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.counts
+          .adoptedTotal,
+      ).toBe(1);
       const nextContext = (await prepareEmployeeContentContext(forget))!;
       expect(nextContext.generationId).not.toBe(runtime.generationId);
       expect(nextContext.allowedMessageIds).not.toBeNull();
@@ -1612,6 +1631,35 @@ suite(
       const view = (await listExperienceDrafts(unsupported.owner))[0]!;
       expect(view.validations).toEqual([]);
       expect(view.validationNotes[0]).toContain('暂无覆盖');
+      expect(
+        (
+          await getExperienceOverview(
+            unsupported.owner,
+            unsupported.instance.id,
+          )
+        ).summary.counts.awaitingValidation,
+      ).toBe(1);
+      await deleteWorkspaceMemory(
+        unsupported.owner,
+        unsupported.workspace,
+        unsupported.candidate.id,
+      );
+      expect(
+        (
+          await getExperienceOverview(
+            unsupported.owner,
+            unsupported.instance.id,
+          )
+        ).summary.counts.awaitingValidation,
+      ).toBe(0);
+      expect(
+        (
+          await listExperienceDrafts(unsupported.owner, unsupported.instance.id)
+        )[0],
+      ).toMatchObject({
+        sourceState: 'unavailable',
+        drafts: unsupported.output.drafts,
+      });
     });
     it.each([
       'wrong-count',
@@ -1840,7 +1888,11 @@ suite(
       await expect(completeJob({ ...f.lease, result: output })).rejects.toThrow(
         'source_changed',
       );
-      expect(await listExperienceDrafts(f.owner)).toEqual([]);
+      expect((await listExperienceDrafts(f.owner))[0]).toMatchObject({
+        id: f.occurrence.id,
+        sourceState: 'unavailable',
+        drafts: [],
+      });
       const [r] =
         await db`select consolidation_occurrence_id from allrice_experience_reviews where memory_id=${f.candidate.id}`;
       expect(r!.consolidation_occurrence_id).toBe(f.occurrence.id);
@@ -1874,6 +1926,79 @@ suite(
         )[0]!.state,
       ).toBe('canceled');
     });
+    it('reads actual policy and schedule without materializing rules, and keeps archived history owner-only', async () => {
+      const f = await source(false, false);
+      const initial = await getExperienceOverview(f.owner, f.instance.id);
+      expect(initial.summary).toMatchObject({
+        policy: { source: 'platform' },
+        schedule: {
+          state: 'not_scheduled',
+          nextRunAt: null,
+          lastOccurrence: null,
+        },
+        counts: { pendingSources: 1, adoptedTotal: 0, awaitingValidation: 0 },
+      });
+      expect(
+        await db`select id from allrice_automations where owner_id=${f.user}`,
+      ).toHaveLength(0);
+      const second = await createEmployeeInstance(f.owner, {
+        workspaceId: f.workspace,
+        assignmentId: f.instance.assignmentId,
+        requestId: randomUUID(),
+        profile: { name: '另一位' },
+      });
+      expect(
+        (await getExperienceOverview(f.owner, second.id)).summary.counts
+          .pendingSources,
+      ).toBe(0);
+      await expect(
+        getExperienceOverview(f.neighbor, f.instance.id),
+      ).rejects.toThrow();
+      const policy = await readExperiencePolicy(f.org);
+      await updateExperiencePolicy(f.reviewer, f.org, {
+        expectedRevision: policy.revision,
+        frequency: 'off',
+        timezone: 'Asia/Shanghai',
+        time: '04:00',
+        weekday: 2,
+        monthDay: 15,
+      });
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary,
+      ).toMatchObject({
+        policy: { source: 'company', frequency: 'off' },
+        schedule: { state: 'off', nextRunAt: null },
+      });
+      await db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.instance.id}`;
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.schedule
+          .state,
+      ).toBe('unavailable');
+      expect(
+        (await createExperienceStore().list(f.owner, f.instance.id)).map(
+          (c) => c.id,
+        ),
+      ).toEqual([f.candidate.id]);
+      expect(
+        await createExperienceStore().list(f.neighbor, f.instance.id),
+      ).toEqual([]);
+    });
+    it('counts all pending sources beyond the 100-row history page', async () => {
+      const f = await source(false, false);
+      // Database-valid synthetic records exercise the projection boundary, not model collection.
+      for (let n = 0; n < 101; n++) {
+        const memory = randomUUID();
+        await db`insert into allrice_memories select (jsonb_populate_record(null::allrice_memories, to_jsonb(m) || jsonb_build_object('id',${memory}::text))).* from allrice_memories m where id=${f.candidate.id}`;
+        await db`insert into allrice_experience_reviews select (jsonb_populate_record(null::allrice_experience_reviews, to_jsonb(e) || jsonb_build_object('memory_id',${memory}::text,'client_request_id',${randomUUID()}::text,'source_key',${runtimePolicyDigest({ n })}::text))).* from allrice_experience_reviews e where memory_id=${f.candidate.id}`;
+      }
+      expect(
+        await createExperienceStore().list(f.owner, f.instance.id),
+      ).toHaveLength(100);
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.counts
+          .pendingSources,
+      ).toBe(102);
+    });
     it('records empty periods without a Run or model execution', async () => {
       const f = await source();
       await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
@@ -1887,6 +2012,10 @@ suite(
         error_code: 'EXPERIENCE_NO_NEW_EVIDENCE',
         experience_execution: null,
       });
+      expect(
+        (await getExperienceOverview(f.owner, f.instance.id)).summary.schedule
+          .lastOccurrence?.outcome,
+      ).toBe('no_sources');
     });
     it('does not rewrite the model or Skill pin after preparation', async () => {
       const f = await queued();
@@ -2000,7 +2129,11 @@ suite(
           await db`select l.id from allrice_model_usage_ledger l join allrice_route_decisions d on d.id=l.route_decision_id where d.run_id=${f.occurrence.run_id}`,
         ).toHaveLength(1);
         if (kind === 'revoked')
-          expect(await listExperienceDrafts(f.owner)).toEqual([]);
+          expect((await listExperienceDrafts(f.owner))[0]).toMatchObject({
+            id: f.occurrence.id,
+            sourceState: 'unavailable',
+            drafts: [],
+          });
       },
     );
   },

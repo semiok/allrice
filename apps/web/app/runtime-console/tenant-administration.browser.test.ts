@@ -398,7 +398,15 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
         await dialog
           .getByRole('tab', { name: '经验积累', exact: true })
           .click();
-        await dialog.getByText('自动沉淀尚未启用', { exact: false }).waitFor();
+        await dialog
+          .getByRole('region', { name: '经验整理概况', exact: true })
+          .waitFor();
+        await dialog
+          .getByText(
+            '仅显示整理配置和汇总；私人反馈、经验内容及技能版本仅本人可见。',
+            { exact: true },
+          )
+          .waitFor();
         await dialog.getByRole('button', { name: '关闭', exact: true }).click();
         await page.getByRole('tab', { name: '模板历史', exact: true }).click();
         await page
@@ -449,7 +457,10 @@ integration('MET-151 management UI -> HTTP -> real isolated PostgreSQL', () => {
           .getByRole('button', { name: '经验沉淀', exact: true })
           .click();
         await page
-          .getByText('自动经验沉淀尚未启用。', { exact: true })
+          .getByText(
+            '所有 AI 员工共用经验整理能力，按所在公司的生效策略执行。',
+            { exact: false },
+          )
           .waitFor();
         expect(await page.getByRole('checkbox').count()).toBe(0);
       } finally {

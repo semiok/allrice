@@ -1376,7 +1376,7 @@ function EmployeeTemplateEditor({
     panel = (
       <div className={styles.notice}>
         <h3>经验沉淀</h3>
-        <p>自动经验沉淀尚未启用。</p>
+        <p>所有 AI 员工共用经验整理能力，按所在公司的生效策略执行。</p>
         <p>
           个人经验仅本人可见，不汇入平台模板。公司和部门已共享的工作内容，可在员工实例详情中查看。
         </p>

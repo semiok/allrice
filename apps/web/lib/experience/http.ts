@@ -3,6 +3,9 @@ import {
   experienceReviewEnabled,
   ExperienceError,
   listExperienceDrafts,
+  getExperienceOverview,
+  DataAccessError,
+  EmployeeInstanceError,
 } from '@allrice/database';
 import { UuidSchema } from '@allrice/contracts';
 import { isRequestValidationError } from '../api-error-response';
@@ -13,29 +16,6 @@ const headers = {
   'Cache-Control': 'private, no-store',
   'X-Content-Type-Options': 'nosniff',
 };
-async function body(request: Request) {
-  if (request.headers.get('content-type')?.split(';')[0] !== 'application/json')
-    throw new SyntaxError();
-  const reader = request.body?.getReader();
-  if (!reader) throw new SyntaxError();
-  const chunks: Uint8Array[] = [];
-  let size = 0;
-  try {
-    for (;;) {
-      const part = await reader.read();
-      if (part.done) break;
-      size += part.value.length;
-      if (size > 40_000) {
-        await reader.cancel();
-        throw new SyntaxError();
-      }
-      chunks.push(part.value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
-}
 export async function experienceHttp(
   request: Request,
   action: 'list' | 'sources' | 'create' | 'review',
@@ -56,59 +36,61 @@ export async function experienceHttp(
       url.searchParams.get('workspaceId') ?? login.workspaceId,
     );
     const context = { ...login, workspaceId };
+    if (action === 'create' || action === 'review') {
+      if (id) UuidSchema.parse(id);
+      return Response.json(
+        { code: 'LEGACY_EXPERIENCE_WRITE_RETIRED' },
+        { status: 410, headers },
+      );
+    }
     const store = createExperienceStore();
-    if (action === 'list')
+    if (action === 'list') {
+      const instanceId = url.searchParams.get('instanceId') ?? undefined;
+      const overview = instanceId
+        ? await getExperienceOverview(context, instanceId)
+        : null;
       return Response.json(
         {
-          candidates: await store.list(
-            context,
-            url.searchParams.get('instanceId') ?? undefined,
-          ),
-          draftBatches: await listExperienceDrafts(
-            context,
-            url.searchParams.get('instanceId') ?? undefined,
-          ),
+          overview,
+          candidates: await store.list(context, instanceId),
+          draftBatches: await listExperienceDrafts(context, instanceId),
         },
         { headers },
       );
-    if (action === 'sources')
-      return Response.json(
-        {
-          sources: await store.sources(
-            context,
-            UuidSchema.parse(url.searchParams.get('sessionId')),
-          ),
-        },
-        { headers },
-      );
-    const input = await body(request);
-    const candidate =
-      action === 'create'
-        ? await store.create(context, input)
-        : await store.review(context, UuidSchema.parse(id), input);
+    }
     return Response.json(
-      { candidate },
-      { status: action === 'create' ? 201 : 200, headers },
+      {
+        sources: await store.sources(
+          context,
+          UuidSchema.parse(url.searchParams.get('sessionId')),
+        ),
+      },
+      { headers },
     );
   } catch (error) {
     const code =
-      error instanceof ExperienceError
+      error instanceof ExperienceError ||
+      error instanceof DataAccessError ||
+      error instanceof EmployeeInstanceError
         ? error.code
         : isRequestValidationError(error)
           ? 'invalid_request'
           : 'unavailable';
     const status =
-      code === 'not_found' || code === 'disabled'
-        ? 404
-        : code === 'conflict' || code === 'source_changed'
-          ? 409
-          : code === 'identity_denied' ||
-              code === 'validation_required' ||
-              code === 'platform_publication_required'
-            ? 403
-            : code === 'invalid_request' || code === 'invalid_source'
-              ? 400
-              : 503;
+      code === 'authentication_required'
+        ? 401
+        : code === 'not_found' || code === 'disabled'
+          ? 404
+          : code === 'conflict' || code === 'source_changed'
+            ? 409
+            : code === 'identity_denied' ||
+                code === 'authorization_denied' ||
+                code === 'validation_required' ||
+                code === 'platform_publication_required'
+              ? 403
+              : code === 'invalid_request' || code === 'invalid_source'
+                ? 400
+                : 503;
     return Response.json({ code }, { status, headers });
   }
 }

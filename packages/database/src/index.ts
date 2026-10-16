@@ -229,6 +229,7 @@ export * from './employees/personal-skills.ts';
 export * from './employees/personal-skill-versions.ts';
 
 export * from './experience-consolidation.ts';
+export { getExperienceOverview } from './experience-overview.ts';
 export {
   syncExperienceValidations,
   experienceValidationStillCurrent,

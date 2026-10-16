@@ -305,6 +305,20 @@ suite(
       ).toHaveLength(0);
       const result = await details(s);
       expect(result.visibility).toBe('shared_only');
+      expect(result.experienceSummary?.counts).toEqual({
+        pendingSources: 0,
+        awaitingValidation: 0,
+        adoptedTotal: 0,
+      });
+      expect(Object.keys(result.experienceSummary!).sort()).toEqual([
+        'counts',
+        'enabled',
+        'policy',
+        'schedule',
+      ]);
+      expect(JSON.stringify(result.experienceSummary)).not.toMatch(
+        /sourceIds|sourceExcerpt|skillDependencies|PRIVATE_|CANDIDATE_/,
+      );
       const text = JSON.stringify(result);
       expect(text).toContain('公司共享场景');
       expect(text).toContain('科研共享场景');

@@ -91,6 +91,64 @@ export function experiencePolicySchedule(
         monthDay: 1,
       };
 }
+/** Operational metadata only. Safe for an explicitly authorized administrator;
+ * private rules, source excerpts and Skill pins belong to the owner response. */
+export const ExperienceSummarySchema = z
+  .object({
+    enabled: z.boolean(),
+    policy: ExperiencePolicySettingsSchema.extend({
+      source: z.enum(['platform', 'company']),
+      revision: z.number().int().positive(),
+      validationMode: z.enum(['off', 'supported_cases']),
+      adoptionMode: z.enum(['off', 'supported_private']),
+    }).strict(),
+    schedule: z
+      .object({
+        state: z.enum([
+          'off',
+          'not_scheduled',
+          'scheduled',
+          'paused',
+          'unavailable',
+        ]),
+        lastCheckedAt: TimestampSchema.nullable(),
+        nextRunAt: TimestampSchema.nullable(),
+        lastOccurrence: z
+          .object({
+            createdAt: TimestampSchema,
+            outcome: z.enum([
+              'queued',
+              'running',
+              'failed',
+              'canceled',
+              'no_sources',
+              'no_draft',
+              'drafted',
+            ]),
+          })
+          .strict()
+          .nullable(),
+      })
+      .strict(),
+    counts: z
+      .object({
+        pendingSources: z.number().int().nonnegative(),
+        awaitingValidation: z.number().int().nonnegative(),
+        adoptedTotal: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+export type ExperienceSummary = z.infer<typeof ExperienceSummarySchema>;
+export const ExperienceOverviewSchema = z
+  .object({
+    visibility: z.literal('owner'),
+    workspaceId: UuidSchema,
+    instanceId: UuidSchema,
+    summary: ExperienceSummarySchema,
+  })
+  .strict();
+export type ExperienceOverview = z.infer<typeof ExperienceOverviewSchema>;
 export const ExperienceDraftOutputSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -142,6 +200,8 @@ export const ExperienceDraftBatchSchema = z
     adoptions: z.array(ExperienceAdoptionViewSchema).max(8).default([]),
     validations: z.array(ExperienceValidationViewSchema).max(8).default([]),
     validationNotes: z.array(z.string().max(500)).max(8).default([]),
+    sourceState: z.enum(['current', 'unavailable']).optional(),
+    skillDependencies: z.array(PersonalSkillPinSchema).max(256).optional(),
   })
   .strict();
 export type ExperienceDraftBatch = z.infer<typeof ExperienceDraftBatchSchema>;
@@ -281,6 +341,7 @@ export const ExperienceCandidateSchema = z
     originKind: z.enum(['manual', 'incremental', 'derived']).optional(),
     instanceId: UuidSchema.nullable().optional(),
     evidence: ExperienceEvidenceSchema.nullable().optional(),
+    consolidatedAt: TimestampSchema.nullable().optional(),
   })
   .strict();
 export type ExperienceCandidate = z.infer<typeof ExperienceCandidateSchema>;
