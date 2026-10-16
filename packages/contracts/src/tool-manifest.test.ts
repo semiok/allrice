@@ -147,6 +147,7 @@ it('ignores published intrinsic grants and gives general instances only private 
   ).toEqual([
     'workspace.file.read',
     'workspace.personal_skill.install',
+    'workspace.personal_skill.version',
     'workspace.employee.profile.update',
   ]);
   expect(

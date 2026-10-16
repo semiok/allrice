@@ -1,4 +1,7 @@
 import {
+  personalSkillVersionFromChat,
+  personalSkillVersionConfirmationFiles,
+  type PersonalSkillImportCall,
   preparePersonalSkillImport,
   reservePersonalSkillPackage,
   completePersonalSkillPackage,
@@ -17,6 +20,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import {
   personalSkillLimits,
   PersonalSkillInstallInputSchema,
+  PersonalSkillVersionInputSchema,
   PersonalSkillGitHubSourceSchema,
   parsePersonalSkillGitHubUrl,
   type PersonalSkillGitHubSource,
@@ -57,12 +61,30 @@ export const installPersonalSkill: RiceToolHandler = async ({
     !input.managedBrowserJobLeaseToken
   )
     throw rejected('当前任务不能安装个人技能。');
-  const call = {
+  const versionArgs =
+    input.call.name === 'workspace.personal_skill.version'
+      ? PersonalSkillVersionInputSchema.parse(args)
+      : null;
+  const importArgs =
+    versionArgs?.operation === 'update'
+      ? 'url' in versionArgs
+        ? { url: versionArgs.url }
+        : { objectId: versionArgs.objectId }
+      : args;
+  const call: PersonalSkillImportCall = {
     context: input.context,
     sessionId: input.sessionId,
     userMessageId: input.userMessageId,
     callId: input.call.id,
-    arguments: args,
+    arguments: importArgs,
+    ...(versionArgs?.operation === 'update'
+      ? {
+          versionUpdate: {
+            installationId: versionArgs.installationId,
+            expectedRevision: versionArgs.expectedRevision,
+          },
+        }
+      : {}),
     worker: {
       attempt: input.managedBrowserJobAttempt,
       leaseToken: input.managedBrowserJobLeaseToken,
@@ -77,7 +99,31 @@ export const installPersonalSkill: RiceToolHandler = async ({
     }
   };
   try {
-    if ('operation' in PersonalSkillInstallInputSchema.parse(args)) {
+    if (versionArgs && versionArgs.operation !== 'update') {
+      for (const object of await personalSkillVersionConfirmationFiles({
+        ...call,
+        arguments: versionArgs,
+      }))
+        await readPersonalSkillBytes(
+          input.storageRoot,
+          object,
+          personalSkillLimits.archiveBytes,
+          input.signal,
+        );
+      input.signal?.throwIfAborted();
+      const result = await personalSkillVersionFromChat({
+        ...call,
+        arguments: versionArgs,
+      });
+      return {
+        modelContent: JSON.stringify(result),
+        summary:
+          'status' in result && result.status === 'applied'
+            ? '技能版本已变更，下一个任务采用'
+            : '个人技能版本信息',
+      };
+    }
+    if ('operation' in PersonalSkillInstallInputSchema.parse(importArgs)) {
       const canceled = await cancelPersonalSkillPackage(call);
       const cleanupPending = await cleanup().then(
         () => false,
@@ -241,7 +287,14 @@ export const installPersonalSkill: RiceToolHandler = async ({
           );
         }
         if (ready) {
-          if (ready.candidates.length > 1)
+          const targetName =
+            'updateName' in source ? source.updateName : undefined;
+          const choices = versionArgs
+            ? ready.candidates.filter((c) => c.definition?.name === targetName)
+            : ready.candidates;
+          if (versionArgs && choices.length !== 1)
+            throw new PersonalSkillError('source_invalid');
+          if (!versionArgs && ready.candidates.length > 1)
             return {
               modelContent: JSON.stringify({
                 status: 'selection_required',
@@ -258,7 +311,7 @@ export const installPersonalSkill: RiceToolHandler = async ({
               }),
               summary: '发现多个技能，等待选择后安装',
             };
-          const candidate = ready.candidates[0]!;
+          const candidate = choices[0]!;
           result = await installPersonalSkillFromChat(call, {
             originalText: candidate.originalText!,
             definition: candidate.definition!,
@@ -273,13 +326,31 @@ export const installPersonalSkill: RiceToolHandler = async ({
       () => false,
       () => true,
     );
+    if ('operationId' in result)
+      return {
+        modelContent: JSON.stringify({
+          ...result,
+          cleanupPending,
+          note: '展示全部受影响员工及固定来源，结束本轮。等待下一条真人按 confirmationText 明确确认，再传 operationId 与 digest；本轮 ask_user 不构成确认。待确认不是更新成功；仅 applied 表示已变更，新任务采用，当前任务仍使用旧版本。',
+        }),
+        summary:
+          result.status === 'unchanged'
+            ? '来源与当前版本一致，无需更新'
+            : '版本候选已准备，等待确认全部绑定范围',
+      };
     return {
       modelContent: JSON.stringify({
         status: 'installed',
         cleanupPending,
         skill: result,
+        ...('current' in source
+          ? { currentSkill: source.current, receipt: 'original_applied_result' }
+          : {}),
         effectiveFrom: 'next_task',
-        note: '仅绑定本人当前 AI 员工；格式检查通过不代表业务试用通过。可在设置→我的技能停用或卸载。',
+        note:
+          'current' in source
+            ? '这是原安装操作的固定回执，没有重复安装；当前采用版本及状态以 currentSkill 为准。'
+            : '仅绑定本人当前 AI 员工；格式检查通过不代表业务试用通过。可在设置→我的技能停用或卸载。',
       }),
       summary: '个人技能已安装，后续任务可采用',
     };
@@ -313,8 +384,9 @@ export const installPersonalSkill: RiceToolHandler = async ({
     if (error instanceof PersonalSkillError)
       throw rejected(
         {
-          intent_required:
-            '尚未收到明确安装或选择指令。本次未安装；请用户随公开 GitHub 链接或 SKILL.md / ZIP 说明“请安装我上传的技能包”，或在下一条消息明确选择候选名称并安装。阅读、评价或临时使用不代表安装。',
+          intent_required: versionArgs
+            ? '需要用户直接明确目标技能、更新来源或回退版本。版本候选必须在下一条真人消息中按展示的确认文字确认全部绑定范围；引用、临时使用、本轮询问和泛泛同意不算授权。'
+            : '尚未收到明确安装或选择指令。本次未安装；请用户随公开 GitHub 链接或 SKILL.md / ZIP 说明“请安装我上传的技能包”，或在下一条消息明确选择候选名称并安装。阅读、评价或临时使用不代表安装。',
           source_invalid:
             '技能文件或包资源不完整或校验失败，本次未安装。SKILL.md 需为有效 UTF-8（不超过 256 KiB）；ZIP 不超过 8 MB，资源需在 references、assets 或 scripts 内。',
           name_conflict:
@@ -363,3 +435,5 @@ function resourceMediaType(path: string) {
     )[extension ?? ''] ?? 'application/octet-stream'
   );
 }
+
+export const versionPersonalSkill = installPersonalSkill;

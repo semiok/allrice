@@ -3,6 +3,7 @@ import {
   PersonalSkillError,
   listPersonalSkills,
   managePersonalSkill,
+  personalSkillHistory,
 } from '@allrice/database';
 import { UuidSchema } from '@allrice/contracts';
 import { getRequestContext } from '../../../../lib/identity/session';
@@ -19,11 +20,27 @@ export async function GET(request: Request) {
     const workspaceId = UuidSchema.parse(
       new URL(request.url).searchParams.get('workspaceId'),
     );
+    const installationId = new URL(request.url).searchParams.get(
+      'installationId',
+    );
+    if (installationId)
+      return Response.json(
+        await personalSkillHistory(
+          { ...context, workspaceId },
+          UuidSchema.parse(installationId),
+        ),
+        { headers },
+      );
     return Response.json(
       { skills: await listPersonalSkills({ ...context, workspaceId }) },
       { headers },
     );
   } catch (error) {
+    if (error instanceof PersonalSkillError)
+      return Response.json(
+        { message: '技能版本不存在或当前不可访问。' },
+        { status: 404, headers },
+      );
     return employeeHubErrorResponse(error);
   }
 }

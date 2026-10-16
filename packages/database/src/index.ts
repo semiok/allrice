@@ -225,3 +225,4 @@ export * from './reference-processing.ts';
 export * from './reference-runtime.ts';
 
 export * from './employees/personal-skills.ts';
+export * from './employees/personal-skill-versions.ts';
