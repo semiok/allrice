@@ -22,6 +22,7 @@ import {
   assertExperienceReadPins,
 } from './experience-adoption.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { experienceSkillsMatchRun } from './experience-skill-dependencies.ts';
 
 type Tx = postgres.TransactionSql;
 export type ExperienceRunScope = {
@@ -85,11 +86,17 @@ async function memoriesForPins(
   tx: Tx,
   who: ContentIdentity,
   pins: ExperienceReadPin[],
+  runSkills: unknown,
 ) {
   const memories = [];
   for (const pin of pins) {
     const m = await readPrivateExperience(tx, who, pin.id);
     if (runtimePolicyDigest(pin) !== runtimePolicyDigest(m.pin))
+      throw new ExperienceError('source_changed');
+    if (
+      m.proof.validation.kind === 'independent_skill_case' &&
+      !experienceSkillsMatchRun(m.proof.validation.dependencies, runSkills)
+    )
       throw new ExperienceError('source_changed');
     memories.push({
       id: pin.id,
@@ -188,7 +195,12 @@ export async function prepareRunExperiences(
       await tx`select experience_reads,experience_prepared_at,experience_action_receipt from allrice_employee_runs where run_id=${scope.runId}`;
     if (fresh!.experience_prepared_at) {
       const pins = ExperienceReadPinsSchema.parse(fresh!.experience_reads);
-      const memories = await memoriesForPins(tx, who, pins);
+      const memories = await memoriesForPins(
+        tx,
+        who,
+        pins,
+        run.execution_snapshot?.personalSkills,
+      );
       await assertExperienceWorker(tx, scope, worker);
       return {
         memories,
@@ -250,6 +262,11 @@ export async function prepareRunExperiences(
       try {
         const m = await readPrivateExperience(tx, who, row.id);
         if (
+          (m.proof.validation.kind === 'independent_skill_case' &&
+            !experienceSkillsMatchRun(
+              m.proof.validation.dependencies,
+              run.execution_snapshot?.personalSkills,
+            )) ||
           !experienceAppliesToRequest(
             m.proof.rule,
             run.current_request ?? '',
@@ -269,7 +286,12 @@ export async function prepareRunExperiences(
     if (pins.length)
       await tx`update allrice_memories set recall_count=recall_count+1,last_recalled_at=clock_timestamp()
       where id in ${tx(pins.map((p) => p.id))}`;
-    const memories = await memoriesForPins(tx, who, pins);
+    const memories = await memoriesForPins(
+      tx,
+      who,
+      pins,
+      run.execution_snapshot?.personalSkills,
+    );
     await assertExperienceWorker(tx, scope, worker);
     return { memories, receipt };
   });
@@ -290,11 +312,16 @@ export async function searchRunExperiences(input: {
       workspaceId: input.workspaceId,
     };
     const [row] =
-      await tx`select experience_reads from allrice_employee_runs where run_id=${input.runId}
+      await tx`select experience_reads,execution_snapshot from allrice_employee_runs where run_id=${input.runId}
       and organization_id=${input.organizationId} and workspace_id=${input.workspaceId} and owner_id=${input.ownerId}`;
     if (!row) return [];
     const pins = ExperienceReadPinsSchema.parse(row.experience_reads);
     await assertExperienceReadPins(who, pins, tx);
-    return memoriesForPins(tx, who, pins);
+    return memoriesForPins(
+      tx,
+      who,
+      pins,
+      row.execution_snapshot?.personalSkills,
+    );
   });
 }

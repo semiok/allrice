@@ -23,6 +23,7 @@ import { PersonalSkillError } from './employees/personal-skills.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { embedWorkspaceText } from './workspace/memory-recall.ts';
 import { classifyExperienceFeedback } from './experience-feedback.ts';
+import { assertExperienceSkillsCurrent } from './experience-skill-dependencies.ts';
 
 type Tx = postgres.TransactionSql;
 type Sql = Tx | ReturnType<typeof getDatabase>;
@@ -89,13 +90,9 @@ export async function syncExperienceAdoptions() {
             draft.sourceIds.includes(s.id),
           );
           const rule = supportedExperienceRule(draft);
-          // First closure deliberately excludes Skill-dependent business rules.
-          // A loaded Skill must have its own exact-version joint proof (PR3b2).
           if (
             !rule ||
-            sources.some(
-              (s) => s.evidence.skills.length || s.evidence.truncated,
-            ) ||
+            sources.some((s) => s.evidence.truncated) ||
             sources.length !== draft.sourceIds.length
           ) {
             plan.push({
@@ -117,30 +114,41 @@ export async function syncExperienceAdoptions() {
             continue;
           }
           let validation: ExperienceAdoptionProof['validation'] | null = null;
-          if (rule.kind === 'attendance_groups')
-            validation = await readPassedExperienceProof(
-              tx,
-              source,
+          try {
+            await readExperienceValidationSource(tx, row.id, draftIndex);
+            if (rule.kind === 'attendance_groups')
+              validation = await readPassedExperienceProof(
+                tx,
+                source,
+                draftIndex,
+              );
+            else if (
+              sources.every((s) => s.evidence.skills.length === 0) &&
+              !o.currentRules.profile.expressionStyle &&
+              !o.currentRules.profile.workStyle &&
+              !o.currentRules.sources.some((s) => s.body) &&
+              sources.every(
+                (s) =>
+                  classifyExperienceFeedback(s.excerpt) === 'explicit_feedback',
+              ) &&
+              supportsDirectReportPreference(
+                rule.style,
+                sources.map((s) => s.excerpt),
+              )
+            ) {
+              validation = {
+                kind: 'direct_preference',
+                evaluator: 'report-style-v1',
+                evidenceDigest: runtimePolicyDigest(sources),
+              };
+            }
+          } catch (e) {
+            if (!experienceUnavailable(e)) throw e;
+            plan.push({
               draftIndex,
-            );
-          else if (
-            !o.currentRules.profile.expressionStyle &&
-            !o.currentRules.profile.workStyle &&
-            !o.currentRules.sources.some((s) => s.body) &&
-            sources.every(
-              (s) =>
-                classifyExperienceFeedback(s.excerpt) === 'explicit_feedback',
-            ) &&
-            supportsDirectReportPreference(
-              rule.style,
-              sources.map((s) => s.excerpt),
-            )
-          ) {
-            validation = {
-              kind: 'direct_preference',
-              evaluator: 'report-style-v1',
-              evidenceDigest: runtimePolicyDigest(sources),
-            };
+              reason: '此草稿的来源或技能依赖已失效，未采用。',
+            });
+            continue;
           }
           if (!validation) {
             if (rule.kind === 'attendance_groups') {
@@ -262,6 +270,7 @@ export async function readPrivateExperience(
   const source = await readExperienceValidationSource(
     sql as Tx,
     proof.occurrenceId,
+    proof.draftIndex,
   );
   const { occurrence: o, receipt } = source,
     draft = receipt.output.drafts[proof.draftIndex];
@@ -281,6 +290,23 @@ export async function readPrivateExperience(
     contentFor(draft) !== row.content
   )
     return deny();
+  if (proof.validation.kind === 'independent_skill_case') {
+    await assertExperienceSkillsCurrent(
+      sql,
+      who,
+      proof.validation.dependencies,
+    );
+    const checked = await readPassedExperienceProof(
+      sql as Tx,
+      source,
+      proof.draftIndex,
+    );
+    if (
+      !checked ||
+      runtimePolicyDigest(checked) !== runtimePolicyDigest(proof.validation)
+    )
+      return deny();
+  }
   const pin: ExperienceReadPin = {
     id,
     revision: row.revision,

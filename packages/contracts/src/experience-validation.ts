@@ -1,6 +1,14 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 
+export const ExperienceSkillValidationSchema = z
+  .object({
+    snapshotChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    loadedPinsChecksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    loadedVersionIds: z.array(UuidSchema).min(1).max(8),
+  })
+  .strict();
+
 export const experienceRosterCase = {
   id: 'attendance-roster-v1' as const,
   version: 1,
@@ -79,10 +87,12 @@ export const ExperienceValidationAssertionSchema = z
       'missing_information_inferred',
       'execution_failed',
       'authority_changed',
+      'skill_load_unverified',
     ]),
     checks: z
       .array(z.object({ id: z.string(), passed: z.boolean() }).strict())
       .max(4),
+    skillValidation: ExperienceSkillValidationSchema.optional(),
   })
   .strict();
 export type ExperienceValidationAssertion = z.infer<

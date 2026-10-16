@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
+import { PersonalSkillSnapshotSchema } from './personal-skills.ts';
+import { ExperienceSkillValidationSchema } from './experience-validation.ts';
 
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 
@@ -29,6 +31,16 @@ export const ExperienceAdoptionProofSchema = z
     sourceDigest: Digest,
     rule: SupportedExperienceRuleSchema,
     validation: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('independent_skill_case'),
+          testId: UuidSchema,
+          caseId: z.literal('attendance-roster-v1'),
+          caseDigest: Digest,
+          dependencies: PersonalSkillSnapshotSchema,
+          skillValidation: ExperienceSkillValidationSchema,
+        })
+        .strict(),
       z
         .object({
           kind: z.literal('independent_case'),

@@ -1,3 +1,5 @@
+import { experienceSkillFixture } from './experience-skill.fixture.ts';
+import { freezePersonalSkills } from './employees/personal-skills.ts';
 import {
   syncExperienceAdoptions,
   readPrivateExperience,
@@ -37,6 +39,7 @@ import {
 import {
   RouteDecisionSchema,
   type PersonalSkillPin,
+  type HarnessEvent,
   resolveAssistantSubscriptionSnapshot,
 } from '@allrice/contracts';
 import type * as Client from './core/client.ts';
@@ -115,19 +118,15 @@ async function source(
   );
   let pin: PersonalSkillPin | undefined;
   if (withSkill) {
-    pin = {
+    const skill = experienceSkillFixture({
       organizationId: f.org,
       ownerId: f.user,
       instanceId: instance.id,
-      installationId: randomUUID(),
-      versionId: randomUUID(),
-      bindingId: randomUUID(),
-      bindingEpoch: 1,
-      definitionChecksum: 'sha256:' + 'a'.repeat(64),
-    };
+    });
+    pin = skill.pin;
     await db.begin(async (tx) => {
-      await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id) values(${pin!.installationId},${f.org},${f.user},'source-method','installed',${pin!.versionId})`;
-      await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum) values(${pin!.versionId},${f.org},${f.user},${pin!.installationId},1,'{}','Synthetic source','{}',${pin!.definitionChecksum})`;
+      await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id) values(${pin!.installationId},${f.org},${f.user},${skill.definition.name},'installed',${pin!.versionId})`;
+      await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum) values(${pin!.versionId},${f.org},${f.user},${pin!.installationId},1,'{}',${skill.definition.content},${tx.json(skill.definition)},${pin!.definitionChecksum})`;
       await tx`insert into allrice_personal_skill_bindings(id,organization_id,workspace_id,owner_id,instance_id,installation_id,enabled,epoch) values(${pin!.bindingId},${f.org},${f.workspace},${f.user},${instance.id},${pin!.installationId},true,1)`;
     });
   }
@@ -380,8 +379,12 @@ suite(
         await admin.unsafe(`drop schema ${schema} cascade`);
       await admin?.end({ timeout: 5 });
     });
-    async function validationFixture(attendance = true, enable = true) {
-      const f = await leased(false, false, attendance, true),
+    async function validationFixture(
+      attendance = true,
+      enable = true,
+      withSkill = false,
+    ) {
+      const f = await leased(withSkill, false, attendance, true),
         output = await proof(f);
       if (attendance)
         Object.assign(output.drafts[0]!, {
@@ -408,6 +411,7 @@ suite(
         Awaited<ReturnType<typeof claimNextPlatformEmployeeTestRun>>
       >,
       answer: unknown,
+      events: HarnessEvent[] = [],
     ) {
       const x = test.experienceCandidate!;
       const snapshot = resolveAssistantSubscriptionSnapshot({
@@ -428,7 +432,7 @@ suite(
         model: x.modelSnapshot.model,
         threadId: null,
         usage: { inputTokens: 100, outputTokens: 120, cachedInputTokens: 0 },
-        events: [],
+        events,
         error: null,
         modelExecution: {
           dispatched: true,
@@ -497,13 +501,44 @@ suite(
         db`update allrice_automation_runs set experience_validation_plan=null where id=${f.occurrence.id}`,
       ).rejects.toThrow('immutable');
     });
-    async function adoptedFixture() {
-      const f = await validationFixture();
+    function skillEvent(
+      test: NonNullable<
+        Awaited<ReturnType<typeof claimNextPlatformEmployeeTestRun>>
+      >,
+    ): HarnessEvent {
+      return {
+        schemaVersion: 1,
+        harness: 'dsh',
+        generation: 0,
+        attempt: test.previewExecution.jobAttempt,
+        order: 1,
+        threadId: 'synthetic',
+        turnId: 'synthetic',
+        sessionId: null,
+        messageId: null,
+        internalTask: { kind: 'experience_validation', occurrenceId: test.id },
+        type: 'tool.completed',
+        toolCallId: 'synthetic-skill-load',
+        name: 'skill',
+        label: 'Skill',
+        source: 'harness',
+        sourcePayload: {
+          skillStatus: 'loaded',
+          personalSkill: test.experienceCandidate!.personalSkills!.skills[0],
+        },
+      };
+    }
+    async function adoptedFixture(withSkill = false) {
+      const f = await validationFixture(true, true, withSkill);
       await syncExperienceValidations();
       const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
       await completePlatformEmployeeTestRun(
         test.id,
-        await validationReceipt(test, attendanceAnswer),
+        await validationReceipt(
+          test,
+          attendanceAnswer,
+          withSkill ? [skillEvent(test)] : [],
+        ),
       );
       await updateExperiencePolicy(f.reviewer, f.org, {
         expectedRevision: (await readExperiencePolicy(f.org)).revision,
@@ -530,6 +565,7 @@ suite(
       f: Awaited<ReturnType<typeof adoptedFixture>>,
       text: string,
       sessionId?: string,
+      includeSkills = true,
     ) {
       const session = sessionId
         ? { id: sessionId }
@@ -544,6 +580,9 @@ suite(
         employeeId: f.frozen.occurrence.employeeId,
         employeeVersionId: f.instance.source.employeeVersionId,
       });
+      const skills = await freezePersonalSkills(f.owner, f.instance, {
+        nativeSkills: [],
+      });
       const runId = randomUUID(),
         userMessage = randomUUID(),
         assistant = randomUUID();
@@ -553,10 +592,10 @@ suite(
       await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
         values(${runId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
       await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,session_id,employee_assignment_id,employee_version_id,
-        user_message_id,assistant_message_id,status,provider_snapshot,prompt_snapshot,execution_snapshot)
+        user_message_id,assistant_message_id,status,provider_snapshot,prompt_snapshot,execution_snapshot,native_skills)
         values(${runId},${f.org},${f.workspace},${f.user},${session.id},${f.instance.assignmentId},${f.instance.source.employeeVersionId},
         ${userMessage},${assistant},'running','{}',${db.json({ userRequest: text, memories: [], conversation: [], systemPrompt: 'Synthetic' })},
-        ${db.json({ instance: f.instance, content })})`;
+        ${db.json({ instance: f.instance, content, personalSkills: includeSkills ? skills.personalSkills : undefined })},${db.json(includeSkills ? skills.nativeSkills : [])})`;
       const worker = {
         jobId: randomUUID(),
         workerId: randomUUID(),
@@ -574,6 +613,312 @@ suite(
         worker,
       };
     }
+    async function changeSkill(
+      f: Awaited<ReturnType<typeof validationFixture>>,
+      change: string,
+    ) {
+      if (change === 'version') {
+        const versionId = randomUUID();
+        await db`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
+          select ${versionId},organization_id,owner_id,installation_id,2,source,original_text,definition,definition_checksum from allrice_personal_skill_versions where id=${f.pin!.versionId}`;
+        await db`update allrice_personal_skill_installations set current_version_id=${versionId},revision=revision+1 where id=${f.pin!.installationId}`;
+      } else if (change === 'uninstall') {
+        await db`update allrice_personal_skill_installations set state='uninstalled' where id=${f.pin!.installationId}`;
+      } else {
+        await db`update allrice_personal_skill_bindings set enabled=${change !== 'disable'},epoch=epoch+1 where id=${f.pin!.bindingId}`;
+      }
+    }
+    it('tests the exact loaded Skill alongside the draft, adopts it and requires matching frozen pins in each new Run', async () => {
+      const f = await adoptedFixture(true);
+      expect(f.memory.adoption_proof.validation).toMatchObject({
+        kind: 'independent_skill_case',
+        dependencies: { skills: [f.pin] },
+        skillValidation: { loadedVersionIds: [f.pin!.versionId] },
+      });
+      const scope = await experienceRun(
+        f,
+        '请核对名单的到场和未到人数，分项列出。',
+      );
+      const adopted = await prepareRunExperiences(scope, scope.worker);
+      expect(adopted.memories.map((m) => m.id)).toEqual([f.memory.id]);
+      const runtime = (await prepareEmployeeContentContext(scope))!;
+      await assertEmployeeContentContext(scope, runtime.generationId);
+      await db`update allrice_employee_runs set status='succeeded',completed_at=clock_timestamp() where run_id=${scope.runId}`;
+
+      const old = await experienceRun(
+        f,
+        '请核对名单的到场和未到人数，分项列出。',
+        undefined,
+        false,
+      );
+      expect((await prepareRunExperiences(old, old.worker)).memories).toEqual(
+        [],
+      );
+      await expect(
+        db.begin((tx) => readPrivateExperience(tx, f.neighbor, f.memory.id)),
+      ).rejects.toThrow();
+      await changeSkill(f, 'version');
+      await expect(
+        assertEmployeeContentContext(scope, runtime.generationId),
+      ).rejects.toThrow();
+      await expect(
+        db.begin((tx) => readPrivateExperience(tx, f.owner, f.memory.id)),
+      ).rejects.toThrow('source_changed');
+      await expect(searchRunExperiences(scope)).rejects.toThrow(
+        'source_changed',
+      );
+      const next = await experienceRun(
+        f,
+        '请核对名单的到场和未到人数，分项列出。',
+        scope.sessionId,
+      );
+      expect((await prepareRunExperiences(next, next.worker)).memories).toEqual(
+        [],
+      );
+      const rotated = (await prepareEmployeeContentContext(next))!;
+      expect(rotated.generationId).not.toBe(runtime.generationId);
+      expect(rotated.allowedMessageIds).not.toBeNull();
+
+      expect(
+        (
+          await db`select count(*) from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`
+        )[0]!.count,
+      ).toBe('1');
+    });
+    it.each([
+      'missing',
+      'wrong-version',
+      'wrong-task',
+      'wrong-attempt',
+      'failed',
+      'registered',
+    ])(
+      'refuses correct answers without exact successful native Skill loading: %s',
+      async (kind) => {
+        const f = await validationFixture(true, true, true);
+        await syncExperienceValidations();
+        const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+        expect(test.experienceCandidate!.nativeSkills).toHaveLength(1);
+        expect(
+          test.previewExecution.policySnapshot.grants.map((g) => g.action),
+        ).toEqual(['job:execute']);
+        const event = skillEvent(test);
+        if (kind === 'wrong-version')
+          event.sourcePayload!.personalSkill = {
+            ...f.pin,
+            versionId: randomUUID(),
+          };
+        if (kind === 'wrong-task')
+          event.internalTask!.occurrenceId = randomUUID();
+        if (kind === 'wrong-attempt') event.attempt++;
+        if (kind === 'failed') event.type = 'tool.failed';
+        if (kind === 'registered')
+          event.sourcePayload!.skillStatus = 'registered';
+        await completePlatformEmployeeTestRun(
+          test.id,
+          await validationReceipt(
+            test,
+            attendanceAnswer,
+            kind === 'missing' ? [] : [event],
+          ),
+        );
+        const [stored] =
+          await db`select experience_assertion from allrice_platform_employee_test_runs where id=${test.id}`;
+        expect(stored!.experience_assertion).toMatchObject({
+          passed: false,
+          reason: 'skill_load_unverified',
+        });
+        await updateExperiencePolicy(f.reviewer, f.org, {
+          expectedRevision: (await readExperiencePolicy(f.org)).revision,
+          frequency: 'daily',
+          timezone: 'Asia/Shanghai',
+          time: '03:00',
+          weekday: 1,
+          monthDay: 1,
+          adoptionMode: 'supported_private',
+        });
+        await syncExperienceAdoptions();
+        expect(
+          await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+        ).toEqual([]);
+      },
+    );
+    it.each(['version', 'disable', 'epoch', 'uninstall'])(
+      'invalidates a running joint test when its Skill changes: %s',
+      async (change) => {
+        const f = await validationFixture(true, true, true);
+        await syncExperienceValidations();
+        const workerId = randomUUID();
+        const test = (await claimNextPlatformEmployeeTestRun(workerId))!;
+        const event = skillEvent(test);
+        await changeSkill(f, change);
+        await expect(
+          experienceValidationStillCurrent(test.id, {
+            ...test.previewExecution,
+            workerId,
+          }),
+        ).rejects.toThrow();
+        const result = await validationReceipt(test, attendanceAnswer, [event]);
+        await completePlatformEmployeeTestRun(test.id, result);
+        await completePlatformEmployeeTestRun(test.id, result);
+        await syncExperienceValidations();
+        const [terminal] =
+          await db`select t.status test_state,r.state run_state,j.status job_state
+          from allrice_platform_employee_test_runs t join allrice_runs r on r.id=t.experience_run_id
+          join allrice_jobs j on j.run_id=r.id where t.id=${test.id}`;
+        expect(
+          Object.values(terminal!).every((s) =>
+            ['succeeded', 'failed', 'canceled'].includes(s as string),
+          ),
+        ).toBe(true);
+        const ledger =
+          await db`select d.status,l.input_tokens,l.output_tokens from allrice_route_decisions d join allrice_model_usage_ledger l on l.route_decision_id=d.id where d.run_id=${test.previewExecution.runId}`;
+        expect(ledger).toHaveLength(1);
+        expect(ledger[0]).toMatchObject({ status: 'succeeded' });
+        expect(Number(ledger[0]!.input_tokens)).toBe(100);
+        expect(Number(ledger[0]!.output_tokens)).toBe(120);
+        expect(
+          await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+        ).toHaveLength(1);
+        expect(
+          (
+            await db`select experience_assertion from allrice_platform_employee_test_runs where id=${test.id}`
+          )[0]!.experience_assertion,
+        ).toMatchObject({ passed: false, reason: 'authority_changed' });
+      },
+    );
+    it('leaves an independent draft usable when another source in the same batch loses its Skill', async () => {
+      const f = await source(true, true, true, true);
+      const session = await createChatSession(f.owner, {
+        workspaceId: f.workspace,
+        employeeAssignmentId: f.instance.assignmentId,
+        employeeInstanceId: f.instance.id,
+        title: 'Synthetic independent source',
+      });
+      const runId = randomUUID(),
+        message = randomUUID(),
+        assistant = randomUUID();
+      await db`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content,status)
+        values(${message},${f.org},${f.workspace},${f.user},${session.id},'user','{"text":"我已核对，到场和未到人数与原始名单一致，分项列出很清晰。","citations":[]}','completed'),
+        (${assistant},${f.org},${f.workspace},${f.user},${session.id},'assistant','{"text":"收到","citations":[]}','completed')`;
+      await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${runId},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
+      await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,session_id,employee_assignment_id,employee_version_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,execution_snapshot,experience_capture_state)
+        select ${runId},organization_id,workspace_id,owner_id,${session.id},employee_assignment_id,employee_version_id,${message},${assistant},'succeeded',clock_timestamp(),provider_snapshot,prompt_snapshot,${db.json({ instance: f.instance })},'pending'
+        from allrice_employee_runs where run_id=${f.sourceRunId}`;
+      await collectPendingExperienceEvidence({ database: db });
+      const independent = (await createExperienceStore().list(f.owner)).find(
+        (c) => c.source?.runId === runId,
+      )!;
+      expect(independent).toBeTruthy();
+      await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
+      await claimDueAutomations();
+      const [occurrence] =
+        await db`select * from allrice_automation_runs where automation_id=${f.rule.id}`;
+      const workerId = randomUUID(),
+        job = (await claimNextJob(workerId, 120000, {
+          allowBackground: true,
+        }))!;
+      const lease = { workerId, jobId: job.id, leaseToken: job.lease!.token };
+      await startClaimedJob(workerId, job.id, job.lease!.token);
+      const combined = {
+        ...f,
+        current: null,
+        occurrence: occurrence!,
+        job,
+        lease,
+        frozen: await getExperienceExecution(occurrence!.run_id),
+      };
+      const output = await proof(combined);
+      const draft = {
+        ...output.drafts[0]!,
+        rule: '统计到场情况时，依据原始名单分别核对到场和未到人数，并在结果中分项列出。',
+        applicability:
+          '适用于有原始名单且到场状态明确的人员统计任务，不适用于缺少名单或状态不明时推算人数。',
+      };
+      output.drafts = [{ ...draft, sourceIds: [independent.id] }, draft];
+      await completeJob({ ...lease, result: output });
+      await syncAutomationRuns();
+      await db`update allrice_personal_skill_bindings set enabled=false,epoch=epoch+1 where id=${f.pin!.bindingId}`;
+      await updateExperiencePolicy(f.reviewer, f.org, {
+        expectedRevision: (await readExperiencePolicy(f.org)).revision,
+        frequency: 'daily',
+        timezone: 'Asia/Shanghai',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+        validationMode: 'supported_cases',
+        adoptionMode: 'supported_private',
+      });
+      await syncExperienceValidations();
+      const tests =
+        await db`select experience_binding from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${occurrence!.id}`;
+      expect(tests).toHaveLength(1);
+      expect(tests[0]!.experience_binding).toMatchObject({
+        schemaVersion: 1,
+        draftIndex: 0,
+      });
+      const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+      await completePlatformEmployeeTestRun(
+        test.id,
+        await validationReceipt(test, attendanceAnswer),
+      );
+      await syncExperienceAdoptions();
+      const memories =
+        await db`select memory_id,adoption_proof from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`;
+      expect(memories).toHaveLength(1);
+      expect(memories[0]!.adoption_proof.draftIndex).toBe(0);
+      await expect(
+        db.begin((tx) =>
+          readPrivateExperience(tx, f.owner, memories[0]!.memory_id),
+        ),
+      ).resolves.toBeTruthy();
+    });
+    it('rechecks current Skill authority before claiming a queued test', async () => {
+      const f = await validationFixture(true, true, true);
+      await syncExperienceValidations();
+      await changeSkill(f, 'version');
+      expect(await claimNextPlatformEmployeeTestRun(randomUUID())).toBeNull();
+      const [row] =
+        await db`select status from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`;
+      expect(row!.status).toBe('failed');
+    });
+    it.each(['disable', 'epoch', 'uninstall'])(
+      'revokes adopted joint experience on %s without rewriting old proof',
+      async (change) => {
+        const f = await adoptedFixture(true);
+        const scope = await experienceRun(
+          f,
+          '请核对名单的到场和未到人数，分项列出。',
+        );
+        await prepareRunExperiences(scope, scope.worker);
+        const [run] =
+          await db`select experience_reads from allrice_employee_runs where run_id=${scope.runId}`;
+        const before = f.memory.adoption_proof;
+        await changeSkill(f, change);
+        await expect(
+          db.begin((tx) => readPrivateExperience(tx, f.owner, f.memory.id)),
+        ).rejects.toThrow();
+        await expect(
+          assertExperienceReadPins(f.owner, run!.experience_reads, db),
+        ).rejects.toThrow();
+        expect(
+          (
+            await db`select adoption_proof from allrice_experience_reviews where memory_id=${f.memory.id}`
+          )[0]!.adoption_proof,
+        ).toEqual(before);
+      },
+    );
+    it('does not start a joint test for a historical version that changed before scheduling', async () => {
+      const f = await validationFixture(true, true, true);
+      await changeSkill(f, 'version');
+      await syncExperienceValidations();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toEqual([]);
+      expect(
+        (await listExperienceDrafts(f.owner))[0]!.validationNotes.join(' '),
+      ).toContain('技能版本已变化');
+    });
     it('adopts the existing independent proof once, without forging human review or rerunning validation', async () => {
       const f = await adoptedFixture();
       expect(f.memory.reviewed_by).toBeNull();

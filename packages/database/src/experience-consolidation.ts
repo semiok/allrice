@@ -454,6 +454,7 @@ async function assertCurrent(
   tx: Tx,
   occurrence: ExperienceOccurrence,
   executing = true,
+  options: { sourceIds?: string[]; checkSkills?: boolean } = {},
 ) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
   if (executing) {
@@ -483,9 +484,12 @@ async function assertCurrent(
       runtimePolicyDigest(occurrence.currentRules)
   )
     return deny();
-  for (const source of [...occurrence.sources].sort((a, b) =>
-    a.id.localeCompare(b.id),
-  )) {
+  const sources = options.sourceIds
+    ? occurrence.sources.filter((s) => options.sourceIds!.includes(s.id))
+    : occurrence.sources;
+  if (options.sourceIds && sources.length !== options.sourceIds.length)
+    return deny();
+  for (const source of [...sources].sort((a, b) => a.id.localeCompare(b.id))) {
     const [row] =
       await tx`select e.source_excerpt,e.source_digest,e.evidence,m.lifecycle_state,m.archived_at,
       msg.content->>'text' original_text from allrice_experience_reviews e
@@ -510,7 +514,9 @@ async function assertCurrent(
       return deny();
     // Evidence may contain two Runs with different versions of up to 8 Skills.
     // Check each historical pin instead of treating all 16 as one Run snapshot.
-    for (const evidence of source.evidence.skills) {
+    for (const evidence of options.checkSkills === false
+      ? []
+      : source.evidence.skills) {
       const index = {
         schemaVersion: 1 as const,
         instanceId: occurrence.instanceId,
@@ -527,9 +533,25 @@ async function assertCurrent(
 
 /** Fixed-draft validation does not rewrite the original collection policy or
  * receipt. Recheck original sources and rule dependencies under their locks. */
-export async function readExperienceValidationSource(tx: Tx, id: string) {
+export async function readExperienceValidationSource(
+  tx: Tx,
+  id: string,
+  draftIndex?: number,
+) {
   const { row, occurrence } = await loadOccurrence(tx, id);
-  await assertCurrent(tx, occurrence, false);
+  if (!row.experience_receipt) return deny();
+  const receipt = ExperienceReceiptSchema.parse(row.experience_receipt);
+  const draft =
+    draftIndex === undefined ? undefined : receipt.output.drafts[draftIndex];
+  if (draftIndex !== undefined && !draft) return deny();
+  // Planning reads provenance only. Executing/consuming a draft must pass its
+  // index so an unrelated Skill's revocation cannot disable this draft.
+  await assertCurrent(
+    tx,
+    occurrence,
+    false,
+    draft ? { sourceIds: draft.sourceIds } : { checkSkills: false },
+  );
   const current = await resolveEmployeeSessionInstance(
     identity(occurrence),
     occurrence.assignmentId,
@@ -544,7 +566,6 @@ export async function readExperienceValidationSource(tx: Tx, id: string) {
     !row.experience_receipt
   )
     return deny();
-  const receipt = ExperienceReceiptSchema.parse(row.experience_receipt);
   const execution = ExperienceExecutionSchema.parse(row.experience_execution);
   if (
     receipt.runId !== row.run_id ||
@@ -793,7 +814,9 @@ export async function listExperienceDrafts(
         row.experience_occurrence,
       );
       try {
-        await assertCurrent(tx, occurrence, false);
+        await assertCurrent(tx, occurrence, false, {
+          checkSkills: !row.experience_receipt,
+        });
       } catch (error) {
         if (
           error instanceof ExperienceError ||
