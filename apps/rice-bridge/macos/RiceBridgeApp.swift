@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Darwin
 
 // Presentation and child ownership only. Auth, policy, transport and execution
 // remain in RiceBridgeCore. No loopback control server and no shell execution.
@@ -11,12 +12,26 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let errors = Pipe()
     private var buffer = Data()
     private let readQueue = DispatchQueue(label: "xyz.bplabs.rice-bridge.protocol")
+    private let writeQueue = DispatchQueue(label: "xyz.bplabs.rice-bridge.input")
+    private var pendingWrites = 0
     private var state: [String: Any] = [:]
     private var sequence = -1
     private var callbacks: [String: ([String: Any]) -> Void] = [:]
     private var window: NSWindow?
     private var detail: NSTextView?
     private var quitting = false
+    private var quitRequested = false
+    private var quitRecovery = false
+    private var quitFailureCode: String?
+    private var forceClosing = false
+    private var quitWatchdog: DispatchWorkItem?
+    private var quitRequestId: String?
+    private var quitStartedAt: TimeInterval?
+    private var quitClock: Timer?
+    private var stateReceivedAt = ProcessInfo.processInfo.systemUptime
+    // UI wait only: do not infer a stopped tool or discard its journal at this
+    // boundary. Covers the normal 30s VM stop + browser/network close budgets.
+    private let quitWaitSeconds: TimeInterval = 60
     private var protocolFailed = false
     private var coreReady = false
     private var pairing = false
@@ -24,6 +39,9 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var filePicker: (id: String, panel: NSOpenPanel)?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A broken private pipe is a recoverable Core failure, not a reason
+        // for the native host to disappear before explaining what happened.
+        signal(SIGPIPE, SIG_IGN)
         if let bundle = Bundle.main.bundleIdentifier,
            let existing = NSRunningApplication.runningApplications(withBundleIdentifier: bundle).first(where: { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }) {
             existing.activate(options: [.activateIgnoringOtherApps])
@@ -111,14 +129,15 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self.coreReady = false
                 self.pairing = false
                 self.callbacks.removeAll()
-                if self.quitting {
-                    if terminated.terminationReason == .exit && terminated.terminationStatus == 0 {
-                        NSApp.reply(toApplicationShouldTerminate: true)
+                self.quitWatchdog?.cancel()
+                if self.quitRequested {
+                    if self.forceClosing || (terminated.terminationReason == .exit && terminated.terminationStatus == 0) {
+                        // A late clean stop still completes the original quit
+                        // intent, even after AppKit's terminateLater was canceled.
+                        if self.quitting { NSApp.reply(toApplicationShouldTerminate: true) }
+                        else { NSApp.terminate(nil) }
                     } else {
-                        self.quitting = false
-                        self.fail("DESKTOP_STOP_UNCONFIRMED")
-                        NSApp.reply(toApplicationShouldTerminate: false)
-                        self.showError("DESKTOP_STOP_UNCONFIRMED")
+                        self.restoreQuitRecovery("DESKTOP_STOP_UNCONFIRMED")
                     }
                 }
                 else {
@@ -157,7 +176,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         DispatchQueue.main.async {
             self.fail("BRIDGE_PROTOCOL_INVALID")
             // Closing the private input makes core stop through its normal path.
-            try? self.input.fileHandleForWriting.close()
+            self.writeQueue.async { try? self.input.fileHandleForWriting.close() }
         }
     }
 
@@ -168,6 +187,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   let next = object["state"] as? [String: Any] else { return }
             sequence = nextSequence
             coreReady = true
+            stateReceivedAt = ProcessInfo.processInfo.systemUptime
             state = next
             refreshMenu()
         case "response":
@@ -194,16 +214,17 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func send(_ type: String, fields: [String: Any] = [:], completion: (([String: Any]) -> Void)? = nil) {
+    @discardableResult
+    private func send(_ type: String, fields: [String: Any] = [:], timeout: TimeInterval? = nil, completion: (([String: Any]) -> Void)? = nil) -> String? {
         guard process?.isRunning == true else {
             let code = state["errorCode"] as? String ?? "BRIDGE_NOT_RUNNING"
             fail(code)
             completion?(["ok": false, "code": code])
-            return
+            return nil
         }
-        guard callbacks.count < 32 else {
+        guard callbacks.count < 32 && pendingWrites < 32 else {
             completion?(["ok": false, "code": "DESKTOP_BUSY"])
-            return
+            return nil
         }
         let id = UUID().uuidString
         var object = fields
@@ -212,11 +233,33 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let bytes = try JSONSerialization.data(withJSONObject: object)
             guard bytes.count <= 16_384 else { throw NSError(domain: "Bridge", code: 2) }
             if let completion = completion { callbacks[id] = completion }
-            try input.fileHandleForWriting.write(contentsOf: bytes + Data([10]))
+            if let timeout = timeout {
+                DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                    self?.callbacks.removeValue(forKey: id)?(["ok": false, "code": "DESKTOP_RESPONSE_TIMEOUT"])
+                }
+            }
+            pendingWrites += 1
+            // A Core which stops reading stdin must not block AppKit's main
+            // thread and therefore prevent its independent recovery watchdog.
+            writeQueue.async { [weak self] in
+                guard let self = self else { return }
+                let failed: Bool
+                do { try self.input.fileHandleForWriting.write(contentsOf: bytes + Data([10])); failed = false }
+                catch { failed = true }
+                DispatchQueue.main.async {
+                    self.pendingWrites -= 1
+                    if failed {
+                        self.fail("BRIDGE_PIPE_UNAVAILABLE")
+                        self.callbacks.removeValue(forKey: id)?(["ok": false, "code": "BRIDGE_PIPE_UNAVAILABLE"])
+                    }
+                }
+            }
+            return id
         } catch {
             callbacks.removeValue(forKey: id)
             fail("BRIDGE_PIPE_UNAVAILABLE")
             completion?(["ok": false, "code": "BRIDGE_PIPE_UNAVAILABLE"])
+            return nil
         }
     }
 
@@ -238,6 +281,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var title: String {
+        if forceClosing { return "正在结束 Bridge · 保留执行记录…" }
+        if quitRecovery { return "退出未完成 · 可查看原因并恢复" }
         if pairing { return "正在配对并连接…" }
         if !coreReady && state["mode"] as? String != "error" { return "正在启动 Bridge…" }
         switch state["mode"] as? String {
@@ -289,7 +334,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "查看状态…", #selector(showStatus))
         menu.addItem(.separator())
         let paired = state["deviceId"] as? String != nil
-        let busy = !coreReady || process?.isRunning != true || pairing || ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
+        let busy = quitRequested || !coreReady || process?.isRunning != true || pairing || ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
         if !paired { add(menu, "配对设备…", #selector(pairDevice), enabled: !busy) }
         add(menu, "选择文件夹…", #selector(selectWorkspace), enabled: paired && !busy)
         if state["mode"] as? String == "paused" {
@@ -298,7 +343,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if (state["environment"] as? [String: Any])?["browser"] as? String == "unavailable" {
             add(menu, "安装或更新 Chrome…", #selector(installChrome), enabled: !busy)
         }
-        add(menu, "检查更新…", #selector(updateStatus))
+        add(menu, "检查更新…", #selector(updateStatus), enabled: !quitRequested)
         if paired { add(menu, "断开配对…", #selector(revokeDevice), enabled: !busy) }
         // Hold Option while opening the status menu for support/acceptance.
         // Ordinary capability controls live in the tenant's computer settings.
@@ -316,7 +361,11 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        add(menu, "退出 Rice Bridge", #selector(quit), enabled: !quitting)
+        if quitRequested {
+            add(menu, "退出诊断与日志…", #selector(diagnostics))
+            if quitRecovery { add(menu, "退出恢复…", #selector(recoverQuit), enabled: !forceClosing) }
+        }
+        add(menu, "退出 Rice Bridge", #selector(quit), enabled: !quitting && !forceClosing)
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ selector: Selector, enabled: Bool = true) {
@@ -340,6 +389,14 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         default: credential = "凭证：尚未配对或暂不可读取"
         }
         var text = "\(title)\n\n设备：\(label(state["deviceName"], fallback: "未配对"))\n版本：\(label(state["version"], fallback: "—")) · \(label(state["architecture"], fallback: "—"))\n本地工作区：\(workspace)\n\n前台任务：\(count("activeForeground"))\n后台任务：\(count("activeServices"))\n待回传记录：\(count("pendingReceipts"))\n结果待核实：\(count("unknownOperations"))\n\n"
+        if quitRequested {
+            let elapsed = Int(max(0, ProcessInfo.processInfo.systemUptime - (quitStartedAt ?? ProcessInfo.processInfo.systemUptime)))
+            text += "退出阶段：\(stopPhaseLabel)\n已等待：\(elapsed) 秒\n"
+            if quitRecovery {
+                text += "本次等待已结束，尚未确认安全停止。可从菜单打开「退出恢复…」继续等待，或明确选择强制退出并保留记录。\n"
+            } else { text += "等待最多 60 秒后提供恢复入口；不会自动强制终止任务。\n" }
+            text += "以上任务计数为最近一次收到的状态，不能单凭零计数确认已停止。\n\n"
+        }
         text += "\(credential)\n\n配对后自动准备可用能力；需要选择目录或批准具体操作时，会在当前任务中提示。\n暂停会停止本地任务，不会撤销已完成的文件修改。恢复不会自动重启旧服务。\n\n已有终端版请先正常退出，再使用菜单栏版；不要删除配对或执行日志。"
         text += "\n\n独立浏览器：\(state["browserEnabled"] as? Bool == true ? "自动准备已开启" : "已主动暂停")。使用 Chromium 自身沙箱，不是命令的 Linux VM，不读取个人 Chrome。"
         if let environment = state["environment"] as? [String: Any] {
@@ -561,27 +618,60 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func prepareEnvironment() { action("prepare") }
     @objc private func pause() { action("pause") }
     @objc private func resume() { action("resume") }
+    private var stopPhaseLabel: String {
+        let phases = ["control": "等待当前操作收尾", "foreground": "停止前台任务",
+                      "browser": "关闭独立浏览器", "preparation": "停止环境准备",
+                      "heartbeat": "完成连接收尾", "folder_watchers": "停止文件夹监听",
+                      "local_processes": "停止本地服务", "sandbox": "停止本地沙箱",
+                      "receipts": "保存并回传执行记录", "journal": "关闭执行日志"]
+        let phase = (state["shutdown"] as? [String: Any])?["phase"] as? String ?? ""
+        return phases[phase] ?? "等待核心确认（暂未收到阶段信息）"
+    }
+
+    private func nativeExitDiagnostics() -> [String: Any] {
+        // A hung/dead Core must not make diagnosis hang too. Export an explicit
+        // stale snapshot, never raw state (which includes device/workspace data).
+        var result: [String: Any] = ["coreResponse": "unavailable", "source": "native-host",
+            "version": label(state["version"], fallback: "unknown"),
+            "architecture": label(state["architecture"], fallback: "unknown"),
+            "quitRequested": quitRequested, "quitRecovery": quitRecovery,
+            "coreRunning": process?.isRunning == true, "waitLimitMs": 60_000,
+            "lastStateAgeMs": Int(max(0, ProcessInfo.processInfo.systemUptime - stateReceivedAt) * 1000),
+            "stopPhase": stopPhaseLabel]
+        for key in ["activeForeground", "activeServices", "pendingReceipts", "unknownOperations"] {
+            result[key] = max(0, min(1_000_000, state[key] as? Int ?? 0))
+        }
+        if let code = quitFailureCode { result["hostQuitError"] = code }
+        if let code = state["errorCode"] { result["errorCode"] = safeCode(code) }
+        if let start = quitStartedAt { result["elapsedMs"] = Int(max(0, ProcessInfo.processInfo.systemUptime - start) * 1000) }
+        return result
+    }
+
     @objc private func diagnostics() {
-        send("diagnostics") { response in
-            guard response["ok"] as? Bool == true, let data = response["data"] as? [String: Any],
-                  let bytes = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) else { self.showError("BRIDGE_ACTION_FAILED"); return }
-            let alert = NSAlert()
-            alert.messageText = "Bridge 诊断与日志"
-            alert.informativeText = "仅导出版本、状态、聚合计数和有限错误代码，不包含配对码、凭证、文件内容或完整本地路径。"
-            alert.addButton(withTitle: "导出诊断…"); alert.addButton(withTitle: "关闭")
-            let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 260))
-            scroll.hasVerticalScroller = true
-            let text = NSTextView(frame: scroll.bounds)
-            text.string = String(decoding: bytes, as: UTF8.self); text.isEditable = false
-            text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-            scroll.documentView = text; alert.accessoryView = scroll
-            if alert.runModal() == .alertFirstButtonReturn {
-                let panel = NSSavePanel(); panel.nameFieldStringValue = "RiceBridge-diagnostics.json"
-                panel.begin { result in
-                    guard result == .OK, let url = panel.url else { return }
-                    do { try bytes.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
-                    catch { self.showError("DIAGNOSTICS_EXPORT_FAILED") }
-                }
+        send("diagnostics", timeout: 2) { response in
+            let data = response["ok"] as? Bool == true ? response["data"] as? [String: Any] : nil
+            self.presentDiagnostics(data ?? self.nativeExitDiagnostics())
+        }
+    }
+
+    private func presentDiagnostics(_ data: [String: Any]) {
+        guard let bytes = try? JSONSerialization.data(withJSONObject: data, options: [.prettyPrinted, .sortedKeys]) else { self.showError("DIAGNOSTICS_EXPORT_FAILED"); return }
+        let alert = NSAlert()
+        alert.messageText = "Bridge 诊断与日志"
+        alert.informativeText = "仅导出版本、状态、聚合计数和有限错误代码，不包含配对码、凭证、文件内容或完整本地路径。"
+        alert.addButton(withTitle: "导出诊断…"); alert.addButton(withTitle: "关闭")
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 260))
+        scroll.hasVerticalScroller = true
+        let text = NSTextView(frame: scroll.bounds)
+        text.string = String(decoding: bytes, as: UTF8.self); text.isEditable = false
+        text.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        scroll.documentView = text; alert.accessoryView = scroll
+        if alert.runModal() == .alertFirstButtonReturn {
+            let panel = NSSavePanel(); panel.nameFieldStringValue = "RiceBridge-diagnostics.json"
+            panel.begin { result in
+                guard result == .OK, let url = panel.url else { return }
+                do { try bytes.write(to: url, options: .atomic); try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path) }
+                catch { self.showError("DIAGNOSTICS_EXPORT_FAILED") }
             }
         }
     }
@@ -629,13 +719,91 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.informativeText = "\(explanations[code] ?? fallback)\n\n诊断代码：\(code)\n原配对和执行证据不会通过重试或清缓存自动删除。"
         alert.runModal()
     }
-    @objc private func quit() { NSApp.terminate(nil) }
+    private func restoreQuitRecovery(_ code: String) {
+        quitWatchdog?.cancel()
+        quitClock?.invalidate()
+        if let id = quitRequestId { callbacks.removeValue(forKey: id) }
+        quitRequestId = nil
+        let wasWaiting = quitting
+        quitting = false
+        quitRecovery = true
+        quitFailureCode = code
+        fail(code)
+        if wasWaiting { NSApp.reply(toApplicationShouldTerminate: false) }
+        showStatus()
+    }
+
+    @objc private func recoverQuit() {
+        guard !forceClosing else { return }
+        if process?.isRunning != true { NSApp.terminate(nil); return }
+        let alert = NSAlert()
+        alert.messageText = "退出尚未完成"
+        alert.informativeText = "当前阶段：\(stopPhaseLabel)。\n\n可以继续等待同一次安全收尾。强制退出会终止此 Bridge 核心，但不能保证沙箱或工具已经停止，也不会撤销已完成的操作。配对与执行日志会保留；重新打开后需核对未完成的任务。"
+        alert.addButton(withTitle: "继续等待安全退出")
+        alert.addButton(withTitle: "强制退出并保留记录")
+        alert.addButton(withTitle: "返回")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: NSApp.terminate(nil)
+        case .alertSecondButtonReturn: forceQuitOwnedCore()
+        default: break
+        }
+    }
+
+    private func forceQuitOwnedCore() {
+        guard let child = process, child.isRunning else { NSApp.terminate(nil); return }
+        forceClosing = true
+        refreshMenu()
+        child.terminate()
+        // Explicit recovery only. Never kill by name/group, delete the journal,
+        // revoke pairing, or claim remote effects were canceled. Wait for this
+        // exact owned child's termination handler before exiting the host.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak child] in
+            guard let self = self, let child = child, self.process === child, child.isRunning else { return }
+            if Darwin.kill(child.processIdentifier, SIGKILL) != 0 && errno != ESRCH {
+                self.forceClosing = false
+                self.restoreQuitRecovery("DESKTOP_STOP_UNCONFIRMED")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self, weak child] in
+                guard let self = self, let child = child, self.process === child, child.isRunning else { return }
+                self.forceClosing = false
+                self.restoreQuitRecovery("DESKTOP_STOP_UNCONFIRMED")
+            }
+        }
+    }
+
+    @objc private func quit() {
+        if quitRecovery { recoverQuit() }
+        else { NSApp.terminate(nil) }
+    }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard process?.isRunning == true else { return .terminateNow }
+        if forceClosing { quitting = true; return .terminateLater }
         if !quitting {
             quitting = true
+            quitRequested = true
+            quitRecovery = false
+            if quitStartedAt == nil { quitStartedAt = ProcessInfo.processInfo.systemUptime }
             state["mode"] = "stopping"; refreshMenu()
-            send("stop")
+            quitClock?.invalidate()
+            let clock = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.refreshMenu() }
+            RunLoop.main.add(clock, forMode: .common)
+            quitClock = clock
+            let watchdog = DispatchWorkItem { [weak self] in
+                guard let self = self, self.quitting else { return }
+                self.restoreQuitRecovery("DESKTOP_STOP_TIMEOUT")
+            }
+            quitWatchdog = watchdog
+            DispatchQueue.main.asyncAfter(deadline: .now() + quitWaitSeconds, execute: watchdog)
+            quitRequestId = send("stop") { [weak self] response in
+                guard response["ok"] as? Bool != true else { return }
+                // A synchronous pipe/busy failure must return terminateLater
+                // to AppKit before canceling that pending termination request.
+                DispatchQueue.main.async {
+                    guard let self = self, self.quitting else { return }
+                    self.restoreQuitRecovery(self.safeCode(response["code"]))
+                }
+            }
         }
         return .terminateLater
     }

@@ -26,6 +26,7 @@ import {
   type DesktopRequest,
 } from './desktop-protocol.js';
 import { bridgeVersion } from './version.js';
+import { DesktopShutdown } from './desktop-shutdown.js';
 import {
   DesktopUpdater,
   acknowledgeBridgeUpdateReadiness,
@@ -140,9 +141,11 @@ export async function runDesktopController() {
     activeBrowsers: runtime.activeBrowsers ?? 0,
     pendingReceipts: runtime.pendingReceipts,
     unknownOperations: runtime.unknownOperations,
+    shutdown: shutdownState.snapshot(),
   });
   const publish = () =>
     send({ type: 'state', sequence: ++sequence, state: state() });
+  const shutdownState = new DesktopShutdown(publish);
   const reply = (
     request: DesktopRequest,
     ok: boolean,
@@ -265,6 +268,7 @@ export async function runDesktopController() {
         publish();
       },
       onNotice: note,
+      onStopPhase: (phase) => shutdownState.enter(phase),
       chooseWorkspace: () =>
         new Promise<string>((resolve, reject) => {
           if (closing || abort?.signal.aborted)
@@ -468,11 +472,26 @@ export async function runDesktopController() {
     finish = resolve;
   });
   let shutdownPromise: Promise<void> | null = null;
+  let shutdownConfirmed = false;
   const shutdown = (request?: DesktopRequest) => {
-    if (shutdownPromise) return shutdownPromise;
+    if (shutdownPromise) {
+      // Re-observe the same stop. Never start another cleanup or renew its
+      // deadline, and never leave a retry waiting for a reply we discarded.
+      if (request)
+        void shutdownPromise.then(() =>
+          reply(
+            request,
+            shutdownConfirmed,
+            undefined,
+            shutdownConfirmed ? undefined : 'DESKTOP_STOP_UNCONFIRMED',
+          ),
+        );
+      return shutdownPromise;
+    }
     closing = true;
     lifecycle.abort();
     mode = 'stopping';
+    shutdownState.begin();
     publish();
     cancelPicker();
     abort?.abort();
@@ -480,11 +499,14 @@ export async function runDesktopController() {
       try {
         await work;
         await halt();
+        shutdownConfirmed = true;
+        shutdownState.finish(true);
         if (request) reply(request, true);
       } catch (error) {
         errorCode = desktopSafeError(error);
         mode = 'error';
         note(errorCode);
+        shutdownState.finish(false);
         publish();
         if (request) reply(request, false, undefined, errorCode);
         process.exitCode = 1;
@@ -495,7 +517,6 @@ export async function runDesktopController() {
     return shutdownPromise;
   };
   const onInput = (chunk: Buffer) => {
-    if (closing) return;
     buffer = Buffer.concat([buffer, chunk]);
     if (buffer.length > desktopMaximumFrameBytes * 2) {
       errorCode = 'DESKTOP_FRAME_LIMIT';
@@ -528,7 +549,7 @@ export async function runDesktopController() {
       ids.add(request.id);
       if (request.type === 'stop') {
         void shutdown(request);
-        return;
+        continue;
       }
       if (request.type === 'status') {
         reply(request, true, state());
@@ -549,8 +570,15 @@ export async function runDesktopController() {
           activeServices: runtime.activeServices,
           pendingReceipts: runtime.pendingReceipts,
           unknownOperations: runtime.unknownOperations,
+          shutdown: shutdownState.snapshot(),
           notices,
         });
+        continue;
+      }
+      // Closing blocks mutations, not read-only diagnosis or an idempotent
+      // stop observation. Picker cancellation already happened in shutdown().
+      if (closing) {
+        reply(request, false, undefined, 'DESKTOP_STOP_IN_PROGRESS');
         continue;
       }
       if (request.type === 'picker') {
@@ -631,6 +659,7 @@ export async function runDesktopController() {
     initializing = false;
     await done;
   } finally {
+    shutdownState.dispose();
     process.stdin.removeListener('data', onInput);
     process.stdin.removeListener('end', onEnd);
     process.stdout.removeListener('error', onError);
