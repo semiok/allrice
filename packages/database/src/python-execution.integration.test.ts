@@ -666,7 +666,7 @@ suite(
       };
       await expect(
         updateBridgeSandboxNetwork(
-          { ...f.context, actor: { ...f.context.actor, id: randomUUID() } },
+          { ...f.context, actor: { type: 'user', id: randomUUID() } },
           f.workspace,
           d.device.id,
           change,

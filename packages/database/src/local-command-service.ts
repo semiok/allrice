@@ -851,6 +851,9 @@ export async function listLocalCommandOperations(
       return {
         snapshot: RuntimeOperationSnapshotSchema.parse(row.snapshot),
         command,
+        executionBudget: localCommand.success
+          ? (localCommand.data.executionBudget ?? null)
+          : null,
         file,
         candidateState: command?.candidate
           ? version

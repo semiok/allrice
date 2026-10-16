@@ -3807,6 +3807,12 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       );
       await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["sandbox_execution_v1"]'::jsonb) where device_id=${f.device.id}`;
       const created = await f.create('budget', args);
+      const [view] = await listLocalCommandOperations(
+        f.context,
+        f.run,
+        database,
+      );
+      expect(view?.executionBudget?.policy).toEqual(policy);
       await f.approve();
       expect(await f.claim()).toBeNull();
       const ledger = f.ledger();
