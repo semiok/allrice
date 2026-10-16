@@ -2512,6 +2512,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .toBe(1);
         expect(await dialog.innerText()).toContain('业务效果尚未验证');
+        // The same management surface consumes persisted GitHub provenance.
+        f.state.personalSkills[0]!.source = {
+          kind: 'github',
+          requestedUrl: 'https://github.com/acme/skills/tree/main/weekly',
+          owner: 'acme',
+          repository: 'skills',
+          resolvedRef: 'main',
+          commitSha: 'a'.repeat(40),
+          treeSha: 'b'.repeat(40),
+          sourcePath: 'weekly',
+          candidatePath: 'weekly/SKILL.md',
+          fileName: 'github-skills.zip',
+          originalChecksum: `sha256:${'c'.repeat(64)}`,
+          byteLength: 300,
+          license: { status: 'unknown' },
+        };
+        await dialog
+          .getByRole('button', { name: '刷新技能', exact: true })
+          .click();
+        const fixedSource = dialog.getByRole('link', {
+          name: '来源版本 aaaaaaaaaaaa',
+        });
+        await fixedSource.waitFor();
+        expect(await fixedSource.getAttribute('href')).toBe(
+          `https://github.com/acme/skills/tree/${'a'.repeat(40)}`,
+        );
+        expect(await dialog.innerText()).toContain('许可：未提供');
+        expect(await dialog.innerText()).toContain('acme/skills');
+        expect(await dialog.innerText()).toContain('weekly/SKILL.md');
         await dialog.getByRole('button', { name: '停用', exact: true }).click();
         await dialog
           .getByRole('button', { name: '启用', exact: true })

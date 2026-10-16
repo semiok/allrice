@@ -84,6 +84,33 @@ describe('private Skill package candidates and exact resources', () => {
     ).toBe(script);
   });
 
+  it('keeps nested SKILL.md templates as resources when a source pins its candidate paths', async () => {
+    const files = [
+      ...pack('weekly/'),
+      file('weekly/assets/example/SKILL.md', raw('example-template')),
+      ...pack('monthly/', 'monthly-review'),
+    ];
+    const [candidate] = await inspectPersonalSkillPackage(files, undefined, [
+      'weekly/SKILL.md',
+    ]);
+    expect(candidate!.parsed!.definition.name).toBe('weekly-review');
+    expect(candidate!.resources.map((resource) => resource.path)).toContain(
+      'assets/example/SKILL.md',
+    );
+    expect(candidate!.resources.map((resource) => resource.path)).not.toContain(
+      'monthly/SKILL.md',
+    );
+    expect(await inspectPersonalSkillPackage(files)).toHaveLength(3);
+    for (const paths of [
+      [],
+      ['missing/SKILL.md'],
+      ['weekly/SKILL.md', 'weekly/SKILL.md'],
+    ])
+      await expect(
+        inspectPersonalSkillPackage(files, undefined, paths),
+      ).rejects.toThrow();
+  });
+
   it('does not fill a missing reference from another candidate', async () => {
     const [first, second] = await inspectPersonalSkillPackage([
       file('a/SKILL.md', raw('first')),

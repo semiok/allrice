@@ -60,7 +60,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.personal_skill.install',
     description:
-      '用户明确安装一份 SKILL.md 或 ZIP 时，以 objectId 导入本人当前 AI 员工。多候选返回 selection_required，必须等下一条真人选择，再传 importId 和 candidatePath；不能代选或批量启用。阅读、评价和临时使用不是安装授权。只有 installed 回执才表示已安装，新任务采用；不授予工具或执行权限。设置→我的技能可停用/卸载。',
+      '用户明确安装公开 GitHub 技能时，以当前真人消息里的唯一 url 导入；SKILL.md 或 ZIP 附件使用 objectId，两者不能混用。公开来源固定提交版本，仅导入本人当前 AI 员工，不使用私有仓库凭据或自动安装依赖。多候选返回 selection_required，必须等下一条真人选择，再传 importId 和 candidatePath；不能代选或批量启用。阅读、评价和临时使用不是安装授权。只有 installed 回执才表示已安装，新任务采用；不授予工具或执行权限。设置→我的技能可停用/卸载。',
     inputSchema: z.toJSONSchema(PersonalSkillInstallInputSchema),
   },
   {

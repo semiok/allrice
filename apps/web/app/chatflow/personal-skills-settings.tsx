@@ -99,8 +99,8 @@ export function PersonalSkillsSettings({
   return (
     <div className={styles.root}>
       <p>
-        在与 AI 员工的聊天中上传 SKILL.md 或 ZIP
-        技能包，再说“请安装我上传的技能包”。
+        在与 AI 员工的聊天中发送公开 GitHub 技能链接，或上传 SKILL.md / ZIP，
+        再明确说明“请安装”。
         包含多个技能时，先选择一个。技能只为你安装，并绑定当时的 AI
         员工；不会改变公司的共享内容。
       </p>
@@ -130,12 +130,31 @@ export function PersonalSkillsSettings({
           </h3>
           <p>{skill.description}</p>
           <p className={styles.meta}>
-            来源：{skill.source.fileName} · 格式已检查 · 业务效果尚未验证
+            来源：
+            {skill.source.kind === 'github'
+              ? `${skill.source.owner}/${skill.source.repository}`
+              : skill.source.fileName}{' '}
+            · 格式已检查 · 业务效果尚未验证
             {skill.source.candidatePath && <> · {skill.source.candidatePath}</>}
             {skill.resourceCount !== undefined && (
               <> · {skill.resourceCount} 份包内资源</>
             )}
           </p>
+          {skill.source.kind === 'github' && (
+            <p className={styles.meta}>
+              <a
+                href={`https://github.com/${skill.source.owner}/${skill.source.repository}/tree/${skill.source.commitSha}`}
+                target="_blank"
+                rel="noreferrer noopener"
+              >
+                来源版本 {skill.source.commitSha.slice(0, 12)}
+              </a>
+              {' · '}许可：
+              {skill.source.license.status === 'unknown'
+                ? '未提供'
+                : `${skill.source.license.identifier}（GitHub 标注）`}
+            </p>
+          )}
           {skill.bindings.map((binding) => {
             return (
               <div className={styles.binding} key={binding.id}>

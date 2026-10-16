@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { SkillResourcePathSchema } from './skill-bundle.ts';
+import { parsePersonalSkillGitHubUrl } from './personal-skill-github.ts';
 
 /** Private additions never participate in platform review or capability grants. */
 export const personalSkillLimits = {
@@ -36,7 +37,7 @@ export type PersonalSkillDefinition = z.infer<
   typeof PersonalSkillDefinitionSchema
 >;
 
-export const PersonalSkillSourceSchema = z
+const PersonalSkillAttachmentSourceSchema = z
   .object({
     kind: z.literal('attachment'),
     objectId: UuidSchema,
@@ -51,6 +52,80 @@ export const PersonalSkillSourceSchema = z
     candidatePath: z.string().min(1).max(512).optional(),
   })
   .strict();
+
+export const PersonalSkillGitHubUrlSchema = z
+  .string()
+  .min(1)
+  .max(2048)
+  .superRefine((value, ctx) => {
+    try {
+      parsePersonalSkillGitHubUrl(value);
+    } catch {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'personal_skill_github_url_invalid',
+      });
+    }
+  });
+
+export const PersonalSkillGitHubSourceSchema = z
+  .object({
+    kind: z.literal('github'),
+    requestedUrl: PersonalSkillGitHubUrlSchema,
+    owner: z.string().min(1).max(39),
+    repository: z.string().min(1).max(100),
+    resolvedRef: z.string().min(1).max(512),
+    commitSha: z.string().regex(/^[a-f0-9]{40}$/u),
+    treeSha: z.string().regex(/^[a-f0-9]{40}$/u),
+    sourcePath: z.string().max(512),
+    fileName: z.string().min(1).max(255),
+    originalChecksum: ChecksumSchema,
+    byteLength: z
+      .number()
+      .int()
+      .positive()
+      .max(personalSkillLimits.archiveBytes),
+    candidatePath: z.string().min(1).max(512).optional(),
+    license: z.union([
+      z.object({ status: z.literal('unknown') }).strict(),
+      z
+        .object({
+          status: z.literal('provider-metadata-only'),
+          identifier: z.string().min(1).max(100),
+        })
+        .strict(),
+    ]),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    let location;
+    try {
+      location = parsePersonalSkillGitHubUrl(value.requestedUrl);
+    } catch {
+      return;
+    } // The URL field already reports its validation issue.
+    if (
+      location.owner !== value.owner ||
+      location.repo !== value.repository ||
+      (/^[a-f0-9]{40}$/u.test(value.resolvedRef) &&
+        value.resolvedRef !== value.commitSha) ||
+      (location.kind === 'repository'
+        ? value.sourcePath !== ''
+        : location.tail.join('/') !==
+          value.resolvedRef + (value.sourcePath ? '/' + value.sourcePath : ''))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'personal_skill_github_source_mismatch',
+      });
+  });
+export type PersonalSkillGitHubSource = z.infer<
+  typeof PersonalSkillGitHubSourceSchema
+>;
+export const PersonalSkillSourceSchema = z.union([
+  PersonalSkillAttachmentSourceSchema,
+  PersonalSkillGitHubSourceSchema,
+]);
 
 export const PersonalSkillPinSchema = z
   .object({
@@ -83,6 +158,7 @@ export type PersonalSkillSnapshot = z.infer<typeof PersonalSkillSnapshotSchema>;
 
 export const PersonalSkillInstallInputSchema = z.union([
   z.object({ objectId: UuidSchema }).strict(),
+  z.object({ url: PersonalSkillGitHubUrlSchema }).strict(),
   z
     .object({ importId: UuidSchema, candidatePath: z.string().min(1).max(512) })
     .strict(),

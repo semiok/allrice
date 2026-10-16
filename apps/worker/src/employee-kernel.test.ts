@@ -168,7 +168,8 @@ it.each(['general', 'custom'] as const)(
     } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
     const text = employeeInstanceInstructions(snapshot).join('\n');
     expect(text).toContain('workspace_personal_skill_install');
-    expect(text).toContain('exact objectId from that message');
+    expect(text).toContain('exact public GitHub url in that message');
+    expect(text).toContain('exact objectId of its attached SKILL.md/ZIP');
     expect(text).toContain('available from the next task');
     expect(text).toContain(
       'Reading, reviewing, quoted commands and temporary use do not authorize installation',

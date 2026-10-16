@@ -11,17 +11,28 @@ import {
   DataAccessError,
   ArtifactReviewError,
   EmployeeInstanceError,
+  skillBytesChecksum,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
 import {
   personalSkillLimits,
   PersonalSkillInstallInputSchema,
+  PersonalSkillGitHubSourceSchema,
+  parsePersonalSkillGitHubUrl,
+  type PersonalSkillGitHubSource,
 } from '@allrice/contracts';
-import { FileArchiveError } from '@allrice/file-archives';
+import { FileArchiveError, createFileArchive } from '@allrice/file-archives';
 import { ZodError } from 'zod';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import { parsePersonalSkill } from '../../personal-skill-import.js';
-import { readPersonalSkillArchive } from '../../personal-skill-package.js';
+import {
+  readPersonalSkillArchive,
+  inspectPersonalSkillPackage,
+} from '../../personal-skill-package.js';
+import {
+  readPublicGitHubSource,
+  PersonalSkillSourceError,
+} from '../../personal-skill-github.js';
 import { readPersonalSkillBytes } from '../../personal-skill-storage.js';
 import type { RiceToolHandler } from '../types.js';
 
@@ -87,20 +98,100 @@ export const installPersonalSkill: RiceToolHandler = async ({
           definition: source.selection.candidate.definition!,
         });
       } else {
-        if (!('object' in source))
-          throw new PersonalSkillError('source_invalid');
-        const zipped = /\.zip$/iu.test(source.source.fileName);
-        const bytes = await readPersonalSkillBytes(
-          input.storageRoot,
-          source.object,
-          zipped
-            ? personalSkillLimits.archiveBytes
-            : personalSkillLimits.sourceBytes,
-          input.signal,
-        );
-        if (zipped) {
-          const inspected = await readPersonalSkillArchive(bytes, input.signal);
-          const candidates = inspected.map((candidate) => ({
+        let packageData:
+          | {
+              bytes: Uint8Array;
+              inspected: Awaited<
+                ReturnType<typeof inspectPersonalSkillPackage>
+              >;
+              github?: PersonalSkillGitHubSource;
+            }
+          | undefined;
+        let ready:
+          Awaited<ReturnType<typeof completePersonalSkillPackage>> | undefined;
+        if ('github' in source) {
+          if (source.github.previous?.ready) {
+            // A previous confirmed staging result is reused before another network read.
+            ready = await completePersonalSkillPackage(call);
+          } else {
+            const frozen = source.github.previous?.source;
+            let readUrl = source.github.url;
+            if (frozen) {
+              const location = parsePersonalSkillGitHubUrl(frozen.requestedUrl);
+              const kind = location.kind === 'blob' ? 'blob' : 'tree';
+              const path = frozen.sourcePath
+                .split('/')
+                .map(encodeURIComponent)
+                .join('/');
+              readUrl = `https://github.com/${frozen.owner}/${frozen.repository}/${kind}/${frozen.commitSha}${path ? '/' + path : ''}`;
+            }
+            const fetched = await readPublicGitHubSource(readUrl, {
+              signal: input.signal,
+            }).catch((error: unknown) => {
+              if (
+                !input.signal?.aborted &&
+                error instanceof Error &&
+                error.name === 'TimeoutError'
+              )
+                throw new PersonalSkillSourceError('source_read_timeout');
+              throw error;
+            });
+            if (
+              frozen &&
+              (frozen.commitSha !== fetched.provenance.commitSha ||
+                frozen.treeSha !== fetched.provenance.treeSha ||
+                frozen.sourcePath !== fetched.provenance.sourcePath)
+            )
+              throw new PersonalSkillSourceError('source_snapshot_changed');
+            const inspected = await inspectPersonalSkillPackage(
+              fetched.files,
+              input.signal,
+              fetched.candidatePaths,
+            );
+            const bytes = await createFileArchive(fetched.files, {
+              signal: input.signal,
+            });
+            const github = PersonalSkillGitHubSourceSchema.parse(
+              frozen ?? {
+                ...fetched.provenance,
+                kind: 'github',
+                fileName: `github-${fetched.provenance.repository}.zip`,
+                originalChecksum: skillBytesChecksum(bytes),
+                byteLength: bytes.byteLength,
+              },
+            );
+            if (
+              github.originalChecksum !== skillBytesChecksum(bytes) ||
+              github.byteLength !== bytes.byteLength
+            )
+              throw new PersonalSkillSourceError('source_snapshot_changed');
+            packageData = { bytes, inspected, github };
+          }
+        } else {
+          if (!('object' in source) || !source.object)
+            throw new PersonalSkillError('source_invalid');
+          const zipped = /\.zip$/iu.test(source.source.fileName);
+          const bytes = await readPersonalSkillBytes(
+            input.storageRoot,
+            source.object,
+            zipped
+              ? personalSkillLimits.archiveBytes
+              : personalSkillLimits.sourceBytes,
+            input.signal,
+          );
+          if (zipped)
+            packageData = {
+              bytes,
+              inspected: await readPersonalSkillArchive(bytes, input.signal),
+            };
+          else
+            result = await installPersonalSkillFromChat(
+              call,
+              await parsePersonalSkill(bytes),
+            );
+        }
+        if (packageData) {
+          const candidates = packageData.inspected.map((candidate) => ({
             sourcePath: candidate.sourcePath,
             ...(candidate.parsed ?? {}),
             issues: candidate.issues,
@@ -133,18 +224,23 @@ export const installPersonalSkill: RiceToolHandler = async ({
           const reservation = await reservePersonalSkillPackage(
             call,
             candidates,
+            packageData.github,
           );
           if (reservation.writeRequired)
-            await storage.put(reservation.object, new Blob([bytes]).stream());
+            await storage.put(
+              reservation.object,
+              new Blob([new Uint8Array(packageData.bytes)]).stream(),
+            );
           input.signal?.throwIfAborted();
-          const ready = await completePersonalSkillPackage(call).catch(
+          ready = await completePersonalSkillPackage(call).catch(
             async (error: unknown) => {
-              // Re-read before cleaning a superseded late write. An installed
-              // immutable version can never be selected by this cleanup query.
+              // Reconcile a late write before retiring only unused private bytes.
               await cleanup().catch(() => undefined);
               throw error;
             },
           );
+        }
+        if (ready) {
           if (ready.candidates.length > 1)
             return {
               modelContent: JSON.stringify({
@@ -167,13 +263,10 @@ export const installPersonalSkill: RiceToolHandler = async ({
             originalText: candidate.originalText!,
             definition: candidate.definition!,
           });
-        } else
-          result = await installPersonalSkillFromChat(
-            call,
-            await parsePersonalSkill(bytes),
-          );
+        }
       }
     }
+    if (!result) throw new PersonalSkillError('source_invalid');
     // A confirmed installation must stay confirmed if separate byte retirement
     // fails. Subsequent requests retry only unused copies, never the installation.
     const cleanupPending = await cleanup().then(
@@ -191,6 +284,19 @@ export const installPersonalSkill: RiceToolHandler = async ({
       summary: '个人技能已安装，后续任务可采用',
     };
   } catch (error) {
+    if (error instanceof PersonalSkillSourceError) {
+      const detail =
+        error.code === 'source_ref_ambiguous'
+          ? '分支和目录无法唯一确定，请提供固定提交版本的 GitHub 链接。'
+          : error.code === 'source_redirect_unsupported'
+            ? '链接已重定向，请提供实际公开仓库的链接。'
+            : /(?:limit|large)$/u.test(error.code)
+              ? '来源超出文件数量或大小限制，请提供更小的技能目录。'
+              : /(?:link|lfs)_unsupported$/u.test(error.code)
+                ? '包含不支持的链接、子模块或 LFS 文件，请提供完整的普通文件。'
+                : '公开来源暂时无法完整读取或校验，请检查链接和可用性。';
+      throw rejected(`技能未安装：${detail}`);
+    }
     if (error instanceof FileArchiveError)
       throw rejected(
         `技能包未安装：${error.code}。请检查 ZIP 路径、文件数量、大小与完整性；不会运行包内代码。`,
@@ -208,7 +314,7 @@ export const installPersonalSkill: RiceToolHandler = async ({
       throw rejected(
         {
           intent_required:
-            '尚未收到明确安装或选择指令。本次未安装；请用户随 SKILL.md / ZIP 说明“请安装我上传的技能包”，或在下一条消息明确选择候选名称并安装。阅读、评价或临时使用不代表安装。',
+            '尚未收到明确安装或选择指令。本次未安装；请用户随公开 GitHub 链接或 SKILL.md / ZIP 说明“请安装我上传的技能包”，或在下一条消息明确选择候选名称并安装。阅读、评价或临时使用不代表安装。',
           source_invalid:
             '技能文件或包资源不完整或校验失败，本次未安装。SKILL.md 需为有效 UTF-8（不超过 256 KiB）；ZIP 不超过 8 MB，资源需在 references、assets 或 scripts 内。',
           name_conflict:

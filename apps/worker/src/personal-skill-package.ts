@@ -54,6 +54,7 @@ export async function readPersonalSkillArchive(
 export async function inspectPersonalSkillPackage(
   files: readonly PersonalSkillPackageFile[],
   signal?: AbortSignal,
+  candidatePaths?: readonly string[],
 ): Promise<PersonalSkillPackageCandidate[]> {
   signal?.throwIfAborted();
   const names = new Set<string>();
@@ -83,9 +84,26 @@ export async function inspectPersonalSkillPackage(
     if (names.has(key)) throw Error('personal_skill_package_path_conflict');
     names.add(key);
   }
+  if (
+    candidatePaths !== undefined &&
+    (!Array.isArray(candidatePaths) ||
+      !candidatePaths.length ||
+      candidatePaths.length > personalSkillPackageLimits.candidates ||
+      new Set(candidatePaths).size !== candidatePaths.length)
+  )
+    throw Error('personal_skill_package_candidate_limit');
   const definitions = files
-    .filter((file) => posix.basename(file.path) === 'SKILL.md')
+    .filter(
+      (file) =>
+        posix.basename(file.path) === 'SKILL.md' &&
+        (candidatePaths === undefined || candidatePaths.includes(file.path)),
+    )
     .toSorted((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  if (
+    candidatePaths !== undefined &&
+    definitions.length !== candidatePaths.length
+  )
+    throw Error('personal_skill_package_missing_skill');
   if (!definitions.length) throw Error('personal_skill_package_missing_skill');
   if (definitions.length > personalSkillPackageLimits.candidates)
     throw Error('personal_skill_package_candidate_limit');
