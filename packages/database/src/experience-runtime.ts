@@ -1,6 +1,7 @@
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
 import { readTaskClock } from './task-clock.ts';
 import type postgres from 'postgres';
+import { ensureExperienceProjection } from './experience-projection.ts';
 import {
   ExperienceAdoptionProofSchema,
   ExperienceActionReceiptSchema,
@@ -276,6 +277,7 @@ export async function prepareRunExperiences(
         )
           continue;
         remaining -= m.row.content.length;
+        await ensureExperienceProjection(tx, m);
         pins.push(m.pin);
       } catch (e) {
         if (!experienceUnavailable(e)) throw e;

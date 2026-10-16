@@ -6,6 +6,8 @@ import {
   getExperienceOverview,
   DataAccessError,
   EmployeeInstanceError,
+  getExperienceProvenance,
+  PersonalSkillError,
 } from '@allrice/database';
 import { UuidSchema } from '@allrice/contracts';
 import { isRequestValidationError } from '../api-error-response';
@@ -18,7 +20,7 @@ const headers = {
 };
 export async function experienceHttp(
   request: Request,
-  action: 'list' | 'sources' | 'create' | 'review',
+  action: 'list' | 'sources' | 'create' | 'review' | 'provenance',
   id?: string,
 ) {
   if (!experienceReviewEnabled())
@@ -36,6 +38,14 @@ export async function experienceHttp(
       url.searchParams.get('workspaceId') ?? login.workspaceId,
     );
     const context = { ...login, workspaceId };
+    if (action === 'provenance') {
+      const value = await getExperienceProvenance(context, {
+        memoryId: UuidSchema.parse(id),
+        instanceId: UuidSchema.parse(url.searchParams.get('instanceId')),
+        revision: Number(url.searchParams.get('revision')),
+      });
+      return Response.json(value, { headers });
+    }
     if (action === 'create' || action === 'review') {
       if (id) UuidSchema.parse(id);
       return Response.json(
@@ -69,13 +79,15 @@ export async function experienceHttp(
     );
   } catch (error) {
     const code =
-      error instanceof ExperienceError ||
-      error instanceof DataAccessError ||
-      error instanceof EmployeeInstanceError
-        ? error.code
-        : isRequestValidationError(error)
-          ? 'invalid_request'
-          : 'unavailable';
+      error instanceof PersonalSkillError
+        ? 'source_changed'
+        : error instanceof ExperienceError ||
+            error instanceof DataAccessError ||
+            error instanceof EmployeeInstanceError
+          ? error.code
+          : isRequestValidationError(error)
+            ? 'invalid_request'
+            : 'unavailable';
     const status =
       code === 'authentication_required'
         ? 401

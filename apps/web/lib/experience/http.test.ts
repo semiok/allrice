@@ -1,7 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
-import { ExperienceError, DataAccessError } from '@allrice/database';
+import {
+  ExperienceError,
+  DataAccessError,
+  PersonalSkillError,
+} from '@allrice/database';
+import { GET as provenanceGet } from '../../app/api/v1/experiences/[id]/provenance/route';
 import { experienceHttp } from './http';
 const ports = vi.hoisted(() => ({
   enabled: vi.fn(),
@@ -9,6 +14,7 @@ const ports = vi.hoisted(() => ({
   list: vi.fn(),
   drafts: vi.fn(),
   overview: vi.fn(),
+  provenance: vi.fn(),
   sources: vi.fn(),
   create: vi.fn(),
   review: vi.fn(),
@@ -19,6 +25,7 @@ vi.mock('@allrice/database', async (original) => ({
   experienceReviewEnabled: ports.enabled,
   listExperienceDrafts: ports.drafts,
   getExperienceOverview: ports.overview,
+  getExperienceProvenance: ports.provenance,
   createExperienceStore: () => ports,
 }));
 const context = {
@@ -141,6 +148,46 @@ describe('P20 HTTP boundary', () => {
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain('PRIVATE');
   });
+  it('registers exact version provenance as authenticated no-store GET without legacy writes', async () => {
+    const id = randomUUID(),
+      instanceId = randomUUID();
+    ports.provenance.mockResolvedValue({
+      sources: [{ excerpt: 'owner feedback' }],
+    });
+    const response = await provenanceGet(
+      new Request(
+        `http://localhost/api/v1/experiences/${id}/provenance?instanceId=${instanceId}&revision=2`,
+      ),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(response.status).toBe(200);
+    expect(ports.provenance).toHaveBeenCalledWith(context, {
+      memoryId: id,
+      instanceId,
+      revision: 2,
+    });
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(ports.create).not.toHaveBeenCalled();
+    expect(ports.review).not.toHaveBeenCalled();
+  });
+  it.each([
+    new ExperienceError('source_changed'),
+    new PersonalSkillError('unavailable'),
+  ])(
+    'does not return stale source data after dependency revocation',
+    async (error) => {
+      ports.provenance.mockRejectedValue(error);
+      const response = await experienceHttp(
+        new Request(
+          `http://localhost/experiences?instanceId=${randomUUID()}&revision=1`,
+        ),
+        'provenance',
+        randomUUID(),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ code: 'source_changed' });
+    },
+  );
 });
 
 it('reads private drafts with the authenticated scope, preserving the old candidate response', async () => {
