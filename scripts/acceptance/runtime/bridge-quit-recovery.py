@@ -8,11 +8,16 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import re
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+assert sys.platform == "darwin", "Native menu acceptance requires macOS"
+session = subprocess.check_output(["/usr/sbin/ioreg", "-n", "Root", "-d1"], text=True)
+assert not re.search(r'"CGSSessionScreenIsLocked"\s*=\s*Yes', session), "NATIVE_UI_SCREEN_LOCKED: run on an unlocked test Mac"
 
 source = Path(sys.argv[1]).resolve()
 root = Path(tempfile.mkdtemp(prefix="allrice-quit-recovery-"))
@@ -65,8 +70,14 @@ report = {"fixture": "packaged native host with synthetic Core, no real device s
 def wait(predicate, seconds=8):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        if predicate():
-            return
+        try:
+            if predicate():
+                return
+        except subprocess.CalledProcessError as error:
+            # AppKit creates/destroys the window after menu action dispatch.
+            # Wait for that AX object; all product assertions remain unchanged.
+            if "(-1728)" not in (error.stderr or ""):
+                raise
         time.sleep(.1)
     raise AssertionError("native acceptance condition timed out")
 
@@ -88,8 +99,15 @@ def status(pid):
     return ui(pid, ['get value of text area 1 of scroll area 1 of window "Rice Bridge · 本地电脑"'])
 
 
+def press(pid, title):
+    wait(lambda: title in ui(pid, ['get name of buttons of window 1']))
+    ui(pid, [f'click button "{title}" of window 1'])
+
+
 try:
-    for mode in ["clean", "reject-then-retry", "pipe-closed", "hung", "ack-without-exit"]:
+    modes = ["clean", "reject-then-retry", "pipe-closed", "hung", "ack-without-exit"]
+    assert all(mode in modes for mode in sys.argv[2:]), "Unknown acceptance case"
+    for mode in (sys.argv[2:] or modes):
         for name in ["core.pid", "complete", "stop-count"]:
             (root / name).unlink(missing_ok=True)
         (root / "mode").write_text(mode)
@@ -101,6 +119,11 @@ try:
             wait(lambda: (root / "core.pid").exists())
             owned_core = int((root / "core.pid").read_text())
             time.sleep(.4)
+            # A shell-launched accessory app can be visible but not active;
+            # activate this exact fixture as a user would before querying AX.
+            ui(child.pid, ['set frontmost to true'])
+            menu(child.pid, "查看状态…")
+            wait(lambda: "尚未配对" in status(child.pid))
             started = time.monotonic()
             menu(child.pid, "退出 Rice Bridge")
             if mode == "clean":
@@ -122,7 +145,7 @@ try:
                 assert parsed["coreResponse"] == "unavailable"
                 assert parsed["quitRecovery"] is True
                 assert "deviceId" not in parsed and "workspaceLabels" not in parsed
-                ui(child.pid, ['click button "关闭" of window 1'])
+                press(child.pid, "关闭")
                 row["fallbackDiagnostics"] = True
                 if mode == "ack-without-exit":
                     (root / "complete").touch()
@@ -131,27 +154,39 @@ try:
                     row["lateCompletionClosesHost"] = True
                 else:
                     menu(child.pid, "退出恢复…")
-                    ui(child.pid, ['click button "返回" of window 1'])
+                    press(child.pid, "返回")
                     assert child.poll() is None
                     menu(child.pid, "退出恢复…")
                     if mode == "reject-then-retry":
-                        ui(child.pid, ['click button "继续等待安全退出" of window 1'])
+                        press(child.pid, "继续等待安全退出")
                         wait(lambda: child.poll() is not None)
                         assert (root / "stop-count").read_text() == "2"
                         assert child.returncode == 0
                     else:
-                        ui(child.pid, ['click button "强制退出并保留记录" of window 1'])
+                        press(child.pid, "强制退出并保留记录")
                         wait(lambda: child.poll() is not None)
                         assert child.returncode == 0
                         row["explicitOwnedCoreForceExit"] = True
             row["passed"] = True
+        except Exception:
+            row["hostExitCode"] = child.poll()
+            row["stopCount"] = (root / "stop-count").read_text() if (root / "stop-count").exists() else "none"
+            try:
+                row["windowsOnFailure"] = ui(child.pid, ['get name of windows'])
+                row["menuOnFailure"] = ui(child.pid, ['click menu bar item "Rice" of last menu bar', 'get name of menu items of menu 1 of menu bar item "Rice" of last menu bar'])
+                ui(child.pid, ['key code 53'])
+            except subprocess.CalledProcessError as error:
+                row["accessibilityError"] = error.stderr
+            raise
         finally:
             # Only the two exact processes created by this fixture are eligible.
             if owned_core is not None:
-                try:
-                    os.kill(owned_core, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+                identity = subprocess.run(["ps", "-p", str(owned_core), "-o", "args="], capture_output=True, text=True)
+                if str(core) in identity.stdout:
+                    try:
+                        os.kill(owned_core, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
             if child.poll() is None:
                 child.kill()
                 child.wait(timeout=3)

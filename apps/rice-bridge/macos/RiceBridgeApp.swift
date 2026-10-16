@@ -22,6 +22,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var quitting = false
     private var quitRequested = false
     private var quitRecovery = false
+    private var quitFailureCode: String?
     private var forceClosing = false
     private var quitWatchdog: DispatchWorkItem?
     private var quitRequestId: String?
@@ -640,7 +641,8 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         for key in ["activeForeground", "activeServices", "pendingReceipts", "unknownOperations"] {
             result[key] = max(0, min(1_000_000, state[key] as? Int ?? 0))
         }
-        result["errorCode"] = safeCode(state["errorCode"])
+        if let code = quitFailureCode { result["hostQuitError"] = code }
+        if let code = state["errorCode"] { result["errorCode"] = safeCode(code) }
         if let start = quitStartedAt { result["elapsedMs"] = Int(max(0, ProcessInfo.processInfo.systemUptime - start) * 1000) }
         return result
     }
@@ -725,6 +727,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let wasWaiting = quitting
         quitting = false
         quitRecovery = true
+        quitFailureCode = code
         fail(code)
         if wasWaiting { NSApp.reply(toApplicationShouldTerminate: false) }
         showStatus()
