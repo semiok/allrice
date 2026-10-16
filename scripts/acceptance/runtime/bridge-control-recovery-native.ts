@@ -177,6 +177,36 @@ try {
         },
       });
       let id: string | undefined;
+      const api = runtime === 'node' ? node.api : python.api;
+      const name =
+        runtime === 'node'
+          ? `allrice-${attemptId}`
+          : `allrice-python-${attemptId}`;
+      const originalJson = api.json.bind(api);
+      let creates = 0,
+        starts = 0,
+        createdId: string | undefined;
+      api.json = async <T>(
+        ...args: Parameters<typeof api.json>
+      ): Promise<T> => {
+        const [method, path] = args;
+        if (
+          method === 'POST' &&
+          path.split('&')[0] === `/containers/create?name=${name}`
+        ) {
+          creates++;
+          const result = await originalJson<T>(...args);
+          createdId = (result as { Id: string }).Id;
+          return result;
+        }
+        if (
+          method === 'POST' &&
+          createdId &&
+          path === `/containers/${createdId}/start`
+        )
+          starts++;
+        return originalJson<T>(...args);
+      };
       try {
         await writeFile(join(root, 'probe.mjs'), script);
         const result =
@@ -241,12 +271,17 @@ try {
           renewals,
           heartbeats,
           uploads,
+          creates,
+          starts,
         });
         assert.equal(result.stopped, true);
         assert.equal(result.execution?.startedAt, now);
         assert.equal(result.execution?.hardDeadlineAt, hardDeadlineAt);
-        assert.equal((result.stdout.match(/native-start/g) ?? []).length, 1);
+        assert.equal(creates, 1);
+        assert.equal(starts, 1);
+        assert.equal(result.containerId, createdId);
         if (mode === 'recover') {
+          assert.equal((result.stdout.match(/native-start/g) ?? []).length, 1);
           assert.equal(result.reason, 'exited');
           assert.equal(result.exitCode, 0);
           assert.equal(result.controlFailure, undefined);
@@ -279,13 +314,9 @@ try {
           }
         }
       } finally {
+        api.json = originalJson;
         server.closeAllConnections();
         await new Promise<void>((resolve) => server.close(() => resolve()));
-        const api = runtime === 'node' ? node.api : python.api;
-        const name =
-          runtime === 'node'
-            ? `allrice-${attemptId}`
-            : `allrice-python-${attemptId}`;
         const container = await api
           .json<{
             Id: string;
