@@ -44,8 +44,8 @@ export const installPersonalSkill: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
-  const rejected = (message: string) => {
-    const error = new HandlerError('PERSONAL_SKILL_REJECTED', message, false);
+  const rejected = (message: string, code = 'PERSONAL_SKILL_REJECTED') => {
+    const error = new HandlerError(code, message, false);
     confirmToolFailure(error, {
       runId: input.context.runId,
       callId: input.call.id,
@@ -397,8 +397,12 @@ export const installPersonalSkill: RiceToolHandler = async ({
           unavailable: '当前技能、员工或授权已失效，本次未安装。',
         }[error.code],
       );
+    if (error instanceof EmployeeAccessBusyError)
+      throw rejected(
+        '技能状态暂时繁忙，请稍后重试查询当前状态，再继续原操作。保留原候选及其确认信息，不要重新上传或创建候选。',
+        'PERSONAL_SKILL_BUSY',
+      );
     if (
-      error instanceof EmployeeAccessBusyError ||
       error instanceof DataAccessError ||
       error instanceof ArtifactReviewError ||
       error instanceof EmployeeInstanceError ||

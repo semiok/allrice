@@ -66,6 +66,27 @@ describe('EmployeeProfileDetails', () => {
     expect(html).not.toContain('<select');
     expect(html).toContain('暂无已生效的执行要求');
   });
+  it('explains an empty custom scene list without inventing active content or exposing private state in shared view', () => {
+    const details = employeeDetailsFixture();
+    details.profile.kind = 'custom';
+    details.content.scenes = [];
+    const personal = renderToStaticMarkup(
+      <EmployeeProfileDetails details={details} onPreview={() => {}} />,
+    );
+    expect(personal).toContain('工作场景');
+    expect(personal).toContain('暂无已启用的工作场景');
+    expect(personal).toContain('可在聊天中说明希望它负责哪些工作');
+    expect(personal).not.toContain('<select');
+    const shared = renderToStaticMarkup(
+      <EmployeeProfileDetails
+        details={details}
+        view="shared"
+        onPreview={() => {}}
+      />,
+    );
+    expect(shared).toContain('暂无可查看的已启用共享场景');
+    expect(shared).not.toContain('可在聊天中说明');
+  });
   it('retains legacy published requirements without inventing platform ownership', () => {
     const details = employeeDetailsFixture();
     details.profile.source = {

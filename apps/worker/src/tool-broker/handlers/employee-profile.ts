@@ -70,11 +70,15 @@ export const updateEmployeeProfile: RiceToolHandler = async ({
             ? '尚未收到明确的长期调整指令，未保存。请让用户直接说明，例如“以后回答保持简洁。”；定制小白还可明确改名。本次任务要求、引用和资料内容不能替代该指令。'
             : '当前任务或授权已失效，未修改个人设置。',
       );
+    if (error instanceof EmployeeAccessBusyError)
+      throw rejected(
+        'EMPLOYEE_PROFILE_BUSY',
+        '个人设置暂时繁忙，请稍后重试原调整请求。当前权限仍会重新核对。',
+      );
     // These errors arise before commit or after a confirmed transaction
     // rollback. Connection/commit uncertainty must keep the ordinary unknown
     // accounting path, never be declared a safely failed write.
     if (
-      error instanceof EmployeeAccessBusyError ||
       error instanceof DataAccessError ||
       error instanceof ArtifactReviewError ||
       error instanceof ZodError

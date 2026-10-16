@@ -1,7 +1,21 @@
 import { expect, it } from 'vitest';
 import { PersonalSkillVersionInputSchema } from '@allrice/contracts';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
+import { HandlerError } from '../errors.js';
 const id = '00000000-0000-4000-8000-000000000011';
+it('preserves temporary skill contention as a failed native tool with recovery guidance', async () => {
+  const message = '技能状态暂时繁忙，请稍后重试查询当前状态，再继续原操作。';
+  await nativeBrokerRoundtrip({
+    canonicalName: 'workspace.personal_skill.version',
+    wireName: 'workspace_personal_skill_version',
+    args: { operation: 'inspect' },
+    invalidArgs: { operation: 'inspect', ownerId: id },
+    expectedToolError: message,
+    onToolCall: async () => {
+      throw new HandlerError('PERSONAL_SKILL_BUSY', message, false);
+    },
+  });
+}, 45000);
 it.each([
   { operation: 'inspect' },
   {

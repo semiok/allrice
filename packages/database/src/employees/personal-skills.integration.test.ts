@@ -225,6 +225,62 @@ suite(
       });
       return JSON.parse(result.modelContent);
     }
+    it('reports root lock contention as busy without retrying the whole Run, then reads the same general employee library without changing authority', async () => {
+      const x = await setup();
+      const initial = await x.run(
+        x.assignment.id,
+        '请安装我上传的 SKILL.md。',
+        raw(),
+      );
+      const skill = (await broker(initial)).skill;
+      await initial.finish();
+      const task = await x.run(x.assignment.id, '查看我的技能库。');
+      await f.db`insert into allrice_runtime_roots(root_run_id,organization_id,workspace_id,task,deadline_at)
+        values(${task.scope.runId},${task.scope.organizationId},${task.scope.workspaceId},'{}',clock_timestamp()+interval '5 minutes')`;
+      let release!: () => void, ready!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const acquired = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const lock = f.db.begin(async (tx) => {
+        const rows =
+          await tx`select root_run_id from allrice_runtime_roots where root_run_id=${task.scope.runId} for update`;
+        expect(rows).toHaveLength(1);
+        ready();
+        await gate;
+      });
+      await acquired;
+      try {
+        await expect(
+          broker(task, { operation: 'inspect' }),
+        ).rejects.toMatchObject({
+          code: 'PERSONAL_SKILL_BUSY',
+          retryable: false,
+        });
+        expect((await listPersonalSkills(x.context))[0]!.versionId).toBe(
+          skill.versionId,
+        );
+      } finally {
+        release();
+        await lock;
+      }
+      expect(
+        (await broker(task, { operation: 'inspect' })).skills.map(
+          (s: { id: string }) => s.id,
+        ),
+      ).toEqual([skill.id]);
+      // Lock recovery must never bypass a later real cancellation.
+      await f.db`update allrice_runtime_roots set cancel_requested_at=clock_timestamp(),cancel_request_id=${randomUUID()},cancel_reason='user_request' where root_run_id=${task.scope.runId}`;
+      await expect(
+        broker(task, { operation: 'inspect' }),
+      ).rejects.toMatchObject({
+        code: 'PERSONAL_SKILL_REJECTED',
+        retryable: false,
+      });
+      await task.finish();
+    });
     it('updates original bytes through the Broker, confirms next-task adoption, and rolls back without altering old Run pins', async () => {
       const x = await setup();
       const initial = await x.run(
@@ -334,6 +390,11 @@ suite(
           (s) => s.name === 'weekly',
         )?.content,
       ).toContain('three items');
+      expect(
+        (await broker(back, { operation: 'inspect' })).skills.map(
+          (s: { id: string }) => s.id,
+        ),
+      ).toEqual([v1.id]);
       const history = await broker(back, {
         operation: 'inspect',
         installationId: v1.id,
