@@ -153,3 +153,13 @@ export interface StoragePort {
   delete(object: StorageObject): Promise<void>;
   exists(object: StorageObject): Promise<boolean>;
 }
+
+/** Resolved by the platform from an authorized immutable object, never from a
+ * model-supplied URL or host path. Opening is deferred until execution owns the
+ * transfer; consumers verify the exact size and checksum while streaming. */
+export interface RuntimeInputSource {
+  path: string;
+  sizeBytes: number;
+  checksum: string;
+  open(signal: AbortSignal): Promise<ReadableStream<Uint8Array>>;
+}

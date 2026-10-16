@@ -44,6 +44,27 @@ function fixture(content: Uint8Array) {
 }
 
 describe('local storage adapter', () => {
+  it('reads large objects incrementally, supports cancellation and still rejects missing objects on open', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'allrice-storage-'));
+    roots.push(root);
+    const content = Buffer.alloc(8 * 1024 * 1024, 120),
+      object = fixture(content);
+    const adapter = new LocalStorageAdapter(root);
+    await expect(adapter.get(object)).rejects.toMatchObject({ code: 'ENOENT' });
+    await adapter.put(object, new Blob([content]).stream());
+    const reader = (await adapter.get(object)).getReader();
+    const first = await reader.read();
+    expect(first.done).toBe(false);
+    expect(first.value!.byteLength).toBeLessThanOrEqual(65536);
+    await reader.cancel();
+    reader.releaseLock();
+    expect(await new Response(await adapter.get(object)).arrayBuffer()).toEqual(
+      content.buffer.slice(
+        content.byteOffset,
+        content.byteOffset + content.byteLength,
+      ),
+    );
+  });
   it('persists content across adapter restarts and verifies integrity', async () => {
     const root = await mkdtemp(join(tmpdir(), 'allrice-storage-'));
     roots.push(root);

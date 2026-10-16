@@ -151,7 +151,7 @@ export interface ManagedPythonSelectionInput {
   toolName: 'workspace.export.create' | 'python.execute';
   arguments: Record<string, unknown>;
   purpose: ManagedPythonPurpose;
-  inputs: { objectId: string; checksum: string }[];
+  inputs: { objectId: string; checksum: string; sizeBytes?: number }[];
   location?: ExecutionLocation;
   jobAttempt: number;
   jobLeaseToken: string;
@@ -302,7 +302,12 @@ export async function selectManagedPythonExecution(
           !p.data.available ||
           !p.data.purposes.includes(input.purpose) ||
           (input.purpose === 'python_charts' &&
-            p.data.pythonChartsContractVersion !== 1) ||
+            (p.data.pythonChartsContractVersion !== 1 ||
+              (input.inputs.reduce(
+                (sum, file) => sum + (file.sizeBytes ?? 0),
+                0,
+              ) > 2_000_000 &&
+                p.data.inputStreamingVersion !== 1))) ||
           (pythonRequest?.execution && p.data.sandboxExecutionVersion !== 1) ||
           (pythonRequest?.network &&
             (!pythonRequest.execution || p.data.sandboxNetworkVersion !== 1)) ||
@@ -505,7 +510,8 @@ export async function assertLocalPythonDelegation(
     if (
       !original.success ||
       !currentProfile.success ||
-      currentProfile.data.pythonChartsContractVersion !== 1
+      currentProfile.data.pythonChartsContractVersion !== 1 ||
+      (a.inputTransfer && currentProfile.data.inputStreamingVersion !== 1)
     )
       throw new RuntimePolicyError('bridge_authority_changed');
     const normalized = normalizeCloudPythonArguments(origin.original_arguments);
@@ -539,7 +545,15 @@ export async function assertLocalPythonDelegation(
         })),
       ) ||
       !runtimeContractEqual(
-        { ...normalized.limits, inputBytes: 2_000_000 },
+        {
+          ...normalized.limits,
+          inputBytes: a.inputTransfer
+            ? Math.max(
+                1,
+                a.inputs.reduce((sum, file) => sum + file.sizeBytes, 0),
+              )
+            : 2_000_000,
+        },
         a.limits,
       ) ||
       a.outputs.some(
@@ -1338,4 +1352,19 @@ export async function publishLocalPythonArtifacts(
       throw new RuntimePolicyError('local_python_result_unconfirmed');
     return published;
   });
+}
+
+/** Failure receipt support: validate absence for both deterministic operation IDs.
+ * A missing connection or an existing attempt is not proof of no execution. */
+export async function managedPythonCallNotDispatched(
+  context: ExecutionContext,
+  callId: string,
+  db = getDatabase(),
+) {
+  const local = cloudStableId(`managed-python:${context.runId}:${callId}`);
+  const cloud = cloudStableId(`cloud-python:${context.runId}:${callId}`);
+  const rows =
+    await db`select id from allrice_runtime_operations where organization_id=${context.organizationId}
+    and workspace_id=${context.workspaceId} and run_id=${context.runId} and id in (${local},${cloud}) limit 1`;
+  return rows.length === 0;
 }

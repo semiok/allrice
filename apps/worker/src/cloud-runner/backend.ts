@@ -1,3 +1,7 @@
+import { pipeline } from 'node:stream/promises';
+import type { RuntimeInputSource } from '@allrice/contracts';
+type CloudInputFile =
+  { path: string; contentBase64: string } | RuntimeInputSource;
 import { request } from 'node:http';
 import { CloudExecutionBudget } from './execution-budget.js';
 import { inFlightHeartbeat } from './service-diagnostics.js';
@@ -75,6 +79,8 @@ import {
   ProjectEvents,
   streamProjectLogs,
   createLocalPythonArchive,
+  createInputArchive,
+  bufferedInput,
   openSandboxNetwork,
   sandboxProxyEnvironment,
   nodeProjectSupervisor,
@@ -210,6 +216,7 @@ type Container = {
     Cmd?: string[];
     Entrypoint?: string[];
     Env?: string[];
+    Volumes?: Record<string, object>;
   };
   Mounts?: { Type: string; Name: string; Destination: string; RW?: boolean }[];
   HostConfig: {
@@ -379,6 +386,30 @@ export const cloudNetworkBudgetSupervisor = cloudBudgetSupervisor.replace(
   'env:{PATH:',
   `env:{...${JSON.stringify(sandboxProxyEnvironment)},PATH:`,
 );
+/** Streamed inputs live on disk, outside the small scratch tmpfs. These new
+ * variants preserve exact supervisor bytes for already-persisted attempts. */
+const streamedSupervisor = (source: string) =>
+  source
+    .replace(
+      'const inputTimer=setTimeout(()=>process.exit(124),65000);inputTimer.unref()',
+      'const inputTimer=undefined',
+    )
+    .replace('setTimeout(()=>process.exit(124),65000).unref()', '')
+    .replace(
+      "fs.mkdirSync('/tmp/work/input',{recursive:true,mode:0o700});",
+      "fs.mkdirSync('/tmp/work',{recursive:true,mode:0o700}); fs.symlinkSync('/allrice-input','/tmp/work/input');",
+    );
+export const cloudStreamSupervisor = streamedSupervisor(cloudSupervisor);
+export const cloudStreamBudgetSupervisor = streamedSupervisor(
+  cloudBudgetSupervisor,
+);
+export const cloudStreamNetworkSupervisor = streamedSupervisor(
+  cloudNetworkSupervisor,
+);
+export const cloudStreamNetworkBudgetSupervisor = streamedSupervisor(
+  cloudNetworkBudgetSupervisor,
+);
+
 /** Only the fixed resolver may preserve its typed diagnostic receipt on a
  * nonzero manager exit. Ordinary tenant scripts retain their original behavior. */
 export const cloudResolutionSupervisor = cloudNetworkBudgetSupervisor.replace(
@@ -558,6 +589,66 @@ export class CloudRunnerBackend {
       req.end(bytes);
     });
   }
+  async putInputArchive(
+    id: string,
+    files: RuntimeInputSource[],
+    signal: AbortSignal,
+    onRead?: (bytes: number) => void,
+  ) {
+    if (!/^[a-f0-9]{64}$/.test(id))
+      throw new CloudRunnerError('CLOUD_INVALID_CONTAINER');
+    signal.throwIfAborted();
+    const requestAbort = new AbortController();
+    const bounded = AbortSignal.any([signal, requestAbort.signal]);
+    const archive = createInputArchive(files, bounded, onRead);
+    const req = request({
+      socketPath: this.socketPath,
+      path: `/v1.45/containers/${id}/archive?path=%2Fallrice-input&noOverwriteDirNonDir=1`,
+      method: 'PUT',
+      signal: bounded,
+      headers: {
+        'Content-Type': 'application/x-tar',
+        'Content-Length': archive.size,
+      },
+    });
+    const response = new Promise<void>((resolve, reject) => {
+      req.once('error', reject);
+      req.once('response', (res) => {
+        let size = 0;
+        const responseChunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > 4096)
+            req.destroy(new CloudRunnerError('CLOUD_RESPONSE_LIMIT'));
+          else responseChunks.push(chunk);
+        });
+        res.once('error', reject);
+        res.once('end', () =>
+          res.statusCode && res.statusCode >= 200 && res.statusCode < 300
+            ? resolve()
+            : reject(
+                new CloudRunnerError(
+                  /no space left|disk quota exceeded/i.test(
+                    Buffer.concat(responseChunks).toString('utf8'),
+                  )
+                    ? 'CLOUD_INPUT_STORAGE_FULL'
+                    : `CLOUD_INPUT_TRANSFER_${res.statusCode}`,
+                ),
+              ),
+        );
+      });
+    });
+    try {
+      await Promise.all([
+        pipeline(archive.stream, req, { signal: bounded }),
+        response,
+      ]);
+    } finally {
+      requestAbort.abort();
+      archive.stream.destroy();
+    }
+  }
+
   async preflight(
     imageDigest = cloudToolchainImageV1,
     requireProjectService = false,
@@ -734,6 +825,28 @@ export class CloudRunnerBackend {
       throw e;
     }
   }
+  private inputMountsMatch(c: Container) {
+    const streamed = c.Config.Labels['xyz.bplabs.allrice.cloud.input'];
+    if (streamed !== undefined && streamed !== 'stream-v1') return false;
+    const inputs =
+      c.Mounts?.filter((m) => m.Destination === '/allrice-input') ?? [];
+    return (
+      (!streamed ||
+        (runtimeContractEqual(c.Config.Volumes, { '/allrice-input': {} }) &&
+          inputs.length === 1)) &&
+      !(c.Mounts ?? []).some(
+        (m) =>
+          !(m.Type === 'tmpfs' && m.Destination === '/tmp') &&
+          !(
+            streamed &&
+            m.Type === 'volume' &&
+            m.Destination === '/allrice-input' &&
+            /^[a-f0-9]{64}$/.test(m.Name) &&
+            m.RW === true
+          ),
+      )
+    );
+  }
   private async assertNetworkContainer(c: Container) {
     if (c.Config.Labels['xyz.bplabs.allrice.cloud.kind'] === 'project') {
       if (
@@ -768,8 +881,12 @@ export class CloudRunnerBackend {
         config.Labels[resolutionLabel] === 'v1'
           ? cloudResolutionSupervisor
           : config.Labels['xyz.bplabs.allrice.cloud.sandbox-execution'] === 'v1'
-            ? cloudNetworkBudgetSupervisor
-            : cloudNetworkSupervisor,
+            ? config.Labels['xyz.bplabs.allrice.cloud.input'] === 'stream-v1'
+              ? cloudStreamNetworkBudgetSupervisor
+              : cloudNetworkBudgetSupervisor
+            : config.Labels['xyz.bplabs.allrice.cloud.input'] === 'stream-v1'
+              ? cloudStreamNetworkSupervisor
+              : cloudNetworkSupervisor,
       ]) ||
       !runtimeContractEqual(config.Entrypoint, ['/usr/local/bin/node']) ||
       !runtimeContractEqual(config.Env ?? [], image.Config.Env ?? []) ||
@@ -778,9 +895,7 @@ export class CloudRunnerBackend {
       !h.ReadonlyRootfs ||
       h.Privileged ||
       h.Binds?.length ||
-      c.Mounts?.some(
-        (mount) => mount.Type !== 'tmpfs' || mount.Destination !== '/tmp',
-      ) ||
+      !this.inputMountsMatch(c) ||
       h.CapAdd?.length ||
       !runtimeContractEqual(h.CapDrop, ['ALL']) ||
       !h.SecurityOpt?.every(
@@ -1207,7 +1322,7 @@ export class CloudRunnerBackend {
   }
   async execute(
     commandInput: CloudExecutionPayload,
-    files: { path: string; contentBase64: string }[],
+    files: CloudInputFile[],
     options: {
       attemptId: string;
       deadlineAt: string;
@@ -1307,7 +1422,7 @@ export class CloudRunnerBackend {
    * file authorization/publication. No cloud grant or host shell is exposed. */
   async executeOffice(
     args: CloudCommandInput,
-    files: { path: string; contentBase64: string }[],
+    files: CloudInputFile[],
     options: Parameters<CloudRunnerBackend['execute']>[2],
   ) {
     if (args.network || options.networkLease)
@@ -1420,7 +1535,7 @@ export class CloudRunnerBackend {
 
   private async executeScript(
     args: CloudCommandInput,
-    files: { path: string; contentBase64: string }[],
+    files: CloudInputFile[],
     options: Parameters<CloudRunnerBackend['execute']>[2],
     office: boolean,
     imageDigest: string,
@@ -2024,7 +2139,7 @@ export class CloudRunnerBackend {
 
   protected async executeAdmittedScript(
     args: CloudCommandInput,
-    files: { path: string; contentBase64: string }[],
+    files: CloudInputFile[],
     options: Parameters<CloudRunnerBackend['execute']>[2],
     office: boolean,
     imageDigest = office
@@ -2048,6 +2163,14 @@ export class CloudRunnerBackend {
         guard?.physicalLeaseMs !== 5000
       )
         throw new CloudRunnerError('SANDBOX_EXECUTION_GUARD_UPGRADE_REQUIRED');
+      if (
+        files.length &&
+        !office &&
+        !options.repositoryExecution &&
+        !resolution &&
+        attestation.inputStreaming !== 1
+      )
+        throw new CloudRunnerError('CLOUD_INPUT_GUARD_UPGRADE_REQUIRED');
       if (resolution && attestation.projectResolution !== 1)
         throw new CloudRunnerError('PROJECT_RESOLUTION_GUARD_UPGRADE_REQUIRED');
     }
@@ -2064,25 +2187,41 @@ export class CloudRunnerBackend {
     }
     if (await this.inspect(attemptId))
       throw new CloudRunnerError('CLOUD_RECOVERY_REQUIRED');
+    const streamed =
+      !office &&
+      !options.repositoryExecution &&
+      !resolution &&
+      files.length > 0;
     let size = 0;
-    for (const f of files) {
-      const input = command.arguments.inputs.find((i) => i.path === f.path);
-      const b = Buffer.from(f.contentBase64, 'base64');
-      size += b.length;
+    const sources: RuntimeInputSource[] = [];
+    for (const file of files) {
+      const source =
+        'contentBase64' in file
+          ? bufferedInput(file.path, Buffer.from(file.contentBase64, 'base64'))
+          : file;
+      const declared = command.arguments.inputs.find(
+        (i) => i.path === source.path,
+      );
       if (
-        !input ||
-        `sha256:${createHash('sha256').update(b).digest('hex')}` !==
-          input.checksum
+        !declared ||
+        source.checksum !== declared.checksum ||
+        !Number.isSafeInteger(source.sizeBytes) ||
+        source.sizeBytes < 0
       )
         throw new CloudRunnerError('CLOUD_INPUT_CHANGED');
+      if (!streamed && !('contentBase64' in file))
+        throw new CloudRunnerError('CLOUD_INPUT_CHANGED');
+      size += source.sizeBytes;
+      sources.push(source);
     }
     if (
       files.length !== command.arguments.inputs.length ||
       new Set(files.map((f) => f.path)).size !== files.length ||
-      size >
-        (office
-          ? 20_000_000
-          : (options.repositoryExecution?.inputLimit ?? 2_000_000))
+      (!streamed &&
+        size >
+          (office
+            ? 20_000_000
+            : (options.repositoryExecution?.inputLimit ?? 2_000_000)))
     )
       throw new CloudRunnerError('CLOUD_INPUT_LIMIT');
     const executionBudget = options.sandboxExecution
@@ -2120,7 +2259,7 @@ export class CloudRunnerBackend {
     const limits = command.arguments.limits;
     const encoded =
       JSON.stringify({
-        files,
+        files: streamed ? [] : files,
         office,
         language: args.language,
         ...(options.repositoryExecution
@@ -2137,12 +2276,56 @@ export class CloudRunnerBackend {
         outputBytes: limits.outputBytes,
         deadline,
       }) + '\n';
+    let transferReadBytes = 0;
     return this.executeAdmittedPlan(
       {
         command,
         encoded,
         executionBudget,
+        get preparationReadBytes() {
+          return transferReadBytes;
+        },
+        ...(streamed
+          ? {
+              afterStart: async (id: string, signal: AbortSignal) => {
+                const transferSignal = AbortSignal.any([
+                  signal,
+                  AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+                ]);
+                const revoked = new AbortController();
+                let checking = false;
+                const timer = setInterval(() => {
+                  if (checking) return;
+                  checking = true;
+                  void options
+                    .maintainLease()
+                    .then((valid) => {
+                      if (!valid) revoked.abort();
+                    })
+                    .catch(() => revoked.abort())
+                    .finally(() => {
+                      checking = false;
+                    });
+                }, 500);
+                try {
+                  await this.putInputArchive(
+                    id,
+                    sources,
+                    AbortSignal.any([transferSignal, revoked.signal]),
+                    (bytes) => {
+                      transferReadBytes += bytes;
+                    },
+                  );
+                } finally {
+                  clearInterval(timer);
+                }
+                if (!(await options.maintainLease()))
+                  throw new CloudRunnerError('CLOUD_EXECUTION_REVOKED');
+              },
+            }
+          : {}),
         config: {
+          ...(streamed ? { Volumes: { '/allrice-input': {} } } : {}),
           Image: imageDigest,
           Entrypoint: ['/usr/local/bin/node'],
           Cmd: [
@@ -2157,11 +2340,19 @@ export class CloudRunnerBackend {
                 ? repositoryCompiledSupervisor
                 : options.networkLease
                   ? executionBudget
-                    ? cloudNetworkBudgetSupervisor
-                    : cloudNetworkSupervisor
+                    ? streamed
+                      ? cloudStreamNetworkBudgetSupervisor
+                      : cloudNetworkBudgetSupervisor
+                    : streamed
+                      ? cloudStreamNetworkSupervisor
+                      : cloudNetworkSupervisor
                   : executionBudget
-                    ? cloudBudgetSupervisor
-                    : cloudSupervisor,
+                    ? streamed
+                      ? cloudStreamBudgetSupervisor
+                      : cloudBudgetSupervisor
+                    : streamed
+                      ? cloudStreamSupervisor
+                      : cloudSupervisor,
           ],
           User: options.repositoryExecution ? '0:0' : '65532:65532',
           WorkingDir: '/tmp',
@@ -2171,6 +2362,9 @@ export class CloudRunnerBackend {
           Env: [],
           Labels: {
             [attemptLabel]: attemptId,
+            ...(streamed
+              ? { 'xyz.bplabs.allrice.cloud.input': 'stream-v1' }
+              : {}),
             ...(resolution ? { [resolutionLabel]: 'v1' } : {}),
             ...(executionBudget
               ? {
@@ -2949,7 +3143,24 @@ export class CloudRunnerBackend {
         await plan.afterStart?.(c.Id, executionOptions.signal);
         executionOptions.signal.throwIfAborted();
       } catch (error) {
-        if (!executionOptions.signal.aborted) throw error;
+        if (!executionOptions.signal.aborted) {
+          if (
+            plan.config &&
+            (plan.config.Labels as Record<string, string> | undefined)?.[
+              'xyz.bplabs.allrice.cloud.input'
+            ] === 'stream-v1'
+          ) {
+            await this.stop(attemptId);
+            const result = await collectResult('failed');
+            result.errorCode =
+              error instanceof Error && /^[A-Z][A-Z_0-9]+$/.test(error.message)
+                ? error.message
+                : 'CLOUD_INPUT_TRANSFER_FAILED';
+            result.output = `Input transfer failed before script execution (${result.errorCode}).`;
+            return result;
+          }
+          throw error;
+        }
         // A lost relay/physical lease must cancel staging as well as execution.
         // Never release the tenant start marker after the controller has stopped.
         await this.stop(attemptId);

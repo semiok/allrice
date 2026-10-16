@@ -5,6 +5,8 @@ import {
   cloudNetworkBudgetSupervisor,
   cloudBudgetSupervisor,
   cloudResolutionSupervisor,
+  cloudStreamBudgetSupervisor,
+  cloudStreamNetworkBudgetSupervisor,
 } from './backend.js';
 
 it('requires the exact sandbox envelope, a live private lease and current guard capability', () => {
@@ -20,6 +22,7 @@ s=importlib.util.spec_from_file_location('guard',sys.argv[1]);m=importlib.util.m
 scripts=json.load(sys.stdin);supervisors=scripts['regular'];resolver=scripts['resolver']
 assert set(hashlib.sha256(x.encode()).hexdigest() for x in supervisors)==set(m.SANDBOX_SUPERVISORS)
 assert {hashlib.sha256(resolver.encode()).hexdigest()}==set(m.RESOLUTION_SUPERVISORS)
+assert set(hashlib.sha256(x.encode()).hexdigest() for x in scripts['streamed'])==set(m.STREAM_SUPERVISORS)
 now=1000000;attempt='00000000-0000-4000-8000-000000000001'
 m.time.time=lambda:now/1000
 c={'Config':{'Image':m.NODE_IMAGE,'User':'65532:65532','Entrypoint':['/usr/local/bin/node'],
@@ -53,6 +56,13 @@ with tempfile.TemporaryDirectory() as tmp:
   resolved.append(m.command_deadline_valid(x,now,1600000))
  # A tenant script cannot borrow the resolver executable temp directory.
  x=copy.deepcopy(c);x['HostConfig']['Tmpfs']=resolution['HostConfig']['Tmpfs'];resolved.append(m.command_deadline_valid(x,now,1600000))
+ streamed=[]
+ for supervisor in scripts['streamed']:
+  x=copy.deepcopy(c);x['Config']['Cmd'][2]=supervisor;x['Config']['Labels']['xyz.bplabs.allrice.cloud.input']='stream-v1'
+  x['Config']['Volumes']={'/allrice-input':{}};x['Mounts'].append({'Type':'volume','Name':'a'*64,'Destination':'/allrice-input','RW':True})
+  streamed.append(m.command_deadline_valid(x,now,1600000))
+  for key,value in [('Type','bind'),('Name','shared-other-volume'),('Destination','/host'),('RW',False)]:
+   y=copy.deepcopy(x);y['Mounts'][-1][key]=value;streamed.append(m.command_deadline_valid(y,now,1600000))
  values=[m.command_deadline_valid(c,now,1600000)]
  x=copy.deepcopy(c);x['Config']['Cmd'][2]=supervisors[1];values.append(m.command_deadline_valid(x,now,1600000))
  x=copy.deepcopy(c);x['Config']['Image']=m.PYTHON_IMAGE;x['Config']['Env']=m.SANDBOX_IMAGE_ENV[m.PYTHON_IMAGE][:];values.append(m.command_deadline_valid(x,now,1600000))
@@ -84,7 +94,7 @@ with tempfile.TemporaryDirectory() as tmp:
  with contextlib.redirect_stdout(io.StringIO()):m.tick({'slots':4})
  old=m.live_sandbox_budget({});current=m.live_sandbox_budget({'sandboxExecution':m.sandbox_budget()})
  m.os.fstat=real_fstat
-print(json.dumps({'values':values,'resolver':resolved,'mixedStopped':len(killed)==1,'old':old,'current':current}))
+print(json.dumps({'streamed':streamed,'values':values,'resolver':resolved,'mixedStopped':len(killed)==1,'old':old,'current':current}))
 `,
         fileURLToPath(new URL('./watchdog.py', import.meta.url)),
       ],
@@ -92,11 +102,27 @@ print(json.dumps({'values':values,'resolver':resolved,'mixedStopped':len(killed)
         input: JSON.stringify({
           regular: [cloudBudgetSupervisor, cloudNetworkBudgetSupervisor],
           resolver: cloudResolutionSupervisor,
+          streamed: [
+            cloudStreamBudgetSupervisor,
+            cloudStreamNetworkBudgetSupervisor,
+          ],
         }),
         encoding: 'utf8',
       },
     ),
   );
+  expect(result.streamed).toEqual([
+    true,
+    false,
+    false,
+    false,
+    false,
+    true,
+    false,
+    false,
+    false,
+    false,
+  ]);
   expect(result.values.slice(0, 3)).toEqual([true, true, true]);
   expect(result.values.slice(3).every((v: boolean) => v === false)).toBe(true);
   expect(result.mixedStopped).toBe(true);

@@ -103,6 +103,7 @@ export const RuntimeLocalPythonProfileSchema = z
     pythonChartsContractVersion: z.literal(1).optional(),
     sandboxExecutionVersion: z.literal(1).optional(),
     sandboxNetworkVersion: z.literal(1).optional(),
+    inputStreamingVersion: z.literal(1).optional(),
   })
   .strict()
   .refine(
@@ -121,7 +122,7 @@ export const RuntimeLocalPythonInputSchema = z
     path,
     objectId: UuidSchema,
     checksum: ChecksumSchema,
-    sizeBytes: z.number().int().nonnegative().max(20_000_000),
+    sizeBytes: z.number().int().nonnegative(),
     mediaType: z.string().min(1).max(255),
   })
   .strict();
@@ -146,6 +147,7 @@ export const RuntimeLocalPythonPayloadSchema = z
         path: z.literal('.'),
         execution: SandboxExecutionRequestSchema.optional(),
         purpose: ManagedPythonPurposeSchema,
+        inputTransfer: z.literal('stream-v1').optional(),
         origin: z
           .object({
             toolName: z.enum(['workspace.export.create', 'python.execute']),
@@ -168,7 +170,7 @@ export const RuntimeLocalPythonPayloadSchema = z
         limits: z
           .object({
             timeoutMs: z.number().int().min(500).max(60_000),
-            inputBytes: z.number().int().positive().max(20_000_000),
+            inputBytes: z.number().int().positive(),
             artifactBytes: z.number().int().positive().max(8_000_000),
             outputBytes: z.number().int().min(1024).max(65_536),
             memoryMiB: z.number().int().min(128).max(512),
@@ -221,13 +223,33 @@ export const RuntimeLocalPythonPayloadSchema = z
       });
     if (
       a.purpose === 'python_charts' &&
-      (a.limits.inputBytes > 2_000_000 ||
+      ((!a.inputTransfer && a.limits.inputBytes > 2_000_000) ||
         a.limits.artifactBytes > 4_000_000 ||
         a.outputs.some((o) => ['docx', 'xlsx', 'pptx'].includes(o.format)))
     )
       ctx.addIssue({
         code: 'custom',
         message: 'chart limits and validators remain separate from Office',
+      });
+    if (
+      a.purpose === 'office' &&
+      (a.inputTransfer || a.limits.inputBytes > 20_000_000)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Office retains its existing input contract',
+      });
+    if (
+      a.inputTransfer &&
+      a.limits.inputBytes !==
+        Math.max(
+          1,
+          a.inputs.reduce((sum, i) => sum + i.sizeBytes, 0),
+        )
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'stream input bytes must match the immutable manifest',
       });
     if (a.inputs.reduce((sum, i) => sum + i.sizeBytes, 0) > a.limits.inputBytes)
       ctx.addIssue({

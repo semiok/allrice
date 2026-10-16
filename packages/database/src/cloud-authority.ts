@@ -528,7 +528,8 @@ export async function checkCloudBindingAuthority(
       object.state !== 'ready' ||
       object.deleted_at ||
       object.checksum !== file.checksum ||
-      Number(object.size_bytes) > (repositoryProof?.inputLimit ?? 2_000_000) ||
+      (repositoryProof &&
+        Number(object.size_bytes) > repositoryProof.inputLimit) ||
       (object.owner_id !== context.actor.id && object.visibility === 'private')
     )
       throw new RuntimePolicyError('cloud_input_not_authorized');
