@@ -30,6 +30,19 @@ The allowance is a bounded engineering starting point, not a measured production
 - Network-grant expiry remains an independent bound. Cloud network authority retains its existing 2s timeout; only the trusted Bridge adapter selects 8s.
 - No command replay, host networking fallback, TLS bypass, DSH core change or extra user setting is introduced.
 
+## MET-190: lost control acknowledgements
+
+Run `20f5c071-2232-411f-ab1b-4d0ebcf6e4d6` stopped near its first renewal with `lease_lost`, exit 137 and no client-recorded extension. Its server operation lease remained valid. The old receipt did not record the failing control phase, so that individual run cannot retrospectively establish whether HTTP, metrics or the private channel failed. Its unknown external-request outcome remains preserved. A later successful run is not proof that the original failure was fixed.
+
+The reproducible defect is that a fast HTTP disconnection immediately failed a heartbeat or budget exchange. A real HTTP fixture commits a renewal and drops its acknowledgement; the old client abandons execution even though the authority has accepted the request. Bridge now permits one reconnect for a recognized transport failure on only the idempotent heartbeat, budget, network-admission and output-evidence routes. Both attempts share the original request deadline, with the exact same body, renewal ID, sequence, counters or output bytes. No second extension or command execution is allocated.
+
+- HTTP denial (including 5xx), malformed replies, cancellation and an exhausted request deadline are not retried. Start, claim, receipt delivery, tenant commands and external-service requests are outside this helper.
+- Control failure evidence distinguishes heartbeat, budget, network admission, output, container inspection, metrics, private connection/write and cycle deadline. It records bounded enums, timestamps, elapsed milliseconds, attempt count and allowlisted HTTP/transport codes. No raw exception, URL, token, response body or stack is persisted in these fields.
+- The failure is included in stopped Node/Python result evidence; uncertain outcomes keep a safe phase/kind summary and structured Core logs. A rejected control admission before invoking the runner is settled as failed with no execution. An uncertain running process or external effect stays uncertain.
+- The 8s/11s/20s limits and business budgets above do not change. A late reply cannot grant a closed controller another lease or overwrite a proven terminal result.
+
+`control-request.test.ts` exercises real dropped HTTP replies and bounded retries; `bridge-control-recovery-native.ts` exercises Node and managed Python on each native architecture, including one accepted renewal with a lost reply, persistent disconnect and explicit denial. Native execution and public Dev acceptance must be completed before treating this as delivered.
+
 ## References
 
 [AWS: Timeouts, retries, and backoff with jitter](https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/) recommends selecting an acceptable false-timeout rate, measuring downstream tail latency and including WAN/connection overhead. It also warns that a timeout does not prove an operation had no side effect.

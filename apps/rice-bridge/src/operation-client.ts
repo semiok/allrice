@@ -1,3 +1,7 @@
+import {
+  BridgeControlRequests,
+  BridgeControlError,
+} from './control-request.js';
 import { localExecutionRequestTimeoutMs } from './local-execution-timing.js';
 import { unconfirmedLocalNetworkOutcome } from './local-sandbox-network.js';
 import { RuntimeBridgeSandboxNetworkResponseSchema } from '@allrice/contracts';
@@ -93,16 +97,22 @@ export class RuntimeBridgeOperationClient {
 
   private async deliverOutput(
     chunk: Awaited<ReturnType<BridgeJournal['recordOutput']>>,
+    control?: BridgeControlRequests,
   ) {
+    const send = control
+      ? <T>(input: Parameters<typeof bridgeRequest>[0]) =>
+          control.send<T>('output', input)
+      : this.request;
     const ack = RuntimeBridgeOutputAckSchema.parse(
-      await this.request({
+      await send({
         server: this.input.config.server,
         path: `${runtimeBridgeOperationPath}/${chunk.attempt.operationId}/output`,
         method: 'POST',
         token: this.input.token,
         body: chunk,
         maximumResponseBytes: 4096,
-        timeoutMs: 2500,
+        timeoutMs: control ? localExecutionRequestTimeoutMs : 2500,
+        signal: this.input.signal,
       }),
     );
     if (
@@ -883,7 +893,10 @@ export class RuntimeBridgeOperationClient {
     }
   }
 
-  private async networkLease(dispatch: RuntimeBridgeDispatch) {
+  private async networkLease(
+    dispatch: RuntimeBridgeDispatch,
+    control: BridgeControlRequests,
+  ) {
     const p = dispatch.payload,
       b = dispatch.snapshot.binding;
     if (
@@ -893,39 +906,88 @@ export class RuntimeBridgeOperationClient {
     )
       return undefined;
     const { config, token } = this.input;
-    const { lease } = RuntimeBridgeSandboxNetworkResponseSchema.parse(
-      await this.request({
-        server: config.server,
-        token,
-        path: `${runtimeBridgeOperationPath}/${b.attempt.operationId}/network`,
-        method: 'POST',
-        body: {
-          contractVersion: 1,
-          attempt: b.attempt,
-          leaseToken: dispatch.leaseToken,
-        },
-        timeoutMs: localExecutionRequestTimeoutMs,
-        signal: this.input.signal,
-        maximumResponseBytes: 32768,
-      }),
-    );
-    if (
-      lease.organizationId !== b.task.scope.organizationId ||
-      lease.workspaceId !== b.task.scope.workspaceId ||
-      lease.ownerId !== b.requestedBy.id ||
-      lease.runId !== b.task.runId ||
-      lease.operationId !== b.attempt.operationId ||
-      lease.attemptId !== b.attempt.attemptId ||
-      lease.target.kind !== 'bridge' ||
-      lease.target.targetId !== b.execution.targetId ||
-      lease.target.deviceId !== b.execution.deviceId ||
-      lease.policyDigest !== b.command?.networkPolicyDigest
-    )
-      throw new LocalCommandError('SANDBOX_NETWORK_DENIED');
-    return lease;
+    const response = await control.send('network_admission', {
+      server: config.server,
+      token,
+      path: `${runtimeBridgeOperationPath}/${b.attempt.operationId}/network`,
+      method: 'POST',
+      body: {
+        contractVersion: 1,
+        attempt: b.attempt,
+        leaseToken: dispatch.leaseToken,
+      },
+      timeoutMs: localExecutionRequestTimeoutMs,
+      signal: this.input.signal,
+      maximumResponseBytes: 32768,
+    });
+    return control.validate('network_admission', () => {
+      const { lease } =
+        RuntimeBridgeSandboxNetworkResponseSchema.parse(response);
+      if (
+        lease.organizationId !== b.task.scope.organizationId ||
+        lease.workspaceId !== b.task.scope.workspaceId ||
+        lease.ownerId !== b.requestedBy.id ||
+        lease.runId !== b.task.runId ||
+        lease.operationId !== b.attempt.operationId ||
+        lease.attemptId !== b.attempt.attemptId ||
+        lease.target.kind !== 'bridge' ||
+        lease.target.targetId !== b.execution.targetId ||
+        lease.target.deviceId !== b.execution.deviceId ||
+        lease.policyDigest !== b.command?.networkPolicyDigest
+      )
+        throw new LocalCommandError('SANDBOX_NETWORK_DENIED');
+      return lease;
+    });
   }
 
-  private async executionBudget(dispatch: RuntimeBridgeDispatch) {
+  private async maintainOperationLease(
+    dispatch: RuntimeBridgeDispatch,
+    budgeted: boolean,
+    control: BridgeControlRequests,
+  ) {
+    if (this.input.signal?.aborted) return false;
+    const request = {
+      server: this.input.config.server,
+      token: this.input.token,
+      path: `${runtimeBridgeOperationPath}/${dispatch.snapshot.binding.attempt.operationId}/heartbeat`,
+      method: 'POST' as const,
+      body: {
+        contractVersion: 1,
+        attempt: dispatch.snapshot.binding.attempt,
+        leaseToken: dispatch.leaseToken,
+      },
+      maximumResponseBytes: 200_000,
+      timeoutMs: budgeted ? localExecutionRequestTimeoutMs : 2500,
+      signal: this.input.signal,
+    };
+    try {
+      const current = budgeted
+        ? await control.send<{ snapshot: unknown; leaseExpiresAt: string }>(
+            'heartbeat',
+            request,
+          )
+        : await this.request<{ snapshot: unknown; leaseExpiresAt: string }>(
+            request,
+          );
+      const snapshot = RuntimeOperationSnapshotSchema.parse(current.snapshot);
+      const allowed =
+        snapshot.status === 'running' &&
+        snapshot.cancelRequestId === null &&
+        runtimeContractEqual(snapshot.binding, dispatch.snapshot.binding) &&
+        Date.parse(current.leaseExpiresAt) > Date.now();
+      if (!allowed && budgeted)
+        throw control.capture(Error('EXECUTION_REVOKED'), 'heartbeat');
+      return allowed;
+    } catch (error) {
+      if (budgeted) throw control.capture(error, 'heartbeat');
+      return false;
+    }
+  }
+
+  private async executionBudget(
+    dispatch: RuntimeBridgeDispatch,
+    control: BridgeControlRequests,
+  ) {
     if (
       (dispatch.payload.capability !== 'local.process.execute' &&
         dispatch.payload.capability !== 'local.python.execute') ||
@@ -934,24 +996,27 @@ export class RuntimeBridgeOperationClient {
       return undefined;
     const { config, token } = this.input;
     const { operationId } = dispatch.snapshot.binding.attempt;
-    const exchange = async (renewal?: SandboxExecutionRenewal) =>
-      RuntimeBridgeSandboxBudgetResponseSchema.parse(
-        await this.request({
-          server: config.server,
-          path: `${runtimeBridgeOperationPath}/${operationId}/budget`,
-          method: 'POST',
-          token,
-          body: {
-            contractVersion: 1,
-            attempt: dispatch.snapshot.binding.attempt,
-            leaseToken: dispatch.leaseToken,
-            ...(renewal ? { renewal } : {}),
-          },
-          maximumResponseBytes: 32768,
-          timeoutMs: localExecutionRequestTimeoutMs,
-          signal: this.input.signal,
-        }),
-      ).budget;
+    const exchange = async (renewal?: SandboxExecutionRenewal) => {
+      const response = await control.send('budget', {
+        server: config.server,
+        path: `${runtimeBridgeOperationPath}/${operationId}/budget`,
+        method: 'POST',
+        token,
+        body: {
+          contractVersion: 1,
+          attempt: dispatch.snapshot.binding.attempt,
+          leaseToken: dispatch.leaseToken,
+          ...(renewal ? { renewal } : {}),
+        },
+        maximumResponseBytes: 32768,
+        timeoutMs: localExecutionRequestTimeoutMs,
+        signal: this.input.signal,
+      });
+      return control.validate(
+        'budget',
+        () => RuntimeBridgeSandboxBudgetResponseSchema.parse(response).budget,
+      );
+    };
     return new SandboxExecutionBudgetController(
       await exchange(),
       dispatch.payload.executionBudget,
@@ -967,15 +1032,16 @@ export class RuntimeBridgeOperationClient {
       throw Error('LOCAL_PYTHON_UNAVAILABLE');
     const { pythonRunner: runner, journal, config, token } = this.input;
     const { operationId, attemptId } = dispatch.snapshot.binding.attempt;
-    const body = {
-      contractVersion: 1,
-      attempt: dispatch.snapshot.binding.attempt,
-      leaseToken: dispatch.leaseToken,
-    };
+    const control = new BridgeControlRequests(this.request, {
+      operationId,
+      attemptId,
+    });
+    let runnerInvoked = false;
     try {
-      const executionBudget = await this.executionBudget(dispatch);
-      const networkLease = await this.networkLease(dispatch);
-      const result = await runner.execute(dispatch.payload, {
+      const executionBudget = await this.executionBudget(dispatch, control);
+      const networkLease = await this.networkLease(dispatch, control);
+      runnerInvoked = true;
+      const rawResult = await runner.execute(dispatch.payload, {
         attemptId,
         ...(executionBudget ? { executionBudget } : {}),
         ...(networkLease ? { networkLease } : {}),
@@ -987,40 +1053,14 @@ export class RuntimeBridgeOperationClient {
           leaseToken: dispatch.leaseToken,
         }),
         maintainLease: async () => {
-          if (this.input.signal?.aborted) return false;
-          try {
-            const current = await this.request<{
-              snapshot: unknown;
-              leaseExpiresAt: string;
-            }>({
-              server: config.server,
-              path: `${runtimeBridgeOperationPath}/${operationId}/heartbeat`,
-              method: 'POST',
-              token,
-              body,
-              maximumResponseBytes: 200_000,
-              timeoutMs: executionBudget
-                ? localExecutionRequestTimeoutMs
-                : 2500,
-              signal: this.input.signal,
-            });
-            const snapshot = RuntimeOperationSnapshotSchema.parse(
-              current.snapshot,
-            );
-            return (
-              snapshot.status === 'running' &&
-              snapshot.cancelRequestId === null &&
-              runtimeContractEqual(
-                snapshot.binding,
-                dispatch.snapshot.binding,
-              ) &&
-              Date.parse(current.leaseExpiresAt) > Date.now()
-            );
-          } catch {
-            return false;
-          }
+          return this.maintainOperationLease(
+            dispatch,
+            Boolean(executionBudget),
+            control,
+          );
         },
       });
+      const result = control.withFailure(rawResult);
       if (unconfirmedLocalNetworkOutcome(dispatch.payload, result)) {
         await journal.uncertain(operationId, 'receipt_missing', {
           output: result,
@@ -1051,6 +1091,20 @@ export class RuntimeBridgeOperationClient {
         .cleanup(attemptId, result.containerId, dispatch.payload)
         .catch(() => undefined);
     } catch (error) {
+      if (
+        error instanceof BridgeControlError ||
+        (error instanceof Error && error.cause instanceof BridgeControlError)
+      )
+        control.capture(error, 'cycle');
+      if (!runnerInvoked && error instanceof BridgeControlError) {
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: `本地执行前连接检查失败（${error.failure.stage}/${error.failure.kind}），命令未运行`,
+          errorCode: 'BRIDGE_CONTROL_REQUEST_FAILED',
+        });
+        return;
+      }
       const notExecuted =
         error instanceof LocalCommandError &&
         [
@@ -1079,7 +1133,11 @@ export class RuntimeBridgeOperationClient {
         });
       else
         await journal.uncertain(operationId, 'receipt_missing', {
-          summary: '本地 Python 停止或字节收集结果待对账；不自动重放或换端',
+          summary:
+            '本地 Python 停止或字节收集结果待对账；不自动重放或换端' +
+            (control.failure
+              ? `（${control.failure.stage}/${control.failure.kind}）`
+              : ''),
         });
     }
   }
@@ -1201,21 +1259,22 @@ export class RuntimeBridgeOperationClient {
       !this.input.runner
     )
       throw new Error('LOCAL_RUNNER_UNAVAILABLE');
-    const { runner, journal, config, token } = this.input;
+    const { runner, journal } = this.input;
     const { operationId, attemptId } = dispatch.snapshot.binding.attempt;
-    const body = {
-      contractVersion: 1,
-      attempt: dispatch.snapshot.binding.attempt,
-      leaseToken: dispatch.leaseToken,
-    };
     let outputQueue = Promise.resolve(),
       persistenceQueue = Promise.resolve(),
       outputFailed = false,
       journalFailed = false;
+    const control = new BridgeControlRequests(this.request, {
+      operationId,
+      attemptId,
+    });
+    let runnerInvoked = false;
     try {
-      const executionBudget = await this.executionBudget(dispatch);
-      const networkLease = await this.networkLease(dispatch);
-      const result = await runner.execute(root, dispatch.payload, {
+      const executionBudget = await this.executionBudget(dispatch, control);
+      const networkLease = await this.networkLease(dispatch, control);
+      runnerInvoked = true;
+      const rawResult = await runner.execute(root, dispatch.payload, {
         attemptId,
         ...(executionBudget ? { executionBudget } : {}),
         ...(networkLease ? { networkLease } : {}),
@@ -1227,38 +1286,13 @@ export class RuntimeBridgeOperationClient {
         signal: this.input.signal,
         leaseExpiresAt: dispatch.leaseExpiresAt,
         maintainLease: async () => {
-          if (outputFailed || this.input.signal?.aborted) return false;
-          try {
-            const current = await this.request<{
-              snapshot: unknown;
-              leaseExpiresAt: string;
-            }>({
-              server: config.server,
-              path: `${runtimeBridgeOperationPath}/${operationId}/heartbeat`,
-              method: 'POST',
-              token,
-              body,
-              maximumResponseBytes: 200_000,
-              timeoutMs: executionBudget
-                ? localExecutionRequestTimeoutMs
-                : 2500,
-              signal: this.input.signal,
-            });
-            const snapshot = RuntimeOperationSnapshotSchema.parse(
-              current.snapshot,
-            );
-            return (
-              snapshot.status === 'running' &&
-              snapshot.cancelRequestId === null &&
-              runtimeContractEqual(
-                snapshot.binding,
-                dispatch.snapshot.binding,
-              ) &&
-              Date.parse(current.leaseExpiresAt) > Date.now()
-            );
-          } catch {
-            return false;
-          }
+          if (outputFailed)
+            throw control.capture(Error('OUTPUT_NOT_CONFIRMED'), 'output');
+          return this.maintainOperationLease(
+            dispatch,
+            Boolean(executionBudget),
+            control,
+          );
         },
         onOutput: (chunk) => {
           // Disk commit must not wait behind a stalled network acknowledgment.
@@ -1277,15 +1311,20 @@ export class RuntimeBridgeOperationClient {
             .then(async () => {
               const body = await saved;
               if (outputFailed) return; // still retain every later bounded chunk on disk
-              await this.deliverOutput(body);
+              await this.deliverOutput(
+                body,
+                executionBudget ? control : undefined,
+              );
             })
-            .catch(() => {
+            .catch((error) => {
+              control.capture(error, 'output');
               outputFailed = true;
             });
         },
       });
       await persistenceQueue;
       await outputQueue;
+      const result = control.withFailure(rawResult);
       if (journalFailed)
         throw new BridgeJournalError('JOURNAL_OUTPUT_NOT_DURABLE');
       // A dropped streaming chunk does not erase the complete bounded local result.
@@ -1322,6 +1361,20 @@ export class RuntimeBridgeOperationClient {
         .catch(() => undefined);
       await outputQueue;
     } catch (error) {
+      if (
+        error instanceof BridgeControlError ||
+        (error instanceof Error && error.cause instanceof BridgeControlError)
+      )
+        control.capture(error, 'cycle');
+      if (!runnerInvoked && error instanceof BridgeControlError) {
+        await journal.outcome(operationId, {
+          status: 'failed',
+          effects: 'none',
+          summary: `本地执行前连接检查失败（${error.failure.stage}/${error.failure.kind}），命令未运行`,
+          errorCode: 'BRIDGE_CONTROL_REQUEST_FAILED',
+        });
+        return;
+      }
       // A daemon/log failure can reject after onOutput has queued disk commits.
       // Drain those callbacks before unknown/final closes the entry to new output.
       await persistenceQueue;
@@ -1364,7 +1417,14 @@ export class RuntimeBridgeOperationClient {
             '本地执行前检查未通过，命令未运行',
           errorCode: error.code,
         });
-      else await journal.uncertain(operationId, 'receipt_missing');
+      else
+        await journal.uncertain(operationId, 'receipt_missing', {
+          summary:
+            '本地执行结果待核实；不自动重放' +
+            (control.failure
+              ? `（${control.failure.stage}/${control.failure.kind}）`
+              : ''),
+        });
     }
   }
 }

@@ -19,6 +19,7 @@ import {
   SandboxExecutionBudgetSpecSchema,
   SandboxExecutionObservationSchema,
   SandboxExecutionRequestSchema,
+  SandboxControlFailureSchema,
 } from './sandbox-execution.ts';
 import {
   CommandCandidateSchema,
@@ -444,6 +445,7 @@ export const RuntimeLocalCommandResultSchema = z
     workCopy: z.literal('local_isolated_copy'),
     sourceDirectoryModified: z.literal(false),
     execution: SandboxExecutionObservationSchema.optional(),
+    controlFailure: SandboxControlFailureSchema.optional(),
     network: SandboxNetworkObservationSchema.optional(),
     errorCode: SandboxNetworkErrorCodeSchema.optional(),
     diagnostics: RuntimeProjectDiagnosticsSchema.optional(),

@@ -2,6 +2,7 @@ import {
   SandboxExecutionBudgetSpecSchema,
   SandboxExecutionRequestSchema,
   SandboxExecutionObservationSchema,
+  SandboxControlFailureSchema,
 } from './sandbox-execution.ts';
 import { z } from 'zod';
 import {
@@ -375,6 +376,7 @@ export const RuntimeLocalPythonResultSchema = z
     workCopy: z.literal('local_isolated_copy'),
     sourceDirectoryModified: z.literal(false),
     execution: SandboxExecutionObservationSchema.optional(),
+    controlFailure: SandboxControlFailureSchema.optional(),
     network: SandboxNetworkObservationSchema.optional(),
     errorCode: SandboxNetworkErrorCodeSchema.optional(),
   })

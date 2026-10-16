@@ -30,6 +30,7 @@ import {
 } from './local-command-inputs.js';
 import { localCommandSupervisor } from './local-command-supervisor.js';
 import { diagnosticEvidence } from './project-diagnostics.js';
+import { BridgeControlError, firstControlFailure } from './control-request.js';
 import {
   prepareDependencyArchives,
   dependencyEvidence,
@@ -542,6 +543,14 @@ export class LocalCommandRunner {
         sourceDirectoryModified: false,
         ...(budget ? { execution: budget.observation } : {}),
         ...(network?.evidence ?? {}),
+        ...(firstControlFailure(executionControl?.failure, network?.failure)
+          ? {
+              controlFailure: firstControlFailure(
+                executionControl?.failure,
+                network?.failure,
+              ),
+            }
+          : {}),
         ...(bundle.candidate ? { candidate: bundle.candidate } : {}),
         ...dependencyEvidence(command, inspected.State.ExitCode, reason),
         ...diagnosticEvidence(
@@ -555,7 +564,11 @@ export class LocalCommandRunner {
       await stop('supervisor_failed').catch(() => undefined);
       // Docker evidence is retained. Transport failure never fabricates a stopped result.
       const error = new LocalCommandError('RUNNER_RESULT_UNKNOWN');
-      error.cause = cause;
+      const failure = firstControlFailure(
+        executionControl?.failure,
+        network?.failure,
+      );
+      error.cause = failure ? new BridgeControlError(failure) : cause;
       throw error;
     } finally {
       await network?.finish();

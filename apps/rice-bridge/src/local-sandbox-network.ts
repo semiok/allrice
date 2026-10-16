@@ -6,6 +6,7 @@ import {
   type RuntimeLocalPythonPayload,
   type SandboxNetworkErrorCode,
   type SandboxNetworkLease,
+  type SandboxControlFailure,
 } from '@allrice/contracts';
 import {
   openSandboxNetwork,
@@ -13,6 +14,7 @@ import {
   type SandboxNetworkSession,
 } from '@allrice/project-runtime';
 import type { LocalDockerApi } from './local-docker-api.js';
+import { controlFailure } from './control-request.js';
 
 type Payload = RuntimeLocalCommand | RuntimeLocalPythonPayload;
 export function requireLocalSandboxNetwork(
@@ -46,6 +48,7 @@ export class LocalSandboxNetwork {
   private error?: SandboxNetworkErrorCode;
   private closing = false;
   private closeTask?: Promise<void>;
+  failure?: SandboxControlFailure;
   constructor(
     private readonly options: {
       api: LocalDockerApi;
@@ -94,9 +97,19 @@ export class LocalSandboxNetwork {
           throw new SandboxNetworkError('SANDBOX_NETWORK_REVOKED');
       },
       assertCurrent: async () => {
-        o.signal.throwIfAborted();
-        if (!(await o.maintainLease()))
-          throw new SandboxNetworkError('SANDBOX_NETWORK_REVOKED');
+        const started = performance.now();
+        try {
+          o.signal.throwIfAborted();
+          if (!(await o.maintainLease()))
+            throw new SandboxNetworkError('SANDBOX_NETWORK_REVOKED');
+        } catch (error) {
+          this.failure ??= controlFailure(
+            error,
+            'heartbeat',
+            performance.now() - started,
+          );
+          throw error;
+        }
       },
       onError: (code) => {
         this.error ??= code;
@@ -147,6 +160,7 @@ export class LocalSandboxNetwork {
         openedConnections: 0,
       },
       ...(this.error ? { errorCode: this.error } : {}),
+      ...(this.failure ? { controlFailure: this.failure } : {}),
     };
   }
   async finish() {

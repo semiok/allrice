@@ -15,6 +15,7 @@ import {
   sandboxExecutionBudgetSpec,
   resolveSandboxExecutionPolicy,
   startSandboxExecutionBudget,
+  renewSandboxExecutionBudget,
   RuntimeLocalPdfPayloadSchema,
   RuntimeLocalPdfResultSchema,
   RuntimeLocalPythonPayloadSchema,
@@ -73,6 +74,8 @@ async function createFixture(
     pdf?: boolean;
     python?: boolean;
     controlDelayMs?: number;
+    loseControlReply?: 'budget' | 'heartbeat';
+    denyBudget?: boolean;
   } = {},
 ) {
   const temporary = await realpath(
@@ -206,6 +209,11 @@ async function createFixture(
   let dispatched = false;
   let started = false;
   let failedResultOnce = false;
+  let authorityBudget = startSandboxExecutionBudget(
+    budgetSpec,
+    Date.now(),
+    Date.now() + 600000,
+  );
   const accepted: RuntimeBridgeReceipt[] = [];
   // This adapter is a deterministic transport fixture, not a substitute for
   // the PostgreSQL ledger integration suite. HTTP and device disk are real.
@@ -228,12 +236,15 @@ async function createFixture(
       };
       return { snapshot, mayExecute };
     },
-    async exchangeSandboxExecutionBudget() {
-      return startSandboxExecutionBudget(
-        budgetSpec,
-        Date.now(),
-        Date.now() + 600000,
-      );
+    async exchangeSandboxExecutionBudget(input) {
+      if (input.renewal)
+        authorityBudget = renewSandboxExecutionBudget(
+          authorityBudget,
+          input.renewal,
+          Date.now(),
+          authorityBudget.hardDeadlineAt,
+        );
+      return authorityBudget;
     },
     async heartbeat() {
       return {
@@ -349,7 +360,17 @@ async function createFixture(
       },
       ...(chunks.length ? { body: Buffer.concat(chunks) } : {}),
     });
+    if (options.denyBudget && action === 'budget') {
+      response.statusCode = 403;
+      response.end(JSON.stringify({ error: { message: 'denied' } }));
+      return;
+    }
     const result = await handle(webRequest, action, pathname.split('/').at(-2));
+    if (options.loseControlReply === action && !failedResultOnce) {
+      failedResultOnce = true;
+      response.destroy();
+      return;
+    }
     // Destroy AFTER the route accepted its durable semantic result, emulating
     // dropped response. Client must not confuse delivery with execution.
     if (
@@ -822,3 +843,76 @@ it('waits for a real slow budget/heartbeat response without replaying Python', a
   );
   expect(await client.pollOnce()).toBe(false);
 }, 15000);
+
+it.each(['budget', 'heartbeat'] as const)(
+  'survives one dropped %s acknowledgement without restarting Python',
+  async (loseControlReply) => {
+    vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+    const f = await createFixture({
+      python: true,
+      controlDelayMs: 1,
+      loseControlReply,
+    });
+    const executed = vi.fn(async (_payload, options) => {
+      expect(await options.maintainLease()).toBe(true);
+      throw new LocalPythonInputDownloadError('INPUT_DOWNLOAD_UNAVAILABLE', {
+        objectId: fixtureId(42),
+        stage: 'body',
+        reason: 'UND_ERR_SOCKET',
+        httpStatus: 200,
+        expectedBytes: 1024,
+        receivedBytes: 0,
+        elapsedMs: 0,
+      });
+    });
+    const client = new RuntimeBridgeOperationClient({
+      config: f.config,
+      token: 'fixture-device-token',
+      journal: f.journal,
+      pythonRunner: {
+        execute: executed,
+        cleanup: vi.fn(),
+      } as unknown as LocalPythonRunner,
+    });
+    await expect(client.pollOnce()).resolves.toBe(true);
+    expect(executed).toHaveBeenCalledOnce();
+    expect(f.accepted.some((r) => r.signal.type === 'operation.outcome')).toBe(
+      true,
+    );
+    expect(await client.pollOnce()).toBe(false);
+  },
+);
+
+it('settles a rejected budget before runner invocation as not executed, never unknown', async () => {
+  vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+  const f = await createFixture({
+    python: true,
+    controlDelayMs: 1,
+    denyBudget: true,
+  });
+  const executed = vi.fn();
+  const client = new RuntimeBridgeOperationClient({
+    config: f.config,
+    token: 'fixture-device-token',
+    journal: f.journal,
+    pythonRunner: {
+      execute: executed,
+      cleanup: vi.fn(),
+    } as unknown as LocalPythonRunner,
+  });
+  await expect(client.pollOnce()).resolves.toBe(true);
+  expect(executed).not.toHaveBeenCalled();
+  expect(f.accepted.some((r) => r.signal.type === 'operation.uncertain')).toBe(
+    false,
+  );
+  expect(
+    f.accepted.find((r) => r.signal.type === 'operation.outcome'),
+  ).toMatchObject({
+    signal: {
+      type: 'operation.outcome',
+      result: { status: 'failed', effects: 'none' },
+    },
+    evidence: { errorCode: 'BRIDGE_CONTROL_REQUEST_FAILED' },
+  });
+  expect(await client.pollOnce()).toBe(false);
+});
