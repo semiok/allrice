@@ -167,6 +167,7 @@ try {
           execution: { version: 1, kind: 'compute' },
           limits: {
             timeoutMs: 60000,
+            inputBytes: 1, // This probe has no input files.
             artifactBytes: 1000000,
             outputBytes: 8192,
             memoryMiB: 512,
