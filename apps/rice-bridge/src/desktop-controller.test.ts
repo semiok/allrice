@@ -136,12 +136,16 @@ async function fixture(
     hang = false,
     acknowledgeReceipts = false,
     receiptAttempts = 0,
-    operationPolls = 0;
+    operationPolls = 0,
+    holdHeartbeat = false;
+  const heldHeartbeats: (() => void)[] = [];
   const server = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
     response.setHeader('content-type', 'application/json');
-    if (request.url?.endsWith('/receipts')) {
+    if (request.url?.endsWith('/heartbeat') && holdHeartbeat) {
+      heldHeartbeats.push(() => response.end('{}'));
+    } else if (request.url?.endsWith('/receipts')) {
       receiptAttempts++;
       if (acknowledgeReceipts)
         response.end(
@@ -364,6 +368,14 @@ async function fixture(
     hang: () => {
       hang = true;
     },
+    holdHeartbeat: () => {
+      holdHeartbeat = true;
+    },
+    heartbeatHeld: () => heldHeartbeats.length > 0,
+    releaseHeartbeat: () => {
+      holdHeartbeat = false;
+      for (const release of heldHeartbeats.splice(0)) release();
+    },
   };
 }
 async function wait(
@@ -545,6 +557,35 @@ it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and
   expect(app.child.exitCode).toBe(0);
   expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
   expect(app.text()).not.toContain('synthetic-secret-token');
+}, 15_000);
+
+it('keeps read-only diagnostics and duplicate stop observations responsive during shutdown', async () => {
+  const f = await fixture();
+  const app = f.launch();
+  await app.waitUntil(() => f.polls() > 0);
+  f.holdHeartbeat();
+  const stopped = app.request('stop');
+  await app.waitUntil(() => f.heartbeatHeld());
+  const retry = app.request('stop');
+  const diagnostics = await app.request('diagnostics');
+  expect(diagnostics.data).toMatchObject({
+    mode: 'stopping',
+    shutdown: { phase: 'heartbeat', status: 'waiting', waitLimitMs: 60_000 },
+  });
+  expect((await app.request('status')).data).toHaveProperty('shutdown');
+  expect(await app.request('resume')).toMatchObject({
+    ok: false,
+    code: 'DESKTOP_STOP_IN_PROGRESS',
+  });
+  expect(JSON.stringify(diagnostics)).not.toContain('synthetic-secret-token');
+  expect(JSON.stringify(diagnostics)).not.toContain(f.root);
+  expect(app.child.exitCode).toBeNull();
+  f.releaseHeartbeat();
+  expect((await stopped).ok).toBe(true);
+  expect((await retry).ok).toBe(true);
+  await exited(app.child);
+  expect(app.child.exitCode).toBe(0);
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
 }, 15_000);
 
 it('explicit pause survives reopening, and resume restores the same pairing', async () => {
