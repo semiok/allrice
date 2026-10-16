@@ -162,9 +162,30 @@ integration(
               };
             await executeManagedCharts(
               {
-                context: { ...f.context, runId: f.task.runId },
+                context: {
+                  executionId: randomUUID(),
+                  runId: f.task.runId,
+                  jobId: f.worker.jobId,
+                  worker: { type: 'worker', id: f.worker.workerId },
+                  delegatedBy: { type: 'user', id: f.context.actor.id },
+                  organizationId: f.context.organizationId,
+                  workspaceId: f.context.workspaceId,
+                  startedAt: new Date().toISOString(),
+                  policySnapshot: {
+                    id: randomUUID(),
+                    organizationId: f.context.organizationId,
+                    subjectId: f.context.actor.id,
+                    version: 1,
+                    issuedAt: new Date().toISOString(),
+                    expiresAt: new Date(Date.now() + 600000).toISOString(),
+                    memberships: f.context.memberships,
+                    grants: [],
+                  },
+                },
+                capabilities: [],
+                storageRoot: database.storageRoot,
                 call,
-              } as RiceToolExecutionInput,
+              } satisfies RiceToolExecutionInput,
               PythonExecuteArgsSchema.parse(call.arguments),
             );
             throw Error('missing lease must reject');
