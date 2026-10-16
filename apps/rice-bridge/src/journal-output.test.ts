@@ -12,6 +12,10 @@ import { fixtureId, journalDispatch } from './journal-fixtures.js';
 import { RuntimeBridgeOperationClient } from './operation-client.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import type { bridgeRequest } from './client.js';
+import {
+  LocalCommandError,
+  LocalCommandNotStartedError,
+} from './local-command-inputs.js';
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -313,6 +317,57 @@ it('persists subsequent real callbacks while the first network ACK stalls, and r
   expect(await journal.pendingOutput()).toEqual([]);
   expect(await journal.pending()).toEqual([]);
 });
+
+it.each([true, false])(
+  'settles a preparation budget failure only with proof that execution never started (%s)',
+  async (notStarted) => {
+    const { journal, parsed } = await fixture();
+    const code = 'SANDBOX_EXECUTION_NO_PROGRESS';
+    const error = notStarted
+      ? new LocalCommandNotStartedError(code)
+      : new LocalCommandError(code);
+    const runner = {
+      execute: vi.fn(async () => {
+        throw error;
+      }),
+      cleanup: vi.fn(),
+    } as unknown as LocalCommandRunner;
+    const client = new RuntimeBridgeOperationClient({
+      journal,
+      runner,
+      token: 'synthetic-token',
+      config: {
+        server: 'https://tenant.example',
+        deviceId: fixtureId(11),
+        deviceName: 'budget fixture',
+        grants: [],
+      },
+      request: async () => {
+        throw Error('receipt retained for inspection');
+      },
+    });
+    await (
+      client as unknown as {
+        executeProcess: (
+          dispatch: typeof parsed,
+          root: string,
+        ) => Promise<void>;
+      }
+    ).executeProcess(parsed, '/unused-synthetic-root');
+    const receipts = await journal.pending();
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.signal.type).toBe(
+      notStarted ? 'operation.outcome' : 'operation.uncertain',
+    );
+    if (notStarted)
+      expect(receipts[0]).toMatchObject({
+        signal: { result: { status: 'failed', effects: 'none' } },
+        evidence: { errorCode: code },
+      });
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+    expect(runner.cleanup).not.toHaveBeenCalled();
+  },
+);
 
 it('drains already emitted output before recording unknown when the runner rejects', async () => {
   const { journal, open, id, parsed } = await fixture();

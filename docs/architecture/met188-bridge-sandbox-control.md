@@ -7,6 +7,10 @@ is separate from the whole Run's active time limit; the stricter deadline wins.
 Preparation uses the original clock. Compute starts with a short slice and
 renews only with physical progress; install/build receives the policy's longer
 initial slice. Neither model output nor a heartbeat creates a fresh budget.
+Manager and dependency downloads supply measured cumulative I/O before the
+container exists. Their renewal is bounded and serialized with lease checks;
+the same byte counters and original clock carry into container execution.
+An interrupted download retains the actual authority or budget failure.
 
 The trusted PID 1 supervisor also requires a private five-second control lease.
 Its immutable hard deadline cannot be raised. Missing control, authority loss,

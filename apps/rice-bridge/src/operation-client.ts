@@ -43,7 +43,10 @@ import {
   bridgeDigest,
   type BridgeJournal,
 } from './journal.js';
-import { LocalCommandError } from './local-command-inputs.js';
+import {
+  LocalCommandError,
+  LocalCommandNotStartedError,
+} from './local-command-inputs.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
 import type { LocalPythonRunner } from './local-python-runner.js';
 import { localPythonHttpTransport } from './local-python-client.js';
@@ -1317,30 +1320,31 @@ export class RuntimeBridgeOperationClient {
       // Before creating a container these failures prove no execution. Other
       // daemon/transport failures may be after start and must remain unknown.
       const noExecution =
-        error instanceof LocalCommandError &&
-        [
-          'TOOLCHAIN_CHANGED',
-          'ISOLATION_UNAVAILABLE',
-          'UNSAFE_DAEMON_SOCKET',
-          'INPUT_VERSION_CHANGED',
-          'INPUT_PATH_CHANGED',
-          'UNSAFE_INPUT_FILE',
-          'SENSITIVE_INPUT',
-          'INPUT_LIMIT',
-          'CANDIDATE_CONTENT_CHANGED',
-          'EXECUTION_REVOKED',
-          'DEPENDENCY_SOURCE_DENIED',
-          'DEPENDENCY_DOWNLOAD_REJECTED',
-          'DEPENDENCY_ARCHIVE_LIMIT',
-          'DEPENDENCY_MANIFEST_REQUIRED',
-          'DEPENDENCY_MANIFEST_INVALID',
-          'DEPENDENCY_LAYOUT_UNSUPPORTED',
-          'DEPENDENCY_LOCK_MISMATCH',
-          'DEPENDENCY_ARCHIVE_REQUIRED',
-          'DEPENDENCY_INTEGRITY_MISMATCH',
-          'DEPENDENCY_NETWORK_UNAVAILABLE',
-          ...Object.keys(projectPreparationErrorLabels),
-        ].includes(error.code);
+        error instanceof LocalCommandNotStartedError ||
+        (error instanceof LocalCommandError &&
+          [
+            'TOOLCHAIN_CHANGED',
+            'ISOLATION_UNAVAILABLE',
+            'UNSAFE_DAEMON_SOCKET',
+            'INPUT_VERSION_CHANGED',
+            'INPUT_PATH_CHANGED',
+            'UNSAFE_INPUT_FILE',
+            'SENSITIVE_INPUT',
+            'INPUT_LIMIT',
+            'CANDIDATE_CONTENT_CHANGED',
+            'EXECUTION_REVOKED',
+            'DEPENDENCY_SOURCE_DENIED',
+            'DEPENDENCY_DOWNLOAD_REJECTED',
+            'DEPENDENCY_ARCHIVE_LIMIT',
+            'DEPENDENCY_MANIFEST_REQUIRED',
+            'DEPENDENCY_MANIFEST_INVALID',
+            'DEPENDENCY_LAYOUT_UNSUPPORTED',
+            'DEPENDENCY_LOCK_MISMATCH',
+            'DEPENDENCY_ARCHIVE_REQUIRED',
+            'DEPENDENCY_INTEGRITY_MISMATCH',
+            'DEPENDENCY_NETWORK_UNAVAILABLE',
+            ...Object.keys(projectPreparationErrorLabels),
+          ].includes(error.code));
       if (noExecution)
         await journal.outcome(operationId, {
           status: 'failed',

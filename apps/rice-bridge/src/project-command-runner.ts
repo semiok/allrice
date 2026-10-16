@@ -28,6 +28,7 @@ import { mutateProjectCache, reserveProjectVolume } from './project-cache.js';
 import type { LocalDockerApi } from './local-docker-api.js';
 import {
   LocalCommandError,
+  LocalCommandNotStartedError,
   readLocalCommandInputs,
   readSavedProjectInputs,
 } from './local-command-inputs.js';
@@ -492,17 +493,47 @@ export class ProjectCommandRunner {
         ...(options.signal ? [options.signal] : []),
         deadlineSignal,
       ]);
-    const check = async () => {
-      if (
-        signal.aborted ||
-        (budget && Date.now() >= budget.state.deadlineAt) ||
-        (options.maintainLease && !(await options.maintainLease()))
-      ) {
-        revoked.abort();
-        throw new LocalCommandError('EXECUTION_REVOKED');
-      }
+    let preparationReadBytes = 0;
+    const onPreparationBytes = (bytes: number) => {
+      preparationReadBytes += bytes;
     };
-    let checking = false;
+    let checking: Promise<void> | undefined;
+    const check = (): Promise<void> => {
+      if (checking) return checking;
+      checking = (async () => {
+        signal.throwIfAborted();
+        if (budget && Date.now() >= budget.state.deadlineAt)
+          throw new LocalCommandError('SANDBOX_EXECUTION_DEADLINE');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          (async () => {
+            if (options.maintainLease && !(await options.maintainLease()))
+              throw new LocalCommandError('EXECUTION_REVOKED');
+            signal.throwIfAborted();
+            await budget?.renew(async () => ({
+              cpuNanos: 0,
+              readBytes: preparationReadBytes,
+              writtenBytes: 0,
+            }));
+            signal.throwIfAborted();
+          })(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new LocalCommandError('EXECUTION_CONTROL_TIMEOUT')),
+              3000,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+      })()
+        .catch((error: unknown) => {
+          revoked.abort(error);
+          throw error;
+        })
+        .finally(() => {
+          checking = undefined;
+        });
+      return checking;
+    };
     let executionControl: LocalExecutionControl | undefined;
     let network: LocalSandboxNetwork | undefined;
     let workVolumeCreated: string | undefined;
@@ -510,12 +541,7 @@ export class ProjectCommandRunner {
     let startRequested = false;
     const heartbeat = setInterval(() => {
       if (checking || executionControl) return;
-      checking = true;
-      void check()
-        .catch(() => revoked.abort())
-        .finally(() => {
-          checking = false;
-        });
+      void check().catch(() => undefined);
     }, 1000);
     try {
       await check();
@@ -524,6 +550,7 @@ export class ProjectCommandRunner {
         this.input.architecture,
         signal,
         spec.offline,
+        onPreparationBytes,
       );
       const prepared = await this.input.preparation.archives({
         command,
@@ -531,7 +558,11 @@ export class ProjectCommandRunner {
         scope: scope.data,
         architecture: this.input.architecture,
         signal,
-        maintainLease: options.maintainLease,
+        maintainLease: async () => {
+          await check();
+          return true;
+        },
+        onBytes: onPreparationBytes,
       });
       await check();
       const cacheKey = projectCacheKey({
@@ -780,11 +811,16 @@ export class ProjectCommandRunner {
         }
         if (signal.aborted) await stop(abortReason());
         if (budget) {
+          // Drain preparation authority before PID 1 takes over. Measured I/O
+          // remains cumulative across download, staging and execution.
+          clearInterval(heartbeat);
+          await check();
           executionControl = new LocalExecutionControl({
             api: this.input.api,
             containerId: id,
             attemptId: options.attemptId,
             budget,
+            preparationReadBytes,
             maintainLease: options.maintainLease!,
             stop,
           });
@@ -896,10 +932,26 @@ export class ProjectCommandRunner {
             )
             .catch(() => undefined);
         }
+        // Download helpers normalize cancellation. Preserve the actual budget
+        // or authorization failure while no execution could have started.
+        if (revoked.signal.aborted) {
+          const cause: unknown = revoked.signal.reason;
+          const code =
+            cause instanceof LocalCommandError
+              ? cause.code
+              : cause instanceof Error &&
+                  /^SANDBOX_EXECUTION_[A-Z_]+$/.test(cause.message)
+                ? cause.message
+                : 'EXECUTION_REVOKED';
+          const failure = new LocalCommandNotStartedError(code);
+          failure.cause = cause;
+          throw failure;
+        }
       }
       throw error;
     } finally {
       clearInterval(heartbeat);
+      await checking?.catch(() => undefined);
     }
   }
   /** Same container, dependency preparation and physical receipt as foreground

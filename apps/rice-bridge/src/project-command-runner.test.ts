@@ -6,11 +6,17 @@ import { afterEach, expect, it, vi } from 'vitest';
 import {
   managedPythonPayloadForPlatform,
   localCommandToolchainImageV1,
+  resolveSandboxExecutionPolicy,
+  sandboxExecutionBudgetSpec,
+  startSandboxExecutionBudget,
+  renewSandboxExecutionBudget,
 } from '@allrice/contracts';
+import { SandboxExecutionBudgetController } from '@allrice/project-runtime';
 import { ProjectCommandRunner } from './project-command-runner.js';
 import { LocalDockerApi } from './local-docker-api.js';
 import { ProjectPreparation } from './project-preparation.js';
 import { projectFixture } from '../test/project-fixture.js';
+import { LocalCommandNotStartedError } from './local-command-inputs.js';
 
 const roots: string[] = [];
 type TestContainer = {
@@ -26,6 +32,7 @@ type TestContainer = {
 };
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -55,7 +62,7 @@ async function fixture() {
       sha256: 'a'.repeat(64),
     },
   });
-  vi.spyOn(preparation, 'archives').mockResolvedValue({
+  const archives = vi.spyOn(preparation, 'archives').mockResolvedValue({
     files: [],
     archiveHits: 0,
     downloadedArchives: 0,
@@ -169,6 +176,7 @@ async function fixture() {
     runner,
     api,
     tool,
+    archives,
     json,
     options,
     staged,
@@ -197,6 +205,102 @@ it('stages the original absolute operation and lease deadline without adding pre
   expect(result.reason).toBe('exited');
 });
 
+it.each(['tool', 'archives'] as const)(
+  'renews slow %s preparation from measured bytes without restarting the execution clock',
+  async (phase) => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const spec = sandboxExecutionBudgetSpec(
+      { version: 1, kind: 'install' },
+      resolveSandboxExecutionPolicy([]),
+    );
+    let authority = startSandboxExecutionBudget(
+      spec,
+      startedAt,
+      startedAt + 600000,
+    );
+    const exchange = vi.fn(
+      async (request) =>
+        (authority = renewSandboxExecutionBudget(
+          authority,
+          request,
+          Date.now(),
+          startedAt + 600000,
+        )),
+    );
+    const budget = new SandboxExecutionBudgetController(
+      authority,
+      spec,
+      exchange,
+    );
+    f.source.command.executionBudget = spec;
+    f.source.command.arguments.execution = { version: 1, kind: 'install' };
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    if (phase === 'tool') {
+      f.tool.mockImplementation(
+        async (_manager, _arch, signal, _offline, onBytes) => {
+          onBytes?.(4096);
+          enter();
+          await pending;
+          signal.throwIfAborted();
+          return {
+            path: '.allrice/manager.tar.gz',
+            bytes: Buffer.alloc(1),
+            asset: {
+              fileName: 'manager',
+              url: 'https://example.test/manager',
+              sizeBytes: 1,
+              sha256: 'a'.repeat(64),
+            },
+          };
+        },
+      );
+    } else {
+      f.archives.mockImplementation(async (input) => {
+        input.onBytes?.(4096);
+        enter();
+        await pending;
+        input.signal.throwIfAborted();
+        return {
+          files: [],
+          archiveHits: 0,
+          downloadedArchives: 1,
+          downloadedBytes: 4096,
+        };
+      });
+    }
+    const operation = f.runner.execute(f.root, f.source.command, {
+      ...f.options,
+      executionBudget: budget,
+    });
+    void operation.catch(() => undefined);
+    try {
+      await entered;
+      vi.setSystemTime(startedAt + 105000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(exchange).toHaveBeenCalledTimes(1);
+      expect(exchange.mock.calls[0]![0].progress.readBytes).toBe(4096);
+      expect(budget.state.startedAt).toBe(startedAt);
+      expect(budget.state.hardDeadlineAt).toBe(startedAt + 600000);
+      expect(budget.state.deadlineAt).toBe(startedAt + 180000);
+      release();
+      const result = await operation;
+      expect(result.reason).toBe('exited');
+      expect(result.execution?.renewalCount).toBe(1);
+    } finally {
+      release();
+      await operation.catch(() => undefined);
+    }
+  },
+);
+
 it.each(['timeout', 'lease_lost'] as const)(
   'retains %s as the actual reason and confirms the physical container stopped',
   async (reason) => {
@@ -212,6 +316,92 @@ it.each(['timeout', 'lease_lost'] as const)(
     expect(result.stopped).toBe(true);
     expect(f.container().State.Running).toBe(false);
     expect(result.projectPreparation!.installation).toBe('interrupted');
+  },
+);
+
+it.each(['no_progress', 'revoked', 'authority_timeout'] as const)(
+  'stops preparation on %s and preserves the cause without creating a container',
+  async (failure) => {
+    const f = await fixture();
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const spec = sandboxExecutionBudgetSpec(
+      { version: 1, kind: 'install' },
+      resolveSandboxExecutionPolicy([]),
+    );
+    let authority = startSandboxExecutionBudget(
+      spec,
+      startedAt,
+      startedAt + 600000,
+    );
+    const exchange = vi.fn(
+      async (request) =>
+        (authority = renewSandboxExecutionBudget(
+          authority,
+          request,
+          Date.now(),
+          startedAt + 600000,
+        )),
+    );
+    const budget = new SandboxExecutionBudgetController(
+      authority,
+      spec,
+      exchange,
+    );
+    f.source.command.executionBudget = spec;
+    f.source.command.arguments.execution = { version: 1, kind: 'install' };
+    const maintainLease = vi.fn(async () => true);
+    const abort = new AbortController();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    f.archives.mockImplementation(async ({ signal }) => {
+      enter();
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener(
+          'abort',
+          () => reject(Error('EXECUTION_REVOKED')),
+          { once: true },
+        );
+      });
+      throw Error('unexpected preparation completion');
+    });
+    const operation = f.runner
+      .execute(f.root, f.source.command, {
+        ...f.options,
+        maintainLease,
+        signal: abort.signal,
+        executionBudget: budget,
+      })
+      .catch((error: unknown) => error);
+    try {
+      await entered;
+      if (failure === 'revoked') maintainLease.mockResolvedValue(false);
+      if (failure === 'authority_timeout')
+        maintainLease.mockImplementation(() => new Promise(() => {}));
+      vi.setSystemTime(startedAt + 105000);
+      await vi.advanceTimersByTimeAsync(4000);
+      if (failure === 'no_progress') {
+        expect(exchange).toHaveBeenCalledTimes(1);
+        vi.setSystemTime(startedAt + 165000);
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+      const error = await operation;
+      expect(error).toBeInstanceOf(LocalCommandNotStartedError);
+      expect((error as Error).message).toBe(
+        {
+          no_progress: 'SANDBOX_EXECUTION_NO_PROGRESS',
+          revoked: 'EXECUTION_REVOKED',
+          authority_timeout: 'EXECUTION_CONTROL_TIMEOUT',
+        }[failure],
+      );
+      if (failure !== 'no_progress') expect(exchange).not.toHaveBeenCalled();
+      expect(f.json).not.toHaveBeenCalled();
+    } finally {
+      abort.abort();
+      await operation;
+    }
   },
 );
 

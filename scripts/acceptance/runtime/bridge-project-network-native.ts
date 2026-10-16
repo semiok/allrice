@@ -235,6 +235,9 @@ print('NETWORK_OK')
       } catch (error) {
         proof.checks[mode] = {
           ...(proof.checks[mode] as object),
+          elapsedMs: Date.now() - started,
+          renewals,
+          execution: budget.observation,
           error: String(error),
         };
         await save();

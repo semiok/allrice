@@ -41,6 +41,7 @@ export class LocalExecutionControl {
       attemptId: string;
       attemptLabel?: string;
       budget: SandboxExecutionBudgetController;
+      preparationReadBytes?: number;
       maintainLease: () => Promise<boolean>;
       stop: (reason: 'timeout' | 'lease_lost') => Promise<void>;
     },
@@ -87,7 +88,7 @@ export class LocalExecutionControl {
         .reduce((n, r) => n + r.value, 0);
     return SandboxExecutionProgressSchema.parse({
       cpuNanos: stats.cpu_stats?.cpu_usage?.total_usage,
-      readBytes: bytes('read'),
+      readBytes: (this.input.preparationReadBytes ?? 0) + bytes('read'),
       writtenBytes: bytes('write'),
     });
   }

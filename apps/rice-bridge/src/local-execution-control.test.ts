@@ -15,7 +15,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.useRealTimers();
 });
-function fixture() {
+function fixture(preparationReadBytes = 0) {
   vi.useFakeTimers();
   vi.setSystemTime(1000000);
   const spec = sandboxExecutionBudgetSpec(
@@ -67,6 +67,7 @@ function fixture() {
     containerId,
     attemptId,
     budget,
+    preparationReadBytes,
     maintainLease,
     stop,
   });
@@ -81,6 +82,23 @@ it('uses distinct physical leases while keeping one authority execution clock', 
   expect(f.budget.state.hardDeadlineAt).toBe(1600000);
   expect(f.budget.state.deadlineAt).toBe(1120000);
   expect(f.socket.send.mock.calls.length).toBeGreaterThan(40);
+  expect(f.stop).not.toHaveBeenCalled();
+  await f.control.finish();
+});
+it('keeps preparation I/O in the cumulative counters when container renewal takes over', async () => {
+  const f = fixture(4096);
+  vi.setSystemTime(1045000);
+  await f.budget.renew(async () => ({
+    cpuNanos: 0,
+    readBytes: 4096,
+    writtenBytes: 0,
+  }));
+  vi.setSystemTime(1105000);
+  await f.control.start();
+  expect(f.exchange).toHaveBeenCalledTimes(2);
+  expect(f.budget.state.progress.readBytes).toBe(4096);
+  expect(f.budget.state.progress.cpuNanos).toBe(2000000);
+  expect(f.budget.state.startedAt).toBe(1000000);
   expect(f.stop).not.toHaveBeenCalled();
   await f.control.finish();
 });

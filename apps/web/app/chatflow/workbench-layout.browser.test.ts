@@ -1066,6 +1066,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return state.bridgeError
           ? answer({ error: { message: '连接状态刷新失败' } }, 503)
           : answer({ devices: state.bridgeDevices });
+      if (/^\/api\/v1\/bridge\/devices\/[^/]+\/sandbox-network$/.test(path)) {
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        const device = state.bridgeDevices.find(
+          (device) => device.id === path.split('/').at(-2),
+        );
+        // Register this settings read; writes and unknown devices still fail.
+        return device
+          ? answer({ version: 0, enabled: false, profile: null })
+          : answer({ error: { message: 'synthetic device missing' } }, 404);
+      }
       if (
         /^\/api\/v1\/bridge\/devices\/[^/]+\/settings$/.test(path) &&
         route.request().method() === 'GET'
