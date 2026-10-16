@@ -1,3 +1,4 @@
+import { archivePrivateExperience } from '../experience-runtime.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
 import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
@@ -1140,7 +1141,7 @@ async function loadWorkspaceMemoryRecallCandidates(input: {
       and c.workspace_id = ${input.workspaceId}
       and m.archived_at is null
       and not exists(select 1 from allrice_experience_reviews er
-        where er.memory_id=m.id and (er.origin_kind='incremental' or er.status<>'approved'
+        where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
@@ -2477,6 +2478,13 @@ export async function deleteWorkspaceMemory(
 ) {
   const sql = getDatabase();
   const memory = await sql.begin(async (transaction) => {
+    const experience = await archivePrivateExperience(
+      transaction,
+      { ...context, workspaceId: UuidSchema.parse(workspaceId) },
+      UuidSchema.parse(memoryId),
+      context.requestId,
+    );
+    if (experience) return experience;
     const rows = await transaction<MemoryRow[]>`
       update allrice_memories
       set archived_at = now(), updated_at = now()

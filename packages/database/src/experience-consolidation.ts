@@ -171,6 +171,7 @@ export async function getExperiencePolicy(
 const PolicyUpdateSchema = ExperiencePolicySettingsSchema.extend({
   expectedRevision: z.number().int().positive(),
   validationMode: z.enum(['off', 'supported_cases']).optional(),
+  adoptionMode: z.enum(['off', 'supported_private']).optional(),
 }).strict();
 export async function updateExperiencePolicy(
   context: RequestContext,
@@ -203,10 +204,19 @@ export async function updateExperiencePolicy(
     const policy = ExperienceCollectionPolicySchema.parse({
       ...previous,
       ...settings,
-      schemaVersion: 3,
+      schemaVersion: 4,
+      adoptionMode:
+        input.adoptionMode ??
+        (previous.schemaVersion === 4 ? previous.adoptionMode : 'off'),
+      adoptionAuthorizedBy:
+        input.adoptionMode === 'supported_private'
+          ? actor
+          : previous.schemaVersion === 4
+            ? previous.adoptionAuthorizedBy
+            : null,
       validationMode:
         input.validationMode ??
-        (previous.schemaVersion === 3 ? previous.validationMode : 'off'),
+        ('validationMode' in previous ? previous.validationMode : 'off'),
       revision: previous.revision + 1,
     });
     await tx`insert into allrice_settings(scope_type,scope_id,key,value)
@@ -446,13 +456,14 @@ async function assertCurrent(
   executing = true,
 ) {
   if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
-  const policy = await readExperiencePolicy(occurrence.organizationId, tx);
-  if (
-    executing &&
-    (policy.frequency === 'off' ||
-      runtimePolicyDigest(policy) !== occurrence.policyDigest)
-  )
-    return deny();
+  if (executing) {
+    const policy = await readExperiencePolicy(occurrence.organizationId, tx);
+    if (
+      policy.frequency === 'off' ||
+      runtimePolicyDigest(policy) !== occurrence.policyDigest
+    )
+      return deny();
+  }
   const who = identity(occurrence);
   // Match personal-Skill mutation order and retain the shared content lock
   // through receipt commit, so a concurrent revocation cannot slip past pins.
@@ -798,7 +809,14 @@ export async function listExperienceDrafts(
         : null;
       const { listExperienceValidationViews } =
         await import('./experience-validation.ts');
+      const { listExperienceAdoptionViews } =
+        await import('./experience-adoption.ts');
       result.push({
+        adoptions: await listExperienceAdoptionViews(
+          tx,
+          identity(occurrence),
+          occurrence.id,
+        ),
         id: row.id,
         runId: row.run_id,
         instanceId: occurrence.instanceId,

@@ -235,3 +235,6 @@ export {
 } from './experience-validation.ts';
 export * from './experience-consolidation-contracts.ts';
 export { runtimePolicyDigest } from './runtime-policy.ts';
+
+export { syncExperienceAdoptions } from './experience-adoption.ts';
+export { prepareRunExperiences } from './experience-runtime.ts';

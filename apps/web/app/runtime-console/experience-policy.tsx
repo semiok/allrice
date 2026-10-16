@@ -20,6 +20,9 @@ export function ExperiencePolicyPanel({
   const [validationMode, setValidationMode] = useState<
     'off' | 'supported_cases'
   >('off');
+  const [adoptionMode, setAdoptionMode] = useState<'off' | 'supported_private'>(
+    'off',
+  );
   const url = `/api/v1/admin/organizations/${organizationId}/experience-policy`;
   async function load() {
     setBusy(true);
@@ -32,8 +35,9 @@ export function ExperiencePolicyPanel({
       );
       setSettings(experiencePolicySchedule(policy));
       setRevision(policy.revision);
+      setAdoptionMode(policy.schemaVersion === 4 ? policy.adoptionMode : 'off');
       setValidationMode(
-        policy.schemaVersion === 3 ? policy.validationMode : 'off',
+        'validationMode' in policy ? policy.validationMode : 'off',
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : '读取失败');
@@ -53,6 +57,7 @@ export function ExperiencePolicyPanel({
         body: JSON.stringify({
           ...settings,
           validationMode,
+          adoptionMode,
           expectedRevision: revision,
         }),
       });
@@ -67,8 +72,9 @@ export function ExperiencePolicyPanel({
       );
       setSettings(experiencePolicySchedule(policy));
       setRevision(policy.revision);
+      setAdoptionMode(policy.schemaVersion === 4 ? policy.adoptionMode : 'off');
       setValidationMode(
-        policy.schemaVersion === 3 ? policy.validationMode : 'off',
+        'validationMode' in policy ? policy.validationMode : 'off',
       );
       setNotice(
         '已保存。整理按下一周期执行，不补跑错过周期；开启专项验证后，也会检查已有待验证草稿。',
@@ -88,7 +94,8 @@ export function ExperiencePolicyPanel({
       <summary>经验自动整理设置</summary>
       <p className={css.note}>
         适用于本公司的 AI
-        员工。只整理各自新增的私有反馈，先形成待验证草稿，不自动共享或改变公司要求。
+        员工。只整理各自新增的私有反馈，先形成待验证草稿；开启自动采用后也仅用于原私人
+        AI 员工，不自动共享或改变公司要求。
       </p>
       {settings && (
         <div className={css.filters}>
@@ -191,7 +198,19 @@ export function ExperiencePolicyPanel({
                 setValidationMode(e.target.checked ? 'supported_cases' : 'off')
               }
             />
-            自动验证支持的合成样例（消耗模型用量，结果暂不启用）
+            自动验证支持的合成样例（消耗模型用量）
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              aria-label="自动采用已验证的私人经验"
+              disabled={busy}
+              checked={adoptionMode === 'supported_private'}
+              onChange={(e) =>
+                setAdoptionMode(e.target.checked ? 'supported_private' : 'off')
+              }
+            />
+            自动采用已验证的私人经验
           </label>
           <AdminButton disabled={busy} onClick={() => void save()}>
             保存整理设置
@@ -210,7 +229,7 @@ export function ExperiencePolicyPanel({
       <p className={css.note}>
         专项验证默认关闭。开启后每份支持的草稿最多验证一次，单次最多 5
         分钟；验证另限本公司每天 8 次、平台每天 64
-        次，与整理共用一个后台执行空位。验证通过也不会自动启用，不支持的业务仍待验证。
+        次，与整理共用一个后台执行空位。自动采用默认关闭；开启后，仅完整规则和适用范围均受支持、验证依据仍有效的私人经验生效。关闭整理或自动采用只停止新增，不删除已有经验。用户可在聊天中明确撤回。不支持的业务仍待验证。
       </p>
       {error && <p role="alert">{error}</p>}
       {notice && <p role="status">{notice}</p>}

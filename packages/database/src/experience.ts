@@ -55,7 +55,7 @@ interface ReviewRow {
   created_at: Date;
   reviewed_at: Date | null;
   review_reason: string | null;
-  origin_kind: 'manual' | 'incremental';
+  origin_kind: 'manual' | 'incremental' | 'derived';
   instance_id: string | null;
   evidence: unknown;
 }
@@ -147,7 +147,7 @@ function view(row: ReviewRow, user: string, admin: boolean) {
     ownedByMe: row.owner_id === user,
     canReview:
       row.status === 'pending' &&
-      row.origin_kind !== 'incremental' &&
+      row.origin_kind === 'manual' &&
       row.archived_at === null &&
       row.requested_scope !== 'platform' &&
       (row.requested_scope === 'private' ? row.owner_id === user : admin),
@@ -217,6 +217,7 @@ export function createExperienceStore(options: { database?: Db } = {}) {
         >`select e.*,m.content,m.memory_class,m.revision,m.archived_at from allrice_experience_reviews e
           join allrice_memories m on m.id=e.memory_id and m.organization_id=e.organization_id and m.workspace_id=e.workspace_id
           where e.organization_id=${p.organization} and e.workspace_id=${p.workspace}
+            and e.origin_kind<>'derived'
             and (e.owner_id=${p.user} or (${p.admin} and e.requested_scope='workspace' and e.share_acknowledged))
             and (${instanceId ?? null}::uuid is null or e.instance_id=${instanceId ?? null})
             and (e.origin_kind='manual' or exists(select 1 from allrice_employee_instances i
@@ -292,10 +293,7 @@ export function createExperienceStore(options: { database?: Db } = {}) {
           where e.memory_id=${id} and e.organization_id=${p.organization} and e.workspace_id=${p.workspace} and m.archived_at is null
             and (e.owner_id=${p.user} or (${p.admin} and e.requested_scope='workspace' and e.share_acknowledged)) for update of e,m`;
         if (!current) throw new ExperienceError('not_found');
-        if (
-          current.origin_kind === 'incremental' &&
-          request.decision === 'approve'
-        )
+        if (current.origin_kind !== 'manual' && request.decision === 'approve')
           throw new ExperienceError('validation_required');
         if (
           current.requested_scope === 'platform' &&

@@ -357,7 +357,7 @@ export async function listCompanyRuleSources(
   await requireCompanyAssetReader(context, org, db, true);
   const sources = await db<
     { id: string; revisionId: string; revision: number; content: string }[]
-  >`select m.id,r.id as "revisionId",r.revision,left(r.content,4000) as content from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id and r.revision=m.revision where m.organization_id=${org} and m.archived_at is null and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id and er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.origin_kind='incremental') order by m.created_at desc,m.id desc limit 50`;
+  >`select m.id,r.id as "revisionId",r.revision,left(r.content,4000) as content from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id and r.revision=m.revision where m.organization_id=${org} and m.archived_at is null and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id and er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.origin_kind in ('incremental','derived')) order by m.created_at desc,m.id desc limit 50`;
   const employees = await db<
     { id: string; name: string }[]
   >`select distinct p.id,p.name from allrice_platform_employees p join allrice_platform_employee_tenant_assignments a on a.employee_id=p.id and a.organization_id=${org} and a.active where p.status='published' order by p.name,p.id`;
@@ -588,7 +588,7 @@ export async function mutateCompanyAsset(
           throw new CompanyAssetError('source_required');
         if (input.content.sourceMemoryId) {
           const [memory] =
-            await tx`select r.id from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id where m.id=${input.content.sourceMemoryId} and m.organization_id=${org} and m.archived_at is null and r.id=${input.content.sourceMemoryRevisionId!} and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id and er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.origin_kind='incremental') for share of m,r`;
+            await tx`select r.id from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id where m.id=${input.content.sourceMemoryId} and m.organization_id=${org} and m.archived_at is null and r.id=${input.content.sourceMemoryRevisionId!} and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id and er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.origin_kind in ('incremental','derived')) for share of m,r`;
           if (!memory) throw new CompanyAssetError('source_changed');
         }
         if (input.content.appliesToEmployeeIds.length) {
