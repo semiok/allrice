@@ -51,7 +51,9 @@ const bridgeDevicePaths = new Set([
 export function isBridgeDeviceApiPath(pathname: string) {
   return (
     bridgeDevicePaths.has(pathname) ||
-    /^\/api\/v1\/bridge\/device\/operations\/[0-9a-f-]{36}\/(start|heartbeat|output|receipts|service)$/.test(
+    // Execution control uses the same device token and attempt lease as start.
+    // Requiring a browser cookie here prevents the packaged Bridge from running.
+    /^\/api\/v1\/bridge\/device\/operations\/[0-9a-f-]{36}\/(start|heartbeat|output|receipts|service|budget|network)$/.test(
       pathname,
     ) ||
     // Binary transfers validate their own device token, lease and live owner.
