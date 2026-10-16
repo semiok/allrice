@@ -220,14 +220,12 @@ it.each([true, false])(
         } as never;
       });
     const api = new LocalDockerApi('/synthetic/docker.sock');
-    const inspect = vi
-      .spyOn(api, 'json')
-      .mockResolvedValue({
-        Id: id,
-        Config: { Labels: { 'xyz.bplabs.allrice.attempt': lease.attemptId } },
-        HostConfig: { NetworkMode: 'none', Privileged: false },
-        State: { Running: running },
-      });
+    const inspect = vi.spyOn(api, 'json').mockResolvedValue({
+      Id: id,
+      Config: { Labels: { 'xyz.bplabs.allrice.attempt': lease.attemptId } },
+      HostConfig: { NetworkMode: 'none', Privileged: false },
+      State: { Running: running },
+    });
     const session = new LocalSandboxNetwork({
       api,
       containerId: id,
