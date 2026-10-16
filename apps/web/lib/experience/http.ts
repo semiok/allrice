@@ -2,6 +2,7 @@ import {
   createExperienceStore,
   experienceReviewEnabled,
   ExperienceError,
+  listExperienceDrafts,
 } from '@allrice/database';
 import { UuidSchema } from '@allrice/contracts';
 import { isRequestValidationError } from '../api-error-response';
@@ -60,6 +61,10 @@ export async function experienceHttp(
       return Response.json(
         {
           candidates: await store.list(
+            context,
+            url.searchParams.get('instanceId') ?? undefined,
+          ),
+          draftBatches: await listExperienceDrafts(
             context,
             url.searchParams.get('instanceId') ?? undefined,
           ),

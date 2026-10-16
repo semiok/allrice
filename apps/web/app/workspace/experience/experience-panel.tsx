@@ -3,7 +3,9 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ExperienceCandidateSchema,
+  ExperienceDraftBatchSchema,
   type ExperienceCandidate,
+  type ExperienceDraftBatch,
 } from '@allrice/contracts';
 import styles from './experience.module.css';
 
@@ -173,6 +175,51 @@ export function ExperienceReviewCard({
     </article>
   );
 }
+export function ExperienceDraftCard({
+  batch,
+}: {
+  batch: ExperienceDraftBatch;
+}) {
+  return (
+    <article className={styles.card} data-experience-batch={batch.id}>
+      <strong>
+        {batch.state === 'pending_validation'
+          ? '经验草稿 · 待验证'
+          : batch.status === 'failed' || batch.status === 'canceled'
+            ? '本次整理未完成'
+            : batch.status === 'succeeded'
+              ? '本次没有新增反馈'
+              : '正在整理'}
+      </strong>
+      <p>
+        {new Date(batch.createdAt).toLocaleString('zh-CN')} ·{' '}
+        {batch.sourceIds.length} 条私有反馈
+      </p>
+      {batch.drafts.map((draft, index) => (
+        <section key={index}>
+          <p className={styles.rule}>{draft.rule}</p>
+          <p>适用范围：{draft.applicability}</p>
+          <details>
+            <summary>查看整理依据</summary>
+            <p>{draft.reason}</p>
+            <p>
+              {draft.confidence === 'consistent'
+                ? '多条反馈一致，仍需验证。'
+                : '初步提炼，仍需验证。'}
+            </p>
+            <small>来源：{draft.sourceIds.join('、')}</small>
+          </details>
+        </section>
+      ))}
+      {batch.state === 'pending_validation' && batch.drafts.length === 0 && (
+        <p>本批反馈暂不适合形成长期经验，原始记录已保留。</p>
+      )}
+      {batch.errorCode && batch.status !== 'succeeded' && (
+        <p>未启用任何新经验；来源已保留。</p>
+      )}
+    </article>
+  );
+}
 export function ExperiencePanel({
   workspaceId,
   sessionId,
@@ -184,6 +231,7 @@ export function ExperiencePanel({
 }) {
   const [sources, setSources] = useState<Source[]>([]),
     [candidates, setCandidates] = useState<ExperienceCandidate[]>([]),
+    [draftBatches, setDraftBatches] = useState<ExperienceDraftBatch[]>([]),
     [selected, setSelected] = useState(''),
     [excerpt, setExcerpt] = useState(''),
     [content, setContent] = useState(''),
@@ -201,6 +249,9 @@ export function ExperiencePanel({
       fetch(`/api/v1/experiences${suffix}`, { cache: 'no-store' }),
     );
     setCandidates(ExperienceCandidateSchema.array().parse(result.candidates));
+    setDraftBatches(
+      ExperienceDraftBatchSchema.array().parse(result.draftBatches ?? []),
+    );
   }, [suffix]);
   useEffect(() => {
     let active = true;
@@ -375,6 +426,17 @@ export function ExperiencePanel({
       )}
       {error ? <p role="alert">{error}</p> : null}
       {notice ? <p role="status">{notice}</p> : null}
+      {draftBatches.length > 0 && (
+        <section aria-label="自动整理记录">
+          <h2>自动整理记录</h2>
+          <p>
+            根据新增反馈整理的经验草稿。验证与采纳完成前，不会用于后续工作。
+          </p>
+          {draftBatches.map((batch) => (
+            <ExperienceDraftCard key={batch.id} batch={batch} />
+          ))}
+        </section>
+      )}
       <div className={styles.heading}>
         <h2>候选与审核记录（最多 100 条，待审核优先）</h2>
         <button

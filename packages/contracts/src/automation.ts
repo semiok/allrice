@@ -9,7 +9,12 @@ export type AutomationStatus = z.infer<typeof AutomationStatusSchema>;
 export const AutomationTriggerTypeSchema = z.enum(['schedule', 'folder']);
 export type AutomationTriggerType = z.infer<typeof AutomationTriggerTypeSchema>;
 
-export const AutomationFrequencySchema = z.enum(['once', 'daily', 'weekly']);
+export const AutomationFrequencySchema = z.enum([
+  'once',
+  'daily',
+  'weekly',
+  'monthly',
+]);
 export type AutomationFrequency = z.infer<typeof AutomationFrequencySchema>;
 
 export const AutomationConversationModeSchema = z.enum([
@@ -29,10 +34,29 @@ export const AutomationScheduleSchema = z
       .regex(/^([01]\d|2[0-3]):[0-5]\d$/)
       .optional(),
     weekday: z.number().int().min(0).max(6).optional(),
-    timezone: z.string().min(1).max(64).default('Asia/Shanghai'),
+    monthDay: z.number().int().min(1).max(31).optional(),
+    timezone: z
+      .string()
+      .min(1)
+      .max(64)
+      .refine((value) => {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone: value });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Choose an IANA timezone')
+      .default('Asia/Shanghai'),
   })
   .strict()
   .superRefine((schedule, ctx) => {
+    if (schedule.frequency === 'monthly' && schedule.monthDay === undefined)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['monthDay'],
+        message: 'monthly schedules require a day of month',
+      });
     if (schedule.frequency === 'once' && !schedule.runAt) {
       ctx.addIssue({
         code: 'custom',

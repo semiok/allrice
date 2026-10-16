@@ -227,3 +227,7 @@ export * from './reference-runtime.ts';
 
 export * from './employees/personal-skills.ts';
 export * from './employees/personal-skill-versions.ts';
+
+export * from './experience-consolidation.ts';
+export * from './experience-consolidation-contracts.ts';
+export { runtimePolicyDigest } from './runtime-policy.ts';

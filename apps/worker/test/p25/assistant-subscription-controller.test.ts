@@ -106,7 +106,7 @@ describe('subscription admission is explicit, not an API output-cap assertion', 
       assertAssistantProviderOutputBound(provider(), true, {
         ...subscription(),
         bypassQuota: true,
-      } as AssistantSubscriptionSnapshot),
+      } as unknown as AssistantSubscriptionSnapshot),
     ).toThrow(
       expect.objectContaining({
         code: 'ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED',

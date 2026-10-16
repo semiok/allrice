@@ -1,4 +1,11 @@
 import { randomUUID } from 'node:crypto';
+import {
+  claimExperienceOccurrence,
+  dispatchExperienceOccurrence,
+  recoverExperienceOccurrences,
+} from '../experience-consolidation.ts';
+import { EmployeeInstanceError } from '../employees/employee-instances.ts';
+import { ExperienceError } from '../experience.ts';
 
 import {
   AutomationRunSchema,
@@ -49,6 +56,7 @@ interface AutomationRow {
   created_at: Date;
   updated_at: Date;
   quality_binding: unknown | null;
+  experience_binding: unknown | null;
 }
 
 interface AutomationRunRow {
@@ -71,6 +79,7 @@ interface AutomationClaim {
   automation: Automation;
   automationRun: AutomationRun;
   qualityOccurrenceId?: string;
+  experienceOccurrenceId?: string;
 }
 
 function userId(context: RequestContext) {
@@ -171,7 +180,14 @@ function zonedTimeToUtc(
   const guess = new Date(
     Date.UTC(input.year, input.month - 1, input.day, input.hour, input.minute),
   );
-  return new Date(guess.getTime() - timeZoneOffset(guess, timeZone));
+  const first = new Date(guess.getTime() - timeZoneOffset(guess, timeZone));
+  const second = new Date(guess.getTime() - timeZoneOffset(first, timeZone));
+  // Resolve the offset at the destination date. A nonexistent spring-forward
+  // wall time moves forward by the gap; an overlap executes only once.
+  const third = new Date(guess.getTime() - timeZoneOffset(second, timeZone));
+  return third.getTime() === second.getTime()
+    ? second
+    : new Date(Math.max(first.getTime(), second.getTime()));
 }
 
 export function nextScheduleAt(scheduleInput: unknown, after = new Date()) {
@@ -179,6 +195,28 @@ export function nextScheduleAt(scheduleInput: unknown, after = new Date()) {
   if (schedule.frequency === 'once') return new Date(schedule.runAt!);
   const time = schedule.time!.split(':').map(Number);
   const current = dateParts(after, schedule.timezone);
+  if (schedule.frequency === 'monthly') {
+    for (let offset = 0; offset < 2; offset++) {
+      const month = new Date(
+        Date.UTC(current.year, current.month - 1 + offset, 1),
+      );
+      const lastDay = new Date(
+        Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 0),
+      ).getUTCDate();
+      const result = zonedTimeToUtc(
+        {
+          year: month.getUTCFullYear(),
+          month: month.getUTCMonth() + 1,
+          day: Math.min(schedule.monthDay!, lastDay),
+          hour: time[0]!,
+          minute: time[1]!,
+        },
+        schedule.timezone,
+      );
+      if (result > after) return result;
+    }
+    throw Error('Invalid monthly schedule');
+  }
   const candidate = new Date(
     Date.UTC(current.year, current.month - 1, current.day, time[0], time[1]),
   );
@@ -265,7 +303,7 @@ async function getAutomationRow(
     where a.organization_id = ${context.organizationId}
       and a.workspace_id = ${UuidSchema.parse(workspaceId)}
       and a.id = ${UuidSchema.parse(automationId)} and a.deleted_at is null
-      and a.quality_binding is null
+      and a.quality_binding is null and a.experience_binding is null
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
@@ -560,7 +598,7 @@ export async function listAutomations(
     where a.organization_id = ${context.organizationId}
       and a.workspace_id = ${workspaceId}
       and a.owner_id = ${userId(context)} and a.deleted_at is null
-      and a.quality_binding is null
+      and a.quality_binding is null and a.experience_binding is null
       and (${triggerType ?? null}::text is null or a.trigger_type=${triggerType ?? null})
     order by a.updated_at desc, a.created_at desc, a.id desc
   `;
@@ -896,6 +934,10 @@ function mapRunRow(row: AutomationRunRow) {
 }
 
 async function enqueueClaim(claim: AutomationClaim) {
+  if (claim.experienceOccurrenceId) {
+    await dispatchExperienceOccurrence(claim.experienceOccurrenceId);
+    return claim.automationRun;
+  }
   if (claim.qualityOccurrenceId) {
     const { dispatchPlatformQualityOccurrence } =
       await import('../platform-quality-automation.ts');
@@ -985,6 +1027,13 @@ async function makeClaim(
 
 export async function claimDueAutomations(limit = 10) {
   const sql = getDatabase();
+  for (const id of await recoverExperienceOccurrences(limit)) {
+    try {
+      await dispatchExperienceOccurrence(id);
+    } catch {
+      /* Durable failure retained by dispatcher. */
+    }
+  }
   const { recoverPlatformQualityOccurrences, claimPlatformQualityOccurrence } =
     await import('../platform-quality-automation.ts');
   const recovered = await recoverPlatformQualityOccurrences(limit);
@@ -1002,8 +1051,9 @@ export async function claimDueAutomations(limit = 10) {
   `;
   const claims: AutomationClaim[] = [];
   for (const candidate of due) {
-    const claim = await sql.begin(async (transaction) => {
-      const locked = await transaction<AutomationRow[]>`
+    const claim = await sql
+      .begin(async (transaction) => {
+        const locked = await transaction<AutomationRow[]>`
         select a.*, latest.status as last_run_status,
           latest.session_id as last_session_id
         from allrice_automations a
@@ -1014,28 +1064,42 @@ export async function claimDueAutomations(limit = 10) {
         where a.id = ${candidate.id} and a.status = 'enabled' and a.deleted_at is null and a.trigger_type='schedule'
         for update of a
       `;
-      const row = locked[0];
-      if (!row || !row.next_run_at || row.next_run_at > new Date()) return null;
-      const scheduledFor = row.next_run_at;
-      const schedule = AutomationScheduleSchema.parse(row.schedule);
-      if (row.quality_binding) {
-        const id = await claimPlatformQualityOccurrence(
-          transaction,
-          row,
-          nextScheduleAt(schedule, new Date()),
-        );
-        if (!id) return null;
-        const [run] = await transaction<
-          AutomationRunRow[]
-        >`select * from allrice_automation_runs where id=${id}`;
-        if (!run) throw new Error('quality occurrence missing');
-        return { ...(await makeClaim(row, run)), qualityOccurrenceId: id };
-      }
-      const isOneTime = schedule.frequency === 'once';
-      const nextRunAt = isOneTime
-        ? null
-        : nextScheduleAt(schedule, scheduledFor);
-      const runs = await transaction<AutomationRunRow[]>`
+        const row = locked[0];
+        if (!row || !row.next_run_at || row.next_run_at > new Date())
+          return null;
+        const scheduledFor = row.next_run_at;
+        const schedule = AutomationScheduleSchema.parse(row.schedule);
+        if (row.experience_binding) {
+          const id = await claimExperienceOccurrence(
+            transaction,
+            row,
+            nextScheduleAt(schedule, new Date()),
+          );
+          if (!id) return null;
+          const [run] = await transaction<
+            AutomationRunRow[]
+          >`select * from allrice_automation_runs where id=${id}`;
+          if (!run) throw Error('experience occurrence missing');
+          return { ...(await makeClaim(row, run)), experienceOccurrenceId: id };
+        }
+        if (row.quality_binding) {
+          const id = await claimPlatformQualityOccurrence(
+            transaction,
+            row,
+            nextScheduleAt(schedule, new Date()),
+          );
+          if (!id) return null;
+          const [run] = await transaction<
+            AutomationRunRow[]
+          >`select * from allrice_automation_runs where id=${id}`;
+          if (!run) throw new Error('quality occurrence missing');
+          return { ...(await makeClaim(row, run)), qualityOccurrenceId: id };
+        }
+        const isOneTime = schedule.frequency === 'once';
+        const nextRunAt = isOneTime
+          ? null
+          : nextScheduleAt(schedule, scheduledFor);
+        const runs = await transaction<AutomationRunRow[]>`
         insert into allrice_automation_runs (
           organization_id, workspace_id, automation_id, scheduled_for
         ) values (
@@ -1043,25 +1107,40 @@ export async function claimDueAutomations(limit = 10) {
         ) on conflict (automation_id, scheduled_for) where folder_event_id is null do nothing
         returning *
       `;
-      if (!runs[0]) {
-        await transaction`
+        if (!runs[0]) {
+          await transaction`
           update allrice_automations
           set next_run_at = ${isOneTime ? null : nextScheduleAt(schedule, scheduledFor)},
               status = ${isOneTime ? 'paused' : 'enabled'},
               updated_at = now()
           where id = ${row.id}
         `;
-        return null;
-      }
-      await transaction`
+          return null;
+        }
+        await transaction`
         update allrice_automations
         set next_run_at = ${nextRunAt},
             status = ${isOneTime ? 'paused' : 'enabled'},
             last_run_at = now(), updated_at = now()
         where id = ${row.id}
       `;
-      return await makeClaim(row, runs[0]);
-    });
+        return await makeClaim(row, runs[0]);
+      })
+      .catch(async (error) => {
+        if (
+          candidate.experience_binding &&
+          (error instanceof DataAccessError ||
+            error instanceof EmployeeInstanceError ||
+            error instanceof ExperienceError)
+        ) {
+          // An archived instance must not poison the shared automation tick.
+          // Do not overwrite a concurrent policy update or restored rule.
+          await sql`update allrice_automations set status='paused',next_run_at=null,updated_at=clock_timestamp()
+          where id=${candidate.id} and status='enabled' and revision=${candidate.revision} and next_run_at<=clock_timestamp()`;
+          return null;
+        }
+        throw error;
+      });
     if (claim) claims.push(claim);
   }
   for (const claim of claims) {
@@ -1070,7 +1149,8 @@ export async function claimDueAutomations(limit = 10) {
     } catch (error) {
       // The private dispatcher reconciles unknown writes and leaves transient
       // failures durable. A generic failure must never overwrite its bound Run.
-      if (!claim.qualityOccurrenceId) await markClaimFailed(claim, error);
+      if (!claim.qualityOccurrenceId && !claim.experienceOccurrenceId)
+        await markClaimFailed(claim, error);
     }
   }
   return recovered + claims.length;

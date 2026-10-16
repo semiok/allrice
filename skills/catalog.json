@@ -349,6 +349,23 @@
         "workspace.employee.method.activate"
       ],
       "enabled": true
+    },
+    {
+      "id": "18300000-0002-4000-8000-000000000001",
+      "name": "experience-consolidation",
+      "contentFile": "skills/experience-consolidation/SKILL.md",
+      "version": "1.0.0",
+      "checksum": "sha256:20ab80b285d9e3a178fe79e37f0e99a08e6d6f537b095c922003992e505557e5",
+      "source": "allrice",
+      "sourceRef": "https://github.com/semiok/allrice/tree/main/skills/experience-consolidation?content-sha256=20ab80b285d9e3a178fe79e37f0e99a08e6d6f537b095c922003992e505557e5",
+      "license": "Apache-2.0",
+      "reviewStatus": "reviewed",
+      "reviewedByLabel": "MET183 bounded private experience consolidation",
+      "createdByLabel": "MET183 Dreaming method adaptation",
+      "modelInvocable": true,
+      "userInvocable": false,
+      "requiredToolRefs": [],
+      "enabled": true
     }
   ]
 }

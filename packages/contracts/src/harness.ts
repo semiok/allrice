@@ -60,6 +60,13 @@ export function harnessCapabilityMatrix(
   });
 }
 
+/** A scheduled private task has its own durable identity, never a fabricated chat. */
+export const InternalHarnessTaskSchema = z
+  .object({
+    kind: z.literal('experience_consolidation'),
+    occurrenceId: UuidSchema,
+  })
+  .strict();
 const HarnessEventEnvelopeSchema = z.object({
   schemaVersion: z.literal(1),
   harness: HarnessKindSchema,
@@ -68,58 +75,72 @@ const HarnessEventEnvelopeSchema = z.object({
   order: z.number().int().positive(),
   threadId: z.string().trim().min(1).nullable(),
   turnId: z.string().trim().min(1).nullable(),
-  sessionId: UuidSchema,
-  messageId: UuidSchema,
+  sessionId: UuidSchema.nullable(),
+  messageId: UuidSchema.nullable(),
+  internalTask: InternalHarnessTaskSchema.optional(),
   sourceEventId: z.string().trim().min(1).max(240).optional(),
   sourceEventType: z.string().trim().min(1).max(240).optional(),
   sourceOccurredAt: z.string().datetime().optional(),
   sourcePayload: z.record(z.string(), z.unknown()).optional(),
 });
 
-export const HarnessEventSchema = z.discriminatedUnion('type', [
-  HarnessEventEnvelopeSchema.extend({
-    type: z.literal('native.event'),
-    presentation: z.enum([
-      'context',
-      'think',
-      'tool',
-      'search',
-      'todo',
-      'compaction',
-      'lifecycle',
-    ]),
-    status: z.enum(['started', 'updated', 'completed', 'failed', 'info']),
-    label: z.string().trim().min(1).max(240),
-    summary: z.string().trim().min(1).max(1_000).optional(),
-  }).strict(),
-  HarnessEventEnvelopeSchema.extend({
-    type: z.literal('assistant.delta'),
-    text: z.string(),
-    replyId: z.string().min(1).max(500).optional(),
-    textMode: z.enum(['append', 'replace']).optional(),
-    orderStart: z.number().int().positive().optional(),
-  }).strict(),
-  HarnessEventEnvelopeSchema.extend({
-    type: z.literal('assistant.completed'),
-    text: z.string(),
-    replyId: z.string().min(1).max(500).optional(),
-  }).strict(),
-  HarnessEventEnvelopeSchema.extend({
-    type: z.enum(['tool.started', 'tool.completed', 'tool.failed']),
-    toolCallId: z.string().trim().min(1),
-    name: z.string().trim().min(1),
-    label: z.string().trim().min(1),
-    source: z.enum(['harness', 'tool_broker']),
-    summary: z.string().optional(),
-    itemCount: z.number().int().nonnegative().optional(),
-  }).strict(),
-  HarnessEventEnvelopeSchema.extend({
-    type: z.literal('usage.updated'),
-    inputTokens: z.number().int().nonnegative(),
-    cachedInputTokens: z.number().int().nonnegative(),
-    outputTokens: z.number().int().nonnegative(),
-  }).strict(),
-]);
+export const HarnessEventSchema = z
+  .discriminatedUnion('type', [
+    HarnessEventEnvelopeSchema.extend({
+      type: z.literal('native.event'),
+      presentation: z.enum([
+        'context',
+        'think',
+        'tool',
+        'search',
+        'todo',
+        'compaction',
+        'lifecycle',
+      ]),
+      status: z.enum(['started', 'updated', 'completed', 'failed', 'info']),
+      label: z.string().trim().min(1).max(240),
+      summary: z.string().trim().min(1).max(1_000).optional(),
+    }).strict(),
+    HarnessEventEnvelopeSchema.extend({
+      type: z.literal('assistant.delta'),
+      text: z.string(),
+      replyId: z.string().min(1).max(500).optional(),
+      textMode: z.enum(['append', 'replace']).optional(),
+      orderStart: z.number().int().positive().optional(),
+    }).strict(),
+    HarnessEventEnvelopeSchema.extend({
+      type: z.literal('assistant.completed'),
+      text: z.string(),
+      replyId: z.string().min(1).max(500).optional(),
+    }).strict(),
+    HarnessEventEnvelopeSchema.extend({
+      type: z.enum(['tool.started', 'tool.completed', 'tool.failed']),
+      toolCallId: z.string().trim().min(1),
+      name: z.string().trim().min(1),
+      label: z.string().trim().min(1),
+      source: z.enum(['harness', 'tool_broker']),
+      summary: z.string().optional(),
+      itemCount: z.number().int().nonnegative().optional(),
+    }).strict(),
+    HarnessEventEnvelopeSchema.extend({
+      type: z.literal('usage.updated'),
+      inputTokens: z.number().int().nonnegative(),
+      cachedInputTokens: z.number().int().nonnegative(),
+      outputTokens: z.number().int().nonnegative(),
+    }).strict(),
+  ])
+  .superRefine((event, ctx) => {
+    if (
+      event.internalTask
+        ? event.sessionId !== null || event.messageId !== null
+        : !event.sessionId || !event.messageId
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'Harness event must identify either a chat message or an internal task',
+      });
+  });
 export type HarnessEvent = z.infer<typeof HarnessEventSchema>;
 
 export const ContextCheckpointSchema = z
@@ -167,3 +188,18 @@ export const EmployeeKernelRequestSchema = z
   })
   .strict();
 export type EmployeeKernelRequest = z.infer<typeof EmployeeKernelRequestSchema>;
+
+export const InternalKernelRequestSchema = EmployeeKernelRequestSchema.extend({
+  sessionId: z.null(),
+  userMessageId: z.null(),
+  assistantMessageId: z.null(),
+  internalTask: InternalHarnessTaskSchema,
+}).strict();
+export type InternalKernelRequest = z.infer<typeof InternalKernelRequestSchema>;
+export function harnessContextKey(
+  kernel: EmployeeKernelRequest | InternalKernelRequest,
+) {
+  return 'internalTask' in kernel
+    ? `experience-${kernel.internalTask.occurrenceId}`
+    : kernel.sessionId;
+}

@@ -1,3 +1,7 @@
+import {
+  GET as getExperiencePolicyHttp,
+  PUT as putExperiencePolicyHttp,
+} from '../api/v1/admin/organizations/[organizationId]/experience-policy/route';
 import { investmentHttp } from '../../lib/organization-administration/investment-http';
 import { listInvestmentEntries, saveInvestmentEntry } from '@allrice/database';
 import { GET as runtimeInventoryHttp } from '../api/v1/admin/runtime-console/route';
@@ -133,49 +137,57 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                       ? 'people'
                       : undefined;
           const response =
-            parts[6] === 'ai-directory' || parts[8] === 'ai-instances'
-              ? await organizationAiDirectoryHttp(
-                  request,
-                  parts[5]!,
-                  parts[7],
-                  parts[9],
-                  parts[10] === 'references'
-                    ? {
-                        revisionId: parts[11]!,
-                        action:
-                          parts[12] === 'download' ? 'download' : 'preview',
-                      }
-                    : undefined,
-                )
-              : parts[3] === 'investment'
-                ? await investmentHttp(request)
-                : parts[6] === 'investment'
-                  ? await investmentHttp(request, parts[5]!)
-                  : parts[4] === 'runtime-console'
-                    ? parts[6] === 'events'
-                      ? await runtimeEventsHttp(request, {
-                          params: Promise.resolve({ sessionId: parts[5]! }),
-                        })
-                      : await runtimeInventoryHttp(request)
-                    : parts[4] === 'activity'
-                      ? await organizationActivityHttp(request)
-                      : parts[4] === 'tenants' && parts[6] === 'validation'
-                        ? await tenantValidationHttp(request, parts[5]!)
-                        : parts[6] === 'deliverables'
-                          ? await companyDeliverablesHttp(request, parts[5]!)
-                          : parts[6] === 'assets'
-                            ? await companyAssetsHttp(request, parts[5]!)
-                            : parts[6] === 'ai-employees'
-                              ? await organizationAssignmentsHttp(
-                                  request,
-                                  parts[5]!,
-                                )
-                              : await organizationAdministrationHttp(
-                                  request,
-                                  parts[5],
-                                  parts[7],
-                                  action,
-                                );
+            parts[6] === 'experience-policy'
+              ? await (
+                  request.method === 'PUT'
+                    ? putExperiencePolicyHttp
+                    : getExperiencePolicyHttp
+                )(request, {
+                  params: Promise.resolve({ organizationId: parts[5]! }),
+                })
+              : parts[6] === 'ai-directory' || parts[8] === 'ai-instances'
+                ? await organizationAiDirectoryHttp(
+                    request,
+                    parts[5]!,
+                    parts[7],
+                    parts[9],
+                    parts[10] === 'references'
+                      ? {
+                          revisionId: parts[11]!,
+                          action:
+                            parts[12] === 'download' ? 'download' : 'preview',
+                        }
+                      : undefined,
+                  )
+                : parts[3] === 'investment'
+                  ? await investmentHttp(request)
+                  : parts[6] === 'investment'
+                    ? await investmentHttp(request, parts[5]!)
+                    : parts[4] === 'runtime-console'
+                      ? parts[6] === 'events'
+                        ? await runtimeEventsHttp(request, {
+                            params: Promise.resolve({ sessionId: parts[5]! }),
+                          })
+                        : await runtimeInventoryHttp(request)
+                      : parts[4] === 'activity'
+                        ? await organizationActivityHttp(request)
+                        : parts[4] === 'tenants' && parts[6] === 'validation'
+                          ? await tenantValidationHttp(request, parts[5]!)
+                          : parts[6] === 'deliverables'
+                            ? await companyDeliverablesHttp(request, parts[5]!)
+                            : parts[6] === 'assets'
+                              ? await companyAssetsHttp(request, parts[5]!)
+                              : parts[6] === 'ai-employees'
+                                ? await organizationAssignmentsHttp(
+                                    request,
+                                    parts[5]!,
+                                  )
+                                : await organizationAdministrationHttp(
+                                    request,
+                                    parts[5],
+                                    parts[7],
+                                    action,
+                                  );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -225,6 +237,99 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
   }, 30000);
+
+  it('saves the company consolidation schedule through the real admin API and reloads the exact revision', async () => {
+    const admin = (await authenticateSession(adminToken))!;
+    const company = await createManagedOrganization(admin, {
+      name: '经验整理设置测试',
+    });
+    const context = await browser.newContext({
+      viewport: { width: 1440, height: 900 },
+    });
+    await context.addCookies([
+      { name: 'fixture_session', value: adminToken, url: origin },
+    ]);
+    const page = await context.newPage();
+    try {
+      await page.goto(`${origin}/?organizationId=${company.organizationId}`);
+      await page
+        .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
+        .click();
+      const loaded = page
+        .waitForResponse(
+          (r) =>
+            r.url().includes('/experience-policy') &&
+            r.request().method() === 'GET',
+          { timeout: 5000 },
+        )
+        .catch(async (e) => {
+          throw Error(
+            String(e) + ' ' + (await page.locator('details').allTextContents()),
+          );
+        });
+      await page.getByText('经验自动整理设置', { exact: true }).click();
+      const loadedResponse = await loaded;
+      expect(loadedResponse.status(), await loadedResponse.text()).toBe(200);
+      await expect
+        .poll(() => page.getByLabel('整理频率', { exact: true }).count(), {
+          timeout: 3000,
+          message: await page
+            .locator('details')
+            .allTextContents()
+            .then((x) => x.join(' ')),
+        })
+        .toBe(1);
+      await page
+        .getByLabel('整理频率', { exact: true })
+        .selectOption('monthly');
+      await page.getByLabel('每月日期', { exact: true }).fill('31');
+      await page.getByLabel('整理时间', { exact: true }).fill('04:15');
+      await page
+        .getByRole('button', { name: '保存整理设置', exact: true })
+        .click();
+      await page
+        .getByRole('status')
+        .filter({ hasText: '已保存。从下一个整理周期' })
+        .waitFor();
+      await page.reload();
+      await page
+        .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
+        .click();
+      await page.getByText('经验自动整理设置', { exact: true }).click();
+      await expect
+        .poll(() => page.getByLabel('整理频率', { exact: true }).inputValue())
+        .toBe('monthly');
+      expect(
+        await page.getByLabel('每月日期', { exact: true }).inputValue(),
+      ).toBe('31');
+      expect(
+        await page.getByLabel('整理时间', { exact: true }).inputValue(),
+      ).toBe('04:15');
+      const [saved] =
+        await fixture.db`select value from allrice_settings where scope_type='organization' and scope_id=${company.organizationId} and key='employee_experience_policy'`;
+      expect(saved!.value).toMatchObject({
+        schemaVersion: 2,
+        revision: 2,
+        frequency: 'monthly',
+        monthDay: 31,
+        time: '04:15',
+      });
+      const anonymous = await browser.newContext();
+      try {
+        expect(
+          (
+            await anonymous.request.get(
+              `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`,
+            )
+          ).status(),
+        ).toBe(401);
+      } finally {
+        await anonymous.close();
+      }
+    } finally {
+      await context.close();
+    }
+  }, 45000);
 
   it.each([1440, 390])(
     'shows organization AI instances and exact shared detail/file boundaries (%i)',

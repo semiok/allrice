@@ -29,6 +29,7 @@ import {
 } from './organization-departments';
 import { OrganizationAiAssignments } from './organization-ai-assignments';
 import { OrganizationAiDirectory } from './organization-ai-directory';
+import { ExperiencePolicyPanel } from './experience-policy';
 import { TenantResourceEditor } from './tenant-resource-editor';
 import {
   AdminButton,
@@ -398,10 +399,13 @@ export function OrganizationAdministration({
                     onChanged={() => void load()}
                   />
                 ) : tab.id === 'directory' ? (
-                  <OrganizationAiDirectory
-                    key={selected.id}
-                    organizationId={selected.id}
-                  />
+                  <div key={selected.id}>
+                    <ExperiencePolicyPanel organizationId={selected.id} />
+                    <OrganizationAiDirectory
+                      key={selected.id}
+                      organizationId={selected.id}
+                    />
+                  </div>
                 ) : (
                   <CompanyConfiguration
                     key={`config-${selected.id}-${tab.id}`}

@@ -7,6 +7,7 @@ const ports = vi.hoisted(() => ({
   enabled: vi.fn(),
   context: vi.fn(),
   list: vi.fn(),
+  drafts: vi.fn(),
   sources: vi.fn(),
   create: vi.fn(),
   review: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('../identity/session', () => ({ getRequestContext: ports.context }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   experienceReviewEnabled: ports.enabled,
+  listExperienceDrafts: ports.drafts,
   createExperienceStore: () => ports,
 }));
 const context = {
@@ -34,6 +36,7 @@ describe('P20 HTTP boundary', () => {
     ports.enabled.mockReturnValue(true);
     ports.context.mockResolvedValue(context);
     ports.list.mockResolvedValue([]);
+    ports.drafts.mockResolvedValue([]);
     ports.create.mockResolvedValue({ id: randomUUID() });
   });
   it('default-off does not resolve credentials or database', async () => {
@@ -105,4 +108,15 @@ describe('P20 HTTP boundary', () => {
     expect(response.status).toBe(503);
     expect(await response.text()).not.toContain('PRIVATE');
   });
+});
+
+it('reads private drafts with the authenticated scope, preserving the old candidate response', async () => {
+  ports.context.mockResolvedValue(context);
+  ports.enabled.mockReturnValue(true);
+  ports.list.mockResolvedValue([]);
+  ports.drafts.mockResolvedValue([]);
+  const r = await experienceHttp(request(), 'list');
+  expect(r.status).toBe(200);
+  expect(await r.json()).toEqual({ candidates: [], draftBatches: [] });
+  expect(ports.drafts).toHaveBeenCalledWith(context, undefined);
 });

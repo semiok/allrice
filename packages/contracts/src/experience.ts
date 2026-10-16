@@ -15,7 +15,7 @@ export const ExperienceStatusSchema = z.enum([
   'rejected',
 ]);
 const DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-export const ExperienceCollectionPolicySchema = z
+const LegacyExperienceCollectionPolicySchema = z
   .object({
     schemaVersion: z.literal(1),
     revision: z.number().int().positive(),
@@ -24,6 +24,124 @@ export const ExperienceCollectionPolicySchema = z
     authorizationSource: z.literal('platform_automatic_experience_policy'),
   })
   .strict();
+export const ExperiencePolicySettingsSchema = z
+  .object({
+    frequency: z.enum(['off', 'daily', 'weekly', 'monthly']),
+    timezone: z
+      .string()
+      .min(1)
+      .max(64)
+      .refine((value) => {
+        try {
+          new Intl.DateTimeFormat('en', { timeZone: value });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Choose an IANA timezone'),
+    time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
+    weekday: z.number().int().min(0).max(6),
+    monthDay: z.number().int().min(1).max(31),
+  })
+  .strict();
+export const ExperienceCollectionPolicySchema = z.discriminatedUnion(
+  'schemaVersion',
+  [
+    LegacyExperienceCollectionPolicySchema,
+    LegacyExperienceCollectionPolicySchema.extend({
+      schemaVersion: z.literal(2),
+      ...ExperiencePolicySettingsSchema.shape,
+    }).strict(),
+  ],
+);
+export function experiencePolicySchedule(
+  policy: z.infer<typeof ExperienceCollectionPolicySchema>,
+) {
+  return policy.schemaVersion === 2
+    ? {
+        frequency: policy.frequency,
+        timezone: policy.timezone,
+        time: policy.time,
+        weekday: policy.weekday,
+        monthDay: policy.monthDay,
+      }
+    : {
+        frequency: policy.frequency,
+        timezone: 'Asia/Shanghai',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+      };
+}
+export const ExperienceDraftOutputSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    drafts: z
+      .array(
+        z
+          .object({
+            sourceIds: z.array(UuidSchema).min(1).max(16),
+            rule: z.string().trim().min(1).max(4000),
+            reason: z.string().trim().min(1).max(800),
+            applicability: z.string().trim().min(1).max(600),
+            confidence: z.enum(['tentative', 'consistent']),
+            validation: z
+              .object({
+                kind: z.enum(['preference', 'workflow', 'calculation']),
+                check: z.string().trim().min(1).max(600),
+              })
+              .strict(),
+          })
+          .strict(),
+      )
+      .max(8),
+    discarded: z
+      .array(
+        z
+          .object({
+            sourceIds: z.array(UuidSchema).min(1).max(16),
+            reason: z.string().trim().min(1).max(800),
+          })
+          .strict(),
+      )
+      .max(16),
+  })
+  .strict();
+export type ExperienceDraftOutput = z.infer<typeof ExperienceDraftOutputSchema>;
+export const ExperienceDraftBatchSchema = z
+  .object({
+    id: UuidSchema,
+    runId: UuidSchema.nullable(),
+    instanceId: UuidSchema,
+    status: z.enum(['queued', 'running', 'succeeded', 'failed', 'canceled']),
+    state: z.enum(['pending_validation', 'not_ready']),
+    revision: z.literal(1).nullable(),
+    digest: DigestSchema.nullable(),
+    createdAt: TimestampSchema,
+    errorCode: z.string().nullable(),
+    sourceIds: z.array(UuidSchema).max(16),
+    drafts: ExperienceDraftOutputSchema.shape.drafts,
+  })
+  .strict();
+export type ExperienceDraftBatch = z.infer<typeof ExperienceDraftBatchSchema>;
+/** Every input is accounted for exactly once. Model text cannot invent provenance. */
+export function validateExperienceDraftOutput(
+  raw: unknown,
+  sourceIds: readonly string[],
+) {
+  const output = ExperienceDraftOutputSchema.parse(raw);
+  const consumed = [...output.drafts, ...output.discarded].flatMap(
+    (d) => d.sourceIds,
+  );
+  if (
+    new Set(sourceIds).size !== sourceIds.length ||
+    consumed.length !== sourceIds.length ||
+    new Set(consumed).size !== consumed.length ||
+    consumed.some((id) => !sourceIds.includes(id))
+  )
+    throw Error('EXPERIENCE_DRAFT_SOURCE_MISMATCH');
+  return output;
+}
 export const ExperienceEvidenceSchema = z
   .object({
     schemaVersion: z.literal(1),

@@ -1,5 +1,6 @@
 import type {
   EmployeeKernelRequest,
+  InternalKernelRequest,
   DshNativeSkillSnapshot,
   EmployeeBaseSkillCatalog,
   EmployeeRuntimeScene,
@@ -110,7 +111,7 @@ export interface HarnessExecutionInput {
       }>;
     }>;
   };
-  kernel: EmployeeKernelRequest;
+  kernel: EmployeeKernelRequest | InternalKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
   images?: readonly HarnessImageInput[];
@@ -198,7 +199,8 @@ export interface HarnessRuntimeProcessSnapshot {
   id: string;
   organizationId: string;
   workspaceId: string;
-  sessionId: string;
+  sessionId: string | null;
+  internalTask?: InternalKernelRequest['internalTask'];
   ownerId: string;
   threadId: string;
   providerRoute: string;

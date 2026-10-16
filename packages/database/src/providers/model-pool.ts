@@ -13,6 +13,7 @@ import {
   modelProviderRuntimeSupported,
   SaasCapabilityManifestSchema,
   SessionModelSnapshotSchema,
+  ExperienceModelSnapshotSchema,
   UpdateModelConnectionInputSchema,
   UpsertEmployeeModelPolicyInputSchema,
   UpsertModelConnectionInputSchema,
@@ -691,6 +692,83 @@ async function resolveFrozenTarget(input: {
   } as const;
 }
 
+async function freezeEmployeeModelTarget(input: {
+  organizationId: string;
+  workspaceId: string;
+  employeeId: string;
+  ownerId: string;
+}) {
+  const sql = getDatabase();
+  const platformSettings = await readPlatformModelSettings();
+  const configuration = platformSettings.configuration;
+  const policy = await ensureDefaultPolicy({
+    organizationId: input.organizationId,
+    workspaceId: input.workspaceId,
+    employeeId: input.employeeId,
+    actorId: input.ownerId,
+  });
+  const connectionId = configuration.connectionId;
+  const [catalog] = await sql<{ id: string }[]>`
+    select m.id from allrice_model_catalog_entries m
+    join allrice_model_connections c on c.provider_id=m.provider_id
+    where c.id=${connectionId} and c.scope='platform' and m.model=${configuration.workModel}
+      and m.enabled and m.reasoning_efforts ? ${configuration.reasoningEffort}`;
+  if (!catalog) throw new DataAccessError('grant_invalid');
+  const modelCatalogEntryId = catalog.id;
+  const selection = await resolveFrozenTarget({
+    organizationId: input.organizationId,
+    connectionId,
+    modelCatalogEntryId,
+    reasoningEffort: configuration.reasoningEffort,
+  });
+  if (selection.provider !== 'openai-codex')
+    throw new DataAccessError('grant_invalid');
+  return {
+    employeeId: input.employeeId,
+    policyRevision: platformSettings.revision,
+    platformSettings,
+    connectionId: selection.connectionId,
+    modelCatalogEntryId: selection.modelCatalogEntryId,
+    harness: selection.harness,
+    provider: selection.provider,
+    authMode: selection.authMode,
+    model: selection.model,
+    reasoningEffort: selection.reasoningEffort,
+    credentialReference: selection.credentialReference,
+    baseUrl: selection.baseUrl,
+    fallbackPolicy: 'disabled',
+    fallbackTargets: [],
+    fallbackOn: [],
+    runLimits: { ...policy.runLimits, timeoutMs: configuration.timeoutMs },
+    resolvedFallbacks: [],
+    frozenAt: new Date().toISOString(),
+  };
+}
+
+/** Internal occurrence identity is separate from any product chat Session. */
+export async function freezeExperienceModelSnapshot(input: {
+  organizationId: string;
+  workspaceId: string;
+  employeeId: string;
+  ownerId: string;
+  occurrenceId: string;
+}) {
+  const target = await freezeEmployeeModelTarget(input);
+  return ExperienceModelSnapshotSchema.parse({
+    ...target,
+    schemaVersion: 2,
+    sessionId: null,
+    occurrenceId: input.occurrenceId,
+    runLimits: {
+      ...target.runLimits,
+      timeoutMs: Math.min(target.runLimits.timeoutMs || 300000, 300000),
+      maxInputTokens: Math.min(target.runLimits.maxInputTokens, 24000),
+      maxOutputTokens: Math.min(target.runLimits.maxOutputTokens, 4000),
+      maxTotalTokens: Math.min(target.runLimits.maxTotalTokens, 28000),
+    },
+  });
+}
+
 export async function freezeSessionModelSnapshot(input: {
   organizationId: string;
   workspaceId: string;
@@ -698,8 +776,6 @@ export async function freezeSessionModelSnapshot(input: {
   employeeVersionId?: string;
 }) {
   const sql = getDatabase();
-  const platformSettings = await readPlatformModelSettings();
-  const configuration = platformSettings.configuration;
   const sessions = await sql<
     {
       employee_id: string;
@@ -726,49 +802,14 @@ export async function freezeSessionModelSnapshot(input: {
   `;
   const session = sessions[0];
   if (!session) throw new DataAccessError('not_found');
-  const policy = await ensureDefaultPolicy({
-    organizationId: input.organizationId,
-    workspaceId: input.workspaceId,
-    employeeId: session.employee_id,
-    actorId: session.owner_id,
-  });
-  const connectionId = configuration.connectionId;
-  const [catalog] = await sql<{ id: string }[]>`
-    select m.id from allrice_model_catalog_entries m
-    join allrice_model_connections c on c.provider_id=m.provider_id
-    where c.id=${connectionId} and c.scope='platform' and m.model=${configuration.workModel}
-      and m.enabled and m.reasoning_efforts ? ${configuration.reasoningEffort}`;
-  if (!catalog) throw new DataAccessError('grant_invalid');
-  const modelCatalogEntryId = catalog.id;
-  const selection = await resolveFrozenTarget({
-    organizationId: input.organizationId,
-    connectionId,
-    modelCatalogEntryId,
-    reasoningEffort: configuration.reasoningEffort,
-  });
-  if (selection.provider !== 'openai-codex')
-    throw new DataAccessError('grant_invalid');
   const snapshot = SessionModelSnapshotSchema.parse({
+    ...(await freezeEmployeeModelTarget({
+      ...input,
+      employeeId: session.employee_id,
+      ownerId: session.owner_id,
+    })),
     schemaVersion: 1,
     sessionId: input.sessionId,
-    employeeId: session.employee_id,
-    policyRevision: platformSettings.revision,
-    platformSettings,
-    connectionId: selection.connectionId,
-    modelCatalogEntryId: selection.modelCatalogEntryId,
-    harness: selection.harness,
-    provider: selection.provider,
-    authMode: selection.authMode,
-    model: selection.model,
-    reasoningEffort: selection.reasoningEffort,
-    credentialReference: selection.credentialReference,
-    baseUrl: selection.baseUrl,
-    fallbackPolicy: 'disabled',
-    fallbackTargets: [],
-    fallbackOn: [],
-    runLimits: { ...policy.runLimits, timeoutMs: configuration.timeoutMs },
-    resolvedFallbacks: [],
-    frozenAt: new Date().toISOString(),
   });
   const inserted = await sql<{ snapshot: unknown }[]>`
     insert into allrice_session_model_snapshots (
@@ -777,8 +818,8 @@ export async function freezeSessionModelSnapshot(input: {
       frozen_at
     ) values (
       ${input.sessionId}, ${input.organizationId}, ${input.workspaceId},
-      ${session.employee_id}, ${platformSettings.revision}, ${connectionId},
-      ${modelCatalogEntryId}, ${sql.json(snapshot)},
+      ${session.employee_id}, ${snapshot.policyRevision}, ${snapshot.connectionId},
+      ${snapshot.modelCatalogEntryId}, ${sql.json(snapshot)},
       ${new Date(snapshot.frozenAt)}
     ) on conflict (session_id) do update
       set connection_id = excluded.connection_id,

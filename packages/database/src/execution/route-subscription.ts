@@ -1,6 +1,7 @@
 import {
   AssistantSubscriptionSnapshotSchema,
   SessionModelSnapshotSchema,
+  ExperienceModelSnapshotSchema,
   resolveAssistantSubscriptionSnapshot,
   type AssistantSubscriptionSnapshot,
 } from '@allrice/contracts';
@@ -27,7 +28,8 @@ export async function freezeRouteSubscriptionSnapshot(
     // requesting chat and is audit provenance, not a replacement model binding.
     const [row] = await tx`
       select d.*,coalesce(e.session_id::text,t.model_snapshot->>'sessionId') as session_id,
-        coalesce(e.execution_snapshot->'modelSnapshot',t.model_snapshot) as model_snapshot,
+        x.id as occurrence_id,
+        coalesce(e.execution_snapshot->'modelSnapshot',t.model_snapshot,x.experience_execution->'model') as model_snapshot,
         p.provider_key,p.auth_mode,s.snapshot_digest as old_digest,s.snapshot as old_snapshot
       from allrice_route_decisions d
       left join allrice_employee_runs e on e.run_id=d.run_id
@@ -36,6 +38,9 @@ export async function freezeRouteSubscriptionSnapshot(
       left join allrice_employee_method_tests t on t.run_id=d.run_id and t.route_decision_id=d.id
         and t.organization_id=d.organization_id and t.workspace_id=d.workspace_id
         and t.owner_id=d.actor_id and t.employee_id=d.employee_id
+      left join allrice_automation_runs x on x.run_id=d.run_id and x.organization_id=d.organization_id and x.workspace_id=d.workspace_id
+        and x.experience_occurrence->>'ownerId'=d.actor_id::text and x.experience_occurrence->>'employeeId'=d.employee_id::text
+        and x.experience_execution->'model'->>'occurrenceId'=x.id::text
       join allrice_model_connections c on c.id=d.model_connection_id
         and (c.scope='platform' or c.organization_id=d.organization_id)
       join allrice_model_providers p on p.id=c.provider_id
@@ -44,14 +49,16 @@ export async function freezeRouteSubscriptionSnapshot(
       left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
       where d.id=${input.decisionId} and d.organization_id=${input.organizationId}
         and d.workspace_id=${input.workspaceId}
-        and ((e.run_id is not null and t.run_id is null) or (e.run_id is null and t.run_id is not null)) for update of d`;
+        and num_nonnulls(e.run_id,t.run_id,x.run_id)=1 for update of d`;
     if (
       !row ||
       !['codex', 'openai-codex'].includes(row.provider_key) ||
       row.auth_mode !== 'chatgpt_subscription'
     )
       throw Error('ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED');
-    const frozen = SessionModelSnapshotSchema.parse(row.model_snapshot);
+    const frozen = row.occurrence_id
+      ? ExperienceModelSnapshotSchema.parse(row.model_snapshot)
+      : SessionModelSnapshotSchema.parse(row.model_snapshot);
     const target = [frozen, ...frozen.resolvedFallbacks].find(
       (t) =>
         t.connectionId === snapshot.connectionId &&
@@ -59,7 +66,9 @@ export async function freezeRouteSubscriptionSnapshot(
     );
     if (!target) throw Error('ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED');
     const expected = resolveAssistantSubscriptionSnapshot({
-      sessionId: row.session_id,
+      ...(row.occurrence_id
+        ? { occurrenceId: row.occurrence_id }
+        : { sessionId: row.session_id }),
       modelSnapshot: frozen,
       decision: {
         employeeId: row.employee_id,
