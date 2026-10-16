@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   PersonalSkillDefinitionSchema,
   PersonalSkillSourceSchema,
+  PersonalSkillGitHubSourceSchema,
   PersonalSkillItemSchema,
   PersonalSkillSnapshotSchema,
   PersonalSkillPinSchema,
@@ -16,6 +17,7 @@ import {
   type PersonalSkillPackage,
   type ExecutionContext,
   type PersonalSkillDefinition,
+  type PersonalSkillGitHubSource,
   type PersonalSkillPin,
   type DshNativeSkillSnapshot,
   type EmployeeBaseSkillCatalog,
@@ -44,6 +46,7 @@ import {
 } from './employee-chat-authority.ts';
 import {
   explicitPersonalSkillInstallIntent,
+  explicitPersonalSkillGitHubInstallIntent,
   explicitPersonalSkillSelectionIntent,
   explicitPersonalSkillCancelIntent,
 } from './personal-skill-intent.ts';
@@ -205,7 +208,9 @@ function installationIntent(input: EmployeeChatCall, instanceId: string) {
       input.userMessageId,
       'objectId' in args
         ? args.objectId
-        : `${args.importId}:${'candidatePath' in args ? args.candidatePath : 'cancel'}`,
+        : 'url' in args
+          ? `url:${args.url}`
+          : `${args.importId}:${'candidatePath' in args ? args.candidatePath : 'cancel'}`,
       instanceId,
     ),
     request: { ...args, userMessageId: input.userMessageId, instanceId },
@@ -247,8 +252,26 @@ async function importSource(
   tx: ContentTx,
   input: EmployeeChatCall,
   text: string,
+  instanceId: string,
+  fetchedGithub?: PersonalSkillGitHubSource,
 ) {
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
+  if ('url' in args) {
+    if (!explicitPersonalSkillGitHubInstallIntent(text, args.url))
+      throw new PersonalSkillError('intent_required');
+    const previous = await previousGitHubImport(tx, input, instanceId);
+    const source = PersonalSkillGitHubSourceSchema.parse(
+      fetchedGithub ?? previous?.source,
+    );
+    if (
+      source.requestedUrl !== args.url ||
+      (previous &&
+        runtimePolicyDigest(previous.source) !== runtimePolicyDigest(source))
+    )
+      throw new PersonalSkillError('conflict');
+    return { source };
+  }
+  if (fetchedGithub) throw new PersonalSkillError('source_invalid');
   if (!('objectId' in args)) throw new PersonalSkillError('source_invalid');
   const [attachment] =
     await tx`select a.file_name,o.checksum from allrice_message_attachments a
@@ -282,6 +305,26 @@ async function importSource(
   )
     throw new PersonalSkillError('source_invalid');
   return { source, object: file.object };
+}
+
+async function previousGitHubImport(
+  tx: ContentTx,
+  input: EmployeeChatCall,
+  instanceId: string,
+) {
+  const { scope } = employeeChatIdentity(input);
+  const [row] =
+    await tx`select source,state,expires_at,archive_object_id from allrice_personal_skill_imports
+    where id=${packageImportId(input, instanceId)} and organization_id=${scope.organizationId}
+      and workspace_id=${scope.workspaceId} and owner_id=${owner(scope)} and instance_id=${instanceId}
+      and session_id=${input.sessionId} and user_message_id=${input.userMessageId} for update`;
+  if (!row) return null;
+  if (!['staging', 'ready'].includes(row.state) || row.expires_at <= new Date())
+    throw new PersonalSkillError('conflict');
+  return {
+    source: PersonalSkillGitHubSourceSchema.parse(row.source),
+    ready: row.state === 'ready',
+  };
 }
 
 function packageImportId(input: EmployeeChatCall, instanceId: string) {
@@ -353,7 +396,7 @@ async function packageImport(
       throw new PersonalSkillError('intent_required');
     candidate = candidates.find((c) => c.sourcePath === args.candidatePath);
   } else {
-    const { source } = await importSource(tx, input, text);
+    const { source } = await importSource(tx, input, text, instanceId);
     if (
       runtimePolicyDigest(source) !== runtimePolicyDigest(row.source) ||
       candidates.length !== 1
@@ -396,6 +439,7 @@ async function packageImport(
 export async function reservePersonalSkillPackage(
   input: EmployeeChatCall,
   rawCandidates: PersonalSkillCandidate[],
+  fetchedGithub?: PersonalSkillGitHubSource,
 ) {
   const candidates = rawCandidates.map((candidate) =>
     PersonalSkillCandidateSchema.parse(candidate),
@@ -413,7 +457,13 @@ export async function reservePersonalSkillPackage(
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
-      const { source } = await importSource(tx, input, text);
+      const { source } = await importSource(
+        tx,
+        input,
+        text,
+        instance.id,
+        fetchedGithub,
+      );
       if (!/\.zip$/iu.test(source.fileName))
         throw new PersonalSkillError('source_invalid');
       const id = packageImportId(input, instance.id);
@@ -486,7 +536,7 @@ export async function completePersonalSkillPackage(input: EmployeeChatCall) {
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
-      const { source } = await importSource(tx, input, text);
+      const { source } = await importSource(tx, input, text, instance.id);
       const id = packageImportId(input, instance.id);
       const [row] =
         await tx`select * from allrice_personal_skill_imports where id=${id} and organization_id=${scope.organizationId}
@@ -638,7 +688,22 @@ export async function preparePersonalSkillImport(input: EmployeeChatCall) {
           selection: await packageImport(tx, input, instance.id, text),
           instanceId: instance.id,
         };
-      const source = await importSource(tx, input, text);
+      const args = PersonalSkillInstallInputSchema.parse(input.arguments);
+      const source =
+        'url' in args
+          ? await (async () => {
+              if (!explicitPersonalSkillGitHubInstallIntent(text, args.url))
+                throw new PersonalSkillError('intent_required');
+              const previous = await previousGitHubImport(
+                tx,
+                input,
+                instance.id,
+              );
+              if (previous && previous.source.requestedUrl !== args.url)
+                throw new PersonalSkillError('conflict');
+              return { github: { url: args.url, previous } };
+            })()
+          : await importSource(tx, input, text, instance.id);
       const currentImport = packageImportId(input, instance.id);
       await tx`update allrice_personal_skill_imports set state='canceled' where organization_id=${scope.organizationId}
         and owner_id=${owner(scope)} and instance_id=${instance.id} and session_id=${input.sessionId}
@@ -674,7 +739,9 @@ export async function installPersonalSkillFromChat(
       if (prior) return prior;
       const args = PersonalSkillInstallInputSchema.parse(input.arguments);
       const attached =
-        'objectId' in args ? await importSource(tx, input, text) : null;
+        'objectId' in args
+          ? await importSource(tx, input, text, instance.id)
+          : null;
       const selected =
         !attached || /\.zip$/iu.test(attached.source.fileName)
           ? await packageImport(tx, input, instance.id, text)

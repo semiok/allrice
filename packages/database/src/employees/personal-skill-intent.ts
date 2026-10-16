@@ -1,3 +1,5 @@
+import { parsePersonalSkillGitHubUrl } from '@allrice/contracts';
+
 /** Installation is a persistent private binding. Only the user's complete
  * direct request can authorize it; never extract an imperative from documents,
  * quotes, a translation request, or an instruction for this task only. */
@@ -61,6 +63,69 @@ export function explicitPersonalSkillInstallIntent(
     return false;
   }
   return install;
+}
+
+/** The literal source must come from this direct message, not a model-selected
+ * URL or repository instructions. Source labels are arguments; the complete
+ * surrounding request must still authorize persistent personal installation. */
+export function explicitPersonalSkillGitHubInstallIntent(
+  text: string,
+  url: string,
+) {
+  if (
+    !text.trim() ||
+    text.length > 2_000 ||
+    /(?:^|\n)(?: {4}| {0,3}\t)/u.test(text)
+  )
+    return false;
+  try {
+    parsePersonalSkillGitHubUrl(url);
+  } catch {
+    return false;
+  }
+  const urls =
+    text.match(/https?:\/\/[^\s<>“”「」"'`()\[\]，。；;！!？?]+/giu) ?? [];
+  if (urls.length !== 1 || urls[0] !== url) return false;
+  const escaped = url.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  // Keep the bound URL distinct from an attachment name in the same message.
+  // A standalone link must not borrow an imperative aimed at an uploaded file.
+  const boundSource = '__ALLRICE_BOUND_GITHUB_SOURCE__';
+  if (text.includes(boundSource)) return false;
+  let normalized = text
+    .replace(
+      new RegExp(`\\[[^\\]\\r\\n]{1,80}\\]\\(${escaped}\\)`, 'u'),
+      boundSource,
+    )
+    .replace(url, boundSource);
+  if (
+    /(?:上传|附件|\b(?:attached|uploaded)\b|SKILL\.md|\.zip\b)/iu.test(
+      normalized,
+    )
+  )
+    return false;
+  normalized = normalized
+    .replaceAll(boundSource, 'SKILL.md')
+    .replace(/<SKILL\.md>/gu, 'SKILL.md');
+  // Handle a source on its own line without extracting imperatives from a
+  // quotation or a larger paragraph. The existing grammar checks every clause.
+  normalized = normalized.replace(/^\s*SKILL\.md\s*$/gmu, '这是SKILL.md');
+  const sourceLabel =
+    /(?:这个|该)?\s*(?:公开\s*)?GitHub\s*(?:链接|仓库|目录)(?:(?:里|中)的?)?(?:技能|Skill)?\s*[:：]?\s*(?:SKILL\.md)?/giu;
+  normalized = normalized.replace(sourceLabel, 'SKILL.md');
+  normalized = normalized
+    .replace(/SKILL\.md\s*(?:里面|里|中)的?\s*(?:技能|Skill)/giu, 'SKILL.md')
+    .replace(/(?:这个|该)\s*技能\s*[:：]\s*SKILL\.md/gu, 'SKILL.md')
+    .replace(/((?:这个|该))技能(?=\s*(?:[:：。；;！!\n]|$))/gu, '$1技能文件')
+    .replace(/((?:SKILL\.md|技能文件))[:：](?=\s*(?:\n|$))/gu, '$1');
+  normalized = normalized.replace(
+    /(?:the\s+)?(?:public\s+)?GitHub\s+(?:skill|repository|directory)\s+(?:at|from)\s+SKILL\.md/giu,
+    'SKILL.md',
+  );
+  normalized = normalized.replace(
+    /SKILL\.md\s*装上/gu,
+    'SKILL.md安装到当前员工',
+  );
+  return explicitPersonalSkillInstallIntent(normalized, 'SKILL.md');
 }
 
 /** A fresh user message must select one exact candidate from this session's

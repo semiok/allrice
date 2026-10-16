@@ -830,10 +830,11 @@ it('cold native recovery reconciles the saved successful scene result before the
 
 describe('personal Skills use the native loader with current authority', () => {
   it.each([
+    { url: 'https://github.com/acme/skills/tree/main/weekly' },
     { importId: privatePin.installationId, candidatePath: 'weekly/SKILL.md' },
     { importId: privatePin.installationId, operation: 'cancel' },
   ])(
-    'round-trips pending selection/cancellation through actual native schema: %j',
+    'round-trips source, selection and cancellation through actual native schema: %j',
     async (args) => {
       const result = await scenario({
         personalInstall: true,

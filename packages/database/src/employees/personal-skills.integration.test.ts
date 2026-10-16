@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
@@ -46,6 +46,7 @@ import { installPersonalSkill } from '../../../../apps/worker/src/tool-broker/ha
 import { readSkillResource } from '../../../../apps/worker/src/tool-broker/handlers/skill.js';
 import { resolveCloudToolArguments } from '../../../../apps/worker/src/tool-broker/handlers/cloud-frozen-script.js';
 import { createFileArchive } from '../../../file-archives/src/index.ts';
+import { LocalStorageAdapter } from '../../../storage/src/index.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -238,6 +239,272 @@ suite(
           ? [{ path: 'monthly/SKILL.md', bytes: Buffer.from(raw('monthly')) }]
           : []),
       ]),
+    });
+    function publicGitHub(multiple = false) {
+      const commit = 'a'.repeat(40),
+        tree = 'b'.repeat(40);
+      let movingRef = commit;
+      const files = new Map([
+        [
+          'weekly/SKILL.md',
+          raw('weekly') +
+            'Read references/checklist.md and assets/report.md.\n',
+        ],
+        ['weekly/references/checklist.md', 'Exact public reference.'],
+        ['weekly/assets/report.md', '# Exact report template\n'],
+        ['weekly/assets/example/SKILL.md', raw('template-only')],
+        ...(multiple ? [['monthly/SKILL.md', raw('monthly')]] : []),
+      ] as [string, string][]);
+      const entries = [...files].map(([path, text]) => ({
+        path,
+        type: 'blob',
+        mode: '100644',
+        size: Buffer.byteLength(text),
+        sha: createHash('sha1')
+          .update(`blob ${Buffer.byteLength(text)}\0`)
+          .update(text)
+          .digest('hex'),
+      }));
+      const json = (value: unknown) => new Response(JSON.stringify(value));
+      const fetch = vi
+        .spyOn(globalThis, 'fetch')
+        .mockImplementation(async (address, options) => {
+          expect(options?.method).toBe('GET');
+          expect(options?.redirect).toBe('manual');
+          expect(new Headers(options?.headers).has('authorization')).toBe(
+            false,
+          );
+          const url = new URL(String(address));
+          if (url.hostname === 'raw.githubusercontent.com') {
+            expect(url.pathname.split('/')[3]).toBe(commit);
+            const path = url.pathname
+              .split('/')
+              .slice(4)
+              .map(decodeURIComponent)
+              .join('/');
+            return files.has(path)
+              ? new Response(files.get(path))
+              : new Response(null, { status: 404 });
+          }
+          expect(url.hostname).toBe('api.github.com');
+          if (url.pathname === '/repos/acme/skills')
+            return json({
+              private: false,
+              full_name: 'acme/skills',
+              default_branch: 'main',
+            });
+          if (url.pathname.startsWith('/repos/acme/skills/commits/')) {
+            const ref = decodeURIComponent(
+              url.pathname.slice('/repos/acme/skills/commits/'.length),
+            );
+            return ref === 'main' || ref === commit
+              ? json({
+                  sha: ref === 'main' ? movingRef : commit,
+                  commit: { tree: { sha: tree } },
+                })
+              : new Response(null, { status: 404 });
+          }
+          if (url.pathname === `/repos/acme/skills/git/trees/${tree}`)
+            return json({
+              sha: tree,
+              truncated: false,
+              tree: [
+                {
+                  path: 'weekly',
+                  mode: '040000',
+                  type: 'tree',
+                  sha: 'c'.repeat(40),
+                },
+                ...entries,
+              ],
+            });
+          throw Error('Unexpected public source request');
+        });
+      return {
+        fetch,
+        files,
+        commit,
+        tree,
+        move: () => {
+          movingRef = 'e'.repeat(40);
+        },
+      };
+    }
+    it('imports a pinned public source through the real Broker and native parser, then reuses private resources without another download', async () => {
+      const x = await setup(),
+        url = 'https://github.com/acme/skills/tree/main/weekly';
+      const task = await x.run(x.custom.id, `请安装这个技能：\n${url}`);
+      const publicSource = publicGitHub();
+      try {
+        const installed = await broker(task, { url });
+        expect(installed.status).toBe('installed');
+        expect(installed.skill).toMatchObject({
+          resourceCount: 3,
+          source: {
+            kind: 'github',
+            requestedUrl: url,
+            commitSha: publicSource.commit,
+            treeSha: publicSource.tree,
+          },
+        });
+        const requests = publicSource.fetch.mock.calls.length;
+        expect((await broker(task, { url })).skill.versionId).toBe(
+          installed.skill.versionId,
+        );
+        expect(publicSource.fetch).toHaveBeenCalledTimes(requests);
+        const [stored] =
+          await f.db`select v.source,v.original_text,o.visibility,o.immutable from allrice_personal_skill_versions v
+          join allrice_storage_objects o on o.id=(v.resource_manifest->>'archiveObjectId')::uuid where v.id=${installed.skill.versionId}`;
+        expect(stored).toMatchObject({
+          original_text: publicSource.files.get('weekly/SKILL.md'),
+          visibility: 'private',
+          immutable: true,
+        });
+        await task.finish();
+        publicSource.fetch.mockImplementation(async () => {
+          throw Error('Source now unavailable');
+        });
+        const next = await x.run(x.custom.id, '按 weekly 参考写报告。');
+        const resolved = await resolveEmployeeExecution(next.scope);
+        const args = { skill: 'weekly', path: 'assets/example/SKILL.md' };
+        const response = await readSkillResource({
+          arguments: args,
+          input: {
+            context: next.input.context,
+            sessionId: next.scope.sessionId,
+            storageRoot: f.storageRoot,
+            nativeSkills: resolved.nativeSkills,
+            capabilities: ['storage:read'],
+            call: {
+              id: randomUUID(),
+              name: 'workspace.skill.read',
+              arguments: args,
+            },
+          },
+        });
+        expect(JSON.parse(response.modelContent)).toMatchObject({
+          text: raw('template-only'),
+          versionId: installed.skill.versionId,
+        });
+        expect(publicSource.fetch).toHaveBeenCalledTimes(requests);
+        await next.finish();
+      } finally {
+        publicSource.fetch.mockRestore();
+      }
+    });
+    it('keeps a public multi-skill selection pinned across a moving ref and requires a new user message', async () => {
+      const x = await setup(),
+        url = 'https://github.com/acme/skills';
+      const first = await x.run(x.custom.id, `请安装 ${url} 里的技能。`);
+      const source = publicGitHub(true);
+      try {
+        const pending = await broker(first, { url });
+        expect(pending.status).toBe('selection_required');
+        expect(
+          pending.candidates.map((c: { name: string }) => c.name).sort(),
+        ).toEqual(['monthly', 'weekly']);
+        const requests = source.fetch.mock.calls.length;
+        source.move();
+        expect((await broker(first, { url })).importId).toBe(pending.importId);
+        expect(source.fetch).toHaveBeenCalledTimes(requests);
+        expect(await listPersonalSkills(x.context)).toEqual([]);
+        const args = {
+          importId: pending.importId,
+          candidatePath: 'weekly/SKILL.md',
+        };
+        await expect(broker(first, args)).rejects.toThrow();
+        await first.finish();
+        const next = await x.run(
+          x.custom.id,
+          '我选 weekly，请安装到当前员工。',
+          undefined,
+          first.scope.sessionId,
+        );
+        const result = await broker(next, args);
+        expect(result.skill.source.commitSha).toBe(source.commit);
+        expect(source.fetch).toHaveBeenCalledTimes(requests);
+        await next.finish();
+      } finally {
+        source.fetch.mockRestore();
+      }
+    });
+    it('recovers a staged public archive with its original commit after an unknown storage write outcome', async () => {
+      const x = await setup(),
+        url = 'https://github.com/acme/skills/tree/main/weekly';
+      const task = await x.run(x.custom.id, `请安装 ${url} 里的技能。`);
+      const source = publicGitHub(),
+        originalPut = LocalStorageAdapter.prototype.put;
+      const put = vi
+        .spyOn(LocalStorageAdapter.prototype, 'put')
+        .mockImplementationOnce(async function (...args) {
+          await originalPut.apply(this, args);
+          throw Error('Synthetic lost storage acknowledgement');
+        });
+      try {
+        await expect(broker(task, { url })).rejects.toThrow(
+          'Synthetic lost storage acknowledgement',
+        );
+        const requests = source.fetch.mock.calls.length;
+        source.move();
+        const result = await broker(task, { url });
+        expect(result.status).toBe('installed');
+        expect(result.skill.source.commitSha).toBe(source.commit);
+        expect(
+          source.fetch.mock.calls
+            .slice(requests)
+            .every(([url]) => !String(url).includes('/commits/main')),
+        ).toBe(true);
+        const [count] =
+          await f.db`select count(*)::int n from allrice_personal_skill_imports where instance_id=${x.custom.id}`;
+        expect(count!.n).toBe(1);
+        await task.finish();
+      } finally {
+        put.mockRestore();
+        source.fetch.mockRestore();
+      }
+    });
+    it.each([
+      '先评估这个链接，不要安装：https://github.com/acme/skills',
+      '请翻译“安装 https://github.com/acme/skills 里的技能”。',
+      '本次临时用 https://github.com/acme/skills 的模板，不要长期保存。',
+    ])(
+      'rejects a non-install user request before any public network read: %s',
+      async (text) => {
+        const x = await setup(),
+          task = await x.run(x.custom.id, text);
+        const source = publicGitHub();
+        try {
+          await expect(
+            broker(task, { url: 'https://github.com/acme/skills' }),
+          ).rejects.toThrow();
+          expect(source.fetch).not.toHaveBeenCalled();
+          expect(await listPersonalSkills(x.context)).toEqual([]);
+          await task.finish();
+        } finally {
+          source.fetch.mockRestore();
+        }
+      },
+    );
+    it('does not borrow attachment installation authority for a separate GitHub link', async () => {
+      const x = await setup(),
+        url = 'https://github.com/acme/skills';
+      const task = await x.run(
+        x.custom.id,
+        `请安装我上传的 SKILL.md。\n${url}`,
+        raw(),
+      );
+      const source = publicGitHub();
+      try {
+        await expect(broker(task, { url })).rejects.toThrow();
+        expect(source.fetch).not.toHaveBeenCalled();
+        expect(await listPersonalSkills(x.context)).toEqual([]);
+        const [imports] =
+          await f.db`select count(*)::int n from allrice_personal_skill_imports where instance_id=${x.custom.id}`;
+        expect(imports!.n).toBe(0);
+        await task.finish();
+      } finally {
+        source.fetch.mockRestore();
+      }
     });
     it('installs a ZIP through the real handler, retains private exact resources independently of the source, and revokes reads', async () => {
       const x = await setup();
