@@ -1,4 +1,8 @@
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
+import {
+  sandboxExecutionParameter,
+  sandboxNetworkParameter,
+} from './allrice-sandbox-native-parameters.mjs';
 import { z } from 'zod';
 import {
   SandboxNetworkRequestSchema,
@@ -150,30 +154,8 @@ export const cloudNativeTools = [
         description:
           'Optional runtime for inline script. Omit to preserve Node; use python for CJK charts. Frozen script references stay Node.',
       },
-      network: {
-        type: 'object',
-        additionalProperties: false,
-        description:
-          'Optional controlled HTTPS access. Exact authorized origins only, no paths, IP addresses, credentials or wildcard. Authorization is resolved by the server, never supplied here.',
-        properties: {
-          mode: { type: 'string', enum: ['controlled_https'], required: true },
-          origins: { type: 'array', items: { type: 'string' }, required: true },
-        },
-      },
-      execution: {
-        type: 'object',
-        additionalProperties: false,
-        description:
-          'Optional finite execution budget when enabled. Select work type only; the server controls initial budget, renewal, remaining Run time and the administrator cap.',
-        properties: {
-          version: { type: 'integer', enum: [1], required: true },
-          kind: {
-            type: 'string',
-            enum: ['compute', 'install', 'build'],
-            required: true,
-          },
-        },
-      },
+      network: sandboxNetworkParameter,
+      execution: sandboxExecutionParameter,
       script: {
         type: 'string',
         description:
@@ -255,6 +237,8 @@ export const cloudNativeTools = [
 export const PythonNativeArgumentsSchema = z
   .object({
     language: z.literal('python').optional(),
+    network: SandboxNetworkRequestSchema.optional(),
+    execution: SandboxExecutionRequestSchema.optional(),
     script: CloudNativeArgumentsSchema.shape.script.unwrap(),
     inputs: CloudNativeArgumentsSchema.shape.inputs,
     outputs: CloudNativeArgumentsSchema.shape.outputs,
@@ -282,7 +266,7 @@ cloudNativeTools.push({
   canonicalName: 'python.execute',
   wireName: 'python_execute',
   description:
-    'Execute Python computation and CJK charts, preferring the ready managed Bridge in auto mode and using authorized cloud only when local cannot carry the task. Omitted language means Python. location:auto/local/cloud is top-level. Busy/preparing local runtimes wait; explicit local, local-only data and unknown outcomes must never replay in cloud. Reuse fixed Python/Matplotlib/Agg/pandas/openpyxl/Pillow and the configured Noto CJK default, without installing dependencies, network access or host paths. Do not assume python-docx/python-pptx here; create and reopen Office files within workspace_export_create.python, or inspect existing files with workspace_document_read. Read exact input/ object copies; declare actual output/ PNG/JSON/CSV/TXT files or no files for stdout-only computation. Real checker-approved PNG bytes return immutable objectId/checksum/versionId for preview, download and embedding through the same Office Skill. Approval binds the exact original call and frozen authority. For XLSX, do not trust declared max_row/max_column as populated data. Inspect actual populated XML cells or reset read-only worksheet dimensions, then read bounded ranges in batches; never build a list across a declared million-row sheet. Print a short summary/sample only; write full field maps and tables to declared output files within artifact limits.',
+    'Execute Python computation and CJK charts, preferring the ready managed Bridge in auto mode and using authorized cloud only when local cannot carry the task. Omitted language means Python. location:auto/local/cloud is top-level. Busy/preparing local runtimes wait; explicit local, local-only data and unknown outcomes must never replay in cloud. Reuse fixed Python/Matplotlib/Agg/pandas/openpyxl/Pillow and the configured Noto CJK default. Offline by default and never access host paths. Optional execution requests a finite compute/install/build budget; optional network selects exact separately authorized HTTPS origins. Input transfer needs its own permission. Per-call installs do not persist; use workspace_project for reusable pinned dependencies. Unsupported controls fail explicitly without changing the target. Do not assume python-docx/python-pptx here; create and reopen Office files within workspace_export_create.python, or inspect existing files with workspace_document_read. Read exact input/ object copies; declare actual output/ PNG/JSON/CSV/TXT files or no files for stdout-only computation. Real checker-approved PNG bytes return immutable objectId/checksum/versionId for preview, download and embedding through the same Office Skill. Approval binds the exact original call and frozen authority. For XLSX, do not trust declared max_row/max_column as populated data. Inspect actual populated XML cells or reset read-only worksheet dimensions, then read bounded ranges in batches; never build a list across a declared million-row sheet. Print a short summary/sample only; write full field maps and tables to declared output files within artifact limits.',
   timeoutMs: managedToolWaitTimeoutMs,
   isConcurrencySafe: false,
   validateArguments(args) {
@@ -290,6 +274,8 @@ cloudNativeTools.push({
     return args;
   },
   parameters: {
+    network: sandboxNetworkParameter,
+    execution: sandboxExecutionParameter,
     language: {
       type: 'string',
       enum: ['python'],
@@ -300,7 +286,7 @@ cloudNativeTools.push({
       ...cloud.parameters.script,
       required: true,
       description:
-        'Required Python script, at most 100000 characters. Read exact input/ files, write declared files under output/; no dependency installation.',
+        'Required Python script, at most 100000 characters. Read exact input/ files and write declared files under output/. Any network or dependency installation needs the explicit frozen network and execution permissions.',
     },
     inputs: cloud.parameters.inputs,
     outputs: {
