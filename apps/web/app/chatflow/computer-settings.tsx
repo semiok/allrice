@@ -11,7 +11,6 @@ import type {
   BridgeEnvironment,
 } from '@allrice/contracts';
 import styles from './sidebar-settings.module.css';
-import { SandboxNetworkSettings } from './sandbox-network-settings';
 import { BrowserLoginSettings } from './browser-login-settings';
 import { projectBridgeView } from './bridge-view';
 import type { useBridge } from './use-bridge';
@@ -262,11 +261,6 @@ export function ComputerSettings({
               </div>
             );
           })}
-          <SandboxNetworkSettings
-            workspaceId={workspaceId}
-            deviceId={computer.device.id}
-            active={active}
-          />
           {computer.environment?.browserDefaultsVersion === 1 ? (
             <BrowserLoginSettings
               workspaceId={workspaceId}

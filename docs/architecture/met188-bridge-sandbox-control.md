@@ -20,31 +20,46 @@ The host confirms physical exit before collecting outputs. Existing Office,
 PDF, MCP, background services, and requests without `execution` retain their
 prior contracts and deadlines.
 
-## Explicit network permission
+## Automatic network admission
 
-`设置 → 我的电脑 → 沙箱联网` belongs to the user who paired that device. The
-setting is initially disabled. The owner selects exact HTTPS origins and
-separately permits input-file transfer. A folder grant, local browser login,
-managed runtime probe, or device credential never creates this permission.
-The model can request only a subset of the configured origins. A request must
-also have the frozen employee's outbound capability, a finite execution budget,
-the current ordinary allow/ask/deny decision, and the exact original tool call.
-Unrelated users, organizations, and workspaces cannot read or modify the grant.
+There is no sandbox-network module or website list in tenant settings. For a
+chat task, the model supplies the exact public HTTPS destinations required by
+its command. The backend admits them automatically after checking the frozen
+employee outbound capability, live owner/device membership, task policy and
+website reputation. Existing task confirmation/automation and exact input
+permissions remain effective; network admission grants no additional file access.
 
-Changing or disabling settings increments the grant version. The payload freezes
-its ID, version and digest; admission, dispatch, heartbeat, and network setup
-recheck live authority. Account, membership, Run, device, and grant revocation
-fence the original attempt. The operation cannot silently adopt a new grant.
-Old clients cannot claim the new payloads. The opt-in feature markers are
-`sandbox_execution_v1`, `sandbox_network_v1`, and the corresponding managed
-Python profile versions.
+Cloudflare's malware/phishing-filtering DNS-over-HTTPS endpoint screens only the
+hostname (not task text, files, URL paths or credentials). The fixed TLS-verified
+endpoint is `https://security.cloudflare-dns.com/dns-query` at `1.1.1.2:443`.
+Queries have a four-second deadline and a 16 KiB response limit. Blocked or
+private/mixed IP answers are refused. Lookup failures are reported separately
+as unavailable and never bypass screening. Positive results are cached for the
+shortest DNS TTL, at most 60 seconds; pending checks and the cache are bounded.
+This blocks known malicious destinations; it does not claim every unknown site
+or package is harmless. The transport below still validates each actual public
+connection and pins its destination. See the provider's
+[filter behavior](https://developers.cloudflare.com/1.1.1.1/setup/) and
+[JSON API](https://developers.cloudflare.com/1.1.1.1/encryption/dns-over-https/make-api-requests/dns-json/).
+
+A new Bridge decision freezes the device ID, policy version and digest of the
+exact owner/workspace/target/destination request. Different concurrent commands
+have independent digests. Admission, dispatch and heartbeat recheck authority
+and reputation. Device, membership, Run and feature revocation stop the original
+attempt. Old manually configured references keep their original narrower
+version, destinations and transfer permissions until their attempt settles;
+they cannot silently adopt automatic authority. The old settings GET returns
+404 and PATCH returns 410 without reading or modifying grants. Ordinary cloud
+execution no longer requires a separate website profile; any explicit
+administrator restrictions already installed on a cloud grant still apply.
 
 Asset-backed inputs retain exact storage-object/artifact/project-snapshot refs
-in transfer scopes. Local folder inputs retain the existing manifest checksums,
-working-directory digest and folder grant, and additionally require the
-independent network grant's input-transfer permission. They are not invented
-cloud storage objects. Runtime output must not be presented as proof that no
-external request was sent.
+in transfer scopes. Local folder inputs retain their manifest checksums,
+working-directory digest and folder grant. Approval binds this exact input and
+network request; local files are never invented as cloud storage objects.
+Client feature markers remain `sandbox_execution_v1`, `sandbox_network_v1` and
+the corresponding managed Python profile versions. Unsupported clients fail
+explicitly. Runtime output is not proof that no external request was sent.
 
 ## Physical transport
 
@@ -93,6 +108,6 @@ physical preflight. Operators can disable either with
 An older installed app remains eligible only for its existing offline contracts.
 
 Release acceptance requires database identity/revocation checks, legacy
-compatibility, real Intel and ARM runner tests, explicit ordinary-owner settings,
+compatibility, real Intel and ARM runner tests, ordinary-owner execution with no manual website configuration,
 and deployment verification. Synthetic native component checks are distinct from
 ordinary-account Dev acceptance. No DSH core or upstream package is modified.

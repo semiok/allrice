@@ -170,7 +170,15 @@ verifies business data persistence plus delete propagation.
 
 Managed public dependency resolution uses the existing
 `ALLRICE_SANDBOX_NETWORK_ENABLED` and `ALLRICE_SANDBOX_EXECUTION_V1_ENABLED`
-flags, plus a scoped administrator-issued cloud network grant. It adds no port,
+flags, plus the existing scoped cloud execution grant. Sandbox runtime requests
+now use automatic backend destination screening; tenants do not enter websites
+in settings. Explicit administrator-installed cloud restrictions still apply.
+Web/Worker must reach the TLS-verified malware-filtering DoH endpoint
+`security.cloudflare-dns.com` at `1.1.1.2:443`; no API key is used. Resolver
+outages fail with a distinct check-unavailable result, without an unfiltered
+fallback. The existing network flag remains the emergency disable control. See
+[automatic sandbox networking](../architecture/met188-bridge-sandbox-control.md).
+This change adds no listening port,
 credential or migration. Deploy the matching cloud watchdog while the VM is idle;
 its attestation must include `projectResolution: 1`. Only the fixed, hash-checked
 resolver may use a 256 MiB executable temporary filesystem. Ordinary scripts keep

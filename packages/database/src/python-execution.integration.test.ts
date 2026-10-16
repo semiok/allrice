@@ -1,6 +1,7 @@
 import {
   updateBridgeSandboxNetwork,
   getBridgeSandboxNetwork,
+  resolveBridgeSandboxNetworkGrant,
 } from './bridge-sandbox-network.ts';
 /** Isolated DB/StoragePort regression. Captured bytes are never tenant-executed here. */
 import { createHash, randomUUID } from 'node:crypto';
@@ -29,6 +30,7 @@ import {
 } from './cloud-execution.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
 import {
+  RuntimePolicyError,
   setRuntimePolicyControls,
   runtimePolicyDigest as digest,
 } from './runtime-policy.ts';
@@ -47,6 +49,12 @@ import { normalizeCloudPythonArguments } from './cloud-authority.ts';
 import { getToolBrokerFile } from './execution/tool-broker.ts';
 import * as client from './core/client.ts';
 import { prepareTenantCloudGrants } from './employees/development-cloud-grants.ts';
+// Authority/lifecycle tests use a deterministic reputation port; the checker
+// itself has separate real-DNS acceptance and refusal/cache regressions.
+const admission = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./sandbox-network-admission.ts', () => ({
+  assertAutomaticSandboxNetwork: admission,
+}));
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -227,22 +235,6 @@ suite(
             ...modernProfile,
             sandboxExecutionVersion: 1,
             ...(a.network ? { sandboxNetworkVersion: 1 } : {}),
-          },
-          isolated.db,
-        );
-      if (a.network)
-        await updateBridgeSandboxNetwork(
-          f.context,
-          f.workspace,
-          d.device.id,
-          {
-            expectedVersion: 0,
-            enabled: true,
-            profile: {
-              ...(a.network as object),
-              version: 1,
-              allowInputTransfer: true,
-            },
           },
           isolated.db,
         );
@@ -620,19 +612,17 @@ suite(
       ).rejects.toThrow('sandbox_network_not_authorized');
     });
 
-    it('requires independent owner egress permission; rejects wrong owners and stale settings without granting implicit access', async () => {
-      vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+    it('automatically admits a new local request without a settings row and freezes each exact destination independently', async () => {
       const network = {
-          mode: 'controlled_https' as const,
-          origins: ['https://pypi.org'],
-        },
-        f = await fixture({
-          canonicalPython: {},
-          outboundCapability: true,
-          sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
-          sandboxNetwork: { ...network, version: 1, allowInputTransfer: true },
-        }),
-        d = await device(f);
+        mode: 'controlled_https' as const,
+        origins: ['https://pypi.org'],
+      };
+      const f = await fixture({
+        canonicalPython: {},
+        outboundCapability: true,
+        sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
+      });
+      const d = await device(f);
       await reportLocalPythonProfile(
         d.device,
         {
@@ -656,82 +646,130 @@ suite(
           isolated.db,
         ),
       ).toEqual({ version: 0, enabled: false, profile: null });
+      const first = await selectManagedPythonExecution(
+        await request(f, a),
+        isolated.db,
+      );
+      expect(first.networkGrant).toMatchObject({ id: d.device.id, version: 1 });
+      const second = await selectManagedPythonExecution(
+        await request(f, {
+          ...a,
+          network: { ...network, origins: ['https://example.com'] },
+        }),
+        isolated.db,
+      );
+      expect(second.networkGrant?.digest).not.toBe(first.networkGrant?.digest);
+      const [row] =
+        await isolated.db`select execution_snapshot from allrice_employee_runs where run_id=${f.execution.runId}`;
+      const frozen = EmployeeExecutionSnapshotSchema.parse(
+        row!.execution_snapshot,
+      );
+      await expect(
+        resolveBridgeSandboxNetworkGrant(
+          isolated.db,
+          d.device,
+          network,
+          false,
+          frozen,
+          first.networkGrant,
+        ),
+      ).resolves.toEqual(first.networkGrant);
+      await expect(
+        resolveBridgeSandboxNetworkGrant(
+          isolated.db,
+          { ...d.device, ownerId: randomUUID() },
+          network,
+          false,
+          frozen,
+        ),
+      ).rejects.toThrow('sandbox_network_not_authorized');
+      await expect(
+        resolveBridgeSandboxNetworkGrant(
+          isolated.db,
+          d.device,
+          network,
+          false,
+          frozen,
+          second.networkGrant,
+        ),
+      ).rejects.toThrow('sandbox_network_grant_changed');
+      admission.mockRejectedValueOnce(
+        new RuntimePolicyError('sandbox_network_destination_blocked'),
+      );
       await expect(
         selectManagedPythonExecution(await request(f, a), isolated.db),
-      ).rejects.toThrow('sandbox_network_not_authorized');
-      const change = {
-        expectedVersion: 0,
-        enabled: true,
-        profile: { ...network, version: 1, allowInputTransfer: false },
-      };
-      await expect(
-        updateBridgeSandboxNetwork(
-          { ...f.context, actor: { type: 'user', id: randomUUID() } },
+      ).rejects.toThrow('sandbox_network_destination_blocked');
+      expect(
+        await getBridgeSandboxNetwork(
+          f.context,
           f.workspace,
           d.device.id,
-          change,
           isolated.db,
         ),
-      ).rejects.toThrow();
-      await expect(
-        updateBridgeSandboxNetwork(
-          f.context,
-          randomUUID(),
-          d.device.id,
-          change,
-          isolated.db,
-        ),
-      ).rejects.toThrow();
-      const saved = await updateBridgeSandboxNetwork(
+      ).toEqual({ version: 0, enabled: false, profile: null });
+
+      // A pre-upgrade operation keeps its old, narrower grant and revocation.
+      const profile = {
+        ...network,
+        version: 1 as const,
+        allowInputTransfer: false,
+      };
+      await updateBridgeSandboxNetwork(
         f.context,
         f.workspace,
         d.device.id,
-        change,
+        { expectedVersion: 0, enabled: true, profile },
         isolated.db,
       );
-      expect(saved.version).toBe(1);
+      const [legacy] =
+        await isolated.db`select id from allrice_bridge_sandbox_network_grants where device_id=${d.device.id}`;
+      const ref = {
+        id: legacy!.id as string,
+        version: 1,
+        digest: digest(profile),
+      };
       await expect(
-        updateBridgeSandboxNetwork(
-          f.context,
-          f.workspace,
-          d.device.id,
-          change,
+        resolveBridgeSandboxNetworkGrant(
           isolated.db,
+          d.device,
+          network,
+          false,
+          frozen,
+          ref,
         ),
-      ).rejects.toThrow('bridge_network_settings_conflict');
-      expect(
-        (await selectManagedPythonExecution(await request(f, a), isolated.db))
-          .networkGrant?.version,
-      ).toBe(1);
+      ).resolves.toEqual(ref);
       await expect(
-        selectManagedPythonExecution(
-          await request(f, {
-            ...a,
-            network: { ...network, origins: ['https://example.com'] },
-          }),
+        resolveBridgeSandboxNetworkGrant(
           isolated.db,
-        ),
-      ).rejects.toThrow('sandbox_network_not_authorized');
-      await expect(
-        selectManagedPythonExecution(
-          await request(f, {
-            ...a,
-            inputs: [
-              {
-                objectId: f.object.id,
-                checksum: f.object.checksum,
-                path: 'input.json',
-              },
-            ],
-          }),
-          isolated.db,
+          d.device,
+          network,
+          true,
+          frozen,
+          ref,
         ),
       ).rejects.toThrow('sandbox_network_transfer_not_authorized');
+      await updateBridgeSandboxNetwork(
+        f.context,
+        f.workspace,
+        d.device.id,
+        { expectedVersion: 1, enabled: false, profile },
+        isolated.db,
+      );
+      await expect(
+        resolveBridgeSandboxNetworkGrant(
+          isolated.db,
+          d.device,
+          network,
+          false,
+          frozen,
+          ref,
+        ),
+      ).rejects.toThrow('sandbox_network_not_authorized');
     });
 
     it.each([
-      'grant-disabled',
-      'grant-changed',
+      'device-revoked',
+      'risk-blocked',
       'member-removed',
       'feature-disabled',
     ])(
@@ -799,17 +837,11 @@ suite(
           await isolated.db`update allrice_memberships set active=false where user_id=${f.user} and organization_id=${f.org}`;
         else if (mode === 'feature-disabled')
           vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '0');
+        else if (mode === 'device-revoked')
+          await isolated.db`update allrice_bridge_devices set revoked_at=clock_timestamp() where id=${run.device.id}`;
         else
-          await updateBridgeSandboxNetwork(
-            f.context,
-            f.workspace,
-            run.device.id,
-            {
-              expectedVersion: 1,
-              enabled: mode !== 'grant-disabled',
-              profile: { ...network, version: 1, allowInputTransfer: true },
-            },
-            isolated.db,
+          admission.mockRejectedValueOnce(
+            new RuntimePolicyError('sandbox_network_destination_blocked'),
           );
         try {
           await expect(

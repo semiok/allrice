@@ -77,6 +77,8 @@ const unavailablePolicyCodes = new Set([
   'sandbox_network_not_authorized',
   'sandbox_network_transfer_not_authorized',
   'sandbox_network_grant_changed',
+  'sandbox_network_destination_blocked',
+  'sandbox_network_check_unavailable',
   'approval_required',
   'approval_invalid_or_stale',
   'approval_already_consumed',

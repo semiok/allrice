@@ -7,6 +7,7 @@ import { riceToolCapability, riceToolRisk } from './tool-broker/definitions.js';
 import { objectValue } from './tool-broker/input-values.js';
 import { requireRiceToolHandler } from './tool-broker/registry.js';
 import { boundToolResult } from './tool-broker/result-budget.js';
+import { sandboxNetworkError } from './tool-broker/network-error.js';
 import type {
   RiceToolExecutionInput,
   RiceToolResult,
@@ -120,7 +121,11 @@ export async function executeRiceTool(
             '公司范本已暂停、撤回或权限已变化。请停止读取并向用户说明，重新选用后再继续。',
             false,
           )
-        : cause;
+        : sandboxNetworkError(cause, {
+            runId: input.context.runId,
+            callId: input.call.id,
+            toolName: input.call.name,
+          });
     await recordToolBrokerAudit({
       context: input.context,
       toolName: input.call.name,

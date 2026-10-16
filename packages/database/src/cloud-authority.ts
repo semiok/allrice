@@ -369,7 +369,7 @@ export async function checkCloudBindingAuthority(
     if (!snapshot.success)
       throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
     assertCloudExecutionBudget(project, snapshot.data, false);
-    assertCloudNetworkAuthority(project, profile, snapshot.data, false);
+    await assertCloudNetworkAuthority(project, profile, snapshot.data, false);
     const source = project.arguments.projectSource;
     const needsOutbound =
       !project.arguments.projectPreparation.offline &&
@@ -475,7 +475,7 @@ export async function checkCloudBindingAuthority(
     snapshot.success ? snapshot.data : undefined,
     Boolean(repositoryProof || method),
   );
-  assertCloudNetworkAuthority(
+  await assertCloudNetworkAuthority(
     payload,
     profile,
     snapshot.success ? snapshot.data : undefined,
