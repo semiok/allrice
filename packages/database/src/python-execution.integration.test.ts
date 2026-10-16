@@ -387,7 +387,12 @@ suite(
       const inputs = await loadCloudCommandInputs(
         f.execution,
         created.payload,
-        { ...f.storage, get } as StoragePort,
+        {
+          get,
+          put: f.storage.put.bind(f.storage),
+          delete: f.storage.delete.bind(f.storage),
+          exists: f.storage.exists.bind(f.storage),
+        } satisfies StoragePort,
         isolated.db,
       );
       expect(get).not.toHaveBeenCalled();
