@@ -834,6 +834,10 @@ export async function listExperienceDrafts(
         await import('./experience-validation.ts');
       const { listExperienceAdoptionViews } =
         await import('./experience-adoption.ts');
+      const validations = await listExperienceValidationViews(
+        tx,
+        occurrence.id,
+      );
       result.push({
         adoptions: await listExperienceAdoptionViews(
           tx,
@@ -851,10 +855,17 @@ export async function listExperienceDrafts(
         digest: receipt?.outputDigest ?? null,
         sourceIds: occurrence.sources.map((s) => s.id),
         drafts: receipt?.output.drafts ?? [],
-        validations: await listExperienceValidationViews(tx, occurrence.id),
+        validations,
         validationNotes: Array.isArray(row.experience_validation_plan)
           ? row.experience_validation_plan
-              .filter((p: { reason?: string }) => p.reason)
+              // The immutable original plan remains audit evidence. Once a
+              // continuation has a real test, render its current result rather
+              // than a contradictory historical "not covered" notice.
+              .filter(
+                (p: { draftIndex?: number; reason?: string }) =>
+                  p.reason &&
+                  !validations.some((v) => v.draftIndex === p.draftIndex),
+              )
               .map((p: { reason: string }) => p.reason)
           : [],
       });

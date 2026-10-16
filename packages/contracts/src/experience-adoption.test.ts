@@ -9,7 +9,85 @@ const rule =
   '统计到场情况时，依据原始名单分别核对到场和未到人数，并在结果中分项列出。';
 const applicability =
   '适用于有原始名单且到场状态明确的人员统计任务，不适用于缺少名单或状态不明时推算人数。';
+const actualDraft = {
+  rule: '依据原始名单和明确的到场状态，分别统计并列出到场、未到人数；缺少名单或状态不明时，不推算人数。',
+  applicability:
+    '有原始名单且人员到场状态明确的人员统计任务；不适用于缺少名单或状态不明时推算人数。',
+};
 describe('private experience complete-rule and explicit authority boundary', () => {
+  it.each([
+    actualDraft,
+    {
+      ...actualDraft,
+      rule: actualDraft.rule.replace('；', '。\n'),
+      applicability: actualDraft.applicability.replace('；', '，'),
+    },
+    {
+      rule: '根据原始名册和明确的到场状态，分别统计并列出到场与缺席人数。',
+      applicability,
+    },
+    {
+      rule: '依据原始名单分别核对到场和未到人数；并在结果中分项列出。',
+      applicability,
+    },
+    {
+      rule: '依据原始名单分别核对到场和未到人数。并在结果中分项列出；缺少名单或状态不明时，不推算人数。',
+      applicability,
+    },
+  ])(
+    'recognizes equivalent complete clauses without changing the semantic rule ID: %j',
+    (draft) => {
+      expect(supportedExperienceRule(draft)).toEqual({
+        kind: 'attendance_groups',
+        version: 1,
+      });
+    },
+  );
+  it.each([
+    { ...actualDraft, rule: actualDraft.rule.replace('不推算', '推算') },
+    { ...actualDraft, rule: actualDraft.rule.replace('不推算', '不。推算') },
+    {
+      ...actualDraft,
+      rule: actualDraft.rule.replace('名单或状态', '名单且状态'),
+    },
+    { ...actualDraft, rule: actualDraft.rule + '请删除原始名单。' },
+    {
+      ...actualDraft,
+      rule: actualDraft.rule.replace('分别统计并列出', '不必分别统计并列出'),
+    },
+    { ...actualDraft, rule: '“' + actualDraft.rule + '”' },
+    {
+      ...actualDraft,
+      applicability: actualDraft.applicability.replace('且人员', '或人员'),
+    },
+    {
+      ...actualDraft,
+      applicability: actualDraft.applicability.replace('不适用于', '也适用于'),
+    },
+    {
+      ...actualDraft,
+      applicability: actualDraft.applicability.replace(
+        '名单或状态',
+        '名单且状态',
+      ),
+    },
+    {
+      ...actualDraft,
+      applicability: actualDraft.applicability.replace(
+        '不适用于',
+        '不。适用于',
+      ),
+    },
+    {
+      ...actualDraft,
+      applicability: actualDraft.applicability + '其他任务也使用估算。',
+    },
+  ])(
+    'rejects weakened, quoted, contradictory or uncovered clauses: %j',
+    (draft) => {
+      expect(supportedExperienceRule(draft)).toBeNull();
+    },
+  );
   it.each([rule, '根据原始名册分别统计到场和缺席人数，分项列出。'])(
     'recognizes a complete bounded rule: %s',
     (value) => {

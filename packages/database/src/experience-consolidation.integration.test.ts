@@ -103,6 +103,7 @@ async function source(
   attendance = false,
   published = false,
   feedback?: string,
+  withSibling = false,
 ) {
   const f = await createExperienceFixture(db, { published });
   for (const context of [f.owner, f.reviewer, f.neighbor])
@@ -153,11 +154,35 @@ async function source(
     (c) => c.source?.runId === runId,
   )!;
   expect(candidate?.originKind).toBe('incremental');
+  let siblingId: string | undefined;
+  if (withSibling) {
+    const siblingRun = randomUUID(),
+      user = randomUUID(),
+      assistant = randomUUID();
+    await db`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content,status)
+      values(${user},${f.org},${f.workspace},${f.user},${f.session.id},'user','{"text":"刚才的对账报告漏了退款，核对时需要单列退款再汇总净回款。","citations":[]}','completed'),
+        (${assistant},${f.org},${f.workspace},${f.user},${f.session.id},'assistant','{"text":"收到","citations":[]}','completed')`;
+    await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${siblingRun},${f.org},${f.workspace},${f.user},'succeeded','{}','{}')`;
+    await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,session_id,employee_assignment_id,employee_version_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,execution_snapshot,experience_capture_state)
+      select ${siblingRun},organization_id,workspace_id,owner_id,session_id,employee_assignment_id,employee_version_id,${user},${assistant},'succeeded',clock_timestamp(),provider_snapshot,prompt_snapshot,${db.json({ instance })},'pending' from allrice_employee_runs where run_id=${runId}`;
+    await collectPendingExperienceEvidence({ database: db });
+    siblingId = (await createExperienceStore().list(f.owner)).find(
+      (c) => c.source?.runId === siblingRun,
+    )!.id;
+  }
   if (materialize) await syncExperienceConsolidationSchedules();
   const [rule] =
     await db`select * from allrice_automations where owner_id=${f.user} and experience_binding is not null`;
   if (materialize) expect(rule).toBeTruthy();
-  return { ...f, instance, candidate, rule: rule!, sourceRunId: runId, pin };
+  return {
+    ...f,
+    instance,
+    candidate,
+    rule: rule!,
+    sourceRunId: runId,
+    pin,
+    siblingId,
+  };
 }
 async function currentRequirement(f: Awaited<ReturnType<typeof source>>) {
   const contentId = randomUUID();
@@ -219,8 +244,16 @@ async function queued(
   attendance = false,
   published = false,
   feedback?: string,
+  withSibling = false,
 ) {
-  const f = await source(withSkill, true, attendance, published, feedback);
+  const f = await source(
+    withSkill,
+    true,
+    attendance,
+    published,
+    feedback,
+    withSibling,
+  );
   const current = withRule ? await currentRequirement(f) : null;
   await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
   await Promise.all([claimDueAutomations(), claimDueAutomations()]);
@@ -235,8 +268,16 @@ async function leased(
   attendance = false,
   published = false,
   feedback?: string,
+  withSibling = false,
 ) {
-  const f = await queued(withSkill, withRule, attendance, published, feedback),
+  const f = await queued(
+      withSkill,
+      withRule,
+      attendance,
+      published,
+      feedback,
+      withSibling,
+    ),
     workerId = randomUUID();
   const job = await claimNextJob(workerId, 120000, { allowBackground: true });
   expect(
@@ -383,14 +424,31 @@ suite(
       attendance = true,
       enable = true,
       withSkill = false,
+      draftOverride: { rule?: string; applicability?: string } = {},
+      withSibling = false,
     ) {
-      const f = await leased(withSkill, false, attendance, true),
+      const f = await leased(
+          withSkill,
+          false,
+          attendance,
+          true,
+          undefined,
+          withSibling,
+        ),
         output = await proof(f);
       if (attendance)
         Object.assign(output.drafts[0]!, {
           rule: '统计到场情况时，依据原始名单分别核对到场和未到人数，并在结果中分项列出。',
           applicability:
             '适用于有原始名单且到场状态明确的人员统计任务，不适用于缺少名单或状态不明时推算人数。',
+        });
+      Object.assign(output.drafts[0]!, draftOverride);
+      if (withSibling)
+        output.drafts.push({
+          ...output.drafts[0]!,
+          sourceIds: [f.siblingId!],
+          rule: '对账时单列退款，再汇总净回款。',
+          applicability: '含退款的回款对账',
         });
       await completeJob({ ...f.lease, result: output });
       await syncAutomationRuns();
@@ -528,8 +586,223 @@ suite(
         },
       };
     }
-    async function adoptedFixture(withSkill = false) {
-      const f = await validationFixture(true, true, withSkill);
+    const actualAttendanceDraft = {
+      rule: '依据原始名单和明确的到场状态，分别统计并列出到场、未到人数；缺少名单或状态不明时，不推算人数。',
+      applicability:
+        '有原始名单且人员到场状态明确的人员统计任务；不适用于缺少名单或状态不明时推算人数。',
+    };
+    const uncoveredReason = '尚无完整规则及技能联合覆盖，仍待验证。';
+    async function legacyCoverage(
+      reason = uncoveredReason,
+      withSibling = false,
+    ) {
+      const f = await validationFixture(
+        true,
+        true,
+        true,
+        actualAttendanceDraft,
+        withSibling,
+      );
+      const originalPlan = [
+        { draftIndex: 0, reason },
+        ...(withSibling
+          ? [
+              {
+                draftIndex: 1,
+                reason: '草稿 2 暂无覆盖其要求的独立专项样例，仍待验证。',
+              },
+            ]
+          : []),
+      ];
+      await db`update allrice_automation_runs set experience_validation_plan=${db.json(originalPlan)} where id=${f.occurrence.id}`;
+      return { ...f, originalPlan };
+    }
+    it.each([false, true])(
+      'continues the original uncovered draft once and preserves sibling decisions, even if authority later changes: %s',
+      async (revoke) => {
+        const f = await legacyCoverage(uncoveredReason, true);
+        await updateExperiencePolicy(f.reviewer, f.org, {
+          expectedRevision: (await readExperiencePolicy(f.org)).revision,
+          frequency: 'daily',
+          timezone: 'Asia/Shanghai',
+          time: '03:00',
+          weekday: 1,
+          monthDay: 1,
+          adoptionMode: 'supported_private',
+        });
+        const sibling = {
+          draftIndex: 1,
+          reason: '尚无覆盖完整规则及依赖的验证，未采用。',
+        };
+        const oldAdoption = {
+          status: 'complete',
+          pendingDrafts: [],
+          drafts: [{ draftIndex: 0, reason: sibling.reason }, sibling],
+        };
+        await db`update allrice_automation_runs set experience_adoption_plan=${db.json(oldAdoption)} where id=${f.occurrence.id}`;
+        const [before] =
+          await db`select experience_receipt from allrice_automation_runs where id=${f.occurrence.id}`;
+        await Promise.all([
+          syncExperienceValidations(),
+          syncExperienceValidations(),
+        ]);
+        const records =
+          await db`select * from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id}`;
+        expect(records).toHaveLength(1);
+        expect(records[0]!).toMatchObject({
+          draft_index: 0,
+          prior_plan_digest: runtimePolicyDigest(f.originalPlan),
+          output_digest: runtimePolicyDigest(f.output),
+          draft_digest: runtimePolicyDigest(f.output.drafts[0]),
+        });
+        const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+        expect(records[0]!.test_id).toBe(test.id);
+        expect(test.experienceCandidate!.instructions).toContain(
+          actualAttendanceDraft.rule,
+        );
+        await completePlatformEmployeeTestRun(
+          test.id,
+          await validationReceipt(test, attendanceAnswer, [skillEvent(test)]),
+        );
+        if (revoke)
+          await db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.instance.id}`;
+        await syncExperienceAdoptions();
+        const [after] =
+          await db`select experience_validation_plan,experience_receipt,experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`;
+        expect(after!.experience_validation_plan).toEqual(f.originalPlan);
+        expect(after!.experience_receipt).toEqual(before!.experience_receipt);
+        expect(after!.experience_adoption_plan.status).toBe('complete');
+        expect(
+          after!.experience_adoption_plan.drafts.find(
+            (d: { draftIndex: number }) => d.draftIndex === 1,
+          ),
+        ).toEqual(sibling);
+        const adopted = after!.experience_adoption_plan.drafts.find(
+          (d: { draftIndex: number }) => d.draftIndex === 0,
+        );
+        if (revoke) {
+          expect(adopted.reason).toBe('来源或有效要求已变化，未采用。');
+          expect(adopted.memoryId).toBeUndefined();
+          return;
+        }
+        expect(adopted.memoryId).toBeTruthy();
+        const displayed = (await listExperienceDrafts(f.owner))[0]!;
+        expect(
+          displayed.validations.find((v) => v.draftIndex === 0)
+            ?.validationStatus,
+        ).toBe('passed');
+        expect(displayed.validationNotes).not.toContain(uncoveredReason);
+        expect(displayed.validationNotes).toEqual([f.originalPlan[1]!.reason]);
+        await expect(
+          db`update allrice_experience_coverage_reassessments set reason='changed',test_id=null where occurrence_id=${f.occurrence.id}`,
+        ).rejects.toThrow('append-only');
+        await expect(
+          db`delete from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id}`,
+        ).rejects.toThrow('append-only');
+        await deleteWorkspaceMemory(f.owner, f.workspace, adopted.memoryId);
+        // A versioned recognizer is not a new semantic rule: forgotten records win.
+        await db`update allrice_automation_runs set experience_adoption_plan=${db.json({ ...oldAdoption, status: 'awaiting_validation', pendingDrafts: [0] })} where id=${f.occurrence.id}`;
+        await syncExperienceValidations();
+        await syncExperienceAdoptions();
+        expect(
+          await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+        ).toHaveLength(1);
+        expect(
+          await db`select id from allrice_memories where instance_id=${f.instance.id} and lifecycle_state='durable' and archived_at is null`,
+        ).toHaveLength(0);
+      },
+    );
+    it.each([
+      '此草稿的来源或当前技能版本已变化，或需尚未覆盖的资源，未启动验证。',
+      '来源、实例或有效要求已变化，原草稿未启用。',
+      '草稿 1 未进入本批验证预算，仍待验证。',
+    ])(
+      'does not turn a different prior denial into a coverage retry: %s',
+      async (reason) => {
+        const f = await legacyCoverage(reason);
+        await syncExperienceValidations();
+        expect(
+          await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+        ).toHaveLength(0);
+        expect(
+          await db`select occurrence_id from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id}`,
+        ).toHaveLength(0);
+      },
+    );
+    it('records a newly revoked source once without scheduling or retrying it', async () => {
+      const f = await legacyCoverage();
+      await changeSkill(f, 'disable');
+      await syncExperienceValidations();
+      await syncExperienceValidations();
+      const records =
+        await db`select test_id,reason from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id}`;
+      expect(records).toHaveLength(1);
+      expect(records[0]!.test_id).toBeNull();
+      expect(records[0]!.reason).toContain('变化');
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(0);
+    });
+    it('never retries a test that ran and failed, and leaves the original failure untouched', async () => {
+      const f = await legacyCoverage();
+      await syncExperienceValidations();
+      const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+      const output = await validationReceipt(test, attendanceAnswer, [
+        skillEvent(test),
+      ]);
+      await completePlatformEmployeeTestRun(test.id, {
+        ...output,
+        error: {
+          code: 'SYNTHETIC_UPSTREAM',
+          message: 'Synthetic upstream failure',
+        },
+      });
+      const [before] =
+        await db`select * from allrice_platform_employee_test_runs where id=${test.id}`;
+      expect(before!.status).toBe('failed');
+      await Promise.all([
+        syncExperienceValidations(),
+        syncExperienceValidations(),
+      ]);
+      expect(
+        await db`select * from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toEqual([before]);
+      expect(
+        await db`select occurrence_id from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id}`,
+      ).toHaveLength(1);
+    });
+    it('defers an uncovered draft at the daily budget without spending its reassessment', async () => {
+      const f = await legacyCoverage();
+      const template = await validationFixture();
+      // Temporarily pause the target while creating a real reservation template.
+      await db`update allrice_settings set value=jsonb_set(value,'{validationMode}','"off"') where scope_id=${f.org}`;
+      await syncExperienceValidations();
+      const [test] =
+        await db`select * from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${template.occurrence.id}`;
+      const fill = [];
+      for (let i = 0; i < 8; i++) {
+        const id = randomUUID();
+        fill.push(id);
+        await db`insert into allrice_platform_employee_test_runs(id,employee_id,revision_id,requested_by_label,status,input,frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,experience_binding)
+          select ${id},employee_id,revision_id,requested_by_label,'failed',input,frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,
+            experience_binding || ${db.json({ id, occurrenceId: randomUUID(), organizationId: f.org })}::jsonb from allrice_platform_employee_test_runs where id=${test!.id}`;
+      }
+      await db`update allrice_settings set value=jsonb_set(value,'{validationMode}','"supported_cases"') where scope_id=${f.org}`;
+      await syncExperienceValidations();
+      expect(
+        await db`select occurrence_id from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id}`,
+      ).toHaveLength(0);
+      await db`update allrice_platform_employee_test_runs set created_at=clock_timestamp()-interval '25 hours' where id in ${db(fill)}`;
+      await syncExperienceValidations();
+      expect(
+        await db`select occurrence_id from allrice_experience_coverage_reassessments where occurrence_id=${f.occurrence.id} and test_id is not null`,
+      ).toHaveLength(1);
+    });
+    async function adoptedFixture(
+      withSkill = false,
+      draftOverride: { rule?: string; applicability?: string } = {},
+    ) {
+      const f = await validationFixture(true, true, withSkill, draftOverride);
       await syncExperienceValidations();
       const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
       await completePlatformEmployeeTestRun(
@@ -561,6 +834,29 @@ suite(
       ).toHaveLength(1);
       return { ...f, memory: rows[0]!, validationId: test.id };
     }
+    it('keeps an unchanged legacy proof readable with its complete output clause on a separate line', async () => {
+      const f = await adoptedFixture(false, {
+        rule: '依据原始名单分别核对到场和未到人数；并在结果中分项列出。',
+      });
+      const originalProof = f.memory.adoption_proof;
+      expect(originalProof.rule).toEqual({
+        kind: 'attendance_groups',
+        version: 1,
+      });
+      await expect(
+        db.begin((tx) => readPrivateExperience(tx, f.owner, f.memory.id)),
+      ).resolves.toBeTruthy();
+      await syncExperienceValidations();
+      await syncExperienceAdoptions();
+      expect(
+        (
+          await db`select adoption_proof from allrice_experience_reviews where memory_id=${f.memory.id}`
+        )[0]!.adoption_proof,
+      ).toEqual(originalProof);
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(1);
+    });
     async function experienceRun(
       f: Awaited<ReturnType<typeof adoptedFixture>>,
       text: string,
