@@ -1,6 +1,66 @@
-import { PersonalSkillInstallInputSchema } from '@allrice/contracts';
+import {
+  PersonalSkillInstallInputSchema,
+  PersonalSkillVersionInputSchema,
+} from '@allrice/contracts';
 
 export const personalSkillNativeTools = [
+  {
+    canonicalName: 'workspace.personal_skill.version',
+    wireName: 'workspace_personal_skill_version',
+    description:
+      'Inspect the owner personal skill library/history; stage an explicitly requested update from the current direct message attachment or literal public GitHub URL, or rollback to an exact historical version. Inspect first for installationId and expectedRevision. update accepts exactly objectId or url, never rewritten skill text. A candidate is not active: display the fixed source, every affected binding including disabled employees/other workspaces, and confirmationText; end this Run and wait for a NEW direct message confirming that full text. Then confirm with the exact operationId and digest. Never use ask_user_question or a generic yes as authority. Only applied means the library current version changed; unchanged is a no-op. Enabled/disabled bindings stay unchanged, current Runs retain old pins, next independent task uses the library version. No dependency installation, permission grants, or shared content edits. inspect without installationId lists the library; with it returns history and this-session pending operations. cancel requires an explicit new cancellation request and operationId/digest. Upload sources need a new attachment to update; reading a moving GitHub link stages a fixed commit, never automatic upgrades.',
+    timeoutMs: 90000,
+    isConcurrencySafe: false,
+    parameters: {
+      operation: {
+        type: 'string',
+        enum: ['inspect', 'update', 'rollback', 'confirm', 'cancel', 'bind'],
+        description:
+          'Required operation. bind only when the direct user explicitly asks to enable the named owned library skill for this current AI employee; never infer it from update/inspect.',
+      },
+      installationId: {
+        type: 'string',
+        description:
+          'Owned installation UUID returned by inspect; required for update/rollback.',
+      },
+      expectedRevision: {
+        type: 'integer',
+        description:
+          'Exact current library revision from inspect; required for update/rollback.',
+      },
+      objectId: {
+        type: 'string',
+        description:
+          'Update only: current message SKILL.md/ZIP attachment UUID. Excludes url.',
+      },
+      url: {
+        type: 'string',
+        description:
+          'Update only: exact literal public GitHub source in the direct user request. Excludes objectId.',
+      },
+      version: {
+        type: 'integer',
+        description:
+          'Rollback only: exact historical version number requested by the user.',
+      },
+      versionId: {
+        type: 'string',
+        description:
+          'bind only: exact current library version UUID from inspect; bind also requires installationId and expectedRevision.',
+      },
+      operationId: {
+        type: 'string',
+        description: 'Confirm/cancel only: exact pending operation UUID.',
+      },
+      digest: {
+        type: 'string',
+        description: 'Confirm/cancel only: exact frozen preview digest.',
+      },
+    },
+    validateArguments(args) {
+      return PersonalSkillVersionInputSchema.parse(args);
+    },
+  },
   {
     canonicalName: 'workspace.personal_skill.install',
     wireName: 'workspace_personal_skill_install',

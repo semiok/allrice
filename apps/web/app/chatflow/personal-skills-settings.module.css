@@ -38,3 +38,10 @@
 .skill > button {
   justify-self: start;
 }
+.skill details > div,
+.skill details > p {
+  margin-top: 12px;
+}
+.skill summary {
+  cursor: pointer;
+}

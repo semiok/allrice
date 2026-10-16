@@ -14,7 +14,6 @@ import {
   EmployeeExecutionSnapshotSchema,
   personalSkillLimits,
   type PersonalSkillCandidate,
-  type PersonalSkillPackage,
   type ExecutionContext,
   type PersonalSkillDefinition,
   type PersonalSkillGitHubSource,
@@ -42,7 +41,6 @@ import { enterMethodChat } from './employee-method-chat.ts';
 import {
   employeeChatIdentity,
   employeeChatUuid,
-  type EmployeeChatCall,
 } from './employee-chat-authority.ts';
 import {
   explicitPersonalSkillInstallIntent,
@@ -53,118 +51,22 @@ import {
 import { employeeBaseSkillLimits } from './employee-base-skills.ts';
 import type { ContentSql, ContentTx } from './employee-content-model.ts';
 
-export class PersonalSkillError extends Error {
-  constructor(
-    readonly code:
-      | 'intent_required'
-      | 'source_invalid'
-      | 'name_conflict'
-      | 'limit'
-      | 'conflict'
-      | 'unavailable',
-  ) {
-    super(`personal_skill_${code}`);
-  }
-}
-const unavailable = (): never => {
-  throw new PersonalSkillError('unavailable');
-};
-const owner = (context: ContentIdentity) =>
-  context.actor.type === 'user' ? context.actor.id : unavailable();
-
-function packageVersionChecksum(
-  definitionChecksum: string,
-  manifest: PersonalSkillPackage,
-) {
-  return runtimePolicyDigest({
-    definitionChecksum,
-    sourcePath: manifest.sourcePath,
-    resources: manifest.resources,
-  });
-}
-function validPackage(
-  raw: unknown,
-  checksum: string | null,
-  definitionChecksum: string,
-) {
-  if (raw === null && checksum === null) return undefined;
-  const manifest = PersonalSkillPackageSchema.parse(raw);
-  const { checksum: manifestChecksum, ...payload } = manifest;
-  if (
-    runtimePolicyDigest(payload) !== manifestChecksum ||
-    packageVersionChecksum(definitionChecksum, manifest) !== checksum
-  )
-    return unavailable();
-  return manifest;
-}
-
-async function items(context: ContentIdentity, sql: ContentSql, id?: string) {
-  const rows = await sql`
-    select i.*,v.version,v.source,v.definition,v.definition_checksum,v.resource_manifest,v.package_checksum from allrice_personal_skill_installations i
-    join allrice_personal_skill_versions v on v.id=i.current_version_id
-    where i.organization_id=${context.organizationId} and i.owner_id=${owner(context)}
-      and (${id ?? null}::uuid is null or i.id=${id ?? null}) order by i.created_at desc limit 128`;
-  const bindings = rows.length
-    ? await sql`select b.*,emp.name as employee_name,e.profile from allrice_personal_skill_bindings b
-    join allrice_employee_instances e on e.id=b.instance_id and e.archived_at is null
-    join allrice_employee_assignments a on a.id=e.assignment_id and a.active
-    join allrice_employees emp on emp.id=a.employee_id
-    where b.installation_id in ${sql(rows.map((r) => r.id))} and b.organization_id=${context.organizationId}
-      and b.owner_id=${owner(context)} and b.workspace_id=${context.workspaceId} order by b.id`
-    : [];
-  const readable = new Map<string, boolean>();
-  const results = [];
-  for (const row of rows) {
-    const visible = [];
-    for (const b of bindings.filter((b) => b.installation_id === row.id)) {
-      if (!readable.has(b.instance_id)) {
-        try {
-          await getEmployeeInstance(context, b.instance_id, sql);
-          readable.set(b.instance_id, true);
-        } catch (error) {
-          if (!(error instanceof DataAccessError)) throw error;
-          readable.set(b.instance_id, false);
-        }
-      }
-      if (!readable.get(b.instance_id)) continue;
-      visible.push({
-        id: b.id,
-        instanceId: b.instance_id,
-        workspaceId: b.workspace_id,
-        enabled: b.enabled,
-        epoch: b.epoch,
-        label: b.profile?.name ?? b.employee_name,
-      });
-    }
-    // The library belongs to the person, independently of a revoked binding.
-    results.push(
-      PersonalSkillItemSchema.parse({
-        id: row.id,
-        name: row.name,
-        description: row.definition.description,
-        revision: row.revision,
-        state: row.state,
-        versionId: row.current_version_id,
-        version: row.version,
-        source: row.source,
-        definitionChecksum: row.definition_checksum,
-        ...(row.package_checksum
-          ? {
-              packageChecksum: row.package_checksum,
-              resourceCount: row.resource_manifest.resources.length,
-            }
-          : {}),
-        compatibility: 'instruction_format_checked',
-        businessVerification: 'not_verified',
-        bindings: visible,
-        createdAt: row.created_at.toISOString(),
-        updatedAt: row.updated_at.toISOString(),
-      }),
-    );
-  }
-  return results;
-}
-
+import {
+  personalSkillImportTool,
+  authorizePersonalSkillUpdate,
+  priorPersonalSkillVersion,
+  stagePersonalSkillUpdate,
+  type PersonalSkillImportCall,
+} from './personal-skill-versions.ts';
+export { PersonalSkillError } from './personal-skill-model.ts';
+import {
+  PersonalSkillError,
+  unavailable,
+  owner,
+  packageVersionChecksum,
+  validPackage,
+  personalSkillItems as items,
+} from './personal-skill-model.ts';
 export async function listPersonalSkills(context: ContentIdentity) {
   if (!(await readContentPrincipal(context)))
     throw new DataAccessError('authorization_denied');
@@ -198,7 +100,10 @@ async function receipt(
   return item;
 }
 
-function installationIntent(input: EmployeeChatCall, instanceId: string) {
+function installationIntent(
+  input: PersonalSkillImportCall,
+  instanceId: string,
+) {
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
   return {
     requestId: employeeChatUuid(
@@ -212,6 +117,7 @@ function installationIntent(input: EmployeeChatCall, instanceId: string) {
           ? `url:${args.url}`
           : `${args.importId}:${'candidatePath' in args ? args.candidatePath : 'cancel'}`,
       instanceId,
+      ...(input.versionUpdate ? [JSON.stringify(input.versionUpdate)] : []),
     ),
     request: { ...args, userMessageId: input.userMessageId, instanceId },
   };
@@ -245,19 +151,21 @@ async function priorInstallation(
     binding.epoch !== previous.epoch
   )
     throw new PersonalSkillError('conflict');
-  return current;
+  return prior;
 }
 
 async function importSource(
   tx: ContentTx,
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
   text: string,
   instanceId: string,
   fetchedGithub?: PersonalSkillGitHubSource,
 ) {
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
   if ('url' in args) {
-    if (!explicitPersonalSkillGitHubInstallIntent(text, args.url))
+    if (input.versionUpdate)
+      await authorizePersonalSkillUpdate(tx, input, text, args.url, true);
+    else if (!explicitPersonalSkillGitHubInstallIntent(text, args.url))
       throw new PersonalSkillError('intent_required');
     const previous = await previousGitHubImport(tx, input, instanceId);
     const source = PersonalSkillGitHubSourceSchema.parse(
@@ -281,10 +189,10 @@ async function importSource(
       and a.organization_id=${input.context.organizationId} and a.workspace_id=${input.context.workspaceId!}
       and o.owner_id=${input.context.policySnapshot.subjectId} and o.state='ready' and o.deleted_at is null
     for share of a,o`;
-  if (
-    !attachment ||
-    !explicitPersonalSkillInstallIntent(text, attachment.file_name)
-  )
+  if (!attachment) throw new PersonalSkillError('intent_required');
+  if (input.versionUpdate)
+    await authorizePersonalSkillUpdate(tx, input, text, attachment.file_name);
+  else if (!explicitPersonalSkillInstallIntent(text, attachment.file_name))
     throw new PersonalSkillError('intent_required');
   // A generic "the attached skill" cannot pick arbitrarily among multiple files.
   const [count] =
@@ -309,7 +217,7 @@ async function importSource(
 
 async function previousGitHubImport(
   tx: ContentTx,
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
   instanceId: string,
 ) {
   const { scope } = employeeChatIdentity(input);
@@ -327,7 +235,7 @@ async function previousGitHubImport(
   };
 }
 
-function packageImportId(input: EmployeeChatCall, instanceId: string) {
+function packageImportId(input: PersonalSkillImportCall, instanceId: string) {
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
   return 'importId' in args
     ? args.importId
@@ -362,7 +270,7 @@ async function packageObject(
 
 async function packageImport(
   tx: ContentTx,
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
   instanceId: string,
   text: string,
 ) {
@@ -399,10 +307,19 @@ async function packageImport(
     const { source } = await importSource(tx, input, text, instanceId);
     if (
       runtimePolicyDigest(source) !== runtimePolicyDigest(row.source) ||
-      candidates.length !== 1
+      (!input.versionUpdate && candidates.length !== 1)
     )
       throw new PersonalSkillError('source_invalid');
-    candidate = candidates[0];
+    if (input.versionUpdate) {
+      const [target] =
+        await tx`select name from allrice_personal_skill_installations where id=${input.versionUpdate.installationId}
+        and organization_id=${scope.organizationId} and owner_id=${owner(scope)}`;
+      const matches = candidates.filter(
+        (c) => c.definition?.name === target?.name,
+      );
+      if (matches.length !== 1) throw new PersonalSkillError('source_invalid');
+      candidate = matches[0];
+    } else candidate = candidates[0];
   }
   if (
     !candidate?.definition ||
@@ -437,7 +354,7 @@ async function packageImport(
  * Bytes are written by StoragePort outside this transaction. Retries reuse the
  * exact import/object rather than accumulating copies or enabling a half import. */
 export async function reservePersonalSkillPackage(
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
   rawCandidates: PersonalSkillCandidate[],
   fetchedGithub?: PersonalSkillGitHubSource,
 ) {
@@ -452,7 +369,7 @@ export async function reservePersonalSkillPackage(
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
@@ -527,11 +444,13 @@ export async function reservePersonalSkillPackage(
   );
 }
 
-export async function completePersonalSkillPackage(input: EmployeeChatCall) {
+export async function completePersonalSkillPackage(
+  input: PersonalSkillImportCall,
+) {
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
@@ -566,13 +485,15 @@ export async function completePersonalSkillPackage(input: EmployeeChatCall) {
   );
 }
 
-export async function cancelPersonalSkillPackage(input: EmployeeChatCall) {
+export async function cancelPersonalSkillPackage(
+  input: PersonalSkillImportCall,
+) {
   const { scope } = employeeChatIdentity(input);
   const args = PersonalSkillInstallInputSchema.parse(input.arguments);
   if (!('operation' in args)) throw new PersonalSkillError('source_invalid');
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
@@ -601,12 +522,12 @@ export async function cancelPersonalSkillPackage(input: EmployeeChatCall) {
  * never eligible. Physical deletion happens outside the quota/authority locks;
  * a failed deletion keeps its quota and is retried on a later owned request. */
 export async function preparePersonalSkillImportCleanup(
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
 ) {
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx, instance) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
@@ -623,6 +544,7 @@ export async function preparePersonalSkillImportCleanup(
         and o.category='memory' and o.visibility='private' and not o.immutable
         and (o.state<>'deleted' or i.id=${currentId})
         and not exists(select 1 from allrice_personal_skill_versions v where v.resource_manifest->>'archiveObjectId'=o.id::text)
+        and not exists(select 1 from allrice_personal_skill_version_operations vo where vo.candidate->'resourceManifest'->>'archiveObjectId'=o.id::text and vo.state='pending' and vo.expires_at>clock_timestamp())
       limit 64`;
       return rows.map((row) =>
         StorageObjectSchema.parse({
@@ -645,14 +567,14 @@ export async function preparePersonalSkillImportCleanup(
 }
 
 export async function completePersonalSkillImportCleanup(
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
   objectIds: string[],
 ) {
   if (!objectIds.length) return;
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
@@ -661,28 +583,39 @@ export async function completePersonalSkillImportCleanup(
       where o.id in ${tx(objectIds)} and o.organization_id=${scope.organizationId} and o.workspace_id=${scope.workspaceId}
         and o.owner_id=${owner(scope)} and not o.immutable and o.category='memory' and o.visibility='private'
         and exists(select 1 from allrice_personal_skill_imports i where i.archive_object_id=o.id and i.state in ('canceled','consumed'))
-        and not exists(select 1 from allrice_personal_skill_versions v where v.resource_manifest->>'archiveObjectId'=o.id::text)`;
+        and not exists(select 1 from allrice_personal_skill_versions v where v.resource_manifest->>'archiveObjectId'=o.id::text)
+        and not exists(select 1 from allrice_personal_skill_version_operations vo where vo.candidate->'resourceManifest'->>'archiveObjectId'=o.id::text and vo.state='pending' and vo.expires_at>clock_timestamp())`;
     },
     { reserveStorage: true },
   );
 }
 
 /** Admission before any source bytes are read; parsing runs outside locks. */
-export async function preparePersonalSkillImport(input: EmployeeChatCall) {
+export async function preparePersonalSkillImport(
+  input: PersonalSkillImportCall,
+) {
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
-      const prior = await priorInstallation(
-        tx,
-        scope,
-        installationIntent(input, instance.id),
-      );
-      if (prior) return { prior };
+      const prior = input.versionUpdate
+        ? await priorPersonalSkillVersion(tx, input)
+        : await priorInstallation(
+            tx,
+            scope,
+            installationIntent(input, instance.id),
+          );
+      if (prior)
+        return {
+          prior,
+          ...('id' in prior
+            ? { current: (await items(scope, tx, prior.id))[0] }
+            : {}),
+        };
       if ('importId' in PersonalSkillInstallInputSchema.parse(input.arguments))
         return {
           selection: await packageImport(tx, input, instance.id, text),
@@ -692,7 +625,17 @@ export async function preparePersonalSkillImport(input: EmployeeChatCall) {
       const source =
         'url' in args
           ? await (async () => {
-              if (!explicitPersonalSkillGitHubInstallIntent(text, args.url))
+              if (input.versionUpdate)
+                await authorizePersonalSkillUpdate(
+                  tx,
+                  input,
+                  text,
+                  args.url,
+                  true,
+                );
+              else if (
+                !explicitPersonalSkillGitHubInstallIntent(text, args.url)
+              )
                 throw new PersonalSkillError('intent_required');
               const previous = await previousGitHubImport(
                 tx,
@@ -708,8 +651,13 @@ export async function preparePersonalSkillImport(input: EmployeeChatCall) {
       await tx`update allrice_personal_skill_imports set state='canceled' where organization_id=${scope.organizationId}
         and owner_id=${owner(scope)} and instance_id=${instance.id} and session_id=${input.sessionId}
         and id<>${currentImport} and state in ('staging','ready')`;
+      const [updating] = input.versionUpdate
+        ? await tx`select name from allrice_personal_skill_installations
+        where id=${input.versionUpdate.installationId} and organization_id=${scope.organizationId} and owner_id=${owner(scope)}`
+        : [];
       return {
         ...source,
+        ...(updating ? { updateName: updating.name as string } : {}),
         instanceId: instance.id,
       };
     },
@@ -717,7 +665,7 @@ export async function preparePersonalSkillImport(input: EmployeeChatCall) {
 }
 
 export async function installPersonalSkillFromChat(
-  input: EmployeeChatCall,
+  input: PersonalSkillImportCall,
   parsed: {
     originalText: string;
     definition: PersonalSkillDefinition;
@@ -729,13 +677,15 @@ export async function installPersonalSkillFromChat(
   const { scope } = employeeChatIdentity(input);
   return enterMethodChat(
     input,
-    'workspace.personal_skill.install',
+    personalSkillImportTool(input),
     false,
     async (tx, instance, text) => {
       if (!(await readContentPrincipal(scope, tx))?.writable)
         throw new DataAccessError('authorization_denied');
       const intent = installationIntent(input, instance.id);
-      const prior = await priorInstallation(tx, scope, intent);
+      const prior = input.versionUpdate
+        ? await priorPersonalSkillVersion(tx, input)
+        : await priorInstallation(tx, scope, intent);
       if (prior) return prior;
       const args = PersonalSkillInstallInputSchema.parse(input.arguments);
       const attached =
@@ -765,6 +715,18 @@ export async function installPersonalSkillFromChat(
         )
       )
         throw new PersonalSkillError('name_conflict');
+      if (input.versionUpdate)
+        return stagePersonalSkillUpdate(tx, input, {
+          originalText: parsed.originalText,
+          definition,
+          source,
+          ...(selected
+            ? {
+                resourceManifest: selected.resourceManifest,
+                importId: selected.importId,
+              }
+            : {}),
+        });
       const [existing] =
         await tx`select i.*,v.definition_checksum,v.source,v.package_checksum from allrice_personal_skill_installations i
       join allrice_personal_skill_versions v on v.id=i.current_version_id

@@ -9,6 +9,7 @@ import {
   ProjectWorkspaceToolInputSchema,
   EmployeeProfileChatInputSchema,
   PersonalSkillInstallInputSchema,
+  PersonalSkillVersionInputSchema,
   EmployeeMethodInspectSchema,
   EmployeeMethodPrepareActivationSchema,
   EmployeeMethodActivateSchema,
@@ -57,6 +58,12 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
+  {
+    name: 'workspace.personal_skill.version',
+    description:
+      '查看本人的技能库及版本；明确更新来源或回退版本时准备固定候选与全部绑定清单。确认必须来自同会话下一条真人消息，使用返回的确认文字、operationId 与 digest。更新和回退不改变绑定启停，当前任务仍使用原版本。inspect 无 installationId 列库，有 ID 返回历史；update 仅接受当前消息附件 objectId 或唯一公开 url。只有用户明确要求将已安装的具名技能绑定给当前员工时，才能 bind；先 inspect，再使用准确的 installationId、revision 和 versionId，不影响其他员工。',
+    inputSchema: z.toJSONSchema(PersonalSkillVersionInputSchema),
+  },
   {
     name: 'workspace.personal_skill.install',
     description:
