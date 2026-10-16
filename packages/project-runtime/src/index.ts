@@ -22,3 +22,5 @@ export * from './sandbox-network-session.js';
 export * from './sandbox-network-docker.js';
 
 export * from './project-resolution.ts';
+export * from './sandbox-execution-budget.js';
+export * from './sandbox-execution-control.js';

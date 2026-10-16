@@ -1,8 +1,16 @@
+import {
+  assertBridgeSandboxNetwork,
+  bridgeSandboxTransferScopes,
+} from './bridge-sandbox-network.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { assertLocalSandboxExecutionBudget } from './local-sandbox-execution-budget.ts';
 import { randomUUID } from 'node:crypto';
 
 import {
   RuntimeBridgePayloadSchema,
+  SandboxNetworkLeaseSchema,
+  type RuntimeScope,
+  type RuntimeAttemptRef,
   RuntimeLocalCommandProfileSchema,
   RuntimeLocalPythonProfileSchema,
   RuntimeLocalPdfProfileSchema,
@@ -66,6 +74,9 @@ import {
 // Expected authority outcomes are unavailable work, not a broken queue. SQL,
 // malformed persisted policy/bindings and unknown adapter failures stay visible.
 const unavailablePolicyCodes = new Set([
+  'sandbox_network_not_authorized',
+  'sandbox_network_transfer_not_authorized',
+  'sandbox_network_grant_changed',
   'approval_required',
   'approval_invalid_or_stale',
   'approval_already_consumed',
@@ -89,6 +100,8 @@ const unavailablePolicyCodes = new Set([
   'bridge_authority_changed',
   'project_execution_origin_changed',
   'assistant_authority_changed',
+  'sandbox_execution_not_enabled',
+  'sandbox_execution_policy_changed',
 ]);
 
 /** Server-owned assembly. This is not an HTTP authorization/budget-install API.
@@ -111,6 +124,22 @@ export function createGovernedBridgeOperationLedger(
   const admission = createRuntimePolicyAdmission(policyOptions);
   const ledger = createRuntimeOperationLedger({
     database: options.database ?? getDatabase(),
+    resolveSandboxExecutionBudget: async ({ transaction, binding }) => {
+      const [row] = await transaction<{ bridge_payload: unknown }[]>`
+        select bridge_payload from allrice_runtime_operations
+        where id=${binding.attempt.operationId} and organization_id=${deviceInput.organizationId}
+          and workspace_id=${deviceInput.workspaceId} and device_id=${deviceInput.id}`;
+      const payload = RuntimeBridgePayloadSchema.parse(row?.bridge_payload);
+      if (
+        (payload.capability !== 'local.process.execute' &&
+          payload.capability !== 'local.python.execute') ||
+        !payload.executionBudget
+      )
+        throw new RuntimeLedgerError('unavailable');
+      // The ledger already locked this attempt and re-evaluated its frozen
+      // policy/profile authority. Read only its immutable execution spec.
+      return payload.executionBudget;
+    },
     ...(options.initialOperation?.payload.capability ===
       'local.process.execute' &&
     options.initialOperation.payload.arguments.projectSource
@@ -129,7 +158,72 @@ export function createGovernedBridgeOperationLedger(
       }
     },
   });
-  return { ...ledger, policyOptions };
+  return {
+    ...ledger,
+    policyOptions,
+    async sandboxNetworkLease(input: {
+      scope: RuntimeScope;
+      operationId: string;
+      leaseToken: string;
+      attempt: RuntimeAttemptRef;
+    }) {
+      const before = await ledger.readOperation(input.scope, input.operationId);
+      if (!runtimeContractEqual(before.binding.attempt, input.attempt))
+        throw new RuntimeLedgerError('lease_lost');
+      const { snapshot } = await ledger.heartbeat({
+        ...input,
+        leaseMs: 120_000,
+      });
+      const b = snapshot.binding;
+      if (
+        snapshot.status !== 'running' ||
+        snapshot.cancelRequestId ||
+        !runtimeContractEqual(b.attempt, input.attempt)
+      )
+        throw new RuntimeLedgerError('lease_lost');
+      const db = options.database ?? getDatabase();
+      const [row] = await db<{ bridge_payload: unknown; deadline_at: Date }[]>`
+        select o.bridge_payload,r.deadline_at from allrice_runtime_operations o join allrice_runtime_roots r on r.root_run_id=o.root_run_id
+        where o.id=${input.operationId} and o.device_id=${deviceInput.id} and o.organization_id=${deviceInput.organizationId}
+          and o.workspace_id=${deviceInput.workspaceId} and o.snapshot->>'status'='running'`;
+      const p = RuntimeBridgePayloadSchema.parse(row?.bridge_payload);
+      if (
+        (p.capability !== 'local.process.execute' &&
+          p.capability !== 'local.python.execute') ||
+        !p.networkGrant ||
+        p.arguments.network === 'none' ||
+        !p.executionBudget ||
+        !b.command ||
+        !row ||
+        row.deadline_at.getTime() <= Date.now()
+      )
+        throw new RuntimeLedgerError('unavailable');
+      const budget = await ledger.exchangeSandboxExecutionBudget(input);
+      return SandboxNetworkLeaseSchema.parse({
+        version: 1,
+        organizationId: deviceInput.organizationId,
+        workspaceId: deviceInput.workspaceId,
+        ownerId: deviceInput.ownerId,
+        runId: b.task.runId,
+        operationId: input.operationId,
+        attemptId: b.attempt.attemptId,
+        target: {
+          kind: 'bridge',
+          targetId: b.execution.targetId,
+          deviceId: deviceInput.id,
+        },
+        policyDigest: b.command.networkPolicyDigest,
+        grantId: p.networkGrant.id,
+        grantVersion: p.networkGrant.version,
+        network: p.arguments.network,
+        expiresAt: new Date(
+          Math.min(row.deadline_at.getTime(), budget.hardDeadlineAt),
+        ).toISOString(),
+        maximumConnections: 16,
+        maximumBytes: 268_435_456,
+      });
+    },
+  };
 }
 
 /** The same production authority resolver, without creating a second database
@@ -271,7 +365,12 @@ export function createGovernedBridgePolicyOptions(
         binding.execution.deviceId !== device.id ||
         binding.execution.targetKind !== 'rice_bridge' ||
         (!command && !mcp && !python && !pdf && binding.command !== null) ||
-        binding.dataScope.length ||
+        !runtimeContractEqual(
+          binding.dataScope,
+          command || python
+            ? bridgeSandboxTransferScopes((command ?? python)!)
+            : [],
+        ) ||
         binding.baseline.length
       )
         throw new RuntimePolicyError('bridge_authority_changed');
@@ -521,6 +620,10 @@ export function createGovernedBridgePolicyOptions(
               !profile.data.features?.includes('background_services'))) ||
           (command?.arguments.dependencies &&
             !profile.data.features?.includes('npm_dependencies')) ||
+          (command?.networkGrant &&
+            !profile.data.features?.includes('sandbox_network_v1')) ||
+          (command?.executionBudget &&
+            !profile.data.features?.includes('sandbox_execution_v1')) ||
           (command?.arguments.projectPreparation &&
             (!profile.data.features?.includes('project_preparation') ||
               !profile.data.projectPreparation?.available)) ||
@@ -622,6 +725,15 @@ export function createGovernedBridgePolicyOptions(
             ))
         )
           throw new RuntimePolicyError('bridge_authority_changed');
+        if (command) assertLocalSandboxExecutionBudget(command, frozen.data);
+        if (python) assertLocalSandboxExecutionBudget(python, frozen.data);
+        if (command || python)
+          await assertBridgeSandboxNetwork(
+            tx,
+            device,
+            (command ?? python)!,
+            frozen.data,
+          );
         if (python)
           await assertLocalPythonDelegation(
             tx,
@@ -872,7 +984,10 @@ export function createGovernedBridgePolicyOptions(
                 ? localPdfCommandBinding(pdf)
                 : null,
         baseline: [],
-        dataScope: [],
+        dataScope:
+          command || python
+            ? bridgeSandboxTransferScopes((command ?? python)!)
+            : [],
       });
     },
   };

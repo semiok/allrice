@@ -424,10 +424,22 @@ async function checkBindingAuthority(
     await checkMcpBindingAuthority(transaction, context, binding);
     return { binding, policyExpiresAt: snapshot.expires_at };
   }
-  // Existing Bridge authority remains separate from cloud data transfer scopes.
+  // Only sandbox input-transfer scopes enter the Bridge resolver, which
+  // reconstructs exact inputs and current independent network authority.
   if (
     binding.execution.targetKind !== 'rice_bridge' ||
-    binding.dataScope.length > 0 ||
+    (binding.dataScope.length > 0 &&
+      (!['local.process.execute', 'local.python.execute'].includes(
+        binding.action,
+      ) ||
+        binding.dataScope.some(
+          (scope) =>
+            scope.purpose !== 'execution_input' ||
+            scope.destination !== 'external_service' ||
+            !scope.externalNetwork ||
+            !scope.authorizationId ||
+            !scope.authorizationVersion,
+        ))) ||
     binding.baseline.length > 0
   )
     throw new RuntimePolicyError('resource_adapter_not_registered');

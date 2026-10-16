@@ -258,7 +258,16 @@ export async function selectProjectExecution(
       if (!c.online) state = 'offline';
       // Current Bridge releases cannot silently drop finite network/budget
       // requests. Its separately versioned adapter must advertise support first.
-      else if (args.action === 'execute' && (args.network || args.execution))
+      else if (
+        args.action === 'execute' &&
+        ((args.network &&
+          (!args.execution ||
+            !parsed.success ||
+            !parsed.data.features?.includes('sandbox_network_v1'))) ||
+          (args.execution &&
+            (!parsed.success ||
+              !parsed.data.features?.includes('sandbox_execution_v1'))))
+      )
         state = 'unsupported';
       else if (
         args.projectPreparation.packages.length > bridgeProjectPackageLimit
@@ -410,6 +419,8 @@ export async function assertProjectExecutionOrigin(
     path: string;
     limits: unknown;
     outputs?: unknown;
+    execution?: unknown;
+    network?: unknown;
     background?: { projectService?: unknown };
   },
   location: 'local' | 'cloud',
@@ -447,6 +458,13 @@ export async function assertProjectExecutionOrigin(
   )
     fail();
   if (args.action === 'execute' && command.background) fail();
+  if (
+    location === 'local' &&
+    args.action === 'execute' &&
+    (!runtimeContractEqual(args.execution, command.execution) ||
+      !runtimeContractEqual(args.network ?? 'none', command.network ?? 'none'))
+  )
+    fail();
   if (
     digest(args) !== origin.argumentsDigest ||
     !runtimeContractEqual(

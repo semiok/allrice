@@ -1066,6 +1066,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         return state.bridgeError
           ? answer({ error: { message: '连接状态刷新失败' } }, 503)
           : answer({ devices: state.bridgeDevices });
+      if (/^\/api\/v1\/bridge\/devices\/[^/]+\/sandbox-network$/.test(path)) {
+        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        const device = state.bridgeDevices.find(
+          (device) => device.id === path.split('/').at(-2),
+        );
+        // Register this settings read; writes and unknown devices still fail.
+        return device
+          ? answer({ version: 0, enabled: false, profile: null })
+          : answer({ error: { message: 'synthetic device missing' } }, 404);
+      }
       if (
         /^\/api\/v1\/bridge\/devices\/[^/]+\/settings$/.test(path) &&
         route.request().method() === 'GET'
@@ -4895,6 +4905,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         revokedAt: null,
         folderGrants: [],
       };
+      let sandboxNetwork: {
+        version: number;
+        enabled: boolean;
+        profile: unknown;
+      } = { version: 0, enabled: false, profile: null };
+      const networkWrites: Record<string, unknown>[] = [];
       const settings = {
         localCommand: true,
         localBrowser: true,
@@ -4926,6 +4942,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             url = new URL(request.url());
           if (url.pathname === '/api/v1/bridge/devices')
             return route.fulfill({ json: { devices: [device] } });
+          if (url.pathname.endsWith('/sandbox-network')) {
+            if (request.method() === 'PATCH') {
+              const change = request.postDataJSON();
+              networkWrites.push(change);
+              sandboxNetwork = {
+                version: sandboxNetwork.version + 1,
+                enabled: change.enabled,
+                profile: change.profile,
+              };
+            }
+            return route.fulfill({ json: sandboxNetwork });
+          }
           if (request.method() === 'PATCH') {
             const change = request.postDataJSON() as {
               capability: keyof typeof settings;
@@ -5043,6 +5071,65 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .waitFor({ state: 'hidden' });
         await f.page.screenshot({
           path: '/tmp/allrice-bridge-three-switches.png',
+        });
+        const networkPanel = dialog
+          .locator('details')
+          .filter({ hasText: '沙箱联网' });
+        await networkPanel.locator('summary').click();
+        const origins = networkPanel.getByRole('textbox', {
+          name: '允许的 HTTPS 地址',
+        });
+        await origins.fill('http://127.0.0.1');
+        await networkPanel
+          .getByRole('button', { name: '保存联网设置' })
+          .click();
+        await networkPanel.getByRole('alert').waitFor();
+        expect(networkWrites).toHaveLength(0);
+        await origins.fill('https://pypi.org\nhttps://files.pythonhosted.org');
+        await networkPanel
+          .getByLabel('允许访问指定网站', { exact: true })
+          .check();
+        expect(
+          await networkPanel
+            .getByLabel('允许任务输入文件的内容发送到这些网站', { exact: true })
+            .isChecked(),
+        ).toBe(false);
+        await networkPanel
+          .getByRole('button', { name: '保存联网设置' })
+          .click();
+        await expect.poll(() => networkWrites.length).toBe(1);
+        await networkPanel
+          .locator('summary')
+          .getByText('已开启', { exact: true })
+          .waitFor();
+        expect(networkWrites[0]).toMatchObject({
+          expectedVersion: 0,
+          enabled: true,
+          profile: {
+            allowInputTransfer: false,
+            origins: ['https://pypi.org', 'https://files.pythonhosted.org'],
+          },
+        });
+        const field = await origins.boundingBox(),
+          panel = await networkPanel.boundingBox();
+        expect(field!.x).toBeGreaterThanOrEqual(panel!.x);
+        expect(field!.x + field!.width).toBeLessThanOrEqual(
+          panel!.x + panel!.width,
+        );
+        if (globalThis.process.env.ALLRICE_SANDBOX_NETWORK_SCREENSHOT)
+          await f.page.screenshot({
+            path: `${globalThis.process.env.ALLRICE_SANDBOX_NETWORK_SCREENSHOT}-${width}.png`,
+          });
+        await networkPanel
+          .getByLabel('允许访问指定网站', { exact: true })
+          .uncheck();
+        await networkPanel
+          .getByRole('button', { name: '保存联网设置' })
+          .click();
+        await expect.poll(() => networkWrites.length).toBe(2);
+        expect(networkWrites[1]).toMatchObject({
+          expectedVersion: 1,
+          enabled: false,
         });
         expect(writes).toEqual(['localBrowser', 'development']);
       } finally {

@@ -9,6 +9,7 @@ import {
   type RuntimeLocalCommand,
   type ProjectVersionRef,
   type RuntimeOperationSnapshot,
+  type SandboxExecutionBudgetSpec,
 } from '@allrice/contracts';
 import styles from './local-command-panel.module.css';
 import { LocalServiceCard, type LocalServiceView } from './local-service-card';
@@ -16,6 +17,7 @@ import { CommandCandidatePreview } from './command-candidate-preview';
 
 interface Operation {
   snapshot: RuntimeOperationSnapshot;
+  executionBudget?: SandboxExecutionBudgetSpec | null;
   command:
     | (Omit<RuntimeLocalCommand['arguments'], 'projectSource'> & {
         project?: ProjectVersionRef;
@@ -44,6 +46,56 @@ const statusLabels: Record<string, string> = {
   unknown: '执行结果待核实',
   partial: '部分完成',
 };
+
+export function LocalCommandRuntimeScope({
+  command,
+  executionBudget,
+}: {
+  command: NonNullable<Operation['command']>;
+  executionBudget?: SandboxExecutionBudgetSpec | null;
+}) {
+  const network =
+    command.network && command.network !== 'none' ? command.network : null;
+  return (
+    <section aria-label="本地执行范围与时限">
+      <p>
+        工作目录：<code>{command.path}</code> ·{' '}
+        {command.background
+          ? `服务硬期限 ${command.background.durationMs / 1000} 秒`
+          : executionBudget
+            ? `累计上限 ${executionBudget.policy.maxExecutionMs / 60000} 分钟`
+            : `时限 ${command.limits.timeoutMs / 1000} 秒`}{' '}
+        · 内存 {command.limits.memoryMiB} MiB · 最多 {command.limits.pids}{' '}
+        个进程
+      </p>
+      {executionBudget && (
+        <small>
+          准备、安装和执行共用同一时限；有实际进展时可自动续时，任务剩余时间不足时会提前停止。
+        </small>
+      )}
+      {network ? (
+        <section aria-label="获准访问的外部服务">
+          <p>本地沙箱 · 按授权联网</p>
+          <ul>
+            {network.origins.map((origin) => (
+              <li key={origin}>
+                <code>{origin}</code>
+              </li>
+            ))}
+          </ul>
+          <small>
+            {command.files.length
+              ? '本次输入文件的内容允许发送到以上网站。'
+              : '本次未附带输入文件；运行中生成的请求数据可发送到以上网站。'}{' '}
+            撤销联网授权会停止操作；已经发送的数据无法撤回。
+          </small>
+        </section>
+      ) : (
+        <p>本地沙箱 · 不联网</p>
+      )}
+    </section>
+  );
+}
 
 export function LocalCommandPanel({
   runId,
@@ -301,7 +353,7 @@ export function LocalCommandPanel({
                     <p>
                       {op.command.projectPreparation.offline
                         ? '仅使用已校验的离线缓存，缺包时停止。'
-                        : '优先复用已校验的归档；缺包时由 Bridge 校验并下载公开依赖，项目本身无网络。'}
+                        : '优先复用已校验的归档；缺包时由 Bridge 校验并下载公开依赖，依赖安装阶段不联网。'}
                     </p>
                     <p>
                       安装脚本：
@@ -348,14 +400,10 @@ export function LocalCommandPanel({
                     .map((arg) => ` ${JSON.stringify(arg)}`)
                     .join('')}
                 </pre>
-                <p>
-                  工作目录：<code>{op.command.path}</code> · 时限{' '}
-                  {op.command.background
-                    ? `服务硬期限 ${op.command.background.durationMs / 1000}`
-                    : op.command.limits.timeoutMs / 1000}{' '}
-                  秒 · 内存 {op.command.limits.memoryMiB} MiB · 最多{' '}
-                  {op.command.limits.pids} 个进程
-                </p>
+                <LocalCommandRuntimeScope
+                  command={op.command}
+                  executionBudget={op.executionBudget}
+                />
                 <details>
                   <summary>
                     查看 {op.command.files.length} 个输入文件及精确版本

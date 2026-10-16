@@ -55,6 +55,8 @@ export function normalizeCloudPythonArguments(original: unknown) {
     inputs: args.inputs,
     outputs: args.outputs,
     limits: args.limits,
+    ...(args.execution ? { execution: args.execution } : {}),
+    ...(args.network ? { network: args.network } : {}),
   });
 }
 export function cloudCommandBinding(
@@ -471,13 +473,13 @@ export async function checkCloudBindingAuthority(
   assertCloudExecutionBudget(
     payload,
     snapshot.success ? snapshot.data : undefined,
-    Boolean(repositoryProof || method || origin?.toolName === 'python.execute'),
+    Boolean(repositoryProof || method),
   );
   assertCloudNetworkAuthority(
     payload,
     profile,
     snapshot.success ? snapshot.data : undefined,
-    Boolean(repositoryProof || method || origin?.toolName === 'python.execute'),
+    Boolean(repositoryProof || method),
   );
   const content = payload.arguments.inputs.map((file) => ({
     kind: 'storage_object' as const,

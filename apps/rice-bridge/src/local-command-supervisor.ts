@@ -1,3 +1,7 @@
+import {
+  nodeSandboxExecutionControl,
+  sandboxProxyEnvironment,
+} from '@allrice/project-runtime';
 import { projectDiagnosticProgram } from './project-diagnostics.js';
 
 /** Trusted PID 1. This source is sent only to an explicitly configured local VM.
@@ -25,9 +29,12 @@ const end = (reason, code) => {
   process.stdout.write('', () => process.exit(code));
   setTimeout(() => process.exit(code), 100).unref();
 };
-const timer = setTimeout(() => end('timeout', 124), Math.max(0, Math.min(bundle.command.limits.timeoutMs,
-  bundle.deadlineUnixMs === undefined ? Infinity : bundle.deadlineUnixMs - Date.now())));
+${nodeSandboxExecutionControl}
+installSandboxExecutionControl(bundle);
+const timer = setTimeout(() => end('timeout', 124), Math.max(0, Math.min(bundle.executionControl ? Infinity : bundle.command.limits.timeoutMs,
+  bundle.deadlineUnixMs === undefined ? Infinity : (bundle.executionControl?.hardDeadlineAt ?? bundle.deadlineUnixMs) - Date.now())));
 try {
+  if(bundle.runtimeNetwork===true){while(bundle.runtimeNetworkReady!==true)await new Promise(r=>setTimeout(r,25));}
   const directories = new Set(['/workspace']);
   for (const file of bundle.files) {
     if (!file.path || file.path.startsWith('/') || file.path.split('/').some(p => !p || p === '.' || p === '..')) throw Error('path');
@@ -59,11 +66,11 @@ try {
     ? ['--input-type=module','--eval', ${JSON.stringify(projectDiagnosticProgram)}, JSON.stringify(bundle.command.diagnostics)]
     : bundle.command.args;
   commands.push([bundle.command.executable,args]);
-  const runChild = (executable,args) => new Promise(resolve => {
+  const runChild = (executable,args,runtime) => new Promise(resolve => {
   const child = spawn(executable, args, {
     cwd: bundle.command.path === '.' ? '/workspace' : '/workspace/' + bundle.command.path,
     uid:1000, gid:1000, detached:false, stdio:['ignore','pipe','pipe'],
-    env:{PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',LANG:'C.UTF-8',CI:'1',
+    env:{...(runtime&&bundle.runtimeNetwork===true?${JSON.stringify(sandboxProxyEnvironment)}:{}),PATH:'/usr/local/bin:/usr/bin:/bin',HOME:'/tmp',TMPDIR:'/tmp',LANG:'C.UTF-8',CI:'1',
       npm_config_cache:'/tmp/npm-cache',npm_config_update_notifier:'false',npm_config_audit:'false',npm_config_fund:'false',npm_config_userconfig:'/tmp/allrice-npm-user.conf',npm_config_globalconfig:'/tmp/allrice-npm-global.conf'},
   });
   for (const stream of ['stdout','stderr']) child[stream].on('data', (bytes) => {
@@ -88,7 +95,7 @@ try {
   });
   for(let i=0;i<commands.length;i++) {
     if(finished) break;
-    const result=await runChild(...commands[i]);
+    const result=await runChild(...commands[i],i===commands.length-1);
     if(result.code!==0 || i===commands.length-1) {clearTimeout(timer);end(result.reason,result.code);break;}
   }
 } catch {

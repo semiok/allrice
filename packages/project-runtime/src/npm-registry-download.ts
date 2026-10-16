@@ -1,6 +1,10 @@
-import { resolvePublicAddress } from './public-address.js';
+import {
+  isTransientNetworkError,
+  resolvePublicAddress,
+} from './public-address.js';
 import { request } from 'node:https';
 import { BlockList, isIP } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import {
   runtimeNpmPackageUrl,
   RuntimeNpmPackageSchema,
@@ -32,7 +36,7 @@ export function publicRegistryAddress(address: string) {
 }
 
 /** GET a canonical, explicitly approved public archive. No auth, proxy, redirect,
- * project URL, host cookies, npmrc, second DNS lookup, or automatic retry.
+ * project URL, host cookies, npmrc, or second DNS lookup.
  * Synthetic DNS uses the existing verified public resolver boundary. Private
  * or mixed answers remain denied; the package socket connects to one pinned IP.
  */
@@ -65,6 +69,33 @@ export async function downloadPublicPackage(
     maximumBytes > 64_000_000
   )
     throw new LocalCommandError('DEPENDENCY_SOURCE_DENIED');
+  // Immutable archive GETs can recover from a transient transport failure before
+  // installation. Each attempt discards its partial body and rechecks DNS; the
+  // caller's original cancellation/deadline and integrity check still apply.
+  // This never retries an installer, tenant process or external API operation.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await downloadAttempt(url, signal, maximumBytes, onBytes);
+    } catch (error) {
+      if (signal.aborted) throw new LocalCommandError('EXECUTION_REVOKED');
+      if (!isTransientNetworkError(error)) throw error;
+      if (attempt >= 2)
+        throw new LocalCommandError('DEPENDENCY_NETWORK_UNAVAILABLE');
+      try {
+        await delay(attempt === 0 ? 250 : 750, undefined, { signal });
+      } catch {
+        throw new LocalCommandError('EXECUTION_REVOKED');
+      }
+    }
+  }
+}
+
+async function downloadAttempt(
+  url: URL,
+  signal: AbortSignal,
+  maximumBytes: number,
+  onBytes?: (bytes: number) => void,
+) {
   signal.throwIfAborted();
   let onAbort: () => void = () => {};
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -74,7 +105,8 @@ export async function downloadPublicPackage(
   const addresses = await Promise.race([
     resolvePublicAddress(url.hostname, publicRegistryAddress)
       .then((answer) => [answer])
-      .catch(() => {
+      .catch((error: unknown) => {
+        if (isTransientNetworkError(error)) throw error;
         throw new LocalCommandError('DEPENDENCY_SOURCE_DENIED');
       }),
     aborted,
@@ -130,7 +162,10 @@ export async function downloadPublicPackage(
             }
           }
         });
-        res.once('error', reject);
+        res.once('error', (error) => {
+          req.destroy();
+          reject(error);
+        });
         res.once('end', () => resolve(Buffer.concat(chunks)));
       },
     );

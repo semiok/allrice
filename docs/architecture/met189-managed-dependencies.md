@@ -53,6 +53,9 @@ diagnostic ownership/publication, native DSH transport and physical gVisor
 resolution/install/reuse. Component native scripts use synthetic identities and
 owned cache volumes; they are separate from ordinary-account Dev acceptance.
 
-This slice does not extend arbitrary project execution to network access or
-renewable budgets, and does not upgrade Bridge. Those remaining adapters retain
-their prior restrictions until their own implementation and native validation.
+The resolver remains separate from ordinary project execution. Cloud command and
+project adapters use the shared finite budget and controlled-egress contracts;
+the corresponding Bridge authority, physical control and rollout gates are
+described in [MET188 sandbox control](met188-bridge-sandbox-control.md). An older
+Bridge retains its prior restrictions until a verified new client advertises
+the required features. Package resolution does not grant runtime network access.

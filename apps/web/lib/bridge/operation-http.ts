@@ -6,6 +6,8 @@ import {
   RuntimeBridgeReceiptSchema,
   RuntimeBridgeStartSchema,
   RuntimeBridgeHeartbeatSchema,
+  RuntimeBridgeSandboxBudgetExchangeSchema,
+  RuntimeBridgeSandboxBudgetResponseSchema,
   RuntimeBridgeOutputSchema,
   RuntimeLocalServiceExchangeSchema,
   UuidSchema,
@@ -20,6 +22,10 @@ import {
   type RuntimeLocalServiceEvent,
   type RuntimeLocalServiceInput,
   type RuntimeActionBinding,
+  type SandboxNetworkLease,
+  RuntimeBridgeSandboxNetworkResponseSchema,
+  type SandboxExecutionBudgetState,
+  type SandboxExecutionRenewal,
 } from '@allrice/contracts';
 
 import { getBridgeDeviceToken } from './request.ts';
@@ -40,6 +46,8 @@ export interface RuntimeBridgeLedgerPort {
     deviceId: string;
     leaseMs: number;
     supportsLocalCommand?: boolean;
+    supportsSandboxExecutionV1?: boolean;
+    supportsSandboxNetworkV1?: boolean;
     supportsLocalMcp?: boolean;
     supportsProjectDiagnostics?: boolean;
     supportsNpmDependencies?: boolean;
@@ -62,6 +70,19 @@ export interface RuntimeBridgeLedgerPort {
     bridgePayload: RuntimeBridgePayload | null;
   } | null>;
   readOperation(scope: Scope, id: string): Promise<Snapshot>;
+  sandboxNetworkLease?(input: {
+    scope: Scope;
+    operationId: string;
+    leaseToken: string;
+    attempt: RuntimeBridgeReceipt['attempt'];
+  }): Promise<SandboxNetworkLease>;
+  exchangeSandboxExecutionBudget?(input: {
+    scope: Scope;
+    operationId: string;
+    leaseToken: string;
+    attempt: RuntimeBridgeReceipt['attempt'];
+    renewal?: SandboxExecutionRenewal;
+  }): Promise<SandboxExecutionBudgetState>;
   exchangeLocalService?(input: {
     scope: Scope;
     operationId: string;
@@ -196,7 +217,15 @@ export function createRuntimeBridgeHttpHandler(input: {
 }) {
   return async (
     request: Request,
-    action: 'next' | 'start' | 'receipts' | 'heartbeat' | 'output' | 'service',
+    action:
+      | 'next'
+      | 'start'
+      | 'receipts'
+      | 'heartbeat'
+      | 'output'
+      | 'service'
+      | 'budget'
+      | 'network',
     operationId?: string,
   ) => {
     try {
@@ -227,6 +256,8 @@ export function createRuntimeBridgeHttpHandler(input: {
             (key) =>
               ![
                 'supportsLocalCommand',
+                'supportsSandboxExecutionV1',
+                'supportsSandboxNetworkV1',
                 'supportsLocalMcp',
                 'supportsChangeset',
                 'supportsBinaryFiles',
@@ -246,6 +277,10 @@ export function createRuntimeBridgeHttpHandler(input: {
           ) ||
           ('supportsLocalCommand' in selection &&
             typeof selection.supportsLocalCommand !== 'boolean') ||
+          ('supportsSandboxNetworkV1' in selection &&
+            typeof selection.supportsSandboxNetworkV1 !== 'boolean') ||
+          ('supportsSandboxExecutionV1' in selection &&
+            typeof selection.supportsSandboxExecutionV1 !== 'boolean') ||
           ('supportsLocalMcp' in selection &&
             typeof selection.supportsLocalMcp !== 'boolean') ||
           ('supportsChangeset' in selection &&
@@ -283,6 +318,9 @@ export function createRuntimeBridgeHttpHandler(input: {
           deviceId: device.id,
           leaseMs: 120_000,
           supportsLocalCommand: selection.supportsLocalCommand === true,
+          supportsSandboxNetworkV1: selection.supportsSandboxNetworkV1 === true,
+          supportsSandboxExecutionV1:
+            selection.supportsSandboxExecutionV1 === true,
           supportsBinaryFiles: selection.supportsBinaryFiles === true,
           supportsFileSurvey: selection.supportsFileSurvey === true,
           supportsFileOrganization: selection.supportsFileOrganization === true,
@@ -363,6 +401,45 @@ export function createRuntimeBridgeHttpHandler(input: {
             operationId: id,
           }),
         );
+      }
+      if (action === 'network') {
+        if (
+          !ledger.sandboxNetworkLease ||
+          !runtimeFeatureEnabled('ALLRICE_SANDBOX_NETWORK_ENABLED')
+        )
+          throw new HttpProblem(404, 'FEATURE_DISABLED');
+        const body = RuntimeBridgeHeartbeatSchema.parse(
+          await boundedJson(request, 16_384),
+        );
+        if (!runtimeContractEqual(body.attempt, snapshot.binding.attempt))
+          throw new HttpProblem(409, 'OPERATION_MISMATCH');
+        const lease = await ledger.sandboxNetworkLease({
+          ...body,
+          scope,
+          operationId: id,
+        });
+        return json(RuntimeBridgeSandboxNetworkResponseSchema.parse({ lease }));
+      }
+      if (action === 'budget') {
+        if (
+          !ledger.exchangeSandboxExecutionBudget ||
+          process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1'
+        )
+          throw new HttpProblem(404, 'FEATURE_DISABLED');
+        const body = RuntimeBridgeSandboxBudgetExchangeSchema.parse(
+          await boundedJson(request, 16_384),
+        );
+        if (
+          body.attempt.operationId !== id ||
+          !runtimeContractEqual(body.attempt, snapshot.binding.attempt)
+        )
+          throw new HttpProblem(409, 'OPERATION_MISMATCH');
+        const budget = await ledger.exchangeSandboxExecutionBudget({
+          ...body,
+          scope,
+          operationId: id,
+        });
+        return json(RuntimeBridgeSandboxBudgetResponseSchema.parse({ budget }));
       }
       if (action === 'start') {
         const grant = operationGrant(
@@ -465,6 +542,21 @@ export function createRuntimeBridgeHttpHandler(input: {
       ) {
         status = 400;
         code = 'INVALID_REQUEST';
+      } else if (
+        action === 'budget' &&
+        error instanceof Error &&
+        [
+          'SANDBOX_EXECUTION_DEADLINE',
+          'SANDBOX_EXECUTION_LIMIT',
+          'SANDBOX_EXECUTION_NO_PROGRESS',
+          'SANDBOX_EXECUTION_POLICY_CHANGED',
+          'SANDBOX_EXECUTION_PROGRESS_CHANGED',
+          'SANDBOX_EXECUTION_RENEWAL_CONFLICT',
+          'SANDBOX_EXECUTION_RENEWAL_EARLY',
+        ].includes(error.message)
+      ) {
+        status = 409;
+        code = error.message;
       } else if (error && typeof error === 'object' && 'code' in error) {
         const reason = String(error.code);
         if (reason === 'device_unauthorized') {
