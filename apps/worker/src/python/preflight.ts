@@ -11,6 +11,7 @@ const preflightCodes = new Set([
   'INPUT_VERSION_CHANGED',
   'INPUT_LIMIT',
   'INPUT_DOWNLOAD_UNAVAILABLE',
+  'INPUT_STORAGE_FULL',
   'EXECUTION_REVOKED',
 ]);
 

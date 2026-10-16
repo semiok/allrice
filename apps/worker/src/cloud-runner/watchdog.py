@@ -27,6 +27,7 @@ SANDBOX_LEASES = "/run/allrice-cloud-sandbox-leases"
 SANDBOX = "xyz.bplabs.allrice.cloud.sandbox-execution"
 PYTHON_IMAGE = "sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e"
 SANDBOX_SUPERVISORS = ["925a800ef4deb97b09bae13c5f3b40f481d03f833160bb46f8760e56bd118837","062418f01144a4d2ee8267a125ba6cf230e877a1ca8600bf7f01f1c863999bbd"]
+STREAM_SUPERVISORS = ['306ed1c4a4efe4206ee187e9ac5a5354a4e0a378b26103172ee1b8d0fbe8e483', '99bda5c2b2226377b54b279a2d3f22617e583193df58d9f4ebc069c9f3c3fa81']
 SERVICE = "xyz.bplabs.allrice.cloud.service"
 SERVICE_ID = "xyz.bplabs.allrice.cloud.service-id"
 COMPILED_PROFILE = 'allrice.output-redaction.compiled.v1'
@@ -289,6 +290,18 @@ def live_sandbox_budget(heartbeat):
     return sandbox_budget() if heartbeat.get('sandboxExecution') == sandbox_budget() else None
 
 
+def input_mounts_valid(container):
+    config=container['Config'];stream=config['Labels'].get('xyz.bplabs.allrice.cloud.input')
+    mounts=container.get('Mounts',[])
+    if stream is None:
+        return not config.get('Volumes') and all(m.get('Type')=='tmpfs' and m.get('Destination')=='/tmp' for m in mounts)
+    if stream!='stream-v1' or config.get('Volumes')!={'/allrice-input':{}} or config['Labels'].get('xyz.bplabs.allrice.cloud.project-resolution'):
+        return False
+    inputs=[m for m in mounts if m.get('Destination')=='/allrice-input']
+    return len(inputs)==1 and all((m.get('Type')=='tmpfs' and m.get('Destination')=='/tmp') or
+        (m.get('Type')=='volume' and m.get('Destination')=='/allrice-input' and re.fullmatch('[a-f0-9]{64}',m.get('Name','')) and m.get('RW') is True) for m in mounts)
+
+
 def sandbox_lease_valid(container, created, deadline, now):
     config,host = container['Config'],container['HostConfig']
     labels=config['Labels'];attempt=labels.get(ATTEMPT,'')
@@ -308,12 +321,12 @@ def sandbox_lease_valid(container, created, deadline, now):
             and config.get('Entrypoint')==['/usr/local/bin/node']
             and sorted(config.get('Env') or []) == sorted(SANDBOX_IMAGE_ENV[config['Image']])
             and len(cmd)==3 and cmd[:2]==['--input-type=module','--eval']
-            and hashlib.sha256(cmd[2].encode()).hexdigest() in (RESOLUTION_SUPERVISORS if resolution else SANDBOX_SUPERVISORS)
+            and hashlib.sha256(cmd[2].encode()).hexdigest() in (RESOLUTION_SUPERVISORS if resolution else STREAM_SUPERVISORS if labels.get('xyz.bplabs.allrice.cloud.input') == 'stream-v1' else SANDBOX_SUPERVISORS)
             and host.get('Runtime')=='runsc' and host.get('NetworkMode')=='none'
             and host.get('ReadonlyRootfs') is True and not host.get('Privileged')
             and host.get('CapDrop')==['ALL'] and not host.get('CapAdd')
             and 'no-new-privileges' in host.get('SecurityOpt',[])
-            and not host.get('Binds') and all(m.get('Type')=='tmpfs' and m.get('Destination')=='/tmp' for m in container.get('Mounts',[]))
+            and not host.get('Binds') and input_mounts_valid(container)
             and 128*1024**2 <= host.get('Memory',0) <= 512*1024**2
             and host.get('MemorySwap')==host.get('Memory') and host.get('PidsLimit')==64
             and host.get('Tmpfs')=={'/tmp':'rw,nosuid,nodev,exec,size=256m,mode=1777' if resolution else 'rw,nosuid,nodev,noexec,size=32m,mode=1777'}))):
@@ -428,7 +441,7 @@ def tick(capacity):
     temporary = STATE + ".new"
     with open(temporary, "w", encoding="utf8") as output:
         json.dump({"at": time.time(), "running": running, 'repositoryCompiled': compiled_budget(),
-                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(), 'projectResolution':1, 'projectSandboxExecution':1,
+                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(), 'projectResolution':1, 'projectSandboxExecution':1, 'inputStreaming':1,
                    "availableBytes": memory_available()}, output)
     os.replace(temporary, STATE)
 
@@ -466,6 +479,7 @@ def attest():
                       "projectWebDevelopment": live_project_web_budget(heartbeat),
                       "sandboxExecution": live_sandbox_budget(heartbeat),
                       "projectResolution": 1 if heartbeat.get("projectResolution") == 1 else None,
+                      "inputStreaming": 1 if heartbeat.get("inputStreaming") == 1 else None,
                       "projectSandboxExecution": 1 if heartbeat.get("projectSandboxExecution") == 1 else None,
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))

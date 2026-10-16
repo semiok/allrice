@@ -41,6 +41,7 @@ import {
   type RuntimeActionBinding,
   type RequestContext,
   type StoragePort,
+  type RuntimeInputSource,
   type StorageObject,
   type CloudCommand,
   type CloudPythonOrigin,
@@ -970,7 +971,9 @@ export async function loadCloudCommandInputs(
     payload,
     database,
   );
-  const files: { path: string; contentBase64: string }[] = [];
+  const files: (
+    { path: string; contentBase64: string } | RuntimeInputSource
+  )[] = [];
   let total = 0;
   for (const input of payload.arguments.inputs) {
     const file = method?.object
@@ -978,6 +981,20 @@ export async function loadCloudCommandInputs(
       : await getToolBrokerFile(context, input.objectId);
     if (file.object.id !== input.objectId)
       throw new RuntimePolicyError('cloud_input_changed');
+    if (!repositoryProof && payload.origin?.toolName !== 'workspace.project') {
+      if (file.object.checksum !== input.checksum)
+        throw new RuntimePolicyError('cloud_input_changed');
+      files.push({
+        path: input.path,
+        sizeBytes: file.object.sizeBytes,
+        checksum: input.checksum,
+        async open(signal) {
+          signal.throwIfAborted();
+          return storage.get(file.object);
+        },
+      });
+      continue;
+    }
     const reader = (await storage.get(file.object)).getReader();
     const chunks: Uint8Array[] = [];
     try {

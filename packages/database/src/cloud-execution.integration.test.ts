@@ -126,21 +126,16 @@ suite('P15 real PostgreSQL governance and SaaS gVisor delivery', () => {
       }),
     ).rejects.toThrow('approval_invalid_or_stale');
   });
-  it('retains the ordinary 2 MB input boundary without a durable private repository proof', async () => {
+  it('admits an authorized ordinary input above the removed 2 MB boundary', async () => {
     const f = await fixture(),
       object = await f.upload(Buffer.alloc(2_000_001, 120), 'text/plain');
-    await expect(
-      f.create('ordinary-large', {
-        ...f.args,
-        inputs: [
-          { path: 'large.txt', objectId: object.id, checksum: object.checksum },
-        ],
-      }),
-    ).rejects.toThrow('cloud_input_not_authorized');
-    expect(
-      (await db`select 1 from allrice_runtime_operations where run_id=${f.run}`)
-        .length,
-    ).toBe(0);
+    const created = await f.create('ordinary-large', {
+      ...f.args,
+      inputs: [
+        { path: 'large.txt', objectId: object.id, checksum: object.checksum },
+      ],
+    });
+    expect(created.snapshot.binding.attempt.operationId).toBeTruthy();
   });
   it('refuses cross-tenant file IDs, changed input checksums and revoked grants', async () => {
     const f = await fixture(),

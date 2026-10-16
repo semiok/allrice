@@ -17,6 +17,7 @@ export interface LocalPythonTransport {
   download(
     input: RuntimeLocalPythonPayload['arguments']['inputs'][number],
     signal: AbortSignal,
+    receive?: (chunk: Uint8Array) => Promise<void>,
   ): Promise<Buffer>;
   upload(
     output: RuntimeLocalPythonPayload['arguments']['outputs'][number],
@@ -44,7 +45,7 @@ export function localPythonHttpTransport(input: {
   const bounded = (signal: AbortSignal) =>
     AbortSignal.any([signal, AbortSignal.timeout(35_000)]);
   return {
-    async download(file, signal) {
+    async download(file, signal, receive) {
       const started = performance.now();
       const deadline = bounded(signal);
       let stage: 'response' | 'body' | 'validation' = 'response';
@@ -94,7 +95,8 @@ export function localPythonHttpTransport(input: {
         }
         stage = 'body';
         const reader = response.body.getReader(),
-          chunks: Uint8Array[] = [];
+          chunks: Uint8Array[] = [],
+          hash = createHash('sha256');
         try {
           for (;;) {
             const next = await reader.read();
@@ -102,7 +104,9 @@ export function localPythonHttpTransport(input: {
             size += next.value.byteLength;
             if (size > file.sizeBytes)
               throw failure('INPUT_LIMIT', 'body_limit');
-            chunks.push(next.value);
+            hash.update(next.value);
+            if (receive) await receive(next.value);
+            else chunks.push(next.value);
           }
         } finally {
           await reader.cancel().catch(() => undefined);
@@ -112,8 +116,7 @@ export function localPythonHttpTransport(input: {
         stage = 'validation';
         if (
           size !== file.sizeBytes ||
-          `sha256:${createHash('sha256').update(bytes).digest('hex')}` !==
-            file.checksum
+          `sha256:${hash.digest('hex')}` !== file.checksum
         )
           throw failure(
             'INPUT_VERSION_CHANGED',
@@ -121,7 +124,12 @@ export function localPythonHttpTransport(input: {
           );
         return bytes;
       } catch (error) {
-        if (error instanceof LocalPythonInputDownloadError) throw error;
+        if (
+          error instanceof LocalPythonInputDownloadError ||
+          (error instanceof LocalCommandError &&
+            error.code === 'INPUT_STORAGE_FULL')
+        )
+          throw error;
         throw failure(
           signal.aborted ? 'EXECUTION_REVOKED' : 'INPUT_DOWNLOAD_UNAVAILABLE',
           signal.aborted

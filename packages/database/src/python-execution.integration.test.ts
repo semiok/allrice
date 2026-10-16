@@ -20,6 +20,7 @@ import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import {
   createCloudPythonOperation,
   cloudStableId,
+  loadCloudCommandInputs,
 } from './cloud-execution.ts';
 import { heartbeatBridgeDevice } from './bridge.ts';
 import {
@@ -34,6 +35,7 @@ import {
   storeLocalPythonArtifact,
   publishLocalPythonArtifacts,
   assertLocalPythonDelegation,
+  managedPythonCallNotDispatched,
 } from './local-python-execution.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import { normalizeCloudPythonArguments } from './cloud-authority.ts';
@@ -339,6 +341,106 @@ suite(
       return { ...d, r, p, created, ledger, identity, upload, succeed };
     };
 
+    it('streams both original input sizes and proves exact-call operation absence without changing file authority', async () => {
+      const f = await fixture();
+      const files = await Promise.all(
+        [1651149, 1494177].map((n) =>
+          f.upload(Buffer.alloc(n, 120), 'text/plain'),
+        ),
+      );
+      const a = {
+        ...args(),
+        inputs: files.map((o, i) => ({
+          path: `${i}.csv`,
+          objectId: o.id,
+          checksum: o.checksum,
+        })),
+      };
+      const r = await request(f, a);
+      expect(
+        await managedPythonCallNotDispatched(
+          f.execution,
+          r.callId,
+          isolated.db,
+        ),
+      ).toBe(true);
+      await selectManagedPythonExecution(r, isolated.db);
+      const created = await createCloudPythonOperation(
+        { context: f.execution, callId: r.callId, arguments: a },
+        isolated.db,
+      );
+      expect(
+        await managedPythonCallNotDispatched(
+          f.execution,
+          r.callId,
+          isolated.db,
+        ),
+      ).toBe(false);
+      expect(
+        await managedPythonCallNotDispatched(
+          f.execution,
+          randomUUID(),
+          isolated.db,
+        ),
+      ).toBe(true);
+      const get = vi.fn(f.storage.get.bind(f.storage));
+      const inputs = await loadCloudCommandInputs(
+        f.execution,
+        created.payload,
+        { ...f.storage, get } as StoragePort,
+        isolated.db,
+      );
+      expect(get).not.toHaveBeenCalled();
+      let total = 0;
+      for (const source of inputs) {
+        if ('contentBase64' in source)
+          throw Error('ordinary inputs must stream');
+        const reader = (
+          await source.open(new AbortController().signal)
+        ).getReader();
+        const hash = createHash('sha256');
+        for (;;) {
+          const value = await reader.read();
+          if (value.done) break;
+          total += value.value.length;
+          hash.update(value.value);
+        }
+        reader.releaseLock();
+        expect(`sha256:${hash.digest('hex')}`).toBe(source.checksum);
+      }
+      expect(total).toBe(3145326);
+      expect(get).toHaveBeenCalledTimes(2);
+    });
+    it('requires streaming capability for oversized local inputs and keeps explicit local requests local', async () => {
+      const f = await fixture(),
+        d = await device(f);
+      const object = await f.upload(Buffer.alloc(3145326, 120), 'text/plain');
+      const a = {
+        ...args(),
+        location: 'local',
+        inputs: [
+          { path: 'data.csv', objectId: object.id, checksum: object.checksum },
+        ],
+      };
+      const r = await request(f, a);
+      const sized = {
+        ...r,
+        inputs: r.inputs.map((i) => ({ ...i, sizeBytes: object.sizeBytes })),
+      };
+      const old = await selectManagedPythonExecution(sized, isolated.db);
+      expect(old.choice.status).toBe('unavailable');
+      expect(old.choice.location).not.toBe('cloud');
+      await reportLocalPythonProfile(
+        d.device,
+        { ...modernProfile, inputStreamingVersion: 1 },
+        isolated.db,
+      );
+      const current = await selectManagedPythonExecution(sized, isolated.db);
+      expect(current.choice).toMatchObject({
+        location: 'local',
+        status: 'execute',
+      });
+    });
     it('admits canonical cloud for ordinary members without BridgeRW/binding/device, preserving raw arguments and exact legacy separation', async () => {
       for (const canonicalPython of [
         { bridgeAccess: 'read_only' as const },

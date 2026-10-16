@@ -24,7 +24,7 @@
 
 V1 Python image 为 `sha256:d6a52afde3d7c99d8cba9c89ff5078a8e1b6a177f97512ff4facfa4f930fe38e`。后续运行时升级需要保留已批准的冻结镜像映射，不能原地替换 V1 常量来升级历史任务。环境探测单独检查 Python image/backend，记录在 compute 的独立 python 证据中；不改旧 grant profile，也不以一个新开关推断 Python 已就绪。执行时再次 preflight 实际选定镜像。
 
-输入仍限已授权的 16 个 StorageObject、合计 2MB；输出最多 8 个、合计最多 4MB，单次最长 60 秒、最高 512MiB。CSV/XLSX 走原有 storage 授权、checksum 和限额，不接任意宿主路径。图表读取数据时须明确数字转换、缺失处理和编号类型；脚本退出 0 本身不能证明文件交付。
+输入声明最多 16 个已授权 StorageObject；2026-10-16 移除 AllRice 原有的合计 2MB 门槛（DSH 未定义此门槛）。输入按对象的确定长度和 SHA-256 流式传输，不进入控制 JSON/base64，也不写入云端 32MiB tmpfs；专属输入卷随本次执行清理。接收确认和完整校验完成后才启动租户脚本。Bridge 通过 `inputStreamingVersion: 1` 上报能力，`inputTransfer: stream-v1` 绑定真实输入总量；旧 Bridge 仍按原有协议接收小输入，大输入需升级，明确要求本地时不换端。输出仍最多 8 个、合计最多 4MB，默认单次最长 60 秒、最高 512MiB，已授权的执行预算规则另行适用。CSV/XLSX 保留 storage 授权、checksum 和执行预算，不接任意宿主路径。图表读取数据时须明确数字转换、缺失处理和编号类型；脚本退出 0 本身不能证明文件交付。
 
 ## PNG 的可信检查与发布
 
@@ -39,3 +39,7 @@ watchdog 的期限使用 VM 时间。Docker 可能已确认达到固定 deadline
 契约回归核对旧 Node 字节/摘要、Python image/language 绑定、PNG 扩展名、路径与资源限制。原生 DSH 往返核对真实 Broker 参数；专用数据库的 UUID schema 回归核对 StorageObject/checksum、授权、PNG 版本、工作台投影、私有输入和重试不重执行。真实 gVisor 测试核对中文长标签、负数/缺失数据、CSV/XLSX 数据质量、损坏 PNG、隔离、超时、取消，以及同一 PNG 的原生 Word/PPT 嵌入字节和 Office checker。
 
 这些后端物理测试使用诊断 UUID 和合成资料，结束后仅清理自己创建的容器与 fixture schema；它们不是 Dev 模型 Run 或前台成果验收。根代理在合并部署后另行验证普通员工、实际 Run、图片预览/下载与含图 Office 成果；Dev 交付状态以该独立验收记录为准。
+
+## 下发前失败与任务结算
+
+输入校验或执行环境选择在下发前失败时，Worker 必须查询当前 run/call 的本地和云端确定操作 ID，确认两者均不存在，才附加可信失败回执并结算本次工具用量。操作已存在、已尝试下发、数据库查询失败或真实结果未知时不附加该证明，继续原有对账。后续修正调用可以正常完成；历史失败记录不重写、不自动重试。
