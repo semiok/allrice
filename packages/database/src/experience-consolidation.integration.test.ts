@@ -41,6 +41,8 @@ import {
 } from 'vitest';
 import {
   RouteDecisionSchema,
+  REPORT_STYLE_RECOGNIZER_VERSION,
+  ExperienceAdoptionProofSchema,
   type PersonalSkillPin,
   type HarnessEvent,
   resolveAssistantSubscriptionSnapshot,
@@ -410,6 +412,9 @@ suite(
       await synchronizePlatformContent(await loadPlatformContentCatalog());
     }, 120000);
     beforeEach(async () => {
+      // Prior fixtures must not consume this case's production daily quota.
+      // Only this suite's disposable schema is changed; limits stay unchanged.
+      await db`update allrice_automation_runs set created_at=clock_timestamp()-interval '2 days' where experience_occurrence is not null`;
       await db`update allrice_automations set status='paused',next_run_at=null`;
       await db`update allrice_settings set value=jsonb_set(value,'{validationMode}','\"off\"') where value->>'schemaVersion' in ('3','4')`;
       await db`update allrice_platform_employee_test_runs set status='failed',completed_at=clock_timestamp() where purpose='experience_validation' and status in ('queued','running')`;
@@ -1624,9 +1629,13 @@ suite(
         await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
       ).toHaveLength(1);
     });
-    it.each([true, false])(
-      'uses direct report preference proof without a model test; specific=%s',
-      async (specific) => {
+    it.each([
+      { specific: true, limited: false },
+      { specific: true, limited: true },
+      { specific: false, limited: true },
+    ])(
+      'uses direct report preference proof without a model test: %j',
+      async ({ specific, limited }) => {
         const f = await leased(
           false,
           false,
@@ -1638,9 +1647,12 @@ suite(
         );
         const output = await proof(f);
         Object.assign(output.drafts[0]!, {
-          rule: '撰写报告时采用分点说明。',
-          applicability:
-            '仅适用于报告的表达方式，不改变业务规则、计算口径或执行步骤。',
+          rule: limited
+            ? '撰写包含多个要点的报告时，优先按要点分条说明。'
+            : '撰写报告时采用分点说明。',
+          applicability: limited
+            ? '适用于包含多个可区分要点、且无指定格式要求的同类报告；不推及所有文体。'
+            : '仅适用于报告的表达方式：不改变业务规则、计算口径，或执行步骤。',
           validation: { kind: 'preference', check: '仅报告表达方式' },
         });
         await completeJob({ ...f.lease, result: output });
@@ -1654,15 +1666,71 @@ suite(
           monthDay: 1,
           adoptionMode: 'supported_private',
         });
-        await syncExperienceAdoptions();
+        // Simulate the old serializer on insertion, never mutate an immutable
+        // stored proof. The subsequent read uses the real current schema.
+        const parse = ExperienceAdoptionProofSchema.parse.bind(
+          ExperienceAdoptionProofSchema,
+        );
+        const oldWriter = !limited
+          ? vi
+              .spyOn(ExperienceAdoptionProofSchema, 'parse')
+              .mockImplementation((...args) => {
+                const proof = parse(...args);
+                delete proof.recognizerVersion;
+                return proof;
+              })
+          : null;
+        try {
+          await Promise.all([
+            syncExperienceAdoptions(),
+            syncExperienceAdoptions(),
+          ]);
+        } finally {
+          oldWriter?.mockRestore();
+        }
         const rows =
-          await db`select adoption_proof from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`;
+          await db`select memory_id,adoption_proof from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`;
         expect(rows).toHaveLength(specific ? 1 : 0);
-        if (specific)
-          expect(rows[0]!.adoption_proof.validation).toMatchObject({
+        if (specific) {
+          const adopted = rows[0]!;
+          expect(adopted.adoption_proof.validation).toMatchObject({
             kind: 'direct_preference',
             evaluator: 'report-style-v1',
           });
+          expect(adopted.adoption_proof.recognizerVersion).toBe(
+            limited ? REPORT_STYLE_RECOGNIZER_VERSION : undefined,
+          );
+          const current = await readPrivateExperience(
+            db,
+            f.owner,
+            adopted.memory_id,
+          );
+          expect(current.proof.draftDigest).toBe(
+            runtimePolicyDigest(output.drafts[0]),
+          );
+          expect(current.row.content).toBe(
+            `${output.drafts[0]!.rule}\n适用范围：${output.drafts[0]!.applicability}`,
+          );
+          const [chunk] =
+            await db`select experience_projection from allrice_rag_chunks where memory_id=${adopted.memory_id}`;
+          expect(chunk!.experience_projection.rule).toBe(
+            output.drafts[0]!.rule,
+          );
+          expect(chunk!.experience_projection.applicability).toBe(
+            output.drafts[0]!.applicability,
+          );
+          await deleteWorkspaceMemory(f.owner, f.workspace, adopted.memory_id);
+          await db`update allrice_automation_runs set experience_adoption_plan=null where id=${f.occurrence.id}`;
+          await syncExperienceAdoptions();
+          const [retained] =
+            await db`select experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`;
+          expect(retained!.experience_adoption_plan.drafts[0].reason).toContain(
+            '同类经验已有记录或已撤回',
+          );
+          expect(
+            await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+          ).toHaveLength(1);
+        }
         expect(
           await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
         ).toHaveLength(0);

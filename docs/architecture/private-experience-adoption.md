@@ -62,3 +62,19 @@
 - `apps/web/app/workspace/experience/experience-panel.test.tsx`：实际状态及覆盖范围文案。
 
 Dev 验收复用原反馈和 PR434 的专项验证证明，只新增跨会话采用、聊天遗忘及后续不再加载的必要任务。保留原记录，检查数据库读取凭据、原生输入、页面刷新和账本；不依赖模型口头确认。
+
+### Report-style recognition
+
+Report preferences use complete, finite presentation and scope clauses, including
+multi-point reports with no specified format. The original rule and applicability
+remain in the adopted memory and projection; a report keyword only selects recall
+candidates, and never proves the request satisfies every scope condition. Explicit
+task formatting still takes precedence. Extra business actions, unknown clauses,
+contradictory scope and punctuation that splits a negation are rejected.
+
+`report-style-clauses-v2` records the recognizer separately from the unchanged
+`report_style / version: 1` semantic key, so withdrawn preferences stay withdrawn.
+Earlier proofs without this metadata remain readable. A direct-preference proof
+records explicit source feedback under the current platform policy; it does not
+claim that a model-proposed A/B comparison was performed. Completed batches are
+not automatically reopened after a recognizer update.

@@ -4,6 +4,8 @@ import { PersonalSkillSnapshotSchema } from './personal-skills.ts';
 import { ExperienceSkillValidationSchema } from './experience-validation.ts';
 
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+// Recognition grammar evolves independently of the semantic key and tombstones.
+export const REPORT_STYLE_RECOGNIZER_VERSION = 'report-style-clauses-v2';
 
 export const SupportedExperienceRuleSchema = z.discriminatedUnion('kind', [
   z
@@ -30,6 +32,7 @@ export const ExperienceAdoptionProofSchema = z
     draftDigest: Digest,
     sourceDigest: Digest,
     rule: SupportedExperienceRuleSchema,
+    recognizerVersion: z.literal(REPORT_STYLE_RECOGNIZER_VERSION).optional(),
     validation: z.discriminatedUnion('kind', [
       z
         .object({
@@ -141,6 +144,41 @@ function completeAttendanceRule(rule: string, applicability: string) {
   );
 }
 
+/** Consume complete report/action/scope clauses. Never remove sentence boundaries
+ * inside a negation, condition or action to make an unsupported rule match. */
+function completeReportStyle(rule: string, applicability: string) {
+  const normalize = (text: string) =>
+    text
+      .trim()
+      .replace(/[。.;；]$/u, '')
+      .replace(/\s/gu, '');
+  const action = normalize(rule);
+  const scope = normalize(applicability);
+  const presentationOnly =
+    /^(?:仅|只)适用于报告的表达方式[，,。.;；：:]?不改变业务规则[、，,]?计算口径[、，,]?或执行步骤$/u;
+  const multiplePointsWithoutFormat =
+    /^(?:仅|只)?适用于(?:包含|含有)?多个(?:可区分)?要点[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告[，,。.;；]不(?:推及|扩展到)(?:所有|其他)文体$/u;
+  if (!presentationOnly.test(scope) && !multiplePointsWithoutFormat.test(scope))
+    return null;
+  const context =
+    '(?:撰写|编写|输出|交付)(?:(?:包含|含有)?多个(?:可区分)?要点的)?报告时[，,]?(?:优先)?';
+  if (
+    new RegExp(
+      `^${context}(?:(?:采用|使用|保持)(?:分点|分项|分条|条理清晰的)(?:方式|表达|说明)|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))$`,
+      'u',
+    ).test(action)
+  )
+    return 'structured' as const;
+  if (
+    new RegExp(
+      `^${context}(?:采用|使用|保持)(?:简洁|简短)(?:的)?(?:方式|表达|说明)$`,
+      'u',
+    ).test(action)
+  )
+    return 'concise' as const;
+  return null;
+}
+
 /** A finite, fully checked rule family. Keyword matching only selects a test;
  * it must never authorize arbitrary model-generated instructions. Both complete
  * clauses must match, including the missing-information restriction. */
@@ -148,35 +186,14 @@ export function supportedExperienceRule(draft: {
   rule: string;
   applicability: string;
 }) {
-  const rule = compact(draft.rule);
-  const applicability = compact(draft.applicability);
   if (completeAttendanceRule(draft.rule, draft.applicability))
     return { kind: 'attendance_groups' as const, version: 1 as const };
-  if (
-    /^(?:撰写|编写|输出|交付)报告时(?:采用|使用|保持)(?:分点|分项|条理清晰的)(?:方式|表达|说明)$/u.test(
-      rule,
-    ) &&
-    /^(?:仅|只)适用于报告的表达方式不改变业务规则计算口径或执行步骤$/u.test(
-      applicability,
-    )
-  )
+  const style = completeReportStyle(draft.rule, draft.applicability);
+  if (style)
     return {
       kind: 'report_style' as const,
       version: 1 as const,
-      style: 'structured' as const,
-    };
-  if (
-    /^(?:撰写|编写|输出|交付)报告时(?:采用|使用|保持)(?:简洁|简短)(?:的)?(?:方式|表达|说明)$/u.test(
-      rule,
-    ) &&
-    /^(?:仅|只)适用于报告的表达方式不改变业务规则计算口径或执行步骤$/u.test(
-      applicability,
-    )
-  )
-    return {
-      kind: 'report_style' as const,
-      version: 1 as const,
-      style: 'concise' as const,
+      style,
     };
   return null;
 }

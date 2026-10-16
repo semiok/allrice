@@ -5,6 +5,7 @@ import {
   ExperienceReadPinsSchema,
   ExperienceAdoptionViewSchema,
   supportedExperienceRule,
+  REPORT_STYLE_RECOGNIZER_VERSION,
   supportsDirectReportPreference,
   type ExperienceAdoptionProof,
   type ExperienceReadPin,
@@ -220,6 +221,9 @@ export async function syncExperienceAdoptions() {
             draftDigest: runtimePolicyDigest(draft),
             sourceDigest: runtimePolicyDigest(o.sources),
             rule,
+            ...(rule.kind === 'report_style'
+              ? { recognizerVersion: REPORT_STYLE_RECOGNIZER_VERSION }
+              : {}),
             validation,
             authority: {
               kind: 'platform_automatic_experience_policy',
