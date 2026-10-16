@@ -229,5 +229,9 @@ export * from './employees/personal-skills.ts';
 export * from './employees/personal-skill-versions.ts';
 
 export * from './experience-consolidation.ts';
+export {
+  syncExperienceValidations,
+  experienceValidationStillCurrent,
+} from './experience-validation.ts';
 export * from './experience-consolidation-contracts.ts';
 export { runtimePolicyDigest } from './runtime-policy.ts';

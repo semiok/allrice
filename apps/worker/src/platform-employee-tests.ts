@@ -8,6 +8,7 @@ import { resolve } from 'node:path';
 import {
   DshExecutionSnapshotSchema,
   EmployeeKernelRequestSchema,
+  InternalKernelRequestSchema,
   ExecutionContextSchema,
   type HarnessEvent,
   type SkillCapability,
@@ -17,6 +18,7 @@ import {
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
   employeeMethodTestStillCurrent,
+  experienceValidationStillCurrent,
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
 } from '@allrice/database';
@@ -63,9 +65,13 @@ export async function executeNextPlatformEmployeeTest(input: {
   const adapter = new DshHarnessAdapter({
     runtimeRoot: testDirectory,
     requestTimeoutMs:
-      test.methodCandidate?.timeoutMs ?? test.runtimeProfile.timeoutMs,
+      test.experienceCandidate?.timeoutMs ??
+      test.methodCandidate?.timeoutMs ??
+      test.runtimeProfile.timeoutMs,
   });
   const method = test.methodCandidate;
+  const experience = test.experienceCandidate;
+  const candidate = experience ?? method;
   let methodExecutionIssue: string | undefined;
   const controller = new AbortController();
   const signal = AbortSignal.any([input.signal, controller.signal]);
@@ -82,10 +88,19 @@ export async function executeNextPlatformEmployeeTest(input: {
   const checkCandidate = (): Promise<void> => {
     // Finalization joins an in-flight poll instead of skipping its verdict.
     if (checking) return checking;
-    if (!method || signal.aborted) return Promise.resolve();
+    if (!candidate || signal.aborted) return Promise.resolve();
     checking = (async () => {
       try {
-        if (!(await employeeMethodTestStillCurrent(test.id)))
+        if (
+          !(await (experience
+            ? experienceValidationStillCurrent(test.id, {
+                runId: test.previewExecution.runId,
+                jobId: test.previewExecution.jobId,
+                workerId: input.workerId,
+                leaseToken: test.previewExecution.leaseToken,
+              })
+            : employeeMethodTestStillCurrent(test.id)))
+        )
           throw new HandlerError(
             'EMPLOYEE_METHOD_TEST_STALE',
             '候选、权限或模型连接已变化，测试已停止；请重新检查后发起测试。',
@@ -111,7 +126,7 @@ export async function executeNextPlatformEmployeeTest(input: {
   try {
     await checkCandidate();
     signal.throwIfAborted();
-    if (method)
+    if (candidate)
       guard = setInterval(() => {
         void checkCandidate();
       }, 2_000);
@@ -127,7 +142,7 @@ export async function executeNextPlatformEmployeeTest(input: {
       startedAt: test.previewExecution.startedAt,
     });
     const grantedCapabilities: SkillCapability[] = ['model:invoke'];
-    for (const toolName of method ? [] : test.runtimeProfile.toolNames) {
+    for (const toolName of candidate ? [] : test.runtimeProfile.toolNames) {
       const capability = riceToolCapability(toolName);
       if (
         capability &&
@@ -139,16 +154,18 @@ export async function executeNextPlatformEmployeeTest(input: {
         grantedCapabilities.push(capability);
       }
     }
-    const tools = method
-      ? method.caseId === 'cny-file-flow-v1'
-        ? employeeMethodFileTools
-        : []
-      : riceReadOnlyToolDefinitionsForPreview(
-          grantedCapabilities,
-          test.runtimeProfile.toolNames,
-        );
-    const snapshot = method
-      ? providerSnapshotForModelTarget(method.modelSnapshot)
+    const tools = experience
+      ? []
+      : method
+        ? method.caseId === 'cny-file-flow-v1'
+          ? employeeMethodFileTools
+          : []
+        : riceReadOnlyToolDefinitionsForPreview(
+            grantedCapabilities,
+            test.runtimeProfile.toolNames,
+          );
+    const snapshot = candidate
+      ? providerSnapshotForModelTarget(candidate.modelSnapshot)
       : DshExecutionSnapshotSchema.parse({
           provider: 'dsh',
           authMode:
@@ -161,49 +178,77 @@ export async function executeNextPlatformEmployeeTest(input: {
           credentialReference: test.runtimeProfile.credentialReference,
           baseUrl: test.runtimeProfile.baseUrl,
         });
-    const subscriptionSnapshot = method
+    const subscriptionSnapshot = experience
       ? preflightAssistantSubscription({
-          sessionId: method.sourceSessionId,
-          modelSnapshot: method.modelSnapshot,
-          decision: method.decision,
+          occurrenceId: experience.occurrenceId,
+          modelSnapshot: experience.modelSnapshot,
+          decision: experience.decision,
           providerSnapshot: snapshot,
         })
-      : undefined;
-    if (subscriptionSnapshot && method) {
+      : method
+        ? preflightAssistantSubscription({
+            sessionId: method.sourceSessionId,
+            modelSnapshot: method.modelSnapshot,
+            decision: method.decision,
+            providerSnapshot: snapshot,
+          })
+        : undefined;
+    if (subscriptionSnapshot && candidate) {
       const frozen = await freezeRouteSubscriptionSnapshot({
         organizationId: test.previewContext.organizationId,
         workspaceId: test.previewContext.workspaceId,
-        decisionId: method.decision.id,
+        decisionId: candidate.decision.id,
         snapshot: subscriptionSnapshot,
       });
       meter.subscriptionSnapshotCreated = frozen.frozen;
     }
+    await checkCandidate();
     signal.throwIfAborted();
     meter.dispatched = true;
     const result = await adapter.execute({
-      kernel: EmployeeKernelRequestSchema.parse({
-        schemaVersion: 1,
-        harness: 'dsh',
-        employeeAssignmentId: ids.assignmentId,
-        employeeVersionId: ids.versionId,
-        sessionId: ids.sessionId,
-        userMessageId: ids.userMessageId,
-        assistantMessageId: ids.assistantMessageId,
-        systemInstructions: [
-          test.runtimeProfile.systemPrompt,
-          method?.instructions,
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
-        userRequest: test.input.prompt,
-        bootstrapConversation: '',
-        authorizedMemoryContext: '',
-        grantedCapabilities,
-        skillVersionIds: method ? [] : test.runtimeProfile.nativeSkillIds,
-      }),
+      kernel: experience
+        ? InternalKernelRequestSchema.parse({
+            schemaVersion: 1,
+            harness: 'dsh',
+            internalTask: {
+              kind: 'experience_validation',
+              occurrenceId: experience.occurrenceId,
+            },
+            employeeAssignmentId: experience.assignmentId,
+            employeeVersionId: experience.employeeVersionId,
+            sessionId: null,
+            userMessageId: null,
+            assistantMessageId: null,
+            systemInstructions: experience.instructions,
+            userRequest: test.input.prompt,
+            bootstrapConversation: '',
+            authorizedMemoryContext: '',
+            grantedCapabilities,
+            skillVersionIds: [],
+          })
+        : EmployeeKernelRequestSchema.parse({
+            schemaVersion: 1,
+            harness: 'dsh',
+            employeeAssignmentId: ids.assignmentId,
+            employeeVersionId: ids.versionId,
+            sessionId: ids.sessionId,
+            userMessageId: ids.userMessageId,
+            assistantMessageId: ids.assistantMessageId,
+            systemInstructions: [
+              test.runtimeProfile.systemPrompt,
+              method?.instructions,
+            ]
+              .filter(Boolean)
+              .join('\n\n'),
+            userRequest: test.input.prompt,
+            bootstrapConversation: '',
+            authorizedMemoryContext: '',
+            grantedCapabilities,
+            skillVersionIds: method ? [] : test.runtimeProfile.nativeSkillIds,
+          }),
       providerSnapshot: snapshot,
       storageObjects: [],
-      nativeSkills: method ? [] : test.nativeSkills,
+      nativeSkills: candidate ? [] : test.nativeSkills,
       workDirectory: testDirectory,
       executionEnvironment: {
         ALLRICE_ORGANIZATION_ID: test.previewContext.organizationId,
@@ -217,11 +262,11 @@ export async function executeNextPlatformEmployeeTest(input: {
       signal,
       attempt: 1,
       generation: 0,
-      maxOutputTokens: method
-        ? Math.min(method.modelSnapshot.runLimits.maxOutputTokens, 8_000)
+      maxOutputTokens: candidate
+        ? Math.min(candidate.modelSnapshot.runLimits.maxOutputTokens, 8_000)
         : 8_000,
       tools,
-      authorizedToolNames: method
+      authorizedToolNames: candidate
         ? tools.map((tool) => tool.name)
         : test.runtimeProfile.toolNames,
       onToolCall:
@@ -266,7 +311,18 @@ export async function executeNextPlatformEmployeeTest(input: {
       },
     });
     usage = result.usage;
-    if (method) {
+    if (candidate) {
+      if (
+        result.provider !== candidate.modelSnapshot.provider ||
+        result.model !== candidate.modelSnapshot.model
+      )
+        throw new HandlerError(
+          subscriptionSnapshot
+            ? 'ASSISTANT_SUBSCRIPTION_RESULT_UNVERIFIED'
+            : 'TEST_MODEL_RESULT_UNVERIFIED',
+          '专项验证模型身份与冻结版本不一致。',
+          false,
+        );
       // Match the ordinary single-root receipt rules. A subscription never
       // becomes a cash estimate; missing token receipts remain unknown.
       if (
@@ -297,12 +353,12 @@ export async function executeNextPlatformEmployeeTest(input: {
             });
       checkCompletedModelBudget({
         verifiedSubscription: !!subscriptionSnapshot,
-        limits: method.modelSnapshot.runLimits,
+        limits: candidate.modelSnapshot.runLimits,
         result,
         costCents: meter.costCents,
       });
       if (
-        method.caseId === 'cny-file-flow-v1' &&
+        method?.caseId === 'cny-file-flow-v1' &&
         (methodExecutionIssue ||
           (await methodFileExecutionUnverified(executionContext, test.id)))
       )
@@ -322,10 +378,10 @@ export async function executeNextPlatformEmployeeTest(input: {
       usage: result.usage,
       events,
       error: null,
-      ...(method ? { modelExecution: meter } : {}),
+      ...(candidate ? { modelExecution: meter } : {}),
     });
   } catch (error) {
-    const failedUsage = method
+    const failedUsage = candidate
       ? getAssistantFailureUsage(
           error,
           test.previewExecution.runId,
@@ -340,8 +396,9 @@ export async function executeNextPlatformEmployeeTest(input: {
     }
     await completePlatformEmployeeTestRun(test.id, {
       answer: null,
-      provider: method?.modelSnapshot.provider ?? test.runtimeProfile.provider,
-      model: method?.modelSnapshot.model ?? test.runtimeProfile.model,
+      provider:
+        candidate?.modelSnapshot.provider ?? test.runtimeProfile.provider,
+      model: candidate?.modelSnapshot.model ?? test.runtimeProfile.model,
       threadId: null,
       usage,
       events,
@@ -354,7 +411,7 @@ export async function executeNextPlatformEmployeeTest(input: {
             ? error.message.slice(0, 2_000)
             : '草稿测试运行失败。',
       },
-      ...(method ? { modelExecution: meter } : {}),
+      ...(candidate ? { modelExecution: meter } : {}),
     });
   } finally {
     if (guard) clearInterval(guard);

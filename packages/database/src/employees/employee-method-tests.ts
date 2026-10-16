@@ -634,7 +634,16 @@ export async function prepareEmployeeMethodTestClaim(tx: Tx, testId: string) {
 export async function assertEmployeeMethodModelCurrent(
   tx: Tx,
   b: Pick<Binding, 'organization_id'>,
-  model: ReturnType<typeof SessionModelSnapshotSchema.parse>,
+  model: Pick<
+    ReturnType<typeof SessionModelSnapshotSchema.parse>,
+    | 'connectionId'
+    | 'modelCatalogEntryId'
+    | 'model'
+    | 'authMode'
+    | 'credentialReference'
+    | 'baseUrl'
+    | 'provider'
+  >,
 ) {
   const [current] =
     await tx`select p.provider_key,p.auth_mode,c.credential_reference,c.base_url from allrice_model_connections c

@@ -1,3 +1,12 @@
+import {
+  syncExperienceValidations,
+  experienceValidationStillCurrent,
+} from './experience-validation.ts';
+import {
+  claimNextPlatformEmployeeTestRun,
+  completePlatformEmployeeTestRun,
+} from './employees/platform-employees.ts';
+import { attendanceAnswer } from './experience-validation.fixture.ts';
 import { randomUUID } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import postgres from 'postgres';
@@ -32,6 +41,7 @@ import {
 } from './experience-consolidation.ts';
 import {
   claimDueAutomations,
+  syncAutomationRuns,
   listAutomations,
   runAutomationNow,
 } from './execution/automation.ts';
@@ -66,8 +76,13 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-async function source(withSkill = false, materialize = true) {
-  const f = await createExperienceFixture(db);
+async function source(
+  withSkill = false,
+  materialize = true,
+  attendance = false,
+  published = false,
+) {
+  const f = await createExperienceFixture(db, { published });
   for (const context of [f.owner, f.reviewer, f.neighbor])
     await db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
     values(${context.sessionId},${context.actor.id},${(randomUUID() + randomUUID()).replaceAll('-', '')},clock_timestamp()+interval '1 day')`;
@@ -100,7 +115,9 @@ async function source(withSkill = false, materialize = true) {
   const runId = randomUUID(),
     messageId = randomUUID(),
     assistantId = randomUUID();
-  const text = '刚才的对账报告漏了退款，核对时需要单列退款再汇总净回款。';
+  const text = attendance
+    ? '我已核对，到场和未到人数与原始名单一致，分项列出很清晰。'
+    : '刚才的对账报告漏了退款，核对时需要单列退款再汇总净回款。';
   await db`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content,status)
     values(${messageId},${f.org},${f.workspace},${f.user},${f.session.id},'user',${db.json({ text, citations: [] })},'completed'),
       (${assistantId},${f.org},${f.workspace},${f.user},${f.session.id},'assistant','{"text":"已收到"}','completed')`;
@@ -176,8 +193,13 @@ async function currentRequirement(f: Awaited<ReturnType<typeof source>>) {
   });
   return { contentId, setId: base.setId };
 }
-async function queued(withSkill = false, withRule = false) {
-  const f = await source(withSkill);
+async function queued(
+  withSkill = false,
+  withRule = false,
+  attendance = false,
+  published = false,
+) {
+  const f = await source(withSkill, true, attendance, published);
   const current = withRule ? await currentRequirement(f) : null;
   await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
   await Promise.all([claimDueAutomations(), claimDueAutomations()]);
@@ -186,8 +208,13 @@ async function queued(withSkill = false, withRule = false) {
   expect(occurrence?.run_id).toBeTruthy();
   return { ...f, current, occurrence: occurrence! };
 }
-async function leased(withSkill = false, withRule = false) {
-  const f = await queued(withSkill, withRule),
+async function leased(
+  withSkill = false,
+  withRule = false,
+  attendance = false,
+  published = false,
+) {
+  const f = await queued(withSkill, withRule, attendance, published),
     workerId = randomUUID();
   const job = await claimNextJob(workerId, 120000, { allowBackground: true });
   expect(
@@ -318,6 +345,8 @@ suite(
     }, 120000);
     beforeEach(async () => {
       await db`update allrice_automations set status='paused',next_run_at=null`;
+      await db`update allrice_settings set value=jsonb_set(value,'{validationMode}','\"off\"') where value->>'schemaVersion'='3'`;
+      await db`update allrice_platform_employee_test_runs set status='failed',completed_at=clock_timestamp() where purpose='experience_validation' and status in ('queued','running')`;
       await db`update allrice_jobs set status='canceled',completed_at=clock_timestamp() where status in ('queued','claimed','running')`;
     });
     afterAll(async () => {
@@ -327,6 +356,282 @@ suite(
         await admin.unsafe(`drop schema ${schema} cascade`);
       await admin?.end({ timeout: 5 });
     });
+    async function validationFixture(attendance = true, enable = true) {
+      const f = await leased(false, false, attendance, true),
+        output = await proof(f);
+      if (attendance)
+        Object.assign(output.drafts[0]!, {
+          rule: '统计到场情况时，依据原始名单分别核对到场和未到人数，并在结果中分项列出。',
+          applicability:
+            '适用于有原始名单且到场状态明确的人员统计任务，不适用于缺少名单或状态不明时推算人数。',
+        });
+      await completeJob({ ...f.lease, result: output });
+      await syncAutomationRuns();
+      if (enable)
+        await updateExperiencePolicy(f.reviewer, f.org, {
+          expectedRevision: (await readExperiencePolicy(f.org)).revision,
+          frequency: 'daily',
+          timezone: 'Asia/Shanghai',
+          time: '03:00',
+          weekday: 1,
+          monthDay: 1,
+          validationMode: 'supported_cases',
+        });
+      return { ...f, output };
+    }
+    async function validationReceipt(
+      test: NonNullable<
+        Awaited<ReturnType<typeof claimNextPlatformEmployeeTestRun>>
+      >,
+      answer: unknown,
+    ) {
+      const x = test.experienceCandidate!;
+      const snapshot = resolveAssistantSubscriptionSnapshot({
+        occurrenceId: x.occurrenceId,
+        modelSnapshot: x.modelSnapshot,
+        decision: x.decision,
+        providerSnapshot: providerSnapshotForModelTarget(x.modelSnapshot),
+      })!;
+      await freezeRouteSubscriptionSnapshot({
+        organizationId: test.previewContext.organizationId,
+        workspaceId: test.previewContext.workspaceId,
+        decisionId: x.decision.id,
+        snapshot,
+      });
+      return {
+        answer: JSON.stringify(answer),
+        provider: x.modelSnapshot.provider,
+        model: x.modelSnapshot.model,
+        threadId: null,
+        usage: { inputTokens: 100, outputTokens: 120, cachedInputTokens: 0 },
+        events: [],
+        error: null,
+        modelExecution: {
+          dispatched: true,
+          subscriptionSnapshotCreated: true,
+          usageComplete: true,
+          cacheUsageKnown: false,
+          costCents: null,
+        },
+      };
+    }
+    it('validates the same draft once with a private test and independently persists coverage without adoption', async () => {
+      const f = await validationFixture();
+      await Promise.all([
+        syncExperienceValidations(),
+        syncExperienceValidations(),
+      ]);
+      const tests =
+        await db`select * from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`;
+      expect(
+        tests,
+        JSON.stringify(
+          await db`select status, experience_validation_plan, (experience_receipt is not null) receipt from allrice_automation_runs where id=${f.occurrence.id}`,
+        ),
+      ).toHaveLength(1);
+      expect(tests[0]!.input.prompt).toContain('complete-a');
+      const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+      expect(test.experienceCandidate?.instructions).toContain(
+        f.output.drafts[0]!.rule,
+      );
+      expect(test.previewContext.ownerId).toBe(f.user);
+      expect(
+        test.previewExecution.policySnapshot.grants.map((g) => g.action),
+      ).toEqual(['job:execute']);
+      await completePlatformEmployeeTestRun(
+        test.id,
+        await validationReceipt(test, attendanceAnswer),
+      );
+      const batches = await listExperienceDrafts(f.owner);
+      expect(batches[0]!.validations[0]).toMatchObject({
+        validationStatus: 'passed',
+        active: false,
+        outputDigest: runtimePolicyDigest(f.output),
+        assertion: { passed: true },
+      });
+      expect(await listExperienceDrafts(f.neighbor)).toEqual([]);
+      expect(await listExperienceDrafts(f.reviewer)).toEqual([]);
+      expect(
+        await searchWorkspaceMemories(f.owner, {
+          workspaceId: f.workspace,
+          query: '到场',
+        }),
+      ).toEqual([]);
+      await syncExperienceValidations();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(1);
+      const ledger =
+        await db`select l.cost_cents,l.output_tokens from allrice_model_usage_ledger l where l.route_decision_id=${test.experienceCandidate!.decision.id}`;
+      expect(ledger).toHaveLength(1);
+      expect(ledger[0]!.cost_cents).toBeNull();
+      expect(Number(ledger[0]!.output_tokens)).toBe(120);
+      await expect(
+        db`update allrice_platform_employee_test_runs set experience_binding=jsonb_set(experience_binding,'{ownerId}',to_jsonb(${f.neighbor.actor.id}::text)) where id=${test.id}`,
+      ).rejects.toThrow('immutable');
+      await expect(
+        db`update allrice_automation_runs set experience_validation_plan=null where id=${f.occurrence.id}`,
+      ).rejects.toThrow('immutable');
+    });
+    it.each(['canceled', 'lease-expired', 'terminal'] as const)(
+      'stops the exact validation worker after %s and rejects another lease',
+      async (kind) => {
+        await validationFixture();
+        await syncExperienceValidations();
+        const workerId = randomUUID(),
+          test = (await claimNextPlatformEmployeeTestRun(workerId))!;
+        const execution = {
+          runId: test.previewExecution.runId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+          workerId,
+        };
+        expect(await experienceValidationStillCurrent(test.id, execution)).toBe(
+          true,
+        );
+        expect(
+          await experienceValidationStillCurrent(test.id, {
+            ...execution,
+            leaseToken: randomUUID(),
+          }),
+        ).toBe(false);
+        if (kind === 'canceled')
+          await db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${execution.jobId}`;
+        if (kind === 'lease-expired')
+          await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${execution.jobId}`;
+        if (kind === 'terminal')
+          await completePlatformEmployeeTestRun(
+            test.id,
+            await validationReceipt(test, attendanceAnswer),
+          );
+        expect(await experienceValidationStillCurrent(test.id, execution)).toBe(
+          false,
+        );
+      },
+    );
+    it('takes the final user admission lock before waiting behind a content writer', async () => {
+      const f = await validationFixture();
+      await syncExperienceValidations();
+      let release!: () => void, ready!: (pid: number) => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const acquired = new Promise<number>((r) => {
+        ready = r;
+      });
+      const blocker = db.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${f.org}`},0))`;
+        ready((await tx`select pg_backend_pid() pid`)[0]!.pid);
+        await gate;
+      });
+      const gatePid = await acquired;
+      const claim = claimNextPlatformEmployeeTestRun(randomUUID());
+      let writerPid = 0,
+        writer: Promise<unknown> | undefined;
+      try {
+        await expect
+          .poll(
+            async () =>
+              Number(
+                (
+                  await db`select count(*) n from pg_stat_activity where ${gatePid}=any(pg_blocking_pids(pid))`
+                )[0]!.n,
+              ),
+            { timeout: 3000 },
+          )
+          .toBeGreaterThan(0);
+        const [claimProcess] =
+          await db`select pid from pg_stat_activity where ${gatePid}=any(pg_blocking_pids(pid)) and query like '%pg_advisory_xact_lock_shared%'`;
+        expect(claimProcess).toBeTruthy();
+        let writerReady!: () => void;
+        const started = new Promise<void>((r) => {
+          writerReady = r;
+        });
+        writer = db.begin(async (tx) => {
+          writerPid = (await tx`select pg_backend_pid() pid`)[0]!.pid;
+          writerReady();
+          await tx`select id from allrice_users where id=${f.user} for share`;
+          await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${f.org}`},0))`;
+        });
+        await started;
+        await expect
+          .poll(
+            async () =>
+              (
+                await db`select ${claimProcess!.pid}=any(pg_blocking_pids(${writerPid})) blocked`
+              )[0]!.blocked,
+            { timeout: 3000 },
+          )
+          .toBe(true);
+      } finally {
+        release();
+        await blocker;
+        await Promise.all([claim, writer]);
+      }
+    });
+    it('does not charge under old/off policy and records unsupported drafts without testing', async () => {
+      const old = await validationFixture(true, false);
+      await syncExperienceValidations();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${old.occurrence.id}`,
+      ).toHaveLength(0);
+      const unsupported = await validationFixture(false);
+      await syncExperienceValidations();
+      const view = (await listExperienceDrafts(unsupported.owner))[0]!;
+      expect(view.validations).toEqual([]);
+      expect(view.validationNotes[0]).toContain('暂无覆盖');
+    });
+    it.each([
+      'wrong-count',
+      'revoked',
+      'disabled',
+      'timeout',
+      'deadline',
+    ] as const)(
+      'preserves %s validation failure without approving or re-running',
+      async (kind) => {
+        const f = await validationFixture();
+        await syncExperienceValidations();
+        const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+        const answer = structuredClone(attendanceAnswer);
+        if (kind === 'wrong-count') answer.results[0]!.present!.count = 12;
+        const receipt = await validationReceipt(test, answer);
+        if (kind === 'revoked')
+          await db`update allrice_memberships set active=false where user_id=${f.user}`;
+        if (kind === 'disabled')
+          await updateExperiencePolicy(f.reviewer, f.org, {
+            expectedRevision: (await readExperiencePolicy(f.org)).revision,
+            frequency: 'daily',
+            timezone: 'Asia/Shanghai',
+            time: '03:00',
+            weekday: 1,
+            monthDay: 1,
+            validationMode: 'off',
+          });
+        if (kind === 'deadline')
+          await db`update allrice_platform_employee_test_runs set started_at=clock_timestamp()-interval '6 minutes' where id=${test.id}`;
+        if (kind === 'timeout')
+          await db`update allrice_platform_employee_test_runs set timeout_at=clock_timestamp()-interval '1 second' where id=${test.id}`;
+        await completePlatformEmployeeTestRun(test.id, receipt);
+        const [row] =
+          await db`select experience_assertion from allrice_platform_employee_test_runs where id=${test.id}`;
+        expect(row!.experience_assertion.passed).toBe(false);
+        expect(row!.experience_assertion.reason).toBe(
+          kind === 'wrong-count'
+            ? 'count_or_membership_mismatch'
+            : kind === 'timeout' || kind === 'deadline'
+              ? 'execution_failed'
+              : 'authority_changed',
+        );
+        expect(
+          await db`select id from allrice_model_usage_ledger where route_decision_id=${test.experienceCandidate!.decision.id}`,
+        ).toHaveLength(1);
+        await syncExperienceValidations();
+        expect(
+          await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+        ).toHaveLength(1);
+      },
+    );
     it('uses two producers without duplicate occurrence/jobs and rejects the browser lane', async () => {
       const f = await queued();
       const rows =

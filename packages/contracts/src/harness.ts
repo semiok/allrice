@@ -63,7 +63,7 @@ export function harnessCapabilityMatrix(
 /** A scheduled private task has its own durable identity, never a fabricated chat. */
 export const InternalHarnessTaskSchema = z
   .object({
-    kind: z.literal('experience_consolidation'),
+    kind: z.enum(['experience_consolidation', 'experience_validation']),
     occurrenceId: UuidSchema,
   })
   .strict();

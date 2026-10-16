@@ -469,7 +469,13 @@ export async function resourceStatus(
                   or exists(select 1 from allrice_automation_runs a where a.run_id=j.run_id
                     and a.organization_id=j.organization_id and a.workspace_id=j.workspace_id
                     and a.experience_occurrence->>'ownerId'=j.owner_id::text
-                    and a.experience_occurrence->>'employeeId'=${input.scopeId}))
+                    and a.experience_occurrence->>'employeeId'=${input.scopeId})
+                  or exists(select 1 from allrice_platform_employee_test_runs v where v.experience_run_id=j.run_id
+                    and v.purpose='experience_validation'
+                    and v.experience_binding->>'organizationId'=j.organization_id::text
+                    and v.experience_binding->>'workspaceId'=j.workspace_id::text
+                    and v.experience_binding->>'ownerId'=j.owner_id::text
+                    and v.experience_binding->>'employeeId'=${input.scopeId}))
                 and j.status in ('claimed', 'running', 'waiting_approval')
                 and (${input.excludingRunId ?? null}::uuid is null or j.run_id<>${input.excludingRunId ?? null})
             `

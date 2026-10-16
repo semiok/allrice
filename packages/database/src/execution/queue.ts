@@ -1598,7 +1598,8 @@ export async function claimNextJob(
       >`select pg_try_advisory_xact_lock(hashtext('experience-background-slot')) locked`;
       if (!mutex?.locked) return null;
       const [active] =
-        await transaction`select id from allrice_jobs where payload->>'type'=${experienceConsolidationJobType}
+        await transaction`select id from allrice_jobs where (payload->>'type'=${experienceConsolidationJobType}
+          or exists(select 1 from allrice_platform_employee_test_runs v where v.experience_run_id=allrice_jobs.run_id and v.purpose='experience_validation'))
         and status in ('claimed','running','waiting_approval') limit 1`;
       if (active) return null;
     }

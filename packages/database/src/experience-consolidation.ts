@@ -170,6 +170,7 @@ export async function getExperiencePolicy(
 }
 const PolicyUpdateSchema = ExperiencePolicySettingsSchema.extend({
   expectedRevision: z.number().int().positive(),
+  validationMode: z.enum(['off', 'supported_cases']).optional(),
 }).strict();
 export async function updateExperiencePolicy(
   context: RequestContext,
@@ -202,7 +203,10 @@ export async function updateExperiencePolicy(
     const policy = ExperienceCollectionPolicySchema.parse({
       ...previous,
       ...settings,
-      schemaVersion: 2,
+      schemaVersion: 3,
+      validationMode:
+        input.validationMode ??
+        (previous.schemaVersion === 3 ? previous.validationMode : 'off'),
       revision: previous.revision + 1,
     });
     await tx`insert into allrice_settings(scope_type,scope_id,key,value)
@@ -510,6 +514,37 @@ async function assertCurrent(
   }
 }
 
+/** Fixed-draft validation does not rewrite the original collection policy or
+ * receipt. Recheck original sources and rule dependencies under their locks. */
+export async function readExperienceValidationSource(tx: Tx, id: string) {
+  const { row, occurrence } = await loadOccurrence(tx, id);
+  await assertCurrent(tx, occurrence, false);
+  const current = await resolveEmployeeSessionInstance(
+    identity(occurrence),
+    occurrence.assignmentId,
+    occurrence.instanceId,
+    tx,
+  );
+  if (
+    stableInstance(current) !== occurrence.instanceDigest ||
+    runtimePolicyDigest(await currentRules(tx, occurrence, current)) !==
+      runtimePolicyDigest(occurrence.currentRules) ||
+    row.status !== 'succeeded' ||
+    !row.experience_receipt
+  )
+    return deny();
+  const receipt = ExperienceReceiptSchema.parse(row.experience_receipt);
+  const execution = ExperienceExecutionSchema.parse(row.experience_execution);
+  if (
+    receipt.runId !== row.run_id ||
+    receipt.occurrenceDigest !== runtimePolicyDigest(occurrence) ||
+    receipt.executionDigest !== runtimePolicyDigest(execution) ||
+    receipt.outputDigest !== runtimePolicyDigest(receipt.output)
+  )
+    return deny();
+  return { occurrence, receipt, execution };
+}
+
 export async function experienceOccurrencePrincipal(
   id: string,
 ): Promise<ResourcePrincipal> {
@@ -736,7 +771,7 @@ export async function listExperienceDrafts(
     )
       throw new ExperienceError('identity_denied');
     const rows =
-      await tx`select r.id,r.run_id,r.status,r.created_at,r.error_code,r.experience_occurrence,r.experience_receipt
+      await tx`select r.id,r.run_id,r.status,r.created_at,r.error_code,r.experience_occurrence,r.experience_receipt,r.experience_validation_plan
       from allrice_automation_runs r join allrice_automations a on a.id=r.automation_id
       where r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and a.owner_id=${context.actor.id}
         and r.experience_occurrence is not null and (${instanceId ?? null}::uuid is null or r.experience_occurrence->>'instanceId'=${instanceId ?? null})
@@ -761,6 +796,8 @@ export async function listExperienceDrafts(
       const receipt = row.experience_receipt
         ? ExperienceReceiptSchema.parse(row.experience_receipt)
         : null;
+      const { listExperienceValidationViews } =
+        await import('./experience-validation.ts');
       result.push({
         id: row.id,
         runId: row.run_id,
@@ -773,6 +810,12 @@ export async function listExperienceDrafts(
         digest: receipt?.outputDigest ?? null,
         sourceIds: occurrence.sources.map((s) => s.id),
         drafts: receipt?.output.drafts ?? [],
+        validations: await listExperienceValidationViews(tx, occurrence.id),
+        validationNotes: Array.isArray(row.experience_validation_plan)
+          ? row.experience_validation_plan
+              .filter((p: { reason?: string }) => p.reason)
+              .map((p: { reason: string }) => p.reason)
+          : [],
       });
     }
     return result;

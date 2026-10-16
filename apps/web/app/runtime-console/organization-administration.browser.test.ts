@@ -238,7 +238,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     if (fixture) await fixture.close();
   }, 30000);
 
-  it('saves the company consolidation schedule through the real admin API and reloads the exact revision', async () => {
+  it('saves the company schedule and validation opt-in through the real admin API and reloads the exact revision', async () => {
     const admin = (await authenticateSession(adminToken))!;
     const company = await createManagedOrganization(admin, {
       name: '经验整理设置测试',
@@ -284,12 +284,18 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         .selectOption('monthly');
       await page.getByLabel('每月日期', { exact: true }).fill('31');
       await page.getByLabel('整理时间', { exact: true }).fill('04:15');
+      const validation = page.getByRole('checkbox', {
+        name: '自动专项验证',
+        exact: true,
+      });
+      expect(await validation.isChecked()).toBe(false);
+      await validation.check();
       await page
         .getByRole('button', { name: '保存整理设置', exact: true })
         .click();
       await page
         .getByRole('status')
-        .filter({ hasText: '已保存。从下一个整理周期' })
+        .filter({ hasText: '已保存。整理按下一周期执行' })
         .waitFor();
       await page.reload();
       await page
@@ -305,12 +311,14 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       expect(
         await page.getByLabel('整理时间', { exact: true }).inputValue(),
       ).toBe('04:15');
+      expect(await validation.isChecked()).toBe(true);
       const [saved] =
         await fixture.db`select value from allrice_settings where scope_type='organization' and scope_id=${company.organizationId} and key='employee_experience_policy'`;
       expect(saved!.value).toMatchObject({
-        schemaVersion: 2,
+        schemaVersion: 3,
         revision: 2,
         frequency: 'monthly',
+        validationMode: 'supported_cases',
         monthDay: 31,
         time: '04:15',
       });
