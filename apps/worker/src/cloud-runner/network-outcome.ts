@@ -19,7 +19,6 @@ export function unconfirmedCloudNetworkOutcome(
   )
     return false;
   return (
-    !('kind' in payload) &&
     payload.network !== 'none' &&
     outcome.reason !== 'completed' &&
     (!outcome.network || outcome.network.sentBytes > 0)

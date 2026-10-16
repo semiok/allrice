@@ -312,7 +312,7 @@ export function CloudOperationCard({
   const failure = operationFailure(op);
   const stopping = cancelPending || op.snapshot.status === 'cancel_requested';
   const networkFailure =
-    proposal.kind === 'cloud' &&
+    proposal.kind !== 'mcp' &&
     proposal.network &&
     ['failed', 'unknown', 'canceled'].includes(op.snapshot.status)
       ? sandboxNetworkErrorMessage(op.result?.code)
@@ -426,7 +426,7 @@ export function CloudOperationCard({
             : '未收到完整的执行回执。'}
           {proposal.kind === 'mcp'
             ? '第三方服务可能已经产生影响，请先核实服务记录；不会自动重放此调用。'
-            : proposal.kind === 'cloud' && proposal.network
+            : proposal.network
               ? '已发出的外部请求可能已经生效，请先核实原操作和外部服务记录；不会自动重跑任务。'
               : '云端需等待实际停止和结果回执；不会自动重跑任务。'}
         </p>
@@ -560,6 +560,23 @@ export function CloudOperationCard({
       resultSection,
     ];
   } else {
+    const networkScope = proposal.network && (
+      <div className={styles.detailScope} aria-label="获准访问的外部服务">
+        <strong>外部服务</strong>
+        <ul>
+          {proposal.network.origins.map((origin) => (
+            <li key={origin}>{origin}</li>
+          ))}
+        </ul>
+        <p>
+          {proposal.kind === 'project'
+            ? '本次项目副本中的源码和文件可发送至以上服务。'
+            : proposal.inputs.length
+              ? '本次输入文件可发送至以上服务。'
+              : '本次未提供输入文件。'}
+        </p>
+      </div>
+    );
     const runtime =
       proposal.kind === 'project'
         ? proposal.preparation.manager === 'uv'
@@ -581,12 +598,16 @@ export function CloudOperationCard({
                 <DetailFields
                   rows={[
                     ['运行环境', runtime],
-                    ['执行位置', '云端 · 不联网'],
+                    [
+                      '执行位置',
+                      proposal.network ? '云端 · 按授权联网' : '云端 · 不联网',
+                    ],
                     ['执行程序', proposal.executable],
                     ['工作目录', proposal.path],
                   ]}
                 />
                 <p>执行本次保存的项目副本，不访问你的电脑。</p>
+                {networkScope}
                 <RawDetail title="查看完整命令" open={!!pending}>
                   <pre aria-label="云端项目命令">
                     {JSON.stringify(
@@ -625,24 +646,7 @@ export function CloudOperationCard({
                     ],
                   ]}
                 />
-                {proposal.network && (
-                  <div
-                    className={styles.detailScope}
-                    aria-label="获准访问的外部服务"
-                  >
-                    <strong>外部服务</strong>
-                    <ul>
-                      {proposal.network.origins.map((origin) => (
-                        <li key={origin}>{origin}</li>
-                      ))}
-                    </ul>
-                    <p>
-                      {proposal.inputs.length
-                        ? '本次输入文件可发送至以上服务。'
-                        : '本次未提供输入文件。'}
-                    </p>
-                  </div>
-                )}
+                {networkScope}
                 {proposal.dependencyResolution && (
                   <ul aria-label="请求的依赖版本">
                     {proposal.dependencyResolution.packages.map((p) => (
@@ -724,25 +728,46 @@ export function CloudOperationCard({
         key: 'limits',
         label: '限制',
         title: '运行限制',
-        value: `${limits.timeoutMs / 1000} 秒 · ${limits.memoryMiB} MiB`,
+        value: `${proposal.executionBudget ? `最多 ${proposal.executionBudget.policy.maxExecutionMs / 60000} 分钟` : `${limits.timeoutMs / 1000} 秒`} · ${limits.memoryMiB} MiB`,
         content: (
-          <DetailFields
-            rows={[
-              ['时限', `${limits.timeoutMs / 1000} 秒`],
-              ['内存', `${limits.memoryMiB} MiB`],
-              ['CPU', `${limits.cpuMillis} 毫核`],
-              ['进程数上限', limits.pids],
-              ['输出上限', `${limits.outputBytes} 字节`],
-              ...('artifactBytes' in limits
-                ? [
-                    ['成果上限', `${limits.artifactBytes} 字节`] as [
+          <>
+            <DetailFields
+              rows={[
+                ...(proposal.executionBudget
+                  ? ([
+                      [
+                        '起始时限',
+                        `${proposal.executionBudget.initialBudgetMs / 1000} 秒`,
+                      ],
+                      [
+                        '累计上限',
+                        `${proposal.executionBudget.policy.maxExecutionMs / 60000} 分钟`,
+                      ],
+                    ] as [string, ReactNode][])
+                  : ([['时限', `${limits.timeoutMs / 1000} 秒`]] as [
                       string,
                       ReactNode,
-                    ],
-                  ]
-                : []),
-            ]}
-          />
+                    ][])),
+                ['内存', `${limits.memoryMiB} MiB`],
+                ['CPU', `${limits.cpuMillis} 毫核`],
+                ['进程数上限', limits.pids],
+                ['输出上限', `${limits.outputBytes} 字节`],
+                ...('artifactBytes' in limits
+                  ? [
+                      ['成果上限', `${limits.artifactBytes} 字节`] as [
+                        string,
+                        ReactNode,
+                      ],
+                    ]
+                  : []),
+              ]}
+            />
+            {proposal.executionBudget && (
+              <p>
+                准备、安装和执行共用同一时限；有实际进展时可自动续时，任务剩余时间不足时会提前停止。
+              </p>
+            )}
+          </>
         ),
       },
       resultSection,
@@ -810,11 +835,7 @@ export function CloudOperationCard({
                     } 个输入文件`}
               </span>
               <span className={styles.cloudLocation}>仅在云端执行</span>
-              <span>
-                {proposal.kind === 'cloud' && proposal.network
-                  ? '按授权联网'
-                  : '不联网'}
-              </span>
+              <span>{proposal.network ? '按授权联网' : '不联网'}</span>
             </>
           )}
         </p>

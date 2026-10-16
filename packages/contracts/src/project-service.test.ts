@@ -4,7 +4,13 @@ import {
   CloudProjectCommandSchema,
   ProjectServiceStartInputSchema,
   CloudProjectRunResultSchema,
+  ProjectExecuteInputSchema,
+  cloudProjectResultMatchesPayload,
 } from './project-execution.ts';
+import {
+  sandboxExecutionBudgetSpec,
+  resolveSandboxExecutionPolicy,
+} from './runtime-v2/sandbox-execution.ts';
 import { ProjectServiceConfigSchema } from './project-service.ts';
 import { RuntimeLocalServiceConfigSchema } from './runtime-v2/local-service.ts';
 import {
@@ -209,5 +215,144 @@ describe('explicit project readiness budget across public, tool and backend cont
         projectService: undefined,
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('finite saved-project network and execution contracts', () => {
+  const network = {
+    mode: 'controlled_https' as const,
+    origins: ['https://registry.npmjs.org'],
+  };
+  const execution = { version: 1 as const, kind: 'build' as const };
+  function finite() {
+    const old = inputs(undefined, 30000);
+    const publicArgs = { ...old.public, service: undefined };
+    delete publicArgs.service;
+    const args = { ...old.cloud.arguments, background: undefined };
+    delete args.background;
+    return {
+      public: { ...publicArgs, action: 'execute' as const },
+      cloud: { ...old.cloud, arguments: args },
+    };
+  }
+  it('preserves omitted old fields and validates the exact matching opt-in copies', () => {
+    const f = finite();
+    const original = ProjectExecuteInputSchema.parse(f.public);
+    expect(original).not.toHaveProperty('execution');
+    expect(original).not.toHaveProperty('network');
+    expect(CloudProjectCommandSchema.parse(f.cloud)).not.toHaveProperty(
+      'executionBudget',
+    );
+    const executionBudget = sandboxExecutionBudgetSpec(
+      execution,
+      resolveSandboxExecutionPolicy([]),
+    );
+    const command = {
+      ...f.cloud,
+      network,
+      executionBudget,
+      arguments: { ...f.cloud.arguments, network, execution },
+    };
+    expect(
+      ProjectExecuteInputSchema.safeParse({ ...f.public, network, execution })
+        .success,
+    ).toBe(true);
+    expect(CloudProjectCommandSchema.safeParse(command).success).toBe(true);
+    for (const changed of [
+      { ...command, network: 'none' },
+      { ...command, executionBudget: undefined },
+      { ...command, arguments: { ...command.arguments, execution: undefined } },
+      {
+        ...command,
+        arguments: {
+          ...command.arguments,
+          execution: { ...execution, kind: 'install' },
+        },
+      },
+      {
+        ...command,
+        arguments: {
+          ...command.arguments,
+          network: { ...network, origins: ['https://example.com'] },
+        },
+      },
+    ])
+      expect(CloudProjectCommandSchema.safeParse(changed).success).toBe(false);
+    expect(
+      ProjectExecuteInputSchema.safeParse({
+        ...f.public,
+        execution: { ...execution, maxExecutionMs: 3600000 },
+      }).success,
+    ).toBe(false);
+  });
+  it('does not widen background service or old Bridge commands with a foreground grant', () => {
+    const f = inputs(undefined, 30000);
+    for (const opt of [{ network }, { execution }]) {
+      expect(
+        ProjectServiceStartInputSchema.safeParse({ ...f.public, ...opt })
+          .success,
+      ).toBe(false);
+      expect(
+        CloudProjectCommandSchema.safeParse({
+          ...f.cloud,
+          ...(opt.network ? { network } : {}),
+          ...(opt.execution
+            ? {
+                executionBudget: sandboxExecutionBudgetSpec(
+                  execution,
+                  resolveSandboxExecutionPolicy([]),
+                ),
+              }
+            : {}),
+          arguments: { ...f.cloud.arguments, ...opt },
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      RuntimeLocalCommandSchema.safeParse({
+        ...f.local,
+        arguments: { ...f.local.arguments, network },
+      }).success,
+    ).toBe(false);
+  });
+  it('requires trusted budget and network observations on a successful project result', () => {
+    const f = finite();
+    const command = CloudProjectCommandSchema.parse({
+      ...f.cloud,
+      network,
+      executionBudget: sandboxExecutionBudgetSpec(
+        execution,
+        resolveSandboxExecutionPolicy([]),
+      ),
+      arguments: { ...f.cloud.arguments, network, execution },
+    });
+    const result = CloudProjectRunResultSchema.parse({
+      containerId: 'a'.repeat(64),
+      exitCode: 0,
+      stopped: true,
+      reason: 'completed',
+      output: '',
+      artifacts: [],
+      elapsedMs: 10,
+      imageDigest: cloudToolchainImageV1,
+    });
+    expect(cloudProjectResultMatchesPayload(command, result)).toBe(false);
+    for (const observations of [
+      { network: { sentBytes: -1, receivedBytes: 0, openedConnections: 0 } },
+      {
+        executionBudget: {
+          startedAt: 100,
+          deadlineAt: 90,
+          hardDeadlineAt: 1000,
+          initialBudgetMs: 120000,
+          maxExecutionMs: 600000,
+          renewalCount: 0,
+        },
+      },
+    ])
+      expect(
+        CloudProjectRunResultSchema.safeParse({ ...result, ...observations })
+          .success,
+      ).toBe(false);
   });
 });

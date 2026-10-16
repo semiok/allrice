@@ -97,6 +97,8 @@ export async function openSandboxNetwork(
     containerId: string;
     signal: AbortSignal;
     assertContainer: () => Promise<void>;
+    /** Fixed supervisor opens the root-owned gate only after offline install. */
+    projectRuntime?: true;
   },
 ) {
   if (!/^[a-f0-9]{64}$/.test(input.containerId))
@@ -124,6 +126,7 @@ export async function openSandboxNetwork(
         sandboxNetworkRelay,
         String(sandboxProxyPort),
         String(Date.parse(input.lease.expiresAt)),
+        ...(input.projectRuntime ? ['project-runtime-v1'] : []),
       ],
     },
     3000,

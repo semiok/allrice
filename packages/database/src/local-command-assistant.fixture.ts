@@ -27,9 +27,13 @@ export async function createAssistantLocalCommandFixture(
     skipChild?: boolean;
     projectWorkspace?: boolean;
     projectCloud?: boolean;
+    snapshot?: NonNullable<
+      Parameters<typeof createAssistantAuthorityFixture>[1]
+    >['snapshot'];
   } = {},
 ) {
   const f = await createAssistantAuthorityFixture(database, {
+    snapshot: options.snapshot,
     project,
     ...(options.projectWorkspace ? { memberRole: 'member' as const } : {}),
     nativeSessionId: options.nativeSessionId,

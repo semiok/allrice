@@ -1,11 +1,13 @@
 import { projectServiceSupervisor } from './project-service-supervisor.js';
+import { sandboxProxyEnvironment } from './sandbox-network-docker.js';
 import {
   nodeProjectArchiveAssembly,
   pythonProjectArchiveAssembly,
 } from './project-archive-assembly.js';
 /** Project code and package scripts run below the immutable PID 1 supervisor.
  * Manager archives are release-pinned; all dependency archives were hash checked
- * outside this container. Neither install nor project code has a network.
+ * outside this container. Installers stay offline. Only explicitly admitted
+ * runtime networking receives the fixed, authority-bound loopback proxy.
  */
 export const nodeProjectSupervisor = String.raw`
 import { spawn } from 'node:child_process';
@@ -60,9 +62,9 @@ async function finalCacheCheck(){
 }
 const cacheTimer=setInterval(()=>{if(cacheChecking||finished)return;void boundedCacheCheck().catch(e=>{emit({type:'stderr',data:Buffer.from('Project cache validation failed: '+String(e?.code||e?.message||'unknown').slice(0,160)).toString('base64')});end('cache_limit',123);});},500);cacheTimer.unref();
 const timer=setTimeout(()=>end(a.deadlineReason||'timeout',124),Math.max(0,a.deadlineUnixMs-Date.now()));
-const run=(exe,args,tenant=true,live=false)=>new Promise(resolve=>{
+const run=(exe,args,tenant=true,live=false,runtime=false)=>new Promise(resolve=>{
  const p=spawn(exe,args,{cwd:root+'/project/'+(a.command.path==='.'?'':a.command.path),uid:tenant?1000:0,gid:tenant?1000:0,stdio:['ignore','pipe','pipe'],
- env:{PATH:root+'/tools/package/bin:/usr/local/bin:/usr/bin:/bin',HOME:root+'/home',TMPDIR:root+'/tmp',LANG:'C.UTF-8',CI:'1',
+ env:{...(runtime&&a.runtimeNetwork===true?${JSON.stringify(sandboxProxyEnvironment)}:{}),PATH:root+'/tools/package/bin:/usr/local/bin:/usr/bin:/bin',HOME:root+'/home',TMPDIR:root+'/tmp',LANG:'C.UTF-8',CI:'1',
  npm_config_userconfig:root+'/.allrice/empty.conf',npm_config_globalconfig:root+'/.allrice/empty.conf',npm_config_update_notifier:'false',COREPACK_ENABLE_NETWORK:'0',PNPM_HOME:root+'/home/pnpm',
  ...(live?{ALLRICE_SERVICE_PREVIEW_HOST:process.env.ALLRICE_SERVICE_PREVIEW_HOST?.split(':')[0],__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS:process.env.ALLRICE_SERVICE_PREVIEW_HOST?.split(':')[0]}:{})}});
  for(const s of ['stdout','stderr'])p[s].on('data',b=>{const keep=b.subarray(0,Math.max(0,a.command.limits.outputBytes-size));size+=b.length;if(keep.length&&frames++<254)emit({type:s,data:keep.toString('base64')});if(size>a.command.limits.outputBytes||frames>=254)end('output_limit',122);});
@@ -111,7 +113,7 @@ try{
  // Restore with tenant privileges, never as root after lifecycle scripts.
  const restored=await run('/usr/local/bin/node',['-e',"const fs=require('node:fs'),crypto=require('node:crypto');const b=fs.readFileSync('/tmp/work/.allrice/pnpm-original-lock');const h=fs.openSync('pnpm-lock.yaml',fs.constants.O_WRONLY|fs.constants.O_TRUNC|fs.constants.O_NOFOLLOW);try{fs.writeFileSync(h,b);}finally{fs.closeSync(h);}if('sha256:'+crypto.createHash('sha256').update(fs.readFileSync('pnpm-lock.yaml')).digest('hex')!=="+JSON.stringify(s.lockChecksum)+")process.exit(125);"]);
  if(installed||restored){clearTimeout(timer);end(restored?'supervisor_failed':'exited',restored||installed);}
- if(!finished){await finalCacheCheck();installation='succeeded';emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args,true,!!service);await finalCacheCheck();if(c===0&&!finished)await collect();clearTimeout(timer);end('exited',c);}
+ if(!finished){await finalCacheCheck();installation='succeeded';if(a.runtimeNetwork===true)await writeFile(root+'/.allrice/network-runtime-ready','ready',{flag:'wx',mode:0o444});emit({type:'stage',stage:'running'});const c=await run(a.command.executable,a.command.args,true,!!service,true);await finalCacheCheck();if(c===0&&!finished)await collect();clearTimeout(timer);end('exited',c);}
 }catch(e){emit({type:'stderr',data:Buffer.from(String(e?.message||'project failure').slice(0,200)).toString('base64')});clearTimeout(timer);end(e?.message==='cache limit'?'cache_limit':'supervisor_failed',e?.message==='cache limit'?123:125);}
 `;
 
@@ -169,9 +171,10 @@ def own(path):
             p=current+'/'+name;os.chown(p,1000,1000);os.chmod(p,0o700 if os.path.isdir(p) else 0o600)
 env=dict(PATH='/opt/python/bin:/usr/bin:/bin',HOME=ROOT+'/home',TMPDIR=ROOT+'/tmp',LANG='C.UTF-8',CI='1',
     UV_CACHE_DIR='/cache/uv',UV_PYTHON_DOWNLOADS='never',UV_NO_CONFIG='true',UV_OFFLINE='true',PYTHONDONTWRITEBYTECODE='1')
-def run(exe,args,tenant=True):
+def run(exe,args,tenant=True,runtime=False):
     global size,frames
-    p=subprocess.Popen([exe]+args,cwd=ROOT+'/project/'+('' if command['path']=='.' else command['path']),env=env,stdin=subprocess.DEVNULL,
+    runtime_env={**env,**${JSON.stringify(sandboxProxyEnvironment)}} if runtime and a.get('runtimeNetwork') is True else env
+    p=subprocess.Popen([exe]+args,cwd=ROOT+'/project/'+('' if command['path']=='.' else command['path']),env=runtime_env,stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,preexec_fn=demote if tenant else None)
     selector=selectors.DefaultSelector()
     for stream,name in [(p.stdout,'stdout'),(p.stderr,'stderr')]:os.set_blocking(stream.fileno(),False);selector.register(stream,selectors.EVENT_READ,name)
@@ -212,8 +215,13 @@ try:
     ]:
         c=run(uv,args)
         if c:end('exited',c)
-    installation='succeeded';emit(dict(type='stage',stage='running'))
-    c=run(ROOT+'/project/'+('' if command['path']=='.' else command['path']+'/')+'.venv/bin/python',command['args'])
+    installation='succeeded'
+    if a.get('runtimeNetwork') is True:
+        ready=os.open(ROOT+'/.allrice/network-runtime-ready',os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o444)
+        try:os.write(ready,b'ready')
+        finally:os.close(ready)
+    emit(dict(type='stage',stage='running'))
+    c=run(ROOT+'/project/'+('' if command['path']=='.' else command['path']+'/')+'.venv/bin/python',command['args'],runtime=True)
     if c==0:collect()
     end('exited',c)
 except Exception as e:

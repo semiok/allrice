@@ -16,6 +16,7 @@ import {
   sandboxExecutionBudgetSpec,
   EmployeeMethodFileStepSchema,
   CloudCommandSchema,
+  CloudExecutionPayloadSchema,
   CloudProjectCommandSchema,
   CloudProjectRunResultSchema,
   ProjectRunnableInputSchema,
@@ -247,6 +248,8 @@ export function createCloudOperationLedger(
         exitCode?: unknown;
         serviceStopReason?: unknown;
         artifacts?: unknown;
+        network?: unknown;
+        executionBudget?: unknown;
       } | null;
       const success =
         receipt.signal.type === 'operation.outcome' &&
@@ -284,6 +287,11 @@ export function createCloudOperationLedger(
         evidence?.reason !== result.data.reason ||
         evidence?.exitCode !== result.data.exitCode ||
         evidence?.serviceStopReason !== result.data.serviceStopReason ||
+        !runtimeContractEqual(evidence?.network, result.data.network) ||
+        !runtimeContractEqual(
+          evidence?.executionBudget,
+          result.data.executionBudget,
+        ) ||
         (success &&
           (result.data.reason !== 'completed' || result.data.exitCode !== 0))
       )
@@ -305,7 +313,7 @@ export function createCloudOperationLedger(
     resolveSandboxExecutionBudget: async ({ transaction, binding }) => {
       const [stored] =
         await transaction`select payload from allrice_cloud_execution_inputs where operation_id=${binding.attempt.operationId}`;
-      const payload = CloudCommandSchema.parse(stored?.payload);
+      const payload = CloudExecutionPayloadSchema.parse(stored?.payload);
       if (!payload.executionBudget)
         throw new RuntimePolicyError('sandbox_execution_not_enabled');
       return payload.executionBudget;
@@ -437,6 +445,7 @@ export async function createCloudProjectOperation(
           session_id: string;
           employee_version_id: string;
           execution_spec: unknown;
+          execution_snapshot: { sandboxExecutionPolicy?: unknown };
           policy_snapshot_id: string;
           payload: unknown;
           thread_generation: number;
@@ -444,7 +453,7 @@ export async function createCloudProjectOperation(
           lease_token: string;
         }[]
       >`
-      select e.session_id,e.employee_version_id,r.execution_spec,r.policy_snapshot_id,p.payload,c.thread_generation,j.timeout_at,j.lease_token::text
+      select e.session_id,e.employee_version_id,e.execution_snapshot,r.execution_spec,r.policy_snapshot_id,p.payload,c.thread_generation,j.timeout_at,j.lease_token::text
       from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
       join allrice_jobs j on j.id=${ctx.jobId} and j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
       join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
@@ -455,6 +464,16 @@ export async function createCloudProjectOperation(
         and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null for share of j,r,e,c,p`;
       if (!run || run.session_id !== selected.sessionId)
         throw new RuntimePolicyError('cloud_worker_lease_changed');
+      if (args.action === 'execute' && args.execution) {
+        if (process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1')
+          throw new RuntimePolicyError('sandbox_execution_not_enabled');
+        if (
+          !SandboxExecutionPolicySchema.safeParse(
+            run.execution_snapshot?.sandboxExecutionPolicy,
+          ).success
+        )
+          throw new RuntimePolicyError('sandbox_execution_upgrade_required');
+      }
       const [grant] = await tx<
         { id: string; version: number; target_id: string; profile: unknown }[]
       >`
@@ -526,6 +545,12 @@ export async function createCloudProjectOperation(
       });
       const commandArgs = {
         executable: args.executable,
+        ...(args.action === 'execute' && args.network
+          ? { network: args.network }
+          : {}),
+        ...(args.action === 'execute' && args.execution
+          ? { execution: args.execution }
+          : {}),
         args: args.args,
         path: args.path,
         projectPreparation: args.projectPreparation,
@@ -567,7 +592,17 @@ export async function createCloudProjectOperation(
         imageDigest,
         backend: profile.backend,
         runtime: profile.runtime,
-        network: 'none',
+        network: args.action === 'execute' ? (args.network ?? 'none') : 'none',
+        ...(args.action === 'execute' && args.execution
+          ? {
+              executionBudget: sandboxExecutionBudgetSpec(
+                args.execution,
+                SandboxExecutionPolicySchema.parse(
+                  run.execution_snapshot?.sandboxExecutionPolicy,
+                ),
+              ),
+            }
+          : {}),
       });
       // Canonical origin is checked again under ledger locks, not only at this preparation read.
       return { run, grant, profile, payload };
@@ -819,17 +854,11 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
     inputDigest: digest(payload),
     command: cloudCommandBinding(payload, repositoryProof),
     baseline: content,
-    dataScope: cloudInputTransferScopes(
-      content,
-      operationId,
-      'kind' in payload
-        ? undefined
-        : {
-            command: payload,
-            grantId: grant.id,
-            grantVersion: grant.version,
-          },
-    ),
+    dataScope: cloudInputTransferScopes(content, operationId, {
+      command: payload,
+      grantId: grant.id,
+      grantVersion: grant.version,
+    }),
   });
   await database`insert into allrice_cloud_execution_inputs(operation_id,organization_id,workspace_id,owner_id,run_id,grant_id,job_id,worker_id,job_lease_token,binding,payload,original_arguments) values(${operationId},${ctx.organizationId},${ctx.workspaceId},${owner},${ctx.runId},${grant.id},${ctx.jobId},${ctx.worker.id},${run.lease_token},${database.json(binding)},${database.json(payload)},${originalArguments ? database.json(originalArguments as Parameters<Database['json']>[0]) : null}) on conflict do nothing`;
   const [stored] = await database<
@@ -888,7 +917,7 @@ async function finishCloudOperation<P extends CloudExecutionPayload>({
           : b.metric === 'wall_time'
             ? isCompiledRepositoryExecution(repositoryProof)
               ? repositoryProof.timeoutMs
-              : !('kind' in payload) && payload.executionBudget
+              : payload.executionBudget
                 ? payload.executionBudget.policy.maxExecutionMs
                 : payload.arguments.limits.timeoutMs
             : b.metric === 'output_bytes'
