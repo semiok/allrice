@@ -26,6 +26,7 @@ const record = (value: unknown): Record<string, unknown> =>
     : {};
 type Tx = TransactionSql;
 type Source = {
+  capture_run_id: string;
   run_id: string;
   organization_id: string;
   workspace_id: string;
@@ -34,6 +35,7 @@ type Source = {
   employee_assignment_id: string;
   employee_version_id: string;
   user_message_id: string;
+  execution_user_message_id: string;
   execution_snapshot: unknown;
   completed_at: Date;
 };
@@ -103,6 +105,7 @@ async function evidenceFor(
     where organization_id=${s.organization_id} and workspace_id=${s.workspace_id}
       and owner_id=${s.owner_id} and session_id=${s.session_id} and run_id<>${s.run_id}
       and completed_at<=${messageCreatedAt} and status in ('succeeded','failed','canceled')
+      and error_code is distinct from 'STEER_CONSUMED'
       and not method_authoring order by completed_at desc,run_id desc limit 1`;
   const runs = [s, ...previous],
     ids = runs.map((r) => r.run_id);
@@ -141,7 +144,7 @@ async function evidenceFor(
   >`
     select a.message_id,o.id object_id,o.checksum from allrice_message_attachments a
     join allrice_storage_objects o on o.id=a.object_id and o.organization_id=a.organization_id and o.workspace_id=a.workspace_id
-    where a.message_id in ${tx(runs.map((r) => r.user_message_id))}
+    where a.message_id in ${tx([...new Set([s.execution_user_message_id, ...runs.map((r) => r.user_message_id)])])}
       and a.organization_id=${s.organization_id} and a.workspace_id=${s.workspace_id}
       and a.attached_by=${s.owner_id} and o.owner_id=${s.owner_id} and o.state='ready' and o.deleted_at is null
     order by a.created_at,a.object_id limit 33 for share of o`;
@@ -198,12 +201,12 @@ async function capture(tx: Tx, s: Source) {
   await tx`set local lock_timeout='100ms'`;
   await tx`set local statement_timeout='2000ms'`;
   const [claim] = await tx<{ locked: boolean }[]>`
-    select pg_try_advisory_xact_lock(hashtextextended(${s.run_id},183)) locked`;
+    select pg_try_advisory_xact_lock(hashtextextended(${s.capture_run_id},183)) locked`;
   if (!claim?.locked) return 'busy' as const;
   const finish = async (state: 'captured' | 'ignored', reason: string) => {
     await tx`update allrice_employee_runs set experience_capture_state=${state},
       experience_capture_reason=${reason},experience_captured_at=clock_timestamp()
-      where run_id=${s.run_id} and experience_capture_state='pending'`;
+      where run_id=${s.capture_run_id} and experience_capture_state='pending'`;
     return state;
   };
   const policies = await tx<{ scope_type: string; value: unknown }[]>`
@@ -247,15 +250,29 @@ async function capture(tx: Tx, s: Source) {
     { text: string; created_at: Date; employee_id: string }[]
   >`
     select m.content->>'text' text,m.created_at,a.employee_id from allrice_employee_runs er
-    join allrice_chat_sessions cs on cs.id=er.session_id and cs.organization_id=er.organization_id and cs.workspace_id=er.workspace_id
-    join allrice_employee_assignments a on a.id=er.employee_assignment_id and a.organization_id=er.organization_id and a.workspace_id=er.workspace_id
+    join allrice_employee_runs actual on actual.run_id=coalesce(er.experience_execution_run_id,er.run_id)
+      and actual.organization_id=er.organization_id and actual.workspace_id=er.workspace_id
+      and actual.owner_id=er.owner_id and actual.session_id=er.session_id
+      and actual.employee_assignment_id=er.employee_assignment_id
+    join allrice_chat_sessions cs on cs.id=actual.session_id and cs.organization_id=actual.organization_id and cs.workspace_id=actual.workspace_id
+    join allrice_employee_assignments a on a.id=actual.employee_assignment_id and a.organization_id=actual.organization_id and a.workspace_id=actual.workspace_id
     join allrice_messages m on m.id=er.user_message_id and m.session_id=er.session_id and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id
-    where er.run_id=${s.run_id} and er.experience_capture_state='pending' and not er.method_authoring
+    where er.run_id=${s.capture_run_id} and actual.run_id=${s.run_id}
+      and er.experience_capture_state='pending' and not er.method_authoring and not actual.method_authoring
       and er.status in ('succeeded','failed','canceled') and er.completed_at is not null
+      and actual.status in ('succeeded','failed','canceled') and actual.completed_at is not null
+      and (er.experience_execution_run_id is null or exists(
+        select 1 from allrice_conversation_commands c where c.followup_run_id=er.run_id
+          and c.organization_id=er.organization_id and c.workspace_id=er.workspace_id and c.session_id=er.session_id
+          and c.owner_id=er.owner_id and c.client_user_message_id=m.client_message_id
+          and c.state='consumed' and c.input_kind='steer_current'
+          and c.native_proof->>'status'='adopted' and c.native_proof->>'inputId'=c.client_user_message_id::text
+          and c.native_proof->>'turnId'=c.expected_turn_id))
       and cs.archived_at is null and cs.owner_id=${s.owner_id} and m.owner_id=${s.owner_id}
       and coalesce(cs.employee_instance_id,cs.employee_assignment_id)=${snapshot.data.id}
+      and er.execution_snapshot->'instance'->>'id'=${snapshot.data.id}
       and m.role='user' and m.status='completed' and m.created_at>=${policy.data.collectionStartedAt}::timestamptz
-    for update of er for share of cs,m`;
+    for update of er for share of actual,cs,m`;
   if (!origin) return finish('ignored', 'source_ineligible');
   const kind = classifyExperienceFeedback(origin.text ?? '');
   if (!kind) return finish('ignored', 'not_direct_feedback');
@@ -339,10 +356,14 @@ export async function collectPendingExperienceEvidence(
   const sql = options.database ?? getDatabase();
   const pending = await sql<
     Source[]
-  >`select run_id,organization_id,workspace_id,owner_id,session_id,
-    employee_assignment_id,employee_version_id,user_message_id,execution_snapshot,completed_at
-    from allrice_employee_runs where experience_capture_state='pending'
-    order by completed_at,run_id limit ${Math.max(1, Math.min(options.limit ?? 4, 16))}`;
+  >`select source.run_id capture_run_id,actual.run_id,actual.organization_id,actual.workspace_id,
+    actual.owner_id,actual.session_id,actual.employee_assignment_id,actual.employee_version_id,
+    source.user_message_id,actual.user_message_id execution_user_message_id,actual.execution_snapshot,actual.completed_at
+    from allrice_employee_runs source
+    join allrice_employee_runs actual on actual.run_id=coalesce(source.experience_execution_run_id,source.run_id)
+    where source.experience_capture_state='pending'
+      and actual.status in ('succeeded','failed','canceled') and actual.completed_at is not null
+    order by actual.completed_at,source.run_id limit ${Math.max(1, Math.min(options.limit ?? 4, 16))}`;
   for (const row of pending) {
     try {
       const result = await sql.begin((tx) => capture(tx, row));

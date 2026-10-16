@@ -19,13 +19,13 @@ export function classifyExperienceFeedback(
     /(?:以后|今后|长期|永久|默认|从现在起|记住|保存为|仅本次|只[在对]?这次|这次就|暂时|临时|from now on|by default|remember|this time only)/iu.test(
       text,
     ) ||
-    /(?:不要|不用|不必|无需|请勿|别)[^。！？；\n]{0,80}(?:记录|学习|记忆|沉淀|记下|保存)/u.test(
+    /(?:不要|不需要|不用|不必|无需|请勿|别|不再)[^。！？；\n]{0,80}(?:记录|学习|记忆|沉淀|记下|保存|留存|存储)|不(?:记录|学习|记忆|沉淀|记下|保存|留存|存储)/u.test(
       text,
     ) ||
     /(?:这次|本次|这一次|当前)[^。！？；\n]{0,20}(?:只|仅)|(?:只|仅)[^。！？；\n]{0,20}(?:这次|本次|这一次|这一单|这一份)/u.test(
       text,
     ) ||
-    /\b(?:do not|don't|never)\s+(?:(?:save|record|retain|learn|remember)\b)|\b(?:only|just)\s+(?:this|the current)\b|\b(?:this|the current)\s+(?:time|task|report)\s+only\b/iu.test(
+    /\b(?:do not|don't|never|no need to)\s+(?:need to\s+)?(?:save|store|record|retain|learn|remember)\b|\b(?:only|just)\s+(?:this|the current)\b|\b(?:this|the current)\s+(?:time|task|report)\s+only\b/iu.test(
       text,
     )
   )

@@ -5,8 +5,14 @@ import { tmpdir } from 'node:os';
 import { LocalStorageAdapter } from '@allrice/storage';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { ExecutionContext } from '@allrice/contracts';
+import { WorkflowDefinitionSchema } from '@allrice/contracts';
+import type {
+  ExecutionContext,
+  RequestContext,
+  PersonalSkillPin,
+} from '@allrice/contracts';
 import type * as Client from './core/client.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createExperienceStore } from './experience.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
 import { collectPendingExperienceEvidence } from './experience-evidence.ts';
@@ -16,10 +22,29 @@ import {
 } from './employees/employee-instances.ts';
 import {
   createChatSession,
+  ensureDefaultEmployee,
+  sendChatMessage,
   deleteWorkspaceMemory,
   searchWorkspaceMemories,
 } from './workspace/service.ts';
 import { searchToolBrokerMemories } from './execution/tool-broker.ts';
+import { startClaimedJob, completeJob } from './execution/queue.ts';
+import {
+  acquireConversationRuntime,
+  bindConversationThread,
+  recordConversationTurn,
+} from './conversation/conversation-runtime.ts';
+import {
+  claimConversationSteer,
+  consumeConversationSteer,
+  rejectConversationSteer,
+  cancelUnadoptedSteers,
+} from './conversation/conversation-input.ts';
+import {
+  decideWorkflowApproval,
+  ensureWorkflowRunForExecution,
+  pauseWorkflowForApproval,
+} from './execution/workflow-runtime.ts';
 import { embedWorkspaceText } from './workspace/memory-recall.ts';
 import {
   listCompanyRuleSources,
@@ -46,7 +71,11 @@ async function fixture() {
       values(${context.sessionId},${context.actor.id},${randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', '')},clock_timestamp()+interval '1 day')`;
   return f;
 }
-async function pending(f: Fixture, text = feedback) {
+async function pending(
+  f: Fixture,
+  text = feedback,
+  pins: PersonalSkillPin[] = [],
+) {
   const [r] = await db<
     { employee_assignment_id: string; employee_version_id: string }[]
   >`
@@ -72,7 +101,7 @@ async function pending(f: Fixture, text = feedback) {
     employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,
     execution_snapshot,experience_capture_state)
     select ${f.run},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
-      ${f.message},${f.assistant},'succeeded',clock_timestamp(),provider_snapshot,prompt_snapshot,${db.json({ instance })},'pending'
+      ${f.message},${f.assistant},'succeeded',clock_timestamp(),provider_snapshot,prompt_snapshot,${db.json({ instance, personalSkills: { skills: pins } })},'pending'
     from allrice_employee_runs where run_id=${previous}`;
   return instance;
 }
@@ -83,13 +112,43 @@ async function replay(f: Fixture) {
   await db`update allrice_employee_runs set experience_capture_state='pending' where run_id=${f.run}`;
   return collectPendingExperienceEvidence({ database: db, limit: 16 });
 }
+async function runningChat(f: Fixture, text: string) {
+  const session = await createChatSession(f.owner, {
+    workspaceId: f.workspace,
+    title: 'Evidence lifecycle',
+  });
+  const sent = await sendChatMessage(f.owner, f.workspace, session.id, {
+    clientMessageId: randomUUID(),
+    text,
+  });
+  const workerId = randomUUID(),
+    leaseToken = randomUUID();
+  const [job] =
+    await db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes'
+    where run_id=${sent.run.id} returning id`;
+  expect(await startClaimedJob(workerId, job!.id, leaseToken)).toBeTruthy();
+  return {
+    session,
+    sent,
+    workerId,
+    leaseToken,
+    jobId: job!.id as string,
+    finish: () =>
+      completeJob({
+        workerId,
+        jobId: job!.id,
+        leaseToken,
+        result: { text: 'Synthetic completion' },
+      }),
+  };
+}
 function execution(f: Fixture): ExecutionContext {
   return {
     executionId: randomUUID(),
     runId: f.run,
     jobId: randomUUID(),
     worker: { type: 'worker', id: 'test' },
-    delegatedBy: f.owner.actor,
+    delegatedBy: { type: 'user', id: f.user },
     organizationId: f.org,
     workspaceId: f.workspace,
     startedAt: new Date().toISOString(),
@@ -117,17 +176,7 @@ suite('MET183 incremental evidence — isolated database, no model', () => {
     const value = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!value) throw Error('Explicit dedicated test DB required');
     const url = new URL(value);
-    if (!(
-      (url.hostname === '127.0.0.1' &&
-        url.port === '5432' &&
-        url.pathname === '/allrice_b2' &&
-        url.username === 'a123') ||
-      (url.hostname === '127.0.0.1' &&
-        url.port === '54329' &&
-        url.pathname === '/allrice' &&
-        url.username === 'allrice')
-    ))
-      throw Error('Dedicated B2/CI database only');
+    assertRuntimeFixtureDatabase(url);
     admin = postgres(url.toString(), { max: 1, onnotice: () => {} });
     const extensions = await admin<
       { extname: string }[]
@@ -414,5 +463,289 @@ suite('MET183 incremental evidence — isolated database, no model', () => {
     expect((await store.list(f.owner, instance.id)).map((x) => x.id)).toEqual([
       c.id,
     ]);
+  });
+  it.each(['current', 'stale_epoch', 'disabled', 'uninstalled'])(
+    'uses current installation and binding authority after a historical revocation: %s',
+    async (mode) => {
+      const f = await fixture();
+      const [assignment] = await db<
+        { id: string; employee_version_id: string }[]
+      >`select id,employee_version_id from allrice_employee_assignments where user_id=${f.user} and workspace_id=${f.workspace}`;
+      const instance = await prepareEmployeeInstanceSnapshot(
+        f.owner,
+        f.session.id,
+        assignment!.id,
+        assignment!.employee_version_id,
+      );
+      const installationId = randomUUID(),
+        versionId = randomUUID(),
+        bindingId = randomUUID();
+      const definitionChecksum = 'sha256:' + 'a'.repeat(64);
+      const pin: PersonalSkillPin = {
+        organizationId: f.org,
+        ownerId: f.user,
+        instanceId: instance.id,
+        installationId,
+        versionId,
+        bindingId,
+        bindingEpoch: mode === 'stale_epoch' ? 1 : 3,
+        definitionChecksum,
+      };
+      await db.begin(async (tx) => {
+        await tx`insert into allrice_personal_skill_installations(id,organization_id,owner_id,name,state,current_version_id,revoked_at)
+          values(${installationId},${f.org},${f.user},'synthetic-review',${mode === 'uninstalled' ? 'uninstalled' : 'installed'},${versionId},clock_timestamp()-interval '1 day')`;
+        await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
+          values(${versionId},${f.org},${f.user},${installationId},1,'{}','Synthetic immutable source','{}',${definitionChecksum})`;
+        await tx`insert into allrice_personal_skill_bindings(id,organization_id,workspace_id,owner_id,instance_id,installation_id,enabled,epoch,revoked_at)
+          values(${bindingId},${f.org},${f.workspace},${f.user},${instance.id},${installationId},${mode !== 'disabled'},3,clock_timestamp()-interval '1 day')`;
+      });
+      await pending(f, feedback, [pin]);
+      const eventId = randomUUID();
+      await db`insert into allrice_run_events(id,organization_id,workspace_id,run_id,sequence,event_type,payload)
+        values(${eventId},${f.org},${f.workspace},${f.run},1,'tool.completed',${db.json({ name: 'skill', nativePayload: { skillStatus: 'loaded', personalSkill: pin } })})`;
+      await collectPendingExperienceEvidence({ database: db, limit: 16 });
+      if (mode === 'current') {
+        expect((await candidate(f))?.evidence?.skills).toEqual([
+          { runId: f.run, eventId, pin },
+        ]);
+      } else {
+        expect(await candidate(f)).toBeUndefined();
+        const [row] =
+          await db`select experience_capture_reason from allrice_employee_runs where run_id=${f.run}`;
+        expect(row!.experience_capture_reason).toBe('dependency_unavailable');
+      }
+    },
+  );
+  it.each(['adopted', 'late_method_authoring', 'not_adopted'] as const)(
+    'captures steering only after its real consuming Run ends: %s',
+    async (mode) => {
+      const f = await fixture(),
+        r = await runningChat(f, '请整理合成流水。');
+      const runtime = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        sessionId: r.session.id,
+        ownerId: f.user,
+        runId: r.sent.run.id,
+        workerId: r.workerId,
+      };
+      await acquireConversationRuntime({
+        ...runtime,
+        configChecksum: 'sha256:' + 'a'.repeat(64),
+        compactThresholdTokens: 10000,
+      });
+      const threadId = 'native-' + randomUUID(),
+        turnId = 'turn-' + randomUUID();
+      await bindConversationThread({ ...runtime, threadId });
+      const binding = await recordConversationTurn({
+        ...runtime,
+        threadId,
+        turnId,
+      });
+      const messageId = randomUUID();
+      const steered = await sendChatMessage(
+        f.owner,
+        f.workspace,
+        r.session.id,
+        {
+          clientMessageId: messageId,
+          text: feedback,
+          deliveryMode: 'steer',
+          expectedTurnId: turnId,
+          expectedGeneration: binding.generation,
+        },
+      );
+      const command = await claimConversationSteer({
+        ...runtime,
+        generation: binding.generation,
+        turnId,
+      });
+      expect(command).not.toBeNull();
+      if (mode === 'not_adopted') {
+        await rejectConversationSteer({
+          commandId: command!.id,
+          workerId: r.workerId,
+          errorCode: 'INPUT_NOT_ADOPTED',
+        });
+        await db.begin((tx) => cancelUnadoptedSteers(tx, r.session.id));
+      } else {
+        await consumeConversationSteer({
+          commandId: command!.id,
+          workerId: r.workerId,
+          proof: {
+            status: 'adopted',
+            inputId: command!.clientUserMessageId,
+            messageId: randomUUID(),
+            turnId,
+            sequence: 5,
+            checkpoint: 'step_user_message',
+          },
+        });
+        const [child] =
+          await db`select status,experience_execution_run_id,experience_capture_state from allrice_employee_runs where run_id=${command!.followupRunId}`;
+        expect(child).toMatchObject({
+          status: 'canceled',
+          experience_execution_run_id: r.sent.run.id,
+          experience_capture_state: 'pending',
+        });
+      }
+      await collectPendingExperienceEvidence({ database: db, limit: 16 });
+      expect(await store.list(f.owner)).toEqual([]);
+      // The active Run may become a method-editing task after adopting input.
+      if (mode === 'late_method_authoring')
+        await db`update allrice_employee_runs set method_authoring=true where run_id=${r.sent.run.id}`;
+      await r.finish();
+      await collectPendingExperienceEvidence({ database: db, limit: 16 });
+      const items = await store.list(f.owner);
+      if (mode === 'adopted') {
+        const [captured] =
+          await db`select experience_capture_state,experience_capture_reason,
+          execution_snapshot->'instance'->>'id' instance_id from allrice_employee_runs where run_id=${command!.followupRunId}`;
+        expect(captured).toMatchObject({
+          experience_capture_state: 'captured',
+          experience_capture_reason: 'direct_feedback',
+        });
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({
+          content: feedback,
+          source: {
+            runId: r.sent.run.id,
+            messageId: steered.userMessage.id,
+          },
+          evidence: {
+            runId: r.sent.run.id,
+            messageId: steered.userMessage.id,
+          },
+        });
+        expect(items[0]!.evidence!.relatedRunId).not.toBe(
+          command!.followupRunId,
+        );
+        await collectPendingExperienceEvidence({ database: db, limit: 16 });
+        expect((await store.list(f.owner)).map((x) => x.id)).toEqual([
+          items[0]!.id,
+        ]);
+      } else expect(items).toEqual([]);
+    },
+  );
+  it('captures the original feedback when a real workflow approval rejection ends its Run', async () => {
+    const f = await fixture(),
+      r = await runningChat(f, feedback);
+    const workflowId = randomUUID(),
+      revisionId = randomUUID();
+    const definition = WorkflowDefinitionSchema.parse({
+      schemaVersion: 1,
+      steps: [
+        { key: 'review', name: 'Review synthetic task', kind: 'approval' },
+      ],
+    });
+    const [assignment] =
+      await db`select a.employee_id from allrice_employee_runs er join allrice_employee_assignments a on a.id=er.employee_assignment_id where er.run_id=${r.sent.run.id}`;
+    await db`insert into allrice_workflows(id,organization_id,workspace_id,slug,name,description,created_by) values(${workflowId},${f.org},${f.workspace},'feedback-review','Synthetic review','Synthetic review',${f.user})`;
+    await db`insert into allrice_workflow_revisions(id,organization_id,workspace_id,workflow_id,revision,name,description,definition,checksum,created_by,published_at) values(${revisionId},${f.org},${f.workspace},${workflowId},1,'Synthetic review','Synthetic review',${db.json(definition as unknown as postgres.JSONValue)},${'sha256:' + 'b'.repeat(64)},${f.user},clock_timestamp())`;
+    await db`insert into allrice_employee_workflow_bindings(organization_id,workspace_id,employee_id,workflow_revision_id,bound_by) values(${f.org},${f.workspace},${assignment!.employee_id},${revisionId},${f.user})`;
+    const context = {
+      ...execution(f),
+      runId: r.sent.run.id,
+      jobId: r.jobId,
+      worker: { type: 'worker' as const, id: r.workerId },
+    };
+    await ensureWorkflowRunForExecution({
+      context,
+      ownerId: f.user,
+      employeeId: assignment!.employee_id,
+      workflowRevisionId: revisionId,
+      sessionId: r.session.id,
+      value: {},
+    });
+    const approval = await pauseWorkflowForApproval({
+      context,
+      workerId: r.workerId,
+      jobId: r.jobId,
+      leaseToken: r.leaseToken,
+      stepKey: 'review',
+      value: {},
+    });
+    await decideWorkflowApproval(f.owner, approval.approvalId, {
+      workspaceId: f.workspace,
+      decision: 'rejected',
+      reason: 'Reject this synthetic operation',
+    });
+    const [terminal] =
+      await db`select status,experience_capture_state from allrice_employee_runs where run_id=${r.sent.run.id}`;
+    expect(terminal).toMatchObject({
+      status: 'failed',
+      experience_capture_state: 'pending',
+    });
+    await collectPendingExperienceEvidence({ database: db, limit: 16 });
+    expect((await store.list(f.owner))[0]).toMatchObject({
+      content: feedback,
+      source: { runId: r.sent.run.id },
+    });
+  });
+  it('marks real completed chat jobs and keeps two ordinary owners of the same template separate', async () => {
+    const f = await fixture();
+    await ensureDefaultEmployee(f.neighbor, f.workspace);
+    async function complete(context: RequestContext, text: string) {
+      const session = await createChatSession(context, {
+        workspaceId: f.workspace,
+        title: 'Incremental feedback admission',
+      });
+      const sent = await sendChatMessage(context, f.workspace, session.id, {
+        clientMessageId: randomUUID(),
+        text,
+      });
+      const [initial] =
+        await db`select experience_capture_state,execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+      expect(initial!.experience_capture_state).toBeNull();
+      const workerId = randomUUID(),
+        leaseToken = randomUUID();
+      const [job] =
+        await db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes'
+        where run_id=${sent.run.id} returning id`;
+      expect(await startClaimedJob(workerId, job!.id, leaseToken)).toBeTruthy();
+      await completeJob({
+        workerId,
+        jobId: job!.id,
+        leaseToken,
+        result: { text: 'Synthetic feedback response.' },
+      });
+      const [terminal] =
+        await db`select experience_capture_state,status from allrice_employee_runs where run_id=${sent.run.id}`;
+      expect(terminal).toMatchObject({
+        experience_capture_state: 'pending',
+        status: 'succeeded',
+      });
+      return {
+        runId: sent.run.id,
+        instanceId: initial!.execution_snapshot.instance.id,
+      };
+    }
+    const first = await complete(
+      f.owner,
+      '这份报告漏了退款，请单列退款再核对净额。',
+    );
+    const second = await complete(
+      f.neighbor,
+      '这份报告重复计算了运费，请按订单核对。',
+    );
+    const assigned =
+      await db`select employee_id from allrice_employee_assignments where id in (${first.instanceId},${second.instanceId})`;
+    expect(assigned).toHaveLength(2);
+    expect(assigned[0]!.employee_id).toBe(assigned[1]!.employee_id);
+    await collectPendingExperienceEvidence({ database: db, limit: 16 });
+    const own = await store.list(f.owner, first.instanceId),
+      peer = await store.list(f.neighbor, second.instanceId);
+    expect(own).toHaveLength(1);
+    expect(peer).toHaveLength(1);
+    expect(own[0]!.source?.runId).toBe(first.runId);
+    expect(peer[0]!.source?.runId).toBe(second.runId);
+    expect(own[0]!.content).toContain('退款');
+    expect(peer[0]!.content).toContain('运费');
+    expect(await store.list(f.owner, second.instanceId)).toEqual([]);
+    expect(await store.list(f.neighbor, first.instanceId)).toEqual([]);
+    await collectPendingExperienceEvidence({ database: db, limit: 16 });
+    expect(
+      (await store.list(f.owner, first.instanceId)).map((x) => x.id),
+    ).toEqual([own[0]!.id]);
   });
 });

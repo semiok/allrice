@@ -31,7 +31,13 @@ alter table allrice_employee_runs
   add column experience_capture_state text
     check (experience_capture_state in ('pending','captured','ignored')),
   add column experience_capture_reason text,
-  add column experience_captured_at timestamptz;
+  add column experience_captured_at timestamptz,
+  -- Adopted steering has a synthetic canceled followup Run. Its real execution
+  -- and frozen context belong to the consuming Run, never the canceled child.
+  add column experience_execution_run_id uuid,
+  add foreign key (organization_id,workspace_id,experience_execution_run_id)
+    references allrice_runs(organization_id,workspace_id,id),
+  add check (experience_execution_run_id is null or experience_execution_run_id<>run_id);
 create index allrice_experience_pending_runs
   on allrice_employee_runs(completed_at,run_id)
   where experience_capture_state='pending';

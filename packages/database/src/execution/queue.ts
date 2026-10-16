@@ -1,4 +1,5 @@
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import { markExperienceCapturePending } from '../experience-capture.ts';
 import { MaintenanceRepositoryBindingSchema } from '../platform-maintenance-publication-contracts.ts';
 import { assertMaintenanceReconciliation } from '../platform-maintenance-authority.ts';
 import { assertMaintenanceGrant } from '../platform-maintenance-authority.ts';
@@ -68,7 +69,6 @@ import {
   authorizeExecution,
   modelGovernanceFailureText,
   nativeExecutionDiagnosticFailureText,
-  runtimeFeatureEnabled,
   type ExecutionContext,
   type EmployeeExecutionSnapshot,
   type Job,
@@ -1623,14 +1623,11 @@ async function transitionTerminal(
   >`
     update allrice_employee_runs
     set status = ${input.runStatus}, error_code = ${input.code ?? null},
-        error_message = ${input.message ?? null}, completed_at = now(),
-        experience_capture_state = case
-          when experience_capture_state is null and not method_authoring
-            and ${runtimeFeatureEnabled('ALLRICE_EXPERIENCE_REVIEW_ENABLED')}
-          then 'pending' else experience_capture_state end
+        error_message = ${input.message ?? null}, completed_at = now()
     where run_id = ${job.run_id}
     returning assistant_message_id, prompt_snapshot
   `;
+  await markExperienceCapturePending(transaction, job.run_id);
   const employeeRun = employeeRuns[0];
   if (employeeRun) {
     const result =
