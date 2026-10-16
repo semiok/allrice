@@ -128,10 +128,25 @@ export function createSandboxNetworkAdmission(
     if (pending.size >= 64) throw unavailable();
     const check = (async () => {
       const types = [1, 28] as const;
-      const replies = await Promise.all(
+      // Keep the admission slot until BOTH lookups settle. A fast rejection
+      // must not release it while its sibling still holds a socket.
+      const results = await Promise.allSettled(
         types.map(async (type) =>
           answer(await query(hostname, type), hostname, type),
         ),
+      );
+      const failures = results.filter((r) => r.status === 'rejected');
+      if (failures.length) {
+        throw (
+          failures.find(
+            (r) =>
+              r.reason instanceof RuntimePolicyError &&
+              r.reason.code === 'sandbox_network_destination_blocked',
+          )?.reason ?? failures[0]!.reason
+        );
+      }
+      const replies = results.flatMap((r) =>
+        r.status === 'fulfilled' ? [r.value] : [],
       );
       if (!replies.some((reply) => reply.count > 0)) throw unavailable();
       const ttl = Math.min(...replies.map((reply) => reply.ttl));

@@ -17,6 +17,28 @@ const publicReply = (hostname: string, type: 1 | 28) =>
   );
 
 describe('automatic sandbox destination admission', () => {
+  it('retains pending slots when one DNS lookup rejects before its sibling finishes', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const check = createSandboxNetworkAdmission(async (host, type) => {
+      if (type === 1) throw Error('fast failure');
+      await gate;
+      return publicReply(host, type);
+    });
+    const jobs = Array.from({ length: 64 }, (_, i) =>
+      check(request([`https://pending${i}.example.com`])),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    await expect(check(request())).rejects.toThrow(
+      'sandbox_network_check_unavailable',
+    );
+    const settled = Promise.allSettled(jobs);
+    release();
+    expect((await settled).every((r) => r.status === 'rejected')).toBe(true);
+  });
   it('checks only hostnames, deduplicates concurrent callers and expires positive results at DNS TTL', async () => {
     let now = 0;
     const query = vi.fn(async (host: string, type: 1 | 28) =>
