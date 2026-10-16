@@ -10,6 +10,9 @@ import {
   RouteDecisionSchema,
   evaluateExperienceRoster,
   experienceRosterCase,
+  DshNativeSkillSnapshotSchema,
+  PersonalSkillSnapshotSchema,
+  supportedExperienceRule,
   type PlatformEmployeeTestRunOutput,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
@@ -27,7 +30,16 @@ import {
 } from './providers/model-governance.ts';
 import { assertEmployeeMethodModelCurrent } from './employees/employee-method-tests.ts';
 import { EmployeeInstanceError } from './employees/employee-instances.ts';
-import { PersonalSkillError } from './employees/personal-skills.ts';
+import {
+  PersonalSkillError,
+  assertFrozenPersonalSkills,
+} from './employees/personal-skills.ts';
+import {
+  experienceSkillDependencies,
+  freezeExperienceSkills,
+  assertExperienceSkillsCurrent,
+} from './experience-skill-dependencies.ts';
+import { matchSuccessfulPersonalSkillLoad } from './experience-evidence.ts';
 import { validatePlatformEmployeeTestExecutionSnapshot } from './platform-employees/runtime-package.ts';
 import {
   recordRouteDecisionInTransaction,
@@ -37,7 +49,7 @@ import {
 type Tx = postgres.TransactionSql;
 const uuid = z.string().uuid(),
   digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
-const BindingSchema = z
+const LegacyBindingSchema = z
   .object({
     schemaVersion: z.literal(1),
     id: uuid,
@@ -60,6 +72,14 @@ const BindingSchema = z
     timeoutMs: z.number().int().positive().max(300000),
   })
   .strict();
+const BindingSchema = z.discriminatedUnion('schemaVersion', [
+  LegacyBindingSchema,
+  LegacyBindingSchema.extend({
+    schemaVersion: z.literal(2),
+    personalSkills: PersonalSkillSnapshotSchema,
+    nativeSkills: z.array(DshNativeSkillSnapshotSchema).min(1).max(8),
+  }).strict(),
+]);
 type Binding = z.infer<typeof BindingSchema>;
 const limited = (e: unknown) =>
   e instanceof ExperienceError ||
@@ -78,7 +98,6 @@ export function supportsRosterValidation(
 ) {
   const text = `${draft.rule}\n${draft.applicability}`;
   return (
-    sources.every((s) => s.evidence.skills.length === 0) &&
     /(?:到场|签到)/u.test(text) &&
     /(?:名单|名册)/u.test(text) &&
     /(?:未到|未签到|缺席)/u.test(text) &&
@@ -116,7 +135,11 @@ async function current(tx: Tx, b: Binding) {
     runtimePolicyDigest(policy) !== b.policyDigest
   )
     return deny();
-  const source = await readExperienceValidationSource(tx, b.occurrenceId);
+  const source = await readExperienceValidationSource(
+    tx,
+    b.occurrenceId,
+    b.draftIndex,
+  );
   const { occurrence: o, receipt } = source,
     draft = receipt.output.drafts[b.draftIndex];
   if (
@@ -135,12 +158,51 @@ async function current(tx: Tx, b: Binding) {
     b.model.occurrenceId !== b.id
   )
     return deny();
+  await checkDependencies(tx, b, source);
   await assertEmployeeMethodModelCurrent(
     tx,
     { organization_id: b.organizationId },
     b.model,
   );
   return source;
+}
+
+async function checkDependencies(
+  tx: Tx,
+  b: Binding,
+  source: Awaited<ReturnType<typeof readExperienceValidationSource>>,
+) {
+  const draft = source.receipt.output.drafts[b.draftIndex]!;
+  const required = experienceSkillDependencies(
+    b.instanceId,
+    source.occurrence.sources.filter((s) => draft.sourceIds.includes(s.id)),
+  );
+  if (b.schemaVersion === 1) {
+    if (required) return deny();
+    return;
+  }
+  if (
+    !required ||
+    runtimePolicyDigest(required) !== runtimePolicyDigest(b.personalSkills)
+  )
+    return deny();
+  assertFrozenPersonalSkills(b.personalSkills, b.nativeSkills, b.instanceId);
+  if (
+    b.nativeSkills.some(
+      (s) =>
+        s.personal?.packageChecksum || s.bundle || s.requiredToolRefs.length,
+    )
+  )
+    return deny();
+  await assertExperienceSkillsCurrent(
+    tx,
+    {
+      organizationId: b.organizationId,
+      workspaceId: b.workspaceId,
+      actor: { type: 'user', id: b.ownerId },
+    },
+    b.personalSkills,
+  );
 }
 async function binding(tx: Tx, id: string) {
   const [row] =
@@ -212,15 +274,43 @@ export async function syncExperienceValidations() {
         8 - budget!.org_count,
       );
       for (const [draftIndex, draft] of receipt.output.drafts.entries()) {
-        if (
-          !supportsRosterValidation(
-            draft,
-            o.sources.filter((s) => draft.sourceIds.includes(s.id)),
-          )
-        ) {
+        const sources = o.sources.filter((s) => draft.sourceIds.includes(s.id));
+        if (!supportsRosterValidation(draft, sources)) {
           plan.push({
             draftIndex,
             reason: `草稿 ${draftIndex + 1} 暂无覆盖其要求的独立专项样例，仍待验证。`,
+          });
+          continue;
+        }
+        let skills;
+        try {
+          await readExperienceValidationSource(tx, id, draftIndex);
+          if (
+            sources.some((s) => s.evidence.skills.length) &&
+            supportedExperienceRule(draft)?.kind !== 'attendance_groups'
+          ) {
+            plan.push({
+              draftIndex,
+              reason: '尚无完整规则及技能联合覆盖，仍待验证。',
+            });
+            continue;
+          }
+          skills = await freezeExperienceSkills(
+            tx,
+            {
+              organizationId: o.organizationId,
+              workspaceId: o.workspaceId,
+              actor: { type: 'user', id: o.ownerId },
+            },
+            o.instanceId,
+            sources,
+          );
+        } catch (e) {
+          if (!limited(e)) throw e;
+          plan.push({
+            draftIndex,
+            reason:
+              '此草稿的来源或当前技能版本已变化，或需尚未覆盖的资源，未启动验证。',
           });
           continue;
         }
@@ -237,7 +327,7 @@ export async function syncExperienceValidations() {
           occurrenceId: testId,
         });
         const b = BindingSchema.parse({
-          schemaVersion: 1,
+          ...(skills ? { schemaVersion: 2, ...skills } : { schemaVersion: 1 }),
           id: testId,
           occurrenceId: id,
           organizationId: o.organizationId,
@@ -327,7 +417,7 @@ export async function prepareExperienceValidationClaim(tx: Tx, id: string) {
     binding: b,
     timeoutMs: b.timeoutMs,
     modelSnapshot: b.model,
-    instructions: `这是平台隔离的经验专项验证。严格按下列固定草稿处理合成样例，不要替草稿补方法或改错。草稿尚未启用。不得调用工具、读取资料、改写内容或发布。返回要求的 JSON，不提供自评结论。\n${JSON.stringify({ rule: draft.rule, applicability: draft.applicability, outputDigest: b.outputDigest, draftDigest: b.draftDigest })}`,
+    instructions: `这是平台隔离的经验专项验证。严格按下列固定草稿处理合成样例，不要替草稿补方法或改错。草稿尚未启用。${b.schemaVersion === 2 ? `先用原生 skill 加载全部指定个人技能：${b.nativeSkills.map((s) => s.name).join('、')}；只允许读取这些已冻结的技能正文。` : '不得调用工具。'}不得读取其他资料、运行命令、改写内容或发布。返回要求的 JSON，不提供自评结论。\n${JSON.stringify({ rule: draft.rule, applicability: draft.applicability, outputDigest: b.outputDigest, draftDigest: b.draftDigest })}`,
     previewContext: {
       organization_id: b.organizationId,
       workspace_id: b.workspaceId,
@@ -395,6 +485,9 @@ export async function recordExperienceValidationExecution(
     modelSnapshot: m,
     timeoutMs: b.timeoutMs,
     instructions: claim.instructions,
+    ...(b.schemaVersion === 2
+      ? { nativeSkills: b.nativeSkills, personalSkills: b.personalSkills }
+      : {}),
     decision,
   };
 }
@@ -441,18 +534,57 @@ export async function finishExperienceValidation(
   status: 'succeeded' | 'failed' | 'canceled',
 ) {
   const b = await binding(tx, id);
+  const [row] =
+    await tx`select t.experience_run_id,t.experience_route_id,t.timeout_at,t.started_at,j.attempt job_attempt
+      from allrice_platform_employee_test_runs t left join allrice_jobs j on j.run_id=t.experience_run_id where t.id=${id}`;
   let assertion = evaluateExperienceRoster(
     output.answer,
     status !== 'succeeded',
   );
+  if (b.schemaVersion === 2) {
+    const loaded = new Map(
+      output.events.flatMap((event) => {
+        if (
+          event.type !== 'tool.completed' ||
+          event.internalTask?.kind !== 'experience_validation' ||
+          event.internalTask.occurrenceId !== id ||
+          event.sessionId !== null ||
+          event.messageId !== null ||
+          event.attempt !== row!.job_attempt ||
+          event.generation !== 0 ||
+          event.harness !== 'dsh' ||
+          event.source !== 'harness'
+        )
+          return [];
+        const pin = matchSuccessfulPersonalSkillLoad(
+          b.personalSkills.skills,
+          event,
+        );
+        return pin ? [[pin.bindingId, pin] as const] : [];
+      }),
+    );
+    if (loaded.size !== b.personalSkills.skills.length)
+      assertion = {
+        ...assertion,
+        passed: false,
+        reason: 'skill_load_unverified',
+      };
+    else
+      assertion = {
+        ...assertion,
+        skillValidation: {
+          snapshotChecksum: b.personalSkills.checksum,
+          loadedPinsChecksum: runtimePolicyDigest(b.personalSkills.skills),
+          loadedVersionIds: b.personalSkills.skills.map((p) => p.versionId),
+        },
+      };
+  }
   try {
     await current(tx, b);
   } catch (e) {
     if (!limited(e)) throw e;
     assertion = { ...assertion, passed: false, reason: 'authority_changed' };
   }
-  const [row] =
-    await tx`select experience_route_id,timeout_at,started_at from allrice_platform_employee_test_runs where id=${id}`;
   const [clock] = await tx`select clock_timestamp() now`;
   if (
     (row!.timeout_at && row!.timeout_at <= clock!.now) ||
@@ -517,6 +649,7 @@ export async function listExperienceValidationViews(
                 'invalid_output',
                 'count_or_membership_mismatch',
                 'missing_information_inferred',
+                'skill_load_unverified',
               ].includes(assertion.reason)
             ? 'failed'
             : 'not_verified',
@@ -568,6 +701,28 @@ export async function readPassedExperienceProof(
     b.caseDigest !== runtimePolicyDigest(experienceRosterCase)
   )
     return null;
+  await checkDependencies(tx, b, source);
+  if (b.schemaVersion === 2) {
+    if (!assertion.data.skillValidation) return null;
+    const expected = {
+      snapshotChecksum: b.personalSkills.checksum,
+      loadedPinsChecksum: runtimePolicyDigest(b.personalSkills.skills),
+      loadedVersionIds: b.personalSkills.skills.map((p) => p.versionId),
+    };
+    if (
+      runtimePolicyDigest(assertion.data.skillValidation) !==
+      runtimePolicyDigest(expected)
+    )
+      return null;
+    return {
+      kind: 'independent_skill_case' as const,
+      testId: b.id,
+      caseId: b.caseId,
+      caseDigest: b.caseDigest,
+      dependencies: b.personalSkills,
+      skillValidation: expected,
+    };
+  }
   return {
     kind: 'independent_case' as const,
     testId: b.id,

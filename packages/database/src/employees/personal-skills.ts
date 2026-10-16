@@ -853,78 +853,91 @@ export async function freezePersonalSkills(
     catalog?: EmployeeBaseSkillCatalog;
   },
 ) {
+  return getDatabase().begin((tx) =>
+    freezePersonalSkillsInTransaction(tx, context, instance, base),
+  );
+}
+
+/** Reuse the same current-version freeze inside an existing authority transaction. */
+export async function freezePersonalSkillsInTransaction(
+  tx: ContentTx,
+  context: ContentIdentity,
+  instance: { id: string },
+  base: {
+    nativeSkills: DshNativeSkillSnapshot[];
+    catalog?: EmployeeBaseSkillCatalog;
+  },
+) {
   const instanceId = instance.id;
-  return getDatabase().begin(async (tx) => {
-    if (!(await readContentPrincipal(context, tx, true))) return unavailable();
-    await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${context.organizationId}`},0))`;
-    await getEmployeeInstance(context, instanceId, tx);
-    const rows =
-      await tx`select b.*,v.id version_id,v.definition,v.definition_checksum,v.resource_manifest,v.package_checksum from allrice_personal_skill_bindings b
+  if (!(await readContentPrincipal(context, tx, true))) return unavailable();
+  await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${context.organizationId}`},0))`;
+  await getEmployeeInstance(context, instanceId, tx);
+  const rows =
+    await tx`select b.*,v.id version_id,v.definition,v.definition_checksum,v.resource_manifest,v.package_checksum from allrice_personal_skill_bindings b
       join allrice_personal_skill_installations i on i.id=b.installation_id and i.state='installed'
       join allrice_personal_skill_versions v on v.id=i.current_version_id
       where b.instance_id=${instanceId} and b.organization_id=${context.organizationId} and b.owner_id=${owner(context)} and b.enabled order by b.id`;
-    if (!rows.length) return { ...base, personalSkills: undefined };
-    const pins: PersonalSkillPin[] = [];
-    const additional = rows.map((row) => {
-      const definition = PersonalSkillDefinitionSchema.parse(row.definition);
-      if (runtimePolicyDigest(definition) !== row.definition_checksum)
-        return unavailable();
-      validPackage(
-        row.resource_manifest,
-        row.package_checksum,
-        row.definition_checksum,
-      );
-      const pin: PersonalSkillPin = {
-        organizationId: context.organizationId,
-        ownerId: owner(context),
-        instanceId,
-        installationId: row.installation_id,
-        versionId: row.version_id,
-        bindingId: row.id,
-        bindingEpoch: row.epoch,
-        definitionChecksum: row.definition_checksum,
-        ...(row.package_checksum
-          ? { packageChecksum: row.package_checksum }
-          : {}),
-      };
-      pins.push(pin);
-      return validateFrozenSkill({
-        ...definition,
-        id: row.version_id,
-        requiredToolRefs: [],
-        personal: pin,
-      });
-    });
-    const nativeSkills = [...base.nativeSkills, ...additional].sort(
-      (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+  if (!rows.length) return { ...base, personalSkills: undefined };
+  const pins: PersonalSkillPin[] = [];
+  const additional = rows.map((row) => {
+    const definition = PersonalSkillDefinitionSchema.parse(row.definition);
+    if (runtimePolicyDigest(definition) !== row.definition_checksum)
+      return unavailable();
+    validPackage(
+      row.resource_manifest,
+      row.package_checksum,
+      row.definition_checksum,
     );
-    if (new Set(nativeSkills.map((s) => s.name)).size !== nativeSkills.length)
-      throw new PersonalSkillError('name_conflict');
-    if (
-      nativeSkills.length > employeeBaseSkillLimits.count ||
-      Buffer.byteLength(JSON.stringify(nativeSkills)) >
-        employeeBaseSkillLimits.snapshotBytes
-    )
-      throw new PersonalSkillError('limit');
-    const index = { schemaVersion: 1 as const, instanceId, skills: pins };
-    const personalSkills = PersonalSkillSnapshotSchema.parse({
-      ...index,
-      checksum: runtimePolicyDigest(index),
-    });
-    return {
-      nativeSkills,
-      personalSkills,
-      catalog: base.catalog
-        ? {
-            ...base.catalog,
-            snapshotChecksum: runtimePolicyDigest({
-              skills: base.catalog.skills,
-              nativeSkills,
-            }),
-          }
-        : undefined,
+    const pin: PersonalSkillPin = {
+      organizationId: context.organizationId,
+      ownerId: owner(context),
+      instanceId,
+      installationId: row.installation_id,
+      versionId: row.version_id,
+      bindingId: row.id,
+      bindingEpoch: row.epoch,
+      definitionChecksum: row.definition_checksum,
+      ...(row.package_checksum
+        ? { packageChecksum: row.package_checksum }
+        : {}),
     };
+    pins.push(pin);
+    return validateFrozenSkill({
+      ...definition,
+      id: row.version_id,
+      requiredToolRefs: [],
+      personal: pin,
+    });
   });
+  const nativeSkills = [...base.nativeSkills, ...additional].sort(
+    (a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id),
+  );
+  if (new Set(nativeSkills.map((s) => s.name)).size !== nativeSkills.length)
+    throw new PersonalSkillError('name_conflict');
+  if (
+    nativeSkills.length > employeeBaseSkillLimits.count ||
+    Buffer.byteLength(JSON.stringify(nativeSkills)) >
+      employeeBaseSkillLimits.snapshotBytes
+  )
+    throw new PersonalSkillError('limit');
+  const index = { schemaVersion: 1 as const, instanceId, skills: pins };
+  const personalSkills = PersonalSkillSnapshotSchema.parse({
+    ...index,
+    checksum: runtimePolicyDigest(index),
+  });
+  return {
+    nativeSkills,
+    personalSkills,
+    catalog: base.catalog
+      ? {
+          ...base.catalog,
+          snapshotChecksum: runtimePolicyDigest({
+            skills: base.catalog.skills,
+            nativeSkills,
+          }),
+        }
+      : undefined,
+  };
 }
 
 /** The history guard only reads compact immutable provenance, not every

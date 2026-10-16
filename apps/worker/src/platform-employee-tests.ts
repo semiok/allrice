@@ -224,7 +224,7 @@ export async function executeNextPlatformEmployeeTest(input: {
             bootstrapConversation: '',
             authorizedMemoryContext: '',
             grantedCapabilities,
-            skillVersionIds: [],
+            skillVersionIds: experience.nativeSkills?.map((s) => s.id) ?? [],
           })
         : EmployeeKernelRequestSchema.parse({
             schemaVersion: 1,
@@ -248,7 +248,35 @@ export async function executeNextPlatformEmployeeTest(input: {
           }),
       providerSnapshot: snapshot,
       storageObjects: [],
-      nativeSkills: candidate ? [] : test.nativeSkills,
+      nativeSkills:
+        experience?.nativeSkills ?? (candidate ? [] : test.nativeSkills),
+      ...(experience?.personalSkills
+        ? {
+            contentGuard: {
+              generationId: test.id,
+              nativeContextKey: `experience-validation-${test.id}`,
+              check: async () => {
+                signal.throwIfAborted();
+                const current = await experienceValidationStillCurrent(
+                  test.id,
+                  {
+                    runId: test.previewExecution.runId,
+                    jobId: test.previewExecution.jobId,
+                    workerId: input.workerId,
+                    leaseToken: test.previewExecution.leaseToken,
+                  },
+                );
+                signal.throwIfAborted();
+                if (!current)
+                  throw new HandlerError(
+                    'EXPERIENCE_TEST_STALE',
+                    '经验来源或个人技能版本已变化，联合验证已停止。',
+                    false,
+                  );
+              },
+            },
+          }
+        : {}),
       workDirectory: testDirectory,
       executionEnvironment: {
         ALLRICE_ORGANIZATION_ID: test.previewContext.organizationId,

@@ -8,6 +8,7 @@ import {
   PersonalSkillPinSchema,
   runtimeFeatureEnabled,
   type ExperienceEvidence,
+  type PersonalSkillPin,
 } from '@allrice/contracts';
 import type { ContentIdentity } from './content-maintenance.ts';
 import { getDatabase } from './core/client.ts';
@@ -50,6 +51,30 @@ function contextFor(s: Source): ContentIdentity & { requestId: string } {
   };
 }
 
+/** Native completion is evidence only when its exact identity matches the
+ * server-frozen pins. Shared by ordinary source capture and internal tests. */
+export function matchSuccessfulPersonalSkillLoad(
+  pins: PersonalSkillPin[],
+  event: { type: string; name?: string; sourcePayload?: unknown },
+) {
+  const native = record(event.sourcePayload);
+  if (
+    event.type !== 'tool.completed' ||
+    event.name !== 'skill' ||
+    native.skillStatus !== 'loaded'
+  )
+    return undefined;
+  const parsed = PersonalSkillPinSchema.safeParse(native.personalSkill);
+  if (!parsed.success) return undefined;
+  const p = parsed.data;
+  return pins.find(
+    (pin) =>
+      Object.keys(pin).every(
+        (key) => pin[key as keyof typeof pin] === p[key as keyof typeof p],
+      ) && Object.keys(p).length === Object.keys(pin).length,
+  );
+}
+
 /** Only successful actual Skill loads matched against that Run's immutable pin
  * count as dependencies. Mere registration, model prose and tool text do not. */
 export function loadedExperienceSkillEvidence(
@@ -66,23 +91,12 @@ export function loadedExperienceSkillEvidence(
     : [];
   const found = new Set<string>();
   return events.flatMap((event) => {
-    const payload = record(event.payload),
-      native = record(payload.nativePayload);
-    if (
-      event.event_type !== 'tool.completed' ||
-      payload.name !== 'skill' ||
-      native.skillStatus !== 'loaded'
-    )
-      return [];
-    const parsed = PersonalSkillPinSchema.safeParse(native.personalSkill);
-    if (!parsed.success) return [];
-    const p = parsed.data;
-    const pin = pins.find(
-      (v) =>
-        Object.keys(v).every(
-          (key) => v[key as keyof typeof v] === p[key as keyof typeof p],
-        ) && Object.keys(p).length === Object.keys(v).length,
-    );
+    const payload = record(event.payload);
+    const pin = matchSuccessfulPersonalSkillLoad(pins, {
+      type: event.event_type,
+      name: typeof payload.name === 'string' ? payload.name : undefined,
+      sourcePayload: payload.nativePayload,
+    });
     if (!pin || found.has(pin.bindingId)) return [];
     found.add(pin.bindingId);
     return [{ runId: run.run_id, eventId: event.id, pin }];

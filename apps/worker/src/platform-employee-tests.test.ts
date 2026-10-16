@@ -461,3 +461,94 @@ it('rechecks cancellation after subscription freeze and never dispatches the inv
     }),
   );
 });
+
+it('binds the personal Skill overlay to the actual test lease and fails closed without giving it chat or write tools', async () => {
+  const test = claimed(),
+    original = test.methodCandidate!,
+    skill = (() => {
+      const pin = {
+        organizationId: randomUUID(),
+        ownerId: randomUUID(),
+        instanceId: randomUUID(),
+        installationId: randomUUID(),
+        versionId: randomUUID(),
+        bindingId: randomUUID(),
+        bindingEpoch: 1,
+        definitionChecksum: `sha256:${'a'.repeat(64)}`,
+      };
+      return {
+        pin,
+        personalSkills: {
+          schemaVersion: 1 as const,
+          instanceId: pin.instanceId,
+          skills: [pin],
+          checksum: `sha256:${'b'.repeat(64)}`,
+        },
+        nativeSkill: {
+          id: pin.versionId,
+          name: 'attendance-counting',
+          description: 'Synthetic',
+          content: '# Synthetic',
+          checksum: `sha256:${'c'.repeat(64)}`,
+          invocation: { modelInvocable: true, userInvocable: true },
+          personal: pin,
+          requiredToolRefs: [],
+        },
+      };
+    })();
+  test.methodCandidate = null;
+  test.experienceCandidate = {
+    caseId: 'attendance-roster-v1',
+    occurrenceId: test.id,
+    assignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    modelSnapshot: ExperienceModelSnapshotSchema.parse({
+      ...original.modelSnapshot,
+      schemaVersion: 2,
+      sessionId: null,
+      occurrenceId: test.id,
+    }),
+    timeoutMs: 300000,
+    instructions: 'Fixed draft and Skill',
+    decision: original.decision,
+    personalSkills: skill.personalSkills,
+    nativeSkills: [skill.nativeSkill],
+  };
+  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
+  vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
+  vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
+    async (input) => {
+      expect(input.kernel).toMatchObject({
+        sessionId: null,
+        internalTask: { kind: 'experience_validation', occurrenceId: test.id },
+        skillVersionIds: [skill.pin.versionId],
+      });
+      expect(input.nativeSkills).toEqual([skill.nativeSkill]);
+      expect(input.tools).toEqual([]);
+      expect(input.onToolCall).toBeUndefined();
+      expect(input.contentGuard?.generationId).toBe(test.id);
+      await input.contentGuard!.check();
+      expect(experienceValidationStillCurrent).toHaveBeenLastCalledWith(
+        test.id,
+        expect.objectContaining({
+          runId: test.previewExecution.runId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+        }),
+      );
+      vi.mocked(experienceValidationStillCurrent).mockResolvedValue(false);
+      await expect(input.contentGuard!.check()).rejects.toThrow(
+        '联合验证已停止',
+      );
+      vi.mocked(experienceValidationStillCurrent).mockRejectedValue(
+        new Error('synthetic authority read failed'),
+      );
+      await expect(input.contentGuard!.check()).rejects.toThrow(
+        'authority read failed',
+      );
+      vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
+      return receipt;
+    },
+  );
+  await run();
+});
