@@ -343,9 +343,12 @@ export class LocalPythonRunner {
           checksum: file.checksum,
           async open(signal) {
             signal.throwIfAborted();
-            return Readable.toWeb(
-              createReadStream(path, { signal }),
-            ) as ReadableStream<Uint8Array>;
+            return Readable.toWeb(createReadStream(path, { signal }), {
+              strategy: {
+                highWaterMark: 65536,
+                size: (chunk) => chunk.byteLength,
+              },
+            }) as ReadableStream<Uint8Array>;
           },
         });
       }
