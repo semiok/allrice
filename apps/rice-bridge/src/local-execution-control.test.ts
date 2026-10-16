@@ -134,7 +134,7 @@ it('bounds stalled authority and ignores a delayed successful acknowledgement', 
       }),
   );
   const start = f.control.start();
-  await vi.advanceTimersByTimeAsync(3100);
+  await vi.advanceTimersByTimeAsync(11100);
   await start;
   expect(f.stop).toHaveBeenCalledWith('lease_lost');
   resolve(true);
@@ -159,5 +159,71 @@ it('does not fetch metrics or renew an already exited container', async () => {
   expect(f.exchange).not.toHaveBeenCalled();
   expect(f.socket.send).not.toHaveBeenCalled();
   expect(f.stop).not.toHaveBeenCalled();
+  await f.control.finish();
+});
+
+it('accepts slow healthy renewal and heartbeat without overlapping cycles', async () => {
+  const f = fixture();
+  vi.setSystemTime(1045000);
+  f.maintainLease.mockImplementation(async () => {
+    await new Promise((r) => setTimeout(r, 6500));
+    return true;
+  });
+  const exchange = f.exchange.getMockImplementation()!;
+  f.exchange.mockImplementation(async (request) => {
+    await new Promise((r) => setTimeout(r, 6500));
+    return exchange(request);
+  });
+  const start = f.control.start();
+  await vi.advanceTimersByTimeAsync(6600);
+  await start;
+  expect(f.stop).not.toHaveBeenCalled();
+  expect(f.exchange).toHaveBeenCalledTimes(1);
+  expect(f.maintainLease).toHaveBeenCalledTimes(1);
+  expect(f.budget.state.sequence).toBe(1);
+  expect(f.budget.state.hardDeadlineAt).toBe(1600000);
+  expect(f.socket.send).toHaveBeenLastCalledWith(
+    expect.objectContaining({ deadlineAt: 1120000, leaseDeadlineAt: 1071500 }),
+  );
+  await f.control.finish();
+});
+it('never extends the physical lease past the last granted execution deadline', async () => {
+  const f = fixture();
+  vi.setSystemTime(1044000);
+  await f.control.start();
+  expect(f.socket.send).toHaveBeenLastCalledWith(
+    expect.objectContaining({ deadlineAt: 1060000, leaseDeadlineAt: 1060000 }),
+  );
+  await f.control.finish();
+});
+it('does not write a late control grant after close while admission is pending', async () => {
+  const f = fixture();
+  let resolve!: (v: boolean) => void;
+  f.maintainLease.mockImplementation(
+    () =>
+      new Promise((r) => {
+        resolve = r;
+      }),
+  );
+  const start = f.control.start();
+  await vi.advanceTimersByTimeAsync(4000);
+  f.control.close();
+  resolve(true);
+  await start;
+  expect(f.socket.send).not.toHaveBeenCalled();
+  expect(f.stop).not.toHaveBeenCalled();
+  await f.control.finish();
+});
+
+it('does not wait for a slow budget reply after known revocation', async () => {
+  const f = fixture();
+  vi.setSystemTime(1045000);
+  f.exchange.mockImplementation(() => new Promise(() => {}));
+  f.maintainLease.mockResolvedValue(false);
+  const start = f.control.start();
+  await vi.advanceTimersByTimeAsync(1);
+  await start;
+  expect(f.stop).toHaveBeenCalledExactlyOnceWith('lease_lost');
+  expect(f.socket.send).not.toHaveBeenCalled();
   await f.control.finish();
 });

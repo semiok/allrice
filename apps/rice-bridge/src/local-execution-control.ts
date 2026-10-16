@@ -4,7 +4,11 @@ import {
   type RuntimeLocalCommand,
   type RuntimeLocalPythonPayload,
 } from '@allrice/contracts';
-import type { SandboxExecutionBudgetController } from '@allrice/project-runtime';
+import {
+  sandboxExecutionControlLeaseMs,
+  type SandboxExecutionBudgetController,
+} from '@allrice/project-runtime';
+import { localExecutionCycleTimeoutMs } from './local-execution-timing.js';
 import { LocalServiceControl } from './local-service-control.js';
 import type { LocalDockerApi } from './local-docker-api.js';
 import { LocalCommandError } from './local-command-inputs.js';
@@ -99,19 +103,23 @@ export class LocalExecutionControl {
       if (this.closed) return;
       if (!(await this.running())) return this.close();
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const [allowed] = await Promise.race([
-        Promise.all([maintainLease(), budget.renew(() => this.progress())]),
+      await Promise.race([
+        Promise.all([
+          maintainLease().then((allowed) => {
+            if (!allowed) throw new LocalCommandError('EXECUTION_REVOKED');
+          }),
+          budget.renew(() => this.progress()),
+        ]),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
             () => reject(new LocalCommandError('EXECUTION_CONTROL_TIMEOUT')),
-            3000,
+            localExecutionCycleTimeoutMs,
           );
         }),
       ]).finally(() => clearTimeout(timer));
       if (this.closed) return;
       // Do not convert a terminal success to an authority/control failure.
       if (!(await this.running())) return this.close();
-      if (!allowed) throw new LocalCommandError('EXECUTION_REVOKED');
       const now = Date.now();
       if (now >= budget.state.deadlineAt)
         throw new LocalCommandError('SANDBOX_EXECUTION_DEADLINE');
@@ -121,7 +129,10 @@ export class LocalExecutionControl {
         attemptId,
         sequence: ++this.sequence,
         deadlineAt: budget.state.deadlineAt,
-        leaseDeadlineAt: Math.min(now + 5000, budget.state.deadlineAt),
+        leaseDeadlineAt: Math.min(
+          now + sandboxExecutionControlLeaseMs,
+          budget.state.deadlineAt,
+        ),
       });
     } catch (error) {
       if (this.closed) return;

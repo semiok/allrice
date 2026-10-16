@@ -27,6 +27,9 @@ type Options = {
   lease: SandboxNetworkLease;
   /** Rechecks current owner, attempt, grant, root cancellation and expiry. */
   assertCurrent: () => Promise<void>;
+  /** Trusted adapter timeout. Remote Bridge checks include WAN/risk lookup;
+   * cloud keeps the existing 2s bound. Never extends the network lease. */
+  authorityTimeoutMs?: number;
   onError?: (code: SandboxNetworkErrorCode) => void;
   onClosed?: (code: SandboxNetworkErrorCode) => void;
   /** Resolver injection is for deterministic tests; production uses public DNS pinning. */
@@ -67,6 +70,13 @@ export class SandboxNetworkSession {
     private readonly options: Options,
   ) {
     this.lease = SandboxNetworkLeaseSchema.parse(options.lease);
+    const authorityTimeoutMs = options.authorityTimeoutMs ?? 2000;
+    if (
+      !Number.isSafeInteger(authorityTimeoutMs) ||
+      authorityTimeoutMs < 1 ||
+      authorityTimeoutMs > 8000
+    )
+      throw new SandboxNetworkError('SANDBOX_NETWORK_DENIED');
     this.ready = new Promise((resolve, reject) => {
       this.readyResolve = resolve;
       this.readyReject = reject;
@@ -87,7 +97,10 @@ export class SandboxNetworkSession {
       this.checking = true;
       const timeout = setTimeout(
         () => this.close('SANDBOX_NETWORK_REVOKED'),
-        2000,
+        Math.min(
+          authorityTimeoutMs,
+          Math.max(1, Date.parse(this.lease.expiresAt) - Date.now()),
+        ),
       );
       void options
         .assertCurrent()

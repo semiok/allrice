@@ -1,3 +1,4 @@
+import { localExecutionRequestTimeoutMs } from './local-execution-timing.js';
 import { unconfirmedLocalNetworkOutcome } from './local-sandbox-network.js';
 import { RuntimeBridgeSandboxNetworkResponseSchema } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
@@ -903,7 +904,8 @@ export class RuntimeBridgeOperationClient {
           attempt: b.attempt,
           leaseToken: dispatch.leaseToken,
         },
-        timeoutMs: 2500,
+        timeoutMs: localExecutionRequestTimeoutMs,
+        signal: this.input.signal,
         maximumResponseBytes: 32768,
       }),
     );
@@ -946,7 +948,8 @@ export class RuntimeBridgeOperationClient {
             ...(renewal ? { renewal } : {}),
           },
           maximumResponseBytes: 32768,
-          timeoutMs: 2500,
+          timeoutMs: localExecutionRequestTimeoutMs,
+          signal: this.input.signal,
         }),
       ).budget;
     return new SandboxExecutionBudgetController(
@@ -996,7 +999,10 @@ export class RuntimeBridgeOperationClient {
               token,
               body,
               maximumResponseBytes: 200_000,
-              timeoutMs: 2500,
+              timeoutMs: executionBudget
+                ? localExecutionRequestTimeoutMs
+                : 2500,
+              signal: this.input.signal,
             });
             const snapshot = RuntimeOperationSnapshotSchema.parse(
               current.snapshot,
@@ -1233,7 +1239,10 @@ export class RuntimeBridgeOperationClient {
               token,
               body,
               maximumResponseBytes: 200_000,
-              timeoutMs: 2500,
+              timeoutMs: executionBudget
+                ? localExecutionRequestTimeoutMs
+                : 2500,
+              signal: this.input.signal,
             });
             const snapshot = RuntimeOperationSnapshotSchema.parse(
               current.snapshot,

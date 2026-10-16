@@ -1,3 +1,4 @@
+import { localExecutionRequestTimeoutMs } from './local-execution-timing.js';
 import {
   SandboxNetworkLeaseSchema,
   runtimeContractEqual,
@@ -83,6 +84,7 @@ export class LocalSandboxNetwork {
     this.session = await openSandboxNetwork(o.api, {
       containerId: o.containerId,
       lease: o.lease,
+      authorityTimeoutMs: localExecutionRequestTimeoutMs,
       signal: o.signal,
       relayRuntime: o.relayRuntime,
       relayUid: 65533,

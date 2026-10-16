@@ -178,8 +178,10 @@ while True:time.sleep(.1)
           },
         });
   try {
-    const maintainLease = async () =>
-      mode !== 'python-revoked' || Date.now() - started < 12000;
+    const maintainLease = async () => {
+      if (mode === 'node-fetch') await new Promise((r) => setTimeout(r, 3500));
+      return mode !== 'python-revoked' || Date.now() - started < 12000;
+    };
     await writeFile(join(root, 'probe.mjs'), script);
     const result =
       payload.capability === 'local.process.execute'
@@ -204,7 +206,11 @@ while True:time.sleep(.1)
             },
           });
     id = result.containerId;
-    proof.checks[mode] = { elapsedMs: Date.now() - started, result };
+    proof.checks[mode] = {
+      elapsedMs: Date.now() - started,
+      result,
+      simulatedAuthorityDelayMs: mode === 'node-fetch' ? 3500 : 0,
+    };
     await writeFile(
       join(output, 'report.json'),
       JSON.stringify(proof, null, 2) + '\n',
