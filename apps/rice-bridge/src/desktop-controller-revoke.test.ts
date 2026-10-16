@@ -3,6 +3,7 @@ import { setImmediate as turn } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
 import type { BridgeConfig } from './config.js';
 import type { BridgeRuntimeState } from './core.js';
+import type * as Client from './client.js';
 
 const ports = vi.hoisted(() => ({
   config: vi.fn(),
@@ -11,6 +12,7 @@ const ports = vi.hoisted(() => ({
   revoke: vi.fn(),
   start: vi.fn(),
   grant: vi.fn(),
+  request: vi.fn(),
 }));
 // These are controller protocol tests, not native/Keychain acceptance. No real
 // core, config, network or filesystem port is imported or invoked.
@@ -31,6 +33,11 @@ vi.mock('./keychain.js', () => ({
     }
   },
 }));
+vi.mock('./client.js', async (original) => ({
+  ...(await original<typeof Client>()),
+  bridgeRequest: ports.request,
+}));
+import { BridgeClientError } from './client.js';
 import { runDesktopController } from './desktop-controller.js';
 
 const oldDevice = '00000000-0000-4000-8000-000000000091';
@@ -61,7 +68,7 @@ const configuration = (deviceId: string): BridgeConfig => ({
   ],
 });
 
-async function fixture(configDeleted: boolean) {
+async function fixture(configDeleted: boolean, rejectedPairing = false) {
   for (const port of Object.values(ports)) port.mockReset();
   let current: BridgeConfig | null = configuration(oldDevice);
   const starts: string[] = [];
@@ -82,6 +89,13 @@ async function fixture(configDeleted: boolean) {
     privateFileSecure: true,
     keychainUnavailableReason: 'interaction-not-allowed',
   });
+  ports.request.mockRejectedValue(
+    new BridgeClientError(
+      'Bridge device credential is invalid or revoked',
+      401,
+      'AUTHENTICATION_REQUIRED',
+    ),
+  );
   ports.start.mockImplementation(
     (options: {
       signal: AbortSignal;
@@ -99,6 +113,11 @@ async function fixture(configDeleted: boolean) {
         pendingReceipts: 0,
         unknownOperations: 0,
       };
+      if (rejectedPairing && deviceId === oldDevice) {
+        stops.push(deviceId);
+        options.onState({ ...state, phase: 'stopped', pairingRequired: true });
+        return Promise.resolve();
+      }
       options.onState(state);
       return new Promise<void>((resolve) => {
         const stop = () => {
@@ -128,7 +147,8 @@ async function fixture(configDeleted: boolean) {
     };
   });
   ports.pair.mockImplementation(async (args: string[]) => {
-    expect(current).toBeNull();
+    if (rejectedPairing) expect(current?.deviceId).toBe(oldDevice);
+    else expect(current).toBeNull();
     expect(args).toEqual([
       '--server',
       'https://synthetic.example/',
@@ -199,7 +219,10 @@ async function fixture(configDeleted: boolean) {
       expect(
         frames.some(
           (frame) =>
-            frame.type === 'state' && frame.state?.connection === 'online',
+            frame.type === 'state' &&
+            (rejectedPairing
+              ? frame.state?.pairingRequired === true
+              : frame.state?.connection === 'online'),
         ),
       ).toBe(true);
     });
@@ -230,6 +253,70 @@ async function fixture(configDeleted: boolean) {
   };
   return { request, close, starts, frames, completeNextRevoke, pickFile };
 }
+
+it('rechecks rejected authorization before deliberately pairing a new identity, without revoking or deleting the old evidence', async () => {
+  const app = await fixture(false, true);
+  try {
+    expect((await app.request('status')).data).toMatchObject({
+      deviceId: oldDevice,
+      pairingRequired: true,
+    });
+    expect(
+      await app.request('pair', {
+        server: 'https://synthetic.example/',
+        code: 'ABCDEF12',
+      }),
+    ).toMatchObject({ ok: true });
+    expect(ports.request).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        server: 'https://synthetic.example/',
+        path: '/api/v1/bridge/device/status',
+        token: syntheticToken,
+      }),
+    );
+    expect(ports.revoke).not.toHaveBeenCalled();
+    expect((await app.request('status')).data).toMatchObject({
+      deviceId: newDevice,
+      pairingRequired: false,
+      connection: 'online',
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+it.each(['unavailable', 'authorized', 'new-pair-rejected'])(
+  'retains the old identity when recovery is %s',
+  async (kind) => {
+    const app = await fixture(false, true);
+    try {
+      if (kind === 'unavailable')
+        ports.request.mockRejectedValueOnce(
+          new BridgeClientError('private proxy failure', 503),
+        );
+      if (kind === 'authorized') ports.request.mockResolvedValueOnce({});
+      if (kind === 'new-pair-rejected')
+        ports.pair.mockRejectedValueOnce(Error('PAIRING_EXPIRED'));
+      expect(
+        (
+          await app.request('pair', {
+            server: 'https://synthetic.example/',
+            code: 'ABCDEF12',
+          })
+        ).ok,
+      ).toBe(false);
+      expect((await app.request('status')).data).toMatchObject({
+        deviceId: oldDevice,
+        pairingRequired: true,
+      });
+      expect(ports.revoke).not.toHaveBeenCalled();
+      if (kind !== 'new-pair-rejected')
+        expect(ports.pair).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  },
+);
 
 it('keeps canceled picker IDs invalid without affecting the next user cancel or selection', async () => {
   const app = await fixture(false);

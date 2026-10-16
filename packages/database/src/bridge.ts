@@ -412,15 +412,27 @@ export async function pairBridgeDevice(input: unknown) {
     `;
     const pairing = pairings[0];
     if (!pairing) throw new BridgeDataError('pairing_invalid');
+    // A computer belongs to an employee in a company. The workspace remains
+    // an internal execution binding; another employee must never replace it.
     await transaction`
-      select pg_advisory_xact_lock(
-        hashtextextended(${pairing.workspace_id}::text, 0)
-      )
+      select pg_advisory_xact_lock(hashtextextended(
+        ${`bridge-owner:${pairing.organization_id}:${pairing.owner_id}`}, 0))
     `;
+    const [member] = await transaction`
+      select m.id from allrice_memberships m
+      join allrice_users u on u.id=m.user_id and u.status='active'
+      join allrice_organizations o on o.id=m.organization_id and o.archived_at is null
+      join allrice_workspaces w on w.id=${pairing.workspace_id}
+        and w.organization_id=o.id and w.archived_at is null
+      where m.organization_id=${pairing.organization_id} and m.user_id=${pairing.owner_id}
+        and m.active and (m.workspace_id is null or m.workspace_id=w.id)
+      for share of m,u,o,w
+    `;
+    if (!member) throw new BridgeDataError('pairing_invalid');
     const replacedDevices = await transaction<DeviceRow[]>`
       update allrice_bridge_devices set revoked_at = now(), updated_at = now()
       where organization_id = ${pairing.organization_id}
-        and workspace_id = ${pairing.workspace_id}
+        and owner_id = ${pairing.owner_id}
         and revoked_at is null
       returning id, organization_id, workspace_id, owner_id, name, platform,
         protocol_version, capabilities, last_seen_at, created_at, revoked_at

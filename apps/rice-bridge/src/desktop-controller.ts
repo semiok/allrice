@@ -27,6 +27,7 @@ import {
 } from './desktop-protocol.js';
 import { bridgeVersion } from './version.js';
 import { DesktopShutdown } from './desktop-shutdown.js';
+import { bridgeRequest, isBridgePairingRejected } from './client.js';
 import {
   DesktopUpdater,
   acknowledgeBridgeUpdateReadiness,
@@ -133,6 +134,7 @@ export async function runDesktopController() {
     environment: runtime.environment ?? null,
     update: updater.state,
     connection: runtime.phase,
+    pairingRequired: runtime.pairingRequired === true,
     workspaceLabels: config
       ? runtime.workspaceLabels.map(desktopSafeText).slice(0, 16)
       : [],
@@ -247,6 +249,7 @@ export async function runDesktopController() {
     await refresh();
     if (closing) return;
     if (!config) throw Error('DESKTOP_PAIRING_REQUIRED');
+    if (runtime.pairingRequired) throw Error('BRIDGE_PAIRING_REJECTED');
     if (config.paused) {
       config = { ...config, paused: false };
       await writeConfig(config);
@@ -263,6 +266,8 @@ export async function runDesktopController() {
       onReady: () => acknowledgeBridgeUpdateReadiness(abort?.signal),
       onState: (next) => {
         runtime = next;
+        if (next.pairingRequired && !closing)
+          mode = next.phase === 'stopped' ? 'paused' : 'pausing';
         if (next.environment?.settings)
           browserEnabled = next.environment.settings.localBrowser;
         publish();
@@ -325,9 +330,29 @@ export async function runDesktopController() {
   const perform = async (request: DesktopRequest) => {
     if (request.type === 'pair') {
       await refresh();
-      if (config) throw Error('DESKTOP_ALREADY_PAIRED');
+      if (config) {
+        if (!runtime.pairingRequired) throw Error('DESKTOP_ALREADY_PAIRED');
+        await halt();
+        const { token } = await readDeviceCredentials(config.deviceId);
+        // Recheck the original service, using the original credential. Only
+        // explicit server rejection permits replacing the saved identity.
+        let rejected = false;
+        try {
+          await bridgeRequest({
+            server: config.server,
+            path: '/api/v1/bridge/device/status',
+            token,
+            timeoutMs: 5000,
+          });
+        } catch (error) {
+          if (!isBridgePairingRejected(error)) throw error;
+          rejected = true;
+        }
+        if (!rejected) throw Error('DESKTOP_ALREADY_PAIRED');
+      }
       await pair(['--server', request.server, '--code', request.code]);
       await refresh();
+      runtime.pairingRequired = false;
       await resume();
     } else if (request.type === 'resume') await resume();
     else if (request.type === 'prepare') {
@@ -561,6 +586,7 @@ export async function runDesktopController() {
           architecture: arch(),
           mode,
           connection: runtime.phase,
+          pairingRequired: runtime.pairingRequired === true,
           workspaceCount: config?.grants.length ?? 0,
           credentialStorage,
           credentialFileSecure,

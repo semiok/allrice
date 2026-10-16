@@ -284,6 +284,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if forceClosing { return "正在结束 Bridge · 保留执行记录…" }
         if quitRecovery { return "退出未完成 · 可查看原因并恢复" }
         if pairing { return "正在配对并连接…" }
+        if state["pairingRequired"] as? Bool == true { return "配对已失效 · 请重新配对" }
         if !coreReady && state["mode"] as? String != "error" { return "正在启动 Bridge…" }
         switch state["mode"] as? String {
         case "unpaired": return "尚未配对"
@@ -334,17 +335,18 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(menu, "查看状态…", #selector(showStatus))
         menu.addItem(.separator())
         let paired = state["deviceId"] as? String != nil
+        let needsPairing = state["pairingRequired"] as? Bool == true
         let busy = quitRequested || !coreReady || process?.isRunning != true || pairing || ["pausing", "stopping", "draining"].contains(state["mode"] as? String ?? "")
-        if !paired { add(menu, "配对设备…", #selector(pairDevice), enabled: !busy) }
-        add(menu, "选择文件夹…", #selector(selectWorkspace), enabled: paired && !busy)
-        if state["mode"] as? String == "paused" {
+        if !paired || needsPairing { add(menu, needsPairing ? "重新配对设备…" : "配对设备…", #selector(pairDevice), enabled: !busy) }
+        add(menu, "选择文件夹…", #selector(selectWorkspace), enabled: paired && !needsPairing && !busy)
+        if state["mode"] as? String == "paused" && !needsPairing {
             add(menu, "恢复连接", #selector(resume), enabled: paired && !busy)
         }
         if (state["environment"] as? [String: Any])?["browser"] as? String == "unavailable" {
             add(menu, "安装或更新 Chrome…", #selector(installChrome), enabled: !busy)
         }
         add(menu, "检查更新…", #selector(updateStatus), enabled: !quitRequested)
-        if paired { add(menu, "断开配对…", #selector(revokeDevice), enabled: !busy) }
+        if paired { add(menu, "断开配对…", #selector(revokeDevice), enabled: !needsPairing && !busy) }
         // Hold Option while opening the status menu for support/acceptance.
         // Ordinary capability controls live in the tenant's computer settings.
         if developer {
@@ -698,6 +700,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "BRIDGE_PIPE_UNAVAILABLE": "窗口与 Bridge 核心的连接已中断。请退出应用后重新打开，并在状态窗口核对配对结果。",
             "DESKTOP_BUSY": "Bridge 正在启动或处理其他操作，请稍后重试。",
             "DESKTOP_PAIRING_CODE_INVALID": "请输入网页生成的 8 位配对码；中间横杠可带可不带。",
+            "BRIDGE_PAIRING_REJECTED": "服务器已确认原配对失效。请在 AllRice 网页生成新的配对码，再选择重新配对设备；原执行记录会保留。",
             "DESKTOP_SERVER_INVALID": "安装包的服务地址配置无效，请从 AllRice 网页重新下载 Rice Bridge。",
             "DESKTOP_CREDENTIAL_UNAVAILABLE": "本机已有配对，但凭证暂不可读。请检查 Keychain，不要重新配对或删除配置。",
             "DESKTOP_REVOKED_CLEANUP_PENDING": "此前解除配对已在服务端生效，但旧凭证或配置尚未完全清理；不代表之后的新配对被撤销。请保留诊断记录，不要使用旧令牌重试撤销。",

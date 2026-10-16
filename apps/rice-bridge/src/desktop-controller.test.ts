@@ -137,13 +137,24 @@ async function fixture(
     acknowledgeReceipts = false,
     receiptAttempts = 0,
     operationPolls = 0,
-    holdHeartbeat = false;
+    holdHeartbeat = false,
+    rejectPairing = false;
   const heldHeartbeats: (() => void)[] = [];
   const server = createServer(async (request, response) => {
     let body = '';
     for await (const chunk of request) body += chunk;
     response.setHeader('content-type', 'application/json');
-    if (request.url?.endsWith('/heartbeat') && holdHeartbeat) {
+    if (rejectPairing && request.url?.startsWith('/api/v1/bridge/device/')) {
+      response.statusCode = 401;
+      response.end(
+        JSON.stringify({
+          error: {
+            code: 'AUTHENTICATION_REQUIRED',
+            message: 'Bridge device credential is invalid or revoked',
+          },
+        }),
+      );
+    } else if (request.url?.endsWith('/heartbeat') && holdHeartbeat) {
       heldHeartbeats.push(() => response.end('{}'));
     } else if (request.url?.endsWith('/receipts')) {
       receiptAttempts++;
@@ -362,6 +373,9 @@ async function fixture(
     polls: () => polls,
     operationPolls: () => operationPolls,
     receiptAttempts: () => receiptAttempts,
+    rejectPairing: () => {
+      rejectPairing = true;
+    },
     acknowledge: () => {
       acknowledgeReceipts = true;
     },
@@ -532,6 +546,36 @@ it('fixture close waits for pipe drain after a spawn error but remains bounded',
       timeoutMs: 0,
     }),
   ).resolves.toBeUndefined();
+});
+
+it('stops a server-rejected identity, retains pairing evidence and exposes recovery instead of endless reconnecting', async () => {
+  const f = await fixture();
+  f.rejectPairing();
+  const app = f.launch();
+  await app.waitUntil(() =>
+    app.frames.some(
+      (frame) =>
+        frame.type === 'state' &&
+        (frame.state as Record<string, unknown>)?.pairingRequired === true &&
+        (frame.state as Record<string, unknown>)?.connection === 'stopped',
+    ),
+  );
+  expect((await app.request('status')).data).toMatchObject({
+    pairingRequired: true,
+    deviceId,
+    connection: 'stopped',
+  });
+  expect((await app.request('diagnostics')).data).toMatchObject({
+    pairingRequired: true,
+    notices: expect.arrayContaining([
+      expect.objectContaining({ code: 'BRIDGE_PAIRING_REJECTED' }),
+    ]),
+  });
+  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+  expect(f.polls()).toBe(0);
+  expect((await app.request('resume')).ok).toBe(false);
+  expect((await app.request('stop')).ok).toBe(true);
+  await exited(app.child);
 });
 
 it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and stops without secrets', async () => {

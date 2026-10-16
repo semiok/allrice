@@ -2,9 +2,21 @@ export class BridgeClientError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly code?: string,
   ) {
     super(message);
   }
+}
+
+/** Only an authenticated API's explicit rejection can permit re-pairing. A
+ * proxy error, unavailable Keychain or ordinary network failure cannot. */
+export function isBridgePairingRejected(error: unknown) {
+  return (
+    error instanceof BridgeClientError &&
+    error.status === 401 &&
+    error.code === 'AUTHENTICATION_REQUIRED' &&
+    error.message === 'Bridge device credential is invalid or revoked'
+  );
 }
 
 export interface BridgeRequestInput {
@@ -65,12 +77,13 @@ export async function bridgeRequest<T>(input: BridgeRequestInput): Promise<T> {
     parsed = await response.json().catch(() => ({}));
   }
   const body = parsed as {
-    error?: { message?: string };
+    error?: { message?: string; code?: string };
   };
   if (!response.ok) {
     throw new BridgeClientError(
       body.error?.message ?? `Rice Bridge API returned HTTP ${response.status}`,
       response.status,
+      body.error?.code,
     );
   }
   return body as T;
