@@ -96,6 +96,7 @@ it('keeps an automatically organized draft read-only and escapes model text', ()
         state: 'pending_validation',
         validations: [],
         validationNotes: [],
+        adoptions: [],
         revision: 1,
         digest: 'sha256:' + 'a'.repeat(64),
         createdAt: new Date().toISOString(),
@@ -150,6 +151,7 @@ it('shows independent validation coverage as not enabled without an approval sho
           },
         ],
         validationNotes: [],
+        adoptions: [],
         validations: [
           {
             id: randomUUID(),
@@ -179,3 +181,59 @@ it('shows independent validation coverage as not enabled without an approval sho
   expect(html).toContain('不证明原任务名单或其他业务场景正确');
   expect(html).not.toContain('<button');
 });
+
+it.each(['active', 'forgotten', 'unavailable'] as const)(
+  'shows the current private adoption state accurately: %s',
+  (state) => {
+    const html = renderToStaticMarkup(
+      <ExperienceDraftCard
+        batch={{
+          id: randomUUID(),
+          runId: randomUUID(),
+          instanceId: randomUUID(),
+          status: 'succeeded',
+          state: 'pending_validation',
+          revision: 1,
+          digest: 'sha256:' + 'a'.repeat(64),
+          createdAt: new Date().toISOString(),
+          errorCode: null,
+          sourceIds: [candidate.id],
+          validations: [],
+          validationNotes: [],
+          drafts: [
+            {
+              sourceIds: [candidate.id],
+              rule: '完整规则',
+              reason: '反馈',
+              applicability: '完整适用范围',
+              confidence: 'tentative',
+              validation: { kind: 'preference', check: '表达方式' },
+            },
+          ],
+          adoptions: [
+            {
+              memoryId: candidate.id,
+              draftIndex: 0,
+              revision: state === 'forgotten' ? 2 : 1,
+              state,
+              reason: null,
+              adoptedAt: new Date().toISOString(),
+              recallCount: 2,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain(
+      state === 'active'
+        ? '已采用 · 仅用于此私人 AI 员工'
+        : state === 'forgotten'
+          ? '已撤回 · 不再采用'
+          : '已停用 · 依据已变化',
+    );
+    expect(html).toContain('已为 2 次任务提供经验');
+    expect(html).not.toContain('尚未启用');
+    expect(html).not.toContain('已确认长期记忆');
+    expect(html).not.toContain('<button');
+  },
+);

@@ -36,6 +36,7 @@ import {
   resolveEmployeeExecution,
   filterEmployeeMethodMemories,
   prepareEmployeeContentContext,
+  prepareRunExperiences,
   assertEmployeeContentContext,
   loadEmployeeRuntimeScene,
   loadEmployeeRuntimeReferences,
@@ -281,6 +282,31 @@ export async function executeEmployeeRun({
   };
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
+    const experience = await prepareRunExperiences(contentScope, {
+      ...workflowLease,
+      attempt: execution.job.attempt,
+    });
+    resolved = {
+      ...resolved,
+      promptSnapshot: {
+        ...resolved.promptSnapshot,
+        memories: [
+          ...resolved.promptSnapshot.memories.slice(
+            0,
+            20 - experience.memories.length,
+          ),
+          ...experience.memories,
+        ],
+        systemPrompt:
+          resolved.promptSnapshot.systemPrompt +
+          (experience.receipt
+            ? `\n私人经验操作的服务器回执：${JSON.stringify(experience.receipt)}。据此如实告知结果，不得将未匹配或歧义说成已删除。`
+            : '') +
+          (experience.memories.length
+            ? '\n自动整理的私人经验仅作为当前任务的辅助方法，受其适用范围限制；当前用户要求、明确个人设置和已发布执行要求优先。不可扩大为其他任务或权限。'
+            : ''),
+      },
+    };
     contentRuntime = await prepareEmployeeContentContext(contentScope);
   } catch (error) {
     if (error instanceof EmployeeRuntimeContentError)

@@ -144,3 +144,5 @@ export * from './project-tool-releases.ts';
 
 export * from './project-resolution-script.ts';
 export * from './experience-validation.ts';
+
+export * from './experience-adoption.ts';

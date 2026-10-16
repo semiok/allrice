@@ -18,6 +18,7 @@ import {
   collectPendingExperienceEvidence,
   syncExperienceConsolidationSchedules,
   syncExperienceValidations,
+  syncExperienceAdoptions,
   pingDatabase,
   queueSummary,
   recoverCodexAuthorizationFlows,
@@ -406,6 +407,7 @@ async function automationTick() {
         await collectPendingExperienceEvidence();
         await syncExperienceConsolidationSchedules();
         await syncExperienceValidations();
+        await syncExperienceAdoptions();
       }
     });
   } catch (error) {

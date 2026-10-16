@@ -238,7 +238,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     if (fixture) await fixture.close();
   }, 30000);
 
-  it('saves the company schedule and validation opt-in through the real admin API and reloads the exact revision', async () => {
+  it('saves the company schedule, validation and private adoption opt-ins through the real admin API and reloads the exact revision', async () => {
     const admin = (await authenticateSession(adminToken))!;
     const company = await createManagedOrganization(admin, {
       name: '经验整理设置测试',
@@ -290,6 +290,12 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       });
       expect(await validation.isChecked()).toBe(false);
       await validation.check();
+      const adoption = page.getByRole('checkbox', {
+        name: '自动采用已验证的私人经验',
+        exact: true,
+      });
+      expect(await adoption.isChecked()).toBe(false);
+      await adoption.check();
       await page
         .getByRole('button', { name: '保存整理设置', exact: true })
         .click();
@@ -312,11 +318,14 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await page.getByLabel('整理时间', { exact: true }).inputValue(),
       ).toBe('04:15');
       expect(await validation.isChecked()).toBe(true);
+      expect(await adoption.isChecked()).toBe(true);
       const [saved] =
         await fixture.db`select value from allrice_settings where scope_type='organization' and scope_id=${company.organizationId} and key='employee_experience_policy'`;
       expect(saved!.value).toMatchObject({
-        schemaVersion: 3,
+        schemaVersion: 4,
         revision: 2,
+        adoptionMode: 'supported_private',
+        adoptionAuthorizedBy: admin.actor.id,
         frequency: 'monthly',
         validationMode: 'supported_cases',
         monthDay: 31,

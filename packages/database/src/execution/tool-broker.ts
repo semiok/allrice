@@ -1,3 +1,4 @@
+import { searchRunExperiences } from '../experience-runtime.ts';
 import { assertMethodFilePublication } from '../employees/employee-method-file-runtime.ts';
 import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
@@ -735,7 +736,7 @@ export async function searchToolBrokerMemories(
         or visibility <> 'private')
       and (expires_at is null or expires_at > now())
       and not exists(select 1 from allrice_experience_reviews er
-        where er.memory_id=m.id and (er.origin_kind='incremental' or er.status<>'approved'
+        where er.memory_id=m.id and (er.origin_kind in ('incremental','derived') or er.status<>'approved'
           or exists(select 1 from allrice_employee_runs origin where origin.run_id=er.run_id and origin.method_authoring)))
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
@@ -744,19 +745,41 @@ export async function searchToolBrokerMemories(
     order by updated_at desc
     limit ${Math.min(Math.max(limit, 1), 20)}
   `;
-  return rows.map((row) => {
-    authorizeRead(context, 'memory', row);
-    return {
-      id: row.id,
-      content: row.content.slice(0, 4_000),
-      provenance: {
-        trust: row.trust_level,
-        confidence: Number(row.confidence),
-        sourceLabel: row.source_label,
-      },
-      updatedAt: row.updated_at.toISOString(),
-    };
+  const experience = await searchRunExperiences({
+    organizationId: context.organizationId,
+    workspaceId: context.workspaceId,
+    ownerId: context.policySnapshot.subjectId,
+    runId: context.runId,
   });
+  return [
+    ...experience
+      .filter(
+        (m) => /经验|记忆/u.test(query) || m.content.includes(query.trim()),
+      )
+      .map((m) => ({
+        id: m.id,
+        content: m.content,
+        provenance: {
+          trust: m.trust,
+          confidence: m.confidence,
+          sourceLabel: m.sourceLabel,
+        },
+        updatedAt: m.capturedAt,
+      })),
+    ...rows.map((row) => {
+      authorizeRead(context, 'memory', row);
+      return {
+        id: row.id,
+        content: row.content.slice(0, 4_000),
+        provenance: {
+          trust: row.trust_level,
+          confidence: Number(row.confidence),
+          sourceLabel: row.source_label,
+        },
+        updatedAt: row.updated_at.toISOString(),
+      };
+    }),
+  ].slice(0, Math.min(Math.max(limit, 1), 20));
 }
 
 export async function searchToolBrokerSessions(

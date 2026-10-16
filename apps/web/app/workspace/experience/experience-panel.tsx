@@ -183,15 +183,19 @@ export function ExperienceDraftCard({
   return (
     <article className={styles.card} data-experience-batch={batch.id}>
       <strong>
-        {batch.state === 'pending_validation'
-          ? batch.validations?.length
-            ? '经验草稿 · 尚未启用'
-            : '经验草稿 · 待验证'
-          : batch.status === 'failed' || batch.status === 'canceled'
-            ? '本次整理未完成'
-            : batch.status === 'succeeded'
-              ? '本次没有新增反馈'
-              : '正在整理'}
+        {batch.adoptions?.some((a) => a.state === 'active')
+          ? '私人经验 · 已采用'
+          : batch.adoptions?.length
+            ? '私人经验 · 已停用'
+            : batch.state === 'pending_validation'
+              ? batch.validations?.length
+                ? '经验草稿 · 尚未启用'
+                : '经验草稿 · 待验证'
+              : batch.status === 'failed' || batch.status === 'canceled'
+                ? '本次整理未完成'
+                : batch.status === 'succeeded'
+                  ? '本次没有新增反馈'
+                  : '正在整理'}
       </strong>
       <p>
         {new Date(batch.createdAt).toLocaleString('zh-CN')} ·{' '}
@@ -201,20 +205,48 @@ export function ExperienceDraftCard({
         <section key={index}>
           <p className={styles.rule}>{draft.rule}</p>
           <p>适用范围：{draft.applicability}</p>
+          {batch.adoptions
+            ?.filter((a) => a.draftIndex === index)
+            .map((a) => (
+              <div key={a.memoryId} data-experience-adoption={a.memoryId}>
+                <p>
+                  {a.state === 'active'
+                    ? '已采用 · 仅用于此私人 AI 员工'
+                    : a.state === 'forgotten'
+                      ? '已撤回 · 不再采用'
+                      : '已停用 · 依据已变化'}
+                </p>
+                <p>
+                  {a.reason ??
+                    `版本 ${a.revision} · 已为 ${a.recallCount} 次任务提供经验`}
+                </p>
+                {a.state === 'active' && (
+                  <p>
+                    如需撤回，可在聊天中说：请忘记“{draft.rule}”这条个人经验。
+                  </p>
+                )}
+              </div>
+            ))}
           {batch.validations
             .filter((v) => v.draftIndex === index)
             .map((v) => (
               <div key={v.id} data-experience-validation={v.id}>
                 <p>
                   {v.validationStatus === 'passed'
-                    ? '专项样例通过 · 尚未启用'
+                    ? batch.adoptions?.some((a) => a.draftIndex === index)
+                      ? '专项样例通过'
+                      : '专项样例通过 · 尚未启用'
                     : v.validationStatus === 'failed'
                       ? '专项验证未通过 · 未启用'
                       : v.validationStatus === 'not_verified'
                         ? '验证未完成 · 未启用'
                         : '专项验证中 · 未启用'}
                 </p>
-                <p>{v.coverage}</p>
+                <p>
+                  {batch.adoptions?.some((a) => a.draftIndex === index)
+                    ? v.coverage.replace('，尚未启用。', '。')
+                    : v.coverage}
+                </p>
                 <details>
                   <summary>查看验证依据</summary>
                   <p>
@@ -235,8 +267,8 @@ export function ExperienceDraftCard({
             <p>{draft.reason}</p>
             <p>
               {draft.confidence === 'consistent'
-                ? '多条反馈一致，仍需验证。'
-                : '初步提炼，仍需验证。'}
+                ? '多条反馈一致；采用状态以验证结果为准。'
+                : '初步提炼；采用状态以验证结果为准。'}
             </p>
             <small>来源：{draft.sourceIds.join('、')}</small>
           </details>

@@ -110,7 +110,7 @@ async function current(tx: Tx, b: Binding) {
   if (!experienceReviewEnabled()) return deny();
   const policy = await readExperiencePolicy(b.organizationId, tx);
   if (
-    policy.schemaVersion !== 3 ||
+    !('validationMode' in policy) ||
     policy.validationMode !== 'supported_cases' ||
     policy.frequency === 'off' ||
     runtimePolicyDigest(policy) !== b.policyDigest
@@ -168,7 +168,7 @@ export async function syncExperienceValidations() {
       if (!row) return;
       const policy = await readExperiencePolicy(row.organization_id, tx);
       if (
-        policy.schemaVersion !== 3 ||
+        !('validationMode' in policy) ||
         policy.validationMode !== 'supported_cases' ||
         policy.frequency === 'off'
       )
@@ -529,4 +529,49 @@ export async function listExperienceValidationViews(
       active: false,
     });
   });
+}
+
+/** A completed proof remains usable when the administrator later enables
+ * adoption. Current source/rule authority is checked separately; do not rerun
+ * the model merely because the scheduling policy revision changed. */
+export async function readPassedExperienceProof(
+  tx: Tx,
+  source: Awaited<ReturnType<typeof readExperienceValidationSource>>,
+  draftIndex: number,
+) {
+  const { occurrence: o, receipt } = source;
+  const draft = receipt.output.drafts[draftIndex];
+  const [row] =
+    await tx`select id,status,experience_binding,experience_assertion,experience_run_id
+    from allrice_platform_employee_test_runs where purpose='experience_validation'
+      and experience_binding->>'occurrenceId'=${o.id} and experience_binding->>'draftIndex'=${String(draftIndex)}`;
+  if (!row || row.status !== 'succeeded' || !row.experience_run_id || !draft)
+    return null;
+  const b = BindingSchema.parse(row.experience_binding);
+  const assertion = ExperienceValidationAssertionSchema.safeParse(
+    row.experience_assertion,
+  );
+  if (
+    !assertion.success ||
+    !assertion.data.passed ||
+    b.id !== row.id ||
+    b.organizationId !== o.organizationId ||
+    b.workspaceId !== o.workspaceId ||
+    b.ownerId !== o.ownerId ||
+    b.instanceId !== o.instanceId ||
+    b.employeeId !== o.employeeId ||
+    b.assignmentId !== o.assignmentId ||
+    b.employeeVersionId !== o.employeeVersionId ||
+    b.outputDigest !== receipt.outputDigest ||
+    b.draftDigest !== runtimePolicyDigest(draft) ||
+    b.sourceDigest !== runtimePolicyDigest(o.sources) ||
+    b.caseDigest !== runtimePolicyDigest(experienceRosterCase)
+  )
+    return null;
+  return {
+    kind: 'independent_case' as const,
+    testId: b.id,
+    caseId: b.caseId,
+    caseDigest: b.caseDigest,
+  };
 }

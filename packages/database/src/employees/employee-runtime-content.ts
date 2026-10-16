@@ -1,3 +1,6 @@
+import { ExperienceReadPinsSchema } from '@allrice/contracts';
+import { assertExperienceReadPins } from '../experience-adoption.ts';
+import { ExperienceError } from '../experience.ts';
 import {
   assertPersonalSkillsReadable,
   assertPersonalSkillPins,
@@ -252,6 +255,7 @@ type ContentContextRow = {
   invalidated_at: Date | null;
 };
 type PersonalProvenance = {
+  experience_reads: unknown;
   personal_skills: unknown;
   has_personal_skills: boolean;
   personal_instance_id: string | null;
@@ -262,6 +266,12 @@ async function assertPersonalProvenance(
   row: PersonalProvenance,
   sql: ContentSql,
 ) {
+  try {
+    await assertExperienceReadPins(reader, row.experience_reads, sql);
+  } catch (error) {
+    if (error instanceof ExperienceError) return unavailable();
+    throw error;
+  }
   const raw = row.has_personal_skills ? row.personal_skills : undefined;
   const pins = row.native_personal_pins ?? [];
   if (row.has_personal_skills || pins.length) {
@@ -290,7 +300,7 @@ function identity(scope: RunScope): ContentIdentity {
 async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
-  >`select er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
+  >`select er.experience_reads,er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
       er.content_generation_id,er.content_scene_state,er.reference_reads,er.prompt_snapshot->>'userRequest' as user_request,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
@@ -354,7 +364,7 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
         | 'reference_reads'
       >[]
     >`
-      select distinct execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+      select distinct experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED' limit 129`;
     if (rows.length > 128) return unavailable();
@@ -455,7 +465,7 @@ async function generationIsReadable(
         { sessionId: string; messages: { id: string }[] }[] | null;
     })[]
   >`
-    select distinct execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+    select distinct experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
       and error_code is distinct from 'STEER_CONSUMED' limit 129`;
@@ -513,6 +523,7 @@ async function generationIsReadable(
         );
     } catch (error) {
       if (
+        error instanceof ExperienceError ||
         error instanceof PersonalSkillError ||
         error instanceof EmployeeRuntimeContentError ||
         error instanceof ZodError ||
@@ -668,11 +679,12 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =
-      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'personalSkills' is not null or content_scene_state is not null or reference_reads is not null or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
+      await tx`select run_id from allrice_employee_runs where content_generation_id=${context!.generation_id} and (execution_snapshot->'personalSkills' is not null or content_scene_state is not null or reference_reads is not null or jsonb_array_length(experience_reads)>0 or jsonb_array_length(coalesce(prompt_snapshot->'referenceSelections','[]'::jsonb))>0) limit 1`;
     return {
       ...current,
       generationId: context!.generation_id,
       nativeContextKey:
+        ExperienceReadPinsSchema.parse(run.experience_reads ?? []).length ||
         run.personal_skills ||
         current.scenes.length ||
         current.sources.some((s) => s.referenceFile) ||

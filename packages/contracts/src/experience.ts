@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { MemoryClassSchema } from './operations.ts';
 import { PersonalSkillPinSchema } from './personal-skills.ts';
+import { ExperienceAdoptionViewSchema } from './experience-adoption.ts';
 import { ExperienceValidationViewSchema } from './experience-validation.ts';
 
 /** Platform Skills keep their separate source/license/test/publication gate. */
@@ -58,6 +59,17 @@ export const ExperienceCollectionPolicySchema = z.discriminatedUnion(
       ...ExperiencePolicySettingsSchema.shape,
       validationMode: z.enum(['off', 'supported_cases']),
     }).strict(),
+    LegacyExperienceCollectionPolicySchema.extend({
+      schemaVersion: z.literal(4),
+      ...ExperiencePolicySettingsSchema.shape,
+      validationMode: z.enum(['off', 'supported_cases']),
+      adoptionMode: z.enum(['off', 'supported_private']),
+      adoptionAuthorizedBy: UuidSchema.nullable(),
+    })
+      .strict()
+      .refine(
+        (p) => p.adoptionMode === 'off' || p.adoptionAuthorizedBy !== null,
+      ),
   ],
 );
 export function experiencePolicySchedule(
@@ -127,6 +139,7 @@ export const ExperienceDraftBatchSchema = z
     errorCode: z.string().nullable(),
     sourceIds: z.array(UuidSchema).max(16),
     drafts: ExperienceDraftOutputSchema.shape.drafts,
+    adoptions: z.array(ExperienceAdoptionViewSchema).max(8).default([]),
     validations: z.array(ExperienceValidationViewSchema).max(8).default([]),
     validationNotes: z.array(z.string().max(500)).max(8).default([]),
   })
@@ -265,7 +278,7 @@ export const ExperienceCandidateSchema = z
     createdAt: TimestampSchema,
     reviewedAt: TimestampSchema.nullable(),
     reviewReason: z.string().max(500).nullable(),
-    originKind: z.enum(['manual', 'incremental']).optional(),
+    originKind: z.enum(['manual', 'incremental', 'derived']).optional(),
     instanceId: UuidSchema.nullable().optional(),
     evidence: ExperienceEvidenceSchema.nullable().optional(),
   })

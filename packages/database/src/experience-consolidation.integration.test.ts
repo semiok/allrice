@@ -1,4 +1,19 @@
 import {
+  syncExperienceAdoptions,
+  readPrivateExperience,
+  assertExperienceReadPins,
+} from './experience-adoption.ts';
+import {
+  prepareRunExperiences,
+  searchRunExperiences,
+} from './experience-runtime.ts';
+import { freezeEmployeeRuntimeContent } from './employees/employee-content.ts';
+import {
+  prepareEmployeeContentContext,
+  assertEmployeeContentContext,
+} from './employees/employee-runtime-content.ts';
+import { createChatSession } from './workspace/service.ts';
+import {
   syncExperienceValidations,
   experienceValidationStillCurrent,
 } from './experience-validation.ts';
@@ -27,7 +42,10 @@ import {
 import type * as Client from './core/client.ts';
 import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
-import { prepareEmployeeInstanceSnapshot } from './employees/employee-instances.ts';
+import {
+  createEmployeeInstance,
+  prepareEmployeeInstanceSnapshot,
+} from './employees/employee-instances.ts';
 import { mutateEmployeeContent } from './employees/employee-content.ts';
 import { collectPendingExperienceEvidence } from './experience-evidence.ts';
 import { createExperienceStore } from './experience.ts';
@@ -81,6 +99,7 @@ async function source(
   materialize = true,
   attendance = false,
   published = false,
+  feedback?: string,
 ) {
   const f = await createExperienceFixture(db, { published });
   for (const context of [f.owner, f.reviewer, f.neighbor])
@@ -115,9 +134,11 @@ async function source(
   const runId = randomUUID(),
     messageId = randomUUID(),
     assistantId = randomUUID();
-  const text = attendance
-    ? '我已核对，到场和未到人数与原始名单一致，分项列出很清晰。'
-    : '刚才的对账报告漏了退款，核对时需要单列退款再汇总净回款。';
+  const text =
+    feedback ??
+    (attendance
+      ? '我已核对，到场和未到人数与原始名单一致，分项列出很清晰。'
+      : '刚才的对账报告漏了退款，核对时需要单列退款再汇总净回款。');
   await db`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content,status)
     values(${messageId},${f.org},${f.workspace},${f.user},${f.session.id},'user',${db.json({ text, citations: [] })},'completed'),
       (${assistantId},${f.org},${f.workspace},${f.user},${f.session.id},'assistant','{"text":"已收到"}','completed')`;
@@ -198,8 +219,9 @@ async function queued(
   withRule = false,
   attendance = false,
   published = false,
+  feedback?: string,
 ) {
-  const f = await source(withSkill, true, attendance, published);
+  const f = await source(withSkill, true, attendance, published, feedback);
   const current = withRule ? await currentRequirement(f) : null;
   await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
   await Promise.all([claimDueAutomations(), claimDueAutomations()]);
@@ -213,8 +235,9 @@ async function leased(
   withRule = false,
   attendance = false,
   published = false,
+  feedback?: string,
 ) {
-  const f = await queued(withSkill, withRule, attendance, published),
+  const f = await queued(withSkill, withRule, attendance, published, feedback),
     workerId = randomUUID();
   const job = await claimNextJob(workerId, 120000, { allowBackground: true });
   expect(
@@ -345,8 +368,9 @@ suite(
     }, 120000);
     beforeEach(async () => {
       await db`update allrice_automations set status='paused',next_run_at=null`;
-      await db`update allrice_settings set value=jsonb_set(value,'{validationMode}','\"off\"') where value->>'schemaVersion'='3'`;
+      await db`update allrice_settings set value=jsonb_set(value,'{validationMode}','\"off\"') where value->>'schemaVersion' in ('3','4')`;
       await db`update allrice_platform_employee_test_runs set status='failed',completed_at=clock_timestamp() where purpose='experience_validation' and status in ('queued','running')`;
+      await db`update allrice_settings set value=jsonb_set(value,'{adoptionMode}','"off"') where value->>'schemaVersion'='4'`;
       await db`update allrice_jobs set status='canceled',completed_at=clock_timestamp() where status in ('queued','claimed','running')`;
     });
     afterAll(async () => {
@@ -473,6 +497,373 @@ suite(
         db`update allrice_automation_runs set experience_validation_plan=null where id=${f.occurrence.id}`,
       ).rejects.toThrow('immutable');
     });
+    async function adoptedFixture() {
+      const f = await validationFixture();
+      await syncExperienceValidations();
+      const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+      await completePlatformEmployeeTestRun(
+        test.id,
+        await validationReceipt(test, attendanceAnswer),
+      );
+      await updateExperiencePolicy(f.reviewer, f.org, {
+        expectedRevision: (await readExperiencePolicy(f.org)).revision,
+        frequency: 'daily',
+        timezone: 'Asia/Shanghai',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+        adoptionMode: 'supported_private',
+      });
+      await Promise.all([syncExperienceAdoptions(), syncExperienceAdoptions()]);
+      const rows =
+        await db`select m.*,e.adoption_proof,e.reviewed_by from allrice_memories m join allrice_experience_reviews e on e.memory_id=m.id
+        where e.owner_id=${f.user} and e.origin_kind='derived'`;
+      expect(
+        rows,
+        JSON.stringify(
+          await db`select experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`,
+        ),
+      ).toHaveLength(1);
+      return { ...f, memory: rows[0]!, validationId: test.id };
+    }
+    async function experienceRun(
+      f: Awaited<ReturnType<typeof adoptedFixture>>,
+      text: string,
+      sessionId?: string,
+    ) {
+      const session = sessionId
+        ? { id: sessionId }
+        : await createChatSession(f.owner, {
+            workspaceId: f.workspace,
+            employeeAssignmentId: f.instance.assignmentId,
+            employeeInstanceId: f.instance.id,
+            title: 'Synthetic experience use',
+          });
+      const content = await freezeEmployeeRuntimeContent(f.owner, {
+        instanceId: f.instance.id,
+        employeeId: f.frozen.occurrence.employeeId,
+        employeeVersionId: f.instance.source.employeeVersionId,
+      });
+      const runId = randomUUID(),
+        userMessage = randomUUID(),
+        assistant = randomUUID();
+      await db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content,status)
+        values(${userMessage},${f.org},${f.workspace},${session.id},${f.user},'user',${db.json({ text, citations: [] })},'completed'),
+        (${assistant},${f.org},${f.workspace},${session.id},${f.user},'assistant','{"text":"","citations":[]}','pending')`;
+      await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
+        values(${runId},${f.org},${f.workspace},${f.user},'running','{}','{}')`;
+      await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,session_id,employee_assignment_id,employee_version_id,
+        user_message_id,assistant_message_id,status,provider_snapshot,prompt_snapshot,execution_snapshot)
+        values(${runId},${f.org},${f.workspace},${f.user},${session.id},${f.instance.assignmentId},${f.instance.source.employeeVersionId},
+        ${userMessage},${assistant},'running','{}',${db.json({ userRequest: text, memories: [], conversation: [], systemPrompt: 'Synthetic' })},
+        ${db.json({ instance: f.instance, content })})`;
+      const worker = {
+        jobId: randomUUID(),
+        workerId: randomUUID(),
+        leaseToken: randomUUID(),
+        attempt: 1,
+      };
+      await db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,attempt)
+        values(${worker.jobId},${f.org},${f.workspace},${f.user},${runId},'running',${randomUUID()},clock_timestamp()+interval '5 minutes','{"schemaVersion":1,"type":"allrice.employee.run","input":{}}',${worker.workerId},${worker.leaseToken},clock_timestamp(),clock_timestamp(),clock_timestamp()+interval '5 minutes',1)`;
+      return {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.user,
+        sessionId: session.id,
+        runId,
+        worker,
+      };
+    }
+    it('adopts the existing independent proof once, without forging human review or rerunning validation', async () => {
+      const f = await adoptedFixture();
+      expect(f.memory.reviewed_by).toBeNull();
+      expect(
+        (await createExperienceStore().list(f.owner)).some(
+          (m) => m.id === f.memory.id,
+        ),
+      ).toBe(false);
+      expect(
+        (await listExperienceDrafts(f.owner))[0]!.adoptions[0]?.memoryId,
+      ).toBe(f.memory.id);
+      expect(f.memory.adoption_proof.validation.testId).toBe(f.validationId);
+      expect(f.memory.visibility).toBe('private');
+      expect(f.memory.instance_id).toBe(f.instance.id);
+      expect(
+        await db`select id from allrice_memory_revisions where memory_id=${f.memory.id}`,
+      ).toHaveLength(1);
+      expect(
+        await db`select id from allrice_rag_chunks where memory_id=${f.memory.id}`,
+      ).toHaveLength(1);
+      await syncExperienceValidations();
+      await syncExperienceAdoptions();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(1);
+      await expect(
+        db.begin((tx) => readPrivateExperience(tx, f.neighbor, f.memory.id)),
+      ).rejects.toThrow('source_changed');
+      expect(
+        await searchWorkspaceMemories(f.owner, {
+          workspaceId: f.workspace,
+          query: '到场',
+        }),
+      ).toEqual([]);
+      await expect(
+        createExperienceStore().review(f.owner, f.memory.id, {
+          decision: 'approve',
+          expectedRevision: 1,
+          expectedDigest: f.memory.adoption_proof.contentDigest,
+          reason: 'bypass',
+        }),
+      ).rejects.toThrow();
+    });
+    it('uses the exact private instance in a new Session and forgets before rotating native history; retries cannot revive it', async () => {
+      const f = await adoptedFixture();
+      const scope = await experienceRun(
+        f,
+        '请根据这份名单核对到场和未到人数，分别列出成员。名单：陈一=到场；李二=未到；王三=到场。',
+      );
+      const first = await prepareRunExperiences(scope, scope.worker);
+      expect(first.memories.map((m) => m.id)).toEqual([f.memory.id]);
+      const runtime = (await prepareEmployeeContentContext(scope))!;
+      expect(runtime.nativeContextKey).toContain(scope.runId);
+      expect((await searchRunExperiences(scope)).map((m) => m.id)).toEqual([
+        f.memory.id,
+      ]);
+      await prepareRunExperiences(scope, scope.worker);
+      expect(
+        (
+          await db`select recall_count from allrice_memories where id=${f.memory.id}`
+        )[0]!.recall_count,
+      ).toBe(1);
+      const unrelated = await experienceRun(f, '请写一段旅行建议。');
+      expect(
+        (await prepareRunExperiences(unrelated, unrelated.worker)).memories,
+      ).toEqual([]);
+      const forget = await experienceRun(
+        f,
+        '请忘记你整理的“到场和未到人数分项列出”这条个人经验，以后不要自动采用。',
+        scope.sessionId,
+      );
+      const forgotten = await prepareRunExperiences(forget, forget.worker);
+      expect(forgotten.receipt).toMatchObject({
+        status: 'forgotten',
+        memoryId: f.memory.id,
+      });
+      expect(forgotten.memories).toEqual([]);
+      const nextContext = (await prepareEmployeeContentContext(forget))!;
+      expect(nextContext.generationId).not.toBe(runtime.generationId);
+      expect(nextContext.allowedMessageIds).not.toBeNull();
+      await expect(
+        assertEmployeeContentContext(scope, runtime.generationId),
+      ).rejects.toThrow();
+      await expect(searchRunExperiences(scope)).rejects.toThrow();
+      expect(
+        (await prepareRunExperiences(forget, forget.worker)).receipt,
+      ).toEqual(forgotten.receipt);
+      const next = await experienceRun(
+        f,
+        '请核对到场和未到人数，名单：一=到场。',
+      );
+      expect((await prepareRunExperiences(next, next.worker)).memories).toEqual(
+        [],
+      );
+      await syncExperienceAdoptions();
+      expect(
+        await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+      ).toHaveLength(1);
+      expect(
+        await db`select id from allrice_memory_revisions where memory_id=${f.memory.id}`,
+      ).toHaveLength(2);
+      expect(
+        await db`select id from allrice_rag_chunks where memory_id=${f.memory.id}`,
+      ).toHaveLength(0);
+      expect(
+        (await listExperienceDrafts(f.owner))[0]!.adoptions[0]?.state,
+      ).toBe('forgotten');
+    });
+    it('fails closed on changed evidence and does not let another principal search or prepare a bound Run', async () => {
+      const f = await adoptedFixture();
+      const scope = await experienceRun(f, '请核对名单中到场和未到的人数。');
+      const prepared = await prepareRunExperiences(scope, scope.worker);
+      expect(prepared.memories).toHaveLength(1);
+      await expect(
+        prepareRunExperiences(
+          { ...scope, ownerId: f.neighbor.actor.id },
+          scope.worker,
+        ),
+      ).rejects.toThrow();
+      expect(
+        await searchRunExperiences({ ...scope, ownerId: f.neighbor.actor.id }),
+      ).toEqual([]);
+      await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
+      const [bound] =
+        await db`select experience_reads from allrice_employee_runs where run_id=${scope.runId}`;
+      await expect(
+        db.begin((tx) =>
+          assertExperienceReadPins(f.owner, bound!.experience_reads, tx),
+        ),
+      ).rejects.toThrow();
+      const next = await experienceRun(f, '请核对名单中到场和未到的人数。');
+      expect((await prepareRunExperiences(next, next.worker)).memories).toEqual(
+        [],
+      );
+    });
+    it('does not leak adopted experience into another instance owned by the same person', async () => {
+      const f = await adoptedFixture();
+      const other = await createEmployeeInstance(f.owner, {
+        workspaceId: f.workspace,
+        assignmentId: f.instance.assignmentId,
+        requestId: randomUUID(),
+        profile: { name: 'Independent private employee' },
+      });
+      const scope = await experienceRun(
+        { ...f, instance: other },
+        '请根据原始名单核对到场和未到人数。',
+      );
+      expect(
+        (await prepareRunExperiences(scope, scope.worker)).memories,
+      ).toEqual([]);
+      expect(await searchRunExperiences(scope)).toEqual([]);
+      expect(
+        (
+          await db`select recall_count from allrice_memories where id=${f.memory.id}`
+        )[0]!.recall_count,
+      ).toBe(0);
+    });
+    it('does not rescan a waiting draft because a different draft already has a terminal proof', async () => {
+      const f = await adoptedFixture();
+      // A persisted partial plan waits for draft 1. Its draft-0 proof is already terminal.
+      const waiting = {
+        status: 'awaiting_validation',
+        pendingDrafts: [1],
+        drafts: [{ draftIndex: 0, memoryId: f.memory.id }],
+      };
+      await db`update allrice_automation_runs set experience_adoption_plan=${db.json(waiting)} where id=${f.occurrence.id}`;
+      await syncExperienceAdoptions();
+      expect(
+        (
+          await db`select experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`
+        )[0]!.experience_adoption_plan,
+      ).toEqual(waiting);
+    });
+    it('adopts after a delayed proof without treating the first missing result as final or rerunning validation', async () => {
+      const f = await validationFixture(true, false);
+      const settings = {
+        frequency: 'daily',
+        timezone: 'Asia/Shanghai',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+        adoptionMode: 'supported_private',
+      };
+      await updateExperiencePolicy(f.reviewer, f.org, {
+        ...settings,
+        expectedRevision: (await readExperiencePolicy(f.org)).revision,
+      });
+      await syncExperienceAdoptions();
+      expect(
+        (
+          await db`select experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`
+        )[0]!.experience_adoption_plan.status,
+      ).toBe('awaiting_validation');
+      await updateExperiencePolicy(f.reviewer, f.org, {
+        ...settings,
+        validationMode: 'supported_cases',
+        expectedRevision: (await readExperiencePolicy(f.org)).revision,
+      });
+      await syncExperienceValidations();
+      const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+      await syncExperienceAdoptions();
+      expect(
+        await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+      ).toHaveLength(0);
+      await completePlatformEmployeeTestRun(
+        test.id,
+        await validationReceipt(test, attendanceAnswer),
+      );
+      await syncExperienceAdoptions();
+      expect(
+        await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+      ).toHaveLength(1);
+      await syncExperienceAdoptions();
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(1);
+    });
+    it.each([true, false])(
+      'uses direct report preference proof without a model test; specific=%s',
+      async (specific) => {
+        const f = await leased(
+          false,
+          false,
+          false,
+          true,
+          specific
+            ? '反馈：这份报告分点说明很清晰，阅读起来很方便。'
+            : '反馈：很好，很清晰。',
+        );
+        const output = await proof(f);
+        Object.assign(output.drafts[0]!, {
+          rule: '撰写报告时采用分点说明。',
+          applicability:
+            '仅适用于报告的表达方式，不改变业务规则、计算口径或执行步骤。',
+          validation: { kind: 'preference', check: '仅报告表达方式' },
+        });
+        await completeJob({ ...f.lease, result: output });
+        await syncAutomationRuns();
+        await updateExperiencePolicy(f.reviewer, f.org, {
+          expectedRevision: (await readExperiencePolicy(f.org)).revision,
+          frequency: 'daily',
+          timezone: 'Asia/Shanghai',
+          time: '03:00',
+          weekday: 1,
+          monthDay: 1,
+          adoptionMode: 'supported_private',
+        });
+        await syncExperienceAdoptions();
+        const rows =
+          await db`select adoption_proof from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`;
+        expect(rows).toHaveLength(specific ? 1 : 0);
+        if (specific)
+          expect(rows[0]!.adoption_proof.validation).toMatchObject({
+            kind: 'direct_preference',
+            evaluator: 'report-style-v1',
+          });
+        expect(
+          await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+        ).toHaveLength(0);
+      },
+    );
+    it.each(['canceled', 'expired', 'replaced'] as const)(
+      'does not apply a forget command from a %s worker',
+      async (mode) => {
+        const f = await adoptedFixture();
+        const scope = await experienceRun(
+          f,
+          '请忘记你整理的“到场和未到人数分项列出”这条个人经验，以后不要自动采用。',
+        );
+        if (mode === 'canceled')
+          await db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${scope.worker.jobId}`;
+        if (mode === 'expired')
+          await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${scope.worker.jobId}`;
+        if (mode === 'replaced')
+          await db`update allrice_jobs set lease_token=${randomUUID()},attempt=2 where id=${scope.worker.jobId}`;
+        await expect(
+          prepareRunExperiences(scope, scope.worker),
+        ).rejects.toThrow('identity_denied');
+        expect(
+          (
+            await db`select archived_at from allrice_memories where id=${f.memory.id}`
+          )[0]!.archived_at,
+        ).toBeNull();
+        expect(
+          (
+            await db`select experience_action_receipt from allrice_employee_runs where run_id=${scope.runId}`
+          )[0]!.experience_action_receipt,
+        ).toBeNull();
+      },
+    );
     it.each(['canceled', 'lease-expired', 'terminal'] as const)(
       'stops the exact validation worker after %s and rejects another lease',
       async (kind) => {
