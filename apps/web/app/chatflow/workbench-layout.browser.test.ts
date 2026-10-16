@@ -2139,7 +2139,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const labelBox = (await label.boundingBox())!;
         expect(
           await card.locator('header').getByRole('status').innerText(),
-        ).toBe('正在执行');
+        ).toBe('执行中');
         expect(
           await card
             .locator('header')
@@ -2236,12 +2236,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await stopping.isDisabled()).toBe(true);
         expect(
           await card.locator('header').getByRole('status').innerText(),
-        ).toBe('正在执行');
+        ).toBe('执行中');
         operation.snapshot.status = 'cancel_requested';
         await card
           .locator('header')
           .getByRole('status', {
-            name: '停止意图已记录，结果待确认',
+            name: '已请求停止',
             exact: true,
           })
           .waitFor();
@@ -2268,7 +2268,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         };
         await card
           .locator('header')
-          .getByText('执行未成功', { exact: true })
+          .getByText('执行失败', { exact: true })
           .waitFor();
         expect((await card.boundingBox())!.height).toBe(runningHeight);
         await detail.click();
@@ -2284,12 +2284,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         operation.snapshot.status = 'unknown';
         await card
           .locator('header')
-          .getByText('结果待确认', { exact: true })
+          .getByText('待核实', { exact: true })
           .waitFor();
         expect(
           await card
             .locator('header')
-            .getByText('执行未成功', { exact: true })
+            .getByText('执行失败', { exact: true })
             .count(),
         ).toBe(0);
         expect(requests).toHaveLength(2);
@@ -6008,7 +6008,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         second = f.page.locator(`#operation-${id(8991)}`);
       await second
         .locator('header')
-        .getByRole('status', { name: '正在执行', exact: true })
+        .getByRole('status', { name: '执行中', exact: true })
         .waitFor();
       await push('assistant.text.delta', {
         replyId: 'final',

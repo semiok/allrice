@@ -17,17 +17,19 @@ import {
 import type { CloudOperationView } from '@allrice/database';
 import styles from './cloud-operation-panel.module.css';
 
-const labels: Record<string, string> = {
-  planned: '正在准备',
-  waiting_user: '等待本次授权',
+const labels: Record<CloudOperationView['snapshot']['status'], string> = {
+  planned: '准备中',
+  waiting_user: '等待授权',
+  waiting_device: '等待设备',
+  waiting_dependency: '等待依赖',
   ready: '等待执行',
-  dispatched: '已派发，尚未确认执行',
-  running: '正在执行',
-  cancel_requested: '停止意图已记录，结果待确认',
-  unknown: '远端结果待核实',
+  dispatched: '已派发',
+  running: '执行中',
+  cancel_requested: '已请求停止',
+  unknown: '待核实',
   succeeded: '执行成功',
-  failed: '执行未成功',
-  canceled: '已确认未执行或停止',
+  failed: '执行失败',
+  canceled: '已取消',
   partial: '部分完成',
 };
 function operationFailure(op: CloudOperationView) {
@@ -84,31 +86,9 @@ export function cloudOperationDisplayStatus(
 
 /** Compact receipts never turn an unconfirmed outcome into success or failure. */
 export function cloudOperationCompactStatus(op: CloudOperationView) {
-  switch (op.snapshot.status) {
-    case 'running':
-      return '执行中';
-    case 'succeeded':
-      return '成功';
-    case 'failed':
-      return '失败';
-    case 'planned':
-      return '准备中';
-    case 'ready':
-      return '待执行';
-    case 'dispatched':
-      return '待确认';
-    case 'cancel_requested':
-      return '停止待确认';
-    case 'unknown':
-      return '结果待确认';
-    case 'canceled':
-      return '已取消';
-    case 'partial':
-      return '部分完成';
-    default:
-      return cloudOperationDisplayStatus(op);
-  }
+  return labels[op.snapshot.status];
 }
+
 type Decision = 'approved' | 'rejected' | 'cancel';
 
 /** A later success is context, not a rewrite of this call's failure receipt. */
@@ -844,14 +824,9 @@ export function CloudOperationCard({
             <span
               className={styles.status}
               role="status"
-              aria-label={fullStatus}
+              aria-label={cloudOperationCompactStatus(op)}
             >
-              {isMcp &&
-              !['succeeded', 'failed', 'running'].includes(op.snapshot.status)
-                ? cloudOperationCompactStatus(op)
-                : isMcp
-                  ? labels[op.snapshot.status]
-                  : fullStatus}
+              {cloudOperationCompactStatus(op)}
             </span>
           </Tooltip>
           {detailsToggle}
