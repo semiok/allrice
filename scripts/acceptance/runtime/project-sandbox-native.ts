@@ -67,8 +67,14 @@ type Case = {
   long?: boolean;
   authorityDelayMs?: number;
   stagingControlLoss?: boolean;
+  terminalControlLoss?: boolean;
 };
 const cases: Case[] = [
+  {
+    name: 'project-terminal-control-loss',
+    terminalControlLoss: true,
+    script: "console.log('terminal-collection:verified')",
+  },
   {
     name: 'node-network-shared-budget',
     network: true,
@@ -367,7 +373,9 @@ async function execute(
     state: SandboxExecutionBudgetState | undefined,
     stopAt: number | undefined,
     finished = false;
-  let staging = false;
+  let staging = false,
+    collecting = false,
+    terminalAuthorityCalls = 0;
   // Delay the daemon boundary while only the independent physical controller
   // can observe the stalled authority. The tenant start marker is never sent.
   class StalledStaging extends CloudRunnerBackend {
@@ -382,7 +390,18 @@ async function execute(
       throw Error('staging did not observe physical controller cancellation');
     }
   }
-  const runner = item.stagingControlLoss ? new StalledStaging() : backend;
+  class SlowCollection extends CloudRunnerBackend {
+    override async collect(...args: Parameters<CloudRunnerBackend['collect']>) {
+      collecting = true;
+      await delay(3500);
+      return super.collect(...args);
+    }
+  }
+  const runner = item.stagingControlLoss
+    ? new StalledStaging()
+    : item.terminalControlLoss
+      ? new SlowCollection()
+      : backend;
   const input = { ...prepared, command, attemptId };
   await save(item.name + '-input', input);
   const lease = item.network
@@ -408,6 +427,10 @@ async function execute(
       deadlineAt: new Date(rootDeadline).toISOString(),
       maintainLease: async () => {
         if (staging) return new Promise<boolean>(() => {});
+        if (collecting) {
+          terminalAuthorityCalls++;
+          return new Promise<boolean>(() => {});
+        }
         if (item.authorityDelayMs) await delay(item.authorityDelayMs);
         return valid;
       },
@@ -467,6 +490,7 @@ async function execute(
       state,
       stopAt,
       finishedAt: Date.now(),
+      ...(item.terminalControlLoss ? { terminalAuthorityCalls } : {}),
     });
     assert.equal(result.stopped, true);
     assert.equal(result.executionBudget?.startedAt, state?.startedAt);
@@ -490,6 +514,11 @@ async function execute(
       assert.equal(result.reason, 'completed');
       assert.equal(result.exitCode, 0);
       assert.equal(result.projectPreparation?.installation, 'succeeded');
+      if (item.terminalControlLoss) {
+        assert.equal(terminalAuthorityCalls, 0);
+        assert.equal(result.errorCode, undefined);
+        assert.match(result.output, /terminal-collection:verified/);
+      }
       if (item.network) {
         assert.match(result.output, /runtime-network:verified/);
         if (item.name === 'project-denied-destinations') {

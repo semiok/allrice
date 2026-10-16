@@ -115,6 +115,7 @@ function fixture(stats?: 'exited' | 'live') {
     observe: vi.fn(),
   };
   return {
+    backend,
     plan,
     options,
     stops,
@@ -124,6 +125,117 @@ function fixture(stats?: 'exited' | 'live') {
       monitor(changedPlan, changedOptions, started, initial.hardDeadlineAt),
   };
 }
+
+it('does not keep renewing execution while collecting an already exited process', async () => {
+  const f = fixture();
+  let collecting = false;
+  const collect = f.backend.collect.bind(f.backend);
+  vi.spyOn(f.backend, 'collect').mockImplementation(async (...args) => {
+    collecting = true;
+    await delay(3200);
+    return collect(...args);
+  });
+  f.options.maintainLease.mockImplementation(() =>
+    collecting ? new Promise<boolean>(() => {}) : Promise.resolve(true),
+  );
+  const completion = setTimeout(f.finish, 50);
+  try {
+    const result = await f.run();
+    expect(result).toMatchObject({
+      reason: 'completed',
+      exitCode: 0,
+      stopped: true,
+    });
+    expect(result.errorCode).toBeUndefined();
+    expect(f.options.maintainLease).toHaveBeenCalledTimes(3);
+    expect(f.stops).not.toHaveBeenCalled();
+  } finally {
+    clearTimeout(completion);
+  }
+});
+
+it('does not apply an in-flight heartbeat failure after physical exit was verified', async () => {
+  const f = fixture();
+  let executing = false;
+  f.options.observe.mockImplementation(() => {
+    executing = true;
+  });
+  f.options.maintainLease.mockImplementation(() =>
+    executing ? new Promise<boolean>(() => {}) : Promise.resolve(true),
+  );
+  const collect = f.backend.collect.bind(f.backend);
+  vi.spyOn(f.backend, 'collect').mockImplementation(async (...args) => {
+    await delay(2600);
+    return collect(...args);
+  });
+  const completion = setTimeout(f.finish, 1150);
+  try {
+    const result = await f.run();
+    expect(result).toMatchObject({
+      reason: 'completed',
+      exitCode: 0,
+      stopped: true,
+    });
+    expect(result.errorCode).toBeUndefined();
+    expect(f.stops).not.toHaveBeenCalled();
+  } finally {
+    clearTimeout(completion);
+  }
+});
+
+it('does not renew a closed physical guard after a late successful heartbeat', async () => {
+  const f = fixture();
+  let executing = false;
+  let resolveLease: ((valid: boolean) => void) | undefined;
+  f.options.observe.mockImplementation(() => {
+    executing = true;
+  });
+  f.options.maintainLease.mockImplementation(() =>
+    executing
+      ? new Promise<boolean>((resolve) => {
+          resolveLease = resolve;
+        })
+      : Promise.resolve(true),
+  );
+  const collect = f.backend.collect.bind(f.backend);
+  vi.spyOn(f.backend, 'collect').mockImplementation(async (...args) => {
+    expect(resolveLease).toBeDefined();
+    expect(boundary.close).toHaveBeenCalledTimes(1);
+    const renewals = boundary.renew.mock.calls.length;
+    resolveLease!(true);
+    await delay(50);
+    expect(boundary.renew).toHaveBeenCalledTimes(renewals);
+    return collect(...args);
+  });
+  const completion = setTimeout(f.finish, 1150);
+  try {
+    expect(await f.run()).toMatchObject({
+      reason: 'completed',
+      exitCode: 0,
+      stopped: true,
+    });
+    expect(f.stops).not.toHaveBeenCalled();
+  } finally {
+    clearTimeout(completion);
+  }
+});
+
+it('does not collect a replacement container as the original execution result', async () => {
+  const f = fixture();
+  const inspect = f.backend.inspect.bind(f.backend);
+  vi.spyOn(f.backend, 'inspect').mockImplementation(async () => {
+    const value = await inspect();
+    return value.State.Running ? value : { ...value, Id: 'b'.repeat(64) };
+  });
+  const collect = vi.spyOn(f.backend, 'collect');
+  const completion = setTimeout(f.finish, 50);
+  try {
+    await expect(f.run()).rejects.toThrow('CLOUD_RESULT_UNKNOWN');
+    expect(collect).not.toHaveBeenCalled();
+  } finally {
+    clearTimeout(completion);
+  }
+});
 
 it('cancels in-flight staging on relay loss before releasing tenant input', async () => {
   const f = fixture();
