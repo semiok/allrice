@@ -52,6 +52,7 @@ const {
 }));
 
 vi.mock('@allrice/database', async (original) => ({
+  RuntimePolicyError: (await original<typeof Database>()).RuntimePolicyError,
   CompanyAssetError: (await original<typeof Database>()).CompanyAssetError,
   CompanyRunAssetError: (await original<typeof Database>())
     .CompanyRunAssetError,

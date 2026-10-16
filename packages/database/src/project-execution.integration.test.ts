@@ -43,6 +43,12 @@ import {
   recoverCloudCommandOperations,
 } from '../../../apps/worker/src/cloud-runner/executor.js';
 
+// Authority/lifecycle tests use a deterministic reputation port; the checker
+// itself has separate real-DNS acceptance and refusal/cache regressions.
+const admission = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./sandbox-network-admission.ts', () => ({
+  assertAutomaticSandboxNetwork: admission,
+}));
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -432,13 +438,38 @@ suite(
         }),
       ).rejects.toThrow('cloud_grant_unavailable');
     });
+    it('admits saved-source execution through backend screening without a manual website profile', async () => {
+      vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+      const f = await setup(true, false, { network: false });
+      const network = {
+        mode: 'controlled_https' as const,
+        origins: ['https://registry.npmjs.org'],
+      };
+      const selection = await f.select(true, { ...f.args, network });
+      const created = await createCloudProjectOperation(
+        {
+          context: f.context,
+          callId: f.callId,
+          projectSelection: selection,
+          worker: f.worker,
+          storage: f.storage,
+        },
+        f.db,
+      );
+      expect(created.payload.network).toEqual(network);
+      expect(created.snapshot.binding.dataScope).toContainEqual(
+        expect.objectContaining({
+          destination: 'external_service',
+          externalNetwork: network,
+        }),
+      );
+    });
     it.each([
       [
         { network: true, allowInputTransfer: false },
         'sandbox_network_transfer_not_authorized',
       ],
       [{ network: true, outbound: false }, 'sandbox_network_not_authorized'],
-      [{ network: false }, 'sandbox_network_not_authorized'],
     ] as const)(
       'does not treat saved source as public or borrow missing network authority: %s',
       async (options, reason) => {
