@@ -13,6 +13,9 @@ import type {
 import {
   CompanyAssetSchema,
   type ExperienceCandidate,
+  type ExperienceDraftBatch,
+  ExperienceDraftBatchSchema,
+  ExperienceProvenanceSchema,
   ExperienceOverviewSchema,
   WorkbenchArtifactSchema,
   EmployeeInstanceSchema,
@@ -396,6 +399,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       experienceDelay: null as Promise<void> | null,
       experienceStatus: 200,
       experienceCandidates: [] as ExperienceCandidate[],
+      experienceBatches: [] as ExperienceDraftBatch[],
       employeeModel: 'configured-model',
       employeeReasoningEffort: 'medium',
       omitSessionA: false,
@@ -931,7 +935,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             },
           }),
           candidates: structuredClone(state.experienceCandidates),
-          draftBatches: [],
+          draftBatches: structuredClone(state.experienceBatches),
         };
         const status = state.experienceStatus;
         if (state.experienceDelay) await state.experienceDelay;
@@ -4285,6 +4289,181 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe(0);
         expect(f.writes).toEqual([]);
       } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
+  it.each([1440, 390])(
+    'MET184 owner expands exact experience sources lazily and clears denied or late results at %s',
+    async (width) => {
+      const f = await fixture({ employeeHistory: true, employeeDetails: true });
+      let release: (() => void) | undefined;
+      let gate: Promise<void> | null = null;
+      let status = 200,
+        reads = 0;
+      const source = ExperienceProvenanceSchema.parse({
+        workspaceId: workspace,
+        representation: 'projection',
+        indexState: 'current',
+        adoptedAt: now,
+        consolidationRunId: id(995),
+        projection: {
+          schemaVersion: 1,
+          algorithm: 'validated-rule-v1',
+          pin: {
+            id: id(991),
+            revision: 1,
+            instanceId: id(7),
+            contentDigest: 'sha256:' + 'a'.repeat(64),
+            adoptionDigest: 'sha256:' + 'b'.repeat(64),
+          },
+          topic: 'report_style',
+          rule: '撰写报告时采用分点说明。',
+          applicability: '仅用于报告表达。',
+          occurrenceId: id(992),
+          draftIndex: 0,
+          sourceIds: [id(993)],
+          sourceDigest: 'sha256:' + 'c'.repeat(64),
+          outputDigest: 'sha256:' + 'd'.repeat(64),
+        },
+        sources: [
+          {
+            id: id(993),
+            runId: id(994),
+            sessionId: A,
+            messageId: id(996),
+            excerpt: 'PRIVATE_EXACT_FEEDBACK',
+            sourceDigest: 'sha256:' + 'e'.repeat(64),
+            skills: [],
+          },
+        ],
+      });
+      f.state.experienceBatches = [
+        ExperienceDraftBatchSchema.parse({
+          id: id(992),
+          runId: id(995),
+          instanceId: id(7),
+          status: 'succeeded',
+          state: 'pending_validation',
+          revision: 1,
+          digest: 'sha256:' + 'd'.repeat(64),
+          createdAt: now,
+          errorCode: null,
+          sourceIds: [id(993)],
+          drafts: [
+            {
+              sourceIds: [id(993)],
+              rule: source.projection.rule,
+              applicability: source.projection.applicability,
+              reason: '明确表达反馈',
+              confidence: 'consistent',
+              validation: { kind: 'preference', check: '明确表达反馈核对' },
+            },
+          ],
+          adoptions: [
+            {
+              memoryId: id(991),
+              draftIndex: 0,
+              revision: 1,
+              state: 'active',
+              reason: null,
+              adoptedAt: now,
+              recallCount: 1,
+            },
+          ],
+        }),
+      ];
+      await f.page.route(
+        '**/api/v1/experiences/*/provenance?**',
+        async (route) => {
+          reads++;
+          const url = new URL(route.request().url());
+          expect(url.searchParams.get('instanceId')).toBe(id(7));
+          expect(url.searchParams.get('revision')).toBe('1');
+          const body = JSON.stringify(source),
+            currentStatus = status;
+          if (gate) await gate;
+          await route.fulfill({
+            status: currentStatus,
+            contentType: 'application/json',
+            body:
+              currentStatus === 200
+                ? body
+                : JSON.stringify({ code: 'source_changed' }),
+          });
+        },
+      );
+      try {
+        await f.page.setViewportSize({ width, height: 900 });
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await f.page
+          .getByRole('button', { name: '查看Rice详情', exact: true })
+          .click();
+        const dialog = f.page.getByRole('dialog', {
+          name: 'Rice员工详情',
+          exact: true,
+        });
+        await dialog
+          .getByRole('tab', { name: '经验积累', exact: true })
+          .click();
+        const open = () =>
+          dialog
+            .getByRole('button', { name: '查看来源与版本', exact: true })
+            .click();
+        const close = () =>
+          dialog
+            .getByRole('button', { name: '收起来源与版本', exact: true })
+            .click();
+        await dialog.getByText('私人经验 · 已采用', { exact: true }).waitFor();
+        expect(reads).toBe(0);
+        await open();
+        await dialog
+          .getByText('PRIVATE_EXACT_FEEDBACK', { exact: true })
+          .waitFor();
+        await dialog.getByText('查看准确记录', { exact: true }).click();
+        expect(
+          await dialog
+            .getByText(`消息：${id(996)}`, { exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth),
+        ).toBe(true);
+        await close();
+        status = 409;
+        await open();
+        await dialog.getByRole('alert').waitFor();
+        expect(
+          await dialog
+            .getByText('PRIVATE_EXACT_FEEDBACK', { exact: true })
+            .count(),
+        ).toBe(0);
+        await close();
+        status = 200;
+        gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        await open();
+        await expect.poll(() => reads).toBe(3);
+        await close();
+        gate = null;
+        source.sources[0]!.excerpt = 'CURRENT_FEEDBACK';
+        await open();
+        await dialog.getByText('CURRENT_FEEDBACK', { exact: true }).waitFor();
+        release?.();
+        expect(
+          await dialog
+            .getByText('PRIVATE_EXACT_FEEDBACK', { exact: true })
+            .count(),
+        ).toBe(0);
+        expect(f.writes).toEqual([]);
+      } finally {
+        release?.();
         await f.close();
       }
     },

@@ -1,4 +1,6 @@
 import { getExperienceOverview } from './experience-overview.ts';
+import { getExperienceProvenance } from './experience-provenance.ts';
+import { ensureExperienceProjection } from './experience-projection.ts';
 import { experienceSkillFixture } from './experience-skill.fixture.ts';
 import { freezePersonalSkills } from './employees/personal-skills.ts';
 import {
@@ -938,6 +940,12 @@ suite(
     }
     it('tests the exact loaded Skill alongside the draft, adopts it and requires matching frozen pins in each new Run', async () => {
       const f = await adoptedFixture(true);
+      const sourceView = await getExperienceProvenance(f.owner, {
+        memoryId: f.memory.id,
+        instanceId: f.instance.id,
+        revision: 1,
+      });
+      expect(sourceView.sources[0]!.skills).toEqual([f.pin]);
       expect(f.memory.adoption_proof.validation).toMatchObject({
         kind: 'independent_skill_case',
         dependencies: { skills: [f.pin] },
@@ -966,6 +974,13 @@ suite(
         db.begin((tx) => readPrivateExperience(tx, f.neighbor, f.memory.id)),
       ).rejects.toThrow();
       await changeSkill(f, 'version');
+      await expect(
+        getExperienceProvenance(f.owner, {
+          memoryId: f.memory.id,
+          instanceId: f.instance.id,
+          revision: 1,
+        }),
+      ).rejects.toThrow('source_changed');
       await expect(
         assertEmployeeContentContext(scope, runtime.generationId),
       ).rejects.toThrow();
@@ -1229,6 +1244,92 @@ suite(
     });
     it('adopts the existing independent proof once, without forging human review or rerunning validation', async () => {
       const f = await adoptedFixture();
+      const target = {
+        memoryId: f.memory.id,
+        instanceId: f.instance.id,
+        revision: 1,
+      };
+      const current = await getExperienceProvenance(f.owner, target);
+      expect(current).toMatchObject({
+        representation: 'projection',
+        indexState: 'current',
+        projection: {
+          pin: { id: f.memory.id, revision: 1 },
+          occurrenceId: f.occurrence.id,
+        },
+      });
+      expect(current.sources.map((s) => s.id)).toEqual([f.candidate.id]);
+      expect(current.sources[0]).toMatchObject({
+        runId: f.sourceRunId,
+        sessionId: f.session.id,
+        messageId: f.candidate.source!.messageId,
+        excerpt: f.candidate.source!.excerpt,
+      });
+      await expect(
+        getExperienceProvenance(f.neighbor, target),
+      ).rejects.toThrow();
+      await expect(
+        getExperienceProvenance(f.reviewer, target),
+      ).rejects.toThrow();
+      await expect(
+        getExperienceProvenance(f.owner, { ...target, revision: 2 }),
+      ).rejects.toThrow('source_changed');
+      await db`update allrice_rag_chunks set experience_projection=jsonb_set(experience_projection,'{rule}','"CORRUPTED INDEX RULE"') where memory_id=${f.memory.id}`;
+      const fallback = await getExperienceProvenance(f.owner, target);
+      expect(fallback).toMatchObject({
+        representation: 'original',
+        indexState: 'outdated',
+      });
+      expect(fallback.projection.rule).toBe(current.projection.rule);
+      // GET must not silently repair, mutate authority or call a model.
+      expect(
+        (
+          await db`select experience_projection from allrice_rag_chunks where memory_id=${f.memory.id}`
+        )[0]!.experience_projection.rule,
+      ).toBe('CORRUPTED INDEX RULE');
+      await db`delete from allrice_rag_chunks where memory_id=${f.memory.id}`;
+      expect(await getExperienceProvenance(f.owner, target)).toMatchObject({
+        representation: 'original',
+        indexState: 'missing',
+      });
+      const rebuild = () =>
+        db.begin(async (tx) =>
+          ensureExperienceProjection(
+            tx,
+            await readPrivateExperience(tx, f.owner, f.memory.id),
+          ),
+        );
+      await db.unsafe(
+        `create function reject_test_projection() returns trigger language plpgsql as $$ begin raise exception 'synthetic derived cache failure'; end $$`,
+      );
+      await db.unsafe(
+        `create trigger reject_test_projection before insert on allrice_rag_chunks for each row when (new.memory_id='${f.memory.id}'::uuid) execute function reject_test_projection()`,
+      );
+      try {
+        expect(await rebuild()).toBe('unavailable');
+        expect(await getExperienceProvenance(f.owner, target)).toMatchObject({
+          representation: 'original',
+          indexState: 'missing',
+        });
+      } finally {
+        await db`drop trigger reject_test_projection on allrice_rag_chunks`;
+        await db`drop function reject_test_projection()`;
+      }
+      expect((await Promise.all([rebuild(), rebuild()])).sort()).toEqual([
+        'rebuilt',
+        'unchanged',
+      ]);
+      expect(await getExperienceProvenance(f.owner, target)).toEqual(current);
+      const parallelRuns = await Promise.all([
+        experienceRun(f, '请核对名单中到场和未到人数。'),
+        experienceRun(f, '请核对名单中到场和未到人数。'),
+      ]);
+      const parallelReads = await Promise.all(
+        parallelRuns.map((scope) => prepareRunExperiences(scope, scope.worker)),
+      );
+      expect(
+        parallelReads.map((result) => result.memories.map((m) => m.id)),
+      ).toEqual([[f.memory.id], [f.memory.id]]);
       expect(f.memory.reviewed_by).toBeNull();
       expect(
         (await getExperienceOverview(f.owner, f.instance.id)).summary.counts,
@@ -1272,15 +1373,58 @@ suite(
           reason: 'bypass',
         }),
       ).rejects.toThrow();
+      let release!: () => void, ready!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const locked = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      const rebuilding = db.begin(async (tx) => {
+        const value = await ensureExperienceProjection(
+          tx,
+          await readPrivateExperience(tx, f.owner, f.memory.id),
+        );
+        ready();
+        await gate;
+        return value;
+      });
+      await locked;
+      // Start the real owner withdrawal while the authorized rebuild holds its
+      // source locks, then release it; withdrawal must remove the entire cache.
+      const forgetting = deleteWorkspaceMemory(
+        f.owner,
+        f.workspace,
+        f.memory.id,
+      );
+      release();
+      await Promise.all([rebuilding, forgetting]);
+      expect(
+        await db`select id from allrice_rag_chunks where memory_id=${f.memory.id}`,
+      ).toHaveLength(0);
+      await expect(rebuild()).rejects.toThrow('source_changed');
+      await expect(getExperienceProvenance(f.owner, target)).rejects.toThrow(
+        'source_changed',
+      );
     });
     it('uses the exact private instance in a new Session and forgets before rotating native history; retries cannot revive it', async () => {
       const f = await adoptedFixture();
+      await db`update allrice_rag_chunks set experience_projection=null where memory_id=${f.memory.id}`;
       const scope = await experienceRun(
         f,
         '请根据这份名单核对到场和未到人数，分别列出成员。名单：陈一=到场；李二=未到；王三=到场。',
       );
       const first = await prepareRunExperiences(scope, scope.worker);
       expect(first.memories.map((m) => m.id)).toEqual([f.memory.id]);
+      expect(
+        (
+          await getExperienceProvenance(f.owner, {
+            memoryId: f.memory.id,
+            instanceId: f.instance.id,
+            revision: 1,
+          })
+        ).indexState,
+      ).toBe('current');
       const runtime = (await prepareEmployeeContentContext(scope))!;
       expect(runtime.nativeContextKey).toContain(scope.runId);
       expect((await searchRunExperiences(scope)).map((m) => m.id)).toEqual([
@@ -1328,6 +1472,21 @@ suite(
       expect((await prepareRunExperiences(next, next.worker)).memories).toEqual(
         [],
       );
+      await expect(
+        getExperienceProvenance(f.owner, {
+          memoryId: f.memory.id,
+          instanceId: f.instance.id,
+          revision: 1,
+        }),
+      ).rejects.toThrow('source_changed');
+      await expect(
+        db.begin(async (tx) =>
+          ensureExperienceProjection(
+            tx,
+            await readPrivateExperience(tx, f.owner, f.memory.id),
+          ),
+        ),
+      ).rejects.toThrow('source_changed');
       await syncExperienceAdoptions();
       expect(
         await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
@@ -1357,6 +1516,13 @@ suite(
         await searchRunExperiences({ ...scope, ownerId: f.neighbor.actor.id }),
       ).toEqual([]);
       await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
+      await expect(
+        getExperienceProvenance(f.owner, {
+          memoryId: f.memory.id,
+          instanceId: f.instance.id,
+          revision: 1,
+        }),
+      ).rejects.toThrow('source_changed');
       const [bound] =
         await db`select experience_reads from allrice_employee_runs where run_id=${scope.runId}`;
       await expect(
@@ -1385,6 +1551,13 @@ suite(
         (await prepareRunExperiences(scope, scope.worker)).memories,
       ).toEqual([]);
       expect(await searchRunExperiences(scope)).toEqual([]);
+      await expect(
+        getExperienceProvenance(f.owner, {
+          memoryId: f.memory.id,
+          instanceId: other.id,
+          revision: 1,
+        }),
+      ).rejects.toThrow('source_changed');
       expect(
         (
           await db`select recall_count from allrice_memories where id=${f.memory.id}`

@@ -24,6 +24,7 @@ import { runtimePolicyDigest } from './runtime-policy.ts';
 import { embedWorkspaceText } from './workspace/memory-recall.ts';
 import { classifyExperienceFeedback } from './experience-feedback.ts';
 import { assertExperienceSkillsCurrent } from './experience-skill-dependencies.ts';
+import { buildExperienceProjection } from './experience-projection.ts';
 
 type Tx = postgres.TransactionSql;
 type Sql = Tx | ReturnType<typeof getDatabase>;
@@ -244,8 +245,19 @@ export async function syncExperienceAdoptions() {
             values(${id},${o.organizationId},${o.workspaceId},${o.ownerId},${randomUUID()},${runtimePolicyDigest(proof)},
               ${source0.runId},${source0.sessionId},${source0.messageId},${source0.excerpt},${source0.sourceDigest},${proof.contentDigest},'private',false,'approved',
               ${now},'平台策略自动采用；非人工审核','derived',${o.instanceId},${sourceKey},${tx.json(proof)})`;
-          await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility)
-            values(${o.organizationId},${o.workspaceId},${id},${o.ownerId},${content},${`[${embedWorkspaceText(content).join(',')}]`}::vector,'private')`;
+          const projection = buildExperienceProjection(
+            {
+              id,
+              revision: 1,
+              instanceId: o.instanceId,
+              contentDigest: proof.contentDigest,
+              adoptionDigest: runtimePolicyDigest(proof),
+            },
+            proof,
+            draft,
+          );
+          await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility,experience_projection)
+            values(${o.organizationId},${o.workspaceId},${id},${o.ownerId},${content},${`[${embedWorkspaceText(content).join(',')}]`}::vector,'private',${tx.json(projection)})`;
           await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
             values(${o.organizationId},${o.workspaceId},${policy.adoptionAuthorizedBy},'experience.auto_adopt','memory',${id},'allowed','platform_automatic_experience_policy',${o.id})`;
           plan.push({ draftIndex, memoryId: id });

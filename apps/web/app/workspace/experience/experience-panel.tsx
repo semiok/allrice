@@ -11,6 +11,7 @@ import {
   type ExperienceDraftBatch,
 } from '@allrice/contracts';
 import styles from './experience.module.css';
+import { ExperienceSources } from './experience-provenance';
 
 const scopeNames = {
   private: '仅我自己',
@@ -113,8 +114,10 @@ export function ExperienceReviewCard({
 }
 export function ExperienceDraftCard({
   batch,
+  sourceContext,
 }: {
   batch: ExperienceDraftBatch;
+  sourceContext?: { workspaceId: string; headers?: Record<string, string> };
 }) {
   return (
     <article className={styles.card} data-experience-batch={batch.id}>
@@ -169,6 +172,14 @@ export function ExperienceDraftCard({
                   <p>
                     如需撤回，可在聊天中说：请忘记“{draft.rule}”这条个人经验。
                   </p>
+                )}
+                {a.state === 'active' && sourceContext && (
+                  <ExperienceSources
+                    {...sourceContext}
+                    instanceId={batch.instanceId}
+                    memoryId={a.memoryId}
+                    revision={a.revision}
+                  />
                 )}
               </div>
             ))}
@@ -461,7 +472,11 @@ function ExperienceReader({
             <h2>自动整理记录</h2>
             <p>最近 50 次整理，保留来源、验证结果和当前采用状态。</p>
             {current.batches?.map((batch) => (
-              <ExperienceDraftCard key={batch.id} batch={batch} />
+              <ExperienceDraftCard
+                key={batch.id}
+                batch={batch}
+                sourceContext={{ workspaceId, headers }}
+              />
             ))}
             {!current.batches?.length && (
               <p>尚无整理记录。有新增且符合策略的反馈后，会按生效频率安排。</p>
