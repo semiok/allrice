@@ -245,6 +245,21 @@ export function EmployeeProfileDetails({
           </span>
         </label>
       )}
+      {content.scenes.length === 0 && profile.kind === 'custom' && (
+        <section className={css.scene} aria-label="工作场景">
+          <strong>工作场景</strong>
+          <span>
+            {view === 'personal'
+              ? '暂无已启用的工作场景。'
+              : '暂无可查看的已启用共享场景。'}
+          </span>
+          {view === 'personal' && (
+            <span>
+              可在聊天中说明希望它负责哪些工作，定制并启用后会显示在这里。
+            </span>
+          )}
+        </section>
+      )}
       <div className={css.tabs} role="tablist" aria-label="工作内容">
         {(Object.entries(sectionNames) as [Section, string][]).map(
           ([key, name], index, entries) => (
