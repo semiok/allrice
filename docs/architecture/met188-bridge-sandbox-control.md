@@ -62,6 +62,11 @@ one pinned public DNS request. Validated positive answers can be reused for the
 shortest returned TTL, capped at 30 seconds and 64 hosts. Every connection still
 checks fresh system answers and its caller's address policy. Private/mixed
 answers, expired entries and resolver errors never permit a stale fallback.
+Only canonical immutable dependency archive GETs retry transient transport/DNS
+failures, at most twice with bounded backoff and the original cancellation and
+execution deadline. Partial response bodies are discarded; complete archives
+still require the pinned integrity check before use. Redirects, private DNS,
+certificate errors and installer/tenant/API operations are never retried here.
 
 A private PID 1 gate prevents tenant startup before the helper is ready. Saved
 project installers remain offline and use the existing pinned archives/cache;

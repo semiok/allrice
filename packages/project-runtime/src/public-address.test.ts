@@ -131,13 +131,16 @@ it('fails closed on resolver outage after expiry, and retries resolution on a la
   ports.get.mockImplementation(() => {
     const req = new EventEmitter();
     queueMicrotask(() => {
-      req.emit('error', new Error('ECONNRESET'));
+      req.emit(
+        'error',
+        Object.assign(new Error('reset'), { code: 'ECONNRESET' }),
+      );
       req.emit('close');
     });
     return req;
   });
   await expect(resolve('registry.npmjs.org', publicOnly)).rejects.toThrow(
-    'PUBLIC_ADDRESS_DENIED',
+    'PUBLIC_DNS_UNAVAILABLE',
   );
   reply();
   expect(await resolve('registry.npmjs.org', publicOnly)).toEqual(

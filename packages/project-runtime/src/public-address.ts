@@ -5,6 +5,31 @@ import { BlockList, isIP } from 'node:net';
 const synthetic4 = new BlockList();
 synthetic4.addSubnet('198.18.0.0', 15, 'ipv4');
 const denied = () => Error('PUBLIC_ADDRESS_DENIED');
+export class PublicAddressUnavailableError extends Error {
+  constructor() {
+    super('PUBLIC_DNS_UNAVAILABLE');
+  }
+}
+export function isTransientNetworkError(error: unknown) {
+  return (
+    error instanceof PublicAddressUnavailableError ||
+    (error instanceof Error &&
+      'code' in error &&
+      [
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'ETIMEDOUT',
+        'EPIPE',
+        'EHOSTUNREACH',
+        'ENETUNREACH',
+        'EAI_AGAIN',
+      ].includes(String(error.code)))
+  );
+}
+const dnsFailure = (error: unknown) =>
+  isTransientNetworkError(error)
+    ? new PublicAddressUnavailableError()
+    : denied();
 type Address = { address: string; family: number };
 type DnsAnswer = { addresses: Address[]; expiresAt: number };
 const verified = new Map<string, DnsAnswer>();
@@ -88,7 +113,11 @@ function queryPublicDns(hostname: string): Promise<DnsAnswer> {
           !response.headers['content-type']?.startsWith('application/dns-json')
         ) {
           response.destroy();
-          reject(denied());
+          reject(
+            response.statusCode === 429 || (response.statusCode ?? 0) >= 500
+              ? new PublicAddressUnavailableError()
+              : denied(),
+          );
           return;
         }
         response.on('data', (chunk: Buffer) => {
@@ -96,7 +125,7 @@ function queryPublicDns(hostname: string): Promise<DnsAnswer> {
           if (size > 16 * 1024) response.destroy(denied());
           else chunks.push(chunk);
         });
-        response.once('error', () => reject(denied()));
+        response.once('error', (error) => reject(dnsFailure(error)));
         response.once('end', () => {
           try {
             const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -137,8 +166,11 @@ function queryPublicDns(hostname: string): Promise<DnsAnswer> {
         });
       },
     );
-    const timeout = setTimeout(() => request.destroy(denied()), 4000);
-    request.once('error', () => reject(denied()));
+    const timeout = setTimeout(
+      () => request.destroy(new PublicAddressUnavailableError()),
+      4000,
+    );
+    request.once('error', (error) => reject(dnsFailure(error)));
     request.once('close', () => clearTimeout(timeout));
   });
 }
