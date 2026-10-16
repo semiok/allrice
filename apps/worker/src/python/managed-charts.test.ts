@@ -694,6 +694,7 @@ describe('canonical Python original-call execution adapter', () => {
     expect(ports.frozen).toHaveBeenCalledWith({
       context: request.context,
       arguments: raw,
+      storageRoot: request.storageRoot,
     });
     expect(ports.legacyCloud).toHaveBeenCalledWith({
       context: request.context,
