@@ -9,6 +9,7 @@ import {
   type EmployeeMethodSharedTarget,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { DataAccessError } from '../data.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
@@ -568,9 +569,16 @@ export async function enterMethodChat<T>(
     instance: Awaited<ReturnType<typeof getEmployeeInstance>>,
     text: string,
   ) => Promise<T>,
+  options: { reserveStorage?: boolean } = {},
 ) {
   const { scope } = employeeChatIdentity(input);
   return employeeAccessTransaction(getDatabase(), async (tx) => {
+    if (options.reserveStorage)
+      await lockWorkspaceStorageQuota(
+        tx,
+        scope.organizationId,
+        scope.workspaceId,
+      );
     await readContentPrincipal(scope, tx, true);
     await tx`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${scope.organizationId}`},0))`;
     const [session] = await tx<
