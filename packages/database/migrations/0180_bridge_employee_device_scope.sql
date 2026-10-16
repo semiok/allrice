@@ -21,7 +21,7 @@ insert into allrice_audit_events (
 )
 select organization_id, workspace_id, owner_id, 'bridge.device.revoke',
   'bridge_device', id, 'recorded', 'replaced_by_employee_device_policy',
-  '{"migration":"0179"}'::jsonb
+  '{"migration":"0180"}'::jsonb
 from stale_devices;
 
 with stale_devices as (
@@ -127,7 +127,7 @@ create unique index if not exists allrice_bridge_devices_one_active_per_employee
 insert into allrice_runtime_metadata (key, value)
 values (
   'rice-bridge-active-device-policy',
-  '{"version":"0179","scope":"organization-employee","activeDevices":1,"replacement":"automatic-revoke"}'::jsonb
+  '{"version":"0180","scope":"organization-employee","activeDevices":1,"replacement":"automatic-revoke"}'::jsonb
 )
 on conflict (key) do update
 set value = excluded.value, updated_at = now();
@@ -144,7 +144,7 @@ with legacy as (
 )
 insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
 select organization_id,id,null,'organization.legacy_scope.cleaned','workspace',id,'recorded',
-  'organization_default_scope',jsonb_build_object('migration','0179','previousName',previous_name) from renamed;
+  'organization_default_scope',jsonb_build_object('migration','0180','previousName',previous_name) from renamed;
 
 -- Expired one-time codes and transport leases carry no execution evidence.
 delete from allrice_bridge_pairing_codes where used_at is not null or expires_at<=now();

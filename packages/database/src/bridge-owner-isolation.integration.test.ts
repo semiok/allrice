@@ -121,7 +121,7 @@ integration('organization/employee Bridge ownership', () => {
       values(${command},${f.org},${f.workspace},${f.a.user},${old},${grant},'local.fs.list','{}','succeeded',${command},now()+interval '1 minute',now(),'{"entries":[]}','original receipt')`;
     const migration = await readFile(
       new URL(
-        '../migrations/0179_bridge_employee_device_scope.sql',
+        '../migrations/0180_bridge_employee_device_scope.sql',
         import.meta.url,
       ),
       'utf8',

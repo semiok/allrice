@@ -9,7 +9,7 @@ when consumed.
 
 `workspace_id` remains an internal binding for existing execution evidence,
 folder grants and file permissions. It does not define device replacement.
-Migration 0179 removes the old workspace-wide unique index and policy, normalizes
+Migration 0180 removes the old workspace-wide unique index and policy, normalizes
 the legacy personal labels of organization default scopes, and removes expired
 pairing/connection caches. Company conversations, files and terminal execution
 receipts retain their original IDs and bindings. Previously revoked device
