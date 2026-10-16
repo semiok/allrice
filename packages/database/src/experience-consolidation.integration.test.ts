@@ -686,6 +686,13 @@ suite(
           return;
         }
         expect(adopted.memoryId).toBeTruthy();
+        const displayed = (await listExperienceDrafts(f.owner))[0]!;
+        expect(
+          displayed.validations.find((v) => v.draftIndex === 0)
+            ?.validationStatus,
+        ).toBe('passed');
+        expect(displayed.validationNotes).not.toContain(uncoveredReason);
+        expect(displayed.validationNotes).toEqual([f.originalPlan[1]!.reason]);
         await expect(
           db`update allrice_experience_coverage_reassessments set reason='changed',test_id=null where occurrence_id=${f.occurrence.id}`,
         ).rejects.toThrow('append-only');
