@@ -10,6 +10,7 @@ import { SandboxExecutionBudgetController } from '@allrice/project-runtime';
 import { LocalExecutionControl } from './local-execution-control.js';
 import { LocalServiceControl } from './local-service-control.js';
 import type { LocalDockerApi } from './local-docker-api.js';
+import { BridgeControlError, controlFailure } from './control-request.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -112,6 +113,7 @@ it('does not replace a terminal result with a late authority failure', async () 
   expect(f.stop).not.toHaveBeenCalled();
   expect(f.socket.send).not.toHaveBeenCalled();
   expect(f.socket.close).toHaveBeenCalled();
+  expect(f.control.failure).toBeUndefined();
   await f.control.finish();
 });
 it('stops a live revoked attempt without another control grant', async () => {
@@ -120,6 +122,10 @@ it('stops a live revoked attempt without another control grant', async () => {
   await f.control.start();
   expect(f.stop).toHaveBeenCalledWith('lease_lost');
   expect(f.socket.send).not.toHaveBeenCalled();
+  expect(f.control.failure).toMatchObject({
+    stage: 'heartbeat',
+    kind: 'revoked',
+  });
   await vi.advanceTimersByTimeAsync(10000);
   expect(f.stop).toHaveBeenCalledTimes(1);
   await f.control.finish();
@@ -140,6 +146,7 @@ it('bounds stalled authority and ignores a delayed successful acknowledgement', 
   resolve(true);
   await vi.advanceTimersByTimeAsync(10000);
   expect(f.socket.send).not.toHaveBeenCalled();
+  expect(f.control.failure).toMatchObject({ stage: 'cycle', kind: 'timeout' });
   await f.control.finish();
 });
 it('rejects missing live CPU evidence instead of renewing from heartbeats alone', async () => {
@@ -149,6 +156,83 @@ it('rejects missing live CPU evidence instead of renewing from heartbeats alone'
   await f.control.start();
   expect(f.exchange).not.toHaveBeenCalled();
   expect(f.stop).toHaveBeenCalledWith('lease_lost');
+  expect(f.control.failure).toMatchObject({
+    stage: 'metrics',
+    kind: 'metrics_invalid',
+  });
+  await f.control.finish();
+});
+
+it('retains the original transport phase and attempt count through a control cycle', async () => {
+  const f = fixture();
+  const cause = Object.assign(Error('private details'), { code: 'ECONNRESET' });
+  const failure = controlFailure(cause, 'heartbeat', 71, 2);
+  f.maintainLease.mockRejectedValue(new BridgeControlError(failure));
+  await f.control.start();
+  expect(f.control.failure).toEqual(failure);
+  expect(f.stop).toHaveBeenCalledExactlyOnceWith('lease_lost');
+  expect(f.socket.send).not.toHaveBeenCalled();
+  await f.control.finish();
+});
+
+it.each(['container_inspect', 'control_write'] as const)(
+  'identifies a %s failure without confusing it with HTTP renewal',
+  async (stage) => {
+    const f = fixture();
+    if (stage === 'container_inspect')
+      vi.mocked(f.api.json).mockRejectedValue(Error('DAEMON_TIMEOUT'));
+    else
+      f.socket.send.mockRejectedValue(
+        Object.assign(Error('private socket path'), { code: 'EPIPE' }),
+      );
+    await f.control.start();
+    expect(f.control.failure).toMatchObject({
+      stage,
+      kind: stage === 'container_inspect' ? 'timeout' : 'transport',
+    });
+    expect(f.stop).toHaveBeenCalledExactlyOnceWith('lease_lost');
+    await f.control.finish();
+  },
+);
+
+it('records an invalid renewed budget separately from a real exhausted deadline', async () => {
+  const f = fixture();
+  vi.setSystemTime(1045000);
+  f.exchange.mockResolvedValue({} as never);
+  await f.control.start();
+  expect(f.control.failure).toMatchObject({
+    stage: 'budget',
+    kind: 'invalid_response',
+  });
+  expect(f.stop).toHaveBeenCalledExactlyOnceWith('lease_lost');
+  await f.control.finish();
+});
+
+it('keeps an exhausted execution budget a timeout, without another renewal', async () => {
+  const f = fixture();
+  vi.setSystemTime(1060000);
+  await f.control.start();
+  expect(f.control.failure).toMatchObject({
+    stage: 'budget',
+    kind: 'deadline',
+  });
+  expect(f.exchange).not.toHaveBeenCalled();
+  expect(f.stop).toHaveBeenCalledExactlyOnceWith('timeout');
+  expect(f.socket.send).not.toHaveBeenCalled();
+  await f.control.finish();
+});
+
+it('records a private control connection failure before any grant is sent', async () => {
+  const f = fixture();
+  vi.mocked(LocalServiceControl.connect).mockRejectedValue(
+    Object.assign(Error('private socket'), { code: 'ECONNREFUSED' }),
+  );
+  await expect(f.control.start()).rejects.toBeInstanceOf(BridgeControlError);
+  expect(f.control.failure).toMatchObject({
+    stage: 'control_connect',
+    kind: 'transport',
+  });
+  expect(f.socket.send).not.toHaveBeenCalled();
   await f.control.finish();
 });
 it('does not fetch metrics or renew an already exited container', async () => {

@@ -8,6 +8,7 @@ import {
   LocalExecutionControl,
   requireLocalExecutionBudget,
 } from './local-execution-control.js';
+import { BridgeControlError, firstControlFailure } from './control-request.js';
 import { mkdtemp, open, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -669,8 +670,16 @@ export class LocalPythonRunner {
         ...result,
         ...(budget ? { execution: budget.observation } : {}),
         ...(network?.evidence ?? {}),
+        ...(firstControlFailure(executionControl?.failure, network?.failure)
+          ? {
+              controlFailure: firstControlFailure(
+                executionControl?.failure,
+                network?.failure,
+              ),
+            }
+          : {}),
       });
-    } catch {
+    } catch (cause) {
       try {
         await stop(reason ?? 'supervisor_failed');
         if (
@@ -678,18 +687,36 @@ export class LocalPythonRunner {
           reason === 'lease_lost' ||
           reason === 'timeout'
         )
-          return await this.result(
-            payload,
-            options.attemptId,
-            id,
-            undefined,
-            AbortSignal.timeout(5000),
-            reason,
-          );
+          return RuntimeLocalPythonResultSchema.parse({
+            ...(await this.result(
+              payload,
+              options.attemptId,
+              id,
+              undefined,
+              AbortSignal.timeout(5000),
+              reason,
+            )),
+            ...(budget ? { execution: budget.observation } : {}),
+            ...(network?.evidence ?? {}),
+            ...(firstControlFailure(executionControl?.failure, network?.failure)
+              ? {
+                  controlFailure: firstControlFailure(
+                    executionControl?.failure,
+                    network?.failure,
+                  ),
+                }
+              : {}),
+          });
       } catch {
         /* No stop proof: retain the attempt for reconciliation. */
       }
-      throw new LocalCommandError('PYTHON_RESULT_UNKNOWN');
+      const error = new LocalCommandError('PYTHON_RESULT_UNKNOWN');
+      const failure = firstControlFailure(
+        executionControl?.failure,
+        network?.failure,
+      );
+      error.cause = failure ? new BridgeControlError(failure) : cause;
+      throw error;
     } finally {
       await network?.finish();
       await executionControl?.finish();

@@ -85,6 +85,58 @@ export function sandboxExecutionBudgetSpec(
 }
 
 const counter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+/** Bounded diagnostic facts, never raw exception text, URLs or credentials.
+ * These observations grant no authority and do not change execution identity. */
+export const SandboxControlFailureSchema = z
+  .object({
+    version: z.literal(1),
+    stage: z.enum([
+      'heartbeat',
+      'budget',
+      'network_admission',
+      'output',
+      'container_inspect',
+      'metrics',
+      'control_connect',
+      'control_write',
+      'cycle',
+    ]),
+    kind: z.enum([
+      'transport',
+      'timeout',
+      'deadline',
+      'rejected',
+      'revoked',
+      'canceled',
+      'invalid_response',
+      'process_changed',
+      'metrics_invalid',
+      'persistence',
+      'internal',
+    ]),
+    occurredAt: counter,
+    elapsedMs: counter,
+    attempts: z.number().int().min(1).max(2),
+    httpStatus: z.number().int().min(100).max(599).optional(),
+    transportCode: z
+      .enum([
+        'ECONNRESET',
+        'ECONNREFUSED',
+        'EPIPE',
+        'ETIMEDOUT',
+        'EAI_AGAIN',
+        'ENETUNREACH',
+        'EHOSTUNREACH',
+        'UND_ERR_SOCKET',
+        'UND_ERR_CONNECT_TIMEOUT',
+        'UND_ERR_HEADERS_TIMEOUT',
+        'UND_ERR_BODY_TIMEOUT',
+      ])
+      .optional(),
+  })
+  .strict();
+export type SandboxControlFailure = z.infer<typeof SandboxControlFailureSchema>;
+
 export const SandboxExecutionObservationSchema = z
   .object({
     startedAt: counter,
@@ -195,7 +247,7 @@ export function startSandboxExecutionBudget(
 }
 
 /** Finite, persisted extensions; retries cannot reset the clock or revive an
- * expired process. A separate five-second physical lease handles host loss. */
+ * expired process. A separate bounded physical lease handles host loss. */
 export function renewSandboxExecutionBudget(
   stateInput: SandboxExecutionBudgetState,
   requestInput: SandboxExecutionRenewal,
