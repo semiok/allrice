@@ -91,8 +91,12 @@ def ui(pid, lines):
 
 
 def menu(pid, title):
-    return ui(pid, ['click menu bar item "Rice" of last menu bar',
-                    f'click menu item "{title}" of menu 1 of menu bar item "Rice" of last menu bar'])
+    # Menu closing/action dispatch and AX publication are asynchronous. Open
+    # and observe the requested item before the single action click.
+    ui(pid, ['key code 53'])
+    ui(pid, ['click menu bar item "Rice" of last menu bar'])
+    wait(lambda: title in ui(pid, ['get name of menu items of menu 1 of menu bar item "Rice" of last menu bar']))
+    return ui(pid, [f'click menu item "{title}" of menu 1 of menu bar item "Rice" of last menu bar'])
 
 
 def status(pid):
