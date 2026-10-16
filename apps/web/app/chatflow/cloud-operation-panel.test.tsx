@@ -173,11 +173,11 @@ describe('Cloud/MCP approval presentation', () => {
     const op = view();
     for (const [status, label] of [
       ['running', '执行中'],
-      ['succeeded', '成功'],
-      ['failed', '失败'],
-      ['unknown', '结果待确认'],
-      ['cancel_requested', '停止待确认'],
-      ['dispatched', '待确认'],
+      ['succeeded', '执行成功'],
+      ['failed', '执行失败'],
+      ['unknown', '待核实'],
+      ['cancel_requested', '已请求停止'],
+      ['dispatched', '已派发'],
     ] as const) {
       op.snapshot.status = status;
       expect(cloudOperationCompactStatus(op)).toBe(label);

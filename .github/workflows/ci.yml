@@ -11,9 +11,9 @@ permissions:
 jobs:
   tenant-workbench-browser:
     runs-on: ubuntu-latest
-    # Browser, tenant and organization suites run sequentially. Keep individual
-    # test deadlines below while allowing the full expanded suite to finish.
-    timeout-minutes: 20
+    # Browser, tenant and organization suites run sequentially and can exceed
+    # 20 minutes on standard runners. Keep the individual test deadlines below.
+    timeout-minutes: 30
     services:
       postgres:
         image: pgvector/pgvector:pg17
