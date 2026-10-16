@@ -51,6 +51,10 @@ import {
   discardPendingDshInputs,
 } from './allrice-dsh-inputs.mjs';
 import { cloudNativeTools } from './allrice-cloud-native-tools.mjs';
+import {
+  sandboxExecutionParameter,
+  sandboxNetworkParameter,
+} from './allrice-sandbox-native-parameters.mjs';
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
 import { employeeProfileNativeTools } from './allrice-employee-profile-native-tools.mjs';
@@ -353,12 +357,14 @@ const brokerNativeTools = [
   {
     canonicalName: 'local.process.execute',
     wireName: 'local_process_execute',
-    // Approval can wait one hour; the execution payload retains its own short
-    // command/CPU timeout. This is only the outer approval + receipt envelope.
+    // Approval can wait one hour; execution retains its finite governed budget
+    // or legacy short timeout. This is only the approval + receipt envelope.
     timeoutMs: managedToolWaitTimeoutMs,
     description:
-      'Run an approved Node/npm or private-venv Python command in a local Linux VM copy of an exact file manifest. Project processes have no network or host writes. Optional projectPreparation installs pinned pnpm/uv dependencies from an exact lock and verified archives before this command. It cannot combine with diagnostics, dependencies, background or a candidate. Optional diagnostics is read-only fixed Node with empty args; dependencies performs bounded locked npm preparation; background is a finite originating-Run-owned service. Supply either a workspace_project exact project ref (omit files, require matching projectPreparation; no folder grant needed) or current SHA-256 host files. Never mix sources. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
+      'Run an approved Node/npm or private-venv Python command in a local Linux VM copy of an exact file manifest, without host writes. Offline by default. Optional execution requests a finite compute/install/build budget; preparation and execution share the server-controlled cap and only measured progress can renew it. Optional network selects exact HTTPS origins independently authorized by the paired owner; input transfer needs separate permission. A folder or browser grant does not authorize network access. Old clients must reject unsupported controls, never silently drop them or move a failed/unknown call to cloud. Optional projectPreparation installs pinned pnpm/uv dependencies from an exact lock and verified archives before this command. It cannot combine with diagnostics, dependencies, background or a candidate. Optional diagnostics is read-only fixed Node with empty args; dependencies performs bounded locked npm preparation; background is a finite originating-Run-owned service. Supply either a workspace_project exact project ref (omit files, require matching projectPreparation; no folder grant needed) or current SHA-256 host files. Never mix sources. Service readiness is container-internal only, not completion or a browser preview. Web approval is not execution success. Use local_process_status/stop for a returned processId; stdin prompts require explicit human UI input, never answer them using a chat tool.',
     parameters: {
+      execution: sandboxExecutionParameter,
+      network: sandboxNetworkParameter,
       executable: {
         type: 'string',
         required: true,
