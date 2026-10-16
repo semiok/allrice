@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { inFlightHeartbeat } from './service-diagnostics.js';
 import {
   CloudProjectCommandSchema,
   CloudProjectRunResultSchema,
@@ -309,12 +310,12 @@ export async function prepareCloudProject(
     imageDigest: command.imageDigest,
   });
   let fenceReleased = false;
-  const maintainLease = async () => {
+  const maintainLease = inFlightHeartbeat(async () => {
     // A concurrent heartbeat may have started its GET before handoff deleted
     // the fence. Re-read the phase after awaiting, before deciding revocation.
     const valid = fenceReleased || (await fence.valid());
     return (fenceReleased || valid) && input.maintainLease();
-  };
+  });
   const revoked = new AbortController(),
     signal = AbortSignal.any([input.signal, revoked.signal]);
   let checking = false;
@@ -467,6 +468,9 @@ export async function prepareCloudProject(
       maintainLease,
       signal,
       archives,
+      // The physical controller takes over only after it has armed its guard.
+      // It calls the same fenced authority; no successful check is cached.
+      handoffHeartbeat: () => clearInterval(heartbeat),
       config: {
         Image: command.imageDigest,
         Entrypoint:

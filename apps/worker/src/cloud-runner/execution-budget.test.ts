@@ -117,6 +117,19 @@ it('cannot renew indefinitely with only lease heartbeats', async () => {
   expect(f.clock.state.sequence).toBe(1);
 });
 
+it('does not submit empty progress or extend a confirmed exited process', async () => {
+  const f = fixture();
+  f.advance(105000);
+  const before = structuredClone(f.clock.state);
+  await f.clock.renew(async () => null);
+  expect(f.requests).toHaveLength(0);
+  expect(f.clock.state).toEqual(before);
+  f.advance(15000);
+  await expect(f.clock.renew(async () => null)).rejects.toThrow(
+    'SANDBOX_EXECUTION_DEADLINE',
+  );
+});
+
 it('never revives an expired preparation phase or resets progress at handoff', async () => {
   const f = fixture();
   f.advance(105000);

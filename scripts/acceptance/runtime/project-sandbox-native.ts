@@ -65,8 +65,23 @@ type Case = {
   installProbe?: boolean;
   stop?: 'cancel' | 'revoke';
   long?: boolean;
+  authorityDelayMs?: number;
+  stagingControlLoss?: boolean;
 };
 const cases: Case[] = [
+  {
+    name: 'node-network-shared-budget',
+    network: true,
+    kind: 'compute',
+    long: true,
+    authorityDelayMs: 250,
+    script: String.raw`async function main(){const r=await fetch('https://registry.npmjs.org/is-number/7.0.0',{signal:AbortSignal.timeout(15000)});if(r.status!==200||(await r.json()).version!=='7.0.0')throw Error('metadata mismatch');console.log('runtime-network:verified');const until=Date.now()+70000;let n=0;while(Date.now()<until){for(let j=0;j<1000;j++)n=Math.sin(n+j)}console.log('shared-clock:continued:'+n)}main().catch(e=>{console.error(e);process.exitCode=1});`,
+  },
+  {
+    name: 'project-staging-control-loss',
+    stagingControlLoss: true,
+    script: "throw Error('tenant script must not start after control loss')",
+  },
   {
     name: 'node-network-and-offline-installer',
     script: netProbe,
@@ -352,6 +367,22 @@ async function execute(
     state: SandboxExecutionBudgetState | undefined,
     stopAt: number | undefined,
     finished = false;
+  let staging = false;
+  // Delay the daemon boundary while only the independent physical controller
+  // can observe the stalled authority. The tenant start marker is never sent.
+  class StalledStaging extends CloudRunnerBackend {
+    override async putArchive(
+      _id: string,
+      _bytes: Uint8Array,
+      signal: AbortSignal,
+    ) {
+      staging = true;
+      stopAt ??= Date.now();
+      await delay(10000, undefined, { signal });
+      throw Error('staging did not observe physical controller cancellation');
+    }
+  }
+  const runner = item.stagingControlLoss ? new StalledStaging() : backend;
   const input = { ...prepared, command, attemptId };
   await save(item.name + '-input', input);
   const lease = item.network
@@ -372,10 +403,14 @@ async function execute(
       })
     : undefined;
   try {
-    const result = await backend.execute(command, [], {
+    const result = await runner.execute(command, [], {
       attemptId,
       deadlineAt: new Date(rootDeadline).toISOString(),
-      maintainLease: async () => valid,
+      maintainLease: async () => {
+        if (staging) return new Promise<boolean>(() => {});
+        if (item.authorityDelayMs) await delay(item.authorityDelayMs);
+        return valid;
+      },
       signal: cancel.signal,
       projectScope: scope,
       ...(lease ? { networkLease: lease } : {}),
@@ -435,7 +470,12 @@ async function execute(
     });
     assert.equal(result.stopped, true);
     assert.equal(result.executionBudget?.startedAt, state?.startedAt);
-    if (item.stop) {
+    if (item.stagingControlLoss) {
+      assert.equal(result.reason, 'failed');
+      assert.equal(result.errorCode, 'SANDBOX_EXECUTION_AUTHORITY_UNCONFIRMED');
+      assert.ok(stopAt && Date.now() - stopAt < 7000);
+      assert.doesNotMatch(result.output, /tenant script must not start/);
+    } else if (item.stop) {
       assert.equal(result.reason, 'canceled');
       assert.ok(stopAt && Date.now() - stopAt < 12000);
       if (item.stop === 'revoke') {

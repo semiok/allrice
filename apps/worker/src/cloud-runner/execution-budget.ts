@@ -49,7 +49,7 @@ export class CloudExecutionBudget {
     };
   }
 
-  async renew(progress: () => Promise<SandboxExecutionProgress>) {
+  async renew(progress: () => Promise<SandboxExecutionProgress | null>) {
     const state = this.value;
     if (this.now() >= state.deadlineAt)
       throw Error('SANDBOX_EXECUTION_DEADLINE');
@@ -60,11 +60,17 @@ export class CloudExecutionBudget {
       return;
     // Preserve the exact request across an uncertain acknowledgement. Neither
     // a phase change nor a transport retry may allocate another extension.
-    this.pending ??= {
-      requestId: randomUUID(),
-      sequence: state.sequence + 1,
-      progress: SandboxExecutionProgressSchema.parse(await progress()),
-    };
+    if (!this.pending) {
+      const measured = await progress();
+      // A runner may prove the original physical process has already exited.
+      // That needs no extension. Missing/untrusted live metrics must still fail.
+      if (measured === null) return;
+      this.pending = {
+        requestId: randomUUID(),
+        sequence: state.sequence + 1,
+        progress: SandboxExecutionProgressSchema.parse(measured),
+      };
+    }
     const request = this.pending;
     const parsed = SandboxExecutionBudgetStateSchema.safeParse(
       await this.exchange(request),
