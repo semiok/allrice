@@ -436,7 +436,10 @@ suite(
         originalPut = LocalStorageAdapter.prototype.put;
       const put = vi
         .spyOn(LocalStorageAdapter.prototype, 'put')
-        .mockImplementationOnce(async function (...args) {
+        .mockImplementationOnce(async function (
+          this: LocalStorageAdapter,
+          ...args
+        ) {
           await originalPut.apply(this, args);
           throw Error('Synthetic lost storage acknowledgement');
         });
