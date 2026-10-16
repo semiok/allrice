@@ -53,6 +53,7 @@ export function parsePersonalSkillGitHubUrl(
         part.length > 512 ||
         part === '.' ||
         part === '..' ||
+        // eslint-disable-next-line no-control-regex -- Reject decoded control bytes before constructing a public URL.
         /[/\\:\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(
           part,
         ),

@@ -84,7 +84,7 @@ export function explicitPersonalSkillGitHubInstallIntent(
     return false;
   }
   const urls =
-    text.match(/https?:\/\/[^\s<>“”「」"'`()\[\]，。；;！!？?]+/giu) ?? [];
+    text.match(/https?:\/\/[^\s<>“”「」"'`()[\]，。；;！!？?]+/giu) ?? [];
   if (urls.length !== 1 || urls[0] !== url) return false;
   const escaped = url.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   // Keep the bound URL distinct from an attachment name in the same message.

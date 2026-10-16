@@ -1,8 +1,11 @@
 import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { Buffer } from 'node:buffer';
+import { URL } from 'node:url';
 import { readPublicGitHubSource } from './personal-skill-github.ts';
 import { parsePersonalSkillGitHubUrl as parseSourceUrl } from '@allrice/contracts';
+const { Response, ReadableStream, AbortController } = globalThis;
 
 const commit = 'a'.repeat(40),
   treeSha = 'b'.repeat(40);

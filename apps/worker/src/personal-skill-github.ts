@@ -35,6 +35,7 @@ function fail(code: string): never {
 const validPath = (path: string) =>
   path.length > 0 &&
   path.length <= 512 &&
+  // eslint-disable-next-line no-control-regex -- Reject control bytes in untrusted Git paths.
   !/[\\:\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(path) &&
   path.split('/').every((part) => part && part !== '.' && part !== '..');
 const key = (path: string) => path.normalize('NFC').toUpperCase().toLowerCase();
