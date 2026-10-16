@@ -1,3 +1,5 @@
+import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
+import { assignPublishedPlatformEmployeeToWorkspace } from './employees/platform-employees.ts';
 /** Synthetic P20 evidence only; callers must provide their dedicated schema. */
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { randomUUID } from 'node:crypto';
@@ -8,7 +10,10 @@ import {
   createChatSession,
 } from './workspace/service.ts';
 
-export async function createExperienceFixture(db: ReturnType<typeof postgres>) {
+export async function createExperienceFixture(
+  db: ReturnType<typeof postgres>,
+  options: { published?: boolean } = {},
+) {
   const org = randomUUID(),
     workspace = randomUUID(),
     user = randomUUID();
@@ -43,13 +48,28 @@ export async function createExperienceFixture(db: ReturnType<typeof postgres>) {
     neighbor = await member('member');
   await authorizeFixturePlatformAdministrator(db, reviewer.actor.id);
   await ensureDefaultEmployee(owner, workspace);
+  let publishedVersion: string | null = null;
+  if (options.published) {
+    const source = await createEmployeeAdministrationFixture(db);
+    await source.preview();
+    await source.publish();
+    await assignPublishedPlatformEmployeeToWorkspace(
+      source.definition.key,
+      workspace,
+    );
+    const [v] =
+      await db`select employee_version_id from allrice_employee_version_sources
+      where workspace_id=${workspace} and platform_employee_id=${source.employeeId}`;
+    publishedVersion = v!.employee_version_id;
+  }
+  const [assignment] = await db<{ id: string; employee_version_id: string }[]>`
+    select id,employee_version_id from allrice_employee_assignments where user_id=${user} and workspace_id=${workspace}
+      and (${publishedVersion}::uuid is null or employee_version_id=${publishedVersion}) order by created_at desc limit 1`;
   const session = await createChatSession(owner, {
     workspaceId: workspace,
     title: 'P20 completed task',
+    employeeAssignmentId: assignment!.id,
   });
-  const [assignment] = await db<
-    { id: string; employee_version_id: string }[]
-  >`select id,employee_version_id from allrice_employee_assignments where user_id=${user} and workspace_id=${workspace}`;
   const run = randomUUID(),
     message = randomUUID(),
     assistant = randomUUID();

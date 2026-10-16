@@ -94,6 +94,8 @@ it('keeps an automatically organized draft read-only and escapes model text', ()
         instanceId: randomUUID(),
         status: 'succeeded',
         state: 'pending_validation',
+        validations: [],
+        validationNotes: [],
         revision: 1,
         digest: 'sha256:' + 'a'.repeat(64),
         createdAt: new Date().toISOString(),
@@ -121,4 +123,59 @@ it('keeps an automatically organized draft read-only and escapes model text', ()
   expect(html).not.toContain('<script>');
   expect(html).not.toContain('<button');
   expect(html).not.toContain('已确认长期记忆');
+});
+
+it('shows independent validation coverage as not enabled without an approval shortcut', () => {
+  const html = renderToStaticMarkup(
+    <ExperienceDraftCard
+      batch={{
+        id: randomUUID(),
+        runId: randomUUID(),
+        instanceId: randomUUID(),
+        status: 'succeeded',
+        state: 'pending_validation',
+        revision: 1,
+        digest: 'sha256:' + 'a'.repeat(64),
+        createdAt: new Date().toISOString(),
+        errorCode: null,
+        sourceIds: [candidate.id],
+        drafts: [
+          {
+            sourceIds: [candidate.id],
+            rule: '到场和未到分别核对',
+            reason: '反馈',
+            applicability: '名单',
+            confidence: 'tentative',
+            validation: { kind: 'calculation', check: '独立计数' },
+          },
+        ],
+        validationNotes: [],
+        validations: [
+          {
+            id: randomUUID(),
+            draftIndex: 0,
+            caseId: 'attendance-roster-v1',
+            status: 'succeeded',
+            validationStatus: 'passed',
+            runId: randomUUID(),
+            createdAt: new Date().toISOString(),
+            completedAt: new Date().toISOString(),
+            outputDigest: 'sha256:' + 'a'.repeat(64),
+            active: false,
+            assertion: {
+              caseId: 'attendance-roster-v1',
+              passed: true,
+              reason: 'matched',
+              checks: [{ id: 'complete-a', passed: true }],
+            },
+            coverage:
+              '仅验证这份草稿在四个合成名单样例中的分组计数和缺失信息处理；不证明原任务名单或其他业务场景正确，尚未启用。',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(html).toContain('专项样例通过 · 尚未启用');
+  expect(html).toContain('不证明原任务名单或其他业务场景正确');
+  expect(html).not.toContain('<button');
 });

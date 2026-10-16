@@ -1,4 +1,11 @@
 import {
+  prepareExperienceValidationClaim,
+  recordExperienceValidationExecution,
+  finishExperienceValidation,
+} from '../experience-validation.ts';
+import { ExperienceError } from '../experience.ts';
+import { PersonalSkillError } from './personal-skills.ts';
+import {
   prepareEmployeeMethodTestClaim,
   recordEmployeeMethodTestExecution,
   finishEmployeeMethodTestInTransaction,
@@ -112,7 +119,7 @@ interface EmployeeRow {
 }
 
 interface TestRunRow {
-  purpose: 'platform_preview' | 'method_candidate';
+  purpose: 'platform_preview' | 'method_candidate' | 'experience_validation';
   id: string;
   employee_id: string;
   revision_id: string;
@@ -673,6 +680,13 @@ async function finalizePlatformEmployeeTestRunInTransaction(
       normalizedOutput,
       terminal.runStatus,
     );
+  if (existing.purpose === 'experience_validation')
+    await finishExperienceValidation(
+      transaction,
+      input.testRunId,
+      normalizedOutput,
+      terminal.runStatus,
+    );
   const persistedOutput: unknown = JSON.parse(JSON.stringify(normalizedOutput));
   const rows = await transaction<TestRunRow[]>`
     update allrice_platform_employee_test_runs
@@ -825,7 +839,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         and frozen_definition is not null
         and frozen_native_skills is not null
         and frozen_package_checksum is not null
-      order by created_at, id
+      order by (purpose='experience_validation') asc, created_at, id
       for update skip locked
       limit 1
     `;
@@ -880,8 +894,18 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     let methodClaim: Awaited<
       ReturnType<typeof prepareEmployeeMethodTestClaim>
     > = null;
+    let experienceClaim: Awaited<
+      ReturnType<typeof prepareExperienceValidationClaim>
+    > = null;
     try {
-      if (row.purpose === 'method_candidate') {
+      if (row.purpose === 'experience_validation') {
+        experienceClaim = await prepareExperienceValidationClaim(
+          transaction,
+          row.id,
+        );
+        if (!experienceClaim) return null;
+        previewContext = experienceClaim.previewContext;
+      } else if (row.purpose === 'method_candidate') {
         methodClaim = await prepareEmployeeMethodTestClaim(transaction, row.id);
         if (!methodClaim) return null;
         previewContext = methodClaim.previewContext;
@@ -898,7 +922,9 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         error instanceof DataAccessError ||
         error instanceof EmployeeContentError ||
         error instanceof EmployeeInstanceError ||
-        error instanceof ModelGovernanceError
+        error instanceof ModelGovernanceError ||
+        error instanceof ExperienceError ||
+        error instanceof PersonalSkillError
       ))
         throw error;
       await transaction`update allrice_platform_employee_test_runs
@@ -925,7 +951,9 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     const issuedAt = new Date();
     const expiresAt = platformEmployeeTestTimeoutAt(
       issuedAt,
-      methodClaim?.timeoutMs ?? runtimeProfile.timeoutMs,
+      experienceClaim?.timeoutMs ??
+        methodClaim?.timeoutMs ??
+        runtimeProfile.timeoutMs,
     );
     const claimed = await transaction`
       update allrice_platform_employee_test_runs
@@ -950,13 +978,14 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
         action: 'job:execute',
         workspaceId: previewContext.workspace_id,
       },
-      ...(methodClaim ? [] : ['storage_object', 'memory', 'chat_session']).map(
-        (resourceType) => ({
-          resourceType,
-          action: 'resource:read',
-          workspaceId: previewContext.workspace_id,
-        }),
-      ),
+      ...(methodClaim || experienceClaim
+        ? []
+        : ['storage_object', 'memory', 'chat_session']
+      ).map((resourceType) => ({
+        resourceType,
+        action: 'resource:read',
+        workspaceId: previewContext.workspace_id,
+      })),
     ];
     await transaction`
       select id from allrice_users
@@ -998,6 +1027,11 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
           handler: 'platform_employee_preview',
           platformEmployeeTestRunId: row.id,
           employeeRevisionId: row.revision_id,
+          ...(experienceClaim
+            ? {
+                experienceValidationDigest: experienceClaim.binding.draftDigest,
+              }
+            : {}),
           ...(methodClaim
             ? {
                 employeeMethodSnapshotDigest:
@@ -1030,6 +1064,13 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     const methodCandidate = methodClaim
       ? await recordEmployeeMethodTestExecution(transaction, methodClaim, runId)
       : null;
+    const experienceCandidate = experienceClaim
+      ? await recordExperienceValidationExecution(
+          transaction,
+          experienceClaim,
+          runId,
+        )
+      : null;
     await transaction`
       insert into allrice_run_events (
         organization_id, workspace_id, run_id, sequence, event_type, payload,
@@ -1054,6 +1095,7 @@ export async function claimNextPlatformEmployeeTestRun(workerIdInput: string) {
     return {
       id: row.id,
       methodCandidate,
+      experienceCandidate,
       employeeId: row.employee_id,
       revisionId: row.revision_id,
       requestedByLabel: row.requested_by_label,

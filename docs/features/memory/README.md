@@ -51,3 +51,47 @@ The workspace Memory panel separates “待你确认” from “长期记忆” 
 - the owner can inspect, promote, correct and delete a memory;
 - private memory never crosses user, workspace or organization boundaries;
 - recall and lifecycle changes remain attributable and auditable.
+
+## MET183 automatic private experience — staged delivery
+
+Completed-task feedback is retained as immutable, private evidence associated with
+its employee instance. Scheduled `experience-consolidation` is an AllRice-owned
+DSH Skill inspired by Dreaming's separation of evidence and reusable drafts; it
+does not install or copy an OpenClaw plugin, add a second memory database, or
+change DSH compaction. Lossless integration remains deferred.
+
+The existing automation producer creates bounded consolidation Runs. The original
+feedback, sources, source/version digests, native Skill-load receipt and draft
+output remain separate. An automatically generated draft is not a confirmed
+preference and is excluded from recall.
+
+PR3a adds optional **specialized validation**, reusing the existing isolated
+platform-test lifecycle, Worker, model admission and route usage ledger. Existing
+v1/v2 policies keep this off; a platform administrator must explicitly enable
+`supported_cases` in the company experience settings. Disabling consolidation or
+validation prevents new dispatch and stops in-flight validation at its next
+current-authority check. Previous results remain private, read-only evidence.
+
+The first supported case is `attendance-roster-v1`: two complete synthetic lists,
+one list with an unknown attendance status, and one missing list. The original
+immutable draft is supplied to native DSH in a fresh non-chat context without
+business tools, source files, recalled history or external Skills. DSH's native
+planning/clarification tools remain available. A server-owned assertion compares
+both member identities and counts and rejects guessing missing information.
+Draft routing selects a possible test, not authority to activate the draft.
+
+One reservation is allowed per original draft. Validation is capped at five
+minutes, eight per company and 64 globally per rolling day; it shares one
+background execution slot with consolidation and yields to foreground jobs.
+The frozen occurrence identity, model, policy, source and case digests bind the
+result and subscription ledger. Cancellation, lease/timeout, current owner,
+instance, model connection and content authority are checked before dispatch,
+during execution and before finalization. Failed/unknown evidence is retained;
+there is no implicit repeated model call.
+
+The employee view states the exact synthetic coverage and **not enabled**.
+Passing this sample does not prove the original task's roster, general business
+correctness or arbitrary external Skill behavior. Unsupported drafts remain
+pending. Private adoption, instance-scoped recall and chat forgetting belong to
+PR3b; PR3a does not create effective memory or expose private content to company
+maintainers.

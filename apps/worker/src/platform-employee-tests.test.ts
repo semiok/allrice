@@ -3,12 +3,14 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   SessionModelSnapshotSchema,
+  ExperienceModelSnapshotSchema,
   type RouteDecision,
 } from '@allrice/contracts';
 import {
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
   employeeMethodTestStillCurrent,
+  experienceValidationStillCurrent,
   methodFileExecutionUnverified,
   freezeRouteSubscriptionSnapshot,
 } from '@allrice/database';
@@ -20,6 +22,7 @@ vi.mock('@allrice/database', () => ({
   claimNextPlatformEmployeeTestRun: vi.fn(),
   completePlatformEmployeeTestRun: vi.fn(),
   employeeMethodTestStillCurrent: vi.fn(),
+  experienceValidationStillCurrent: vi.fn(),
   methodFileExecutionUnverified: vi.fn(),
   freezeRouteSubscriptionSnapshot: vi.fn(),
 }));
@@ -199,6 +202,7 @@ it('physically signals a running test to stop on revocation and keeps missing us
   vi.useFakeTimers();
   vi.mocked(employeeMethodTestStillCurrent)
     .mockResolvedValueOnce(true)
+    .mockResolvedValueOnce(true)
     .mockResolvedValue(false);
   let aborted = false;
   vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
@@ -254,6 +258,7 @@ it('awaits a pending authority read before finalizing a model answer', async () 
   let resolveCheck!: (value: boolean) => void;
   let resolveModel!: (value: typeof receipt) => void;
   vi.mocked(employeeMethodTestStillCurrent)
+    .mockResolvedValueOnce(true)
     .mockResolvedValueOnce(true)
     .mockImplementation(
       () =>
@@ -351,6 +356,108 @@ it('limits file-case tools and keeps an unknown backend result unverified even i
       }),
       usage: receipt.usage,
       modelExecution: expect.objectContaining({ usageComplete: true }),
+    }),
+  );
+});
+
+it('uses the original experience draft with true non-chat identity, no unrelated policy/tools and frozen occurrence billing', async () => {
+  const test = claimed(),
+    original = test.methodCandidate!;
+  test.methodCandidate = null;
+  test.experienceCandidate = {
+    caseId: 'attendance-roster-v1',
+    occurrenceId: test.id,
+    assignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    modelSnapshot: ExperienceModelSnapshotSchema.parse({
+      ...original.modelSnapshot,
+      schemaVersion: 2,
+      sessionId: null,
+      occurrenceId: test.id,
+    }),
+    timeoutMs: 300000,
+    instructions: 'Original immutable attendance draft',
+    decision: original.decision,
+  };
+  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
+  vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
+  const execute = vi
+    .spyOn(DshHarnessAdapter.prototype, 'execute')
+    .mockResolvedValue(receipt);
+  await run();
+  const input = execute.mock.calls[0]![0];
+  expect(input.kernel).toMatchObject({
+    sessionId: null,
+    userMessageId: null,
+    assistantMessageId: null,
+    internalTask: { kind: 'experience_validation', occurrenceId: test.id },
+    systemInstructions: 'Original immutable attendance draft',
+    authorizedMemoryContext: '',
+    bootstrapConversation: '',
+  });
+  expect(input.kernel.systemInstructions).not.toContain('Published base');
+  expect(input.nativeSkills).toEqual([]);
+  expect(input.tools).toEqual([]);
+  expect(input.onToolCall).toBeUndefined();
+  expect(freezeRouteSubscriptionSnapshot).toHaveBeenCalledWith(
+    expect.objectContaining({
+      snapshot: expect.objectContaining({
+        version: 2,
+        occurrenceId: test.id,
+        sessionId: null,
+      }),
+    }),
+  );
+  expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
+    test.id,
+    expect.objectContaining({
+      error: null,
+      modelExecution: expect.objectContaining({
+        dispatched: true,
+        usageComplete: true,
+        costCents: null,
+      }),
+    }),
+  );
+});
+
+it('rechecks cancellation after subscription freeze and never dispatches the invalidated experience', async () => {
+  const test = claimed(),
+    original = test.methodCandidate!;
+  test.methodCandidate = null;
+  test.experienceCandidate = {
+    caseId: 'attendance-roster-v1',
+    occurrenceId: test.id,
+    assignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    modelSnapshot: ExperienceModelSnapshotSchema.parse({
+      ...original.modelSnapshot,
+      schemaVersion: 2,
+      sessionId: null,
+      occurrenceId: test.id,
+    }),
+    timeoutMs: 300000,
+    instructions: 'Original immutable attendance draft',
+    decision: original.decision,
+  };
+  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
+  vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
+  vi.mocked(freezeRouteSubscriptionSnapshot).mockImplementationOnce(
+    async () => {
+      vi.mocked(experienceValidationStillCurrent).mockResolvedValue(false);
+      return { frozen: true, snapshotDigest: 'synthetic' };
+    },
+  );
+  const execute = vi.spyOn(DshHarnessAdapter.prototype, 'execute');
+  await run();
+  expect(execute).not.toHaveBeenCalled();
+  expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
+    test.id,
+    expect.objectContaining({
+      modelExecution: expect.objectContaining({
+        dispatched: false,
+        subscriptionSnapshotCreated: true,
+      }),
     }),
   );
 });

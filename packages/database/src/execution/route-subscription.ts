@@ -28,8 +28,8 @@ export async function freezeRouteSubscriptionSnapshot(
     // requesting chat and is audit provenance, not a replacement model binding.
     const [row] = await tx`
       select d.*,coalesce(e.session_id::text,t.model_snapshot->>'sessionId') as session_id,
-        x.id as occurrence_id,
-        coalesce(e.execution_snapshot->'modelSnapshot',t.model_snapshot,x.experience_execution->'model') as model_snapshot,
+        coalesce(x.id,v.id) as occurrence_id,
+        coalesce(e.execution_snapshot->'modelSnapshot',t.model_snapshot,x.experience_execution->'model',v.experience_binding->'model') as model_snapshot,
         p.provider_key,p.auth_mode,s.snapshot_digest as old_digest,s.snapshot as old_snapshot
       from allrice_route_decisions d
       left join allrice_employee_runs e on e.run_id=d.run_id
@@ -41,6 +41,13 @@ export async function freezeRouteSubscriptionSnapshot(
       left join allrice_automation_runs x on x.run_id=d.run_id and x.organization_id=d.organization_id and x.workspace_id=d.workspace_id
         and x.experience_occurrence->>'ownerId'=d.actor_id::text and x.experience_occurrence->>'employeeId'=d.employee_id::text
         and x.experience_execution->'model'->>'occurrenceId'=x.id::text
+      left join allrice_platform_employee_test_runs v on v.experience_run_id=d.run_id and v.experience_route_id=d.id
+        and v.purpose='experience_validation'
+        and v.experience_binding->>'organizationId'=d.organization_id::text
+        and v.experience_binding->>'workspaceId'=d.workspace_id::text
+        and v.experience_binding->>'ownerId'=d.actor_id::text
+        and v.experience_binding->>'employeeId'=d.employee_id::text
+        and v.experience_binding->'model'->>'occurrenceId'=v.id::text
       join allrice_model_connections c on c.id=d.model_connection_id
         and (c.scope='platform' or c.organization_id=d.organization_id)
       join allrice_model_providers p on p.id=c.provider_id
@@ -49,7 +56,7 @@ export async function freezeRouteSubscriptionSnapshot(
       left join allrice_route_subscription_snapshots s on s.route_decision_id=d.id
       where d.id=${input.decisionId} and d.organization_id=${input.organizationId}
         and d.workspace_id=${input.workspaceId}
-        and num_nonnulls(e.run_id,t.run_id,x.run_id)=1 for update of d`;
+        and num_nonnulls(e.run_id,t.run_id,x.run_id,v.experience_run_id)=1 for update of d`;
     if (
       !row ||
       !['codex', 'openai-codex'].includes(row.provider_key) ||
