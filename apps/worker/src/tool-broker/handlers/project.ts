@@ -165,6 +165,12 @@ export const runProjectWorkspace: RiceToolHandler = async ({
                 }
               : {}),
             limits: command.limits,
+            ...(command.action === 'execute' && command.network
+              ? { network: command.network }
+              : {}),
+            ...(command.action === 'execute' && command.execution
+              ? { execution: command.execution }
+              : {}),
           };
           const local = await createLocalCommandOperation({
             context: input.context,

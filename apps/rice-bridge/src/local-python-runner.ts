@@ -1,3 +1,13 @@
+import {
+  LocalSandboxNetwork,
+  requireLocalSandboxNetwork,
+} from './local-sandbox-network.js';
+import type { SandboxNetworkLease } from '@allrice/contracts';
+import type { SandboxExecutionBudgetController } from '@allrice/project-runtime';
+import {
+  LocalExecutionControl,
+  requireLocalExecutionBudget,
+} from './local-execution-control.js';
 import { mkdtemp, open, rm } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -203,6 +213,13 @@ export class LocalPythonRunner {
       officePreview: false,
       stopConfirmed: true,
       pythonChartsContractVersion: 1,
+      ...(process.env.ALLRICE_BRIDGE_SANDBOX_EXECUTION_V1_ENABLED !== '0' &&
+      process.env.ALLRICE_BRIDGE_SANDBOX_NETWORK_V1_ENABLED !== '0'
+        ? { sandboxNetworkVersion: 1 }
+        : {}),
+      ...(process.env.ALLRICE_BRIDGE_SANDBOX_EXECUTION_V1_ENABLED !== '0'
+        ? { sandboxExecutionVersion: 1 }
+        : {}),
       inputStreamingVersion: 1,
     });
   }
@@ -386,6 +403,8 @@ export class LocalPythonRunner {
     input: RuntimeLocalPythonPayload,
     options: {
       attemptId: string;
+      executionBudget?: SandboxExecutionBudgetController;
+      networkLease?: SandboxNetworkLease;
       transport: LocalPythonTransport;
       signal?: AbortSignal;
       maintainLease: () => Promise<boolean>;
@@ -393,6 +412,13 @@ export class LocalPythonRunner {
   ) {
     const payload = RuntimeLocalPythonPayloadSchema.parse(input),
       a = payload.arguments;
+    const budget = options.executionBudget;
+    requireLocalExecutionBudget(payload, budget, options.maintainLease);
+    requireLocalSandboxNetwork(
+      payload,
+      options.networkLease,
+      options.attemptId,
+    );
     if (!uuid.test(options.attemptId))
       throw new LocalCommandError('INVALID_ATTEMPT');
     if (
@@ -404,15 +430,27 @@ export class LocalPythonRunner {
       signal = AbortSignal.any([
         aborted.signal,
         ...(options.signal ? [options.signal] : []),
-        AbortSignal.timeout(a.limits.timeoutMs + 35_000),
+        AbortSignal.timeout(
+          budget
+            ? Math.max(1, budget.state.hardDeadlineAt - Date.now()) + 35000
+            : a.limits.timeoutMs + 35_000,
+        ),
       ]);
-    await this.preflight(signal);
+    const preparationSignal = budget
+      ? AbortSignal.any([
+          signal,
+          AbortSignal.timeout(
+            Math.max(1, budget.state.deadlineAt - Date.now()),
+          ),
+        ])
+      : signal;
+    await this.preflight(preparationSignal);
     if (!(await options.maintainLease()))
       throw new LocalCommandError('EXECUTION_REVOKED');
     const files = await this.inputs(
       payload,
       options.transport,
-      signal,
+      preparationSignal,
       options.maintainLease,
     );
     try {
@@ -435,6 +473,7 @@ export class LocalPythonRunner {
     files: RuntimeInputSource[],
   ) {
     const a = payload.arguments;
+    const budget = options.executionBudget;
     const volumeName = `allrice-python-${options.attemptId}`;
     const labels = {
       [attemptLabel]: options.attemptId,
@@ -463,7 +502,8 @@ export class LocalPythonRunner {
         Cmd: ['-I', '-c', localPythonSupervisor],
         User: '0:0',
         WorkingDir: '/tmp/work',
-        OpenStdin: false,
+        OpenStdin: !!budget,
+        StdinOnce: false,
         Tty: false,
         Labels: labels,
         HostConfig: {
@@ -505,8 +545,10 @@ export class LocalPythonRunner {
       void stop('canceled').catch(() => undefined);
     };
     options.signal?.addEventListener('abort', onAbort, { once: true });
+    let executionControl: LocalExecutionControl | undefined;
+    let network: LocalSandboxNetwork | undefined;
     const timer = setInterval(() => {
-      if (checking) return;
+      if (checking || executionControl) return;
       checking = true;
       void options
         .maintainLease()
@@ -518,10 +560,16 @@ export class LocalPythonRunner {
           checking = false;
         });
     }, 1000);
-    const deadlineUnixMs = Date.now() + a.limits.timeoutMs;
-    const deadline = setTimeout(() => {
-      void stop('timeout').catch(() => undefined);
-    }, a.limits.timeoutMs + 22_000);
+    const deadlineUnixMs =
+      budget?.state.deadlineAt ?? Date.now() + a.limits.timeoutMs;
+    const deadline = setTimeout(
+      () => {
+        void stop('timeout').catch(() => undefined);
+      },
+      budget
+        ? Math.max(1, budget.state.hardDeadlineAt - Date.now())
+        : a.limits.timeoutMs + 22_000,
+    );
     try {
       await this.api.putInputArchive(
         id,
@@ -531,14 +579,33 @@ export class LocalPythonRunner {
             bufferedInput('main.py', Buffer.from(a.script)),
             bufferedInput(
               '.allrice/config.json',
-              Buffer.from(JSON.stringify({ arguments: a, deadlineUnixMs })),
+              Buffer.from(
+                JSON.stringify({
+                  arguments: a,
+                  ...(options.networkLease ? { runtimeNetwork: true } : {}),
+                  deadlineUnixMs,
+                  ...(budget
+                    ? {
+                        executionControl: {
+                          version: 1,
+                          attemptId: options.attemptId,
+                          hardDeadlineAt: budget.state.hardDeadlineAt,
+                        },
+                      }
+                    : {}),
+                }),
+              ),
             ),
           ],
           signal,
         ),
         signal,
       );
-      if (signal.aborted || !(await options.maintainLease())) {
+      if (
+        signal.aborted ||
+        (budget && Date.now() >= budget.state.deadlineAt) ||
+        !(await options.maintainLease())
+      ) {
         await stop('lease_lost');
       } else {
         await this.inspect(options.attemptId, id, payload);
@@ -546,16 +613,51 @@ export class LocalPythonRunner {
         startPending = this.api.json('POST', `/containers/${id}/start`);
         await startPending;
         if (signal.aborted) await stop('canceled');
+        if (budget) {
+          executionControl = new LocalExecutionControl({
+            api: this.api,
+            containerId: id,
+            attemptId: options.attemptId,
+            attemptLabel,
+            budget,
+            maintainLease: options.maintainLease,
+            stop,
+          });
+          await executionControl.start();
+        }
+        if (options.networkLease) {
+          network = new LocalSandboxNetwork({
+            api: this.api,
+            containerId: id,
+            attemptId: options.attemptId,
+            attemptLabel,
+            lease: options.networkLease,
+            allowExecution: () => executionControl!.allowNetwork(),
+            signal,
+            maintainLease: options.maintainLease,
+            stop,
+            relayRuntime: 'python',
+          });
+          await network.start();
+        }
       }
       let state = await this.inspect(options.attemptId, id, payload);
       while (state.State.Running) {
         await delay(100);
         state = await this.inspect(options.attemptId, id, payload);
       }
+      await network?.finish();
+      await executionControl?.finish();
+      if (
+        budget &&
+        state.State.ExitCode === 124 &&
+        Date.now() >= budget.state.deadlineAt
+      )
+        await stop('timeout');
       if (stopPromise) await stopPromise;
       if (state.State.Status !== 'exited' && state.State.Status !== 'created')
         throw new LocalCommandError('STOP_NOT_CONFIRMED');
-      return await this.result(
+      const result = await this.result(
         payload,
         options.attemptId,
         id,
@@ -563,6 +665,11 @@ export class LocalPythonRunner {
         signal,
         reason ?? (state.State.OOMKilled ? 'memory_limit' : null),
       );
+      return RuntimeLocalPythonResultSchema.parse({
+        ...result,
+        ...(budget ? { execution: budget.observation } : {}),
+        ...(network?.evidence ?? {}),
+      });
     } catch {
       try {
         await stop(reason ?? 'supervisor_failed');
@@ -584,6 +691,8 @@ export class LocalPythonRunner {
       }
       throw new LocalCommandError('PYTHON_RESULT_UNKNOWN');
     } finally {
+      await network?.finish();
+      await executionControl?.finish();
       clearInterval(timer);
       clearTimeout(deadline);
       options.signal?.removeEventListener('abort', onAbort);

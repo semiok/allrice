@@ -1146,6 +1146,8 @@ export class BridgeJournal {
         !localPythonResultMatchesPayload(dispatch.payload, result)
       )
         throw new BridgeJournalError('JOURNAL_RECOVERY_MISMATCH');
+      if (dispatch.payload.arguments.network !== 'none')
+        throw new BridgeJournalError('JOURNAL_NETWORK_RECONCILIATION_REQUIRED');
       const evidence = {
         summary: `本地 Python 已物理停止（${result.reason}）；只核对结果，未重跑`,
         output: result,
@@ -1209,6 +1211,8 @@ export class BridgeJournal {
         dispatch.payload.arguments.imageDigest !== result.imageDigest
       )
         throw new BridgeJournalError('JOURNAL_RECOVERY_MISMATCH');
+      if (dispatch.payload.arguments.network !== 'none')
+        throw new BridgeJournalError('JOURNAL_NETWORK_RECONCILIATION_REQUIRED');
       const evidence = {
         summary: `已核实重启前的本地命令：退出 ${result.exitCode}（${result.reason}）；未重跑`,
         output: result,

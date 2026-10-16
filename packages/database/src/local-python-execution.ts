@@ -1,3 +1,8 @@
+import { assertLocalSandboxExecutionBudget } from './local-sandbox-execution-budget.ts';
+import {
+  resolveBridgeSandboxNetworkGrant,
+  bridgeSandboxTransferScopes,
+} from './bridge-sandbox-network.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -8,6 +13,7 @@ import {
   ExecutionLocationSchema,
   NativeOfficeExportSchema,
   PythonExecuteArgsSchema,
+  sandboxExecutionBudgetSpec,
   RuntimeActionBindingSchema,
   RuntimeLocalPythonPayloadSchema,
   RuntimeLocalPythonProfileSchema,
@@ -211,6 +217,21 @@ export async function selectManagedPythonExecution(
       input.toolName,
       input.inputs.length > 0,
     );
+    const pythonRequest =
+      input.purpose === 'python_charts'
+        ? PythonExecuteArgsSchema.parse(input.arguments)
+        : undefined;
+    const executionBudget =
+      pythonRequest?.execution &&
+      f?.schemaVersion === 2 &&
+      f.sandboxExecutionPolicy
+        ? sandboxExecutionBudgetSpec(
+            pythonRequest.execution,
+            f.sandboxExecutionPolicy,
+          )
+        : undefined;
+    if (pythonRequest?.execution && !executionBudget)
+      throw new RuntimePolicyError('sandbox_execution_policy_changed');
     // Historic snapshots retain the established cloud Office execution; explicit local stays unavailable.
     const [prior] = await tx<
       {
@@ -287,6 +308,9 @@ export async function selectManagedPythonExecution(
                 0,
               ) > 2_000_000 &&
                 p.data.inputStreamingVersion !== 1))) ||
+          (pythonRequest?.execution && p.data.sandboxExecutionVersion !== 1) ||
+          (pythonRequest?.network &&
+            (!pythonRequest.execution || p.data.sandboxNetworkVersion !== 1)) ||
           !d.profile_fresh ||
           !localPythonProfileMatchesRelease(p.data, release!))
       )
@@ -319,6 +343,19 @@ export async function selectManagedPythonExecution(
           : old?.location,
       outcomeUnknown: snapshot?.status === 'unknown',
     });
+    const selectedDevice = device?.device
+      ? BridgeDeviceSchema.parse(device.device)
+      : null;
+    const networkGrant =
+      choice.location === 'local' && pythonRequest?.network && selectedDevice
+        ? await resolveBridgeSandboxNetworkGrant(
+            tx,
+            selectedDevice,
+            pythonRequest.network,
+            input.inputs.length > 0,
+            f ?? undefined,
+          )
+        : undefined;
     if (!prior && choice.status !== 'unavailable')
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
         values(${ctx.organizationId},${ctx.workspaceId},${owner},'execution.location','managed_python',${operationId},'recorded',${choice.reason},
@@ -327,8 +364,10 @@ export async function selectManagedPythonExecution(
       choice,
       selectionReason: prior?.reason ?? choice.reason,
       operationId,
-      device: device?.device ? BridgeDeviceSchema.parse(device.device) : null,
+      device: selectedDevice,
+      ...(networkGrant ? { networkGrant } : {}),
       profile: device?.profile ?? null,
+      ...(executionBudget ? { executionBudget } : {}),
       deadlineAt: run.timeout_at.toISOString(),
       existingSnapshot: snapshot,
       localOnly: localInputs || location === 'local',
@@ -351,13 +390,20 @@ export function localPythonCommandBinding(payload: RuntimeLocalPythonPayload) {
     }),
     workingDirectoryDigest: digest({ kind: 'local_copy', inputs: a.inputs }),
     effectiveEnvironmentDigest: digest({ version: 1, credentials: 'none' }),
-    networkPolicyDigest: digest({ network: 'none' }),
+    networkPolicyDigest: digest({
+      network: a.network,
+      ...(payload.networkGrant ? { grant: payload.networkGrant } : {}),
+    }),
     toolchainDigest: digest({
       imageId: a.imageId,
       architecture: a.architecture,
       profileVersion: a.profileVersion,
     }),
-    budgetDigest: digest(a.limits),
+    budgetDigest: digest(
+      payload.executionBudget
+        ? { limits: a.limits, execution: payload.executionBudget }
+        : a.limits,
+    ),
   };
 }
 
@@ -477,6 +523,11 @@ export async function assertLocalPythonDelegation(
     };
     if (
       normalized.script !== a.script ||
+      !runtimeContractEqual(normalized.execution, a.execution) ||
+      (a.execution && currentProfile.data.sandboxExecutionVersion !== 1) ||
+      !runtimeContractEqual(normalized.network ?? 'none', a.network) ||
+      (a.network !== 'none' &&
+        currentProfile.data.sandboxNetworkVersion !== 1) ||
       !runtimeContractEqual(
         normalized.inputs,
         a.inputs.map(({ path, objectId, checksum }) => ({
@@ -516,6 +567,7 @@ export async function assertLocalPythonDelegation(
     )
       throw new RuntimePolicyError('bridge_authority_changed');
   }
+  assertLocalSandboxExecutionBudget(payload, f);
   for (const file of a.inputs) {
     const { getCompanyRunMaterial } = await import('./company-run-assets.ts');
     await getCompanyRunMaterial(
@@ -646,7 +698,7 @@ export async function createLocalPythonOperation(
     inputDigest: digest(payload),
     command: localPythonCommandBinding(payload),
     baseline: [],
-    dataScope: [],
+    dataScope: bridgeSandboxTransferScopes(payload),
   });
   const ledger = createGovernedBridgeOperationLedger(device, {
     database: db,

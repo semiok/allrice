@@ -1,3 +1,7 @@
+import {
+  nodeSandboxExecutionControl,
+  pythonSandboxExecutionControl,
+} from './sandbox-execution-control.js';
 import { projectServiceSupervisor } from './project-service-supervisor.js';
 import { sandboxProxyEnvironment } from './sandbox-network-docker.js';
 import {
@@ -27,6 +31,9 @@ if(cacheRoot!=='/cache')await mkdir(cacheRoot,{mode:0o700});
 let finished=false,size=0,frames=0,installation='failed';
 const emit=e=>process.stdout.write(JSON.stringify(e)+'\n');
 const end=(reason,code)=>{if(finished)return;finished=true;emit({type:'exit',reason,code,installation});process.stdout.write('',()=>process.exit(code));setTimeout(()=>process.exit(code),100).unref();};
+${nodeSandboxExecutionControl}
+installSandboxExecutionControl(a);
+if(a.networkStartGate===true){while(a.runtimeNetworkReady!==true)await new Promise(r=>setTimeout(r,25));}
 ${projectServiceSupervisor}
 ${nodeProjectArchiveAssembly}
 let cacheChecking=null;
@@ -61,7 +68,7 @@ async function finalCacheCheck(){
  if(cacheChecking)await cacheChecking;await boundedCacheCheck();
 }
 const cacheTimer=setInterval(()=>{if(cacheChecking||finished)return;void boundedCacheCheck().catch(e=>{emit({type:'stderr',data:Buffer.from('Project cache validation failed: '+String(e?.code||e?.message||'unknown').slice(0,160)).toString('base64')});end('cache_limit',123);});},500);cacheTimer.unref();
-const timer=setTimeout(()=>end(a.deadlineReason||'timeout',124),Math.max(0,a.deadlineUnixMs-Date.now()));
+const timer=setTimeout(()=>end(a.deadlineReason||'timeout',124),Math.max(0,(a.executionControl?.hardDeadlineAt??a.deadlineUnixMs)-Date.now()));
 const run=(exe,args,tenant=true,live=false,runtime=false)=>new Promise(resolve=>{
  const p=spawn(exe,args,{cwd:root+'/project/'+(a.command.path==='.'?'':a.command.path),uid:tenant?1000:0,gid:tenant?1000:0,stdio:['ignore','pipe','pipe'],
  env:{...(runtime&&a.runtimeNetwork===true?${JSON.stringify(sandboxProxyEnvironment)}:{}),PATH:root+'/tools/package/bin:/usr/local/bin:/usr/bin:/bin',HOME:root+'/home',TMPDIR:root+'/tmp',LANG:'C.UTF-8',CI:'1',
@@ -129,6 +136,10 @@ while bootDeadline:
     if time.time()*1000>=bootDeadline:os._exit(124)
     time.sleep(.02)
 with open(ROOT+'/.allrice/config.json',encoding='utf-8') as f:a=json.load(f)
+${pythonSandboxExecutionControl}
+install_sandbox_execution_control(a)
+if a.get('networkStartGate') is True:
+    while a.get('runtimeNetworkReady') is not True:time.sleep(.025)
 command=a['command'];installation='failed';size=0;frames=0;finished=False
 ${pythonProjectArchiveAssembly}
 def emit(e):print(json.dumps(e),flush=True)
@@ -175,13 +186,13 @@ def run(exe,args,tenant=True,runtime=False):
     global size,frames
     runtime_env={**env,**${JSON.stringify(sandboxProxyEnvironment)}} if runtime and a.get('runtimeNetwork') is True else env
     p=subprocess.Popen([exe]+args,cwd=ROOT+'/project/'+('' if command['path']=='.' else command['path']),env=runtime_env,stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,preexec_fn=demote if tenant else None)
+        stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True,**({'user':1000 if tenant else 0,'group':1000 if tenant else 0,'extra_groups':[]} if a.get('executionControl') else {'preexec_fn':demote if tenant else None}))
     selector=selectors.DefaultSelector()
     for stream,name in [(p.stdout,'stdout'),(p.stderr,'stderr')]:os.set_blocking(stream.fileno(),False);selector.register(stream,selectors.EVENT_READ,name)
     next_cache=0
     while selector.get_map() or p.poll() is None:
         if time.monotonic()>=next_cache:check_cache();next_cache=time.monotonic()+.5
-        if time.time()*1000>=a['deadlineUnixMs']:end(a.get('deadlineReason','timeout'),124)
+        if time.time()*1000>=a.get('executionControl',{}).get('hardDeadlineAt',a['deadlineUnixMs']):end(a.get('deadlineReason','timeout'),124)
         for key,_ in selector.select(.05):
             chunk=os.read(key.fileobj.fileno(),8192)
             if not chunk:selector.unregister(key.fileobj);continue

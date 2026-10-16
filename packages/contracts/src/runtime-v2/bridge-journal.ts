@@ -1,3 +1,4 @@
+import { SandboxNetworkLeaseSchema } from './sandbox-network.ts';
 import { z } from 'zod';
 
 import { RuntimeBridgePayloadSchema } from './local-command.ts';
@@ -7,6 +8,10 @@ import {
   RuntimeOperationSignalSchema,
   RuntimeOperationSnapshotSchema,
 } from './operations.ts';
+import {
+  SandboxExecutionBudgetStateSchema,
+  SandboxExecutionRenewalSchema,
+} from './sandbox-execution.ts';
 
 /** Opt-in ledger transport, deliberately NOT a new legacy Bridge capability. */
 export const RuntimeBridgeDispatchSchema = z
@@ -89,6 +94,18 @@ export const RuntimeBridgeStartResponseSchema = z
 export const RuntimeBridgeHeartbeatSchema = RuntimeBridgeStartSchema.omit({
   receiptId: true,
 });
+/** Separate opt-in endpoint: legacy start/heartbeat responses stay byte-shaped
+ * as before. This body carries progress, never an authorized execution cap. */
+export const RuntimeBridgeSandboxBudgetExchangeSchema =
+  RuntimeBridgeHeartbeatSchema.extend({
+    renewal: SandboxExecutionRenewalSchema.optional(),
+  }).strict();
+export const RuntimeBridgeSandboxBudgetResponseSchema = z
+  .object({ budget: SandboxExecutionBudgetStateSchema })
+  .strict();
+export const RuntimeBridgeSandboxNetworkResponseSchema = z
+  .object({ lease: SandboxNetworkLeaseSchema })
+  .strict();
 export const RuntimeBridgeOutputSchema = RuntimeBridgeHeartbeatSchema.extend({
   sequence: z.number().int().min(0).max(255),
   stream: z.enum(['stdout', 'stderr']),

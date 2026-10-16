@@ -13,6 +13,9 @@ import {
 import { RuntimeCommandError as LocalCommandError } from '@allrice/project-runtime';
 export { RuntimeCommandError as LocalCommandError } from '@allrice/project-runtime';
 
+/** Only a runner which has not requested process start can create this proof. */
+export class LocalCommandNotStartedError extends LocalCommandError {}
+
 import {
   privateProjectPart as privatePart,
   readSavedProjectSource,

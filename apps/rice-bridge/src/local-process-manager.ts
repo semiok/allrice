@@ -8,7 +8,10 @@ import { bridgeRequest } from './client.js';
 import type { BridgeConfig } from './config.js';
 import type { BridgeJournal } from './journal.js';
 import type { LocalCommandRunner } from './local-command-runner.js';
-import { LocalCommandError } from './local-command-inputs.js';
+import {
+  LocalCommandError,
+  LocalCommandNotStartedError,
+} from './local-command-inputs.js';
 import { LocalServiceRunner } from './local-service-runner.js';
 
 const managers = new WeakMap<BridgeJournal, LocalProcessManager>();
@@ -293,18 +296,19 @@ export class LocalProcessManager {
         if (terminalRecorded)
           throw new LocalCommandError('LOCAL_STOP_UNCONFIRMED');
         const noExecution =
-          error instanceof LocalCommandError &&
-          [
-            'SERVICE_CONFIG_INVALID',
-            'EXECUTION_REVOKED',
-            'TOOLCHAIN_CHANGED',
-            'ISOLATION_UNAVAILABLE',
-            'INPUT_VERSION_CHANGED',
-            'INPUT_PATH_CHANGED',
-            'UNSAFE_INPUT_FILE',
-            'SENSITIVE_INPUT',
-            'INPUT_LIMIT',
-          ].includes(error.code);
+          error instanceof LocalCommandNotStartedError ||
+          (error instanceof LocalCommandError &&
+            [
+              'SERVICE_CONFIG_INVALID',
+              'EXECUTION_REVOKED',
+              'TOOLCHAIN_CHANGED',
+              'ISOLATION_UNAVAILABLE',
+              'INPUT_VERSION_CHANGED',
+              'INPUT_PATH_CHANGED',
+              'UNSAFE_INPUT_FILE',
+              'SENSITIVE_INPUT',
+              'INPUT_LIMIT',
+            ].includes(error.code));
         if (noExecution) {
           physicalReleased = true;
           await journal.outcome(operationId, {

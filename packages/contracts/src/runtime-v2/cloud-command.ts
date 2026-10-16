@@ -169,8 +169,7 @@ export const CloudCommandSchema = z
         Boolean(command.executionBudget) ||
       (command.arguments.execution &&
         command.executionBudget &&
-        command.arguments.execution.kind !== command.executionBudget.kind) ||
-      (command.origin?.toolName === 'python.execute' && command.executionBudget)
+        command.arguments.execution.kind !== command.executionBudget.kind)
     )
       ctx.addIssue({
         code: 'custom',

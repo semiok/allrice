@@ -1,3 +1,13 @@
+import {
+  LocalSandboxNetwork,
+  requireLocalSandboxNetwork,
+} from './local-sandbox-network.js';
+import type { SandboxNetworkLease } from '@allrice/contracts';
+import type { SandboxExecutionBudgetController } from '@allrice/project-runtime';
+import {
+  LocalExecutionControl,
+  requireLocalExecutionBudget,
+} from './local-execution-control.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -18,6 +28,7 @@ import { mutateProjectCache, reserveProjectVolume } from './project-cache.js';
 import type { LocalDockerApi } from './local-docker-api.js';
 import {
   LocalCommandError,
+  LocalCommandNotStartedError,
   readLocalCommandInputs,
   readSavedProjectInputs,
 } from './local-command-inputs.js';
@@ -54,6 +65,8 @@ const digest = (command: RuntimeLocalCommand) =>
     .digest('hex');
 type Options = {
   attemptId: string;
+  executionBudget?: SandboxExecutionBudgetController;
+  networkLease?: SandboxNetworkLease;
   leaseExpiresAt?: string;
   /** Absolute operation budget, including preflight and preparation. */
   deadlineUnixMs?: number;
@@ -405,6 +418,13 @@ export class ProjectCommandRunner {
   ) {
     const command = RuntimeLocalCommandSchema.parse(input),
       a = command.arguments;
+    const budget = options.executionBudget;
+    requireLocalExecutionBudget(command, budget, options.maintainLease);
+    requireLocalSandboxNetwork(
+      command,
+      options.networkLease,
+      options.attemptId,
+    );
     if (
       !!a.background?.projectService !== !!options.service ||
       (options.service && !a.projectSource)
@@ -431,11 +451,13 @@ export class ProjectCommandRunner {
     )
       throw new LocalCommandError('TOOLCHAIN_CHANGED');
     const leaseDeadline =
-      options.leaseExpiresAt === undefined
+      budget || options.leaseExpiresAt === undefined
         ? Infinity
         : Date.parse(options.leaseExpiresAt) - 250;
     const operationDeadline =
-      options.deadlineUnixMs ?? Date.now() + a.limits.timeoutMs;
+      budget?.state.hardDeadlineAt ??
+      options.deadlineUnixMs ??
+      Date.now() + a.limits.timeoutMs;
     const deadlineUnixMs = Math.min(operationDeadline, leaseDeadline);
     if (!(deadlineUnixMs > Date.now()))
       throw new LocalCommandError('EXECUTION_REVOKED');
@@ -471,27 +493,55 @@ export class ProjectCommandRunner {
         ...(options.signal ? [options.signal] : []),
         deadlineSignal,
       ]);
-    const check = async () => {
-      if (
-        signal.aborted ||
-        (options.maintainLease && !(await options.maintainLease()))
-      ) {
-        revoked.abort();
-        throw new LocalCommandError('EXECUTION_REVOKED');
-      }
+    let preparationReadBytes = 0;
+    const onPreparationBytes = (bytes: number) => {
+      preparationReadBytes += bytes;
     };
-    let checking = false;
+    let checking: Promise<void> | undefined;
+    const check = (): Promise<void> => {
+      if (checking) return checking;
+      checking = (async () => {
+        signal.throwIfAborted();
+        if (budget && Date.now() >= budget.state.deadlineAt)
+          throw new LocalCommandError('SANDBOX_EXECUTION_DEADLINE');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          (async () => {
+            if (options.maintainLease && !(await options.maintainLease()))
+              throw new LocalCommandError('EXECUTION_REVOKED');
+            signal.throwIfAborted();
+            await budget?.renew(async () => ({
+              cpuNanos: 0,
+              readBytes: preparationReadBytes,
+              writtenBytes: 0,
+            }));
+            signal.throwIfAborted();
+          })(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new LocalCommandError('EXECUTION_CONTROL_TIMEOUT')),
+              3000,
+            );
+          }),
+        ]).finally(() => clearTimeout(timer));
+      })()
+        .catch((error: unknown) => {
+          revoked.abort(error);
+          throw error;
+        })
+        .finally(() => {
+          checking = undefined;
+        });
+      return checking;
+    };
+    let executionControl: LocalExecutionControl | undefined;
+    let network: LocalSandboxNetwork | undefined;
     let workVolumeCreated: string | undefined;
     let createdContainer: string | undefined;
     let startRequested = false;
     const heartbeat = setInterval(() => {
-      if (checking) return;
-      checking = true;
-      void check()
-        .catch(() => revoked.abort())
-        .finally(() => {
-          checking = false;
-        });
+      if (checking || executionControl) return;
+      void check().catch(() => undefined);
     }, 1000);
     try {
       await check();
@@ -500,6 +550,7 @@ export class ProjectCommandRunner {
         this.input.architecture,
         signal,
         spec.offline,
+        onPreparationBytes,
       );
       const prepared = await this.input.preparation.archives({
         command,
@@ -507,7 +558,11 @@ export class ProjectCommandRunner {
         scope: scope.data,
         architecture: this.input.architecture,
         signal,
-        maintainLease: options.maintainLease,
+        maintainLease: async () => {
+          await check();
+          return true;
+        },
+        onBytes: onPreparationBytes,
       });
       await check();
       const cacheKey = projectCacheKey({
@@ -605,7 +660,7 @@ export class ProjectCommandRunner {
               User: '0:0',
               WorkingDir: '/tmp/work',
               Tty: false,
-              OpenStdin: !!options.service,
+              OpenStdin: !!options.service || !!budget,
               StdinOnce: false,
               ...(options.service
                 ? {
@@ -715,12 +770,24 @@ export class ProjectCommandRunner {
           await start;
         }
         for (const bytes of projectStagingArchives({
+          ...(options.networkLease
+            ? { runtimeNetwork: true, networkStartGate: true }
+            : {}),
           command,
           files: bundle.files,
           tool,
           prepared,
-          deadlineUnixMs,
+          deadlineUnixMs: budget?.state.deadlineAt ?? deadlineUnixMs,
           deadlineReason,
+          ...(budget
+            ? {
+                executionControl: {
+                  version: 1 as const,
+                  attemptId: options.attemptId,
+                  hardDeadlineAt: budget.state.hardDeadlineAt,
+                },
+              }
+            : {}),
         }))
           await this.input.api.putArchive(id, '/tmp/work', bytes, signal);
         await check();
@@ -743,19 +810,55 @@ export class ProjectCommandRunner {
           await start;
         }
         if (signal.aborted) await stop(abortReason());
+        if (budget) {
+          // Drain preparation authority before PID 1 takes over. Measured I/O
+          // remains cumulative across download, staging and execution.
+          clearInterval(heartbeat);
+          await check();
+          executionControl = new LocalExecutionControl({
+            api: this.input.api,
+            containerId: id,
+            attemptId: options.attemptId,
+            budget,
+            preparationReadBytes,
+            maintainLease: options.maintainLease!,
+            stop,
+          });
+          await executionControl.start();
+        }
+        if (options.networkLease) {
+          network = new LocalSandboxNetwork({
+            api: this.input.api,
+            containerId: id,
+            attemptId: options.attemptId,
+            lease: options.networkLease,
+            allowExecution: () => executionControl!.allowNetwork(),
+            signal,
+            maintainLease: options.maintainLease!,
+            stop,
+            relayRuntime: spec.manager === 'uv' ? 'python' : 'node',
+            projectRuntime: true,
+          });
+          await network.start();
+        }
         const observed = options.service
           ? await this.readService(id, command, options.service, signal, stop)
           : await this.read(
               id,
               a.limits.outputBytes,
-              a.limits.timeoutMs + 15000,
+              (budget
+                ? Math.max(1, budget.state.hardDeadlineAt - Date.now())
+                : a.limits.timeoutMs) + 15000,
               options.onOutput,
               a.outputs,
+              false,
+              () => executionControl?.close(),
             );
         await stopPromise;
         const c = await this.inspect(options.attemptId, id, command);
         if (c.State.Running || c.State.Status !== 'exited')
           throw new LocalCommandError('STOP_NOT_CONFIRMED');
+        await network?.finish();
         const reason = this.exitReason(c, observed.exit, stopReason);
         return RuntimeLocalCommandResultSchema.parse({
           backend: 'local-vm-container-v1',
@@ -769,6 +872,8 @@ export class ProjectCommandRunner {
           truncated: observed.truncated,
           workCopy: 'local_isolated_copy',
           sourceDirectoryModified: false,
+          ...(budget ? { execution: budget.observation } : {}),
+          ...(network?.evidence ?? {}),
           ...(a.outputs
             ? {
                 artifacts:
@@ -801,6 +906,8 @@ export class ProjectCommandRunner {
         }
         throw new LocalCommandError('RUNNER_RESULT_UNKNOWN');
       } finally {
+        await network?.finish();
+        await executionControl?.finish();
         signal.removeEventListener('abort', abort);
       }
     } catch (error) {
@@ -825,10 +932,26 @@ export class ProjectCommandRunner {
             )
             .catch(() => undefined);
         }
+        // Download helpers normalize cancellation. Preserve the actual budget
+        // or authorization failure while no execution could have started.
+        if (revoked.signal.aborted) {
+          const cause: unknown = revoked.signal.reason;
+          const code =
+            cause instanceof LocalCommandError
+              ? cause.code
+              : cause instanceof Error &&
+                  /^SANDBOX_EXECUTION_[A-Z_]+$/.test(cause.message)
+                ? cause.message
+                : 'EXECUTION_REVOKED';
+          const failure = new LocalCommandNotStartedError(code);
+          failure.cause = cause;
+          throw failure;
+        }
       }
       throw error;
     } finally {
       clearInterval(heartbeat);
+      await checking?.catch(() => undefined);
     }
   }
   /** Same container, dependency preparation and physical receipt as foreground
@@ -997,6 +1120,7 @@ export class ProjectCommandRunner {
     onOutput?: Options['onOutput'],
     outputs?: RuntimeLocalCommand['arguments']['outputs'],
     serviceReceiptOnly = false,
+    onTerminal?: () => void,
   ) {
     // Recovery reads trusted facts only after killing the original container.
     // Accept its service/source receipts without renewing or replaying controls.
@@ -1006,7 +1130,14 @@ export class ProjectCommandRunner {
       outputs,
       serviceReceiptOnly ? () => undefined : undefined,
     );
-    await this.input.api.logs(id, (bytes) => events.push(bytes), timeout);
+    await this.input.api.logs(
+      id,
+      (bytes) => {
+        events.push(bytes);
+        if (events.exit) onTerminal?.();
+      },
+      timeout,
+    );
     return events.finish();
   }
 

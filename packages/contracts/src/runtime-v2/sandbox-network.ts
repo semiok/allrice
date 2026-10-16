@@ -69,6 +69,33 @@ export const SandboxNetworkGrantSchema = SandboxNetworkRequestSchema.extend({
 });
 export type SandboxNetworkGrant = z.infer<typeof SandboxNetworkGrantSchema>;
 
+/** Separate server-installed Bridge grant; neither folder access nor a browser
+ * grant authorizes script egress. The ref is frozen into an operation payload. */
+export const BridgeSandboxNetworkGrantRefSchema = z
+  .object({
+    id: UuidSchema,
+    version: z.number().int().positive(),
+    digest: ChecksumSchema,
+  })
+  .strict();
+export type BridgeSandboxNetworkGrantRef = z.infer<
+  typeof BridgeSandboxNetworkGrantRefSchema
+>;
+export const UpdateBridgeSandboxNetworkSchema = z
+  .object({
+    expectedVersion: z.number().int().nonnegative(),
+    enabled: z.boolean(),
+    profile: SandboxNetworkGrantSchema,
+  })
+  .strict();
+export const BridgeSandboxNetworkSettingsSchema = z
+  .object({
+    version: z.number().int().nonnegative(),
+    enabled: z.boolean(),
+    profile: SandboxNetworkGrantSchema.nullable(),
+  })
+  .strict();
+
 /** Created by the authority adapter, never accepted as model-supplied proof.
  * Cloud and Bridge share policy semantics but cannot borrow each other's grant. */
 export const SandboxNetworkLeaseSchema = z

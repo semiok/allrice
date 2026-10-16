@@ -4,10 +4,32 @@ import {
   cloudPythonImageV1,
   cloudToolchainImageV1,
 } from '@allrice/contracts';
-import { cloudCommandBinding } from './cloud-authority.ts';
+import {
+  cloudCommandBinding,
+  normalizeCloudPythonArguments,
+} from './cloud-authority.ts';
 import { runtimePolicyDigest as digest } from './runtime-policy.ts';
 import { RepositoryExecutionProofSchema } from './platform-repair-contracts.ts';
 import { randomUUID } from 'node:crypto';
+
+it('preserves explicit canonical Python budgets and destinations without injecting them into legacy calls', () => {
+  const original = {
+    script: 'print(35)',
+    location: 'local',
+    execution: { version: 1, kind: 'compute' },
+    network: { mode: 'controlled_https', origins: ['https://pypi.org'] },
+  };
+  const before = JSON.stringify(original);
+  const normalized = normalizeCloudPythonArguments(original);
+  expect(normalized.execution).toEqual(original.execution);
+  expect(normalized.network).toEqual(original.network);
+  expect(normalized.language).toBe('python');
+  expect(normalized).not.toHaveProperty('location');
+  expect(JSON.stringify(original)).toBe(before);
+  const legacy = normalizeCloudPythonArguments({ script: 'print(35)' });
+  expect(legacy).not.toHaveProperty('execution');
+  expect(legacy).not.toHaveProperty('network');
+});
 
 it('keeps historic executable/image bindings unchanged and freezes Python language separately', () => {
   const node = CloudCommandSchema.parse({

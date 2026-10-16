@@ -84,6 +84,7 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
     }),
     networkPolicyDigest: runtimePolicyDigest({
       network: args.network,
+      ...(payload.networkGrant ? { grant: payload.networkGrant } : {}),
       ...(args.dependencies ? { dependencyDownloads: args.dependencies } : {}),
       ...(args.projectPreparation
         ? { projectPreparation: args.projectPreparation }
@@ -97,9 +98,11 @@ export function localCommandBinding(payload: RuntimeLocalCommand) {
         : {}),
     }),
     budgetDigest: runtimePolicyDigest(
-      args.background
-        ? { limits: args.limits, background: args.background }
-        : args.limits,
+      payload.executionBudget
+        ? { limits: args.limits, execution: payload.executionBudget }
+        : args.background
+          ? { limits: args.limits, background: args.background }
+          : args.limits,
     ),
   };
 }

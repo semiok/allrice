@@ -1,5 +1,11 @@
 import { z } from 'zod';
 import {
+  SandboxNetworkRequestSchema,
+  BridgeSandboxNetworkGrantRefSchema,
+  SandboxNetworkObservationSchema,
+  SandboxNetworkErrorCodeSchema,
+} from './sandbox-network.ts';
+import {
   ProjectOutputSpecsSchema,
   ProjectCollectedArtifactsSchema,
   projectArtifactsMatchOutputs,
@@ -9,6 +15,11 @@ import {
   RuntimeSavedProjectSourceSchema,
 } from '../project-workspace.ts';
 import { runtimeContractEqual } from './identity.ts';
+import {
+  SandboxExecutionBudgetSpecSchema,
+  SandboxExecutionObservationSchema,
+  SandboxExecutionRequestSchema,
+} from './sandbox-execution.ts';
 import {
   CommandCandidateSchema,
   CommandCandidateRefSchema,
@@ -99,8 +110,12 @@ export function isLocalCommandProfileForPlatform(
 export const RuntimeLocalCommandSchema = z
   .object({
     capability: z.literal('local.process.execute'),
+    // Omitted for every legacy payload; a new client must opt in explicitly.
+    executionBudget: SandboxExecutionBudgetSpecSchema.optional(),
+    networkGrant: BridgeSandboxNetworkGrantRefSchema.optional(),
     arguments: z
       .object({
+        execution: SandboxExecutionRequestSchema.optional(),
         executable: z.enum([
           '/usr/local/bin/node',
           '/usr/local/bin/npm',
@@ -128,7 +143,7 @@ export const RuntimeLocalCommandSchema = z
           .max(64),
         imageDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
         isolation: z.literal('local-vm-container-v1'),
-        network: z.literal('none'),
+        network: z.union([z.literal('none'), SandboxNetworkRequestSchema]),
         limits: z
           .object({
             timeoutMs: z.number().int().min(500).max(600_000),
@@ -144,6 +159,24 @@ export const RuntimeLocalCommandSchema = z
   .strict()
   .superRefine((value, context) => {
     const a = value.arguments;
+    if (
+      (a.network !== 'none') !== Boolean(value.networkGrant) ||
+      (a.network !== 'none' && (!value.executionBudget || a.background))
+    )
+      context.addIssue({
+        code: 'custom',
+        message:
+          'networking requires a finite budget and separate frozen grant',
+      });
+    if (
+      !!value.executionBudget !== !!a.execution ||
+      (value.executionBudget &&
+        (a.background || value.executionBudget.kind !== a.execution?.kind))
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'finite sandbox execution requires its frozen budget',
+      });
     if (
       a.background?.projectService &&
       a.background.projectService.readinessTimeoutMs >
@@ -278,6 +311,7 @@ export const RuntimeLocalCommandToolInputSchema =
       outputs: true,
     })
     .extend({
+      network: SandboxNetworkRequestSchema.optional(),
       candidate: CommandCandidateRefSchema.optional(),
       project: ProjectVersionRefSchema.optional(),
       files: RuntimeLocalCommandSchema.shape.arguments.shape.files.optional(),
@@ -351,9 +385,11 @@ export const RuntimeLocalCommandProfileSchema = z
           'changeset_candidate',
           'project_preparation',
           'saved_project_source',
+          'sandbox_execution_v1',
+          'sandbox_network_v1',
         ]),
       )
-      .max(8)
+      .max(10)
       .optional(),
     projectPreparation: z
       .object({
@@ -407,6 +443,9 @@ export const RuntimeLocalCommandResultSchema = z
     truncated: z.boolean(),
     workCopy: z.literal('local_isolated_copy'),
     sourceDirectoryModified: z.literal(false),
+    execution: SandboxExecutionObservationSchema.optional(),
+    network: SandboxNetworkObservationSchema.optional(),
+    errorCode: SandboxNetworkErrorCodeSchema.optional(),
     diagnostics: RuntimeProjectDiagnosticsSchema.optional(),
     dependencies: RuntimeDependencyPreparationResultSchema.optional(),
     projectPreparation: RuntimeProjectPreparationEvidenceSchema.optional(),

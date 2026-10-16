@@ -70,6 +70,8 @@ export interface RuntimeLedgerLease {
 
 /** An absent support flag keeps the legacy claim set unchanged. */
 export interface RuntimeBridgeClaimSupport {
+  supportsSandboxExecutionV1?: boolean;
+  supportsSandboxNetworkV1?: boolean;
   supportsLocalCommand?: boolean;
   supportsLocalMcp?: boolean;
   supportsProjectDiagnostics?: boolean;

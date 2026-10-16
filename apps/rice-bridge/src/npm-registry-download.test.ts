@@ -7,6 +7,7 @@ const ports = vi.hoisted(() => ({ lookup: vi.fn(), request: vi.fn() }));
 vi.mock('node:dns/promises', () => ({ lookup: ports.lookup }));
 vi.mock('node:https', () => ({ request: ports.request }));
 import { downloadNpmArchive } from './npm-registry-download.js';
+import { downloadPublicPackage } from '../../../packages/project-runtime/src/npm-registry-download.js';
 const pkg = RuntimeNpmPackageSchema.parse({
   name: 'is-number',
   version: '7.0.0',
@@ -114,6 +115,86 @@ it('cancels stalled DNS instead of waiting indefinitely or issuing a late reques
   abort.abort();
   await expect(pending).rejects.toThrow('EXECUTION_REVOKED');
   expect(ports.request).not.toHaveBeenCalled();
+});
+
+function failRequest(code = 'ECONNRESET', partial = false) {
+  return (_url: unknown, _options: unknown, callback: (r: unknown) => void) => {
+    const req = Object.assign(new EventEmitter(), {
+      destroy: () => undefined,
+      end: () =>
+        queueMicrotask(() => {
+          const error = Object.assign(
+            new Error('synthetic transport failure'),
+            {
+              code,
+            },
+          );
+          if (partial) {
+            const response = Object.assign(new EventEmitter(), {
+              statusCode: 200,
+              headers: {},
+            });
+            callback(response);
+            response.emit('data', Buffer.from('partial'));
+            response.emit('error', error);
+          } else req.emit('error', error);
+        }),
+    });
+    return req;
+  };
+}
+
+it('recovers a reset during immutable archive GET without joining partial response bytes', async () => {
+  transport(200, Buffer.from('complete'));
+  ports.request.mockImplementationOnce(failRequest('ECONNRESET', true));
+  const progress = vi.fn();
+  const bytes = await downloadPublicPackage(
+    new URL('https://registry.npmjs.org/is-number/-/is-number-7.0.0.tgz'),
+    AbortSignal.timeout(3000),
+    1000,
+    progress,
+  );
+  expect(bytes.toString()).toBe('complete');
+  expect(ports.request).toHaveBeenCalledTimes(2);
+  expect(ports.lookup).toHaveBeenCalledTimes(2);
+  expect(progress.mock.calls.map(([n]) => n)).toEqual([7, 8]);
+});
+
+it('bounds transient GET retries and returns the existing network-unavailable error', async () => {
+  ports.request.mockImplementation(failRequest());
+  await expect(
+    downloadNpmArchive(pkg, AbortSignal.timeout(3000)),
+  ).rejects.toThrow('DEPENDENCY_NETWORK_UNAVAILABLE');
+  expect(ports.request).toHaveBeenCalledTimes(3);
+});
+
+it('cancels during retry backoff before another request can be sent', async () => {
+  ports.request.mockImplementation(failRequest());
+  const abort = new AbortController();
+  const result = downloadNpmArchive(pkg, abort.signal);
+  await vi.waitFor(() => expect(ports.request).toHaveBeenCalledTimes(1));
+  abort.abort();
+  await expect(result).rejects.toThrow('EXECUTION_REVOKED');
+  expect(ports.request).toHaveBeenCalledTimes(1);
+});
+
+it('checks DNS again before retry and refuses a new private answer', async () => {
+  ports.request.mockImplementation(failRequest());
+  ports.lookup
+    .mockResolvedValueOnce([{ address: '104.16.5.34', family: 4 }])
+    .mockResolvedValue([{ address: '10.0.0.1', family: 4 }]);
+  await expect(
+    downloadNpmArchive(pkg, AbortSignal.timeout(3000)),
+  ).rejects.toThrow('DEPENDENCY_SOURCE_DENIED');
+  expect(ports.request).toHaveBeenCalledTimes(1);
+});
+
+it('never retries certificate validation errors', async () => {
+  ports.request.mockImplementation(failRequest('CERT_HAS_EXPIRED'));
+  await expect(
+    downloadNpmArchive(pkg, AbortSignal.timeout(3000)),
+  ).rejects.toMatchObject({ code: 'CERT_HAS_EXPIRED' });
+  expect(ports.request).toHaveBeenCalledTimes(1);
 });
 it.skipIf(!process.env.ALLRICE_REGISTRY_TEST_IPV4)(
   'actual public npm TLS download (test DNS pinned to an independently verified public A record)',
