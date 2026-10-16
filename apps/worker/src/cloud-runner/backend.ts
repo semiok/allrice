@@ -2626,7 +2626,28 @@ export class CloudRunnerBackend {
         ...(options.signal ? [options.signal] : []),
       ]),
     };
+    const closeExecutionControl = () => {
+      if (physicalClosing) return;
+      physicalClosing = true;
+      if (physicalTimer) clearInterval(physicalTimer);
+      serviceGuard?.close();
+      networkSession?.close();
+      stdin?.destroy();
+    };
     const collectResult = async (reason: CloudRunResult['reason']) => {
+      const stopped = await this.inspect(attemptId);
+      if (
+        stopped?.Id !== c.Id ||
+        stopped.State.Running ||
+        stopped.State.Status !== 'exited'
+      )
+        throw new CloudRunnerError('CLOUD_RESULT_UNKNOWN');
+      // Execution authority governs the live process. Once this exact process
+      // is physically terminal, stop its control loop before reading logs or
+      // artifacts. Preserve failures already observed; late heartbeat results
+      // cannot rewrite a terminal receipt or renew its closed physical guard.
+      // Artifact publication still checks current authority in its own transaction.
+      closeExecutionControl();
       await networkCloseTask;
       const result = await this.collect(
         attemptId,
@@ -2699,9 +2720,11 @@ export class CloudRunnerBackend {
               ))
             )
               throw new CloudRunnerError('SANDBOX_EXECUTION_REVOKED');
+            if (physicalClosing) return;
             await serviceGuard!.renew(
               Math.min(budget.state.deadlineAt, deadline, Date.now() + 5000),
             );
+            if (physicalClosing) return;
             await budget.renew(async () => {
               const exited = async () => {
                 const current = await serviceCall(
@@ -2737,7 +2760,7 @@ export class CloudRunnerBackend {
               // Docker can return empty/reset cgroup counters as the process
               // exits. Reconcile the immutable container, not a zero sample or
               // a guessed successful outcome; collect still checks its exit code.
-              if (!stats) return null;
+              if (!stats || physicalClosing) return null;
               const io = stats.blkio_stats?.io_service_bytes_recursive ?? [];
               const sum = (op: string) =>
                 io
@@ -2769,6 +2792,7 @@ export class CloudRunnerBackend {
               }
               return measured;
             });
+            if (physicalClosing) return;
             await serviceGuard!.renew(
               Math.min(budget.state.deadlineAt, deadline, Date.now() + 5000),
             );
@@ -2987,12 +3011,8 @@ export class CloudRunnerBackend {
       }
       return await collectResult(reason);
     } finally {
-      physicalClosing = true;
-      networkSession?.close();
+      closeExecutionControl();
       physicalFailure.abort();
-      if (physicalTimer) clearInterval(physicalTimer);
-      serviceGuard?.close();
-      stdin?.destroy();
       if (physicalTask)
         await serviceCall(physicalTask, 3500).catch(() => undefined);
       await networkCloseTask;
