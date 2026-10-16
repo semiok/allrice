@@ -101,6 +101,46 @@ export const ExperienceAdoptionViewSchema = z
 
 const compact = (text: string) => text.replace(/[\s，,、。.;；：:]/gu, '');
 
+/** Keep clause boundaries: punctuation must not turn `不。推算` into a refusal.
+ * These are equivalent forms of one tested rule, not a new semantic rule ID. */
+function completeAttendanceRule(rule: string, applicability: string) {
+  const clauses = (text: string) =>
+    text
+      .trim()
+      .replace(/[。.;；]$/u, '')
+      .split(/[。.;；]/u)
+      .map((s) => s.replace(/\s/gu, ''));
+  const action = clauses(rule);
+  const scope = clauses(applicability);
+  const counting =
+    /^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数[，,]?(?:并)?(?:在结果中)?分项列出|统计并列出到场(?:和|与|、)(?:未到|缺席)人数)$/u;
+  const refusal = /^缺少(?:名单|名册)或状态不明时[，,]?不推算人数$/u;
+  const countsOnly =
+    /^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数$/u;
+  const listResult = /^(?:并)?(?:在结果中)?分项列出$/u;
+  // Older accepted drafts may put the complete output clause in a new sentence.
+  // Join only these two known clauses, never fragments such as `不。推算`.
+  if (
+    action.length >= 2 &&
+    countsOnly.test(action[0]!) &&
+    listResult.test(action[1]!)
+  )
+    action.splice(0, 2, `${action[0]}，${action[1]}`);
+  const included =
+    /^(?:适用于)?有原始(?:名单|名册)且(?:人员)?到场状态明确的人员统计任务$/u;
+  const excluded = /^不适用于缺少(?:名单|名册)或状态不明时推算人数$/u;
+  // Scope may use a comma or a sentence boundary between two complete clauses.
+  const scopeClauses = scope.flatMap((s) => s.split(/[，,]/u));
+  return (
+    (action.length === 1 ||
+      (action.length === 2 && refusal.test(action[1]!))) &&
+    counting.test(action[0]!) &&
+    scopeClauses.length === 2 &&
+    included.test(scopeClauses[0]!) &&
+    excluded.test(scopeClauses[1]!)
+  );
+}
+
 /** A finite, fully checked rule family. Keyword matching only selects a test;
  * it must never authorize arbitrary model-generated instructions. Both complete
  * clauses must match, including the missing-information restriction. */
@@ -110,14 +150,7 @@ export function supportedExperienceRule(draft: {
 }) {
   const rule = compact(draft.rule);
   const applicability = compact(draft.applicability);
-  if (
-    /^(?:统计到场情况时)?(?:依据|根据)原始(?:名单|名册)分别(?:核对|统计)到场和(?:未到|缺席)人数(?:并)?(?:在结果中)?分项列出$/u.test(
-      rule,
-    ) &&
-    /^适用于有原始(?:名单|名册)且到场状态明确的人员统计任务不适用于缺少(?:名单|名册)或状态不明时推算人数$/u.test(
-      applicability,
-    )
-  )
+  if (completeAttendanceRule(draft.rule, draft.applicability))
     return { kind: 'attendance_groups' as const, version: 1 as const };
   if (
     /^(?:撰写|编写|输出|交付)报告时(?:采用|使用|保持)(?:分点|分项|条理清晰的)(?:方式|表达|说明)$/u.test(

@@ -64,7 +64,7 @@ export async function syncExperienceAdoptions() {
         await tx`set local lock_timeout='100ms'`;
         await tx`set local statement_timeout='3000ms'`;
         const [batch] =
-          await tx`select id,organization_id from allrice_automation_runs where id=${row.id} and (experience_adoption_plan is null or experience_adoption_plan->>'status'='awaiting_validation') for update skip locked`;
+          await tx`select id,organization_id,experience_adoption_plan from allrice_automation_runs where id=${row.id} and (experience_adoption_plan is null or experience_adoption_plan->>'status'='awaiting_validation') for update skip locked`;
         if (!batch) return;
         const policy = await readExperiencePolicy(batch.organization_id, tx);
         if (
@@ -74,18 +74,47 @@ export async function syncExperienceAdoptions() {
           policy.frequency === 'off'
         )
           return;
+        const pending =
+          batch.experience_adoption_plan?.status === 'awaiting_validation'
+            ? new Set<number>(batch.experience_adoption_plan.pendingDrafts)
+            : null;
+        // A newly covered draft does not rewrite completed siblings' records.
+        const plan: {
+          draftIndex: number;
+          memoryId?: string;
+          reason?: string;
+        }[] = pending
+          ? batch.experience_adoption_plan.drafts.filter(
+              (d: { draftIndex: number }) => !pending.has(d.draftIndex),
+            )
+          : [];
         let source;
         try {
           source = await readExperienceValidationSource(tx, row.id);
         } catch (e) {
           if (!experienceUnavailable(e)) throw e;
-          await tx`update allrice_automation_runs set experience_adoption_plan=${tx.json([{ reason: '来源或有效要求已变化，未采用。' }])} where id=${row.id}`;
+          const reason = '来源或有效要求已变化，未采用。';
+          await tx`update allrice_automation_runs set experience_adoption_plan=${tx.json(
+            pending
+              ? {
+                  status: 'complete',
+                  pendingDrafts: [],
+                  drafts: [
+                    ...plan,
+                    ...[...pending].map((draftIndex) => ({
+                      draftIndex,
+                      reason,
+                    })),
+                  ],
+                }
+              : [{ reason }],
+          )} where id=${row.id}`;
           return;
         }
         const { occurrence: o, receipt } = source;
-        const plan = [];
         const pendingDrafts: number[] = [];
         for (const [draftIndex, draft] of receipt.output.drafts.entries()) {
+          if (pending && !pending.has(draftIndex)) continue;
           const sources = o.sources.filter((s) =>
             draft.sourceIds.includes(s.id),
           );

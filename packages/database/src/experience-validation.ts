@@ -81,6 +81,8 @@ const BindingSchema = z.discriminatedUnion('schemaVersion', [
   }).strict(),
 ]);
 type Binding = z.infer<typeof BindingSchema>;
+const coverageReason = '尚无完整规则及技能联合覆盖，仍待验证。';
+const coverageRecognizer = 'attendance-complete-clauses-v2';
 const limited = (e: unknown) =>
   e instanceof ExperienceError ||
   e instanceof DataAccessError ||
@@ -220,14 +222,105 @@ export async function syncExperienceValidations() {
   const rows = await db`select a.id from allrice_automation_runs a
     left join allrice_settings org on org.scope_type='organization' and org.scope_id=a.organization_id and org.key='employee_experience_policy'
     left join allrice_settings sys on sys.scope_type='system' and sys.scope_id is null and sys.key='employee_experience_policy'
-    where a.status='succeeded' and a.experience_receipt is not null and a.experience_validation_plan is null
+    where a.status='succeeded' and a.experience_receipt is not null and (a.experience_validation_plan is null or exists (
+      select 1 from jsonb_array_elements(case when jsonb_typeof(a.experience_validation_plan)='array' then a.experience_validation_plan else '[]'::jsonb end) p
+      where p->>'reason'=${coverageReason} and p->>'draftIndex' ~ '^[0-7]$' and not (p ? 'testId')
+        and not exists(select 1 from allrice_platform_employee_test_runs t where t.purpose='experience_validation'
+          and t.experience_binding->>'occurrenceId'=a.id::text and t.experience_binding->>'draftIndex'=p->>'draftIndex')
+        and not exists(select 1 from allrice_experience_coverage_reassessments r where r.occurrence_id=a.id
+          and r.draft_index::text=p->>'draftIndex' and r.recognizer_version=${coverageRecognizer})))
     and coalesce(org.value,sys.value)->>'validationMode'='supported_cases'
     and coalesce(org.value,sys.value)->>'frequency'<>'off' order by a.created_at,a.id limit 8`;
   for (const { id } of rows) {
     await db.begin(async (tx) => {
       const [row] =
-        await tx`select id,organization_id from allrice_automation_runs where id=${id} and experience_validation_plan is null for update skip locked`;
+        await tx`select id,organization_id,experience_validation_plan,experience_adoption_plan,experience_receipt
+          from allrice_automation_runs where id=${id} for update skip locked`;
       if (!row) return;
+      const reassessing = row.experience_validation_plan !== null;
+      const pending = new Set<number>();
+      if (reassessing) {
+        // Recheck after the occurrence lock: another tick may already have
+        // reserved a test or recorded a denied/unsupported reassessment.
+        const recorded =
+          await tx`select draft_index from allrice_experience_coverage_reassessments
+          where occurrence_id=${id} and recognizer_version=${coverageRecognizer}`;
+        const tests =
+          await tx`select experience_binding->>'draftIndex' draft_index from allrice_platform_employee_test_runs
+          where purpose='experience_validation' and experience_binding->>'occurrenceId'=${id}`;
+        const done = new Set(
+          [...recorded, ...tests].map((r) => Number(r.draft_index)),
+        );
+        for (const entry of z
+          .array(
+            z.object({
+              draftIndex: z.number().int().min(0).max(7).optional(),
+              reason: z.string().optional(),
+              testId: uuid.optional(),
+            }),
+          )
+          .parse(row.experience_validation_plan)) {
+          if (
+            entry.reason === coverageReason &&
+            entry.testId === undefined &&
+            entry.draftIndex !== undefined &&
+            !done.has(entry.draftIndex)
+          )
+            pending.add(entry.draftIndex);
+        }
+        if (!pending.size) return;
+      }
+      type Plan = { draftIndex: number; testId?: string; reason?: string };
+      const savePlan = async (plan: Plan[]) => {
+        if (!reassessing) {
+          await tx`update allrice_automation_runs set experience_validation_plan=${tx.json(plan)} where id=${id}`;
+          return;
+        }
+        for (const entry of plan) {
+          const draft = row.experience_receipt.output.drafts[entry.draftIndex];
+          if (!draft || !pending.has(entry.draftIndex)) continue;
+          await tx`insert into allrice_experience_coverage_reassessments
+            (occurrence_id,draft_index,recognizer_version,prior_plan_digest,output_digest,draft_digest,test_id,reason)
+            values(${id},${entry.draftIndex},${coverageRecognizer},${runtimePolicyDigest(row.experience_validation_plan)},
+              ${row.experience_receipt.outputDigest},${runtimePolicyDigest(draft)},${entry.testId ?? null},${entry.reason ?? null})`;
+        }
+        const previous = row.experience_adoption_plan;
+        if (
+          previous &&
+          ['complete', 'awaiting_validation'].includes(previous.status) &&
+          Array.isArray(previous.drafts)
+        ) {
+          const resumed = plan
+            .filter(
+              (p) =>
+                p.testId &&
+                previous.drafts.some(
+                  (d: { draftIndex: number; reason?: string }) =>
+                    d.draftIndex === p.draftIndex &&
+                    d.reason === '尚无覆盖完整规则及依赖的验证，未采用。',
+                ),
+            )
+            .map((p) => p.draftIndex);
+          if (resumed.length)
+            await tx`update allrice_automation_runs set experience_adoption_plan=${tx.json(
+              {
+                ...previous,
+                status: 'awaiting_validation',
+                pendingDrafts: [
+                  ...new Set([...(previous.pendingDrafts ?? []), ...resumed]),
+                ],
+              },
+            )} where id=${id}`;
+        }
+      };
+      const denyPlan = async (reason: string) => {
+        if (reassessing)
+          await savePlan(
+            [...pending].map((draftIndex) => ({ draftIndex, reason })),
+          );
+        else
+          await tx`update allrice_automation_runs set experience_validation_plan=${tx.json([{ reason }])} where id=${id}`;
+      };
       const policy = await readExperiencePolicy(row.organization_id, tx);
       if (
         !('validationMode' in policy) ||
@@ -240,7 +333,7 @@ export async function syncExperienceValidations() {
         source = await readExperienceValidationSource(tx, id);
       } catch (e) {
         if (!limited(e)) throw e;
-        await tx`update allrice_automation_runs set experience_validation_plan=${tx.json([{ reason: '来源、实例或有效要求已变化，原草稿未启用。' }])} where id=${id}`;
+        await denyPlan('来源、实例或有效要求已变化，原草稿未启用。');
         return;
       }
       const { occurrence: o, receipt } = source;
@@ -255,7 +348,7 @@ export async function syncExperienceValidations() {
         where s.employee_version_id=${o.employeeVersionId} and s.employee_id=${o.employeeId} and s.organization_id=${o.organizationId}
           and s.workspace_id=${o.workspaceId} and r.status='published' for share of r`;
       if (!base) {
-        await tx`update allrice_automation_runs set experience_validation_plan=${tx.json([{ reason: '原发布版本缺少可核验的运行包，尚未验证或启用。' }])} where id=${id}`;
+        await denyPlan('原发布版本缺少可核验的运行包，尚未验证或启用。');
         return;
       }
       const profile = PlatformEmployeeRuntimeProfileSchema.parse(
@@ -267,13 +360,13 @@ export async function syncExperienceValidations() {
         nativeSkills: profile.runtimePackage?.skills,
         packageChecksum: profile.runtimePackage?.checksum ?? null,
       });
-      const plan: { draftIndex: number; testId?: string; reason?: string }[] =
-        [];
+      const plan: Plan[] = [];
       let remaining = Math.min(
         64 - budget!.global_count,
         8 - budget!.org_count,
       );
       for (const [draftIndex, draft] of receipt.output.drafts.entries()) {
+        if (reassessing && !pending.has(draftIndex)) continue;
         const sources = o.sources.filter((s) => draft.sourceIds.includes(s.id));
         if (!supportsRosterValidation(draft, sources)) {
           plan.push({
@@ -291,7 +384,7 @@ export async function syncExperienceValidations() {
           ) {
             plan.push({
               draftIndex,
-              reason: '尚无完整规则及技能联合覆盖，仍待验证。',
+              reason: coverageReason,
             });
             continue;
           }
@@ -315,6 +408,9 @@ export async function syncExperienceValidations() {
           continue;
         }
         if (remaining-- <= 0) {
+          // No paid attempt or denial happened. Leave this draft eligible for
+          // a later tick rather than consuming its one reassessment on budget.
+          if (reassessing) continue;
           plan.push({
             draftIndex,
             reason: `草稿 ${draftIndex + 1} 未进入本批验证预算，仍待验证。`,
@@ -353,7 +449,7 @@ export async function syncExperienceValidations() {
             ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'experience_validation',${tx.json(b)})`;
         plan.push({ draftIndex, testId });
       }
-      await tx`update allrice_automation_runs set experience_validation_plan=${tx.json(plan)} where id=${id}`;
+      await savePlan(plan);
     });
   }
 }
