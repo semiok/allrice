@@ -132,9 +132,13 @@ function methodHandler(
                       ? '当前文字来自已有来源，未追加冲突流程。请读取候选，用 replaceTextReferences 指明要替换的准确执行要求或流程引用，并提供新文字；其余内容和原始历史保留。'
                       : '当前任务上下文不可维护，请在新任务中继续。',
         );
+      if (error instanceof EmployeeAccessBusyError)
+        throw rejected(
+          'EMPLOYEE_METHOD_BUSY',
+          '工作场景状态暂时繁忙，请稍后重试查询当前候选或测试状态，再继续原操作。不要另建候选或重复提交测试。',
+        );
       if (
         error instanceof EmployeeInstanceError ||
-        error instanceof EmployeeAccessBusyError ||
         error instanceof DataAccessError ||
         error instanceof ZodError
       )
