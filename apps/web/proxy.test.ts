@@ -152,20 +152,30 @@ describe('Rice Bridge portal boundary', () => {
       'output',
       'receipts',
       'service',
+      'budget',
+      'network',
     ]) {
       const path = `${prefix}/6f9619ff-8b86-d011-b42d-00cf4fc964ff/${action}`;
       expect(isBridgeDeviceApiPath(path)).toBe(true);
-      const response = proxy(
-        new NextRequest(`https://allrice-snow.bplabs.xyz${path}`, {
-          headers: { host: 'allrice-snow.bplabs.xyz' },
-        }),
-      );
-      expect(response.status).toBe(200);
+      for (const host of ['allrice.bplabs.xyz', 'allrice-snow.bplabs.xyz']) {
+        const response = proxy(
+          new NextRequest(`https://${host}${path}`, {
+            method: 'POST',
+            headers: { host, authorization: 'Bearer synthetic-device-token' },
+          }),
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get('x-middleware-next')).toBe('1');
+      }
     }
     for (const suffix of [
       '../devices',
       'foo/start',
       '6f9619ff-8b86-d011-b42d-00cf4fc964ff/approve',
+      '6f9619ff-8b86-d011-b42d-00cf4fc964ff/budget/extra',
+      '6f9619ff-8b86-d011-b42d-00cf4fc964ff/network-extra',
+      'foo/budget',
+      'foo/network',
       'next/extra',
     ])
       expect(isBridgeDeviceApiPath(`${prefix}/${suffix}`)).toBe(false);
