@@ -57,6 +57,12 @@ ungranted hosts, and unsupported protocols are rejected. Connection count, total
 bytes, outstanding frames and buffers are bounded. The managed Python image uses
 a standard-library helper instead of assuming Node is installed.
 
+When system DNS returns only synthetic proxy addresses, concurrent lookups share
+one pinned public DNS request. Validated positive answers can be reused for the
+shortest returned TTL, capped at 30 seconds and 64 hosts. Every connection still
+checks fresh system answers and its caller's address policy. Private/mixed
+answers, expired entries and resolver errors never permit a stale fallback.
+
 A private PID 1 gate prevents tenant startup before the helper is ready. Saved
 project installers remain offline and use the existing pinned archives/cache;
 their runtime gate opens only after installation. Per-attempt package installs

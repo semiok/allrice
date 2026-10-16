@@ -6,6 +6,23 @@ const synthetic4 = new BlockList();
 synthetic4.addSubnet('198.18.0.0', 15, 'ipv4');
 const denied = () => Error('PUBLIC_ADDRESS_DENIED');
 type Address = { address: string; family: number };
+type DnsAnswer = { addresses: Address[]; expiresAt: number };
+const verified = new Map<string, DnsAnswer>();
+const pending = new Map<string, Promise<DnsAnswer>>();
+const maximumEntries = 64;
+
+function publicDns(hostname: string) {
+  const saved = verified.get(hostname);
+  if (saved && saved.expiresAt > Date.now()) return Promise.resolve(saved);
+  verified.delete(hostname);
+  const active = pending.get(hostname);
+  if (active) return active;
+  const query = queryPublicDns(hostname);
+  if (pending.size >= maximumEntries) return query;
+  const tracked = query.finally(() => pending.delete(hostname));
+  pending.set(hostname, tracked);
+  return tracked;
+}
 
 /** Only compensate for a synthetic DNS proxy. Private/mixed system answers
  * remain denied. All browser sockets still connect to validated literal IPs. */
@@ -14,6 +31,8 @@ export async function resolvePublicAddress(
   publicAddress: (address: string) => boolean,
 ) {
   const literal = hostname.replace(/^\[|\]$/g, '');
+  const key = literal.toLowerCase().replace(/\.$/, '');
+  let resolved: DnsAnswer | undefined;
   let answers: Address[] = isIP(literal)
     ? [{ address: literal, family: isIP(literal) }]
     : await lookup(literal, { all: true, verbatim: true });
@@ -26,8 +45,10 @@ export async function resolvePublicAddress(
         isIP(item.address) === 4 &&
         synthetic4.check(item.address, 'ipv4'),
     )
-  )
-    answers = await queryPublicDns(literal);
+  ) {
+    resolved = await publicDns(key);
+    answers = resolved.addresses;
+  }
   if (
     !answers.length ||
     answers.some(
@@ -36,10 +57,18 @@ export async function resolvePublicAddress(
     )
   )
     throw denied();
-  return answers[0]!;
+  // A cache hit still requires fresh system DNS and this caller's full policy.
+  // Only positive, validated fallback answers are retained, for their shortest
+  // DNS TTL (at most 30 seconds). No stale-on-error or private-address fallback.
+  if (resolved && resolved.expiresAt > Date.now()) {
+    if (!verified.has(key) && verified.size >= maximumEntries)
+      verified.delete(verified.keys().next().value!);
+    verified.set(key, resolved);
+  }
+  return { ...answers[0]! };
 }
 
-function queryPublicDns(hostname: string): Promise<Address[]> {
+function queryPublicDns(hostname: string): Promise<DnsAnswer> {
   return new Promise((resolve, reject) => {
     // Fixed public IP, verified TLS server name; no system DNS recursion,
     // redirect, proxy, custom CA or privileged network exception.
@@ -91,7 +120,17 @@ function queryPublicDns(hostname: string): Promise<Address[]> {
                 throw denied();
               return { address: answer.data, family: 4 };
             });
-            resolve(addresses);
+            const ttl = Math.min(
+              30,
+              ...body.Answer.map((answer: { TTL?: unknown }) =>
+                typeof answer.TTL === 'number' &&
+                Number.isSafeInteger(answer.TTL) &&
+                answer.TTL > 0
+                  ? answer.TTL
+                  : 0,
+              ),
+            );
+            resolve({ addresses, expiresAt: Date.now() + ttl * 1000 });
           } catch {
             reject(denied());
           }
