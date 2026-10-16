@@ -256,6 +256,10 @@ export async function selectProjectExecution(
       );
       let state = discovery.state;
       if (!c.online) state = 'offline';
+      // Current Bridge releases cannot silently drop finite network/budget
+      // requests. Its separately versioned adapter must advertise support first.
+      else if (args.action === 'execute' && (args.network || args.execution))
+        state = 'unsupported';
       else if (
         args.projectPreparation.packages.length > bridgeProjectPackageLimit
       )

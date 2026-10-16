@@ -363,6 +363,7 @@ export class ProjectPreparation {
     architecture: 'amd64' | 'arm64',
     signal: AbortSignal,
     offline = false,
+    onBytes?: (bytes: number) => void,
   ) {
     const asset =
       manager === 'pnpm'
@@ -382,7 +383,7 @@ export class ProjectPreparation {
     )
       throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
     try {
-      await downloadManagedRuntimeAsset(path, asset, signal);
+      await downloadManagedRuntimeAsset(path, asset, signal, { onBytes });
     } catch (error) {
       if (signal.aborted) throw new LocalCommandError('EXECUTION_REVOKED');
       if (
@@ -398,6 +399,7 @@ export class ProjectPreparation {
       asset.sizeBytes,
     );
     if (!bytes) throw new LocalCommandError('PROJECT_DEPENDENCY_INTEGRITY');
+    onBytes?.(bytes.length);
     return { path: '.allrice/manager.tar.gz', bytes, asset };
   }
   async archives(input: {
@@ -407,6 +409,8 @@ export class ProjectPreparation {
     signal: AbortSignal;
     maintainLease?: () => Promise<boolean>;
     onProgress?: (text: string) => void;
+    /** Trusted I/O measurements; UI progress text and lease beats never count. */
+    onBytes?: (bytes: number) => void;
     architecture?: 'amd64' | 'arm64';
   }) {
     const spec = validateProjectPreparation(input.command, input.files);
@@ -481,13 +485,16 @@ export class ProjectPreparation {
           checksum,
           limits.archiveBytes,
         );
-        if (bytes) hits++;
-        else {
+        if (bytes) {
+          hits++;
+          input.onBytes?.(bytes.length);
+        } else {
           const source =
             pkg.archivePath &&
             input.files.find((f) => f.path === pkg.archivePath);
-          if (source) bytes = Buffer.from(source.content, 'base64');
-          else {
+          if (source) {
+            bytes = Buffer.from(source.content, 'base64');
+          } else {
             if (pkg.archivePath)
               throw new LocalCommandError('DEPENDENCY_ARCHIVE_REQUIRED');
             if (spec.offline)
@@ -500,6 +507,7 @@ export class ProjectPreparation {
                 new URL(npm ? runtimeNpmPackageUrl(pkg) : pkg.url),
                 signal,
                 limits.archiveBytes,
+                input.onBytes,
               );
             } catch (e) {
               if (signal.aborted)
@@ -514,6 +522,7 @@ export class ProjectPreparation {
             throw new LocalCommandError('PROJECT_DEPENDENCY_LIMIT');
           if (!checksum(bytes))
             throw new LocalCommandError('PROJECT_DEPENDENCY_INTEGRITY');
+          if (source) input.onBytes?.(bytes.length);
           await check();
           await mutateProjectCache(join(this.root, 'archives'), async () => {
             await reserveProjectArchive(

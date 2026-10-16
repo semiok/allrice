@@ -99,6 +99,8 @@ async function fetchAsset(
 }
 
 type DownloadOptions = {
+  /** Actual new bytes written this attempt, excluding any resumed prefix. */
+  onBytes?: (bytes: number) => void;
   onProgress?: (state: {
     stage: 'downloading' | 'verifying' | 'retrying';
     receivedBytes: number;
@@ -300,6 +302,7 @@ export async function downloadManagedRuntimeAsset(
               written += result.bytesWritten;
             }
             offset += written;
+            options.onBytes?.(written);
             options.onProgress?.({
               stage: 'downloading',
               receivedBytes: offset,

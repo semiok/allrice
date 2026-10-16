@@ -281,7 +281,7 @@ export async function runCloudCommandOperation(
         );
         outcome = await backend.execute(payload, files, {
           attemptId,
-          ...(!('kind' in payload) && payload.executionBudget
+          ...(payload.executionBudget
             ? {
                 sandboxExecution: {
                   spec: payload.executionBudget,
@@ -293,7 +293,7 @@ export async function runCloudCommandOperation(
                 },
               }
             : {}),
-          ...(!('kind' in payload) && payload.network !== 'none'
+          ...(payload.network !== 'none'
             ? {
                 networkLease: SandboxNetworkLeaseSchema.parse({
                   version: 1,
@@ -379,12 +379,29 @@ export async function runCloudCommandOperation(
             containerId: '',
             exitCode: null,
             stopped: true,
-            reason: 'failed',
+            reason: [
+              'SANDBOX_EXECUTION_DEADLINE',
+              'SANDBOX_EXECUTION_LIMIT',
+            ].includes(error.message)
+              ? 'deadline'
+              : 'failed',
             output: '',
             artifacts: [],
-            elapsedMs: 0,
+            elapsedMs: error.preparation?.elapsedMs ?? 0,
+            ...(error.preparation?.executionBudget
+              ? { executionBudget: error.preparation.executionBudget }
+              : {}),
             imageDigest: payload.imageDigest,
             errorCode: error.message.slice(0, 128),
+            ...(payload.network !== 'none'
+              ? {
+                  network: {
+                    sentBytes: 0,
+                    receivedBytes: 0,
+                    openedConnections: 0,
+                  },
+                }
+              : {}),
           } satisfies CloudProjectRunResult;
         }
         const container = await backend.inspect(attemptId).catch(() => null);
@@ -466,6 +483,9 @@ export async function runCloudCommandOperation(
     output: outcome.output,
     ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
     ...(outcome.network ? { network: outcome.network } : {}),
+    ...(outcome.executionBudget
+      ? { executionBudget: outcome.executionBudget }
+      : {}),
     ...(outcome.resolution
       ? {
           resolution: projectResolutionReceiptSummary(outcome.resolution),
@@ -589,6 +609,10 @@ export async function runCloudCommandOperation(
     ...(outcome.resolution ? { resolution: outcome.resolution } : {}),
     ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
     ...(externalOutcomeUnknown ? { externalOutcomeUnknown: true } : {}),
+    ...(outcome.network ? { network: outcome.network } : {}),
+    ...(outcome.executionBudget
+      ? { executionBudget: outcome.executionBudget }
+      : {}),
     ...('kind' in payload
       ? {
           project: payload.arguments.projectSource.project,

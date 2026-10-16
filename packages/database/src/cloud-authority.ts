@@ -85,14 +85,24 @@ export function cloudCommandBinding(
         credentials: 'none',
         user: '1000',
         preparation: 'trusted_root_supervisor',
+        ...(payload.network !== 'none'
+          ? { sandboxNetwork: 'controlled-https-v1' }
+          : {}),
       }),
-      networkPolicyDigest: digest({ network: 'none' }),
+      networkPolicyDigest: digest({ network: payload.network }),
       toolchainDigest: digest({
         backend: payload.backend,
         imageDigest: payload.imageDigest,
         architecture: 'amd64',
       }),
-      budgetDigest: digest(payload.arguments.limits),
+      budgetDigest: digest(
+        payload.executionBudget
+          ? {
+              limits: payload.arguments.limits,
+              execution: payload.executionBudget,
+            }
+          : payload.arguments.limits,
+      ),
     };
   return {
     executableDigest: digest({
@@ -356,6 +366,8 @@ export async function checkCloudBindingAuthority(
   if (project) {
     if (!snapshot.success)
       throw new RuntimePolicyError('cloud_frozen_tool_not_allowed');
+    assertCloudExecutionBudget(project, snapshot.data, false);
+    assertCloudNetworkAuthority(project, profile, snapshot.data, false);
     const source = project.arguments.projectSource;
     const needsOutbound =
       !project.arguments.projectPreparation.offline &&
@@ -385,16 +397,18 @@ export async function checkCloudBindingAuthority(
       digest(payload) !== binding.inputDigest ||
       !runtimeContractEqual(cloudCommandBinding(payload), binding.command) ||
       !runtimeContractEqual(binding.baseline, [source.project.snapshot]) ||
-      !runtimeContractEqual(binding.dataScope, [
-        {
-          content: source.project.snapshot,
-          sourceTargetId: null,
-          purpose: 'execution_input',
-          destination: 'cloud_execution',
-          authorizationId: binding.attempt.operationId,
-          authorizationVersion: 1,
-        },
-      ]) ||
+      !runtimeContractEqual(
+        binding.dataScope,
+        cloudInputTransferScopes(
+          [source.project.snapshot],
+          binding.attempt.operationId,
+          {
+            command: project,
+            grantId: binding.execution.grantId,
+            grantVersion: binding.execution.grantVersion,
+          },
+        ),
+      ) ||
       source.cacheKey !==
         'sha256:' +
           createHash('sha256')

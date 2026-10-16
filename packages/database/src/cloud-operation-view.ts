@@ -52,6 +52,7 @@ export type CloudOperationView = {
         kind: 'cloud';
         dependencyResolution?: ProjectDependencyResolveInput;
         network?: Exclude<CloudCommand['network'], 'none'>;
+        executionBudget?: CloudCommand['executionBudget'];
         language?: CloudCommand['arguments']['language'];
         script: string;
         inputs: CloudCommand['arguments']['inputs'];
@@ -60,6 +61,8 @@ export type CloudOperationView = {
       }
     | {
         kind: 'project';
+        network?: Exclude<CloudProjectCommand['network'], 'none'>;
+        executionBudget?: CloudProjectCommand['executionBudget'];
         project: CloudProjectCommand['arguments']['projectSource']['project'];
         sourceDigest: string;
         executable: string;
@@ -271,6 +274,12 @@ export async function listCloudRuntimeOperations(
           'kind' in payload
             ? {
                 kind: 'project',
+                ...(payload.network !== 'none'
+                  ? { network: payload.network }
+                  : {}),
+                ...(payload.executionBudget
+                  ? { executionBudget: payload.executionBudget }
+                  : {}),
                 ...(payload.arguments.outputs
                   ? { outputs: payload.arguments.outputs }
                   : {}),
@@ -291,6 +300,9 @@ export async function listCloudRuntimeOperations(
                   : {}),
                 ...(payload.network !== 'none'
                   ? { network: payload.network }
+                  : {}),
+                ...(payload.executionBudget
+                  ? { executionBudget: payload.executionBudget }
                   : {}),
                 ...(payload.arguments.language
                   ? { language: payload.arguments.language }

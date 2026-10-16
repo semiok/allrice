@@ -6,9 +6,11 @@ import {
   RuntimeProjectPreparationEvidenceSchema,
   RuntimeProjectScopeSchema,
   projectRuntimeCacheIdentity,
-  cloudProjectResultMatchesPayload,
+  cloudProjectPreparationMatchesPayload,
   type CloudProjectCommand,
   type RuntimeProjectScope,
+  type SandboxExecutionBudgetState,
+  type SandboxNetworkLease,
 } from '@allrice/contracts';
 import {
   type ProjectPreparation,
@@ -276,6 +278,9 @@ export async function prepareCloudProject(
     maintainLease: () => Promise<boolean>;
     serviceId?: string;
     previewHost?: string | null;
+    executionBudget?: SandboxExecutionBudgetState;
+    networkLease?: SandboxNetworkLease;
+    onPreparationBytes?: (bytes: number) => void;
   },
 ) {
   const command = CloudProjectCommandSchema.parse(input.command),
@@ -336,6 +341,7 @@ export async function prepareCloudProject(
       'amd64',
       signal,
       spec.offline,
+      input.onPreparationBytes,
     );
     const prepared = await preparation.archives({
       command,
@@ -344,6 +350,7 @@ export async function prepareCloudProject(
       architecture: 'amd64',
       signal,
       maintainLease,
+      onBytes: input.onPreparationBytes,
     });
     await check();
     await reserveProjectVolume(api, cacheVolume, profile);
@@ -371,6 +378,24 @@ export async function prepareCloudProject(
       'xyz.bplabs.allrice.backend': 'cloud-gvisor-v1',
       'xyz.bplabs.allrice.cloud.deadline': String(input.deadline),
       'xyz.bplabs.allrice.project.image': command.imageDigest,
+      ...(input.executionBudget
+        ? {
+            'xyz.bplabs.allrice.cloud.sandbox-execution': 'v1',
+            'xyz.bplabs.allrice.cloud.sandbox-execution-limit': String(
+              input.executionBudget.spec.policy.maxExecutionMs,
+            ),
+            'xyz.bplabs.allrice.cloud.sandbox-execution-started': String(
+              input.executionBudget.startedAt,
+            ),
+          }
+        : {}),
+      ...(input.networkLease
+        ? {
+            'xyz.bplabs.allrice.cloud.network': 'controlled-https-v1',
+            'xyz.bplabs.allrice.cloud.network-policy':
+              input.networkLease.policyDigest,
+          }
+        : {}),
       ...(command.arguments.background
         ? {
             'xyz.bplabs.allrice.cloud.service': 'project-v1',
@@ -432,6 +457,7 @@ export async function prepareCloudProject(
       prepared,
       deadlineUnixMs: input.deadline,
       deadlineReason: 'timeout',
+      ...(input.networkLease ? { runtimeNetwork: true as const } : {}),
       ...(command.arguments.background
         ? { privateServiceCache: true as const }
         : {}),
@@ -621,7 +647,9 @@ export function collectCloudProject(
     imageDigest: command.imageDigest,
     projectPreparation: proof,
   });
-  if (!cloudProjectResultMatchesPayload(command, result))
+  // The executor attaches its host-observed network and budget receipts after
+  // collecting the supervisor. Admission validates the complete receipt again.
+  if (!cloudProjectPreparationMatchesPayload(command, result))
     throw Error('CLOUD_PROJECT_RECEIPT_CHANGED');
   return result;
 }

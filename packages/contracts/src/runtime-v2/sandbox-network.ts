@@ -48,6 +48,19 @@ export const SandboxNetworkRequestSchema = z
   .strict();
 export type SandboxNetworkRequest = z.infer<typeof SandboxNetworkRequestSchema>;
 
+/** Bounded physical transport counters, never a claim of application success. */
+const transportCounter = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
+export const SandboxNetworkObservationSchema = z
+  .object({
+    sentBytes: transportCounter,
+    receivedBytes: transportCounter,
+    openedConnections: transportCounter,
+  })
+  .strict();
+export type SandboxNetworkObservation = z.infer<
+  typeof SandboxNetworkObservationSchema
+>;
+
 /** Installed by an administrator for one execution grant. A tool request can
  * select a subset, never add destinations or permit input transfer itself. */
 export const SandboxNetworkGrantSchema = SandboxNetworkRequestSchema.extend({

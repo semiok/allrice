@@ -129,6 +129,12 @@ async function createLocalBridgeToolOperation(
     if (args?.background || args?.project)
       throw new RuntimePolicyError('assistant_authority_changed');
   }
+  const projectRequest = input.projectSelection?.originalArguments;
+  if (
+    projectRequest?.action === 'execute' &&
+    (projectRequest.network || projectRequest.execution)
+  )
+    throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args?.background && !localServiceFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const ctx = input.context;

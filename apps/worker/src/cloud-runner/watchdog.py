@@ -45,6 +45,7 @@ SANDBOX_IMAGE_ENV = {
                    'PYTHON_SHA256=8fb5f9fbc7609fa822cb31549884575db7fd9657cbffb89510b5d7975963a83a',
                    'PYTHONDONTWRITEBYTECODE=1', 'MPLBACKEND=Agg'],
 }
+PROJECT_SUPERVISORS = {NODE_IMAGE: 'fc9f0088d067c1ec6c09fad4d388c0ac4cfbef30dd2f57204343f0de730ff96e', PYTHON_IMAGE: 'bc423fb8c85ca181b56497935943f8b29e52ecbeff1c3b3f4a1f4a8b1bad8fd0'}
 STATE = "/run/allrice-cloud-watchdog.json"
 CAPACITY = "/run/allrice-cloud-capacity.json"
 EXPECTED = "1a4995a70b3c8b7d36f55d7d2dc6d15185ebe420de653b1a330b42d36c0e6b4a"
@@ -241,6 +242,45 @@ def project_web_container_valid(container):
     )
 
 
+def project_sandbox_container_valid(container, deadline):
+    config, host = container['Config'], container['HostConfig']
+    labels = config['Labels']; image = config.get('Image')
+    profile = labels.get('xyz.bplabs.allrice.project.profile')
+    cache = labels.get('xyz.bplabs.allrice.project.cache', '')
+    attempt = labels.get(ATTEMPT, '')
+    cmd = config.get('Cmd', []); mounts = container.get('Mounts', [])
+    node = image == NODE_IMAGE
+    return (
+        labels.get('xyz.bplabs.allrice.cloud.kind') == 'project'
+        and profile in (None, 'web-development') and (profile is None or node)
+        and SERVICE not in labels and 'xyz.bplabs.allrice.cloud.project-resolution' not in labels
+        and 'xyz.bplabs.allrice.project.private-service-cache' not in labels
+        and image in PROJECT_SUPERVISORS and labels.get('xyz.bplabs.allrice.project.image') == image
+        and re.fullmatch(r'sha256:[a-f0-9]{64}', cache)
+        and re.fullmatch(r'[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.project.payload', ''))
+        and config.get('User') == '0:0'
+        and config.get('Entrypoint') == (['/usr/local/bin/node'] if node else ['/opt/python/bin/python'])
+        and len(cmd) == 4 and cmd[:2] == (['--input-type=module', '--eval'] if node else ['-I', '-c'])
+        and cmd[3] == str(deadline) and hashlib.sha256(cmd[2].encode()).hexdigest() == PROJECT_SUPERVISORS[image]
+        and sorted(config.get('Env') or []) == sorted(SANDBOX_IMAGE_ENV[image])
+        and labels.get('xyz.bplabs.allrice.cloud.network') in (None, 'controlled-https-v1')
+        and ('xyz.bplabs.allrice.cloud.network' not in labels or re.fullmatch(r'sha256:[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.cloud.network-policy', '')))
+        and host.get('Runtime') == 'runsc' and host.get('NetworkMode') == 'none'
+        and host.get('ReadonlyRootfs') is True and not host.get('Privileged')
+        and host.get('CapDrop') == ['ALL']
+        and sorted(cap.removeprefix('CAP_') for cap in host.get('CapAdd', [])) == ['CHOWN', 'DAC_OVERRIDE', 'FOWNER', 'KILL', 'SETGID', 'SETUID']
+        and bool(host.get('SecurityOpt')) and all(v in ('no-new-privileges','no-new-privileges=true') for v in host['SecurityOpt'])
+        and not host.get('Binds') and not host.get('Devices') and not host.get('PortBindings')
+        and len(mounts) == 2 and all(m.get('Type') == 'volume' and m.get('RW') is True for m in mounts)
+        and {m.get('Destination'):m.get('Name') for m in mounts} == {
+            '/tmp/work':'allrice-project-work-'+attempt, '/cache':'allrice-project-cache-'+cache[7:]}
+        and 128 * 1024 ** 2 <= host.get('Memory',0) <= (1536 if profile else 512) * 1024 ** 2
+        and host.get('MemorySwap') == host.get('Memory') and 64 <= host.get('PidsLimit',0) <= (128 if profile else 64)
+        and host.get('CpuPeriod') == 100000 and 10000 <= host.get('CpuQuota',0) <= 100000
+        and host.get('Tmpfs') == {'/tmp':'rw,nosuid,nodev,noexec,size=32m,mode=1777'}
+    )
+
+
 def sandbox_budget():
     return {'version':1,'maximumTimeoutMs':3600000,'physicalLeaseMs':5000}
 
@@ -260,8 +300,9 @@ def sandbox_lease_valid(container, created, deadline, now):
             and re.fullmatch(r'[a-f0-9-]{36}',attempt)
             and 0 < started <= created+1000 and started < deadline <= started+cap
             and SERVICE not in labels and 'xyz.bplabs.allrice.repository.profile' not in labels
-            and 'xyz.bplabs.allrice.project.profile' not in labels
             and labels.get('xyz.bplabs.allrice.cloud.project-resolution') in (None,'v1')
+            and (project_sandbox_container_valid(container,deadline) if labels.get('xyz.bplabs.allrice.cloud.kind') == 'project' else (
+            'xyz.bplabs.allrice.project.profile' not in labels
             and (not resolution or labels.get('xyz.bplabs.allrice.cloud.network') == 'controlled-https-v1')
             and config.get('Image') in (NODE_IMAGE,PYTHON_IMAGE) and config.get('User')=='65532:65532'
             and config.get('Entrypoint')==['/usr/local/bin/node']
@@ -275,7 +316,7 @@ def sandbox_lease_valid(container, created, deadline, now):
             and not host.get('Binds') and all(m.get('Type')=='tmpfs' and m.get('Destination')=='/tmp' for m in container.get('Mounts',[]))
             and 128*1024**2 <= host.get('Memory',0) <= 512*1024**2
             and host.get('MemorySwap')==host.get('Memory') and host.get('PidsLimit')==64
-            and host.get('Tmpfs')=={'/tmp':'rw,nosuid,nodev,exec,size=256m,mode=1777' if resolution else 'rw,nosuid,nodev,noexec,size=32m,mode=1777'}):
+            and host.get('Tmpfs')=={'/tmp':'rw,nosuid,nodev,exec,size=256m,mode=1777' if resolution else 'rw,nosuid,nodev,noexec,size=32m,mode=1777'}))):
             return False
         fd=os.open(SANDBOX_LEASES+'/'+attempt+'.json',os.O_RDONLY|os.O_NOFOLLOW)
         with os.fdopen(fd,encoding='utf8') as source:
@@ -387,7 +428,7 @@ def tick(capacity):
     temporary = STATE + ".new"
     with open(temporary, "w", encoding="utf8") as output:
         json.dump({"at": time.time(), "running": running, 'repositoryCompiled': compiled_budget(),
-                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(), 'projectResolution':1,
+                   'projectWebDevelopment': project_web_budget(), 'sandboxExecution': sandbox_budget(), 'projectResolution':1, 'projectSandboxExecution':1,
                    "availableBytes": memory_available()}, output)
     os.replace(temporary, STATE)
 
@@ -425,6 +466,7 @@ def attest():
                       "projectWebDevelopment": live_project_web_budget(heartbeat),
                       "sandboxExecution": live_sandbox_budget(heartbeat),
                       "projectResolution": 1 if heartbeat.get("projectResolution") == 1 else None,
+                      "projectSandboxExecution": 1 if heartbeat.get("projectSandboxExecution") == 1 else None,
                       "capacity": capacity, "availableBytes": heartbeat['availableBytes'],
                       "running": heartbeat['running']}))
     return 0 if ready else 1

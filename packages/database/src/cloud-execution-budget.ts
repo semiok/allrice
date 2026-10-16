@@ -2,12 +2,12 @@ import {
   sandboxExecutionBudgetSpec,
   runtimeContractEqual,
   type EmployeeExecutionSnapshot,
-  type CloudCommand,
+  type CloudExecutionPayload,
 } from '@allrice/contracts';
 import { RuntimePolicyError } from './runtime-policy.ts';
 
 export function assertCloudExecutionBudget(
-  command: CloudCommand,
+  command: CloudExecutionPayload,
   snapshot: EmployeeExecutionSnapshot | undefined,
   privateExecution: boolean,
 ) {

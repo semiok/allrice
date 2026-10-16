@@ -50,6 +50,7 @@ export async function downloadPublicPackage(
   url: URL,
   signal: AbortSignal,
   maximumBytes: number,
+  onBytes?: (bytes: number) => void,
 ) {
   if (
     url.protocol !== 'https:' ||
@@ -116,7 +117,18 @@ export async function downloadPublicPackage(
           length += chunk.length;
           if (length > maximumBytes)
             req.destroy(new LocalCommandError('DEPENDENCY_ARCHIVE_LIMIT'));
-          else chunks.push(chunk);
+          else {
+            chunks.push(chunk);
+            try {
+              onBytes?.(chunk.length);
+            } catch (error) {
+              req.destroy(
+                error instanceof Error
+                  ? error
+                  : new Error('DEPENDENCY_PROGRESS_FAILED'),
+              );
+            }
+          }
         });
         res.once('error', reject);
         res.once('end', () => resolve(Buffer.concat(chunks)));

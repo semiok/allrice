@@ -21,6 +21,15 @@ import {
 } from './project-outputs.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
 import {
+  SandboxNetworkRequestSchema,
+  SandboxNetworkObservationSchema,
+} from './runtime-v2/sandbox-network.ts';
+import {
+  SandboxExecutionRequestSchema,
+  SandboxExecutionBudgetSpecSchema,
+  SandboxExecutionObservationSchema,
+} from './runtime-v2/sandbox-execution.ts';
+import {
   CloudCommandSchema,
   cloudBackendV1,
   cloudToolchainImageV1,
@@ -35,10 +44,13 @@ import {
 } from './project-service.ts';
 
 const path = z.string().min(1).max(240).refine(isRuntimeRelativePath);
-/** Saved source executes one finite command; no model-owned device, lease, image or network. */
+/** Saved source executes one finite command; requests never grant authority. */
 const ProjectExecuteObjectSchema = z
   .object({
     action: z.literal('execute'),
+    // Omitted legacy fields keep historical calls and binding digests intact.
+    network: SandboxNetworkRequestSchema.optional(),
+    execution: SandboxExecutionRequestSchema.optional(),
     project: ProjectVersionRefSchema,
     executable: z.enum([
       '/usr/local/bin/node',
@@ -90,6 +102,8 @@ export type ProjectExecuteInput = z.infer<typeof ProjectExecuteInputSchema>;
 export const ProjectServiceStartInputSchema = ProjectExecuteObjectSchema.omit({
   action: true,
   outputs: true,
+  network: true,
+  execution: true,
 })
   .extend({
     action: z.literal('service_start'),
@@ -157,12 +171,25 @@ export const CloudProjectCommandSchema = z
       z.literal(cloudPythonImageV1),
     ]),
     runtime: z.literal('runsc'),
-    network: z.literal('none'),
+    network: z.union([z.literal('none'), SandboxNetworkRequestSchema]),
+    executionBudget: SandboxExecutionBudgetSpecSchema.optional(),
   })
   .strict()
   .superRefine((c, ctx) => {
     const a = c.arguments,
       s = a.projectSource;
+    if (
+      JSON.stringify(c.network) !== JSON.stringify(a.network ?? 'none') ||
+      Boolean(a.execution) !== Boolean(c.executionBudget) ||
+      (a.execution &&
+        c.executionBudget &&
+        a.execution.kind !== c.executionBudget.kind) ||
+      (a.background && (a.network || a.execution || c.executionBudget))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'cloud_project_execution_request_changed',
+      });
     if (!projectExecutionLimitsAllowed(a.projectPreparation, a.limits))
       ctx.addIssue({
         code: 'custom',
@@ -245,10 +272,35 @@ export const CloudProjectRunResultSchema = z
     projectPreparation: RuntimeProjectPreparationEvidenceSchema.optional(),
     errorCode: z.string().max(128).optional(),
     serviceStopReason: ProjectServiceStopCauseSchema.optional(),
+    network: SandboxNetworkObservationSchema.optional(),
+    executionBudget: SandboxExecutionObservationSchema.optional(),
   })
   .strict();
 export type CloudProjectRunResult = z.infer<typeof CloudProjectRunResultSchema>;
 export function cloudProjectResultMatchesPayload(
+  payload: CloudProjectCommand,
+  result: CloudProjectRunResult,
+) {
+  if (result.imageDigest !== payload.imageDigest) return false;
+  const succeeded = result.reason === 'completed' && result.exitCode === 0;
+  if (
+    (payload.network === 'none' && result.network) ||
+    (payload.network !== 'none' && succeeded && !result.network) ||
+    (!payload.executionBudget && result.executionBudget) ||
+    (payload.executionBudget && succeeded && !result.executionBudget) ||
+    (payload.executionBudget &&
+      result.executionBudget &&
+      (payload.executionBudget.initialBudgetMs !==
+        result.executionBudget.initialBudgetMs ||
+        payload.executionBudget.policy.maxExecutionMs !==
+          result.executionBudget.maxExecutionMs))
+  )
+    return false;
+  return cloudProjectPreparationMatchesPayload(payload, result);
+}
+
+/** Supervisor-owned source/artifact evidence, before host observations attach. */
+export function cloudProjectPreparationMatchesPayload(
   payload: CloudProjectCommand,
   result: CloudProjectRunResult,
 ) {

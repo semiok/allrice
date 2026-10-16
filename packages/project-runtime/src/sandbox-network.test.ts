@@ -204,6 +204,8 @@ describe('sandbox outbound boundary', () => {
     closers.push(() => child.kill());
     let authorized = true,
       resolved = 0;
+    let relayFrames = '';
+    child.stdout.on('data', (b: Buffer) => (relayFrames += b.toString()));
     const stream = Duplex.from({
       readable: child.stdout,
       writable: child.stdin,
@@ -221,6 +223,8 @@ describe('sandbox outbound boundary', () => {
     closers.push(() => session.close());
     await session.ready;
     const socket = connect({ host: '127.0.0.1', port });
+    let response = '';
+    socket.on('data', (b) => (response += b.toString()));
     socket.on('error', () => {});
     closers.push(() => socket.destroy());
     const closed = new Promise<void>((resolve) =>
@@ -231,6 +235,45 @@ describe('sandbox outbound boundary', () => {
     );
     await closed;
     expect(resolved).toBe(0);
+    expect(response).toBe(
+      'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+    );
+    // Exercise the actual Node proxy client: after one denied CONNECT and a
+    // caught fetch error it must exit, not spin/reconnect until task timeout.
+    const client = spawn(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        "try{await fetch('https://private.example',{signal:AbortSignal.timeout(1500)});process.exitCode=2}catch{console.log('denied')}",
+      ],
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          HTTPS_PROXY: `http://127.0.0.1:${port}`,
+          NO_PROXY: '',
+          NODE_USE_ENV_PROXY: '1',
+        },
+      },
+    );
+    closers.push(() => client.kill());
+    let output = '';
+    client.stdout.on('data', (b: Buffer) => (output += b.toString()));
+    const timeout = setTimeout(() => client.kill(), 4000);
+    const exit = await new Promise<number | null>((resolve) =>
+      client.once('exit', resolve),
+    );
+    clearTimeout(timeout);
+    expect(exit).toBe(0);
+    expect(output).toContain('denied');
+    expect(resolved).toBe(0);
+    expect(
+      relayFrames
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line) as { type: string })
+        .filter((frame) => frame.type === 'open'),
+    ).toHaveLength(2);
     authorized = false;
     await new Promise<void>((resolve) => stream.once('close', () => resolve()));
     expect(stream.destroyed).toBe(true);
