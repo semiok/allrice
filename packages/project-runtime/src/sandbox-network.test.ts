@@ -13,7 +13,11 @@ import {
 } from '@allrice/contracts';
 import { SandboxNetworkSession } from './sandbox-network-session.js';
 import { sandboxNetworkRelay } from './sandbox-network-relay.js';
-import { SandboxDockerStream } from './sandbox-network-docker.js';
+import { sandboxNetworkPythonRelay } from './sandbox-network-python-relay.js';
+import {
+  SandboxDockerStream,
+  openSandboxNetwork,
+} from './sandbox-network-docker.js';
 import {
   sandboxPublicAddress,
   sandboxTlsClientHello,
@@ -22,6 +26,24 @@ import {
 } from './sandbox-network-policy.js';
 
 const closers: (() => void)[] = [];
+const relayRuntimes = ['node', 'python'] as const;
+function startRelay(
+  runtime: (typeof relayRuntimes)[number],
+  port: number,
+  deadline: number,
+) {
+  return spawn(
+    runtime === 'python' ? 'python3' : process.execPath,
+    [
+      ...(runtime === 'python'
+        ? ['-I', '-S', '-u', '-c', sandboxNetworkPythonRelay]
+        : ['--eval', sandboxNetworkRelay]),
+      String(port),
+      String(deadline),
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+}
 afterEach(() => {
   while (closers.length) closers.pop()!();
 });
@@ -73,6 +95,70 @@ const hello = (hostname: string) => {
 };
 
 describe('sandbox outbound boundary', () => {
+  it.each(relayRuntimes)(
+    'keeps %s exec isolated and never retries through a different runtime',
+    async (runtime) => {
+      const attempts: unknown[] = [];
+      const failure = new Error('original exec failure');
+      const api = {
+        socketPath: '/unused-sandbox-network-test.sock',
+        async json<T>(
+          _method: string,
+          _path: string,
+          body?: unknown,
+        ): Promise<T> {
+          attempts.push(body);
+          throw failure;
+        },
+      };
+      const input = {
+        containerId: 'a'.repeat(64),
+        signal: new AbortController().signal,
+        lease: lease(),
+        assertCurrent: async () => {},
+        assertContainer: async () => {},
+      };
+      await expect(
+        openSandboxNetwork(api, {
+          ...input,
+          ...(runtime === 'python' ? { relayRuntime: runtime } : {}),
+        }),
+      ).rejects.toBe(failure);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]).toMatchObject({
+        Privileged: false,
+        User: '65532:65532',
+        WorkingDir: '/tmp',
+        Cmd:
+          runtime === 'python'
+            ? [
+                '/usr/local/bin/python3',
+                '-I',
+                '-S',
+                '-u',
+                '-c',
+                sandboxNetworkPythonRelay,
+                '3139',
+                String(Date.parse(input.lease.expiresAt)),
+              ]
+            : [
+                '/usr/local/bin/node',
+                '--v8-pool-size=1',
+                '--eval',
+                sandboxNetworkRelay,
+                '3139',
+                String(Date.parse(input.lease.expiresAt)),
+              ],
+      });
+      await expect(
+        openSandboxNetwork(api, {
+          ...input,
+          relayRuntime: 'unavailable' as never,
+        }),
+      ).rejects.toThrow('SANDBOX_NETWORK_DENIED');
+      expect(attempts).toHaveLength(1);
+    },
+  );
   it('binds cloud without a device, Bridge with one, and exact canonical HTTPS origins', () => {
     expect(lease().target.kind).toBe('cloud');
     for (const origin of [
@@ -186,101 +272,106 @@ describe('sandbox outbound boundary', () => {
     incoming.write(Buffer.from([2, 0, 0, 0, 0, 0, 0, 1, 65]));
     expect((await failure).message).toContain('PROTOCOL');
   });
-  it('runs the real loopback relay, denies unauthorized CONNECT before resolving, and closes on lost authority', async () => {
-    const probe = createServer();
-    await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));
-    const port = (probe.address() as { port: number }).port;
-    await new Promise<void>((resolve) => probe.close(() => resolve()));
-    const child = spawn(
-      process.execPath,
-      [
-        '--eval',
-        sandboxNetworkRelay,
-        String(port),
-        String(Date.now() + 10_000),
-      ],
-      { stdio: ['pipe', 'pipe', 'pipe'] },
-    );
-    closers.push(() => child.kill());
-    let authorized = true,
-      resolved = 0;
-    let relayFrames = '';
-    child.stdout.on('data', (b: Buffer) => (relayFrames += b.toString()));
-    const stream = Duplex.from({
-      readable: child.stdout,
-      writable: child.stdin,
-    });
-    const session = new SandboxNetworkSession(stream, {
-      lease: lease(),
-      assertCurrent: async () => {
-        if (!authorized) throw Error('revoked');
-      },
-      resolve: async () => {
-        resolved++;
-        throw new SandboxNetworkError('SANDBOX_NETWORK_DNS');
-      },
-    });
-    closers.push(() => session.close());
-    await session.ready;
-    const socket = connect({ host: '127.0.0.1', port });
-    let response = '';
-    socket.on('data', (b) => (response += b.toString()));
-    socket.on('error', () => {});
-    closers.push(() => socket.destroy());
-    const closed = new Promise<void>((resolve) =>
-      socket.once('close', () => resolve()),
-    );
-    socket.write(
-      'CONNECT private.example:443 HTTP/1.1\r\nHost: private.example:443\r\n\r\n',
-    );
-    await closed;
-    expect(resolved).toBe(0);
-    expect(response).toBe(
-      'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
-    );
-    // Exercise the actual Node proxy client: after one denied CONNECT and a
-    // caught fetch error it must exit, not spin/reconnect until task timeout.
-    const client = spawn(
-      process.execPath,
-      [
-        '--input-type=module',
-        '--eval',
-        "try{await fetch('https://private.example',{signal:AbortSignal.timeout(1500)});process.exitCode=2}catch{console.log('denied')}",
-      ],
-      {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          HTTPS_PROXY: `http://127.0.0.1:${port}`,
-          NO_PROXY: '',
-          NODE_USE_ENV_PROXY: '1',
+  it.each(relayRuntimes)(
+    'runs the real %s loopback relay, denies unauthorized CONNECT before resolving, and closes on lost authority',
+    async (runtime) => {
+      const probe = createServer();
+      await new Promise<void>((resolve) =>
+        probe.listen(0, '127.0.0.1', resolve),
+      );
+      const port = (probe.address() as { port: number }).port;
+      await new Promise<void>((resolve) => probe.close(() => resolve()));
+      const child = startRelay(runtime, port, Date.now() + 10_000);
+      closers.push(() => child.kill());
+      let authorized = true,
+        resolved = 0;
+      let relayFrames = '';
+      child.stdout.on('data', (b: Buffer) => (relayFrames += b.toString()));
+      const stream = Duplex.from({
+        readable: child.stdout,
+        writable: child.stdin,
+      });
+      const session = new SandboxNetworkSession(stream, {
+        lease: lease(),
+        assertCurrent: async () => {
+          if (!authorized) throw Error('revoked');
         },
-      },
-    );
-    closers.push(() => client.kill());
-    let output = '';
-    client.stdout.on('data', (b: Buffer) => (output += b.toString()));
-    const timeout = setTimeout(() => client.kill(), 4000);
-    const exit = await new Promise<number | null>((resolve) =>
-      client.once('exit', resolve),
-    );
-    clearTimeout(timeout);
-    expect(exit).toBe(0);
-    expect(output).toContain('denied');
-    expect(resolved).toBe(0);
-    expect(
-      relayFrames
-        .trim()
-        .split('\n')
-        .map((line) => JSON.parse(line) as { type: string })
-        .filter((frame) => frame.type === 'open'),
-    ).toHaveLength(2);
-    authorized = false;
-    await new Promise<void>((resolve) => stream.once('close', () => resolve()));
-    expect(stream.destroyed).toBe(true);
-  });
-  it.each(['complete', 'revoked', 'transport_lost'] as const)(
-    'carries verified TLS and handles %s without losing tail bytes or leaving sockets',
-    async (mode) => {
+        resolve: async () => {
+          resolved++;
+          throw new SandboxNetworkError('SANDBOX_NETWORK_DNS');
+        },
+      });
+      closers.push(() => session.close());
+      await session.ready;
+      const socket = connect({ host: '127.0.0.1', port });
+      let response = '';
+      socket.on('data', (b) => (response += b.toString()));
+      socket.on('error', () => {});
+      closers.push(() => socket.destroy());
+      const closed = new Promise<void>((resolve) =>
+        socket.once('close', () => resolve()),
+      );
+      socket.write(
+        'CONNECT private.example:443 HTTP/1.1\r\nHost: private.example:443\r\n\r\n',
+      );
+      await closed;
+      expect(resolved).toBe(0);
+      expect(response).toBe(
+        'HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n',
+      );
+      // Exercise the actual Node proxy client: after one denied CONNECT and a
+      // caught fetch error it must exit, not spin/reconnect until task timeout.
+      const client = spawn(
+        process.execPath,
+        [
+          '--input-type=module',
+          '--eval',
+          "try{await fetch('https://private.example',{signal:AbortSignal.timeout(1500)});process.exitCode=2}catch{console.log('denied')}",
+        ],
+        {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: {
+            HTTPS_PROXY: `http://127.0.0.1:${port}`,
+            NO_PROXY: '',
+            NODE_USE_ENV_PROXY: '1',
+          },
+        },
+      );
+      closers.push(() => client.kill());
+      let output = '';
+      client.stdout.on('data', (b: Buffer) => (output += b.toString()));
+      const timeout = setTimeout(() => client.kill(), 4000);
+      const exit = await new Promise<number | null>((resolve) =>
+        client.once('exit', resolve),
+      );
+      clearTimeout(timeout);
+      expect(exit).toBe(0);
+      expect(output).toContain('denied');
+      expect(resolved).toBe(0);
+      expect(
+        relayFrames
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line) as { type: string })
+          .filter((frame) => frame.type === 'open'),
+      ).toHaveLength(2);
+      authorized = false;
+      await new Promise<void>((resolve) =>
+        stream.once('close', () => resolve()),
+      );
+      expect(stream.destroyed).toBe(true);
+    },
+  );
+  it.each(
+    relayRuntimes.flatMap((runtime) =>
+      (['complete', 'revoked', 'transport_lost'] as const).map((mode) => ({
+        runtime,
+        mode,
+      })),
+    ),
+  )(
+    '$runtime carries verified TLS and handles $mode without losing tail bytes or leaving sockets',
+    async ({ runtime, mode }) => {
       const directory = mkdtempSync(join(tmpdir(), 'allrice-relay-test-'));
       closers.push(() => rmSync(directory, { recursive: true, force: true }));
       const certPath = join(directory, 'cert.pem'),
@@ -331,16 +422,7 @@ describe('sandbox outbound boundary', () => {
       );
       const port = (probe.address() as { port: number }).port;
       await new Promise<void>((resolve) => probe.close(() => resolve()));
-      const child = spawn(
-        process.execPath,
-        [
-          '--eval',
-          sandboxNetworkRelay,
-          String(port),
-          String(Date.now() + 15_000),
-        ],
-        { stdio: ['pipe', 'pipe', 'pipe'] },
-      );
+      const child = startRelay(runtime, port, Date.now() + 15_000);
       closers.push(() => child.kill());
       const stream = Duplex.from({
         readable: child.stdout,

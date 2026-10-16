@@ -121,8 +121,23 @@ export async function executeManagedCharts(
         '本地 Python 图表协议尚未通过实际探测。',
         false,
       );
+    if (
+      (args.network &&
+        (!selection.networkGrant ||
+          selection.profile.sandboxNetworkVersion !== 1)) ||
+      (args.execution &&
+        (!selection.executionBudget ||
+          selection.profile.sandboxExecutionVersion !== 1))
+    )
+      throw new RuntimePolicyError('local_runner_upgrade_required');
     payload = RuntimeLocalPythonPayloadSchema.parse({
       capability: 'local.python.execute',
+      ...(selection.networkGrant
+        ? { networkGrant: selection.networkGrant }
+        : {}),
+      ...(selection.executionBudget
+        ? { executionBudget: selection.executionBudget }
+        : {}),
       arguments: {
         path: '.',
         purpose: 'python_charts',
@@ -144,7 +159,8 @@ export async function executeManagedCharts(
         imageId: selection.profile.imageId,
         architecture: selection.profile.architecture,
         isolation: 'local-vm-container-v1',
-        network: 'none',
+        network: args.network ?? 'none',
+        ...(args.execution ? { execution: args.execution } : {}),
         limits: { ...args.limits, inputBytes: 2_000_000 },
       },
     });

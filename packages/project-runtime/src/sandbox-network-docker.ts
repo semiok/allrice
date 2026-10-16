@@ -2,6 +2,7 @@ import { request } from 'node:http';
 import { Duplex } from 'node:stream';
 import { SandboxNetworkSession } from './sandbox-network-session.js';
 import { sandboxNetworkRelay } from './sandbox-network-relay.js';
+import { sandboxNetworkPythonRelay } from './sandbox-network-python-relay.js';
 import { SandboxNetworkError } from './sandbox-network-policy.js';
 
 /** Docker's multiplex headers are transport data, not sandbox frames. */
@@ -99,9 +100,20 @@ export async function openSandboxNetwork(
     assertContainer: () => Promise<void>;
     /** Fixed supervisor opens the root-owned gate only after offline install. */
     projectRuntime?: true;
+    /** Selected by the trusted adapter for its verified image, never from tool
+     * arguments. The managed local Python image has no Node executable. */
+    relayRuntime?: 'node' | 'python';
+    /** Trusted Bridge adapter uses a UID distinct from managed tenant Python. */
+    relayUid?: 65533;
   },
 ) {
   if (!/^[a-f0-9]{64}$/.test(input.containerId))
+    throw new SandboxNetworkError('SANDBOX_NETWORK_DENIED');
+  if (
+    input.relayRuntime !== undefined &&
+    input.relayRuntime !== 'node' &&
+    input.relayRuntime !== 'python'
+  )
     throw new SandboxNetworkError('SANDBOX_NETWORK_DENIED');
   input.signal.throwIfAborted();
   await input.assertCurrent();
@@ -116,14 +128,25 @@ export async function openSandboxNetwork(
       AttachStderr: false,
       Tty: false,
       Privileged: false,
-      User: '65532:65532',
+      User: input.relayUid === 65533 ? '65533:65533' : '65532:65532',
       WorkingDir: '/tmp',
       Env: ['NODE_OPTIONS=', 'NODE_USE_ENV_PROXY=0'],
       Cmd: [
-        '/usr/local/bin/node',
-        '--v8-pool-size=1',
-        '--eval',
-        sandboxNetworkRelay,
+        ...(input.relayRuntime === 'python'
+          ? [
+              '/usr/local/bin/python3',
+              '-I',
+              '-S',
+              '-u',
+              '-c',
+              sandboxNetworkPythonRelay,
+            ]
+          : [
+              '/usr/local/bin/node',
+              '--v8-pool-size=1',
+              '--eval',
+              sandboxNetworkRelay,
+            ]),
         String(sandboxProxyPort),
         String(Date.parse(input.lease.expiresAt)),
         ...(input.projectRuntime ? ['project-runtime-v1'] : []),

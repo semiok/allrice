@@ -1,3 +1,13 @@
+import {
+  LocalSandboxNetwork,
+  requireLocalSandboxNetwork,
+} from './local-sandbox-network.js';
+import type { SandboxNetworkLease } from '@allrice/contracts';
+import type { SandboxExecutionBudgetController } from '@allrice/project-runtime';
+import {
+  LocalExecutionControl,
+  requireLocalExecutionBudget,
+} from './local-execution-control.js';
 import { createHash } from 'node:crypto';
 import {
   RuntimeLocalCommandSchema,
@@ -145,6 +155,13 @@ export class LocalCommandRunner {
       imageDigest: image.Id,
       architecture: image.Architecture,
       features: [
+        ...(process.env.ALLRICE_BRIDGE_SANDBOX_EXECUTION_V1_ENABLED !== '0' &&
+        process.env.ALLRICE_BRIDGE_SANDBOX_NETWORK_V1_ENABLED !== '0'
+          ? ['sandbox_network_v1']
+          : []),
+        ...(process.env.ALLRICE_BRIDGE_SANDBOX_EXECUTION_V1_ENABLED !== '0'
+          ? ['sandbox_execution_v1']
+          : []),
         'project_diagnostics',
         'npm_dependencies',
         'changeset_candidate',
@@ -171,6 +188,8 @@ export class LocalCommandRunner {
     input: RuntimeLocalCommand,
     options: {
       attemptId: string;
+      executionBudget?: SandboxExecutionBudgetController;
+      networkLease?: SandboxNetworkLease;
       signal?: AbortSignal;
       leaseExpiresAt?: string;
       onOutput?: (chunk: LocalCommandOutput) => void;
@@ -180,12 +199,21 @@ export class LocalCommandRunner {
     },
   ): Promise<RuntimeLocalCommandResult> {
     const command = RuntimeLocalCommandSchema.parse(input);
+    const budget = options.executionBudget;
+    requireLocalExecutionBudget(command, budget, options.maintainLease);
+    requireLocalSandboxNetwork(
+      command,
+      options.networkLease,
+      options.attemptId,
+    );
     if (command.arguments.projectPreparation) {
       if (!this.projects)
         throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
-      const deadlineUnixMs = Date.now() + command.arguments.limits.timeoutMs;
+      const deadlineUnixMs =
+        budget?.state.hardDeadlineAt ??
+        Date.now() + command.arguments.limits.timeoutMs;
       const leaseDeadline =
-        options.leaseExpiresAt === undefined
+        budget || options.leaseExpiresAt === undefined
           ? Infinity
           : Date.parse(options.leaseExpiresAt) - 250;
       const bound = Math.min(deadlineUnixMs, leaseDeadline);
@@ -223,17 +251,20 @@ export class LocalCommandRunner {
     )
       throw new LocalCommandError('EXECUTION_REVOKED');
     const leaseDeadline =
-      options.leaseExpiresAt === undefined
+      budget || options.leaseExpiresAt === undefined
         ? Infinity
         : Date.parse(options.leaseExpiresAt);
     if (!(leaseDeadline > Date.now() + 500))
       throw new LocalCommandError('EXECUTION_REVOKED');
     const deadlineUnixMs = Math.min(
-      Date.now() + command.arguments.limits.timeoutMs,
+      budget?.state.hardDeadlineAt ??
+        Date.now() + command.arguments.limits.timeoutMs,
       leaseDeadline - 250,
     );
     const prepareSignal = AbortSignal.any([
-      AbortSignal.timeout(Math.max(1, deadlineUnixMs - Date.now())),
+      AbortSignal.timeout(
+        Math.max(1, (budget?.state.deadlineAt ?? deadlineUnixMs) - Date.now()),
+      ),
       ...(options.signal ? [options.signal] : []),
     ]);
     const archives = await prepareDependencyArchives(command, bundle.files, {
@@ -245,7 +276,17 @@ export class LocalCommandRunner {
       JSON.stringify({
         ...bundle,
         command: { ...bundle.command, candidate: undefined },
-        deadlineUnixMs,
+        deadlineUnixMs: budget?.state.deadlineAt ?? deadlineUnixMs,
+        ...(budget
+          ? {
+              executionControl: {
+                version: 1,
+                attemptId: options.attemptId,
+                hardDeadlineAt: budget.state.hardDeadlineAt,
+              },
+            }
+          : {}),
+        ...(options.networkLease ? { runtimeNetwork: true } : {}),
         archives,
       }),
     ).toString('base64');
@@ -260,7 +301,8 @@ export class LocalCommandRunner {
         Cmd: ['--input-type=module', '--eval', localCommandSupervisor],
         User: '0:0',
         WorkingDir: '/',
-        OpenStdin: false,
+        OpenStdin: !!budget,
+        StdinOnce: false,
         Tty: false,
         Env: [
           `ALLRICE_INPUT_PARTS=${parts.length}`,
@@ -359,7 +401,7 @@ export class LocalCommandRunner {
     // Cancel/lease failure before start cannot be undone by a delayed start request.
     if (
       options.signal?.aborted ||
-      Date.now() >= deadlineUnixMs ||
+      Date.now() >= (budget?.state.deadlineAt ?? deadlineUnixMs) ||
       (options.maintainLease && !(await options.maintainLease()))
     ) {
       await this.api.json('DELETE', `/containers/${id}`);
@@ -377,8 +419,33 @@ export class LocalCommandRunner {
       },
       Math.max(1, deadlineUnixMs - Date.now()),
     );
+    const network = options.networkLease
+      ? new LocalSandboxNetwork({
+          api: this.api,
+          containerId: id,
+          attemptId: options.attemptId,
+          lease: options.networkLease,
+          allowExecution: () => executionControl!.allowNetwork(),
+          signal:
+            options.signal ??
+            AbortSignal.timeout(Math.max(1, deadlineUnixMs - Date.now())),
+          maintainLease: options.maintainLease!,
+          stop,
+          relayRuntime: 'node',
+        })
+      : undefined;
+    const executionControl = budget
+      ? new LocalExecutionControl({
+          api: this.api,
+          containerId: id,
+          attemptId: options.attemptId,
+          budget,
+          maintainLease: options.maintainLease!,
+          stop,
+        })
+      : undefined;
     const heartbeat = setInterval(() => {
-      if (!options.maintainLease || heartbeatBusy) return;
+      if (budget || !options.maintainLease || heartbeatBusy) return;
       heartbeatBusy = true;
       void options
         .maintainLease()
@@ -390,6 +457,8 @@ export class LocalCommandRunner {
         });
     }, 1000);
     try {
+      await executionControl?.start();
+      await network?.start();
       await this.api.logs(
         id,
         (bytes) => {
@@ -414,10 +483,12 @@ export class LocalCommandRunner {
                 throw new LocalCommandError('SUPERVISOR_OUTPUT_LIMIT');
               publish(event.type, filters[event.type].push(buffer));
             } else if (event.type === 'exit') {
+              executionControl?.close();
               if (
                 ![
                   'exited',
                   'timeout',
+                  'lease_lost',
                   'output_limit',
                   'memory_limit',
                   'supervisor_failed',
@@ -433,7 +504,9 @@ export class LocalCommandRunner {
               throw new LocalCommandError('INVALID_SUPERVISOR_OUTPUT');
           }
         },
-        limits.timeoutMs + 15_000,
+        (budget
+          ? Math.max(1, budget.state.hardDeadlineAt - Date.now())
+          : limits.timeoutMs) + 15_000,
       );
       for (const stream of ['stdout', 'stderr'] as const)
         publish(stream, filters[stream].push(Buffer.alloc(0), true));
@@ -442,6 +515,7 @@ export class LocalCommandRunner {
       const inspected = await this.inspect(options.attemptId, id);
       if (inspected.State.Running || inspected.State.Status !== 'exited')
         throw new LocalCommandError('STOP_NOT_CONFIRMED');
+      await network?.finish();
       const observed = exit as { reason: StopReason; code: number } | null;
       const reason = inspected.State.OOMKilled
         ? 'memory_limit'
@@ -466,6 +540,8 @@ export class LocalCommandRunner {
           filters.stderr.truncated,
         workCopy: 'local_isolated_copy',
         sourceDirectoryModified: false,
+        ...(budget ? { execution: budget.observation } : {}),
+        ...(network?.evidence ?? {}),
         ...(bundle.candidate ? { candidate: bundle.candidate } : {}),
         ...dependencyEvidence(command, inspected.State.ExitCode, reason),
         ...diagnosticEvidence(
@@ -475,11 +551,15 @@ export class LocalCommandRunner {
           reason,
         ),
       });
-    } catch {
+    } catch (cause) {
       await stop('supervisor_failed').catch(() => undefined);
       // Docker evidence is retained. Transport failure never fabricates a stopped result.
-      throw new LocalCommandError('RUNNER_RESULT_UNKNOWN');
+      const error = new LocalCommandError('RUNNER_RESULT_UNKNOWN');
+      error.cause = cause;
+      throw error;
     } finally {
+      await network?.finish();
+      await executionControl?.finish();
       clearTimeout(wallTimer);
       clearInterval(heartbeat);
       options.signal?.removeEventListener('abort', onAbort);

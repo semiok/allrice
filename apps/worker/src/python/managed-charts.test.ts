@@ -4,6 +4,8 @@ import {
   PythonExecuteArgsSchema,
   RuntimeLocalPythonProfileSchema,
   managedPythonPayloadForPlatform,
+  resolveSandboxExecutionPolicy,
+  sandboxExecutionBudgetSpec,
   type RuntimeLocalPythonPayload,
 } from '@allrice/contracts';
 import type * as Database from '@allrice/database';
@@ -395,6 +397,55 @@ describe('canonical Python original-call execution adapter', () => {
     expect(ports.create).not.toHaveBeenCalled();
     expect(ports.cloud).not.toHaveBeenCalled();
   });
+  it('passes the server-frozen Python budget without changing the original call or its legacy timeout', async () => {
+    const execution = { version: 1 as const, kind: 'compute' as const };
+    const executionBudget = sandboxExecutionBudgetSpec(
+      execution,
+      resolveSandboxExecutionPolicy([]),
+    );
+    const selected = selection();
+    ports.select.mockResolvedValue({
+      ...selected,
+      executionBudget,
+      profile: { ...selected.profile, sandboxExecutionVersion: 1 },
+    });
+    const args = { ...argumentsForPng(), execution };
+    await run(input(args));
+    expect(lastPayload.executionBudget).toEqual(executionBudget);
+    expect(lastPayload.arguments.execution).toEqual(execution);
+    expect(lastPayload.arguments.limits.timeoutMs).toBe(30_000);
+    expect(lastPayload.arguments.origin.argumentsDigest).toBe(
+      runtimePolicyDigest(args),
+    );
+    expect(ports.cloud).not.toHaveBeenCalled();
+  });
+  it.each(['no-profile', 'no-budget'])(
+    'rejects %s for a local budget without cloud fallback',
+    async (missing) => {
+      const execution = { version: 1 as const, kind: 'compute' as const };
+      const selected = selection();
+      ports.select.mockResolvedValue({
+        ...selected,
+        ...(missing === 'no-budget'
+          ? {}
+          : {
+              executionBudget: sandboxExecutionBudgetSpec(
+                execution,
+                resolveSandboxExecutionPolicy([]),
+              ),
+            }),
+        profile: {
+          ...selected.profile,
+          ...(missing === 'no-profile' ? {} : { sandboxExecutionVersion: 1 }),
+        },
+      });
+      await expect(
+        run(input({ ...argumentsForPng(), execution })),
+      ).rejects.toThrow('local_runner_upgrade_required');
+      expect(ports.create).not.toHaveBeenCalled();
+      expect(ports.cloud).not.toHaveBeenCalled();
+    },
+  );
   it.each([{ location: 'local' }, { localOnly: true }])(
     'enforces local-only intent even if an inconsistent selector returns cloud (%j)',
     async (constraint) => {

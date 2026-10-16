@@ -658,7 +658,6 @@ async function createCloudOperation(
     if (process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1')
       throw new RuntimePolicyError('sandbox_execution_not_enabled');
     if (
-      canonical?.origin.toolName === 'python.execute' ||
       !SandboxExecutionPolicySchema.safeParse(
         run.execution_snapshot?.sandboxExecutionPolicy,
       ).success

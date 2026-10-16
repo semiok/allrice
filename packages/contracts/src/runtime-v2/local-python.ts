@@ -1,4 +1,15 @@
+import {
+  SandboxExecutionBudgetSpecSchema,
+  SandboxExecutionRequestSchema,
+  SandboxExecutionObservationSchema,
+} from './sandbox-execution.ts';
 import { z } from 'zod';
+import {
+  SandboxNetworkRequestSchema,
+  BridgeSandboxNetworkGrantRefSchema,
+  SandboxNetworkObservationSchema,
+  SandboxNetworkErrorCodeSchema,
+} from './sandbox-network.ts';
 
 import { UuidSchema } from '../common.ts';
 import { ChecksumSchema } from '../runs.ts';
@@ -90,6 +101,8 @@ export const RuntimeLocalPythonProfileSchema = z
     stopConfirmed: z.boolean(),
     // Absent in old clients; only reported after the PNG contract probe passes.
     pythonChartsContractVersion: z.literal(1).optional(),
+    sandboxExecutionVersion: z.literal(1).optional(),
+    sandboxNetworkVersion: z.literal(1).optional(),
   })
   .strict()
   .refine(
@@ -126,9 +139,12 @@ export const RuntimeLocalPythonOutputSchema = z
 export const RuntimeLocalPythonPayloadSchema = z
   .object({
     capability: z.literal('local.python.execute'),
+    executionBudget: SandboxExecutionBudgetSpecSchema.optional(),
+    networkGrant: BridgeSandboxNetworkGrantRefSchema.optional(),
     arguments: z
       .object({
         path: z.literal('.'),
+        execution: SandboxExecutionRequestSchema.optional(),
         purpose: ManagedPythonPurposeSchema,
         origin: z
           .object({
@@ -148,7 +164,7 @@ export const RuntimeLocalPythonPayloadSchema = z
         imageId: ChecksumSchema,
         architecture,
         isolation: z.literal('local-vm-container-v1'),
-        network: z.literal('none'),
+        network: z.union([z.literal('none'), SandboxNetworkRequestSchema]),
         limits: z
           .object({
             timeoutMs: z.number().int().min(500).max(60_000),
@@ -166,6 +182,26 @@ export const RuntimeLocalPythonPayloadSchema = z
   .strict()
   .superRefine((v, ctx) => {
     const a = v.arguments;
+    if (
+      (a.network !== 'none') !== Boolean(v.networkGrant) ||
+      (a.network !== 'none' &&
+        (!v.executionBudget || a.purpose !== 'python_charts'))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message:
+          'networking requires a finite chart budget and separate frozen grant',
+      });
+    if (
+      Boolean(v.executionBudget) !== Boolean(a.execution) ||
+      (v.executionBudget &&
+        (a.purpose !== 'python_charts' ||
+          v.executionBudget.kind !== a.execution?.kind))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'sandbox execution requires its exact frozen request',
+      });
     if (
       a.origin.toolName !==
       (a.purpose === 'office' ? 'workspace.export.create' : 'python.execute')
@@ -316,6 +352,9 @@ export const RuntimeLocalPythonResultSchema = z
       .max(8),
     workCopy: z.literal('local_isolated_copy'),
     sourceDirectoryModified: z.literal(false),
+    execution: SandboxExecutionObservationSchema.optional(),
+    network: SandboxNetworkObservationSchema.optional(),
+    errorCode: SandboxNetworkErrorCodeSchema.optional(),
   })
   .strict();
 export type RuntimeLocalPythonResult = z.infer<

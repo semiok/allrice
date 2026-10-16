@@ -1,3 +1,7 @@
+import {
+  pythonSandboxExecutionControl,
+  sandboxProxyEnvironment,
+} from '@allrice/project-runtime';
 /** Trusted PID 1, shipped with Bridge. Tenant Python is a different UID in the
  * private VM, without network, host mounts or writable interpreter/checkers. */
 export const localPythonSupervisor = String.raw`
@@ -11,8 +15,12 @@ def png_report(raw,checksum):
     return report
 ROOT='/tmp/work'
 with open(ROOT+'/.allrice/config.json',encoding='utf-8') as f: config=json.load(f)
-a=config['arguments']; limits=a['limits']; deadline=config['deadlineUnixMs']/1000
+${pythonSandboxExecutionControl}
+install_sandbox_execution_control(config)
+a=config['arguments']; limits=a['limits']; deadline=config.get('executionControl',{}).get('hardDeadlineAt',config['deadlineUnixMs'])/1000
 os.chmod(ROOT+'/.allrice',0o700)
+if config.get('runtimeNetwork') is True:
+    while config.get('runtimeNetworkReady') is not True:time.sleep(.025)
 for directory in ['input','output','cache']:
     os.makedirs(ROOT+'/'+directory,mode=0o755,exist_ok=True)
 for current,dirs,files in os.walk(ROOT+'/input'):
@@ -48,9 +56,12 @@ def kill_tenant():
 env={'PATH':'/opt/python/bin:/usr/bin:/bin','HOME':ROOT+'/cache','TMPDIR':ROOT+'/cache',
      'MPLBACKEND':'Agg','MPLCONFIGDIR':ROOT+'/cache/mpl','MATPLOTLIBRC':'/opt/python/mplconfig/matplotlibrc','LANG':'C.UTF-8',
      'PYTHONHASHSEED':'0','PYTHONDONTWRITEBYTECODE':'1'}
-process=subprocess.Popen(['/opt/python/bin/python','-B',ROOT+'/main.py'],cwd=ROOT,env=env,
+if config.get('runtimeNetwork') is True:env.update(${JSON.stringify(sandboxProxyEnvironment)})
+guarded_script="import os,runpy;status=dict((s.partition(':')[0],s.partition(':')[2].strip()) for s in open('/proc/self/status') if ':' in s);assert os.getuid()==65532 and all(int(status.get(k,'1'),16)==0 for k in ['CapEff','CapPrm','CapAmb']) and status.get('NoNewPrivs')=='1';runpy.run_path('/tmp/work/main.py',run_name='__main__')"
+program=['/opt/python/bin/python','-I','-B','-c',guarded_script] if config.get('executionControl') else ['/opt/python/bin/python','-B',ROOT+'/main.py']
+process=subprocess.Popen(program,cwd=ROOT,env=env,
     stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-    start_new_session=True,preexec_fn=demote)
+    start_new_session=True,**({'user':65532,'group':65532,'extra_groups':[]} if config.get('executionControl') else {'preexec_fn':demote}))
 selector=selectors.DefaultSelector()
 for stream,name in [(process.stdout,'stdout'),(process.stderr,'stderr')]:
     os.set_blocking(stream.fileno(),False);selector.register(stream,selectors.EVENT_READ,name)

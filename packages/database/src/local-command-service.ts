@@ -1,4 +1,9 @@
 import { readProjectService } from './project-services.ts';
+import { assertLocalSandboxExecutionBudget } from './local-sandbox-execution-budget.ts';
+import {
+  resolveBridgeSandboxNetworkGrant,
+  bridgeSandboxTransferScopes,
+} from './bridge-sandbox-network.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { createHash, randomUUID } from 'node:crypto';
 
@@ -20,6 +25,8 @@ import {
   isLocalCommandProfileForPlatform,
   localCommandRuntimeImage,
   RuntimeLocalCommandToolInputSchema,
+  EmployeeExecutionSnapshotSchema,
+  sandboxExecutionBudgetSpec,
   ProjectOutputSpecsSchema,
   RuntimeSavedProjectSourceSchema,
   projectRuntimeCacheIdentity,
@@ -129,12 +136,6 @@ async function createLocalBridgeToolOperation(
     if (args?.background || args?.project)
       throw new RuntimePolicyError('assistant_authority_changed');
   }
-  const projectRequest = input.projectSelection?.originalArguments;
-  if (
-    projectRequest?.action === 'execute' &&
-    (projectRequest.network || projectRequest.execution)
-  )
-    throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args?.background && !localServiceFeatureEnabled())
     throw new RuntimePolicyError('runtime_policy_disabled');
   const ctx = input.context;
@@ -146,6 +147,7 @@ async function createLocalBridgeToolOperation(
   const [row] = await database<
     {
       execution_spec: Record<string, unknown>;
+      execution_snapshot: unknown;
       policy_snapshot_id: string;
       payload: unknown;
       employee_version_id: string;
@@ -154,7 +156,7 @@ async function createLocalBridgeToolOperation(
       timeout_at: Date;
       project_id: string | null;
     }[]
-  >`select r.execution_spec,r.project_id,r.policy_snapshot_id,p.payload,e.employee_version_id,e.session_id,c.thread_generation,j.timeout_at
+  >`select r.execution_spec,e.execution_snapshot,r.project_id,r.policy_snapshot_id,p.payload,e.employee_version_id,e.session_id,c.thread_generation,j.timeout_at
     from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
     join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId}
     join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
@@ -341,6 +343,8 @@ async function createLocalBridgeToolOperation(
     throw new RuntimePolicyError('local_runner_upgrade_required');
   if (args?.dependencies && !profile?.features?.includes('npm_dependencies'))
     throw new RuntimePolicyError('local_runner_upgrade_required');
+  if (args?.execution && !profile?.features?.includes('sandbox_execution_v1'))
+    throw new RuntimePolicyError('local_runner_upgrade_required');
   if (
     args?.projectPreparation &&
     args.projectPreparation.packages.length > bridgeProjectPackageLimit
@@ -449,10 +453,41 @@ async function createLocalBridgeToolOperation(
         .digest('hex')}`,
     });
   }
+  const frozenEmployee =
+    args?.execution || args?.network
+      ? EmployeeExecutionSnapshotSchema.parse(row.execution_snapshot)
+      : undefined;
+  const executionPolicy =
+    frozenEmployee?.schemaVersion === 2
+      ? frozenEmployee.sandboxExecutionPolicy
+      : undefined;
+  if (args?.execution && !executionPolicy)
+    throw new RuntimePolicyError('sandbox_execution_policy_changed');
+  const executionBudget = args?.execution
+    ? sandboxExecutionBudgetSpec(args.execution, executionPolicy!)
+    : undefined;
+  if (
+    args?.network &&
+    (!executionBudget ||
+      !profile?.features?.includes('sandbox_network_v1') ||
+      input.assistant)
+  )
+    throw new RuntimePolicyError('local_runner_upgrade_required');
+  const networkGrant = args?.network
+    ? await resolveBridgeSandboxNetworkGrant(
+        database,
+        device,
+        args.network,
+        true,
+        frozenEmployee,
+      )
+    : undefined;
   const payload =
     input.file ??
     RuntimeLocalCommandSchema.parse({
       capability: 'local.process.execute',
+      ...(executionBudget ? { executionBudget } : {}),
+      ...(networkGrant ? { networkGrant } : {}),
       arguments: {
         ...commandArgs,
         ...(savedSource
@@ -467,11 +502,13 @@ async function createLocalBridgeToolOperation(
         ...(candidate ? { candidate } : {}),
         imageDigest: localCommandRuntimeImage(profile!, commandArgs!),
         isolation: profile!.backend,
-        network: 'none',
+        network: args?.network ?? 'none',
       },
     });
-  if (payload.capability === 'local.process.execute')
+  if (payload.capability === 'local.process.execute') {
+    assertLocalSandboxExecutionBudget(payload, frozenEmployee);
     localCommandCandidateEvidence(payload);
+  }
   // Leave room for the operation snapshot inside the existing 512 KB ledger
   // envelope; do not enlarge transport limits for a code proposal.
   if (
@@ -525,7 +562,10 @@ async function createLocalBridgeToolOperation(
         ? localCommandBinding(payload)
         : null,
     baseline: [],
-    dataScope: [],
+    dataScope:
+      payload.capability === 'local.process.execute'
+        ? bridgeSandboxTransferScopes(payload)
+        : [],
   });
   const ledger = createGovernedBridgeOperationLedger(device, {
     database,

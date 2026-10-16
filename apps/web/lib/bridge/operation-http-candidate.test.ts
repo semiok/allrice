@@ -6,9 +6,13 @@ import {
   type RuntimeBridgeLedgerPort,
 } from './operation-http';
 
-it.each([undefined, false, true, 'true'])(
-  'requires explicit boolean candidate support on HTTP claim: %s',
-  async (support) => {
+it.each(
+  ['supportsChangesetCandidate', 'supportsSandboxExecutionV1'].flatMap((key) =>
+    [undefined, false, true, 'true'].map((support) => ({ key, support })),
+  ),
+)(
+  'requires explicit boolean $key support on HTTP claim: $support',
+  async ({ key, support }) => {
     const claim = vi.fn(async () => null);
     const device = BridgeDeviceSchema.parse({
       id: randomUUID(),
@@ -41,9 +45,7 @@ it.each([undefined, false, true, 'true'])(
         },
         body: JSON.stringify({
           supportsLocalCommand: true,
-          ...(support === undefined
-            ? {}
-            : { supportsChangesetCandidate: support }),
+          ...(support === undefined ? {} : { [key]: support }),
         }),
       }),
       'next',
@@ -55,7 +57,7 @@ it.each([undefined, false, true, 'true'])(
       expect(response.ok).toBe(true);
       expect(claim).toHaveBeenCalledWith(
         expect.objectContaining({
-          supportsChangesetCandidate: support === true,
+          [key]: support === true,
         }),
       );
     }

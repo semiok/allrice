@@ -33,6 +33,8 @@ import {
   RuntimeLocalCommandResultSchema,
   localCommandToolchainImageV1,
   managedPythonPayloadForPlatform,
+  resolveSandboxExecutionPolicy,
+  type SandboxExecutionPolicy,
 } from '@allrice/contracts';
 import postgres from 'postgres';
 import {
@@ -412,6 +414,7 @@ async function commandFixture(
   manifest?: unknown,
   network = false,
   platform: 'macos-x64' | 'macos-arm64' = 'macos-x64',
+  sandboxExecutionPolicy?: SandboxExecutionPolicy,
 ) {
   vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '1');
   vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
@@ -429,7 +432,8 @@ async function commandFixture(
     false,
     (ids) => {
       const frozen = EmployeeExecutionSnapshotSchema.parse({
-        schemaVersion: 1,
+        schemaVersion: sandboxExecutionPolicy ? 2 : 1,
+        ...(sandboxExecutionPolicy ? { sandboxExecutionPolicy } : {}),
         employee: {
           id: ids.employeeId,
           versionId: ids.versionId,
@@ -478,6 +482,14 @@ async function commandFixture(
             workflowIds: [],
           },
           skillBindings: [],
+          ...(sandboxExecutionPolicy
+            ? {
+                agentSkills: [],
+                workflows: [],
+                knowledge: [],
+                resolvedForActorId: ids.user,
+              }
+            : {}),
         },
         tenantContext: {
           organizationId: ids.org,
@@ -3765,6 +3777,124 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
     const retry = await f.create();
     expect(retry.snapshot.binding).toEqual(created.snapshot.binding);
     expect(await f.claim()).toBeNull();
+  });
+  it.each([600000, 1800000, 3600000] as const)(
+    'Bridge sandbox budget freezes %s without changing legacy claim/start or resetting the clock',
+    async (maxExecutionMs) => {
+      vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+      const policy = resolveSandboxExecutionPolicy(
+        maxExecutionMs === 600000
+          ? []
+          : [
+              {
+                scope: 'user',
+                scopeId: randomUUID(),
+                source: 'tenant_override',
+                maxExecutionMs,
+              },
+            ],
+      );
+      const f = await commandFixture(
+        undefined,
+        undefined,
+        false,
+        'macos-x64',
+        policy,
+      );
+      const args = { ...f.args, execution: { version: 1, kind: 'compute' } };
+      await expect(f.create('budget', args)).rejects.toThrow(
+        'local_runner_upgrade_required',
+      );
+      await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["sandbox_execution_v1"]'::jsonb) where device_id=${f.device.id}`;
+      const created = await f.create('budget', args);
+      await f.approve();
+      expect(await f.claim()).toBeNull();
+      const ledger = f.ledger();
+      const claim = await ledger.claimNextBridgeOperation({
+        scope: f.task.scope,
+        deviceId: f.device.id,
+        leaseMs: 120000,
+        supportsLocalCommand: true,
+        supportsSandboxExecutionV1: true,
+      });
+      expect(claim?.bridgePayload?.capability).toBe('local.process.execute');
+      if (claim?.bridgePayload?.capability !== 'local.process.execute')
+        throw Error('command missing');
+      expect(claim.bridgePayload.executionBudget?.policy).toEqual(policy);
+      expect(claim.snapshot.binding).toEqual(created.snapshot.binding);
+      const exchange = {
+        scope: f.task.scope,
+        operationId: claim.snapshot.binding.attempt.operationId,
+        attempt: claim.snapshot.binding.attempt,
+        leaseToken: claim.leaseToken,
+      };
+      await expect(
+        ledger.exchangeSandboxExecutionBudget(exchange),
+      ).rejects.toThrow('lease_lost');
+      const started = await ledger.startOperation({
+        ...exchange,
+        receiptId: randomUUID(),
+      });
+      expect(Object.keys(started).sort()).toEqual(['mayExecute', 'snapshot']);
+      const budget = await ledger.exchangeSandboxExecutionBudget(exchange);
+      expect(budget.spec.policy.maxExecutionMs).toBe(maxExecutionMs);
+      expect(budget.deadlineAt - budget.startedAt).toBe(60000);
+      expect(budget.hardDeadlineAt).toBeLessThanOrEqual(
+        budget.startedAt + 300000,
+      );
+      expect(await ledger.exchangeSandboxExecutionBudget(exchange)).toEqual(
+        budget,
+      );
+      await expect(
+        ledger.exchangeSandboxExecutionBudget({
+          ...exchange,
+          leaseToken: randomUUID(),
+        }),
+      ).rejects.toThrow('lease_lost');
+      // Simulate elapsed time only in this isolated test operation; no sleeping
+      // and no changes to the frozen Run or authorized cap.
+      const elapsed = {
+        ...budget,
+        startedAt: budget.startedAt - 50000,
+        lastProgressAt: budget.lastProgressAt - 50000,
+        deadlineAt: budget.deadlineAt - 50000,
+      };
+      await database`update allrice_runtime_operations set execution_budget=${database.json(elapsed)} where id=${exchange.operationId}`;
+      const renewal = {
+        requestId: randomUUID(),
+        sequence: 1,
+        progress: { cpuNanos: 1000000, readBytes: 0, writtenBytes: 0 },
+      };
+      const renewed = await ledger.exchangeSandboxExecutionBudget({
+        ...exchange,
+        renewal,
+      });
+      expect(renewed.startedAt).toBe(elapsed.startedAt);
+      expect(renewed.hardDeadlineAt).toBe(elapsed.hardDeadlineAt);
+      expect(renewed.deadlineAt).toBe(elapsed.deadlineAt + 60000);
+      expect(
+        await ledger.exchangeSandboxExecutionBudget({ ...exchange, renewal }),
+      ).toEqual(renewed);
+      await database`update allrice_bridge_folder_grants set revoked_at=clock_timestamp() where id=${f.grant}`;
+      await expect(
+        ledger.exchangeSandboxExecutionBudget(exchange),
+      ).rejects.toThrow('unavailable');
+    },
+  );
+  it('Bridge sandbox budget refuses a legacy Run even when a client reports the new feature', async () => {
+    vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+    const f = await commandFixture();
+    await database`update allrice_bridge_runtime_profiles set profile=jsonb_set(profile,'{features}','["sandbox_execution_v1"]'::jsonb) where device_id=${f.device.id}`;
+    await expect(
+      f.create('budget-old-run', {
+        ...f.args,
+        execution: { version: 1, kind: 'compute' },
+      }),
+    ).rejects.toThrow('sandbox_execution_policy_changed');
+    const old = await f.create();
+    const [stored] =
+      await database`select bridge_payload from allrice_runtime_operations where id=${old.snapshot.binding.attempt.operationId}`;
+    expect(stored!.bridge_payload).not.toHaveProperty('executionBudget');
   });
   it('P09-a requires a current diagnostic feature report, exact approval and compatible claim; revocation closes admission', async () => {
     const f = await commandFixture();

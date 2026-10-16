@@ -1,17 +1,22 @@
+import { unconfirmedLocalNetworkOutcome } from './local-sandbox-network.js';
+import { RuntimeBridgeSandboxNetworkResponseSchema } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
+import { SandboxExecutionBudgetController } from '@allrice/project-runtime';
 
 import {
   RuntimeBridgeDispatchSchema,
   RuntimeBridgeReceiptAckSchema,
   RuntimeBridgeOutputAckSchema,
   RuntimeBridgeStartResponseSchema,
+  RuntimeBridgeSandboxBudgetResponseSchema,
   RuntimeOperationSnapshotSchema,
   runtimeContractEqual,
   dependencyPreparationErrorLabels,
   projectPreparationErrorLabels,
   localPdfPreExecutionDenialCodes,
   type RuntimeBridgeDispatch,
+  type SandboxExecutionRenewal,
 } from '@allrice/contracts';
 
 import { bridgeRequest } from './client.js';
@@ -173,7 +178,7 @@ export class RuntimeBridgeOperationClient {
             attemptId,
             dispatch.payload,
           );
-          if (result) {
+          if (result && dispatch.payload.arguments.network === 'none') {
             await this.input.journal.reconcileLocalPython(operationId, result);
             await this.input.pythonRunner
               .cleanup(attemptId, result.containerId, dispatch.payload)
@@ -202,7 +207,7 @@ export class RuntimeBridgeOperationClient {
             attemptId,
             dispatch.payload,
           );
-          if (result) {
+          if (result && dispatch.payload.arguments.network === 'none') {
             await this.input.journal.reconcileLocalCommand(operationId, result);
             await this.input.runner
               .cleanup(attemptId, result.containerId)
@@ -234,6 +239,15 @@ export class RuntimeBridgeOperationClient {
           : {}),
         ...(this.input.pythonRunner ? { supportsManagedPython: true } : {}),
         ...(this.input.pdfRunner ? { supportsPdfRead: true } : {}),
+        ...((this.input.runner || this.input.pythonRunner) &&
+        process.env.ALLRICE_BRIDGE_SANDBOX_EXECUTION_V1_ENABLED !== '0'
+          ? {
+              supportsSandboxExecutionV1: true,
+              ...(process.env.ALLRICE_BRIDGE_SANDBOX_NETWORK_V1_ENABLED !== '0'
+                ? { supportsSandboxNetworkV1: true }
+                : {}),
+            }
+          : {}),
         ...(this.input.runner
           ? {
               supportsLocalCommand: true,
@@ -865,6 +879,80 @@ export class RuntimeBridgeOperationClient {
     }
   }
 
+  private async networkLease(dispatch: RuntimeBridgeDispatch) {
+    const p = dispatch.payload,
+      b = dispatch.snapshot.binding;
+    if (
+      (p.capability !== 'local.process.execute' &&
+        p.capability !== 'local.python.execute') ||
+      p.arguments.network === 'none'
+    )
+      return undefined;
+    const { config, token } = this.input;
+    const { lease } = RuntimeBridgeSandboxNetworkResponseSchema.parse(
+      await this.request({
+        server: config.server,
+        token,
+        path: `${runtimeBridgeOperationPath}/${b.attempt.operationId}/network`,
+        method: 'POST',
+        body: {
+          contractVersion: 1,
+          attempt: b.attempt,
+          leaseToken: dispatch.leaseToken,
+        },
+        timeoutMs: 2500,
+        maximumResponseBytes: 32768,
+      }),
+    );
+    if (
+      lease.organizationId !== b.task.scope.organizationId ||
+      lease.workspaceId !== b.task.scope.workspaceId ||
+      lease.ownerId !== b.requestedBy.id ||
+      lease.runId !== b.task.runId ||
+      lease.operationId !== b.attempt.operationId ||
+      lease.attemptId !== b.attempt.attemptId ||
+      lease.target.kind !== 'bridge' ||
+      lease.target.targetId !== b.execution.targetId ||
+      lease.target.deviceId !== b.execution.deviceId ||
+      lease.policyDigest !== b.command?.networkPolicyDigest
+    )
+      throw new LocalCommandError('SANDBOX_NETWORK_DENIED');
+    return lease;
+  }
+
+  private async executionBudget(dispatch: RuntimeBridgeDispatch) {
+    if (
+      (dispatch.payload.capability !== 'local.process.execute' &&
+        dispatch.payload.capability !== 'local.python.execute') ||
+      !dispatch.payload.executionBudget
+    )
+      return undefined;
+    const { config, token } = this.input;
+    const { operationId } = dispatch.snapshot.binding.attempt;
+    const exchange = async (renewal?: SandboxExecutionRenewal) =>
+      RuntimeBridgeSandboxBudgetResponseSchema.parse(
+        await this.request({
+          server: config.server,
+          path: `${runtimeBridgeOperationPath}/${operationId}/budget`,
+          method: 'POST',
+          token,
+          body: {
+            contractVersion: 1,
+            attempt: dispatch.snapshot.binding.attempt,
+            leaseToken: dispatch.leaseToken,
+            ...(renewal ? { renewal } : {}),
+          },
+          maximumResponseBytes: 32768,
+          timeoutMs: 2500,
+        }),
+      ).budget;
+    return new SandboxExecutionBudgetController(
+      await exchange(),
+      dispatch.payload.executionBudget,
+      exchange,
+    );
+  }
+
   private async executePython(dispatch: RuntimeBridgeDispatch) {
     if (
       dispatch.payload.capability !== 'local.python.execute' ||
@@ -879,8 +967,12 @@ export class RuntimeBridgeOperationClient {
       leaseToken: dispatch.leaseToken,
     };
     try {
+      const executionBudget = await this.executionBudget(dispatch);
+      const networkLease = await this.networkLease(dispatch);
       const result = await runner.execute(dispatch.payload, {
         attemptId,
+        ...(executionBudget ? { executionBudget } : {}),
+        ...(networkLease ? { networkLease } : {}),
         signal: this.input.signal,
         transport: localPythonHttpTransport({
           server: config.server,
@@ -920,6 +1012,14 @@ export class RuntimeBridgeOperationClient {
           }
         },
       });
+      if (unconfirmedLocalNetworkOutcome(dispatch.payload, result)) {
+        await journal.uncertain(operationId, 'receipt_missing', {
+          output: result,
+          summary:
+            '本地进程已停止，已发送的外部请求结果尚待核实；不会重放或换端',
+        });
+        return;
+      }
       if (['canceled', 'lease_lost'].includes(result.reason))
         await journal.stopped(
           operationId,
@@ -929,7 +1029,9 @@ export class RuntimeBridgeOperationClient {
       else
         await journal.outcome(operationId, {
           status:
-            result.reason === 'exited' && result.exitCode === 0
+            result.reason === 'exited' &&
+            result.exitCode === 0 &&
+            !result.errorCode
               ? 'succeeded'
               : 'failed',
           effects: 'none',
@@ -1101,8 +1203,12 @@ export class RuntimeBridgeOperationClient {
       outputFailed = false,
       journalFailed = false;
     try {
+      const executionBudget = await this.executionBudget(dispatch);
+      const networkLease = await this.networkLease(dispatch);
       const result = await runner.execute(root, dispatch.payload, {
         attemptId,
+        ...(executionBudget ? { executionBudget } : {}),
+        ...(networkLease ? { networkLease } : {}),
         scope: {
           organizationId: dispatch.snapshot.binding.task.scope.organizationId,
           workspaceId: dispatch.snapshot.binding.task.scope.workspaceId,
@@ -1171,6 +1277,14 @@ export class RuntimeBridgeOperationClient {
         throw new BridgeJournalError('JOURNAL_OUTPUT_NOT_DURABLE');
       // A dropped streaming chunk does not erase the complete bounded local result.
       // Evidence is committed before disposal; ACK retries can never rerun a command.
+      if (unconfirmedLocalNetworkOutcome(dispatch.payload, result)) {
+        await journal.uncertain(operationId, 'receipt_missing', {
+          output: result,
+          summary:
+            '本地进程已停止，已发送的外部请求结果尚待核实；不会重放或换端',
+        });
+        return;
+      }
       if (['canceled', 'lease_lost'].includes(result.reason)) {
         await journal.stopped(
           operationId,
@@ -1180,7 +1294,9 @@ export class RuntimeBridgeOperationClient {
       } else {
         await journal.outcome(operationId, {
           status:
-            result.reason === 'exited' && result.exitCode === 0
+            result.reason === 'exited' &&
+            result.exitCode === 0 &&
+            !result.errorCode
               ? 'succeeded'
               : 'failed',
           effects: 'none',

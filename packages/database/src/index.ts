@@ -47,6 +47,7 @@ export * from './experience.ts';
 export * from './bridge.ts';
 export * from './local-files.ts';
 export * from './bridge-settings.ts';
+export * from './bridge-sandbox-network.ts';
 export * from './browser-execution-choice.ts';
 export * from './bridge-connections.ts';
 export * from './runtime-policy.ts';

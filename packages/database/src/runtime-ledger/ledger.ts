@@ -1002,6 +1002,8 @@ export function createRuntimeOperationLedger(options: {
           and (${input.supportsProjectDiagnostics === true} or not coalesce(bridge_payload->'arguments' ? 'diagnostics',false))
           and (${input.supportsNpmDependencies === true} or not coalesce(bridge_payload->'arguments' ? 'dependencies',false))
           and (${input.supportsSavedProjectSource === true} or not coalesce(bridge_payload->'arguments' ? 'projectSource',false))
+          and (${input.supportsSandboxExecutionV1 === true} or not coalesce(bridge_payload ? 'executionBudget',false))
+          and (${input.supportsSandboxNetworkV1 === true} or not coalesce(bridge_payload ? 'networkGrant',false))
           and (${input.supportsProjectPreparation === true} or not coalesce(bridge_payload->'arguments' ? 'projectPreparation',false))
           and (${input.supportsChangesetCandidate === true} or not coalesce(bridge_payload->'arguments' ? 'candidate',false))
           and (${input.supportsBackgroundServices === true} or not coalesce(bridge_payload->'arguments' ? 'background',false))

@@ -1,3 +1,7 @@
+import {
+  updateBridgeSandboxNetwork,
+  getBridgeSandboxNetwork,
+} from './bridge-sandbox-network.ts';
 /** Isolated DB/StoragePort regression. Captured bytes are never tenant-executed here. */
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -13,6 +17,7 @@ import {
   cloudPythonImageV1,
   cloudToolchainImageV1,
   managedPythonPayloadForPlatform,
+  resolveSandboxExecutionPolicy,
   type StoragePort,
 } from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -87,6 +92,8 @@ suite(
         'ALLRICE_BRIDGE_OPERATION_LEDGER_ENABLED',
         'ALLRICE_WORKBENCH_ENABLED',
         'ALLRICE_CLOUD_RUNNER_ENABLED',
+        'ALLRICE_SANDBOX_EXECUTION_V1_ENABLED',
+        'ALLRICE_SANDBOX_NETWORK_ENABLED',
       ])
         vi.stubEnv(flag, '1');
       vi.stubEnv('ALLRICE_LOCAL_COMMAND_ENABLED', '0');
@@ -210,8 +217,34 @@ suite(
       limits: { artifactBytes: 4_000_000 },
     });
     const running = async (f: F, a: Record<string, unknown>) => {
-      const d = await device(f),
-        r = await request(f, a),
+      const d = await device(f);
+      if (a.execution)
+        await reportLocalPythonProfile(
+          d.device,
+          {
+            ...modernProfile,
+            sandboxExecutionVersion: 1,
+            ...(a.network ? { sandboxNetworkVersion: 1 } : {}),
+          },
+          isolated.db,
+        );
+      if (a.network)
+        await updateBridgeSandboxNetwork(
+          f.context,
+          f.workspace,
+          d.device.id,
+          {
+            expectedVersion: 0,
+            enabled: true,
+            profile: {
+              ...(a.network as object),
+              version: 1,
+              allowInputTransfer: true,
+            },
+          },
+          isolated.db,
+        );
+      const r = await request(f, a),
         selection = await selectManagedPythonExecution(r, isolated.db),
         normalized = normalizeCloudPythonArguments(a);
       const media = {
@@ -222,6 +255,12 @@ suite(
       };
       const p = RuntimeLocalPythonPayloadSchema.parse({
         capability: 'local.python.execute',
+        ...(selection.networkGrant
+          ? { networkGrant: selection.networkGrant }
+          : {}),
+        ...(selection.executionBudget
+          ? { executionBudget: selection.executionBudget }
+          : {}),
         arguments: {
           path: '.',
           purpose: 'python_charts',
@@ -247,7 +286,8 @@ suite(
           imageId: release.imageId,
           architecture: release.architecture,
           isolation: 'local-vm-container-v1',
-          network: 'none',
+          network: normalized.network ?? 'none',
+          ...(normalized.execution ? { execution: normalized.execution } : {}),
           limits: { ...normalized.limits, inputBytes: 2_000_000 },
         },
       });
@@ -259,11 +299,22 @@ suite(
         database: isolated.db,
       });
       const scope = created.snapshot.binding.task.scope;
+      if (p.executionBudget)
+        expect(
+          await ledger.claimNextBridgeOperation({
+            scope,
+            deviceId: d.device.id,
+            leaseMs: 30000,
+            supportsManagedPython: true,
+          }),
+        ).toBeNull();
       const claim = await ledger.claimNextBridgeOperation({
         scope,
         deviceId: d.device.id,
         leaseMs: 30000,
         supportsManagedPython: true,
+        ...(p.executionBudget ? { supportsSandboxExecutionV1: true } : {}),
+        ...(p.networkGrant ? { supportsSandboxNetworkV1: true } : {}),
       });
       if (!claim) throw Error('managed chart claim required');
       const identity = {
@@ -403,6 +454,332 @@ suite(
           isolated.db,
         ),
       ).rejects.toThrow('cloud_frozen_tool_not_allowed');
+    });
+
+    it('admits exact canonical cloud budget/network intent and rechecks the independent network grant', async () => {
+      const network = {
+        mode: 'controlled_https' as const,
+        origins: ['https://pypi.org'],
+      };
+      const f = await fixture({
+        canonicalPython: {},
+        sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
+        outboundCapability: true,
+        sandboxNetwork: { ...network, version: 1, allowInputTransfer: true },
+      });
+      const a = {
+        ...args(),
+        location: 'cloud',
+        execution: { version: 1, kind: 'compute' },
+        network,
+      };
+      const r = await request(f, a);
+      await selectManagedPythonExecution(r, isolated.db);
+      const created = await createCloudPythonOperation(
+        { context: f.execution, callId: r.callId, arguments: a },
+        isolated.db,
+      );
+      expect(created.payload.arguments.execution).toEqual(a.execution);
+      expect(created.payload.executionBudget?.policy.maxExecutionMs).toBe(
+        600000,
+      );
+      expect(created.payload.network).toEqual(network);
+      expect(created.payload.origin?.argumentsDigest).toBe(digest(a));
+      await f.approve(created);
+      await isolated.db`update allrice_cloud_execution_grants set enabled=false where id=${f.grant.id}`;
+      await expect(
+        created.ledger.dispatch({
+          scope: created.snapshot.binding.task.scope,
+          operationId: created.snapshot.binding.attempt.operationId,
+          leaseOwner: created.context.worker.id,
+          leaseMs: 30000,
+        }),
+      ).rejects.toThrow('cloud_grant_unavailable');
+      const denied = await fixture({
+        canonicalPython: {},
+        sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
+      });
+      const deniedRequest = await request(denied, a);
+      await selectManagedPythonExecution(deniedRequest, isolated.db);
+      await expect(
+        createCloudPythonOperation(
+          {
+            context: denied.execution,
+            callId: deniedRequest.callId,
+            arguments: a,
+          },
+          isolated.db,
+        ),
+      ).rejects.toThrow('sandbox_network_not_authorized');
+    });
+
+    it('requires independent owner egress permission; rejects wrong owners and stale settings without granting implicit access', async () => {
+      vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+      const network = {
+          mode: 'controlled_https' as const,
+          origins: ['https://pypi.org'],
+        },
+        f = await fixture({
+          canonicalPython: {},
+          outboundCapability: true,
+          sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
+          sandboxNetwork: { ...network, version: 1, allowInputTransfer: true },
+        }),
+        d = await device(f);
+      await reportLocalPythonProfile(
+        d.device,
+        {
+          ...modernProfile,
+          sandboxExecutionVersion: 1,
+          sandboxNetworkVersion: 1,
+        },
+        isolated.db,
+      );
+      const a = {
+        ...args(),
+        location: 'local',
+        execution: { version: 1, kind: 'compute' },
+        network,
+      };
+      expect(
+        await getBridgeSandboxNetwork(
+          f.context,
+          f.workspace,
+          d.device.id,
+          isolated.db,
+        ),
+      ).toEqual({ version: 0, enabled: false, profile: null });
+      await expect(
+        selectManagedPythonExecution(await request(f, a), isolated.db),
+      ).rejects.toThrow('sandbox_network_not_authorized');
+      const change = {
+        expectedVersion: 0,
+        enabled: true,
+        profile: { ...network, version: 1, allowInputTransfer: false },
+      };
+      await expect(
+        updateBridgeSandboxNetwork(
+          { ...f.context, actor: { ...f.context.actor, id: randomUUID() } },
+          f.workspace,
+          d.device.id,
+          change,
+          isolated.db,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        updateBridgeSandboxNetwork(
+          f.context,
+          randomUUID(),
+          d.device.id,
+          change,
+          isolated.db,
+        ),
+      ).rejects.toThrow();
+      const saved = await updateBridgeSandboxNetwork(
+        f.context,
+        f.workspace,
+        d.device.id,
+        change,
+        isolated.db,
+      );
+      expect(saved.version).toBe(1);
+      await expect(
+        updateBridgeSandboxNetwork(
+          f.context,
+          f.workspace,
+          d.device.id,
+          change,
+          isolated.db,
+        ),
+      ).rejects.toThrow('bridge_network_settings_conflict');
+      expect(
+        (await selectManagedPythonExecution(await request(f, a), isolated.db))
+          .networkGrant?.version,
+      ).toBe(1);
+      await expect(
+        selectManagedPythonExecution(
+          await request(f, {
+            ...a,
+            network: { ...network, origins: ['https://example.com'] },
+          }),
+          isolated.db,
+        ),
+      ).rejects.toThrow('sandbox_network_not_authorized');
+      await expect(
+        selectManagedPythonExecution(
+          await request(f, {
+            ...a,
+            inputs: [
+              {
+                objectId: f.object.id,
+                checksum: f.object.checksum,
+                path: 'input.json',
+              },
+            ],
+          }),
+          isolated.db,
+        ),
+      ).rejects.toThrow('sandbox_network_transfer_not_authorized');
+    });
+
+    it.each([
+      'grant-disabled',
+      'grant-changed',
+      'member-removed',
+      'feature-disabled',
+    ])(
+      'fences a running local network attempt when %s, while preserving the original grant and input versions',
+      async (mode) => {
+        vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+        const network = {
+            mode: 'controlled_https' as const,
+            origins: ['https://pypi.org'],
+          },
+          f = await fixture({
+            canonicalPython: {},
+            outboundCapability: true,
+            sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
+            sandboxNetwork: {
+              ...network,
+              version: 1,
+              allowInputTransfer: true,
+            },
+          });
+        const run = await running(f, {
+          ...args(),
+          inputs: [
+            {
+              objectId: f.object.id,
+              checksum: f.object.checksum,
+              path: 'input.json',
+            },
+          ],
+          location: 'local',
+          execution: { version: 1, kind: 'compute' },
+          network,
+        });
+        const lease = await run.ledger.sandboxNetworkLease(run.identity);
+        const budget = await run.ledger.exchangeSandboxExecutionBudget(
+          run.identity,
+        );
+        expect(Date.parse(lease.expiresAt)).toBe(budget.hardDeadlineAt);
+        expect(lease.target).toEqual({
+          kind: 'bridge',
+          targetId: run.created.snapshot.binding.execution.targetId,
+          deviceId: run.device.id,
+        });
+        expect(lease.network).toEqual(network);
+        expect(lease.grantId).toBe(run.p.networkGrant?.id);
+        expect(run.created.snapshot.binding.dataScope).toEqual([
+          expect.objectContaining({
+            content: {
+              kind: 'storage_object',
+              id: f.object.id,
+              checksum: f.object.checksum,
+            },
+            destination: 'external_service',
+            authorizationId: lease.grantId,
+            authorizationVersion: 1,
+          }),
+        ]);
+        await expect(
+          run.ledger.sandboxNetworkLease({
+            ...run.identity,
+            attempt: { ...run.identity.attempt, attemptId: randomUUID() },
+          }),
+        ).rejects.toThrow('lease_lost');
+        if (mode === 'member-removed')
+          await isolated.db`update allrice_memberships set active=false where user_id=${f.user} and organization_id=${f.org}`;
+        else if (mode === 'feature-disabled')
+          vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '0');
+        else
+          await updateBridgeSandboxNetwork(
+            f.context,
+            f.workspace,
+            run.device.id,
+            {
+              expectedVersion: 1,
+              enabled: mode !== 'grant-disabled',
+              profile: { ...network, version: 1, allowInputTransfer: true },
+            },
+            isolated.db,
+          );
+        try {
+          await expect(
+            run.ledger.sandboxNetworkLease(run.identity),
+          ).rejects.toThrow();
+        } finally {
+          vi.stubEnv('ALLRICE_SANDBOX_NETWORK_ENABLED', '1');
+        }
+      },
+    );
+
+    it('freezes the managed Python budget and fences old clients, profile downgrade and disabled policy', async () => {
+      const execution = { version: 1, kind: 'compute' };
+      const f = await fixture({
+        canonicalPython: {},
+        sandboxExecutionPolicy: resolveSandboxExecutionPolicy([]),
+      });
+      const run = await running(f, { ...args(), location: 'local', execution });
+      const budget = await run.ledger.exchangeSandboxExecutionBudget(
+        run.identity,
+      );
+      expect(budget.spec).toEqual(run.p.executionBudget);
+      expect(budget.spec.policy.maxExecutionMs).toBe(600000);
+      expect(budget.deadlineAt - budget.startedAt).toBe(60000);
+      expect(run.p.arguments.limits.timeoutMs).toBe(30000);
+      await reportLocalPythonProfile(run.device, modernProfile, isolated.db);
+      const [frozenRow] =
+        await isolated.db`select execution_snapshot from allrice_employee_runs where run_id=${f.run}`;
+      const frozen = EmployeeExecutionSnapshotSchema.parse(
+        frozenRow!.execution_snapshot,
+      );
+      await expect(
+        isolated.db.begin((tx) =>
+          assertLocalPythonDelegation(
+            tx,
+            run.device,
+            run.created.snapshot.binding,
+            run.p,
+            frozen,
+          ),
+        ),
+      ).rejects.toThrow('bridge_authority_changed');
+      await expect(
+        run.ledger.exchangeSandboxExecutionBudget(run.identity),
+      ).rejects.toThrow('unavailable');
+      await reportLocalPythonProfile(
+        run.device,
+        { ...modernProfile, sandboxExecutionVersion: 1 },
+        isolated.db,
+      );
+      vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '0');
+      try {
+        await expect(
+          isolated.db.begin((tx) =>
+            assertLocalPythonDelegation(
+              tx,
+              run.device,
+              run.created.snapshot.binding,
+              run.p,
+              frozen,
+            ),
+          ),
+        ).rejects.toThrow('sandbox_execution_not_enabled');
+        await expect(
+          run.ledger.exchangeSandboxExecutionBudget(run.identity),
+        ).rejects.toThrow('unavailable');
+      } finally {
+        vi.stubEnv('ALLRICE_SANDBOX_EXECUTION_V1_ENABLED', '1');
+      }
+      const old = await fixture();
+      await device(old);
+      await expect(
+        selectManagedPythonExecution(
+          await request(old, { ...args(), location: 'local', execution }),
+          isolated.db,
+        ),
+      ).rejects.toThrow('sandbox_execution_policy_changed');
     });
 
     it('honors explicit local and local-only inputs, exact origin digest, revocation and cloud unknown without replay', async () => {

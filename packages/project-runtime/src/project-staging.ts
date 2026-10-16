@@ -1,3 +1,4 @@
+import type { SandboxExecutionControl } from './sandbox-execution-control.js';
 import type { ProjectRuntimeCommand } from './types.js';
 import type { ProjectSourceFile } from './project-preparation.js';
 import { createLocalPythonArchive } from './local-python-archive.js';
@@ -13,11 +14,13 @@ export function projectStagingArchives(input: {
   tool: { path: string; bytes: Buffer };
   prepared: { files: { path: string; bytes: Buffer }[] };
   deadlineUnixMs: number;
+  executionControl?: SandboxExecutionControl;
   deadlineReason: 'timeout' | 'lease_lost';
   /** Trusted cloud service staging only; never supplied by project/model code. */
   privateServiceCache?: true;
   /** Trusted admission only. Installers retain their offline environment. */
   runtimeNetwork?: true;
+  networkStartGate?: true;
 }) {
   const a = input.command.arguments;
   const chunks: { path: string; bytes: Buffer }[] = [];
@@ -68,8 +71,12 @@ export function projectStagingArchives(input: {
           },
           deadlineUnixMs: input.deadlineUnixMs,
           deadlineReason: input.deadlineReason,
+          ...(input.executionControl
+            ? { executionControl: input.executionControl }
+            : {}),
           ...(input.privateServiceCache ? { privateServiceCache: true } : {}),
           ...(input.runtimeNetwork ? { runtimeNetwork: true } : {}),
+          ...(input.networkStartGate ? { networkStartGate: true } : {}),
           assemblies,
         }),
       ),
