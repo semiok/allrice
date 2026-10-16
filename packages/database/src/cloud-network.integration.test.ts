@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { RuntimePolicyError } from './runtime-policy.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import type * as Client from './core/client.ts';
 import { CloudRunnerBackend } from '../../../apps/worker/src/cloud-runner/backend.js';
@@ -14,6 +15,12 @@ let db: ReturnType<typeof postgres>,
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof Client>()),
   getDatabase: () => db,
+}));
+// Authority/lifecycle tests use a deterministic reputation port; the checker
+// itself has separate real-DNS acceptance and refusal/cache regressions.
+const admission = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./sandbox-network-admission.ts', () => ({
+  assertAutomaticSandboxNetwork: admission,
 }));
 const schema = `cloud_network_${randomUUID().replaceAll('-', '')}`;
 const suite =
@@ -115,9 +122,21 @@ suite(
       const c = await f.create('no-input', { ...f.args, inputs: [], network });
       expect(c.snapshot.binding.dataScope).toEqual([]);
       const other = await fixture({ sandboxNetwork: undefined });
+      const automatic = await other.create('automatic-no-settings', {
+        ...other.args,
+        network,
+      });
+      expect(automatic.payload.network).toEqual(network);
+      expect(automatic.snapshot.binding.dataScope[1]).toMatchObject({
+        destination: 'external_service',
+        externalNetwork: network,
+      });
+      admission.mockRejectedValueOnce(
+        new RuntimePolicyError('sandbox_network_destination_blocked'),
+      );
       await expect(
-        other.create('other-owner', { ...other.args, network }),
-      ).rejects.toThrow('sandbox_network_not_authorized');
+        other.create('blocked', { ...other.args, network }),
+      ).rejects.toThrow('sandbox_network_destination_blocked');
       await expect(
         f.create('other-file', {
           ...f.args,

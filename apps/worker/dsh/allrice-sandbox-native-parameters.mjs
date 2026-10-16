@@ -4,7 +4,7 @@ export const sandboxNetworkParameter = {
   type: 'object',
   additionalProperties: false,
   description:
-    'Optional controlled HTTPS access. Exact authorized origins only, no paths, IP addresses, credentials or wildcard. Authorization and separate input-transfer permission are resolved by the server, never supplied here.',
+    'Optional controlled HTTPS access. Exact public HTTPS origins only, no paths, IP addresses, credentials or wildcard. The backend automatically screens and admits destinations; never ask the user to fill in a website list or network settings. Existing task/input permissions still apply and are resolved by the server.',
   properties: {
     mode: { type: 'string', enum: ['controlled_https'], required: true },
     origins: { type: 'array', items: { type: 'string' }, required: true },

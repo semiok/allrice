@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { RuntimePolicyError } from './runtime-policy.ts';
 import { resolveSandboxExecutionPolicy } from '@allrice/contracts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { createCloudProjectResolutionOperation } from './cloud-execution.ts';
@@ -17,6 +18,10 @@ let db: ReturnType<typeof postgres>,
 vi.mock('./core/client.ts', async (original) => ({
   ...(await original<typeof Client>()),
   getDatabase: () => db,
+}));
+const admission = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('./sandbox-network-admission.ts', () => ({
+  assertAutomaticSandboxNetwork: admission,
 }));
 const schema = `cloud_budget_${randomUUID().replaceAll('-', '')}`;
 const suite =
@@ -245,7 +250,6 @@ snapshots:
       for (const options of [
         { projectResolution: false },
         { outboundCapability: false },
-        { sandboxNetwork: undefined },
       ]) {
         const f = await fixture(options);
         await expect(create(f)).rejects.toThrow();
@@ -253,6 +257,21 @@ snapshots:
           await db`select id from allrice_runtime_operations where root_run_id=${f.run}`,
         ).toHaveLength(0);
       }
+    });
+    it('resolves public dependencies with automatic screening and no manual website profile', async () => {
+      const f = await fixture({ sandboxNetwork: undefined });
+      const created = await create(f);
+      expect(created.payload.network).toEqual({
+        mode: 'controlled_https',
+        origins: ['https://registry.npmjs.org'],
+      });
+      expect(created.snapshot.binding.dataScope).toEqual([]);
+      admission.mockRejectedValueOnce(
+        new RuntimePolicyError('sandbox_network_destination_blocked'),
+      );
+      await expect(create(f, 'blocked-resolution')).rejects.toThrow(
+        'sandbox_network_destination_blocked',
+      );
     });
     it('cannot widen origins or continue after the scoped cloud grant is revoked', async () => {
       const f = await fixture(),

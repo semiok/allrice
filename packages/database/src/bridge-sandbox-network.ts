@@ -19,6 +19,7 @@ import {
   type SandboxNetworkRequest,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { assertAutomaticSandboxNetwork } from './sandbox-network-admission.ts';
 import {
   assertRuntimePolicyIdentity,
   RuntimePolicyError,
@@ -56,8 +57,8 @@ async function ownerTarget(
   return row.target_id;
 }
 
-/** A browser owner action only. Neither the device credential nor a model tool
- * can install this grant; a folder/browser grant is never sufficient. */
+/** Legacy settings retained only to reconcile operations frozen before automatic
+ * admission. The retired HTTP settings endpoint no longer calls this function. */
 export async function updateBridgeSandboxNetwork(
   context: RequestContext,
   workspaceId: string,
@@ -110,8 +111,11 @@ export async function getBridgeSandboxNetwork(
   });
 }
 
-/** Checked against live rows on create, dispatch and every heartbeat. The
- * current operation still passes the existing allow/ask/deny policy afterward. */
+/** New operations obtain a server-derived, request-specific network decision.
+ * No device-owner address form is required. Existing execution/input approvals
+ * still bind the exact payload; live device/member authority and risk screening
+ * are rechecked on dispatch and heartbeat. Historical manual refs keep their
+ * original semantics and can never be upgraded to broader automatic authority. */
 export async function resolveBridgeSandboxNetworkGrant(
   sql: Sql,
   device: BridgeDevice,
@@ -131,6 +135,37 @@ export async function resolveBridgeSandboxNetworkGrant(
       ))
   )
     throw new RuntimePolicyError('sandbox_network_not_authorized');
+  if (!expected || expected.id === device.id) {
+    const [target] = await sql<{ id: string }[]>`
+      select t.id from allrice_bridge_devices d
+      join allrice_execution_targets t on t.organization_id=d.organization_id and t.workspace_id=d.workspace_id
+        and t.kind='rice_bridge' and t.target_key='bridge.'||d.id::text and t.state='online'
+      where d.id=${device.id} and d.organization_id=${device.organizationId} and d.workspace_id=${device.workspaceId}
+        and d.owner_id=${device.ownerId} and d.revoked_at is null
+        and exists(select 1 from allrice_memberships m where m.user_id=d.owner_id and m.organization_id=d.organization_id
+          and m.active and (m.workspace_id is null or m.workspace_id=d.workspace_id) and m.role in ('admin','member'))
+      for share of d,t`;
+    if (!target) throw new RuntimePolicyError('sandbox_network_not_authorized');
+    const ref = BridgeSandboxNetworkGrantRefSchema.parse({
+      id: device.id,
+      version: 1,
+      digest: digest({
+        policy: 'automatic_sandbox_https_v1',
+        organizationId: device.organizationId,
+        workspaceId: device.workspaceId,
+        ownerId: device.ownerId,
+        deviceId: device.id,
+        targetId: target.id,
+        network: request,
+      }),
+    });
+    if (expected && !runtimeContractEqual(ref, expected))
+      throw new RuntimePolicyError('sandbox_network_grant_changed');
+    await assertAutomaticSandboxNetwork(request);
+    return ref;
+  }
+  // Only a previously frozen legacy operation may still use these retired
+  // settings. A new call never creates or expands a manual grant row.
   const [row] = await sql<
     Grant[]
   >`select g.id,g.version,g.profile,g.enabled from allrice_bridge_sandbox_network_grants g
