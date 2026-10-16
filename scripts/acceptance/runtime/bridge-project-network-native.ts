@@ -2,7 +2,7 @@
  * Only the operator's synthetic projects, containers and cache volumes are used. */
 import assert from 'node:assert/strict';
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -49,7 +49,9 @@ const save = () =>
   );
 const sha = (x: Buffer | string) =>
   'sha256:' + createHash('sha256').update(x).digest('hex');
+const reaFixture = process.env.ALLRICE_BRIDGE_ACCEPTANCE_REA_FIXTURE;
 for (const manager of ['pnpm', 'uv'] as const) {
+  if (reaFixture && manager !== 'pnpm') continue;
   if (
     process.env.ALLRICE_BRIDGE_ACCEPTANCE_PROJECT_MANAGER &&
     process.env.ALLRICE_BRIDGE_ACCEPTANCE_PROJECT_MANAGER !== manager
@@ -63,6 +65,35 @@ for (const manager of ['pnpm', 'uv'] as const) {
     ownerId: randomUUID(),
   };
   const file = manager === 'pnpm' ? 'verify.cjs' : 'verify.py';
+  if (reaFixture) {
+    const fixed = JSON.parse(await readFile(reaFixture, 'utf8')) as {
+      files: { path: string; text: string }[];
+      projectPreparation: typeof f.command.arguments.projectPreparation;
+    };
+    assert.deepEqual(fixed.files.map((x) => x.path).sort(), [
+      'package.json',
+      'pnpm-lock.yaml',
+    ]);
+    const manifest = JSON.parse(
+      fixed.files.find((x) => x.path === 'package.json')!.text,
+    );
+    assert.deepEqual(manifest.dependencies, { 'rea-agents': '6.5.0' });
+    f.files = Object.fromEntries(
+      fixed.files.map((x) => [x.path, Buffer.from(x.text)]),
+    );
+    f.files[file] = Buffer.from(
+      "const assert=require('node:assert/strict'),{spawnSync}=require('node:child_process');const p=require('./node_modules/rea-agents/package.json');assert.equal(p.version,'6.5.0');const bin=typeof p.bin==='string'?p.bin:p.bin?.rea;assert.ok(bin);const r=spawnSync(process.execPath,['node_modules/rea-agents/'+bin,'--help'],{encoding:'utf8',timeout:90000,maxBuffer:1000000});assert.equal(r.status,0,r.stderr);assert.match(r.stdout,/rea/i);console.log('REA_CLI_OK:6.5.0');",
+    );
+    f.command.arguments.projectPreparation = {
+      ...fixed.projectPreparation!,
+      projectId: randomUUID(),
+    };
+    f.command.arguments.limits = {
+      ...f.command.arguments.limits,
+      memoryMiB: 1536,
+      pids: 128,
+    };
+  }
   f.files[file] = Buffer.concat([
     f.files[file]!,
     Buffer.from(
@@ -93,11 +124,14 @@ print('NETWORK_OK')
   });
   try {
     for (const warm of [false, true]) {
-      const mode = manager + (warm ? '-warm' : '-cold'),
+      const mode = (reaFixture ? 'rea' : manager) + (warm ? '-warm' : '-cold'),
         attemptId = randomUUID(),
         started = Date.now(),
         hard = started + 600000;
-      const execution = { version: 1 as const, kind: 'compute' as const };
+      const execution = {
+        version: 1 as const,
+        kind: reaFixture ? ('install' as const) : ('compute' as const),
+      };
       const spec = sandboxExecutionBudgetSpec(
         execution,
         resolveSandboxExecutionPolicy([]),
@@ -152,10 +186,13 @@ print('NETWORK_OK')
         arguments: {
           ...f.command.arguments,
           files,
-          projectPreparation: prep,
+          projectPreparation: { ...prep, offline: warm },
           network,
           execution,
-          args: [file, ...(manager === 'pnpm' && !warm ? ['long'] : [])],
+          args: [
+            file,
+            ...(manager === 'pnpm' && !warm && !reaFixture ? ['long'] : []),
+          ],
           limits: { ...f.command.arguments.limits, timeoutMs: 1000 },
         },
       });
@@ -180,10 +217,17 @@ print('NETWORK_OK')
         assert.equal(result.reason, 'exited');
         assert.equal(result.exitCode, 0, result.stderr);
         assert.equal(result.errorCode, undefined);
-        assert.match(result.stdout, /dependency verification: 42/);
+        assert.match(
+          result.stdout,
+          reaFixture ? /REA_CLI_OK:6.5.0/ : /dependency verification: 42/,
+        );
         assert.match(result.stdout, /NETWORK_OK/);
         assert.ok((result.network?.receivedBytes ?? 0) > 0);
-        if (manager === 'pnpm' && !warm) {
+        if (warm) {
+          assert.equal(result.projectPreparation?.downloadedArchives, 0);
+          assert.equal(result.projectPreparation?.downloadedBytes, 0);
+        }
+        if (manager === 'pnpm' && !warm && !reaFixture) {
           assert.ok(renewals > 0);
           assert.match(result.stdout, /CONTINUED/);
           assert.ok(Date.now() - started > 65000);
