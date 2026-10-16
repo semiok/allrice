@@ -36,6 +36,7 @@ import {
 import {
   bridgeRequest,
   BridgeClientError,
+  isBridgePairingRejected,
   type BridgeRequestInput,
 } from './client.js';
 import { BridgeDualTransport } from './dual-transport.js';
@@ -545,6 +546,7 @@ export async function completeWorkspaceSelection(
 
 export interface BridgeRuntimeState {
   environment?: BridgeEnvironment;
+  pairingRequired?: boolean;
   phase: 'connecting' | 'online' | 'offline' | 'stopping' | 'stopped';
   workspaceLabels: string[];
   activeForeground: number;
@@ -1086,6 +1088,7 @@ type StartOptions = {
   onNotice?: (
     code:
       | 'BRIDGE_CONNECTED'
+      | 'BRIDGE_PAIRING_REJECTED'
       | 'CONNECTION_UNAVAILABLE'
       | 'SANDBOX_UNAVAILABLE'
       | 'WORKSPACE_CHANGED'
@@ -1354,6 +1357,19 @@ async function startSession(
     publish();
     commandAbort.abort();
     (transport as BridgeDualTransport | null)?.close();
+  };
+  const connectionFailure = (error: unknown) => {
+    if (isBridgePairingRejected(error)) {
+      if (!state.pairingRequired) options.onNotice?.('BRIDGE_PAIRING_REJECTED');
+      state.pairingRequired = true;
+      // Stop this identity's local work and retain its journal/receipts. Never
+      // keep acquiring tasks or silently restore a server-revoked credential.
+      stop();
+    } else if (!stopping) {
+      state.phase = 'offline';
+      options.onNotice?.('CONNECTION_UNAVAILABLE');
+      publish();
+    }
   };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
@@ -1651,12 +1667,11 @@ async function startSession(
   const heartbeatTimer = setInterval(() => {
     prepare();
     if (!stopping)
-      void heartbeat().catch(() => {
+      void heartbeat().catch((error: unknown) => {
         runnerAvailable = false;
         pythonAvailable = false;
         pdfAvailable = false;
-        state.phase = 'offline';
-        publish();
+        connectionFailure(error);
       });
   }, 20_000);
   // Browser control is independent of a folder grant or a Linux command VM.
@@ -1908,9 +1923,8 @@ async function startSession(
         state.activeForeground = 0;
         if (stopping) break;
         if (options.drainSignal?.aborted) continue;
-        state.phase = 'offline';
-        options.onNotice?.('CONNECTION_UNAVAILABLE');
-        publish();
+        connectionFailure(error);
+        if (stopping) break;
         console.error(
           `Bridge 暂时断开，${Math.ceil(reconnectDelayMs / 1_000)} 秒后重试：${
             error instanceof Error ? error.message : 'unknown error'
@@ -1937,7 +1951,7 @@ async function startSession(
     });
     state.environment = initialBridgeEnvironment(true);
     options.onStopPhase?.('heartbeat');
-    await heartbeat().catch(() => undefined);
+    if (!state.pairingRequired) await heartbeat().catch(() => undefined);
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
     options.signal?.removeEventListener('abort', stop);

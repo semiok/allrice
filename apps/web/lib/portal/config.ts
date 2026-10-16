@@ -66,7 +66,7 @@ const definitions: readonly PortalDefinition[] = [
       organizationSlug: 'snow',
       organizationName: 'Snow',
       workspaceSlug: 'default',
-      workspaceName: 'Snow Workspace',
+      workspaceName: '默认工作区',
       email:
         process.env.ALLRICE_SNOW_BOOTSTRAP_EMAIL ??
         'snow@bootstrap.allrice.local',
@@ -87,7 +87,7 @@ const definitions: readonly PortalDefinition[] = [
       organizationSlug: 'drink',
       organizationName: 'Drink',
       workspaceSlug: 'default',
-      workspaceName: 'Drink Workspace',
+      workspaceName: '默认工作区',
       email:
         process.env.ALLRICE_DRINK_BOOTSTRAP_EMAIL ??
         'drink@bootstrap.allrice.local',
