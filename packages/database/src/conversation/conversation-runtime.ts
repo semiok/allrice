@@ -872,15 +872,51 @@ export async function bindConversationThread(input: {
   workerId: string;
   threadId: string;
 }) {
+  return getDatabase().begin((tx) =>
+    bindConversationThreadInTransaction(tx, input),
+  );
+}
+
+/** Called after the queue's Job lock by native binding. Same-ID admission is
+ * read-only: it must not clear a live turn or rewrite usage/generation. */
+export async function bindConversationThreadInTransaction(
+  transaction: postgres.TransactionSql,
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    sessionId: string;
+    runId: string;
+    workerId: string;
+    threadId: string;
+    ownerId?: string;
+    expected?: {
+      configChecksum: string;
+      generation: number;
+      threadId: string | null;
+    };
+  },
+) {
   const values = {
     ...ownedValues(input),
     threadId: ThreadIdSchema.parse(input.threadId),
   };
-  const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const current = await lockedOwnedRuntime(transaction, values);
-    const changed = current.thread_id !== values.threadId;
-    const rows = await transaction<ConversationRuntimeRow[]>`
+  const current = await lockedOwnedRuntime(transaction, values);
+  if (
+    (input.ownerId && current.owner_id !== input.ownerId) ||
+    (input.expected &&
+      (current.config_checksum !== input.expected.configChecksum ||
+        !(
+          (current.thread_generation === input.expected.generation &&
+            current.thread_id === input.expected.threadId) ||
+          (current.thread_id === values.threadId &&
+            input.expected.threadId !== values.threadId &&
+            current.thread_generation === input.expected.generation + 1)
+        )))
+  )
+    throw new ConversationRuntimeError('conversation_ownership_lost');
+  const changed = current.thread_id !== values.threadId;
+  if (!changed) return mapBinding(current);
+  const rows = await transaction<ConversationRuntimeRow[]>`
       update allrice_conversation_runtimes
       set thread_id = ${values.threadId},
           thread_generation = thread_generation + ${changed ? 1 : 0},
@@ -898,8 +934,7 @@ export async function bindConversationThread(input: {
       where session_id = ${values.sessionId}
       returning *
     `;
-    return mapBinding(rows[0]!);
-  });
+  return mapBinding(rows[0]!);
 }
 
 export async function recordConversationUsage(input: {

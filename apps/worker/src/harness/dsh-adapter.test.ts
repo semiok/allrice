@@ -92,10 +92,16 @@ function executionInput(input: {
   events?: HarnessEvent[];
   onToolCall?: HarnessExecutionInput['onToolCall'];
   images?: HarnessExecutionInput['images'];
+  sameSessionAs?: HarnessExecutionInput;
 }): HarnessExecutionInput {
-  const organizationId = randomUUID();
-  const workspaceId = randomUUID();
-  const ownerId = randomUUID();
+  const organizationId =
+    input.sameSessionAs?.executionEnvironment.ALLRICE_ORGANIZATION_ID ??
+    randomUUID();
+  const workspaceId =
+    input.sameSessionAs?.executionEnvironment.ALLRICE_WORKSPACE_ID ??
+    randomUUID();
+  const ownerId =
+    input.sameSessionAs?.executionEnvironment.ALLRICE_OWNER_ID ?? randomUUID();
   const events = input.events ?? [];
   return {
     kernel: {
@@ -103,7 +109,7 @@ function executionInput(input: {
       harness: 'dsh',
       employeeAssignmentId: randomUUID(),
       employeeVersionId: randomUUID(),
-      sessionId: randomUUID(),
+      sessionId: input.sameSessionAs?.kernel.sessionId ?? randomUUID(),
       userMessageId: randomUUID(),
       assistantMessageId: randomUUID(),
       systemInstructions: 'You are Rice.',
@@ -764,7 +770,11 @@ describe('DshHarnessAdapter', () => {
       threadId = binding.threadId;
     };
     const first = await adapter.execute(firstInput);
-    const secondInput = executionInput({ prompt: 'second', threadId });
+    const secondInput = executionInput({
+      prompt: 'second',
+      threadId,
+      sameSessionAs: firstInput,
+    });
     secondInput.tools = [];
     const second = await adapter.execute(secondInput);
     expect(first.answer).toBe('turn-1');
@@ -800,6 +810,7 @@ describe('DshHarnessAdapter', () => {
     const samePackage = await adapter.execute(
       executionInput({
         prompt: 'same package',
+        sameSessionAs: firstInput,
         threadId,
         runtimePackageChecksum: `sha256:${'a'.repeat(64)}`,
       }),
@@ -807,6 +818,7 @@ describe('DshHarnessAdapter', () => {
     const changedPackage = await adapter.execute(
       executionInput({
         prompt: 'changed package',
+        sameSessionAs: firstInput,
         threadId,
         runtimePackageChecksum: `sha256:${'b'.repeat(64)}`,
       }),
@@ -1690,7 +1702,11 @@ describe('DshHarnessAdapter', () => {
     await adapter.execute(input);
     await adapter.compact({ threadId: threadId! });
     const after = await adapter.execute(
-      executionInput({ prompt: 'after compact', threadId }),
+      executionInput({
+        prompt: 'after compact',
+        threadId,
+        sameSessionAs: input,
+      }),
     );
     expect(after.answer).toBe('turn-2');
   });

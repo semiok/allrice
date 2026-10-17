@@ -3,6 +3,7 @@ import {
   executeEmployeeMethodFileStep,
 } from './employee-method-file-tests.js';
 import { randomUUID } from 'node:crypto';
+import { createJobNativeBinding } from './harness/native-session-binding.js';
 import { resolve } from 'node:path';
 
 import {
@@ -206,6 +207,19 @@ export async function executeNextPlatformEmployeeTest(input: {
     signal.throwIfAborted();
     meter.dispatched = true;
     const result = await adapter.execute({
+      nativeBinding: createJobNativeBinding({
+        beforeBind: async () => {
+          await checkCandidate();
+          signal.throwIfAborted();
+        },
+        lease: {
+          workerId: input.workerId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+        },
+        attempt: test.previewExecution.jobAttempt,
+        subject: () => ({ kind: 'platform_employee_test', id: test.id }),
+      }),
       kernel: experience
         ? InternalKernelRequestSchema.parse({
             schemaVersion: 1,

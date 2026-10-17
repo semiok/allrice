@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { resolve } from 'node:path';
 import { EmployeeKernelRequestSchema } from '@allrice/contracts';
 import {
@@ -54,6 +55,11 @@ export async function executePlatformTechnicalTask(
   const progressReceipts = new Set<string>();
   try {
     const result = await adapter.execute({
+      nativeBinding: createJobNativeBinding({
+        lease: input.workflowLease,
+        attempt: input.execution.job.attempt,
+        subject: () => ({ kind: 'platform_technical', id: task.id }),
+      }),
       kernel: EmployeeKernelRequestSchema.parse({
         schemaVersion: 1,
         harness: 'dsh',

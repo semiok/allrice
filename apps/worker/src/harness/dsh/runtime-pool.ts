@@ -4,9 +4,14 @@ import { resolve, sep } from 'node:path';
 
 import {
   harnessContextKey,
+  UuidSchema,
   type DshExecutionSnapshot,
   type InternalKernelRequest,
 } from '@allrice/contracts';
+import type {
+  NativeSessionDescriptor,
+  NativeSessionPin,
+} from '@allrice/database';
 
 import { HandlerError } from '../../errors.js';
 import {
@@ -52,6 +57,7 @@ export interface DshRuntime {
   lastActivityAt: string;
   nativeArtifactId?: string;
   nativeProfileId?: string;
+  nativePin?: NativeSessionPin;
 }
 
 export interface DshRuntimePoolOptions {
@@ -174,12 +180,85 @@ export class DshRuntimePool {
     runtime.lastActivityAt = new Date().toISOString();
   }
 
+  /** Pure location calculation, before credentials, mkdir or native launch. */
+  private storage(input: HarnessExecutionInput) {
+    const organizationId =
+      input.executionEnvironment.ALLRICE_ORGANIZATION_ID ?? '';
+    const workspaceId = input.executionEnvironment.ALLRICE_WORKSPACE_ID ?? '';
+    const ownerId = input.executionEnvironment.ALLRICE_OWNER_ID ?? '';
+    if (
+      ![organizationId, workspaceId, ownerId].every(
+        (value) => UuidSchema.safeParse(value).success,
+      )
+    )
+      throw new HandlerError(
+        'DSH_TENANT_CONTEXT_INVALID',
+        'DSH execution is missing tenant isolation context',
+        false,
+      );
+    const storageContextKey = harnessContextKey(input.kernel);
+    const tenantRoot = resolve(
+      this.runtimeRoot,
+      organizationId,
+      workspaceId,
+      ownerId,
+      storageContextKey,
+    );
+    if (!tenantRoot.startsWith(`${this.runtimeRoot}${sep}`))
+      throw new HandlerError(
+        'DSH_TENANT_CONTEXT_INVALID',
+        'DSH runtime path escaped its tenant root',
+        false,
+      );
+    return {
+      organizationId,
+      workspaceId,
+      ownerId,
+      storageContextKey,
+      tenantRoot,
+      storageNamespace: resolve(tenantRoot, 'sessions'),
+    };
+  }
+
+  describeNativeSession(
+    input: HarnessExecutionInput,
+    threadId: string,
+  ): NativeSessionDescriptor | null {
+    const identity = checkedDshNativeLaunch({
+      command: this.runtimeCommand ?? '',
+      args: this.runtimeArgs,
+      profile: this.cordisConfig,
+    });
+    if (
+      input.kernel.runtimeDistributionGeneration !== undefined &&
+      input.kernel.runtimeDistributionGeneration !==
+        DSH_DISTRIBUTION_CURRENT_GENERATION
+    )
+      throw new HandlerError(
+        'DSH_GENERATION_MISMATCH',
+        'The frozen employee package requires a different DSH generation',
+        false,
+      );
+    if (!identity) return null; // Standalone protocol fixture, no approved artifact.
+    const storage = this.storage(input);
+    return {
+      nativeSessionId: threadId,
+      artifactId: identity.artifactId,
+      artifactManifestDigest: identity.artifactId,
+      distributionGeneration: DSH_DISTRIBUTION_CURRENT_GENERATION,
+      profileId: identity.profileId as 'restricted' | 'technical',
+      storageContextKey: storage.storageContextKey,
+      storageNamespace: storage.storageNamespace,
+    };
+  }
+
   async acquire(input: {
     input: HarnessExecutionInput;
     snapshot: DshExecutionSnapshot;
     threadId: string;
     systemInstructions: string;
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
+    nativePin?: NativeSessionPin;
   }) {
     const acquireStarted = performance.now();
     let nativeIdentity: ReturnType<typeof checkedDshNativeLaunch>;
@@ -227,17 +306,53 @@ export class DshRuntimePool {
       );
     }
 
-    const organizationId =
-      input.input.executionEnvironment.ALLRICE_ORGANIZATION_ID;
-    const workspaceId = input.input.executionEnvironment.ALLRICE_WORKSPACE_ID;
-    const ownerId = input.input.executionEnvironment.ALLRICE_OWNER_ID;
-    if (!organizationId || !workspaceId || !ownerId) {
+    const { organizationId, workspaceId, ownerId, tenantRoot } = this.storage(
+      input.input,
+    );
+    const descriptor = this.describeNativeSession(input.input, input.threadId);
+    if (descriptor) {
+      if (!input.nativePin)
+        throw new HandlerError(
+          'DSH_NATIVE_SESSION_BINDING_REQUIRED',
+          '原生会话尚未获得当前任务授权。',
+          false,
+        );
+      if (
+        Object.entries(descriptor).some(
+          ([k, v]) => input.nativePin![k as keyof NativeSessionPin] !== v,
+        ) ||
+        input.nativePin.organizationId !== organizationId ||
+        input.nativePin.workspaceId !== workspaceId ||
+        input.nativePin.ownerId !== ownerId
+      )
+        throw new HandlerError(
+          'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+          '原生会话的制品或存储身份不一致。',
+          false,
+        );
+    }
+    const resident = this.runtimes.get(input.threadId);
+    if (
+      resident &&
+      (resident.organizationId !== organizationId ||
+        resident.workspaceId !== workspaceId ||
+        resident.ownerId !== ownerId ||
+        resident.productSessionId !== input.input.kernel.sessionId ||
+        JSON.stringify(resident.internalTask ?? null) !==
+          JSON.stringify(
+            'internalTask' in input.input.kernel
+              ? input.input.kernel.internalTask
+              : null,
+          ) ||
+        (input.nativePin &&
+          JSON.stringify(resident.nativePin) !==
+            JSON.stringify(input.nativePin)))
+    )
       throw new HandlerError(
-        'DSH_TENANT_CONTEXT_INVALID',
-        'DSH execution is missing tenant isolation context',
+        'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+        '原生会话不能替换其他运行身份。',
         false,
       );
-    }
     const credentialStarted = performance.now();
     const dshPlatformHome =
       input.snapshot.route === 'openai-codex'
@@ -280,6 +395,7 @@ export class DshRuntimePool {
     // configuration without recording its values.
     const fingerprintInput = {
       ...(nativeIdentity ? { nativeArtifact: nativeIdentity } : {}),
+      ...(input.nativePin ? { nativeSessionBinding: input.nativePin } : {}),
       snapshot: input.snapshot,
       codexSubscriptionHome: dshPlatformHome,
       runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
@@ -384,20 +500,6 @@ export class DshRuntimePool {
       await this.drop(input.threadId);
       preparation.previousRuntimeCloseMs = performance.now() - closeStarted;
     }
-    const tenantRoot = resolve(
-      this.runtimeRoot,
-      organizationId,
-      workspaceId,
-      ownerId,
-      harnessContextKey(input.input.kernel),
-    );
-    if (!tenantRoot.startsWith(`${this.runtimeRoot}${sep}`)) {
-      throw new HandlerError(
-        'DSH_TENANT_CONTEXT_INVALID',
-        'DSH runtime path escaped its tenant root',
-        false,
-      );
-    }
     await mkdir(tenantRoot, { recursive: true, mode: 0o700 });
     await mkdir(dshPlatformHome, { recursive: true, mode: 0o700 });
     const environment: Record<string, string> = {
@@ -461,6 +563,7 @@ export class DshRuntimePool {
       .filter(isDshNativeTool);
     const startedAt = new Date().toISOString();
     const runtime: DshRuntime = {
+      ...(input.nativePin ? { nativePin: input.nativePin } : {}),
       ...(nativeIdentity
         ? {
             nativeArtifactId: nativeIdentity.artifactId,

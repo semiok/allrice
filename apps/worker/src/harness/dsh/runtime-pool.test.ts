@@ -346,6 +346,36 @@ it('reuses the session process across business Runs with assistants enabled', as
   expect(close).not.toHaveBeenCalled();
 });
 
+it.each(['owner', 'workspace', 'session'] as const)(
+  'never replaces another resident context when %s differs',
+  async (change) => {
+    const runtimes = pool(),
+      first = request(),
+      created = await runtimes.acquire(first),
+      close = vi.spyOn(created.runtime.client, 'close');
+    const next = {
+      ...first,
+      input: {
+        ...first.input,
+        kernel: { ...first.input.kernel },
+        executionEnvironment: { ...first.input.executionEnvironment },
+      },
+    };
+    if (change === 'session') next.input.kernel.sessionId = randomUUID();
+    else
+      next.input.executionEnvironment = {
+        ...next.input.executionEnvironment,
+        [change === 'owner' ? 'ALLRICE_OWNER_ID' : 'ALLRICE_WORKSPACE_ID']:
+          randomUUID(),
+      };
+    await expect(runtimes.acquire(next)).rejects.toMatchObject({
+      code: 'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+    });
+    expect(close).not.toHaveBeenCalled();
+    expect(runtimes.get(first.threadId)).toBe(created.runtime);
+  },
+);
+
 it.each(['assistant mode', 'assistant output cap', 'ordinary output cap'])(
   'restarts when process configuration changes: %s',
   async (change) => {

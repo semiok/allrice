@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { bindJobNativeSession } from './execution/queue.ts';
+import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,6 +115,34 @@ suite(
       });
     }
 
+    it('binds the real private technical lease without a chat Session or company membership', async () => {
+      const detail = await submit(),
+        { lease } = await start(detail),
+        task = await getPlatformTechnicalExecution(lease);
+      const input = {
+        ...lease,
+        subject: { kind: 'platform_technical' as const, id: task.id },
+        descriptor: nativeBindingDescriptor({
+          ...task,
+          profileId: 'technical',
+        }),
+      };
+      const first = await bindJobNativeSession(input);
+      expect(first.binding).toMatchObject({
+        contextKind: 'platform_technical',
+        contextId: task.id,
+        profileId: 'technical',
+      });
+      expect(first.conversation).toBeUndefined();
+      expect((await bindJobNativeSession(input)).binding).toEqual(
+        first.binding,
+      );
+      await cancelPlatformTechnicalTask(admin, task.id);
+      await expect(bindJobNativeSession(input)).rejects.toBeDefined();
+      expect(
+        await fixture.db`select native_session_id from allrice_native_session_bindings where native_session_id=${first.binding.nativeSessionId}`,
+      ).toHaveLength(1);
+    });
     it('creates one atomic task/Run/Job with no company membership; simultaneous retries and configuration change keep the frozen version', async () => {
       const requestId = randomUUID();
       const before =

@@ -144,6 +144,14 @@ export interface HarnessExecutionInput {
   generation: number;
   maxOutputTokens?: number;
   threadId?: string | null;
+  /** Trusted Worker closure only. Real lease tokens never enter the kernel,
+   * native environment, RPC or events. A returned pin has committed in SQL. */
+  nativeBinding?: {
+    bind: (descriptor: NativeSessionDescriptor) => Promise<{
+      binding: NativeSessionPin;
+      generation?: number;
+    }>;
+  };
   /**
    * Employee-authorized Tool Broker names before per-turn activation.
    *
@@ -242,3 +250,7 @@ export interface HarnessAdapter {
   runtimeInventory?(): readonly HarnessRuntimeProcessSnapshot[];
   close?(): Promise<void>;
 }
+import type {
+  NativeSessionDescriptor,
+  NativeSessionPin,
+} from '@allrice/database';

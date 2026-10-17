@@ -1,4 +1,14 @@
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import {
+  bindLeasedNativeSession,
+  NativeSessionLeaseInputSchema,
+  type NativeSessionLeaseInput,
+} from '../conversation/native-session-binding.ts';
+export { NativeSessionBindingError } from '../conversation/native-session-binding.ts';
+export type {
+  NativeSessionDescriptor,
+  NativeSessionPin,
+} from '../conversation/native-session-binding.ts';
 import { markExperienceCapturePending } from '../experience-capture.ts';
 import { experienceConsolidationJobType } from '../experience-consolidation-contracts.ts';
 import {
@@ -2248,6 +2258,21 @@ async function lockRootCreation(
       });
   } else
     await transaction`select pg_advisory_xact_lock(hashtextextended(${runId},703))`;
+}
+
+/** Worker-only admission. Receipt-drain leases remain valid for finish, but
+ * bindLeasedNativeSession explicitly denies them for new native dispatch. */
+export async function bindJobNativeSession(input: NativeSessionLeaseInput) {
+  const value = NativeSessionLeaseInputSchema.parse(input);
+  return getDatabase().begin(async (tx) => {
+    const job = await lockedLeasedJob(
+      tx,
+      value.workerId,
+      value.jobId,
+      value.leaseToken,
+    );
+    return bindLeasedNativeSession(tx, job, value);
+  });
 }
 
 export async function heartbeatJob(

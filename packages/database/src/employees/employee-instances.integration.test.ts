@@ -1,4 +1,6 @@
 import { sharedHistoryMethodAcceptancePhrases } from './employee-method-shared-history.fixture.ts';
+import { bindJobNativeSession } from '../execution/queue.ts';
+import { nativeBindingDescriptor } from '../native-session-binding.fixture.ts';
 import {
   departmentCommonAcceptancePhrases,
   companyCommonAcceptancePhrases,
@@ -721,6 +723,25 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       coverage,
     };
   }
+
+  it('binds a real method-candidate preview to its own test identity and lease', async () => {
+    const x = await retryFixture(),
+      workerId = randomUUID();
+    const test = (await claimNextPlatformEmployeeTestRun(workerId))!;
+    expect(test.id).toBe(x.test.id);
+    expect(test.methodCandidate).toBeDefined();
+    const input = {
+      workerId,
+      jobId: test.previewExecution.jobId,
+      leaseToken: test.previewExecution.leaseToken,
+      attempt: test.previewExecution.jobAttempt,
+      subject: { kind: 'platform_employee_test' as const, id: test.id },
+      descriptor: nativeBindingDescriptor(test.previewContext),
+    };
+    expect((await bindJobNativeSession(input)).binding.contextId).toBe(test.id);
+    await x.fail(test.id);
+    await expect(bindJobNativeSession(input)).rejects.toBeDefined();
+  }, 30000);
 
   async function claimActivationTest(
     f: Awaited<ReturnType<typeof setup>>,
