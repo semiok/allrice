@@ -7566,6 +7566,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     const [cutoff] =
       await fixture.db`select cancel_request_id,cancel_requested_at from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
     expect(cutoff!.cancel_request_id).not.toBeNull();
+    const [drain] =
+      await fixture.db`select drain_reason,drain_deadline_at from allrice_jobs where run_id=${f.rootRunId}`;
+    expect(drain?.drain_reason).toBe('cancel');
+    expect(drain?.drain_deadline_at).toBeInstanceOf(Date);
     await changeEmployeeInstanceLifecycle(context, f.assignment, {
       ...input,
       requestId: randomUUID(),
@@ -7584,7 +7588,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         rootRunId: f.rootRunId,
         worker: f.worker,
       }),
-    ).toEqual({ cancelRequested: true });
+    ).toEqual({
+      cancelRequested: true,
+      stopReason: 'cancel',
+      drainDeadlineAt: drain!.drain_deadline_at.toISOString(),
+    });
   });
   it('maps legacy Sessions to their original default, labels unprovable provenance honestly, and leaves old Run JSON intact', async () => {
     const f = await setup();
