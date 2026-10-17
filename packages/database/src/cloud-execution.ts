@@ -37,6 +37,7 @@ import {
   StorageObjectSchema,
   UuidSchema,
   runtimeContractEqual,
+  localFileMediaType,
   type ExecutionContext,
   type RuntimeActionBinding,
   type RequestContext,
@@ -1137,6 +1138,9 @@ export async function publishCloudOperationArtifacts(
           throw new RuntimePolicyError('cloud_artifact_invalid');
         }
       }
+      const isMarkdown =
+        output.format === 'txt' &&
+        localFileMediaType(output.fileName) === 'text/markdown';
       const object = StorageObjectSchema.parse({
         ...createToolBrokerExportObject({
           context: ctx,
@@ -1151,7 +1155,9 @@ export async function publishCloudOperationArtifacts(
                     ? 'text/html'
                     : output.format === 'zip'
                       ? 'application/zip'
-                      : 'text/plain',
+                      : isMarkdown
+                        ? 'text/markdown'
+                        : 'text/plain',
           sizeBytes: bytes.length,
           checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
         }),
@@ -1185,7 +1191,9 @@ export async function publishCloudOperationArtifacts(
                   ? 'html'
                   : output.format === 'zip'
                     ? 'zip'
-                    : 'text',
+                    : isMarkdown
+                      ? 'markdown'
+                      : 'text',
           object,
           ...('kind' in payload
             ? {

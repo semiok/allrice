@@ -332,6 +332,39 @@ describe('canonical Python original-call execution adapter', () => {
     expect(ports.frozen).not.toHaveBeenCalled();
     expect(JSON.stringify(args)).toBe(before);
   });
+  it.each([
+    ['finance-note.md', 'text/markdown'],
+    ['finance-note.MD', 'text/markdown'],
+    ['reconcile.py.txt', 'text/plain'],
+  ])(
+    'publishes %s with its presentation type without changing the original Python call',
+    async (fileName, mediaType) => {
+      const args = {
+        script: "print('original script')",
+        outputs: [{ path: fileName, fileName, format: 'txt' }],
+      };
+      const request = input(args),
+        before = JSON.stringify(args);
+      const response = JSON.parse((await run(request)).modelContent);
+      expect(ports.create.mock.calls[0]![0].arguments).toBe(args);
+      expect(lastPayload.arguments.origin.argumentsDigest).toBe(
+        runtimePolicyDigest(args),
+      );
+      expect(lastPayload.arguments.outputs[0]).toMatchObject({
+        path: fileName,
+        fileName,
+        format: 'txt',
+        mediaType,
+      });
+      expect(response.artifacts[0]).toMatchObject({
+        objectId: lastPayload.arguments.outputs[0]!.objectId,
+        fileName,
+      });
+      expect(JSON.stringify(args)).toBe(before);
+      expect(ports.publish).toHaveBeenCalledTimes(1);
+      expect(ports.cloud).not.toHaveBeenCalled();
+    },
+  );
   it.each(['local_busy', 'local_preparing'])(
     'durably waits for %s using the same call without creating any cloud slot',
     async (reason) => {

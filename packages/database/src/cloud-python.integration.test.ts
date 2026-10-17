@@ -260,6 +260,92 @@ suite(
       ).rejects.toThrow('cloud_result_unconfirmed');
     });
 
+    it('delivers a Python Markdown report directly, preserving bytes, other formats and immutable replay', async () => {
+      const f = await fixture();
+      const reports = [
+        {
+          path: 'report.md',
+          fileName: '报告.md',
+          format: 'txt',
+          mediaType: 'text/markdown',
+          versionFormat: 'markdown',
+          content: '# 对账结果\n\n差额 **0.00 元**。\n',
+        },
+        {
+          path: 'script.txt',
+          fileName: 'reconcile.py.txt',
+          format: 'txt',
+          mediaType: 'text/plain',
+          versionFormat: 'text',
+          content: "print('0.00')\n",
+        },
+        {
+          path: 'metrics.json',
+          fileName: 'metrics.md',
+          format: 'json',
+          mediaType: 'application/json',
+          versionFormat: 'json',
+          content: '{"difference":"0.00"}',
+        },
+      ];
+      const created = await f.create('markdown-publish', {
+        ...args,
+        outputs: reports.map(({ path, fileName, format }) => ({
+          path,
+          fileName,
+          format,
+        })),
+      });
+      await f.approve(created);
+      const backend = new CapturedBackend(
+        reports.map(({ path, content }) => ({
+          path,
+          contentBase64: Buffer.from(content).toString('base64'),
+        })),
+      );
+      const options = { storage: f.storage, backend, database: db };
+      const result = await runCloudCommandOperation(created, options);
+      expect(result.status).toBe('succeeded');
+      expect(result.artifacts).toHaveLength(reports.length);
+      for (const [index, report] of reports.entries()) {
+        const published = result.artifacts[index]!;
+        const displayed = await getWorkbenchArtifact(
+          f.context,
+          f.session,
+          published.versionId,
+          db,
+        );
+        const bytes = Buffer.from(report.content);
+        expect(displayed).toMatchObject({
+          kind: 'file',
+          version: { format: report.versionFormat, fileName: report.fileName },
+          object: {
+            mediaType: report.mediaType,
+            checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+            sizeBytes: bytes.length,
+          },
+        });
+        expect(
+          Buffer.from(
+            await new Response(
+              await f.storage.get(displayed.object),
+            ).arrayBuffer(),
+          ),
+        ).toEqual(bytes);
+      }
+      expect(
+        (await runCloudCommandOperation(created, options)).artifacts,
+      ).toEqual(result.artifacts);
+      expect(backend.executions).toBe(1);
+      expect(
+        await db`select id from allrice_deliverable_versions where session_id=${f.session}`,
+      ).toHaveLength(reports.length);
+      const other = await fixture();
+      await expect(
+        getToolBrokerFile(other.execution, result.artifacts[0]!.objectId),
+      ).rejects.toThrow();
+    });
+
     it('refuses absent or changed decoder proof before creating any storage object or version', async () => {
       for (const invalid of [
         { path: artifact.path, contentBase64: artifact.contentBase64 },

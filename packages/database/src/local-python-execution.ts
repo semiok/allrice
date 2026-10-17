@@ -23,6 +23,7 @@ import {
   UuidSchema,
   localPythonProfileMatchesRelease,
   localPythonResultMatchesPayload,
+  localFileMediaType,
   PlatformEmployeeDefinitionSchema,
   managedPythonPayloadForPlatform,
   resolveExecutionChoice,
@@ -558,7 +559,12 @@ export async function assertLocalPythonDelegation(
       ) ||
       a.outputs.some(
         (o, index) =>
-          o.mediaType !== mediaTypes[normalized.outputs[index]!.format] ||
+          (o.mediaType !== mediaTypes[normalized.outputs[index]!.format] &&
+            !(
+              o.format === 'txt' &&
+              localFileMediaType(o.fileName) === 'text/markdown' &&
+              o.mediaType === 'text/markdown'
+            )) ||
           o.objectId !==
             cloudStableId(
               `managed-python-output:${binding.task.runId}:${a.origin.callId}:${index}`,
@@ -1324,7 +1330,9 @@ export async function publishLocalPythonArtifacts(
               ? 'png'
               : output.format === 'json'
                 ? 'json'
-                : 'text',
+                : object.mediaType === 'text/markdown'
+                  ? 'markdown'
+                  : 'text',
           object,
           storageMode: 'existing_ready',
         },
