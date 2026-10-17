@@ -156,11 +156,13 @@ it('ignores published intrinsic grants and gives general instances only private 
   expect(
     withEmployeeCustomizationTools(declared, ['storage:read', 'storage:write']),
   ).toEqual(['workspace.file.read']);
-  expect(
-    withEmployeeCustomizationTools(
-      declared,
-      ['storage:read', 'storage:write'],
-      'custom',
-    ),
-  ).toContain('workspace.employee.method.activate');
+  const custom = withEmployeeCustomizationTools(
+    declared,
+    ['storage:read', 'storage:write'],
+    'custom',
+  );
+  expect(custom).toContain('workspace.employee.method.save_candidate');
+  expect(custom).toContain('workspace.employee.method.restore_candidate');
+  for (const stage of ['test', 'test_status', 'prepare_activation', 'activate'])
+    expect(custom).not.toContain(`workspace.employee.method.${stage}`);
 });

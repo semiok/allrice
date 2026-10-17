@@ -682,6 +682,8 @@ export async function mutateEmployeeContentInTransaction(
   input: EmployeeContentMutation,
   tx: ContentTx,
   options: {
+    /** Controlled chat saves publish in the same transaction, without a draft gate. */
+    publishOnSave?: boolean;
     inputDigest?: string;
     authorize?: () => Promise<void>;
     buildInput?: (
@@ -689,6 +691,12 @@ export async function mutateEmployeeContentInTransaction(
     ) => Promise<EmployeeContentMutation>;
   } = {},
 ): Promise<EmployeeContentReceipt> {
+  if (
+    options.publishOnSave &&
+    (!options.authorize ||
+      (input.operation !== 'save_draft' && input.operation !== 'restore_draft'))
+  )
+    throw new DataAccessError('authorization_denied');
   await requireContentMaintenance(context, input.ownership, tx);
   // Short company transaction gate serializes absent-layer insertion and
   // cross-layer validation without a check-then-insert/activation race.
@@ -777,6 +785,54 @@ export async function mutateEmployeeContentInTransaction(
         values(${id},${row.id},${next},${tx.json(manifest)},${digest},${input.changeSummary},${context.actor.id},
         ${restoredFrom}) returning *`;
     candidate = revision!;
+    if (options.publishOnSave) {
+      const result = await assemble(
+        context,
+        target,
+        input.ownership,
+        tx,
+        { row, revision: candidate },
+        true,
+        true,
+      );
+      validation = result.validation;
+      if (!validation.valid)
+        throw new EmployeeContentError('validation_failed');
+      // A company save also changes existing department combinations. Check
+      // their structural/source conflicts, without reading anyone's private
+      // methods or requiring paid business tests.
+      if (input.ownership.scope === 'company') {
+        const departments = await tx<{ department_id: string }[]>`
+          select distinct department_id from allrice_employee_content_sets
+          where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
+            and employee_id=${target.employeeId} and scope='department' and active_revision_id is not null`;
+        for (const department of departments) {
+          const combined = await assemble(
+            context,
+            target,
+            {
+              scope: 'department',
+              organizationId: context.organizationId,
+              departmentId: department.department_id,
+            },
+            tx,
+            { row, revision: candidate },
+            true,
+            true,
+          );
+          if (!combined.validation.valid)
+            throw new EmployeeContentError('validation_failed');
+        }
+      }
+      await publishContentRevision(
+        context,
+        row,
+        candidate,
+        result.resolved,
+        tx,
+      );
+      active = candidate;
+    }
   } else {
     const saved = await readRevision(tx, row.candidate_revision_id);
     if (
@@ -811,15 +867,13 @@ export async function mutateEmployeeContentInTransaction(
         await tx`select revision_id from allrice_employee_content_publications
           where set_id=${row.id} and revision_id=${candidate.id} and invalidated_at is not null`;
       if (revoked) throw new EmployeeContentError('source_changed');
-      await tx`insert into allrice_employee_content_publications(set_id,revision_id)
-          values(${row.id},${candidate.id}) on conflict do nothing`;
-      for (const source of result.resolved)
-        if (source.publish) {
-          await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by)
-            values(${source.publish.contentId},${source.publish.revisionId},${context.actor.id}) on conflict do nothing`;
-          await tx`update allrice_company_assets set state='published',published_revision_id=${source.publish.revisionId},revision=revision+1,updated_at=clock_timestamp()
-            where id=${source.publish.contentId} and latest_revision_id=${source.publish.revisionId}`;
-        }
+      await publishContentRevision(
+        context,
+        row,
+        candidate,
+        result.resolved,
+        tx,
+      );
       active = candidate;
     }
   }
@@ -835,8 +889,26 @@ export async function mutateEmployeeContentInTransaction(
   await tx`insert into allrice_employee_content_requests(id,organization_id,workspace_id,actor_id,request_id,set_id,operation,input_digest,response)
       values(${randomUUID()},${context.organizationId},${context.workspaceId},${context.actor.id},${input.requestId},${row.id},${input.operation},${inputDigest},${tx.json(response)})`;
   await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id)
-      values(${context.organizationId},${context.workspaceId},${context.actor.id},${`employee.content.${input.operation}`},'employee_content_set',${row.id},'allowed','current_scope_authority',${context.requestId})`;
+      values(${context.organizationId},${context.workspaceId},${context.actor.id},${options.publishOnSave ? 'employee.content.save_and_publish' : `employee.content.${input.operation}`},'employee_content_set',${row.id},'allowed','current_scope_authority',${context.requestId})`;
   return response;
+}
+
+async function publishContentRevision(
+  context: EmployeeContentContext,
+  row: ContentSetRow,
+  revision: ContentRevisionRow,
+  sources: ResolvedContentSource[],
+  tx: ContentTx,
+) {
+  await tx`insert into allrice_employee_content_publications(set_id,revision_id)
+    values(${row.id},${revision.id}) on conflict do nothing`;
+  for (const source of sources)
+    if (source.publish) {
+      await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by)
+        values(${source.publish.contentId},${source.publish.revisionId},${context.actor.id}) on conflict do nothing`;
+      await tx`update allrice_company_assets set state='published',published_revision_id=${source.publish.revisionId},revision=revision+1,updated_at=clock_timestamp()
+        where id=${source.publish.contentId} and latest_revision_id=${source.publish.revisionId}`;
+    }
 }
 
 /** Freeze only active indexes at the Run's exact employee version. Scene
@@ -1197,6 +1269,7 @@ export async function inspectEmployeeMethodContent(
   tx: ContentTx,
   sharedTarget?: EmployeeMethodSharedTarget,
   beforeTestId?: string,
+  editableActiveOnly = false,
 ) {
   const selection = await resolveEmployeeMethodTarget(
     context,
@@ -1249,7 +1322,10 @@ export async function inspectEmployeeMethodContent(
       nextBeforeTestId: null,
     };
   }
-  const candidate = await readRevision(tx, row.candidate_revision_id);
+  const candidate = await readRevision(
+    tx,
+    editableActiveOnly ? row.active_revision_id : row.candidate_revision_id,
+  );
   const active = await readRevision(tx, row.active_revision_id);
   const sources = [];
   for (const ref of new Map(

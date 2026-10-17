@@ -79,19 +79,19 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.inspect',
     description:
-      '查看当前小白的已启用内容、候选或相应范围的 history 历史索引。默认个人范围；明确维护部门时 scope=department，公司时 scope=company；departments 返回当前可维护部门，公司级可按用户明确名称／ID选择 departmentId，部门级只可选本部门，同名须澄清；selectionRequired 时必须先选部门。服务端检查权限并返回准确 sharedTarget 与受影响范围；公司维护人不要求有部门。共享历史限定当前可维护目标；只有 history 可用 beforeRevision 向前分页。历史只含固定引用，不附正文或赋予来源权限。candidate 是未启用草稿，不是任务执行规则；跨会话调整先读取候选和当前 revision。公司／部门共同要求变化时，testCoverage 提供完整受影响视图、场景及摘要，不能用自有场景或测试历史代替全清单。candidateTests 返回准确当前候选的一页测试索引；nextBeforeTestId 不为空时用 beforeTestId 续页。再通过 test_status 核对实际原断言与适用性，不能把存储状态当作通过证明。effective 只返回已启用内容，不含上游维护草稿。',
+      '读取当前小白的工作场景或 history 历史索引。view=candidate 是当前可编辑版本的内部名称，正常保存后与生效版本一致；effective 返回已生效内容。默认个人范围；明确维护公司或部门时用 scope=company/department，指定部门先读取 departments，再按用户直接给出的准确部门名称或 ID 选择。返回准确 sharedTarget、audience 与 revision，共享写入原样携带。history 只含固定引用，不赋予来源访问权。跨会话先读当前版本，保留场景 ID、未修改字段及准确来源；历史草稿不代表已生效。',
     inputSchema: z.toJSONSchema(EmployeeMethodInspectSchema),
   },
   {
     name: 'workspace.employee.method.save_candidate',
     description:
-      '用户明确要求保存或调整工作方法时，保存当前小白的个人候选，或明确请求并有维护权限的公司或明确目标部门的文字场景候选。共享模式必须带 inspect 返回的 sharedTarget；公司／部门通用执行要求仅在用户直接明确要求修改该共同部分时可用 section=common；单场景请求不授权共同部分。共享资料绑定仍不支持，不能转存个人假装完成。先 inspect candidate 取得 expectedRevision。每次只改通用要求或一个场景；已有 scene.id 必须沿用，未提供的其他场景/字段保留。requirements/procedure 替换对应聊天编辑文本，references 只追加可读固定版本的长期资料引用。不会验证、启用或修改权限；范围必须匹配用户直接请求和返回的准确目标，不得声称已生效。',
+      '用户明确要求保存或调整今后使用的工作场景时，保存并立即生效，一次事务完成，不需另行测试、确认或启用。默认只改当前用户的小白；共享修改须用户直接指定准确公司或部门范围并有维护权限，原样携带 inspect 返回的 sharedTarget。共同执行要求须用户直接请求，不能从单场景扩大。先 inspect(view=candidate) 取得 expectedRevision，每次只改通用部分或一个场景；已有 scene.id 沿用，未提供的字段和其他场景保留。requirements/procedure 替换对应文字，references 只追加用户要求长期引用的可读固定版本；共享资料绑定仍不支持。成功回执表示已保存且生效，详情可见，后续独立任务采用；当前任务快照保留。保存不启动后台监控、不改变权限、不代表业务已验证。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
   },
   {
     name: 'workspace.employee.method.restore_candidate',
     description:
-      '用户明确要求将整份个人或已授权公司／部门工作方法恢复到指定历史版时，先 inspect history 核对版本号和 ID，共享恢复还须原样携带准确 sharedTarget，用户直接请求的范围、部门及版本必须一致；再以当前 expectedRevision 恢复。只生成新候选，保留已启用版本、历史和来源权限；需对新候选重新测试并准确确认。不接受单场景恢复、权限或启用参数。',
+      '用户明确要求将整份个人或有维护权限的公司／部门工作方法恢复到指定历史版时，先 inspect(view=history) 核对版本号和 ID，再以当前 expectedRevision 和准确 sourceRevisionId 恢复。共享目标原样携带 sharedTarget，范围、部门和版本必须与用户直接请求一致。恢复保存后立即生效，无额外测试或启用步骤；历史记录及原来源权限保留，撤销的来源不可恢复访问。不接受单场景整体恢复，场景局部恢复应使用 save_candidate。',
     inputSchema: z.toJSONSchema(EmployeeMethodRestoreSchema),
   },
   {

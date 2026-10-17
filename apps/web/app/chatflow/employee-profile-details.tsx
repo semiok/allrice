@@ -252,12 +252,12 @@ export function EmployeeProfileDetails({
           <strong>工作场景</strong>
           <span>
             {view === 'personal'
-              ? '暂无已启用的工作场景。'
-              : '暂无可查看的已启用共享场景。'}
+              ? '暂无已保存的工作场景。'
+              : '暂无可查看的共享场景。'}
           </span>
           {view === 'personal' && (
             <span>
-              可在聊天中说明希望它负责哪些工作，定制并启用后会显示在这里。
+              可在聊天中说明希望它负责哪些工作，保存后即生效并显示在这里。
             </span>
           )}
         </section>
