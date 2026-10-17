@@ -13,6 +13,7 @@ import { readTaskClock } from './task-clock.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { createAssistantRuntime } from './assistant-runtime.ts';
 import { listDshRuntimeEventTimeline } from './conversation/conversation-runtime.ts';
+import { cancelRun } from './execution/queue.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -533,6 +534,159 @@ suite(
         s.port()({ action: 'check', nativeSessionId: s.nativeSessionId }),
       ).rejects.toThrow('task_progress_lease_lost');
     }, 30000);
+    it.each([
+      ['model', 'requested'],
+      ['tool', 'requested'],
+      ['model', 'progress'],
+      ['tool', 'progress'],
+    ] as const)(
+      'accepts only existing late terminal receipts for %s after %s cancellation without changing progress decisions',
+      async (kind, cancellation) => {
+        const s = await setup(),
+          handle = s.port();
+        const argumentsDigest = `sha256:${'a'.repeat(64)}`;
+        const resultDigest = `sha256:${'b'.repeat(64)}`;
+        // A late third failed tool would ordinarily create a pause. Its actual
+        // result must remain recordable after cancellation without that decision.
+        for (let i = 0; i < 3; i++) {
+          await handle({
+            action: 'start',
+            kind: 'tool',
+            nativeSessionId: s.nativeSessionId,
+            callId: `late-tool-${i}`,
+            name: 'read',
+            argumentsDigest,
+          });
+          if (i < 2)
+            await handle({
+              action: 'finish',
+              kind: 'tool',
+              nativeSessionId: s.nativeSessionId,
+              callId: `late-tool-${i}`,
+              resultDigest,
+              outcome: 'error',
+            });
+        }
+        await handle({
+          action: 'start',
+          kind: 'model',
+          nativeSessionId: s.nativeSessionId,
+          callId: 'late-model',
+        });
+        if (cancellation === 'progress') {
+          await handle({
+            action: 'start',
+            kind: 'tool',
+            nativeSessionId: s.nativeSessionId,
+            callId: 'pause-trigger',
+            name: 'read',
+            argumentsDigest,
+          });
+          const pause = await handle({
+            action: 'finish',
+            kind: 'tool',
+            nativeSessionId: s.nativeSessionId,
+            callId: 'pause-trigger',
+            resultDigest,
+            outcome: 'error',
+          });
+          await handle({
+            action: 'decide',
+            nativeSessionId: s.nativeSessionId,
+            pauseId: pause.pauseId,
+            decision: 'cancel',
+          });
+        } else {
+          await cancelRun(f.context, f.workspaceId, s.task.runId, {
+            reason: 'user_requested',
+          });
+        }
+        const [before] =
+          await f.db`select * from allrice_task_progress where run_id=${s.task.runId}`;
+        const receipt = {
+          action: 'finish',
+          nativeSessionId: s.nativeSessionId,
+          callId: kind === 'model' ? 'late-model' : 'late-tool-2',
+          kind,
+          resultDigest,
+          outcome: 'error',
+        };
+        await expect(handle(receipt)).resolves.toMatchObject({
+          canceled: true,
+        });
+        const [finished] = await f.db`
+          select finished_at,settled_output_tokens from allrice_task_calls
+          where run_id=${s.task.runId} and native_session_id=${s.nativeSessionId}
+            and call_id=${receipt.callId} and kind=${kind}`;
+        expect(finished!.finished_at).toBeInstanceOf(Date);
+        expect(finished!.settled_output_tokens).toBeNull();
+        await expect(handle(receipt)).resolves.toMatchObject({
+          canceled: true,
+        });
+        expect(
+          (
+            await f.db`select * from allrice_task_progress where run_id=${s.task.runId}`
+          )[0],
+        ).toEqual(before);
+        await expect(
+          handle({ ...receipt, outcome: 'success' }),
+        ).rejects.toThrow('task_progress_receipt_conflict');
+        await expect(
+          handle({ ...receipt, callId: 'never-started' }),
+        ).rejects.toThrow('task_progress_call_missing');
+        await expect(
+          handle({ ...receipt, nativeSessionId: randomUUID() }),
+        ).rejects.toThrow('task_progress_call_missing');
+        for (const raw of [
+          { action: 'check', nativeSessionId: s.nativeSessionId },
+          {
+            action: 'start',
+            nativeSessionId: s.nativeSessionId,
+            callId: 'new-model-denied',
+            kind: 'model',
+          },
+          {
+            action: 'model_prepare',
+            nativeSessionId: s.nativeSessionId,
+            callId: 'new-prepare-denied',
+            requestedOutputTokens: 100,
+          },
+          {
+            action: 'decide',
+            nativeSessionId: s.nativeSessionId,
+            pauseId: before!.pause_id ?? randomUUID(),
+            decision: 'continue',
+          },
+        ])
+          await expect(handle(raw)).rejects.toThrow('task_progress_lease_lost');
+        for (const altered of [
+          {
+            context: { ...s.context, organizationId: randomUUID() },
+            worker: s.worker,
+          },
+          {
+            context: s.context,
+            worker: { ...s.worker, workerId: randomUUID() },
+          },
+          {
+            context: s.context,
+            worker: { ...s.worker, leaseToken: randomUUID() },
+          },
+        ])
+          await expect(
+            createTaskProgressRuntime(altered, f.db)(receipt),
+          ).rejects.toThrow('task_progress_lease_lost');
+        const [job] =
+          await f.db`select status,cancel_requested_at from allrice_jobs where id=${s.worker.jobId}`;
+        expect(job!.status).toBe('running');
+        expect(job!.cancel_requested_at).toBeInstanceOf(Date);
+        await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${s.worker.jobId}`;
+        await expect(handle(receipt)).rejects.toThrow(
+          'task_progress_lease_lost',
+        );
+      },
+      30000,
+    );
     it('enrolls a task clock without requiring subscription-only billing proof', async () => {
       const s = await setup(false);
       await expect(
