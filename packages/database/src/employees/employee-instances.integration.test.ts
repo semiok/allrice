@@ -4854,6 +4854,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it.each([
     '请保存我的第一个工作场景候选「美股监控助手」：我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
     '请保存我的工作场景候选「美股监控助手」：仅在我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
+    '请保存我的工作场景「美股监控助手」：不要自动启用监控，只在我主动询问时查询并回复。',
   ])(
     'saves and publishes a trailing named personal scene immediately: %s',
     async (text) => {

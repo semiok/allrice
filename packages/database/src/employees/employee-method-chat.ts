@@ -561,11 +561,23 @@ function assertMethodEditIntent(
 
 function assertImmediateSaveIntent(text: string) {
   if (
-    methodOperationClauses(text).some((clause) =>
-      /(?:不要|先不|暂不|不|别|勿)(?:要|立即|马上|自动)?(?:启用|生效)|(?:只|仅)(?:保存|存为)(?:为)?(?:候选|草稿)|(?:do not|don't) (?:activate|enable)/iu.test(
-        clause,
-      ),
-    )
+    methodOperationClauses(text)
+      .flatMap((clause) => clause.split(/[，,]/u))
+      .some((clause) => {
+        // A business rule such as “不要自动启用监控” is saved text, not a
+        // refusal to make the work method effective. Match only the request
+        // header or an explicit draft-only clause, never the body after ':'.
+        const header = clause.split(/[：:]/u, 1)[0]!.trim();
+        return (
+          /(?:只|仅)(?:保存|存为)(?:为)?(?:候选|草稿)/u.test(header) ||
+          /^(?:请)?(?:本次|这次|现在)?(?:先|暂时)?(?:不要|不|别|勿|暂不)(?:立即|马上|自动)?(?:启用|生效)(?:(?:我的|这个|该|新(?:的)?)?(?:工作场景|工作方法|场景|方法|规则))?$/u.test(
+            header,
+          ) ||
+          /^(?:please )?(?:do not|don't) (?:activate|enable)(?: (?:this|the) (?:scenario|method))?$/iu.test(
+            header,
+          )
+        );
+      })
   )
     throw new EmployeeMethodChatError('save_takes_effect');
 }
