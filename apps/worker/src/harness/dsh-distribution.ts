@@ -1,10 +1,11 @@
-import { PLATFORM_EMPLOYEE_DSH_DISTRIBUTION } from '@allrice/contracts';
+import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
 
-// CURRENT means this build's installed generation; distribution.json separately
-// records production promotion status (the installed channel may be candidate).
-export const DSH_DISTRIBUTION_CURRENT_VERSION = '0.1.5-rc.3';
+// CURRENT means this build's installed composition, not a live acceptance or
+// production-promotion receipt. The generated facts have one reviewed source.
+export const DSH_DISTRIBUTION_CURRENT_VERSION =
+  DSH_INSTALLED_DISTRIBUTION.version;
 export const DSH_DISTRIBUTION_CURRENT_GENERATION =
-  PLATFORM_EMPLOYEE_DSH_DISTRIBUTION;
+  DSH_INSTALLED_DISTRIBUTION.generation;
 
 export function isCompatibleDshRuntimeVersion(version: string) {
   return (

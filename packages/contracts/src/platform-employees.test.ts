@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DSH_MISSING_FROZEN_GENERATION } from './dsh-distribution.generated.ts';
 import {
   developmentWorkflowToolNames,
   employeeToolConfigurationErrors,
@@ -10,7 +11,6 @@ import {
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeAuditEventSchema,
   PlatformEmployeeRuntimeProfileSchema,
-  PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
   PlatformEmployeeTestRunSchema,
   RollbackPlatformEmployeeInputSchema,
 } from './platform-employees.ts';
@@ -96,9 +96,7 @@ describe('platform employee production contract', () => {
       securityPolicy: riceDefinition.securityPolicy,
     });
     expect(profile.harness).toBe('dsh');
-    expect(profile.distributionGeneration).toBe(
-      PLATFORM_EMPLOYEE_DSH_DISTRIBUTION,
-    );
+    expect(profile.distributionGeneration).toBe(DSH_MISSING_FROZEN_GENERATION);
     expect(profile.approvedPluginIds).toContain(
       '@deepseek-ai/dsh-repeat-tool-reminder',
     );

@@ -25,6 +25,7 @@ import {
   installSessionReferenceAdmission,
 } from './allrice-session-references.mjs';
 import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { mcpNativeTools } from './allrice-mcp-native-tools.mjs';
 import { localMcpNativeTools } from './allrice-local-mcp-native-tools.mjs';
@@ -81,6 +82,28 @@ import {
 } from './allrice-dsh-waits.mjs';
 
 const runtimeName = 'allrice-dsh-jsonrpc-runtime';
+// The parent may request a version, but cannot manufacture the loaded kernel's
+// identity through an environment claim. Public package metadata resolves from
+// this actual adapter, including the SDK and loop it imports.
+const installedModules = [
+  'dsh-app-boot',
+  'dsh-agent',
+  'dsh-agent-loop',
+  'dsh-llm',
+  'dsh-session',
+  'dsh-sdk-protocol',
+  'dsh-sdk-jsonrpc-server',
+];
+const requirePackage = createRequire(import.meta.url);
+const installedVersions = installedModules.map(
+  (name) => requirePackage(`@deepseek-ai/${name}/package.json`).version,
+);
+if (
+  installedVersions.some((version) => typeof version !== 'string') ||
+  new Set(installedVersions).size !== 1
+)
+  throw Error('DSH_INSTALLED_MODULE_VERSION_MISMATCH');
+const installedDshRuntimeVersion = installedVersions[0];
 const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
@@ -1098,8 +1121,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       preparation: { skillRegistrationMs },
       serverInfo: {
         name: 'deepseek-harness-sdk-runtime',
-        version:
-          process.env.DSH_DISTRIBUTION_VERSION ?? 'unapproved-development',
+        version: installedDshRuntimeVersion,
       },
       capabilities: {
         durableQuestions: true,
