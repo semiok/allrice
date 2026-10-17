@@ -106,6 +106,35 @@ function deepseekReasoning(
   return effort;
 }
 
+/** One interpretation of deployment overrides for startup and pool launches. */
+export function configuredDshNativeLaunch(options: DshRuntimePoolOptions = {}) {
+  const configuredCommand =
+    options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
+  return {
+    command: configuredCommand ?? process.execPath,
+    args:
+      options.runtimeArgs ??
+      (process.env.ALLRICE_DSH_RUNTIME_ARGS
+        ? parseRuntimeArgs(process.env.ALLRICE_DSH_RUNTIME_ARGS)
+        : configuredCommand
+          ? []
+          : [
+              resolve(
+                import.meta.dirname,
+                '../../../dsh/allrice-jsonrpc-runtime.mjs',
+              ),
+            ]),
+    profile: resolve(
+      options.cordisConfig ??
+        process.env.ALLRICE_DSH_CORDIS_CONFIG ??
+        resolve(
+          import.meta.dirname,
+          '../../../dsh/allrice-restricted.cordis.yml',
+        ),
+    ),
+  };
+}
+
 export class DshRuntimePool {
   private readonly runtimes = new Map<string, DshRuntime>();
   private readonly credentialResolver: DshCredentialResolver;
@@ -118,34 +147,15 @@ export class DshRuntimePool {
   constructor(options: DshRuntimePoolOptions = {}) {
     this.credentialResolver =
       options.credentialResolver ?? new DeploymentDshCredentialResolver();
-    const configuredRuntimeCommand =
-      options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
-    this.runtimeCommand = configuredRuntimeCommand ?? process.execPath;
-    this.runtimeArgs =
-      options.runtimeArgs ??
-      (process.env.ALLRICE_DSH_RUNTIME_ARGS
-        ? parseRuntimeArgs(process.env.ALLRICE_DSH_RUNTIME_ARGS)
-        : configuredRuntimeCommand
-          ? []
-          : [
-              resolve(
-                import.meta.dirname,
-                '../../../dsh/allrice-jsonrpc-runtime.mjs',
-              ),
-            ]);
+    const launch = configuredDshNativeLaunch(options);
+    this.runtimeCommand = launch.command;
+    this.runtimeArgs = launch.args;
     this.runtimeRoot = resolve(
       options.runtimeRoot ??
         process.env.ALLRICE_DSH_RUNTIME_ROOT ??
         '.local/dsh-runtime',
     );
-    this.cordisConfig = resolve(
-      options.cordisConfig ??
-        process.env.ALLRICE_DSH_CORDIS_CONFIG ??
-        resolve(
-          import.meta.dirname,
-          '../../../dsh/allrice-restricted.cordis.yml',
-        ),
-    );
+    this.cordisConfig = launch.profile;
     this.requestTimeoutMs = requestTimeout(
       options.requestTimeoutMs ??
         Number(process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS ?? 300_000),

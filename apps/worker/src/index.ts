@@ -40,7 +40,11 @@ import {
   probeDshCodexProvider,
 } from './codex-auth-broker.js';
 import { executeClaimedJob } from './runtime.js';
-import { installDshNativeArtifact } from './harness/dsh-native-artifact.js';
+import {
+  installDshNativeArtifact,
+  checkedDshNativeLaunch,
+} from './harness/dsh-native-artifact.js';
+import { configuredDshNativeLaunch } from './harness/dsh/runtime-pool.js';
 import { fileURLToPath } from 'node:url';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
@@ -118,6 +122,9 @@ const nativeArtifact = await installDshNativeArtifact({
       }
     : {}),
 });
+// Provider probes/authentication also use the configured profile before a Run
+// reaches the pool. Reject unapproved deployment overrides before producers.
+checkedDshNativeLaunch(configuredDshNativeLaunch());
 const producerLifecycle = await installDevProducerLifecycle('worker');
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
