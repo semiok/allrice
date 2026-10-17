@@ -106,5 +106,41 @@ The existing service manifest and release acceptance keep their original roles.
 The disposable Compose smoke test separately builds, verifies and approves only
 its own newly built fixture image before starting its isolated Worker. This
 test-only script does not approve or change a shared Dev/Prod deployment.
-This slice does not create immutable native root bindings, migrate journals,
-select another generation, or implement automatic release ACK/publishing.
+Artifact verification alone does not migrate journals, select another
+generation, or implement automatic release ACK/publishing.
+
+## Native Session identity and current Job authority
+
+`allrice_native_session_bindings` preserves an immutable native root ID,
+organization/workspace/owner, authoritative subject, approved artifact/profile,
+and exact Session storage namespace. The first Run/Job/attempt are durable facts
+without short-lived Run/Job/test foreign keys. An ordinary binding call cannot
+delete, rebind or overwrite the identity. Archiving or revoking access retains
+the pin and prevents execution; a pin is not permission to restore a task.
+
+All five Harness execute paths use the same trusted Worker closure: ordinary
+employee runs, Workflow steps, platform technical diagnostics, private experience
+consolidation, and platform draft/method/experience tests. Only the closure holds
+the real worker/Job/token/attempt. No lease token is passed to the kernel,
+native process environment, events or tool schema. The transaction reuses
+703/root/clock/Job ordering, rejects any cancel/drain/expired authority, and
+rechecks the database clock after CAS/lock waits. Chat pointer updates commit
+atomically with the pin. Same-ID admission preserves the active turn and usage.
+Preview tests use their real test subject rather than a fabricated chat Session;
+the binder does not lock their Run/test rows in reverse finalizer order.
+
+The adapter commits the binding before acquiring a process and re-admits after
+initialization before each AllRice prompt, including cached hosts. Other tenant,
+profile or storage identities cannot replace a resident host. Existing model,
+content, assistant and Broker authorization remains mandatory.
+
+The current single approved 0.1.5 reader records
+`binding_basis=approved_compatibility_reader`, never an inferred original writer.
+There is no blanket historical backfill or fallback to an empty/new log root.
+Keep the configured runtime root stable and preserve the binding table together
+with its native storage in backups. Short-term Run/Job/test cleanup retains the
+pin. Whole-tenant destruction also requires retirement of its private namespace;
+there is no ordinary product endpoint that deletes and recreates bindings.
+Multi-artifact retention/routing, a different reader and V4 migration remain
+subsequent upgrade work. A missing or different artifact/namespace fails closed;
+do not solve it with an UPDATE to the pin or an automatic current-reader retry.

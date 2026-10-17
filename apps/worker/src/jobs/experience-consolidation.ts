@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import {
   InternalKernelRequestSchema,
   RouteDecisionSchema,
@@ -31,6 +32,7 @@ export async function executeExperienceConsolidation({
   isolation,
   signal,
   onHarnessEvent,
+  workflowLease,
 }: ClaimedJobHandlerInput) {
   const frozen = await getExperienceExecution(job.context.runId);
   const { occurrence, execution } = frozen,
@@ -220,6 +222,14 @@ export async function executeExperienceConsolidation({
     usageComplete = false;
     cacheUsageKnown = false;
     const result = await adapter.execute({
+      nativeBinding: createJobNativeBinding({
+        lease: workflowLease,
+        attempt: job.job.attempt,
+        subject: () => ({
+          kind: 'experience_consolidation',
+          id: occurrence.id,
+        }),
+      }),
       kernel,
       providerSnapshot,
       nativeSkills: execution.nativeSkills,

@@ -14,6 +14,8 @@ import {
   type AssistantFailureUsage,
 } from './assistant-outcome.js';
 import { AssistantRuntimeError } from '@allrice/database';
+import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
+import { HandlerError } from '../../errors.js';
 import { DshStartupRejection } from './startup-rejection.js';
 
 afterEach(() => {
@@ -32,6 +34,8 @@ function fixture(options: {
   failureUsage?: AssistantFailureUsage;
   failureUsageError?: boolean;
   drainError?: boolean;
+  drainHang?: boolean;
+  nativeReadmissionFailure?: Error;
   admissionFailure?: boolean;
   admissionFailureReturned?: boolean;
   admissionMethod?: string;
@@ -82,7 +86,7 @@ function fixture(options: {
         notificationListeners.delete(listener);
       };
     },
-    prompt: async () => {
+    prompt: vi.fn(async () => {
       for (const params of options.modelTimings ?? [])
         notify?.({ method: 'allrice.modelTiming', params });
       if (options.streamDiagnostic)
@@ -143,7 +147,7 @@ function fixture(options: {
         params: { sessionId: threadId, status: 'idle' },
       });
       return {};
-    },
+    }),
     assistant: vi.fn(async (action: string) => {
       order.push(action);
       for (const params of (action === 'join'
@@ -156,6 +160,7 @@ function fixture(options: {
         rejectPrompt?.(Error('native stopped'));
       if (action === 'drain' && options.drainError)
         throw Error('drain unavailable');
+      if (action === 'drain' && options.drainHang) return new Promise(() => {});
       if (action === 'diagnostics') {
         if (options.diagnosticFailure)
           throw Error('diagnostic-endpoint-failed');
@@ -237,6 +242,13 @@ function fixture(options: {
               return {};
             },
             cancellation: async () => {
+              if (options.nativeReadmissionFailure) {
+                order.push('cancellation');
+                return {
+                  nativeSessionId: threadId,
+                  instances: [{ nativeSessionId: threadId }],
+                };
+              }
               if (options.authorityFailure) throw options.authorityFailure;
               return options.rootTimeout
                 ? {
@@ -270,6 +282,43 @@ function fixture(options: {
           }),
         },
   };
+  if (options.nativeReadmissionFailure) {
+    // Explicit descriptor/pin seam: real SQL rejection is covered in P25.
+    // This case isolates the already-bound assistant's receipt/close order.
+    const descriptor = {
+      nativeSessionId: threadId,
+      artifactId: `sha256:${'a'.repeat(64)}`,
+      artifactManifestDigest: `sha256:${'a'.repeat(64)}`,
+      distributionGeneration: DSH_INSTALLED_DISTRIBUTION.generation,
+      profileId: 'restricted' as const,
+      storageContextKey: sessionId,
+      storageNamespace: '/synthetic/sessions',
+    };
+    vi.spyOn(DshRuntimePool.prototype, 'describeNativeSession').mockReturnValue(
+      descriptor,
+    );
+    input.nativeBinding = {
+      bind: vi
+        .fn<NonNullable<HarnessExecutionInput['nativeBinding']>['bind']>()
+        .mockResolvedValueOnce({
+          binding: {
+            ...descriptor,
+            organizationId: randomUUID(),
+            workspaceId: randomUUID(),
+            ownerId: randomUUID(),
+            contextKind: 'chat',
+            contextId: sessionId,
+            firstRunId: input.assistants!.rootRunId,
+            firstJobId: randomUUID(),
+            firstAttempt: 1,
+            boundAt: new Date().toISOString(),
+            bindingBasis: 'approved_compatibility_reader',
+          },
+          generation: 1,
+        })
+        .mockRejectedValue(options.nativeReadmissionFailure),
+    };
+  }
   return {
     input,
     client,
@@ -281,6 +330,62 @@ function fixture(options: {
 }
 
 describe('bounded assistant diagnostic consumption', () => {
+  it.each(['available', 'unavailable', 'hanging'] as const)(
+    'a post-initialize admission refusal preserves bounded assistant cleanup with %s drain',
+    async (drain) => {
+      vi.useFakeTimers();
+      const denied = new HandlerError(
+        'NATIVE_SESSION_ADMISSION_DENIED',
+        'Synthetic lease revoked after initialize',
+        false,
+      );
+      const receipt = {
+        usage: { inputTokens: 120, outputTokens: 7, cachedInputTokens: 0 },
+        usageComplete: false,
+        cacheUsageKnown: false,
+      };
+      const f = fixture({
+        nativeReadmissionFailure: denied,
+        failureUsage: receipt,
+        drainError: drain === 'unavailable',
+        drainHang: drain === 'hanging',
+      });
+      const outcome = f.adapter
+        .execute(f.input)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.input.nativeBinding!.bind).toHaveBeenCalledTimes(2);
+      expect(f.client.prompt).not.toHaveBeenCalled();
+      expect(f.order.slice(0, 5)).toEqual([
+        'bind',
+        'diagnostics',
+        'cancel',
+        'cancellation',
+        'drain',
+      ]);
+      if (drain === 'hanging') {
+        expect(f.order).not.toContain('drop');
+        await vi.advanceTimersByTimeAsync(25000);
+        expect(f.order).not.toContain('failureUsage');
+      } else {
+        expect(f.order.indexOf('drain')).toBeLessThan(
+          f.order.indexOf('failureUsage'),
+        );
+        expect(f.order.indexOf('failureUsage')).toBeLessThan(
+          f.order.indexOf('drop'),
+        );
+      }
+      const error = await outcome;
+      expect(error).toBe(denied);
+      expect(getAssistantFailureDiagnostics(error)).toEqual(f.diagnostics);
+      expect(
+        getAssistantFailureUsage(error, f.input.assistants!.rootRunId, 1),
+      ).toEqual(drain === 'hanging' ? undefined : receipt);
+      expect(f.order.filter((action) => action === 'drop')).toHaveLength(1);
+      expect(f.order).not.toContain('finish');
+      expect(f.client.prompt).not.toHaveBeenCalled();
+    },
+  );
   it.each(['join', 'drain'] as const)(
     'keeps timing capture through %s and disposes it after final flush',
     async (action) => {

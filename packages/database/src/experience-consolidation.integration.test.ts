@@ -1,4 +1,10 @@
 import type * as NativeBudget from './run-memory-context.ts';
+import { bindJobNativeSession } from './execution/queue.ts';
+import {
+  nativeBindingDescriptor,
+  nativeBindingInsertGate,
+  nativeBindingWaiter,
+} from './native-session-binding.fixture.ts';
 import type * as NativeSource from './run-experience-source.ts';
 import { withEmployeeMemorySourceTool } from '@allrice/contracts';
 import {
@@ -553,6 +559,83 @@ suite(
         },
       };
     }
+    it.each(['forget', 'skill'] as const)(
+      'denies native consolidation binding after current source change %s',
+      async (change) => {
+        const f = await leased(true);
+        if (change === 'forget')
+          await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
+        else
+          await db`update allrice_personal_skill_bindings set enabled=false,epoch=epoch+1 where id=${f.pin!.bindingId}`;
+        const descriptor = nativeBindingDescriptor({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          contextKey: `experience-${f.occurrence.id}`,
+        });
+        await expect(
+          bindJobNativeSession({
+            ...f.lease,
+            attempt: f.job.attempt,
+            subject: { kind: 'experience_consolidation', id: f.occurrence.id },
+            descriptor,
+          }),
+        ).rejects.toBeDefined();
+        expect(
+          await db`select native_session_id from allrice_native_session_bindings where native_session_id=${descriptor.nativeSessionId}`,
+        ).toHaveLength(0);
+      },
+    );
+    it('serializes native consolidation binding with a real policy update and denies old post-initialize authority', async () => {
+      const f = await leased(true),
+        descriptor = nativeBindingDescriptor({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          contextKey: `experience-${f.occurrence.id}`,
+        });
+      const input = {
+        ...f.lease,
+        attempt: f.job.attempt,
+        subject: {
+          kind: 'experience_consolidation' as const,
+          id: f.occurrence.id,
+        },
+        descriptor,
+      };
+      const gate = await nativeBindingInsertGate(
+        db,
+        descriptor.nativeSessionId,
+      );
+      const binding = bindJobNativeSession(input).then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      let changing: Promise<unknown> | undefined;
+      try {
+        const binderPid = await nativeBindingWaiter(db, gate.pid);
+        const policy = await readExperiencePolicy(f.org);
+        changing = updateExperiencePolicy(f.reviewer, f.org, {
+          expectedRevision: policy.revision,
+          frequency: 'weekly',
+          timezone: 'Asia/Shanghai',
+          time: '04:00',
+          weekday: 2,
+          monthDay: 1,
+        });
+        await nativeBindingWaiter(db, binderPid);
+      } finally {
+        await gate.release();
+      }
+      expect(await binding).toHaveProperty('value');
+      await changing;
+      await expect(bindJobNativeSession(input)).rejects.toBeDefined();
+      expect(
+        (
+          await db`select first_job_id from allrice_native_session_bindings where native_session_id=${descriptor.nativeSessionId}`
+        )[0]!.first_job_id,
+      ).toBe(input.jobId);
+    }, 30000);
     it('validates the same draft once with a private test and independently persists coverage without adoption', async () => {
       const f = await validationFixture();
       await Promise.all([
@@ -568,7 +651,21 @@ suite(
         ),
       ).toHaveLength(1);
       expect(tests[0]!.input.prompt).toContain('complete-a');
-      const test = (await claimNextPlatformEmployeeTestRun(randomUUID()))!;
+      const validationWorker = randomUUID();
+      const test = (await claimNextPlatformEmployeeTestRun(validationWorker))!;
+      const pin = await bindJobNativeSession({
+        workerId: validationWorker,
+        jobId: test.previewExecution.jobId,
+        leaseToken: test.previewExecution.leaseToken,
+        attempt: test.previewExecution.jobAttempt,
+        subject: { kind: 'platform_employee_test', id: test.id },
+        descriptor: nativeBindingDescriptor({
+          ...test.previewContext,
+          contextKey: `experience-${test.id}`,
+        }),
+      });
+      expect(pin.binding.contextId).toBe(test.id);
+      expect(pin.conversation).toBeUndefined();
       expect(test.experienceCandidate?.instructions).toContain(
         f.output.drafts[0]!.rule,
       );

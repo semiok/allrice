@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
 import { LocalStorageAdapter } from '@allrice/storage';
 
@@ -1386,6 +1387,30 @@ export async function executeEmployeeRun({
         '先前执行进程已中断；结果不明的操作不会自动重跑，请查看已保留的内容与执行记录。',
         false,
       );
+    const nativeBinding = createJobNativeBinding({
+      lease: workflowLease,
+      attempt: execution.job.attempt,
+      subject: () => ({
+        kind: 'chat',
+        id: ownership.sessionId,
+        configChecksum: runtime.configChecksum,
+        generation: runtime.generation,
+        expectedThreadId: runtime.threadId,
+      }),
+      onBound: async (value, descriptor) => {
+        if (!value.conversation) throw Error('native_chat_binding_missing');
+        const replacedThreadId = runtime.threadId;
+        runtime = value.conversation;
+        if (replacedThreadId !== descriptor.nativeSessionId)
+          await appendChatFlowEvent('session.bound', {
+            source: adapter.kind,
+            threadId: descriptor.nativeSessionId,
+            generation: runtime.generation,
+            resumed: replacedThreadId === descriptor.nativeSessionId,
+            replacedThreadId,
+          });
+      },
+    });
     const result: HarnessExecutionResult =
       routeDecision.selectedKind === 'workflow'
         ? await (async () => {
@@ -1580,6 +1605,7 @@ export async function executeEmployeeRun({
                   authorizedToolNames: authorizedTools.map((tool) => tool.name),
                   tools: [],
                   threadId: runtime.threadId,
+                  nativeBinding,
                   onThreadBound: async ({
                     threadId,
                     resumed,
@@ -1740,6 +1766,7 @@ export async function executeEmployeeRun({
                       )
                   : undefined,
               threadId: runtime.threadId,
+              nativeBinding,
               onThreadBound: async ({
                 threadId,
                 resumed,

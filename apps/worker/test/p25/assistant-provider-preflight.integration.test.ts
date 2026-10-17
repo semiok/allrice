@@ -49,6 +49,9 @@ import { executeEmployeeRun } from '../../src/jobs/employee-run.js';
 import { assembleEmployeeKernel } from '../../src/employee-kernel.js';
 import { estimateConversationTokens } from '../../../../packages/database/src/conversation/conversation-checkpoint.ts';
 import { HandlerError } from '../../src/errors.js';
+import { acquireConversationRuntime as acquireConversationActual } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
+import { nativeBindingDescriptor } from '../../../../packages/database/src/native-session-binding.fixture.ts';
+import type { DshRuntime } from '../../src/harness/dsh/runtime-pool.js';
 import { DshHarnessAdapter } from '../../src/harness/dsh-adapter.js';
 import { DshRuntimePool } from '../../src/harness/dsh/runtime-pool.js';
 import { assistantPriceSnapshotDigest } from '../../src/assistant-pricing-preflight.js';
@@ -709,6 +712,117 @@ integration(
       expect(state.bind).not.toHaveBeenCalled();
       expect(adapter.runtimeInventory()).toEqual([]);
     }
+    it.each([false, true])(
+      'commits the actual leased native pin before ordinary/workflow acquisition (workflow %s)',
+      async (workflow) => {
+        const { f, job } = await fixture({
+          compatible: true,
+          price: true,
+          enabled: false,
+          workflow,
+        });
+        state.runtime.mockImplementation((value) =>
+          value
+            ? acquireConversationActual(value)
+            : Promise.resolve({ generation: 1, threadId: null }),
+        );
+        const descriptor = vi
+          .spyOn(DshRuntimePool.prototype, 'describeNativeSession')
+          .mockImplementation((_input, threadId) => ({
+            ...nativeBindingDescriptor({
+              organizationId: f.org,
+              workspaceId: f.workspace,
+              ownerId: f.user,
+              contextKey: f.session,
+            }),
+            nativeSessionId: threadId,
+          }));
+        acquire.mockImplementationOnce(async (value) => {
+          expect(value.nativePin).toMatchObject({
+            firstJobId: f.worker.jobId,
+            firstRunId: f.rootRunId,
+            ownerId: f.user,
+          });
+          const [pin] =
+            await database.db`select * from allrice_native_session_bindings where native_session_id=${value.threadId}`;
+          expect(pin!.first_job_id).toBe(f.worker.jobId);
+          throw lateError;
+        });
+        try {
+          await expect(executeEmployeeRun(job)).rejects.toBe(lateError);
+          expect(acquire).toHaveBeenCalledOnce();
+          noNativeAccess();
+        } finally {
+          descriptor.mockRestore();
+        }
+      },
+    );
+    it('rechecks the real lease after initialize and refuses an ordinary prompt after cancellation', async () => {
+      const { f, job } = await fixture({
+        compatible: true,
+        price: true,
+        enabled: false,
+      });
+      state.runtime.mockImplementation((value) =>
+        value
+          ? acquireConversationActual(value)
+          : Promise.resolve({ generation: 1, threadId: null }),
+      );
+      const descriptor = vi
+        .spyOn(DshRuntimePool.prototype, 'describeNativeSession')
+        .mockImplementation((_input, threadId) => ({
+          ...nativeBindingDescriptor({
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            ownerId: f.user,
+            contextKey: f.session,
+          }),
+          nativeSessionId: threadId,
+        }));
+      const prompt = vi.fn();
+      acquire.mockImplementationOnce(async (value) => {
+        expect(value.nativePin!.firstJobId).toBe(f.worker.jobId);
+        // Only the initialization port is synthetic. Real handler, adapter,
+        // lease cancellation and both SQL admissions remain in this test.
+        await database.db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_request' where id=${f.worker.jobId}`;
+        const runtime = {
+          id: randomUUID(),
+          sessionId: value.threadId,
+          client: {
+            setRequestHandler: vi.fn(),
+            subscribe: () => () => {},
+            prompt,
+          },
+        } as unknown as DshRuntime;
+        return {
+          runtime,
+          fresh: true,
+          preparation: {
+            cache: 'miss',
+            reason: 'not_resident',
+            changedFields: [],
+            credentialResolutionMs: 0,
+            previousRuntimeCloseMs: 0,
+            initializeMs: 0,
+            skillRegistrationMs: 0,
+            acquireMs: 0,
+          },
+        };
+      });
+      try {
+        await expect(executeEmployeeRun(job)).rejects.toMatchObject({
+          code: 'NATIVE_SESSION_ADMISSION_DENIED',
+        });
+        expect(prompt).not.toHaveBeenCalled();
+        expect(acquire).toHaveBeenCalledOnce();
+        noNativeAccess();
+        expect(
+          await database.db`select native_session_id from allrice_native_session_bindings where first_job_id=${f.worker.jobId}`,
+        ).toHaveLength(1);
+      } finally {
+        descriptor.mockRestore();
+      }
+    });
     it('starts an empty-memory Worker with the frozen source tool through real root admission', async () => {
       const { f, job } = await fixture({
         compatible: true,

@@ -15,6 +15,7 @@ import {
   type HarnessEvent,
 } from '@allrice/contracts';
 import { AssistantRuntimeError } from '@allrice/database';
+import type { NativeSessionPin } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
 import { HandlerError } from '../errors.js';
@@ -156,7 +157,22 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const systemInstructions = input.kernel.systemInstructions;
     let generation = input.generation;
     const threadBindingStarted = performance.now();
-    if (!input.threadId || input.threadId !== threadId) {
+    const nativeDescriptor = this.runtimePool.describeNativeSession(
+      input,
+      threadId,
+    );
+    let nativePin: NativeSessionPin | undefined;
+    if (nativeDescriptor) {
+      if (!input.nativeBinding)
+        throw new HandlerError(
+          'DSH_NATIVE_SESSION_BINDING_REQUIRED',
+          '原生会话尚未获得当前任务授权。',
+          false,
+        );
+      const bound = await input.nativeBinding.bind(nativeDescriptor);
+      nativePin = bound.binding;
+      generation = bound.generation ?? generation;
+    } else if (!input.threadId || input.threadId !== threadId) {
       const bound = await input.onThreadBound?.({
         threadId,
         resumed: Boolean(existing),
@@ -165,12 +181,19 @@ export class DshHarnessAdapter implements HarnessAdapter {
       generation = bound?.generation ?? generation;
     }
     const threadBindingMs = performance.now() - threadBindingStarted;
+    if (input.signal.aborted)
+      throw new HandlerError(
+        'EXECUTION_ABORTED',
+        'DSH execution was interrupted',
+        false,
+      );
     const { runtime, fresh, preparation } = await this.runtimePool.acquire({
       input,
       snapshot,
       threadId,
       systemInstructions,
       nativeSkills,
+      nativePin,
     });
     const runtimeBindingStarted = performance.now();
     this.runtimePool.touch(runtime);
@@ -618,6 +641,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
         },
       });
       for (let callIndex = 0; ; callIndex++) {
+        // Initialization, event persistence or a previous tool round may
+        // outlive the lease. The pin alone never authorizes another prompt.
+        if (nativeDescriptor) {
+          const admitted = await input.nativeBinding!.bind(nativeDescriptor);
+          if (JSON.stringify(admitted.binding) !== JSON.stringify(nativePin))
+            throw new HandlerError(
+              'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+              '原生会话身份已变化。',
+              false,
+            );
+        }
         if (executionSignal.aborted)
           throw new HandlerError(
             'EXECUTION_ABORTED',

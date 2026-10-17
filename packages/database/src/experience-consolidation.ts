@@ -674,23 +674,32 @@ export async function bindExperienceRun(
 }
 
 export async function getExperienceExecution(runId: string) {
-  return getDatabase().begin(async (tx) => {
-    const [r] =
-      await tx`select id from allrice_automation_runs where run_id=${runId} and experience_occurrence is not null`;
-    if (!r) return deny();
-    const { row, occurrence } = await loadOccurrence(tx, r.id);
-    if (row.deleted_at || row.automation_status !== 'enabled') return deny();
-    await assertCurrent(tx, occurrence);
-    const execution = ExperienceExecutionSchema.parse(row.experience_execution);
-    assertFrozenBaseSkillCatalog(execution.catalog, execution.nativeSkills);
-    if (
-      execution.model.occurrenceId !== occurrence.id ||
-      execution.model.employeeId !== occurrence.employeeId ||
-      execution.occurrenceDigest !== runtimePolicyDigest(occurrence)
-    )
-      return deny();
-    return { occurrence, execution };
-  });
+  return getDatabase().begin((tx) =>
+    getExperienceExecutionInTransaction(tx, runId),
+  );
+}
+
+/** Preserves the full source/policy/Skill authority check in the caller's
+ * existing Job transaction, without acquiring a second connection or lock183. */
+export async function getExperienceExecutionInTransaction(
+  tx: Tx,
+  runId: string,
+) {
+  const [r] =
+    await tx`select id from allrice_automation_runs where run_id=${runId} and experience_occurrence is not null`;
+  if (!r) return deny();
+  const { row, occurrence } = await loadOccurrence(tx, r.id);
+  if (row.deleted_at || row.automation_status !== 'enabled') return deny();
+  await assertCurrent(tx, occurrence);
+  const execution = ExperienceExecutionSchema.parse(row.experience_execution);
+  assertFrozenBaseSkillCatalog(execution.catalog, execution.nativeSkills);
+  if (
+    execution.model.occurrenceId !== occurrence.id ||
+    execution.model.employeeId !== occurrence.employeeId ||
+    execution.occurrenceDigest !== runtimePolicyDigest(occurrence)
+  )
+    return deny();
+  return { occurrence, execution };
 }
 
 /** completeJob owns the lease lock and commits receipt + source progress atomically. */
