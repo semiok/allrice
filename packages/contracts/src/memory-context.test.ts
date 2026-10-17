@@ -8,7 +8,10 @@ import {
   selectWholeMemories,
   RunMemoryContextStateSchema,
   memoryContextPolicy,
+  freezeMemorySourceToolNames,
 } from './memory-context.ts';
+import { EmployeeCapabilityBindingsSchema } from './employees.ts';
+import { withPlatformImageTools } from './image-generation.ts';
 
 describe('whole memory transport budgets', () => {
   it('counts UTF-8 bytes including the actual locator and kernel wrapper', () => {
@@ -82,5 +85,54 @@ describe('whole memory transport budgets', () => {
     expect(
       withEmployeeMemorySourceTool(['workspace.file.read'], ['storage:read']),
     ).not.toContain('workspace.experience.read');
+  });
+  it('keeps valid full tool sets usable and never removes an existing tool for a source companion', () => {
+    const source = 'workspace.experience.read';
+    const tools = Array.from({ length: 63 }, (_, i) =>
+      i ? `synthetic_${i}` : 'workspace.memory.search',
+    );
+    const expanded = freezeMemorySourceToolNames(
+      tools,
+      ['storage:read'],
+      undefined,
+    );
+    expect(expanded).toEqual([...tools, source]);
+    expect(
+      freezeMemorySourceToolNames(expanded, ['storage:read'], undefined),
+    ).toEqual(expanded);
+    const full = [...tools, 'synthetic_last'];
+    expect(
+      freezeMemorySourceToolNames(full, ['storage:read'], undefined),
+    ).toEqual(full);
+    const frozenFull = [...tools.slice(0, 62), 'image.generate', 'image.edit'];
+    expect(
+      freezeMemorySourceToolNames(frozenFull, ['storage:read'], undefined),
+    ).toEqual(frozenFull);
+    expect(
+      EmployeeCapabilityBindingsSchema.shape.toolNames.safeParse([
+        ...full,
+        source,
+      ]).success,
+    ).toBe(false);
+  });
+  it('reserves the real image tool slots before adding optional source expansion', () => {
+    const model = {
+      harness: 'dsh',
+      provider: 'openai-codex',
+      authMode: 'chatgpt_subscription',
+      platformSettings: { configuration: { imagesEnabled: true } },
+    } as NonNullable<Parameters<typeof freezeMemorySourceToolNames>[2]>;
+    const grants = ['storage:read', 'storage:write', 'model:invoke'] as const;
+    const tools = [
+      'workspace.memory.search',
+      'workspace.export.create',
+      ...Array.from({ length: 59 }, (_, i) => `synthetic_${i}`),
+    ];
+    const expanded = freezeMemorySourceToolNames(tools, grants, model);
+    expect(expanded).toContain('workspace.experience.read');
+    expect(withPlatformImageTools(expanded, grants, model)).toHaveLength(64);
+    const full = [...tools, 'synthetic_last'];
+    expect(freezeMemorySourceToolNames(full, grants, model)).toEqual(full);
+    expect(withPlatformImageTools(full, grants, model)).toHaveLength(64);
   });
 });

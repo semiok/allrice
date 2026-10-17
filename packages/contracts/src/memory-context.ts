@@ -1,5 +1,26 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
+import { EmployeeCapabilityBindingsSchema } from './employees.ts';
+import { withPlatformImageTools } from './image-generation.ts';
+import { withEmployeeMemorySourceTool } from './tool-manifest.ts';
+import type { SkillCapability } from './skills.ts';
+
+/** Optional source expansion cannot displace an existing tool or overflow the
+ * final native set, including image tools derived from the frozen model. */
+export function freezeMemorySourceToolNames(
+  toolNames: readonly string[],
+  capabilities: readonly SkillCapability[],
+  model: Parameters<typeof withPlatformImageTools>[2],
+) {
+  const expanded = withEmployeeMemorySourceTool(toolNames, capabilities);
+  return EmployeeCapabilityBindingsSchema.shape.toolNames.safeParse(expanded)
+    .success &&
+    EmployeeCapabilityBindingsSchema.shape.toolNames.safeParse(
+      withPlatformImageTools(expanded, capabilities, model),
+    ).success
+    ? expanded
+    : [...toolNames];
+}
 
 /** Content transport limits, not a tokenizer or a claim about model billing. */
 export const memoryContextPolicy = {
