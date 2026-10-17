@@ -351,6 +351,46 @@ describe('Codex hosted search Tool Broker integration', () => {
     ).rejects.toMatchObject({ code: 'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED' });
   });
 
+  it('confirms only pre-write memory refusals for the exact invocation', async () => {
+    const context = executionContext();
+    const call = {
+      id: randomUUID(),
+      name: 'workspace.memory.remember',
+      arguments: { content: '观察名单 NVDA、COIN', lifecycleState: 'durable' },
+    };
+    const common = {
+      context,
+      capabilities: ['storage:write'] as ['storage:write'],
+      storageRoot: '.local/storage',
+      employeeId: randomUUID(),
+      userMessageId: randomUUID(),
+      call,
+    };
+    const identity = {
+      runId: context.runId,
+      callId: call.id,
+      toolName: call.name,
+    };
+    const denied = await executeRiceTool({
+      ...common,
+      userRequest: '你记在哪里啦',
+    }).catch((error) => error);
+    expect(denied).toMatchObject({
+      code: 'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED',
+    });
+    expect(createTraceableMemory).not.toHaveBeenCalled();
+    expect(isConfirmedToolFailure(denied, identity)).toBe(true);
+    expect(
+      isConfirmedToolFailure(denied, { ...identity, callId: randomUUID() }),
+    ).toBe(false);
+    const uncertain = new Error('commit acknowledgement lost');
+    createTraceableMemory.mockRejectedValueOnce(uncertain);
+    await expect(
+      executeRiceTool({ ...common, userRequest: '请记住我的观察名单。' }),
+    ).rejects.toBe(uncertain);
+    expect(isConfirmedToolFailure(uncertain, identity)).toBe(false);
+  });
+
   it('dispatches only structured Bridge commands with governed risks', async () => {
     expect(
       riceToolDefinitionsForCapabilities(['storage:read']).map(

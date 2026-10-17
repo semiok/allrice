@@ -22,7 +22,7 @@ import { inspectOffice } from '../../office/inspect.js';
 import { officeMediaTypes, type OfficeFormat } from '../../office/package.js';
 import { parseDocument } from '../../document-reader.js';
 import { readPdfLocally } from '../../document-read-local.js';
-import { HandlerError } from '../../errors.js';
+import { confirmToolFailure, HandlerError } from '../../errors.js';
 import {
   hasExplicitRememberIntent,
   hasStableMemorySignal,
@@ -450,32 +450,38 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
+  const rejected = (code: string, message: string) => {
+    const error = new HandlerError(code, message, false);
+    confirmToolFailure(error, {
+      runId: input.context.runId,
+      callId: input.call.id,
+      toolName: input.call.name,
+    });
+    return error;
+  };
   const lifecycleState = memoryLifecycleStateValue(args.lifecycleState);
   if (
     lifecycleState === 'durable' &&
     !hasExplicitRememberIntent(input.userRequest)
   ) {
-    throw new HandlerError(
+    throw rejected(
       'MEMORY_EXPLICIT_CONFIRMATION_REQUIRED',
       '只有用户在当前消息中明确要求记住时，才能写入长期记忆',
-      false,
     );
   }
   if (
     lifecycleState === 'candidate' &&
     !hasStableMemorySignal(input.userRequest)
   ) {
-    throw new HandlerError(
+    throw rejected(
       'MEMORY_STABLE_USER_STATEMENT_REQUIRED',
       '候选记忆必须来自用户当前消息中的稳定偏好、决定或项目事实',
-      false,
     );
   }
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
-    throw new HandlerError(
+    throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
       '长期记忆缺少当前员工或用户消息来源',
-      false,
     );
   }
   const content = stringValue(args.content, 'content');

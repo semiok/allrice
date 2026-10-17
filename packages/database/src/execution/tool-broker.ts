@@ -34,6 +34,7 @@ import {
 } from '../company-run-assets.ts';
 import { CompanyAssetError } from '../company-assets.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
+import { memorySearchPatterns } from '../memory/search-patterns.ts';
 
 interface ResourceRow {
   id: string;
@@ -722,7 +723,8 @@ export async function searchToolBrokerMemories(
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
   const sql = transaction ?? getDatabase();
-  const pattern = `%${query.trim().slice(0, 500)}%`;
+  const { exact, patterns } = memorySearchPatterns(query);
+  if (!patterns.length) return [];
   const rows = await sql<
     (ResourceRow & {
       content: string;
@@ -746,8 +748,11 @@ export async function searchToolBrokerMemories(
       and not exists(select 1 from allrice_employee_runs er
         where er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.method_authoring
           and m.source_type='message' and m.source_id in (er.user_message_id,er.assistant_message_id))
-      and content ilike ${pattern}
-    order by updated_at desc
+      and content ilike any(${patterns}::text[])
+    order by (content ilike ${exact}) desc,
+      (select count(*) from unnest(${patterns}::text[]) term(pattern)
+        where content ilike term.pattern) desc,
+      updated_at desc, id
     limit ${Math.min(Math.max(limit, 1), 20)}
   `;
   const experience = await searchRunExperiences(
