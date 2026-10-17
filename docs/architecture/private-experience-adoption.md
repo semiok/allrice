@@ -72,12 +72,30 @@ candidates, and never proves the request satisfies every scope condition. Explic
 task formatting still takes precedence. Extra business actions, unknown clauses,
 contradictory scope and punctuation that splits a negation are rejected.
 
-`report-style-clauses-v2` records the recognizer separately from the unchanged
+`report-style-clauses-v3` composes a report context, finite presentation action,
+and complete scope clauses. A scope may exclude specified formats or explicitly
+give them priority, while excluding other genres. Unknown or leftover clauses
+remain unsupported. Original tentative confidence and proposed validation remain
+unchanged; direct feedback is not proof of a stable long-term preference.
+
+The recognizer is recorded separately from the unchanged
 `report_style / version: 1` semantic key, so withdrawn preferences stay withdrawn.
-Earlier proofs without this metadata remain readable. A direct-preference proof
+Earlier proofs without this metadata or with `report-style-clauses-v2` remain
+readable without rewriting their proof or pin. A direct-preference proof
 records explicit source feedback under the current platform policy; it does not
 claim that a model-proposed A/B comparison was performed. Completed batches are
 not automatically reopened after a recognizer update.
+
+An internal, explicitly targeted `reassessReportStyleAdoption` continuation can
+reconsider one completed grammar refusal. It requires the current private owner,
+exact occurrence/draft and expected output/decision digests, then uses the same
+consumer and current policy/source/Skill/conflict checks. It appends the original
+decision, the new decision and recognizer version to the existing audit log in
+the adoption transaction. Concurrent or uncertain retries return that recorded
+decision; other drafts and original model receipts remain unchanged. A recorded
+decision is historical, not a claim that its memory is still active. Tombstones
+and later authorization checks still win. There is no new HTTP/model tool,
+scheduler, table, blanket reopening or model/test invocation.
 
 ## MET184: memory loading scope and limit
 

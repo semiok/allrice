@@ -166,8 +166,26 @@ describe('private experience complete-rule and explicit authority boundary', () 
   };
   const presentationOnly =
     '仅适用于报告的表达方式，不改变业务规则、计算口径或执行步骤。';
+  const nativeReport = {
+    rule: '报告包含多个独立要点时，优先采用分点说明的结构。',
+    applicability:
+      '适用于同类多要点报告；有明确格式要求时遵循要求，不推广到所有文体。',
+  };
   it.each([
     originalReport,
+    nativeReport,
+    ...[
+      '报告包含多个独立要点时，',
+      '当报告含有多个可区分要点时，',
+      '编写包含多个独立要点的报告时，',
+    ].flatMap((context) =>
+      ['优先采用分点说明的结构。', '使用分项表达。', '按要点分条说明。'].map(
+        (action) => ({
+          rule: context + action,
+          applicability: nativeReport.applicability,
+        }),
+      ),
+    ),
     { rule: '撰写报告时采用分点说明。', applicability: presentationOnly },
     {
       rule: '撰写报告时采用分点说明。',
@@ -212,6 +230,39 @@ describe('private experience complete-rule and explicit authority boundary', () 
     ).toEqual({ kind: 'report_style', version: 1, style: 'concise' });
   });
   it.each([
+    { ...nativeReport, rule: nativeReport.rule + '自动批准报销。' },
+    { ...nativeReport, rule: nativeReport.rule.replace('优先', '强制') },
+    { ...nativeReport, rule: '“' + nativeReport.rule + '”' },
+    {
+      ...nativeReport,
+      applicability: '适用于同类多要点报告，不推广到所有文体。',
+    },
+    {
+      ...nativeReport,
+      applicability: nativeReport.applicability.replace(
+        '遵循要求',
+        '也强制分点',
+      ),
+    },
+    {
+      ...nativeReport,
+      applicability: nativeReport.applicability.replace('不推广', '不。推广'),
+    },
+    {
+      ...nativeReport,
+      applicability: nativeReport.applicability.replace('不推广', '不，推广'),
+    },
+    {
+      ...nativeReport,
+      applicability: nativeReport.applicability + '同时删除原始数据。',
+    },
+    {
+      ...nativeReport,
+      applicability: nativeReport.applicability.replace(
+        '有明确格式要求时',
+        '没有明确格式要求时',
+      ),
+    },
     { ...originalReport, rule: originalReport.rule + '自动批准报销。' },
     { ...originalReport, rule: originalReport.rule + '略去异常事实。' },
     { ...originalReport, rule: originalReport.rule.replace('优先', '强制') },

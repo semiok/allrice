@@ -5,7 +5,7 @@ import { ExperienceSkillValidationSchema } from './experience-validation.ts';
 
 const Digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 // Recognition grammar evolves independently of the semantic key and tombstones.
-export const REPORT_STYLE_RECOGNIZER_VERSION = 'report-style-clauses-v2';
+export const REPORT_STYLE_RECOGNIZER_VERSION = 'report-style-clauses-v3';
 
 export const SupportedExperienceRuleSchema = z.discriminatedUnion('kind', [
   z
@@ -32,7 +32,9 @@ export const ExperienceAdoptionProofSchema = z
     draftDigest: Digest,
     sourceDigest: Digest,
     rule: SupportedExperienceRuleSchema,
-    recognizerVersion: z.literal(REPORT_STYLE_RECOGNIZER_VERSION).optional(),
+    recognizerVersion: z
+      .enum(['report-style-clauses-v2', REPORT_STYLE_RECOGNIZER_VERSION])
+      .optional(),
     validation: z.discriminatedUnion('kind', [
       z
         .object({
@@ -156,15 +158,28 @@ function completeReportStyle(rule: string, applicability: string) {
   const scope = normalize(applicability);
   const presentationOnly =
     /^(?:仅|只)适用于报告的表达方式[，,。.;；：:]?不改变业务规则[、，,]?计算口径[、，,]?或执行步骤$/u;
-  const multiplePointsWithoutFormat =
-    /^(?:仅|只)?适用于(?:包含|含有)?多个(?:可区分)?要点[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告[，,。.;；]不(?:推及|扩展到)(?:所有|其他)文体$/u;
-  if (!presentationOnly.test(scope) && !multiplePointsWithoutFormat.test(scope))
-    return null;
-  const context =
-    '(?:撰写|编写|输出|交付)(?:(?:包含|含有)?多个(?:可区分)?要点的)?报告时[，,]?(?:优先)?';
+  // Compose complete, finite clauses. An explicit format may be excluded from
+  // the scope, or have priority in its own clause. Never discard leftovers or
+  // join a negation across punctuation to infer either condition.
+  const points = '(?:多个(?:可区分|独立)?要点|多要点)';
+  const boundary = '[，,。.;；]';
+  const noOtherGenres = '不(?:推及|推广到|扩展到)(?:所有|其他)文体';
+  const unformattedReport = `(?:仅|只)?适用于(?:包含|含有)?${points}[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告`;
+  const reportTopic = `(?:仅|只)?适用于(?:同类)?(?:包含|含有)?${points}(?:的)?报告`;
+  const formatPriority = '有(?:明确|指定)格式要求时(?:遵循|按)(?:该格式)?要求';
+  const limitedScope = new RegExp(
+    `^(?:${unformattedReport}${boundary}${noOtherGenres}|${reportTopic}${boundary}${formatPriority}${boundary}${noOtherGenres})$`,
+    'u',
+  );
+  if (!presentationOnly.test(scope) && !limitedScope.test(scope)) return null;
+  const writing = `(?:撰写|编写|输出|交付)(?:(?:包含|含有)?${points}的)?报告时`;
+  const reportCondition = `(?:当)?报告(?:包含|含有)${points}时`;
+  const context = `(?:${writing}|${reportCondition})[，,]?(?:优先)?`;
+  const structuredObject =
+    '(?:(?:分点|分项|分条)(?:方式|结构|(?:表达|说明)(?:的结构)?)|条理清晰的(?:方式|表达|说明|结构))';
   if (
     new RegExp(
-      `^${context}(?:(?:采用|使用|保持)(?:分点|分项|分条|条理清晰的)(?:方式|表达|说明)|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))$`,
+      `^${context}(?:(?:采用|使用|保持)${structuredObject}|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))$`,
       'u',
     ).test(action)
   )

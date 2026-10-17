@@ -26,6 +26,7 @@ import { experienceSkillFixture } from './experience-skill.fixture.ts';
 import { freezePersonalSkills } from './employees/personal-skills.ts';
 import {
   syncExperienceAdoptions,
+  reassessReportStyleAdoption,
   readPrivateExperience,
   assertExperienceReadPins,
 } from './experience-adoption.ts';
@@ -2020,12 +2021,19 @@ suite(
       ).toHaveLength(1);
     });
     it.each([
-      { specific: true, limited: false },
-      { specific: true, limited: true },
-      { specific: false, limited: true },
+      { specific: true, limited: false, oldVersion: undefined, native: false },
+      { specific: true, limited: true, oldVersion: undefined, native: false },
+      {
+        specific: true,
+        limited: true,
+        oldVersion: 'report-style-clauses-v2' as const,
+        native: false,
+      },
+      { specific: true, limited: true, oldVersion: undefined, native: true },
+      { specific: false, limited: true, oldVersion: undefined, native: false },
     ])(
       'uses direct report preference proof without a model test: %j',
-      async ({ specific, limited }) => {
+      async ({ specific, limited, oldVersion, native }) => {
         const f = await leased(
           false,
           false,
@@ -2037,13 +2045,29 @@ suite(
         );
         const output = await proof(f);
         Object.assign(output.drafts[0]!, {
-          rule: limited
-            ? '撰写包含多个要点的报告时，优先按要点分条说明。'
-            : '撰写报告时采用分点说明。',
-          applicability: limited
-            ? '适用于包含多个可区分要点、且无指定格式要求的同类报告；不推及所有文体。'
-            : '仅适用于报告的表达方式：不改变业务规则、计算口径，或执行步骤。',
-          validation: { kind: 'preference', check: '仅报告表达方式' },
+          rule: native
+            ? '报告包含多个独立要点时，优先采用分点说明的结构。'
+            : limited
+              ? '撰写包含多个要点的报告时，优先按要点分条说明。'
+              : '撰写报告时采用分点说明。',
+          applicability: native
+            ? '适用于同类多要点报告；有明确格式要求时遵循要求，不推广到所有文体。'
+            : limited
+              ? '适用于包含多个可区分要点、且无指定格式要求的同类报告；不推及所有文体。'
+              : '仅适用于报告的表达方式：不改变业务规则、计算口径，或执行步骤。',
+          ...(native
+            ? {
+                reason:
+                  '用户肯定了该报告分点说明的清晰度和阅读便利性；单次评价尚不足以确认长期偏好。',
+                confidence: 'tentative',
+              }
+            : {}),
+          validation: {
+            kind: 'preference',
+            check: native
+              ? '在后续同类报告中，提供内容一致的分点版与连续段落版，请用户比较并确认分点版是否更清晰、便于阅读。'
+              : '仅报告表达方式',
+          },
         });
         await completeJob({ ...f.lease, result: output });
         await syncAutomationRuns();
@@ -2061,15 +2085,17 @@ suite(
         const parse = ExperienceAdoptionProofSchema.parse.bind(
           ExperienceAdoptionProofSchema,
         );
-        const oldWriter = !limited
-          ? vi
-              .spyOn(ExperienceAdoptionProofSchema, 'parse')
-              .mockImplementation((...args) => {
-                const proof = parse(...args);
-                delete proof.recognizerVersion;
-                return proof;
-              })
-          : null;
+        const oldWriter =
+          !limited || oldVersion
+            ? vi
+                .spyOn(ExperienceAdoptionProofSchema, 'parse')
+                .mockImplementation((...args) => {
+                  const proof = parse(...args);
+                  if (oldVersion) proof.recognizerVersion = oldVersion;
+                  else delete proof.recognizerVersion;
+                  return proof;
+                })
+            : null;
         try {
           await Promise.all([
             syncExperienceAdoptions(),
@@ -2088,7 +2114,8 @@ suite(
             evaluator: 'report-style-v1',
           });
           expect(adopted.adoption_proof.recognizerVersion).toBe(
-            limited ? REPORT_STYLE_RECOGNIZER_VERSION : undefined,
+            oldVersion ??
+              (limited ? REPORT_STYLE_RECOGNIZER_VERSION : undefined),
           );
           const current = await readPrivateExperience(
             db,
@@ -2126,6 +2153,230 @@ suite(
         ).toHaveLength(0);
       },
     );
+    async function refusedReportFixture(withSkill = false) {
+      const f = await leased(
+        withSkill,
+        false,
+        false,
+        true,
+        '反馈：这份报告分点说明很清晰，阅读起来很方便。',
+        true,
+      );
+      const output = await proof(f);
+      Object.assign(output.drafts[0]!, {
+        rule: '报告包含多个独立要点时，优先采用分点说明的结构。',
+        reason:
+          '用户肯定了该报告分点说明的清晰度和阅读便利性；单次评价尚不足以确认长期偏好。',
+        applicability:
+          '适用于同类多要点报告；有明确格式要求时遵循要求，不推广到所有文体。',
+        confidence: 'tentative',
+        validation: {
+          kind: 'preference',
+          check:
+            '在后续同类报告中，提供内容一致的分点版与连续段落版，请用户比较并确认分点版是否更清晰、便于阅读。',
+        },
+      });
+      output.drafts.push({
+        ...output.drafts[0]!,
+        sourceIds: [f.siblingId!],
+        rule: '对账时单列退款，再汇总净回款。',
+        applicability: '含退款的回款对账',
+      });
+      await completeJob({ ...f.lease, result: output });
+      await syncAutomationRuns();
+      await updateExperiencePolicy(f.reviewer, f.org, {
+        expectedRevision: (await readExperiencePolicy(f.org)).revision,
+        frequency: 'daily',
+        timezone: 'Asia/Shanghai',
+        time: '03:00',
+        weekday: 1,
+        monthDay: 1,
+        adoptionMode: 'supported_private',
+      });
+      // Serialize the previous recognizer's complete refusal in this disposable
+      // fixture. The real source/output is never changed by reassessment.
+      const oldPlan = {
+        status: 'complete',
+        pendingDrafts: [],
+        drafts: [0, 1].map((draftIndex) => ({
+          draftIndex,
+          reason: '尚无覆盖完整规则及依赖的验证，未采用。',
+        })),
+      };
+      await db`update allrice_automation_runs set experience_adoption_plan=${db.json(oldPlan)} where id=${f.occurrence.id}`;
+      const [original] =
+        await db`select experience_occurrence,experience_execution,experience_receipt,experience_validation_plan from allrice_automation_runs where id=${f.occurrence.id}`;
+      const request = {
+        occurrenceId: f.occurrence.id,
+        draftIndex: 0,
+        expectedPlanDigest: runtimePolicyDigest(oldPlan),
+        expectedOutputDigest: original!.experience_receipt.outputDigest,
+      };
+      return { ...f, oldPlan, request, original };
+    }
+    it('reassesses one exact report draft through the consumer, preserving refusal, sibling and raw evidence', async () => {
+      const f = await refusedReportFixture();
+      await syncExperienceAdoptions();
+      expect(
+        (
+          await db`select experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`
+        )[0]!.experience_adoption_plan,
+      ).toEqual(f.oldPlan);
+      const [first, retry] = await Promise.all([
+        reassessReportStyleAdoption(f.owner, f.request),
+        reassessReportStyleAdoption(f.owner, f.request),
+      ]);
+      expect(retry).toEqual(first);
+      expect(first.decision).toBe('adopted');
+      const current = await readPrivateExperience(db, f.owner, first.memoryId!);
+      expect(current.proof.recognizerVersion).toBe(
+        REPORT_STYLE_RECOGNIZER_VERSION,
+      );
+      expect(current.proof.validation.kind).toBe('direct_preference');
+      const [after] =
+        await db`select experience_occurrence,experience_execution,experience_receipt,experience_validation_plan,experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`;
+      for (const field of Object.keys(f.original!))
+        expect(after![field]).toEqual(f.original![field]);
+      expect(
+        after!.experience_adoption_plan.drafts.find(
+          (d: { draftIndex: number }) => d.draftIndex === 1,
+        ),
+      ).toEqual(f.oldPlan.drafts[1]);
+      const audits =
+        await db`select metadata from allrice_audit_events where action='experience.adoption.reassess' and resource_id=${f.occurrence.id}`;
+      expect(audits).toHaveLength(1);
+      expect(audits[0]!.metadata.previousDecision).toEqual(f.oldPlan);
+      expect(audits[0]!.metadata.nextDecision).toEqual(
+        after!.experience_adoption_plan,
+      );
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(0);
+      await deleteWorkspaceMemory(f.owner, f.workspace, first.memoryId!);
+      expect(await reassessReportStyleAdoption(f.owner, f.request)).toEqual(
+        first,
+      );
+      expect(
+        await db`select id from allrice_memories where id=${first.memoryId} and archived_at is null`,
+      ).toHaveLength(0);
+      expect(
+        await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+      ).toHaveLength(1);
+      expect(
+        await db`select id from allrice_audit_events where action='experience.adoption.reassess' and resource_id=${f.occurrence.id}`,
+      ).toHaveLength(1);
+    });
+    it.each(['55P03', '57014'] as const)(
+      'rejects a rolled-back reassessment on %s and permits a confirmed retry',
+      async (code) => {
+        const f = await refusedReportFixture();
+        const beforeMemories = Array.from(
+          await db`select id,content from allrice_memories where owner_id=${f.user} order by id`,
+        );
+        await db.unsafe(`create function reject_report_reassessment() returns trigger
+          language plpgsql as $$ begin
+            if new.action='experience.adoption.reassess' then
+              raise exception using errcode='${code}', message='injected reassessment write timeout';
+            end if;
+            return new;
+          end $$`);
+        await db`create trigger reject_report_reassessment before insert on allrice_audit_events
+          for each row execute function reject_report_reassessment()`;
+        try {
+          await expect(
+            reassessReportStyleAdoption(f.owner, f.request),
+          ).rejects.toMatchObject({ code });
+          const [unchanged] =
+            await db`select experience_adoption_plan,experience_receipt from allrice_automation_runs where id=${f.occurrence.id}`;
+          expect(unchanged!.experience_adoption_plan).toEqual(f.oldPlan);
+          expect(unchanged!.experience_receipt).toEqual(
+            f.original!.experience_receipt,
+          );
+          expect(
+            Array.from(
+              await db`select id,content from allrice_memories where owner_id=${f.user} order by id`,
+            ),
+          ).toEqual(beforeMemories);
+          expect(
+            await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+          ).toHaveLength(0);
+          expect(
+            await db`select id from allrice_audit_events where request_id=${f.occurrence.id}
+              and action in ('experience.auto_adopt','experience.adoption.reassess')`,
+          ).toHaveLength(0);
+        } finally {
+          await db`drop trigger reject_report_reassessment on allrice_audit_events`;
+          await db`drop function reject_report_reassessment()`;
+        }
+        const retried = await reassessReportStyleAdoption(f.owner, f.request);
+        expect(retried.decision).toBe('adopted');
+        expect(
+          (await readPrivateExperience(db, f.owner, retried.memoryId!)).row.id,
+        ).toBe(retried.memoryId);
+      },
+    );
+    it.each([
+      'peer',
+      'administrator',
+      'output',
+      'plan',
+      'source',
+      'policy',
+      'profile',
+    ] as const)(
+      'rejects a report reassessment with changed %s without replacing the original decision',
+      async (changed) => {
+        const f = await refusedReportFixture();
+        const input = { ...f.request };
+        const who =
+          changed === 'peer'
+            ? f.neighbor
+            : changed === 'administrator'
+              ? f.reviewer
+              : f.owner;
+        if (changed === 'output')
+          input.expectedOutputDigest = runtimePolicyDigest('other output');
+        if (changed === 'plan')
+          input.expectedPlanDigest = runtimePolicyDigest('other plan');
+        if (changed === 'source')
+          await deleteWorkspaceMemory(f.owner, f.workspace, f.candidate.id);
+        if (changed === 'policy')
+          await updateExperiencePolicy(f.reviewer, f.org, {
+            expectedRevision: (await readExperiencePolicy(f.org)).revision,
+            frequency: 'off',
+            timezone: 'Asia/Shanghai',
+            time: '03:00',
+            weekday: 1,
+            monthDay: 1,
+            adoptionMode: 'supported_private',
+          });
+        if (changed === 'profile') await currentRequirement(f);
+        await expect(reassessReportStyleAdoption(who, input)).rejects.toThrow();
+        expect(
+          (
+            await db`select experience_adoption_plan from allrice_automation_runs where id=${f.occurrence.id}`
+          )[0]!.experience_adoption_plan,
+        ).toEqual(f.oldPlan);
+        expect(
+          await db`select id from allrice_audit_events where action='experience.adoption.reassess' and resource_id=${f.occurrence.id}`,
+        ).toHaveLength(0);
+        expect(
+          await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+        ).toHaveLength(0);
+      },
+    );
+    it('does not turn uncovered Skill-dependent feedback into a report preference during reassessment', async () => {
+      const f = await refusedReportFixture(true);
+      const decision = await reassessReportStyleAdoption(f.owner, f.request);
+      expect(decision.decision).toBe('not_adopted');
+      expect(decision.memoryId).toBeNull();
+      expect(
+        await db`select memory_id from allrice_experience_reviews where owner_id=${f.user} and origin_kind='derived'`,
+      ).toHaveLength(0);
+      expect(
+        await db`select id from allrice_platform_employee_test_runs where experience_binding->>'occurrenceId'=${f.occurrence.id}`,
+      ).toHaveLength(0);
+    });
     it.each(['canceled', 'expired', 'replaced'] as const)(
       'does not apply a forget command from a %s worker',
       async (mode) => {

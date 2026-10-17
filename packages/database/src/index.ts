@@ -237,7 +237,10 @@ export {
 export * from './experience-consolidation-contracts.ts';
 export { runtimePolicyDigest } from './runtime-policy.ts';
 
-export { syncExperienceAdoptions } from './experience-adoption.ts';
+export {
+  syncExperienceAdoptions,
+  reassessReportStyleAdoption,
+} from './experience-adoption.ts';
 export { prepareRunExperiences } from './experience-runtime.ts';
 export {
   prepareRunMemoryContext,
