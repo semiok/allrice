@@ -132,8 +132,13 @@ describe('workspace memory hybrid recall', () => {
       [{ ...ranked[0]!, content: '记'.repeat(1_000) }],
       100,
     );
-    expect(budgeted).toHaveLength(1);
-    expect(budgeted[0]!.content.length).toBeLessThanOrEqual(400);
-    expect(budgeted[0]!.content).toContain('记忆内容已按预算截断');
+    expect(budgeted).toEqual([]);
+    const rule = '只核算已确认记录；不得包含退款。';
+    expect(
+      applyWorkspaceMemoryRecallBudget(
+        [{ ...ranked[0]!, content: rule }],
+        1000,
+      )[0]!.content,
+    ).toBe(rule);
   });
 });

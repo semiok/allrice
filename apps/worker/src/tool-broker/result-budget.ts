@@ -1,3 +1,5 @@
+import { memoryContextPolicy } from '@allrice/contracts';
+import { HandlerError } from '../errors.js';
 import { createHash } from 'node:crypto';
 import {
   createToolBrokerExportObject,
@@ -76,6 +78,25 @@ export async function boundToolResult(
   input: RiceToolExecutionInput,
   result: RiceToolResult,
 ): Promise<RiceToolResult> {
+  // Never persist private memory/source contents as a static export. Such an
+  // object would outlive the source authorization. Unexpected overflow is a
+  // bounded failure, not excerpts and not a second file-reading route.
+  if (
+    ['workspace.memory.search', 'workspace.experience.read'].includes(
+      input.call.name,
+    )
+  ) {
+    if (
+      Buffer.byteLength(result.modelContent, 'utf8') >
+      memoryContextPolicy.maximumResponseBytes
+    )
+      throw new HandlerError(
+        'MEMORY_CONTEXT_BUDGET_EXHAUSTED',
+        '返回内容超出本次记忆加载上限，未返回或保存内容。',
+        false,
+      );
+    return result;
+  }
   if (
     !boundedTools.has(input.call.name) ||
     result.modelContent.length <= inlineToolResultCharacters

@@ -275,7 +275,8 @@ export const riceToolDefinitions = [
   },
   {
     name: 'workspace.memory.search',
-    description: '搜索当前用户有权读取的工作区记忆。',
+    description:
+      '在当前任务的记忆加载上限内搜索获准记忆，返回完整条目；经验可用随条目返回的 handle 展开准确来源。超出加载上限时说明缺资料，不要循环重试。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -283,6 +284,19 @@ export const riceToolDefinitions = [
         limit: { type: 'integer', minimum: 1, maximum: 20 },
       },
       required: ['query'],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: 'workspace.experience.read',
+    description:
+      '按当前任务记忆中提供的 handle 读取完整原始反馈与准确出处。当前权限和记忆加载上限每次重新检查；不是通用历史会话查询。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        handle: { type: 'string', pattern: '^experience:sha256:[a-f0-9]{64}$' },
+      },
+      required: ['handle'],
       additionalProperties: false,
     },
   },
@@ -841,5 +855,11 @@ export function riceReadOnlyToolDefinitionsForPreview(
   return riceToolDefinitionsForCapabilities(
     capabilities,
     allowedToolNames,
-  ).filter((definition) => riceToolRisk(definition.name) === 'read_only');
+  ).filter(
+    (definition) =>
+      riceToolRisk(definition.name) === 'read_only' &&
+      !['workspace.memory.search', 'workspace.experience.read'].includes(
+        definition.name,
+      ),
+  );
 }

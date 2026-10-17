@@ -239,4 +239,10 @@ export { runtimePolicyDigest } from './runtime-policy.ts';
 
 export { syncExperienceAdoptions } from './experience-adoption.ts';
 export { prepareRunExperiences } from './experience-runtime.ts';
+export {
+  prepareRunMemoryContext,
+  MemoryContextError,
+  type RunMemoryAuthority,
+} from './run-memory-context.ts';
+export { readRunExperienceSource } from './run-experience-source.ts';
 export { getExperienceProvenance } from './experience-provenance.ts';

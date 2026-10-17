@@ -22,6 +22,7 @@ import {
   AssignEmployeeVersionInputSchema,
   allRiceToolManifest,
   withEmployeeCustomizationTools,
+  withEmployeeMemorySourceTool,
   CreateEmployeeInputSchema,
   DshNativeSkillSnapshotSchema,
   EmployeeAdminDirectoryEntrySchema,
@@ -1544,7 +1545,10 @@ export async function prepareEmployeeRunBinding(input: {
           // Exact intrinsic bindings are computed from existing grants, never
           // widened by the guidance Skill or shared employee publication.
           toolNames: withEmployeeCustomizationTools(
-            capabilityBindings(manifest.data).toolNames,
+            withEmployeeMemorySourceTool(
+              capabilityBindings(manifest.data).toolNames,
+              grantedCapabilities,
+            ),
             grantedCapabilities,
             instance?.kind,
           ),

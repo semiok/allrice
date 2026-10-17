@@ -1203,7 +1203,7 @@ async function recallForReply(
       limit: workspaceMemoryRecallPolicy.maximumAutomaticResults,
       durableOnly: true,
     }),
-    workspaceMemoryRecallPolicy.maximumAutomaticTokens,
+    workspaceMemoryRecallPolicy.maximumAutomaticBytes,
   );
   if (recalled.length > 0) {
     const sql = getDatabase();

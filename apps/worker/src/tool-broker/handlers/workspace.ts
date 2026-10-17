@@ -4,7 +4,10 @@ import {
   createTraceableMemory,
   getToolBrokerFile,
   listToolBrokerFiles,
-  searchToolBrokerMemories,
+  readToolBrokerMemoryContext,
+  readRunExperienceSource,
+  MemoryContextError,
+  ExperienceError,
   searchToolBrokerSessions,
   markCompanyMaterialRead,
 } from '@allrice/database';
@@ -375,20 +378,72 @@ function workspaceDocumentResult(
   };
 }
 
+function memoryAuthority(input: Parameters<RiceToolHandler>[0]['input']) {
+  const auth = input.memoryReadAuthority;
+  if (
+    !auth ||
+    input.platformTestRunId ||
+    auth.scope.runId !== input.context.runId ||
+    auth.scope.organizationId !== input.context.organizationId ||
+    auth.scope.workspaceId !== input.context.workspaceId ||
+    auth.scope.ownerId !== input.context.policySnapshot.subjectId ||
+    auth.scope.sessionId !== input.sessionId
+  )
+    throw new HandlerError(
+      'MEMORY_CONTEXT_UNAVAILABLE',
+      '当前任务的记忆加载上限不可用，请说明资料不足。',
+      false,
+    );
+  return auth;
+}
+async function memoryResult(
+  read: () => Promise<{ items: unknown[]; omittedItems: number }>,
+) {
+  try {
+    const result = await read();
+    return {
+      modelContent: JSON.stringify(result),
+      summary: `读取 ${result.items.length} 条完整记录${result.omittedItems ? `，${result.omittedItems} 条超出记忆加载上限，未返回` : ''}`,
+      itemCount: result.items.length,
+    };
+  } catch (error) {
+    if (error instanceof MemoryContextError)
+      throw new HandlerError(
+        error.code,
+        '已达到本次记忆加载上限，或当前加载状态不可用。请说明缺少资料，不要循环重试。',
+        false,
+      );
+    if (error instanceof ExperienceError)
+      throw new HandlerError(
+        'MEMORY_CONTEXT_UNAVAILABLE',
+        '经验来源、任务或当前权限已变化，无法继续读取；请说明资料不可用。',
+        false,
+      );
+    throw error;
+  }
+}
 export const searchWorkspaceMemory: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
-  const memories = await searchToolBrokerMemories(
-    input.context,
-    stringValue(args.query, 'query'),
-    limitValue(args.limit, 5, 20),
+  const auth = memoryAuthority(input);
+  return memoryResult(() =>
+    readToolBrokerMemoryContext(
+      input.context,
+      stringValue(args.query, 'query'),
+      limitValue(args.limit, 5, 20),
+      auth,
+    ),
   );
-  return {
-    modelContent: JSON.stringify(memories),
-    summary: `找到 ${memories.length} 条相关记忆`,
-    itemCount: memories.length,
-  };
+};
+export const readExperienceSource: RiceToolHandler = async ({
+  input,
+  arguments: args,
+}) => {
+  const auth = memoryAuthority(input);
+  return memoryResult(() =>
+    readRunExperienceSource(auth, stringValue(args.handle, 'handle')),
+  );
 };
 
 export const rememberWorkspaceMemory: RiceToolHandler = async ({

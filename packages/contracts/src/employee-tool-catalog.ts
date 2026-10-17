@@ -211,6 +211,7 @@ const labels: Partial<Record<AllRiceToolName, string>> = {
   'workspace.file.read': '读取工作区文件',
   'workspace.document.read': '解析工作区文档',
   'workspace.memory.search': '检索记忆',
+  'workspace.experience.read': '读取经验来源',
   'workspace.memory.remember': '写入获准记忆',
   'workspace.session.search': '检索会话',
   'web.search': '联网搜索',

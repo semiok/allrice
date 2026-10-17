@@ -80,6 +80,18 @@ export function withEmployeeCustomizationTools(
   ];
 }
 
+/** Source expansion is a narrower companion to an existing memory-read grant.
+ * Apply only while freezing a new Run; never widen a previous Run's allowlist. */
+export function withEmployeeMemorySourceTool(
+  toolNames: readonly string[],
+  capabilities: readonly SkillCapability[],
+) {
+  return capabilities.includes('storage:read') &&
+    toolNames.includes('workspace.memory.search')
+    ? [...new Set([...toolNames, 'workspace.experience.read'])]
+    : [...toolNames];
+}
+
 /**
  * Metadata-only single source of truth for the governed AllRice tool surface.
  *
@@ -278,6 +290,13 @@ export const allRiceToolManifest = [
     risk: 'read_only',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_memory_search',
+  },
+  {
+    canonicalName: 'workspace.experience.read',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_experience_read',
   },
   {
     canonicalName: 'workspace.memory.remember',
