@@ -432,6 +432,10 @@ integration(
             baseUrl: null,
           }
         : provider;
+      // Execute the Worker only after the same claim transitions as job-runner.
+      // The authority fixture itself starts with an unclaimed employee record.
+      await database.db`update allrice_employee_runs set status='running' where run_id=${f.rootRunId}`;
+      await database.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
       state.resolved.mockResolvedValue({
         providerSnapshot: provider,
         executionSnapshot: capturedSnapshot ?? f.snapshot,
@@ -789,6 +793,19 @@ integration(
             usage: { inputTokens: 10, outputTokens: 3 },
           });
         expect(state.record).toHaveBeenCalledTimes(1);
+        const [memory] = await database.db`
+          select er.memory_context_state,i.id instance_id
+          from allrice_employee_runs er
+          join allrice_employee_instances i on i.id=er.employee_assignment_id
+            and i.owner_id=er.owner_id and i.kind='general'
+          where er.run_id=${f.rootRunId}`;
+        expect(memory).toMatchObject({
+          instance_id: f.assignment,
+          memory_context_state: {
+            initial: { ids: [] },
+            toolReads: 0,
+          },
+        });
         const kernel = assembleEmployeeKernel({
           employeeAssignmentId: f.assignment,
           employeeVersionId: f.version,
@@ -1471,6 +1488,8 @@ integration(
       });
       expect(() => assertQuotaAvailable(quota)).not.toThrow();
       const nextRunId = randomUUID();
+      const nextJobId = randomUUID();
+      const nextLeaseToken = randomUUID();
       const nextUserMessageId = randomUUID();
       const nextAssistantMessageId = randomUUID();
       await database.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
@@ -1484,8 +1503,18 @@ integration(
         select ${nextRunId},organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,
           ${nextUserMessageId},${nextAssistantMessageId},provider_snapshot,prompt_snapshot,native_skills,execution_snapshot
         from allrice_employee_runs where run_id=${f.rootRunId}`;
+      await database.db`update allrice_employee_runs set status='running' where run_id=${nextRunId}`;
+      await database.db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,attempt,timeout_at,payload,worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at)
+        select ${nextJobId},organization_id,workspace_id,owner_id,${nextRunId},'running',${nextJobId},1,
+          timeout_at,payload,worker_id,${nextLeaseToken},clock_timestamp(),clock_timestamp(),lease_expires_at
+        from allrice_jobs where id=${f.worker.jobId}`;
       const next = {
         ...job,
+        workflowLease: {
+          ...job.workflowLease,
+          jobId: nextJobId,
+          leaseToken: nextLeaseToken,
+        },
         execution: {
           ...job.execution,
           context: { ...job.execution.context, runId: nextRunId },

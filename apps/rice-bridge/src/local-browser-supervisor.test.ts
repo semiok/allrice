@@ -59,10 +59,14 @@ describe('P22 private watchdog lease mirror, not an offline authority', () => {
   it('an opt-out or lost pairing stops refresh rather than renewing a lease', async () => {
     const { directory, disable } = await fixture();
     disable();
-    await new Promise((resolve) => setTimeout(resolve, 600));
-    expect(
-      JSON.parse(await readFile(join(directory, 'lease.json'), 'utf8')).stop,
-    ).toBe(true);
+    await expect
+      .poll(
+        async () =>
+          JSON.parse(await readFile(join(directory, 'lease.json'), 'utf8'))
+            .stop,
+        { timeout: 2000 },
+      )
+      .toBe(true);
   });
   it('does not treat absent, wrong-identity or still-live process receipts as cleanup success', async () => {
     const { directory, supervisor } = await fixture();

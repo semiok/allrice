@@ -65,7 +65,7 @@ async function withRun<T>(
     await resolveEmployeeSessionInstance(
       who,
       row.employee_assignment_id,
-      row.employee_instance_id ?? row.employee_assignment_id,
+      row.employee_instance_id ?? undefined,
       tx,
     );
     const result = await read(tx, row.memory_context_state);
