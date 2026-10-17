@@ -110,15 +110,18 @@ export function createTaskProgressRuntime(
             attempt: job.attempt,
           });
       }
-      const settlingMaintenance = !!maintenance && p.action === 'finish';
-      if (job.cancel_requested_at && !settlingMaintenance)
+      // Cancellation closes admission, not the receipt channel for an already
+      // started call. The original running lease and exact call are still
+      // required; queue/heartbeat terminalization is a separate drain boundary.
+      const finishing = p.action === 'finish';
+      if (job.cancel_requested_at && !finishing)
         throw Error('task_progress_lease_lost');
       await tx`insert into allrice_task_progress(run_id) values(${runId}) on conflict do nothing`;
       const [row] = await tx<
         { state: ProgressState; pause_id: string | null; canceled: boolean }[]
       >`select * from allrice_task_progress where run_id=${runId} for update`;
-      if (row!.canceled && !settlingMaintenance)
-        throw Error('task_progress_canceled');
+      if (row!.canceled && !finishing) throw Error('task_progress_canceled');
+      const canceled = !!job.cancel_requested_at || row!.canceled;
       let state = row!.state,
         pauseId = row!.pause_id;
       if (maintenance && p.action !== 'finish') {
@@ -179,14 +182,14 @@ export function createTaskProgressRuntime(
             await tx`update allrice_task_calls set settled_output_tokens=${p.outputTokens ?? null}
               where run_id=${runId} and native_session_id=${p.nativeSessionId} and call_id=${p.callId} and kind='model'`;
           }
-          if (p.kind === 'tool')
+          if (p.kind === 'tool' && !canceled)
             state = observeProgress(state, {
               name: call.name,
               argumentsDigest: call.arguments_digest,
               resultDigest: p.resultDigest,
               outcome: p.outcome,
             });
-          if (state.reason && !pauseId) pauseId = randomUUID();
+          if (state.reason && !pauseId && !canceled) pauseId = randomUUID();
         }
       } else if (p.action === 'decide') {
         const [prior] =
@@ -206,7 +209,8 @@ export function createTaskProgressRuntime(
           }
         }
       }
-      await tx`update allrice_task_progress set state=${tx.json(JSON.parse(JSON.stringify(state)))},pause_id=${pauseId},updated_at=clock_timestamp() where run_id=${runId}`;
+      if (!canceled)
+        await tx`update allrice_task_progress set state=${tx.json(JSON.parse(JSON.stringify(state)))},pause_id=${pauseId},updated_at=clock_timestamp() where run_id=${runId}`;
       await refreshTaskClock(tx, runId);
       return {
         paused: !!pauseId,
@@ -215,7 +219,8 @@ export function createTaskProgressRuntime(
         recent: state.history
           .slice(-3)
           .map((f) => ({ tool: f.name, outcome: f.outcome })),
-        canceled: p.action === 'decide' && p.decision === 'cancel',
+        canceled:
+          canceled || (p.action === 'decide' && p.decision === 'cancel'),
       };
     });
   };
