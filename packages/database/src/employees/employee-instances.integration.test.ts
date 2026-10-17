@@ -4816,6 +4816,84 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     ).rejects.toMatchObject({ code: 'source_changed' });
   }, 60000);
 
+  it.each([
+    '请保存我的第一个工作场景候选「美股监控助手」：我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
+    '请保存我的工作场景候选「美股监控助手」：仅在我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
+  ])(
+    'saves a trailing named personal scene as a candidate only: %s',
+    async (text) => {
+      const f = await setup(true),
+        instance = await f.custom('小白');
+      const run = await methodRun(f, instance.id, text);
+      expect(
+        await inspectEmployeeMethodFromChat({
+          ...run,
+          arguments: { view: 'candidate' },
+        }),
+      ).toMatchObject({ revision: 0, candidate: null, active: null });
+      const saved = await saveEmployeeMethodFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: {
+            name: '美股监控助手',
+            appliesWhen: '用户主动询问美股相关信息时使用。',
+          },
+          requirements:
+            '仅在用户主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
+          procedure:
+            '等待用户主动询问，查询并回复后结束，不安排自动监控或推送。',
+          changeSummary: '保存首个个人工作场景候选',
+        },
+      });
+      expect(saved).toMatchObject({ revision: 1, active: null });
+      const content = await getEmployeeContentSet(f.a.context, saved.setId);
+      expect(content.set.candidate!.manifest.scenes).toMatchObject([
+        {
+          name: '美股监控助手',
+          appliesWhen: '用户主动询问美股相关信息时使用。',
+        },
+      ]);
+      await run.finish();
+      const next = await methodRun(f, instance.id, '普通一次性查询');
+      expect(next.frozen.content.layers).toEqual([]);
+      expect(
+        (await getEffectiveEmployeeContent(f.a.context, instance.id)).scenes,
+      ).toEqual([]);
+      await next.finish();
+    },
+  );
+
+  it('does not save a trailing named scene when the original request denies persistence', async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景候选「美股监控助手」。请不要保存我的第一个工作场景候选「美股监控助手」。',
+    );
+    await expect(
+      saveEmployeeMethodFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: '美股监控助手', appliesWhen: '主动询问时' },
+          procedure: '仅查询并回复',
+          changeSummary: '不应保存',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'explicit_method_request_required' });
+    expect(
+      await inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+      }),
+    ).toMatchObject({ revision: 0, candidate: null, active: null });
+    await run.finish();
+  });
+
   it('saves several personal scene candidates, replays exact receipts before merging, and continues across sessions without activation', async () => {
     const f = await setup(true),
       instance = await f.custom('小白');
