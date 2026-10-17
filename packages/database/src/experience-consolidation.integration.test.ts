@@ -1,8 +1,14 @@
+import type * as NativeBudget from './run-memory-context.ts';
+import type * as NativeSource from './run-experience-source.ts';
 import { withEmployeeMemorySourceTool } from '@allrice/contracts';
 import {
   prepareRunMemoryContext,
   readRunMemoryContext,
 } from './run-memory-context.ts';
+import {
+  ExperienceReceiptSchema,
+  ExperienceOccurrenceSchema,
+} from './experience-consolidation-contracts.ts';
 import { readRunExperienceSource } from './run-experience-source.ts';
 import { readToolBrokerMemoryContext } from './execution/tool-broker.ts';
 import {
@@ -50,7 +56,7 @@ import {
 } from './employees/platform-employees.ts';
 import { attendanceAnswer } from './experience-validation.fixture.ts';
 import { randomUUID } from 'node:crypto';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
 import postgres from 'postgres';
 import {
   afterAll,
@@ -108,6 +114,16 @@ import {
   searchWorkspaceMemories,
 } from './workspace/service.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { assembleEmployeeKernel } from '../../../apps/worker/src/employee-kernel.ts';
+import {
+  memoryGrowthFixture,
+  growthOrdinaryFacts,
+  observeMemorySql,
+  memoryLatency,
+  explainMemoryQueries,
+  openMemoryBenchmarkArm,
+  isolatedMemoryBenchmarkUrl,
+} from './memory-growth.fixture.ts';
 import {
   recordRouteDecision,
   completeRouteDecision,
@@ -131,9 +147,10 @@ async function source(
   published = false,
   feedback?: string,
   withSibling = false,
+  target?: Awaited<ReturnType<typeof createExperienceFixture>>,
 ) {
-  const f = await createExperienceFixture(db, { published });
-  for (const context of [f.owner, f.reviewer, f.neighbor])
+  const f = target ?? (await createExperienceFixture(db, { published }));
+  for (const context of target ? [] : [f.owner, f.reviewer, f.neighbor])
     await db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
     values(${context.sessionId},${context.actor.id},${(randomUUID() + randomUUID()).replaceAll('-', '')},clock_timestamp()+interval '1 day')`;
   const [old] =
@@ -272,6 +289,7 @@ async function queued(
   published = false,
   feedback?: string,
   withSibling = false,
+  target?: Awaited<ReturnType<typeof createExperienceFixture>>,
 ) {
   const f = await source(
     withSkill,
@@ -280,12 +298,13 @@ async function queued(
     published,
     feedback,
     withSibling,
+    target,
   );
   const current = withRule ? await currentRequirement(f) : null;
   await db`update allrice_automations set next_run_at=clock_timestamp()-interval '1 second' where id=${f.rule.id}`;
   await Promise.all([claimDueAutomations(), claimDueAutomations()]);
   const [occurrence] =
-    await db`select * from allrice_automation_runs where automation_id=${f.rule.id}`;
+    await db`select * from allrice_automation_runs where automation_id=${f.rule.id} order by created_at desc,id desc limit 1`;
   expect(occurrence?.run_id).toBeTruthy();
   return { ...f, current, occurrence: occurrence! };
 }
@@ -296,6 +315,7 @@ async function leased(
   published = false,
   feedback?: string,
   withSibling = false,
+  target?: Awaited<ReturnType<typeof createExperienceFixture>>,
 ) {
   const f = await queued(
       withSkill,
@@ -304,9 +324,11 @@ async function leased(
       published,
       feedback,
       withSibling,
+      target,
     ),
     workerId = randomUUID();
   const job = await claimNextJob(workerId, 120000, { allowBackground: true });
+  expect(job).toBeTruthy();
   expect(
     (await db`select run_id from allrice_jobs where id=${job!.id}`)[0]!.run_id,
   ).toBe(f.occurrence.run_id);
@@ -948,6 +970,8 @@ suite(
         ownerId: f.user,
         sessionId: session.id,
         runId,
+        userMessageId: userMessage,
+        assistantMessageId: assistant,
         worker,
       };
     }
@@ -995,6 +1019,592 @@ suite(
         )[0]!.memory_context_state;
       return { ...f, scope, auth, selected, handle, context, state };
     }
+    it('measures bounded memory with real captured feedback and supported history growth', async () => {
+      const evidenceDirectory = process.env.ALLRICE_MEMORY_GROWTH_EVIDENCE_DIR;
+      const previousDatabaseUrl = process.env.DATABASE_URL;
+      const native: {
+        label: string;
+        api: Awaited<ReturnType<typeof openMemoryBenchmarkArm>>;
+      }[] = [];
+      try {
+        if (evidenceDirectory) {
+          process.env.DATABASE_URL = isolatedMemoryBenchmarkUrl(schema);
+          for (const [label, root, sha] of [
+            [
+              'baseline',
+              process.env.ALLRICE_MEMORY_GROWTH_BASELINE_ROOT!,
+              process.env.ALLRICE_MEMORY_GROWTH_BASELINE_SHA!,
+            ],
+            [
+              'candidate',
+              process.env.ALLRICE_MEMORY_GROWTH_CANDIDATE_ROOT!,
+              process.env.ALLRICE_MEMORY_GROWTH_CANDIDATE_SHA!,
+            ],
+          ])
+            native.push({
+              label: label!,
+              api: await openMemoryBenchmarkArm(root!, sha!, schema),
+            });
+        }
+        const f = await adoptedFixture();
+        // Three actual supported identities, not 1000 fabricated adopted rules.
+        // The old consumer creates its real v2 proofs for this common fixture;
+        // the candidate must authorize those original proofs unchanged.
+        for (const style of ['structured', 'concise'] as const) {
+          // These are historical synthetic days. Preserve the production
+          // one-collection-per-instance-per-day guard rather than disabling it.
+          await db`update allrice_automation_runs set created_at=clock_timestamp()-interval '2 days'
+            where organization_id=${f.org} and experience_occurrence is not null`;
+          const next = await leased(
+            false,
+            false,
+            false,
+            true,
+            style === 'structured'
+              ? '反馈：这份报告分点说明很清晰，阅读起来很方便。'
+              : '反馈：这份报告简短表达很清晰。',
+            false,
+            f,
+          );
+          const output = await proof(next);
+          Object.assign(output.drafts[0]!, {
+            rule:
+              style === 'structured'
+                ? '撰写报告时采用分点说明。'
+                : '撰写报告时采用简短的表达。',
+            reason: '合成用户明确评价了报告的表达方式',
+            applicability:
+              '仅适用于报告的表达方式，不改变业务规则、计算口径或执行步骤。',
+            validation: {
+              kind: 'preference',
+              check: '后续同类报告中继续核对表达是否适合。',
+            },
+          });
+          await completeJob({ ...next.lease, result: output });
+          await syncAutomationRuns();
+          if (native.length)
+            await native[0]!.api.adoption.syncExperienceAdoptions();
+          else await syncExperienceAdoptions();
+        }
+        const derived =
+          await db`select m.id,m.revision,m.content,e.adoption_proof,a.experience_receipt,a.experience_occurrence
+          from allrice_memories m join allrice_experience_reviews e on e.memory_id=m.id
+          join allrice_automation_runs a on a.id=(e.adoption_proof->>'occurrenceId')::uuid
+          where e.owner_id=${f.user} and e.origin_kind='derived' order by m.id`;
+        expect(derived).toHaveLength(3);
+        const expected = derived.map((row) => {
+          const proof = ExperienceAdoptionProofSchema.parse(row.adoption_proof);
+          const receipt = ExperienceReceiptSchema.parse(row.experience_receipt);
+          const occurrence = ExperienceOccurrenceSchema.parse(
+            row.experience_occurrence,
+          );
+          const draft = receipt.output.drafts[proof.draftIndex]!;
+          if (native.length && proof.rule.kind === 'report_style')
+            expect(proof.recognizerVersion).toBe('report-style-clauses-v2');
+          return {
+            id: row.id as string,
+            content: row.content as string,
+            proof,
+            draft,
+            pin: {
+              id: row.id,
+              revision: row.revision,
+              instanceId: proof.instanceId,
+              contentDigest: proof.contentDigest,
+              adoptionDigest: runtimePolicyDigest(proof),
+            },
+            sources: occurrence.sources.filter((source) =>
+              proof.sourceIds.includes(source.id),
+            ),
+          };
+        });
+        expect(
+          new Set(
+            expected.map((e) =>
+              e.proof.rule.kind === 'report_style'
+                ? e.proof.rule.style
+                : e.proof.rule.kind,
+            ),
+          ).size,
+        ).toBe(3);
+        const data = await memoryGrowthFixture(db, {
+          org: f.org,
+          workspace: f.workspace,
+          user: f.user,
+          sourceRunId: f.sourceRunId,
+          rule: { id: f.rule.id },
+          frozen: f.frozen,
+        });
+        const arms = native.length
+          ? await Promise.all(
+              native.map(async (arm) => ({
+                ...arm,
+                budget:
+                  arm.label === 'candidate'
+                    ? await arm.api.loadTyped<typeof NativeBudget>(
+                        'packages/database/dist/run-memory-context.js',
+                      )
+                    : null,
+                reader:
+                  arm.label === 'candidate'
+                    ? await arm.api.loadTyped<typeof NativeSource>(
+                        'packages/database/dist/run-experience-source.js',
+                      )
+                    : null,
+              })),
+            )
+          : [
+              {
+                label: 'candidate-source',
+                api: {
+                  sql: db,
+                  sha: 'source-under-test',
+                  artifacts: {},
+                  source: { prepareRunExperiences },
+                  workspace: { searchWorkspaceMemories },
+                  overview: { getExperienceOverview },
+                  kernel: { assembleEmployeeKernel },
+                },
+                budget: { prepareRunMemoryContext },
+                reader: { readRunExperienceSource },
+              },
+            ];
+        const cells = evidenceDirectory
+          ? [
+              [10, 10],
+              [100, 10],
+              [1000, 10],
+              [10, 100],
+              [10, 1000],
+              [1000, 1000],
+            ]
+          : [[10, 10]];
+        const repeats = evidenceDirectory ? 30 : 2;
+        const request =
+          '请核对合成名单到场和未到人数并写报告。本次只写一段话。';
+        const results = [];
+        const warmups = [];
+        const queryPlans = [];
+        const actualScales = [];
+        // Missing derived views are safe to rebuild only from these exact valid sources.
+        await db`update allrice_rag_chunks set experience_projection=null where memory_id in ${db(expected.map((e) => e.id))}`;
+        for (const [ordinaryCount, historyCount] of cells) {
+          const ordinaryIds = await data.ordinary(ordinaryCount!);
+          await data.history(historyCount!);
+          // Bulk fixture inserts bypass normal autovacuum timing. Give both
+          // unchanged release arms the same current planner statistics.
+          await db.unsafe(
+            'ANALYZE ' +
+              [
+                'allrice_memories',
+                'allrice_rag_chunks',
+                'allrice_employee_runs',
+                'allrice_experience_reviews',
+                'allrice_automation_runs',
+                'allrice_messages',
+              ]
+                .map((table) => `"${schema}"."${table}"`)
+                .join(', '),
+          );
+          actualScales.push({
+            ordinaryCount,
+            historyCount,
+            tables: (
+              await db`select
+              (select count(*)::int from allrice_employee_runs) employee_runs,
+              (select count(*)::int from allrice_messages) messages,
+              (select count(*)::int from allrice_memories where archived_at is null) current_memories,
+              (select count(*)::int from allrice_rag_chunks) rag_chunks,
+              (select count(*)::int from allrice_automation_runs) collection_runs`
+            )[0],
+          });
+          const samples = new Map<
+            string,
+            {
+              search: number[];
+              assembly: number[];
+              completeAssembly: number[];
+              overview: number[];
+              source: number[];
+              sql: Record<string, unknown>[];
+            }
+          >();
+          for (const arm of arms)
+            samples.set(arm.label, {
+              search: [],
+              assembly: [],
+              completeAssembly: [],
+              overview: [],
+              source: [],
+              sql: [],
+            });
+          for (let n = -1; n < repeats; n++) {
+            for (const arm of (n + 1) % 2 ? [...arms].reverse() : arms) {
+              const sample = samples.get(arm.label)!;
+              const scope = await experienceRun(f, request);
+              const auth = { scope, worker: scope.worker };
+              const ordinary = await observeMemorySql(arm.api.sql, () =>
+                arm.api.workspace.searchWorkspaceMemories(f.owner, {
+                  workspaceId: f.workspace,
+                  query: '合成名单',
+                  limit: 3,
+                }),
+              );
+              expect(ordinary.value.map((m) => m.id).sort()).toEqual(
+                ordinaryIds.slice(0, 3).sort(),
+              );
+              const assembled = await observeMemorySql(
+                arm.api.sql,
+                async () => {
+                  const prepared = await arm.api.source.prepareRunExperiences(
+                    scope,
+                    scope.worker,
+                  );
+                  expect(
+                    prepared.memories
+                      .map((m) => ({ id: m.id, content: m.content }))
+                      .sort((a, b) => a.id.localeCompare(b.id)),
+                  ).toEqual(
+                    expected
+                      .map((e) => ({ id: e.id, content: e.content }))
+                      .sort((a, b) => a.id.localeCompare(b.id)),
+                  );
+                  const items = [
+                    ...ordinary.value.map((m) => ({
+                      id: m.id,
+                      revision: 1,
+                      content: m.content,
+                      memoryClass: m.memory_class,
+                      lifecycleState: m.lifecycle_state,
+                      trust: m.trust_level,
+                      confidence: m.confidence,
+                      sourceLabel: m.source_label,
+                    })),
+                    ...prepared.memories,
+                  ];
+                  const selected = arm.budget
+                    ? await arm.budget.prepareRunMemoryContext(auth, items)
+                    : items;
+                  const input = {
+                    employeeAssignmentId: f.instance.assignmentId,
+                    employeeVersionId: f.instance.source.employeeVersionId,
+                    sessionId: scope.sessionId,
+                    userMessageId: scope.userMessageId,
+                    assistantMessageId: scope.assistantMessageId,
+                    resolved: {
+                      promptSnapshot: {
+                        userRequest: request,
+                        systemPrompt: 'Synthetic memory formatter probe',
+                        conversation: [],
+                        memories: selected,
+                        imageAttachments: [],
+                      },
+                      nativeSkills: [],
+                      grantedCapabilities: ['storage:read'],
+                      providerSnapshot: providerSnapshotForModelTarget(
+                        f.frozen.execution.model,
+                      ),
+                      executionSnapshot: null,
+                      skillArtifacts: [],
+                    },
+                  } as Parameters<typeof assembleEmployeeKernel>[0];
+                  const kernel = arm.api.kernel.assembleEmployeeKernel(input);
+                  expect(kernel.userRequest).toContain(request);
+                  for (const fact of growthOrdinaryFacts)
+                    expect(kernel.authorizedMemoryContext).toContain(fact);
+                  expect(kernel.authorizedMemoryContext).toContain(
+                    '仅在用户未指定其他格式时采用',
+                  );
+                  expect(selected.map((m) => m.id)).toHaveLength(6);
+                  return { selected, kernel };
+                },
+              );
+              let sourceMilliseconds: number | undefined;
+              let sourceCounts: Record<string, number> | undefined;
+              let responseBytes: number | undefined;
+              let meter:
+                | {
+                    initial: { bytes: number };
+                    spentBytes: number;
+                    toolReads: number;
+                  }
+                | undefined;
+              let sourceQueries: Parameters<typeof explainMemoryQueries>[1] =
+                [];
+              if (arm.reader) {
+                const selected = assembled.value.selected;
+                const sourceItem = selected.find((m) => 'sourceHandle' in m);
+                const handle =
+                  sourceItem && 'sourceHandle' in sourceItem
+                    ? sourceItem.sourceHandle
+                    : undefined;
+                if (typeof handle !== 'string')
+                  throw Error('Expected a current source handle');
+                const read = await observeMemorySql(arm.api.sql, () =>
+                  arm.reader!.readRunExperienceSource(auth, handle!),
+                );
+                expect(read.value.items).toHaveLength(1);
+                const item = read.value.items[0]!;
+                const reference = expected.find(
+                  (e) => e.id === sourceItem!.id,
+                )!;
+                expect(item.handle).toBe(handle);
+                expect(reference).toBeTruthy();
+                expect(item.pin).toEqual(reference.pin);
+                expect(item.rule).toBe(reference.draft.rule);
+                expect(item.applicability).toBe(reference.draft.applicability);
+                expect(reference.sources).toHaveLength(1);
+                const original = reference.sources[0]!;
+                expect(item.source).toEqual({
+                  id: original.id,
+                  runId: original.runId,
+                  sessionId: original.sessionId,
+                  messageId: original.messageId,
+                  excerpt: original.excerpt,
+                  sourceDigest: original.sourceDigest,
+                  skills: [
+                    ...new Map(
+                      original.evidence.skills.map(({ pin }) => [
+                        pin.bindingId,
+                        pin,
+                      ]),
+                    ).values(),
+                  ],
+                });
+                sourceQueries = read.queries;
+                sourceMilliseconds = read.milliseconds;
+                sourceCounts = read.counts;
+                responseBytes = memoryContextBytes(read.value);
+                const [meterRow] =
+                  await db`select memory_context_state from allrice_employee_runs where run_id=${scope.runId}`;
+                meter = meterRow!.memory_context_state;
+                expect(meter!.toolReads).toBe(1);
+                expect(meter!.initial.bytes).toBe(
+                  initialMemoryContextBytes(selected),
+                );
+                expect(meter!.spentBytes).toBe(
+                  meter!.initial.bytes + responseBytes,
+                );
+                expect(meter!.initial.bytes).toBeLessThanOrEqual(6000);
+                expect(responseBytes).toBeLessThanOrEqual(8000);
+                expect(meter!.spentBytes).toBeLessThanOrEqual(24000);
+              }
+              const overview = await observeMemorySql(arm.api.sql, () =>
+                arm.api.overview.getExperienceOverview(f.owner, f.instance.id),
+              );
+              expect(overview.value.summary.counts.pendingSources).toBe(
+                historyCount,
+              );
+              expect(overview.value.summary.counts.adoptedTotal).toBe(3);
+              expect(ordinary.counts.total).toBeGreaterThan(0);
+              expect(assembled.counts.total).toBeGreaterThan(0);
+              expect(overview.counts.total).toBeGreaterThan(0);
+              const measurement = {
+                runId: scope.runId,
+                search: ordinary.counts,
+                assembly: assembled.counts,
+                source: sourceCounts ?? 'unsupported',
+                overview: overview.counts,
+                explicitSearchPoolCap: 60,
+                returnedRows: ordinary.value.length,
+                adoptedRules: 3,
+                selectedItems: 6,
+                selectedJsonBytes: memoryContextBytes(assembled.value.selected),
+                renderedInitialBytes: Buffer.byteLength(
+                  assembled.value.kernel.authorizedMemoryContext,
+                ),
+                toolResponseBytes: responseBytes ?? 'unsupported',
+                meter: meter ?? 'unsupported',
+                currentRequestIntact: true,
+                allRequiredShortFactsPresent: true,
+                allAdoptedRulesAndConditionsExact: true,
+              };
+              if (n === -1) {
+                warmups.push({
+                  arm: arm.label,
+                  ordinaryCount,
+                  historyCount,
+                  searchMs: ordinary.milliseconds,
+                  assemblyMs: assembled.milliseconds,
+                  sourceMs: sourceMilliseconds,
+                  overviewMs: overview.milliseconds,
+                  indexState:
+                    results.length === 0 && arm === arms[0]
+                      ? 'first preparation after index invalidation'
+                      : 'warmup; index may already be rebuilt',
+                  measurement,
+                });
+                if (evidenceDirectory)
+                  queryPlans.push({
+                    arm: arm.label,
+                    ordinaryCount,
+                    historyCount,
+                    search: await explainMemoryQueries(
+                      arm.api.sql,
+                      ordinary.queries,
+                    ),
+                    assembly: await explainMemoryQueries(
+                      arm.api.sql,
+                      assembled.queries,
+                    ),
+                    source: await explainMemoryQueries(
+                      arm.api.sql,
+                      sourceQueries,
+                    ),
+                    overview: await explainMemoryQueries(
+                      arm.api.sql,
+                      overview.queries,
+                    ),
+                  });
+              }
+              if (n >= 0) {
+                sample.search.push(ordinary.milliseconds);
+                sample.assembly.push(assembled.milliseconds);
+                if (sourceMilliseconds !== undefined)
+                  sample.source.push(sourceMilliseconds);
+                sample.completeAssembly.push(
+                  ordinary.milliseconds + assembled.milliseconds,
+                );
+                sample.overview.push(overview.milliseconds);
+                sample.sql.push(measurement);
+              }
+            }
+          }
+          for (const arm of arms) {
+            const sample = samples.get(arm.label)!;
+            results.push({
+              arm: arm.label,
+              ordinaryMemories: ordinaryCount,
+              pendingFeedback: historyCount,
+              emptyHistoricalTicks: historyCount,
+              adoptedSemanticIdentities: 3,
+              repetitions: repeats,
+              search: memoryLatency(sample.search),
+              assembly: memoryLatency(sample.assembly),
+              completeAssembly: memoryLatency(sample.completeAssembly),
+              overview: memoryLatency(sample.overview),
+              source: sample.source.length
+                ? memoryLatency(sample.source)
+                : 'unsupported',
+              samples: sample.sql,
+            });
+          }
+        }
+        expect(
+          await db`select m.id,m.revision,m.content,e.adoption_proof,a.experience_receipt,a.experience_occurrence
+          from allrice_memories m join allrice_experience_reviews e on e.memory_id=m.id
+          join allrice_automation_runs a on a.id=(e.adoption_proof->>'occurrenceId')::uuid
+          where e.owner_id=${f.user} and e.origin_kind='derived' order by m.id`,
+        ).toEqual(derived);
+        const gates = [];
+        for (const arm of arms) {
+          const rows = results.filter((r) => r.arm === arm.label);
+          for (const stage of [
+            'search',
+            'assembly',
+            'source',
+            'overview',
+          ] as const) {
+            const counts = rows
+              .flatMap((r) => r.samples.map((sample) => sample[stage]))
+              .filter(
+                (count): count is Record<string, number> =>
+                  typeof count === 'object' && count !== null,
+              );
+            if (!counts.length) continue;
+            const totals = counts.map((count) => count.total!);
+            const delta = Math.max(...totals) - Math.min(...totals);
+            gates.push({
+              arm: arm.label,
+              stage,
+              gate: 'query growth delta <=2',
+              actual: delta,
+              passed: delta <= 2,
+            });
+          }
+          if (evidenceDirectory && arm.label !== 'baseline')
+            for (const row of rows) {
+              for (const stage of [
+                'completeAssembly',
+                'source',
+                'overview',
+              ] as const) {
+                const metric = row[stage];
+                if (typeof metric === 'string') continue;
+                gates.push({
+                  arm: arm.label,
+                  ordinaryMemories: row.ordinaryMemories,
+                  pendingFeedback: row.pendingFeedback,
+                  stage,
+                  gate: 'warm p95 <=250ms',
+                  actual: metric.p95Ms,
+                  passed: metric.p95Ms! <= 250,
+                });
+              }
+            }
+        }
+        if (evidenceDirectory) {
+          await mkdir(evidenceDirectory, { recursive: true });
+          await writeFile(
+            evidenceDirectory + '/memory-growth-results.json',
+            JSON.stringify(
+              {
+                schemaVersion: 1,
+                passed: gates.every((gate) => gate.passed),
+                gates,
+                warmups,
+                queryPlans,
+                actualScales,
+                kind: 'isolated-real-postgres-native-module-growth',
+                modelCalls: 0,
+                modelCost: null,
+                schemaCleanup:
+                  'Required in suite afterAll; outer operator must independently verify removal',
+                reportStyleProofsProducedByActualLegacyConsumer: true,
+                plannerStatistics:
+                  'Explicit ANALYZE on the isolated schema after each fixture growth; both arms share those statistics',
+                inputPolicy:
+                  'Same owner, sources, three supported semantic identities, ordinary rows and query; fresh equivalent Run per sample; alternating warm samples, one excluded warmup.',
+                scope:
+                  'Explicit search, authorized experience assembly, real kernel formatter and new bounded source-read transactions. Synthetic completed feedback is captured by the real producer; empty collection history has no invented model receipt. This does not measure full DSH dispatch, billed model tokens, or model compliance with the paragraph request.',
+                code: Object.fromEntries(
+                  arms.map((a) => [
+                    a.label,
+                    { sha: a.api.sha, artifacts: a.api.artifacts },
+                  ]),
+                ),
+                results,
+              },
+              null,
+              2,
+            ) + '\n',
+          );
+        }
+        expect(
+          gates.filter((gate) => !gate.passed),
+          JSON.stringify(gates),
+        ).toEqual([]);
+      } finally {
+        try {
+          const closed = await Promise.allSettled(
+            native.map((arm) => arm.api.close()),
+          );
+          const failures = closed.filter(
+            (result) => result.status === 'rejected',
+          );
+          expect(
+            failures,
+            'Native benchmark pool cleanup must complete',
+          ).toEqual([]);
+        } finally {
+          if (evidenceDirectory) {
+            if (previousDatabaseUrl === undefined)
+              delete process.env.DATABASE_URL;
+            else process.env.DATABASE_URL = previousDatabaseUrl;
+          }
+        }
+      }
+    }, 900000);
     it('carries a real native source handle through schema, Broker, database accounting and back to DSH', async () => {
       const f = await boundedFixture();
       const model = await p24Fixture(async (_request, index) =>
