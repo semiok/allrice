@@ -37,11 +37,17 @@ function fixture(options: {
   admissionMethod?: string;
   authorityFailure?: Error;
   streamDiagnostic?: unknown;
+  modelTimings?: Record<string, unknown>[];
+  joinTimings?: Record<string, unknown>[];
+  drainTimings?: Record<string, unknown>[];
 }) {
   const sessionId = randomUUID();
   const threadId = `dsh-${sessionId}`;
   const order: string[] = [];
-  let notify: ((value: DshNotification) => void) | undefined;
+  const notificationListeners = new Set<(value: DshNotification) => void>();
+  const notify = (value: DshNotification) => {
+    for (const listener of [...notificationListeners]) listener(value);
+  };
   let cleared = false;
   let rejectPrompt: ((error: Error) => void) | undefined;
   let handler:
@@ -70,12 +76,14 @@ function fixture(options: {
       handler = value;
     }),
     subscribe: (listener: (value: DshNotification) => void) => {
-      notify = listener;
+      notificationListeners.add(listener);
       return () => {
-        notify = undefined;
+        notificationListeners.delete(listener);
       };
     },
     prompt: async () => {
+      for (const params of options.modelTimings ?? [])
+        notify?.({ method: 'allrice.modelTiming', params });
       if (options.streamDiagnostic)
         notify?.({
           method: 'allrice.modelStream',
@@ -137,6 +145,12 @@ function fixture(options: {
     },
     assistant: vi.fn(async (action: string) => {
       order.push(action);
+      for (const params of (action === 'join'
+        ? options.joinTimings
+        : action === 'drain'
+          ? options.drainTimings
+          : []) ?? [])
+        notify({ method: 'allrice.modelTiming', params });
       if (action === 'drain' && options.drainError)
         throw Error('drain unavailable');
       if (action === 'diagnostics') {
@@ -249,6 +263,7 @@ function fixture(options: {
   return {
     input,
     client,
+    notify,
     order,
     diagnostics,
     adapter: new DshHarnessAdapter(),
@@ -256,6 +271,132 @@ function fixture(options: {
 }
 
 describe('bounded assistant diagnostic consumption', () => {
+  it.each(['join', 'drain'] as const)(
+    'keeps timing capture through %s and disposes it after final flush',
+    async (action) => {
+      const timing = {
+        version: 1,
+        phase: 'prepared',
+        startedAt: new Date().toISOString(),
+        elapsedMs: 2,
+        preparationMs: 1,
+        ledgerPreparationMs: 1,
+        authorizationReadMs: null,
+        firstChunkMs: null,
+        firstContentMs: null,
+        firstTextMs: null,
+        firstReasoningMs: null,
+        firstToolCallMs: null,
+        transport: 'unobserved',
+        requestCount: 0,
+        websocketRequests: 0,
+        requestsTruncated: false,
+        httpRequests: [],
+      };
+      const frame = {
+        sessionId: 'owned-native-child',
+        callId: randomUUID(),
+        timing,
+      };
+      const late = {
+        ...frame,
+        timing: {
+          ...timing,
+          phase: action === 'join' ? 'completed' : 'failed',
+        },
+      };
+      const failure = new Error('synthetic model failure');
+      const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+      const f = fixture({
+        outcome: 'completed',
+        modelTimings: [frame],
+        ...(action === 'join'
+          ? { joinTimings: [late, late] }
+          : { originalError: failure, drainTimings: [late, late] }),
+      });
+      const runId = randomUUID();
+      f.input.executionEnvironment = { ALLRICE_RUN_ID: runId };
+      if (action === 'join') await f.adapter.execute(f.input);
+      else await expect(f.adapter.execute(f.input)).rejects.toBe(failure);
+      const rows = logs.mock.calls
+        .filter((x) => x[0] === '[AllRice:model-timing]')
+        .map((x) => JSON.parse(String(x[1])));
+      expect(rows.map((x) => x.timing.phase)).toEqual([
+        'prepared',
+        action === 'join' ? 'completed' : 'failed',
+      ]);
+      expect(
+        rows.every((x) => x.runId === runId && x.callId === frame.callId),
+      ).toBe(true);
+      const count = logs.mock.calls.length;
+      f.notify({
+        method: 'allrice.modelTiming',
+        params: { ...frame, callId: randomUUID() },
+      });
+      expect(logs).toHaveBeenCalledTimes(count);
+    },
+  );
+  it('logs validated call timing once with the root Run, without creating chat events', async () => {
+    const timing = {
+      version: 1,
+      phase: 'prepared',
+      startedAt: new Date().toISOString(),
+      elapsedMs: 2,
+      preparationMs: 2,
+      ledgerPreparationMs: 1,
+      authorizationReadMs: null,
+      firstChunkMs: null,
+      firstContentMs: null,
+      firstTextMs: null,
+      firstReasoningMs: null,
+      firstToolCallMs: null,
+      transport: 'unobserved',
+      requestCount: 0,
+      websocketRequests: 0,
+      requestsTruncated: false,
+      httpRequests: [],
+    };
+    const frame = {
+      sessionId: 'owned-native-child',
+      callId: randomUUID(),
+      timing,
+    };
+    const logs = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const f = fixture({
+      outcome: 'completed',
+      modelTimings: [
+        frame,
+        frame,
+        { ...frame, timing: { ...timing, prompt: 'PRIVATE_PROMPT' } },
+      ],
+    });
+    const runId = randomUUID();
+    f.input.executionEnvironment = { ALLRICE_RUN_ID: runId };
+    const onEvent = vi.fn(
+      async (event: { type: string; sourceEventType?: string }) => {
+        void event;
+      },
+    );
+    f.input.onEvent = onEvent;
+    await f.adapter.execute(f.input);
+    const rows = logs.mock.calls.filter(
+      (x) => x[0] === '[AllRice:model-timing]',
+    );
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(String(rows[0]![1]))).toMatchObject({
+      event: 'allrice.model_timing',
+      runId,
+      callId: frame.callId,
+      nativeSessionId: frame.sessionId,
+      timing,
+    });
+    expect(JSON.stringify(rows)).not.toContain('PRIVATE_PROMPT');
+    expect(
+      onEvent.mock.calls.some(
+        ([event]) => event.sourceEventType === 'allrice/model-timing',
+      ),
+    ).toBe(false);
+  });
   it('persists short connection-failure facts without calling them a long wait', async () => {
     const diagnostic = {
       transport: 'unobserved',

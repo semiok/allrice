@@ -361,13 +361,13 @@ async function runWire({
     });
     let recovery, diagnostic;
     if (guarded) installModelTransportObservation();
+    const modelTransport = guarded
+      ? createModelTransport({ provider: 'openai-codex', sessionId })
+      : undefined;
     const stream = guarded
       ? boundedModelStream(source, {
           idleMs: 200,
-          transport: createModelTransport({
-            provider: 'openai-codex',
-            sessionId,
-          }),
+          transport: modelTransport,
           onDiagnostic: (value) => {
             diagnostic = value;
           },
@@ -379,7 +379,15 @@ async function runWire({
       if (!guarded) throw error;
       recovery = modelStreamRecoveryReceipt(error);
     }
-    return { calls, chunks, forwarded, payloadHookCalls, recovery, diagnostic };
+    return {
+      calls,
+      chunks,
+      forwarded,
+      payloadHookCalls,
+      recovery,
+      diagnostic,
+      timing: modelTransport?.timing(),
+    };
   } finally {
     if (wsServer) {
       for (const client of wsServer.clients) client.terminate();
@@ -393,6 +401,22 @@ async function runWire({
 describe.sequential(
   'pinned Codex output-bound wire evidence (offline only)',
   () => {
+    it('observes success-path HTTP phases through the actual pinned native provider', async () => {
+      const r = await runWire({ guarded: true });
+      expect(r.calls).toHaveLength(1);
+      expect(r.timing).toMatchObject({
+        transport: 'sse',
+        requestCount: 1,
+        requestsTruncated: false,
+      });
+      const http = r.timing.httpRequests[0];
+      expect(http.headersMs).toEqual(expect.any(Number));
+      expect(http.firstByteMs).toBeGreaterThanOrEqual(http.headersMs);
+      expect(http.firstEventMs).toBeGreaterThanOrEqual(http.firstByteMs);
+      expect(JSON.stringify(r.timing)).not.toMatch(
+        /PRIVATE|synthetic-refresh|127\.0\.0\.1|backend-api|Bearer/,
+      );
+    });
     it('carries pre-header failure facts through the actual pinned DSH provider', async () => {
       const r = await runWire({ disconnect: true, guarded: true });
       expect(r.calls).toHaveLength(1);

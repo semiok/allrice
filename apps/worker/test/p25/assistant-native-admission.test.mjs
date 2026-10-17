@@ -87,6 +87,60 @@ function fixture(
 }
 
 describe('governed native model admission recovery', () => {
+  it('records success and native retry under distinct admission IDs without changing settlement or tools', async () => {
+    const events = [];
+    const f = fixture(
+      async () => ({ settled: true, tokenUsageObservational: true }),
+      { onModelTiming: (e) => events.push(e) },
+    );
+    await f.prepare();
+    await f.execute({ inputTokens: 12, outputTokens: 4 }, false, {
+      kind: 'error',
+      failure: { code: 'SERVER' },
+    });
+    await f.prepare();
+    await f.execute(
+      { inputTokens: 14, outputTokens: 5 },
+      false,
+      { kind: 'stop' },
+      [{ type: 'text-delta', text: 'PRIVATE_OUTPUT' }],
+    );
+    expect(events.map((x) => x.timing.phase)).toEqual([
+      'prepared',
+      'failed',
+      'prepared',
+      'first_content',
+      'completed',
+    ]);
+    expect(new Set(events.map((x) => x.callId)).size).toBe(2);
+    expect(events.at(-1).timing).toMatchObject({
+      inputBytes: expect.any(Number),
+      toolCount: 0,
+      firstContentMs: expect.any(Number),
+      settlementConfirmed: true,
+    });
+    expect(JSON.stringify(events)).not.toContain('PRIVATE_OUTPUT');
+    expect(
+      f.bridge.mock.calls.filter((x) => x[0] === 'model-dispatch'),
+    ).toHaveLength(2);
+    expect(
+      f.bridge.mock.calls.filter((x) => x[0] === 'model-settle'),
+    ).toHaveLength(2);
+  });
+  it('continues normal model settlement when the diagnostic sink throws', async () => {
+    const f = fixture(async () => ({ settled: true }), {
+      onModelTiming: () => {
+        throw Error('diagnostic sink unavailable');
+      },
+    });
+    await f.prepare();
+    await expect(
+      f.execute({ inputTokens: 12, outputTokens: 4 }, false, { kind: 'stop' }),
+    ).resolves.toBeUndefined();
+    expect(
+      f.bridge.mock.calls.filter((x) => x[0] === 'model-dispatch'),
+    ).toHaveLength(1);
+  });
   it.each(['text', 'reasoning'])(
     'lets native retry an empty %s block without fabricating usage',
     async (blockType) => {

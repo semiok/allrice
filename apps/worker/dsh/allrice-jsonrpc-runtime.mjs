@@ -817,6 +817,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   authorizationNotify = () => undefined;
   modelWaitNotify = () => undefined;
   modelStreamNotify = () => undefined;
+  modelTimingNotify = () => undefined;
   codexModels = null;
   nativeTools = new Set();
   nativeToolsRegistered = new Set();
@@ -1072,6 +1073,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
             requestedSkills.some((skill) => skill.invocation.modelInvocable),
           onModelWait: (state) => this.modelWaitNotify(state),
           onModelStream: (state) => this.modelStreamNotify(state),
+          onModelTiming: (state) => this.modelTimingNotify(state),
           modelStreamOptions: {
             // Bounded deployment/test setting; never supplied by model input.
             idleMs: Math.min(
@@ -1903,6 +1905,8 @@ server.modelWaitNotify = (state) =>
   transport.notify('allrice.modelWait', state);
 server.modelStreamNotify = (state) =>
   transport.notify('allrice.modelStream', state);
+server.modelTimingNotify = (state) =>
+  transport.notify('allrice.modelTiming', state);
 server.installUserQuestionProvider();
 if (process.env.ALLRICE_ASSISTANTS_ENABLED === '1')
   server.assistantBridge = (method, params, signal) =>
