@@ -121,10 +121,15 @@ git clone https://github.com/semiok/allrice.git
 cd allrice
 corepack enable
 pnpm install
+pnpm --filter @allrice/worker... build
+node apps/worker/scripts/prepare-native-artifact.mjs --root="$PWD"
+# Review the printed artifact ID and put it in .env:
+# ALLRICE_DSH_NATIVE_ARTIFACT_ID=sha256:<reviewed 64-character digest>
 pnpm dev
 ```
 
-That is the complete default setup. On the first run, `pnpm dev`:
+Preparation measures the installed native code; it does not approve it. After
+recording the reviewed ID, `pnpm dev`:
 
 1. loads optional overrides from the root `.env`;
 2. starts an isolated PostgreSQL 17 + pgvector container on `127.0.0.1:54329`;
@@ -132,7 +137,10 @@ That is the complete default setup. On the first run, `pnpm dev`:
 4. creates the ignored local storage directory;
 5. starts Web and Worker with the same environment.
 
-Run `pnpm doctor` for prerequisite diagnostics. Copy `.env.example` to `.env` only when you need overrides; it is not required for the default path. See the [development guide](docs/development/README.md) for existing-database setup, environment variables, and troubleshooting.
+Run `pnpm doctor` for prerequisite diagnostics. Use `.env` for the reviewed native
+artifact ID and optional environment overrides. The Worker runs compiled code
+with Node watch; see the [development guide](docs/development/README.md) for
+incremental compilation, existing databases, and troubleshooting.
 
 Default endpoints:
 
