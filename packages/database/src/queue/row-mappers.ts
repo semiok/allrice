@@ -31,6 +31,10 @@ export interface JobRow {
   lease_expires_at: Date | null;
   cancel_requested_at: Date | null;
   cancel_reason: string | null;
+  /** Internal receipt cutoff, never a new execution grant. Optional for legacy
+   * synthetic rows; production migrations always provide both columns. */
+  drain_reason?: 'cancel' | 'timeout' | null;
+  drain_deadline_at?: Date | null;
   last_error_code: string | null;
   last_error_message: string | null;
   created_at: Date;

@@ -91,6 +91,7 @@ export function createTaskProgressRuntime(
       >`select j.* from allrice_jobs j join allrice_runs r on r.id=j.run_id
         where j.id=${worker.jobId} and j.run_id=${runId} and j.worker_id=${worker.workerId} and j.lease_token=${worker.leaseToken}
           and j.status='running' and j.lease_expires_at>clock_timestamp()
+          and (j.drain_deadline_at is null or j.drain_deadline_at>clock_timestamp())
           and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and r.owner_id=${context.delegatedBy.id}
         for update of j`;
       if (!job) throw Error('task_progress_lease_lost');

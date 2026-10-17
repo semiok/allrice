@@ -36,6 +36,7 @@ function fixture(options: {
   admissionFailureReturned?: boolean;
   admissionMethod?: string;
   authorityFailure?: Error;
+  rootTimeout?: boolean;
   streamDiagnostic?: unknown;
   modelTimings?: Record<string, unknown>[];
   joinTimings?: Record<string, unknown>[];
@@ -93,7 +94,7 @@ function fixture(options: {
             diagnostic: options.streamDiagnostic,
           },
         });
-      if (options.authorityFailure)
+      if (options.authorityFailure || options.rootTimeout)
         return new Promise((_, reject) => {
           rejectPrompt = reject;
         });
@@ -151,6 +152,8 @@ function fixture(options: {
           ? options.drainTimings
           : []) ?? [])
         notify({ method: 'allrice.modelTiming', params });
+      if (action === 'drain' && options.rootTimeout)
+        rejectPrompt?.(Error('native stopped'));
       if (action === 'drain' && options.drainError)
         throw Error('drain unavailable');
       if (action === 'diagnostics') {
@@ -235,7 +238,14 @@ function fixture(options: {
             },
             cancellation: async () => {
               if (options.authorityFailure) throw options.authorityFailure;
-              return { instances: [] };
+              return options.rootTimeout
+                ? {
+                    nativeSessionId: threadId,
+                    instances: [{ nativeSessionId: threadId }],
+                    stopReason: 'timeout' as const,
+                    drainDeadlineAt: new Date(Date.now() + 30000).toISOString(),
+                  }
+                : { instances: [] };
             },
             cancel: async () => {
               order.push('cancel');
@@ -446,6 +456,29 @@ describe('bounded assistant diagnostic consumption', () => {
       message: expect.stringContaining('执行时限'),
     });
     expect(f.order).toContain('drop');
+  });
+  it('authority-first timeout drains and reads genuine usage before closing the owned host', async () => {
+    vi.useFakeTimers();
+    const receipt = {
+      usage: { inputTokens: 120, outputTokens: 7, cachedInputTokens: 0 },
+      usageComplete: false,
+      cacheUsageKnown: false,
+    };
+    const f = fixture({ rootTimeout: true, failureUsage: receipt });
+    const outcome = f.adapter.execute(f.input).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(await outcome).toMatchObject({
+      code: 'ASSISTANT_BUDGET_EXHAUSTED',
+      retryable: false,
+    });
+    expect(f.order.indexOf('drain')).toBeGreaterThan(-1);
+    expect(f.order.indexOf('drain')).toBeLessThan(
+      f.order.indexOf('failureUsage'),
+    );
+    expect(f.order.indexOf('failureUsage')).toBeLessThan(
+      f.order.indexOf('drop'),
+    );
+    expect(f.order.filter((x) => x === 'drain')).toHaveLength(1);
   });
   it.each([true, false])(
     'propagates known prior usage with completeness=%s, only after drain and before host disposal',

@@ -4,6 +4,7 @@ import {
   appendJobEvent,
   completeJob,
   failJob,
+  finishJobDrain,
   heartbeatJob,
   startClaimedJob,
   type ClaimedExecution,
@@ -46,6 +47,21 @@ export type ClaimedJobHandler = (
 
 function isLeaseLoss(error: unknown) {
   return error instanceof QueueError && error.code === 'lease_lost';
+}
+
+async function joinHeartbeatForCleanup(pending: Promise<void> | undefined) {
+  if (!pending) return true;
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      pending.then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), 5_000);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function appendHarnessEvent(input: {
@@ -107,8 +123,10 @@ export async function runClaimedJob(
     });
     return;
   }
+  let heartbeatTask: Promise<void> | undefined;
   const heartbeat = setInterval(() => {
-    void heartbeatJob(
+    if (heartbeatTask) return;
+    heartbeatTask = heartbeatJob(
       input.workerId,
       input.jobId,
       input.leaseToken,
@@ -125,6 +143,9 @@ export async function runClaimedJob(
           });
         }
         controller.abort();
+      })
+      .finally(() => {
+        heartbeatTask = undefined;
       });
   }, input.heartbeatMs);
 
@@ -206,6 +227,13 @@ export async function runClaimedJob(
     }
   } finally {
     clearInterval(heartbeat);
+    // Join the one in-flight heartbeat before releasing its receipt lease.
+    const heartbeatJoined = await joinHeartbeatForCleanup(heartbeatTask);
+    if (!heartbeatJoined)
+      console.error(
+        '[M5] Heartbeat join timed out; local cleanup continues, queue maintenance owns terminal state',
+        { jobId: input.jobId },
+      );
     await eventBatcher.close().catch((error: unknown) => {
       if (!isLeaseLoss(error)) {
         console.error('[M5] Harness event flush failed', {
@@ -214,6 +242,30 @@ export async function runClaimedJob(
         });
       }
     });
-    await isolation.cleanup();
+    try {
+      await isolation.cleanup();
+    } finally {
+      if (heartbeatJoined && controller.signal.aborted && !input.stopping()) {
+        try {
+          await finishJobDrain({
+            workerId: input.workerId,
+            jobId: input.jobId,
+            leaseToken: input.leaseToken,
+          });
+        } catch (error) {
+          // An expired/replaced incarnation cannot finalize; maintenance owns
+          // that boundary. Never restore a lost lease to manufacture closure.
+          if (!isLeaseLoss(error))
+            console.error(
+              '[M5] Receipt drain finalization unconfirmed; queue maintenance retains ownership',
+              {
+                jobId: input.jobId,
+                message:
+                  error instanceof Error ? error.message : 'unknown error',
+              },
+            );
+        }
+      }
+    }
   }
 }

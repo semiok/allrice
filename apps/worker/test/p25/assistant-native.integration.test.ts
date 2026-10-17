@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { AssistantInstanceView } from '@allrice/contracts';
-import { beforeAll, afterAll, describe, it, expect } from 'vitest';
+import { beforeAll, afterAll, describe, it, expect, vi } from 'vitest';
+import { closeDatabase } from '../../../../packages/database/src/core/client.ts';
+import {
+  cancelRun,
+  heartbeatJob,
+  maintainQueue,
+  finishJobDrain,
+} from '../../../../packages/database/src/execution/queue.ts';
 import {
   assistantFixture,
   createAssistantFixtureDatabase,
@@ -17,10 +24,19 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
   beforeAll(async () => {
     process.env.ALLRICE_ASSISTANTS_ENABLED = '1';
     database = await createAssistantFixtureDatabase();
+    const [scope] = await database.db<
+      { schema: string }[]
+    >`select current_schema() schema`;
+    const schema = scope!.schema;
+    const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+    url.searchParams.set('options', '-csearch_path=' + schema + ',public');
+    vi.stubEnv('DATABASE_URL', url.href);
   }, 120000);
   afterAll(async () => {
     delete process.env.ALLRICE_ASSISTANTS_ENABLED;
+    await closeDatabase();
     await database?.close();
+    vi.unstubAllEnvs();
   });
   it('trusted host provisions two native independent children; reservations, child identities and durable parent adoption survive queries', async () => {
     const f = await assistantFixture(database.db, 20);
@@ -209,6 +225,119 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
       await native.close();
     }
   }, 60000);
+  it.each(['heartbeat', 'maintenance', 'authority-timeout', 'crash'] as const)(
+    'ordinary cancellation survives %s until actual native child-first stopped receipts',
+    async (trigger) => {
+      const f = await assistantFixture(database.db),
+        hold = gate();
+      f.context.memberships = (
+        await database.db`select * from allrice_memberships where user_id=${f.context.actor.id}`
+      ).map((m) => ({
+        id: m.id,
+        userId: m.user_id,
+        organizationId: m.organization_id,
+        workspaceId: m.workspace_id,
+        role: m.role,
+        active: m.active,
+      }));
+      const bridge = createAssistantWorkerBridge({
+        runtime: f.runtime,
+        task: f.task,
+        context: f.context,
+        worker: f.worker,
+        wireNames: { read: 'p24_proposal' },
+        readOnlyTools: new Set(),
+      });
+      const stopped = new Set<string>();
+      const native = await p24Fixture(
+        async () => {
+          await hold.promise;
+          return { text: 'Late synthetic response' };
+        },
+        undefined,
+        {
+          p25: true,
+          callback: async (method, p) => {
+            const result = await bridge.handle(method, p);
+            if (method === 'stopped' && result.stopped === true)
+              stopped.add(String(p.nativeSessionId));
+            return result;
+          },
+        },
+      );
+      const client = native.launch();
+      try {
+        await client.call('ready');
+        await client.call('create', { id: f.nativeSessionId });
+        await client.call('p25/bind', { nativeSessionId: f.nativeSessionId });
+        const id = randomUUID();
+        await f.delegate({ delegationId: id });
+        await client.call('p25/start', await bridge.messageDispatch(id));
+        await expect.poll(() => native.requests.length).toBe(1);
+        if (trigger === 'authority-timeout')
+          await database.db`update allrice_jobs set created_at=clock_timestamp()-interval '2 seconds',timeout_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+        else
+          await cancelRun(f.context, f.context.workspaceId!, f.task.runId, {
+            reason: 'user_requested',
+          });
+        if (trigger === 'heartbeat')
+          expect(
+            await heartbeatJob(
+              f.worker.workerId,
+              f.worker.jobId,
+              f.worker.leaseToken,
+              30000,
+            ),
+          ).toMatchObject({ active: false, draining: true });
+        else if (trigger === 'maintenance') await maintainQueue();
+        if (trigger === 'crash') {
+          await client.crash();
+          hold.release();
+          await database.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second',lease_expires_at=clock_timestamp()-interval '1 second' where id=${f.worker.jobId}`;
+          await maintainQueue();
+          const [job] =
+            await database.db`select status from allrice_jobs where id=${f.worker.jobId}`;
+          expect(job!.status).toBe('canceled');
+          expect(stopped.size).toBe(0);
+          const rows =
+            await database.db`select stopped_at from allrice_assistant_instances where root_run_id=${f.task.runId}`;
+          expect(rows.every((row) => row.stopped_at === null)).toBe(true);
+          const calls =
+            await database.db`select finished_at from allrice_assistant_model_admissions where root_run_id=${f.task.runId}`;
+          expect(calls.some((call) => call.finished_at === null)).toBe(true);
+          return;
+        }
+        const request = await bridge.cancellation();
+        expect(request.drainDeadlineAt).toEqual(expect.any(String));
+        await client.call('p25/drain', request);
+        hold.release();
+        await client.call('p25/flush');
+        const rows =
+          await database.db`select native_session_id,stopped_at from allrice_assistant_instances where root_run_id=${f.task.runId}`;
+        expect(rows).toHaveLength(2);
+        for (const row of rows) {
+          expect(stopped.has(row.native_session_id)).toBe(true);
+          expect(row.stopped_at).not.toBeNull();
+        }
+        expect(native.requests).toHaveLength(1);
+        expect(
+          (
+            await database.db`select status from allrice_jobs where id=${f.worker.jobId}`
+          )[0]!.status,
+        ).toBe('running');
+        await finishJobDrain(f.worker);
+        expect(
+          (
+            await database.db`select status from allrice_jobs where id=${f.worker.jobId}`
+          )[0]!.status,
+        ).toBe(trigger === 'authority-timeout' ? 'failed' : 'canceled');
+      } finally {
+        hold.release();
+        await native.close();
+      }
+    },
+    60000,
+  );
   it('canceling one actually-running native child never drains its parent or sibling', async () => {
     const f = await assistantFixture(database.db),
       holdA = gate(),

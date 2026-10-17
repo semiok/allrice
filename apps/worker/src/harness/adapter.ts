@@ -82,6 +82,8 @@ export interface HarnessExecutionInput {
       ): Promise<Record<string, unknown>>;
       cancellation(): Promise<{
         nativeSessionId?: string;
+        drainDeadlineAt?: string;
+        stopReason?: 'cancel' | 'timeout';
         instances: readonly { nativeSessionId: string }[];
       }>;
       cancel(): Promise<void>;

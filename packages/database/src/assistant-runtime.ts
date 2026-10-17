@@ -1,3 +1,6 @@
+import { freezeJobReceiptDrain } from './queue/receipt-drain.ts';
+import { queueStopCause } from './queue/policy.ts';
+import type { JobRow } from './queue/row-mappers.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 import { randomUUID } from 'node:crypto';
@@ -261,6 +264,7 @@ export function createAssistantRuntime(
       where j.id=${lease.jobId} and j.run_id=${root.root_run_id}
       and j.worker_id=${lease.workerId} and j.lease_token=${lease.leaseToken}
       and j.status='running' and j.lease_expires_at>clock_timestamp() and (${admitting}::boolean=false or j.cancel_requested_at is null)
+      and (j.drain_deadline_at is null or j.drain_deadline_at>clock_timestamp())
       and r.state in ('running','queued','waiting_approval') for share of j,r`;
     if (
       !job ||
@@ -482,6 +486,10 @@ export function createAssistantRuntime(
           values(${task.rootRunId},${json(tx, configuration)},${input.worker.jobId},${input.worker.workerId},${runtimeLedgerInputDigest(input.worker.leaseToken)},${input.worker.generation})`;
         const root = await lock(tx, task.scope, task.rootRunId);
         await assertLease(tx, root, input.worker, false);
+        const [job] =
+          await tx`select cancel_requested_at from allrice_jobs where id=${input.worker.jobId}`;
+        if (root.cancel_request_id || job?.cancel_requested_at)
+          fail('canceled');
         await authorize({
           transaction: tx,
           task,
@@ -590,9 +598,10 @@ export function createAssistantRuntime(
         return { instance: view(row!), created: true };
       });
     },
-    /** Read-only liveness check for an already owned native host. Re-resolve
+    /** Liveness check for an already owned native host. Re-resolve
      * current authority even while a model stream makes no further tool calls.
-     * A committed cancellation needs no new grant to drain that host. */
+     * A committed cancellation needs no new grant to drain that host. First
+     * deadline observation commits the same queue receipt cutoff atomically. */
     async assertCurrentAuthority(input: {
       scope: RuntimeScope;
       rootRunId: string;
@@ -601,9 +610,39 @@ export function createAssistantRuntime(
       return db.begin(async (tx) => {
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker, false);
-        if (root.cancel_request_id) {
-          await assertLease(tx, root, input.worker, false);
-          return { cancelRequested: true };
+        const [job] = await tx<
+          JobRow[]
+        >`select * from allrice_jobs where id=${input.worker.jobId} for update`;
+        const [clock] = await tx<
+          { now: Date }[]
+        >`select clock_timestamp() as now`;
+        // A row-lock wait must not turn a pre-wait clock observation into a
+        // renewed incarnation. This is a stop channel, never lease recovery.
+        if (
+          !job?.lease_expires_at ||
+          job.lease_expires_at <= clock!.now ||
+          (job.drain_deadline_at && job.drain_deadline_at <= clock!.now)
+        )
+          fail('lease_lost');
+        const stopReason = queueStopCause(job!, clock!.now);
+        if (stopReason) {
+          await freezeJobReceiptDrain(tx, job!, stopReason);
+          await cancelAssistantRootTransaction(
+            tx,
+            root.root_run_id,
+            randomUUID(),
+            stopReason === 'timeout' ? 'budget_exhausted' : 'user_request',
+          );
+        }
+        if (root.cancel_request_id || stopReason) {
+          const [stopped] =
+            await tx`select drain_deadline_at from allrice_jobs where id=${input.worker.jobId}`;
+          return {
+            cancelRequested: true,
+            stopReason: stopReason ?? undefined,
+            drainDeadlineAt: stopped?.drain_deadline_at?.toISOString() as
+              string | undefined,
+          };
         }
         await assertLease(tx, root, input.worker);
         await authorize({
@@ -613,7 +652,11 @@ export function createAssistantRuntime(
           phase: 'recover',
         });
         await assertLease(tx, root, input.worker);
-        return { cancelRequested: false };
+        return {
+          cancelRequested: false,
+          stopReason: undefined as 'cancel' | 'timeout' | undefined,
+          drainDeadlineAt: undefined as string | undefined,
+        };
       });
     },
     /** Trusted native idle proof, not inferred from the mere presence of a

@@ -48,6 +48,21 @@ export type MaintenanceAction =
   | 'recover_lease'
   | 'dead_letter';
 
+/** One absolute stop cause survives clock refreshes and later cancellation. */
+export function queueStopCause(
+  job: {
+    drain_reason?: 'cancel' | 'timeout' | null;
+    cancel_requested_at: Date | null;
+    timeout_at: Date;
+  },
+  now: Date,
+) {
+  if (job.drain_reason) return job.drain_reason;
+  if (job.cancel_requested_at) return 'cancel' as const;
+  if (job.timeout_at <= now) return 'timeout' as const;
+  return null;
+}
+
 export function queueMaintenanceAction(
   job: {
     status: JobStatus;
@@ -57,12 +72,13 @@ export function queueMaintenanceAction(
     timeout_at: Date;
     lease_expires_at: Date | null;
     cancel_requested_at: Date | null;
+    drain_reason?: 'cancel' | 'timeout' | null;
   },
   now: Date,
 ): MaintenanceAction {
   if (isTerminalJobStatus(job.status)) return 'none';
-  if (job.cancel_requested_at) return 'cancel';
-  if (job.timeout_at <= now) return 'timeout';
+  const stopped = queueStopCause(job, now);
+  if (stopped) return stopped;
   if (job.status === 'retry_wait' && job.available_at <= now) {
     return 'promote_retry';
   }

@@ -699,9 +699,11 @@ export function createAssistantWorkerBridge(
     async cancellation() {
       // Admission-only checks cannot stop a provider stream after its grant is
       // revoked. Failure makes the adapter close only this already-owned host.
-      await runtime.assertCurrentAuthority(base);
+      const authority = await runtime.assertCurrentAuthority(base);
       const snapshot = await tree();
       return {
+        drainDeadlineAt: authority.drainDeadlineAt,
+        stopReason: authority.stopReason,
         nativeSessionId: snapshot.instances.find((i) => i.parentRunId === null)
           ?.nativeSessionId,
         instances: snapshot.instances
