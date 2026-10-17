@@ -298,6 +298,22 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
         await fixture.db`select status from allrice_automations where session_id=${f.session}`
       )[0]?.status,
     ).toBe('paused');
+    const [draining] =
+      await fixture.db`select status,lease_token,drain_reason,drain_deadline_at from allrice_jobs where run_id=${f.rootRunId}`;
+    expect(draining).toMatchObject({
+      status: 'running',
+      lease_token: f.worker.leaseToken,
+      drain_reason: 'cancel',
+    });
+    expect(draining?.drain_deadline_at).toBeInstanceOf(Date);
+    const startModel = () =>
+      f.runtime.prepareModelUsage({
+        ...f.base,
+        runId: f.rootRunId,
+        callId: randomUUID(),
+        requestedOutputTokens: 100,
+      });
+    await expect(startModel()).rejects.toThrow('lease_lost');
     await updateChatSession(f.requestContext, f.workspace, f.session, {
       archived: false,
     });
@@ -307,11 +323,25 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
       )[0]?.cancel_requested_at,
     ).not.toBeNull();
     await maintainQueue();
+    const [restored] =
+      await fixture.db`select status,drain_deadline_at from allrice_jobs where run_id=${f.rootRunId}`;
+    expect(restored?.status).toBe('running');
+    expect(restored?.drain_deadline_at).toEqual(draining?.drain_deadline_at);
+    await expect(startModel()).rejects.toThrow('lease_lost');
+    // Advance only this synthetic Job's receipt cutoff. Restoration never
+    // renews it, and maintenance must not invent a native stopped receipt.
+    await fixture.db`update allrice_jobs set drain_deadline_at=clock_timestamp()-interval '1 second',lease_expires_at=clock_timestamp()-interval '1 second' where run_id=${f.rootRunId}`;
+    await maintainQueue();
     expect(
       (
         await fixture.db`select status from allrice_jobs where run_id=${f.rootRunId}`
       )[0]?.status,
     ).toBe('canceled');
+    expect(
+      (
+        await fixture.db`select stopped_at from allrice_assistant_instances where run_id=${f.rootRunId}`
+      )[0]?.stopped_at,
+    ).toBeNull();
     expect(
       (
         await fixture.db`select status from allrice_automations where session_id=${f.session}`

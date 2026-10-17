@@ -95,6 +95,7 @@ import {
   isTerminalRunEventType,
   leaseDeadline,
   queueMaintenanceAction,
+  queueStopCause,
   retryAvailableAt,
   type MaintenanceAction,
 } from '../queue/policy.ts';
@@ -108,6 +109,7 @@ import {
   type RunRow,
 } from '../queue/row-mappers.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
+import { freezeJobReceiptDrain } from '../queue/receipt-drain.ts';
 import { ArtifactReviewError } from '../artifact-review.ts';
 import { prepareReviewContinuation } from '../conversation/review-continuation.ts';
 import { releaseConversationRuntimeTransaction } from '../conversation/conversation-runtime.ts';
@@ -1494,6 +1496,7 @@ async function requestCancellationTransaction(
   ignoreTerminal: boolean,
   nonBlocking = false,
 ) {
+  await lockRootCreation(transaction, runId, nonBlocking);
   // Persistent tree cutoff precedes job cancellation and native drain. No root
   // row means an unchanged legacy single-agent Run.
   await cancelAssistantRootTransaction(
@@ -1516,9 +1519,19 @@ async function requestCancellationTransaction(
   await transaction`
       update allrice_jobs
       set cancel_requested_at = coalesce(cancel_requested_at, now()),
-          cancel_reason = ${reason}, updated_at = now()
+          cancel_reason = coalesce(cancel_reason, ${reason}), updated_at = now()
       where id = ${job.id}
     `;
+  // Freeze the first stop before a later clock refresh or second request. A
+  // queued/claimed Job has no executing handler and needs no receipt lease.
+  await retainStopReceiptLease(
+    transaction,
+    {
+      ...job,
+      cancel_requested_at: job.cancel_requested_at ?? new Date(),
+    },
+    queueStopCause(job, new Date()) ?? 'cancel',
+  );
   await audit(transaction, {
     organizationId: job.organization_id,
     workspaceId: job.workspace_id,
@@ -1839,6 +1852,106 @@ async function transitionTerminal(
   }
 }
 
+/** Queue and authority polling share the same durable cutoff. */
+async function retainStopReceiptLease(
+  transaction: TransactionSql,
+  job: JobRow,
+  cause: 'cancel' | 'timeout',
+  leaseMs?: number,
+) {
+  const deadline = await freezeJobReceiptDrain(
+    transaction,
+    job,
+    cause,
+    leaseMs,
+  );
+  await cancelAssistantRootTransaction(
+    transaction,
+    job.run_id,
+    randomUUID(),
+    (job.drain_reason ?? cause) === 'timeout'
+      ? 'budget_exhausted'
+      : 'user_request',
+  );
+  return deadline;
+}
+
+async function transitionStoppedJob(
+  transaction: TransactionSql,
+  job: JobRow,
+  cause: 'cancel' | 'timeout',
+  disposition: 'worker_returned' | 'receipt_window_closed',
+) {
+  if (cause === 'cancel') {
+    await transitionTerminal(transaction, job, {
+      jobStatus: 'canceled',
+      runStatus: 'canceled',
+      eventType: 'run.canceled',
+      payload: {
+        reason: job.cancel_reason ?? 'user_requested',
+        drainDisposition: disposition,
+      },
+    });
+  } else {
+    await transitionTerminal(transaction, job, {
+      jobStatus: 'failed',
+      runStatus: 'failed',
+      eventType: 'run.failed',
+      code: 'JOB_TIMEOUT',
+      message: 'Job execution timed out',
+      payload: { code: 'JOB_TIMEOUT', drainDisposition: disposition },
+    });
+  }
+}
+
+/** No terminal/usage/physical-stop proof is implied by asking the handler to
+ * abort. The still-live original lease accepts only existing-call receipts. */
+async function stopJobOrDrain(
+  transaction: TransactionSql,
+  job: JobRow,
+  cause: 'cancel' | 'timeout',
+  leaseMs?: number,
+) {
+  const deadline = await retainStopReceiptLease(
+    transaction,
+    job,
+    cause,
+    leaseMs,
+  );
+  if (!deadline)
+    await transitionStoppedJob(
+      transaction,
+      job,
+      cause,
+      'receipt_window_closed',
+    );
+  return {
+    active: false as const,
+    canceled: cause === 'cancel',
+    draining: !!deadline,
+    drainDeadlineAt: deadline?.toISOString(),
+  };
+}
+
+/** Called only after the owning handler and its event flush returned. Native
+ * stopped/usage receipts remain independent durable facts, never fabricated. */
+export async function finishJobDrain(input: {
+  workerId: string;
+  jobId: string;
+  leaseToken: string;
+}) {
+  const workerId = UuidSchema.parse(input.workerId),
+    jobId = UuidSchema.parse(input.jobId),
+    leaseToken = UuidSchema.parse(input.leaseToken);
+  return getDatabase().begin(async (transaction) => {
+    const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
+    const cause = queueStopCause(job, new Date());
+    if (!cause) return { finalized: false };
+    await transitionStoppedJob(transaction, job, cause, 'worker_returned');
+    return { finalized: true };
+  });
+}
+
 async function settleManagedBrowserTasksForJobAttempt(
   transaction: TransactionSql,
   job: Pick<JobRow, 'id' | 'organization_id' | 'workspace_id' | 'attempt'>,
@@ -2088,6 +2201,15 @@ async function lockedLeasedJob(
   jobId: string,
   leaseToken: string,
 ) {
+  // These transactions contain only queue control/receipt SQL, never model,
+  // tool or human waits. A blocked heartbeat/event write must roll back rather
+  // than hold root locks forever after its handler/host has stopped.
+  await transaction`set local lock_timeout='5s'`;
+  await transaction`set local statement_timeout='10s'`;
+  const [scope] = await transaction<
+    { run_id: string }[]
+  >`select run_id from allrice_jobs where id=${jobId}`;
+  if (scope) await lockRootCreation(transaction, scope.run_id);
   await refreshTaskClockForJob(transaction, jobId);
   const rows = await transaction<JobRow[]>`
     select * from allrice_jobs where id = ${jobId} for update
@@ -2101,11 +2223,31 @@ async function lockedLeasedJob(
     job.worker_id !== workerId ||
     job.lease_token !== leaseToken ||
     !job.lease_expires_at ||
-    job.lease_expires_at <= new Date()
+    job.lease_expires_at <= new Date() ||
+    (job.drain_deadline_at && job.drain_deadline_at <= new Date())
   ) {
     throw new QueueError('lease_lost');
   }
   return job;
+}
+
+/** Same pre-root mutex as runtimeLedger.createRoot, including when no root row
+ * exists yet. Never acquire it after an owned job/root lock. */
+async function lockRootCreation(
+  transaction: TransactionSql,
+  runId: string,
+  nonBlocking = false,
+) {
+  if (nonBlocking) {
+    const [lock] = await transaction<
+      { locked: boolean }[]
+    >`select pg_try_advisory_xact_lock(hashtextextended(${runId},703)) locked`;
+    if (!lock?.locked)
+      throw Object.assign(new Error('Runtime root creation is busy'), {
+        code: '55P03',
+      });
+  } else
+    await transaction`select pg_advisory_xact_lock(hashtextextended(${runId},703))`;
 }
 
 export async function heartbeatJob(
@@ -2120,26 +2262,8 @@ export async function heartbeatJob(
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
-    if (job.cancel_requested_at) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'canceled',
-        runStatus: 'canceled',
-        eventType: 'run.canceled',
-        payload: { reason: job.cancel_reason ?? 'user_requested' },
-      });
-      return { active: false, canceled: true };
-    }
-    if (job.timeout_at <= new Date()) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'failed',
-        runStatus: 'failed',
-        eventType: 'run.failed',
-        code: 'JOB_TIMEOUT',
-        message: 'Job execution timed out',
-        payload: { code: 'JOB_TIMEOUT' },
-      });
-      return { active: false, canceled: false };
-    }
+    const cause = queueStopCause(job, new Date());
+    if (cause) return stopJobOrDrain(transaction, job, cause, leaseMs);
     if (await stopUnauthorizedTechnicalJob(transaction, job))
       return { active: false, canceled: false };
     const now = new Date();
@@ -2284,13 +2408,9 @@ export async function completeJob(input: {
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
     const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
-    if (job.cancel_requested_at) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'canceled',
-        runStatus: 'canceled',
-        eventType: 'run.canceled',
-        payload: { reason: job.cancel_reason ?? 'user_requested' },
-      });
+    const stopped = queueStopCause(job, new Date());
+    if (stopped) {
+      await transitionStoppedJob(transaction, job, stopped, 'worker_returned');
       return;
     }
     if (await stopUnauthorizedTechnicalJob(transaction, job)) return;
@@ -2417,13 +2537,9 @@ export async function failJob(input: {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
     const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
-    if (job.cancel_requested_at) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'canceled',
-        runStatus: 'canceled',
-        eventType: 'run.canceled',
-        payload: { reason: job.cancel_reason ?? 'user_requested' },
-      });
+    const stopped = queueStopCause(job, new Date());
+    if (stopped) {
+      await transitionStoppedJob(transaction, job, stopped, 'worker_returned');
       return { retrying: false };
     }
     if (
@@ -2537,6 +2653,7 @@ export async function maintainQueue(limit = 100) {
   for (const candidate of rows) {
     // Same root -> clock -> job order as dispatch; one root per transaction.
     await sql.begin(async (transaction) => {
+      await lockRootCreation(transaction, candidate.run_id);
       await refreshTaskClockForJob(transaction, candidate.id);
       const [job] = await transaction<
         JobRow[]
@@ -2554,32 +2671,17 @@ export async function maintainQueue(limit = 100) {
         return;
       const action = queueMaintenanceAction(job, new Date());
       if (action === 'none') return;
+      if (action === 'cancel' || action === 'timeout') {
+        const result = await stopJobOrDrain(transaction, job, action);
+        if (!result.draining) counts[action] += 1;
+        return;
+      }
       counts[action] += 1;
       if (action === 'promote_retry') {
         await transaction`
           update allrice_jobs set status = 'queued', updated_at = ${now}
           where id = ${job.id}
         `;
-        return;
-      }
-      if (action === 'cancel') {
-        await transitionTerminal(transaction, job, {
-          jobStatus: 'canceled',
-          runStatus: 'canceled',
-          eventType: 'run.canceled',
-          payload: { reason: job.cancel_reason ?? 'user_requested' },
-        });
-        return;
-      }
-      if (action === 'timeout') {
-        await transitionTerminal(transaction, job, {
-          jobStatus: 'failed',
-          runStatus: 'failed',
-          eventType: 'run.failed',
-          code: 'JOB_TIMEOUT',
-          message: 'Job execution timed out',
-          payload: { code: 'JOB_TIMEOUT', attempt: job.attempt },
-        });
         return;
       }
       if (action === 'dead_letter') {

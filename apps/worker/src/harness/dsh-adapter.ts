@@ -19,6 +19,7 @@ import { AssistantRuntimeError } from '@allrice/database';
 import { AgentLoopGuard } from '../agent-loop-guard.js';
 import { HandlerError } from '../errors.js';
 import { NativeQuestionParked } from './dsh/native-question-wait.js';
+import { ReceiptDrainWindow } from './dsh/receipt-drain.js';
 import {
   AssistantExecutionUnresolvedError,
   attachAssistantFailureUsage,
@@ -332,37 +333,63 @@ export class DshHarnessAdapter implements HarnessAdapter {
           .map(([wire]) => wire),
       });
     let cancellationTask: Promise<unknown> | undefined;
+    let rootDrainTask: Promise<unknown> | undefined;
+    let rootStopTask: Promise<unknown> | undefined;
+    let ownedDrop: Promise<void> | undefined;
+    const dropOwnedHost = () => (ownedDrop ??= this.runtimePool.drop(threadId));
+    const stopWindow = new ReceiptDrainWindow(dropOwnedHost);
     const assistantFailureSignal = new AbortController();
     const executionSignal = assistant
       ? AbortSignal.any([input.signal, assistantFailureSignal.signal])
       : input.signal;
+    const drainRequest = (request: {
+      nativeSessionId?: string;
+      drainDeadlineAt?: string;
+      instances: readonly { nativeSessionId: string }[];
+    }) => {
+      const root = request.instances.some(
+        (i) => i.nativeSessionId === threadId,
+      );
+      if (root || stopWindow.started) {
+        stopWindow.begin(request.drainDeadlineAt);
+        return (rootDrainTask ??= stopWindow.within(() =>
+          runtime.client.assistant('drain', request),
+        ));
+      }
+      // A canceled child must not consume a later root stop's budget or close a
+      // healthy parent after its own successful drain.
+      const childWindow = new ReceiptDrainWindow(dropOwnedHost);
+      return childWindow
+        .within(() => runtime.client.assistant('drain', request))
+        .finally(() => childWindow.dispose());
+    };
     const pollCancellation = () => {
-      if (!assistant || cancellationTask) return;
+      if (!assistant || cancellationTask || rootStopTask || rootDrainTask)
+        return;
       cancellationTask = assistant
         .cancellation()
-        .then((request) =>
-          request.instances.length
-            ? runtime.client.assistant('drain', request)
-            : undefined,
-        )
+        .then((request) => {
+          if (request.stopReason === 'timeout')
+            assistantAdmissionFailure ??= new HandlerError(
+              'ASSISTANT_BUDGET_EXHAUSTED',
+              '本次任务已达到配置的执行时限，已停止继续运行；这不是 Token 配额限制。',
+              false,
+            );
+          return request.instances.length ? drainRequest(request) : undefined;
+        })
         .catch(async (error) => {
           if (
             error instanceof AssistantRuntimeError &&
             error.code === 'budget_exhausted'
           ) {
-            // The liveness check enforces the root's durable deadline even
-            // while a model stream is active. Preserve that cause before
-            // closing the owned host produces a generic runtime-closed error.
             assistantAdmissionFailure ??= new HandlerError(
               'ASSISTANT_BUDGET_EXHAUSTED',
               '本次任务已达到配置的执行时限，已停止继续运行；这不是 Token 配额限制。',
               false,
             );
           }
-          // Loss of read authority cannot keep an owned model stream alive.
-          // Process termination needs no new user grant; do not invent stopped receipts.
           assistantFailureSignal.abort();
-          await this.runtimePool.drop(threadId);
+          await dropOwnedHost();
         })
         .finally(() => {
           cancellationTask = undefined;
@@ -372,14 +399,20 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? setInterval(pollCancellation, 250)
       : undefined;
     const stopAssistants = () => {
-      if (assistant)
-        cancellationTask = assistant
-          .cancel()
-          .then(() => assistant.cancellation())
-          .then((request) => runtime.client.assistant('drain', request))
-          .catch(() => this.runtimePool.drop(threadId));
+      stopWindow.begin();
+      if (assistant) {
+        rootStopTask ??= stopWindow
+          .within(() => assistant.cancel())
+          .then(() => stopWindow.within(() => assistant.cancellation()))
+          .then(drainRequest);
+        // Abort listeners cannot surface an unhandled rejection. The failure
+        // path still observes this same promise before reading durable usage.
+        void rootStopTask.catch(() => {});
+      }
+      return rootStopTask ?? Promise.resolve();
     };
     input.signal.addEventListener('abort', stopAssistants, { once: true });
+    if (input.signal.aborted) void stopAssistants();
     let order = 0;
     let turnId: string | null = null;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -913,30 +946,36 @@ export class DshHarnessAdapter implements HarnessAdapter {
               false,
             )
           : caught);
+      stopWindow.begin();
       // Capture before cancel/drop destroys the host, without widening root
       // authority or reading another native session's transcript.
       await captureAssistantDiagnostics();
       attachAssistantFailureDiagnostics(error, assistantDiagnostics);
-      let failedUsage: AssistantFailureUsage | undefined = interruptedUsage;
+      let failedUsage: AssistantFailureUsage | undefined = assistant
+        ? undefined
+        : interruptedUsage;
       if (cancellationTimer) clearInterval(cancellationTimer);
-      await cancellationTask?.catch(() => {});
+      await stopWindow
+        .within(() => cancellationTask ?? Promise.resolve())
+        .catch(() => {});
       try {
-        if (assistant && !assistantFinished) {
-          await assistant.cancel().catch(() => {});
-          if (!assistantFailureSignal.signal.aborted) {
-            const request = await assistant.cancellation();
-            await runtime.client.assistant('drain', request);
-          }
-        }
+        if (
+          assistant &&
+          !assistantFinished &&
+          !assistantFailureSignal.signal.aborted
+        )
+          await stopAssistants();
       } catch {
-        // Revoked membership/lease may forbid reading the tree; still stop our host.
+        // Revoked membership/lease may forbid tree reads; still close our host.
       } finally {
-        // Drain's durable stopped receipts release only undispatched holds.
-        // Read confirmed prior usage even if drain failed (then completeness
-        // remains false). Do not use model output, diagnostics or guessed zero.
-        if (assistant)
-          failedUsage = await assistant.failureUsage?.().catch(() => undefined);
-        await this.runtimePool.drop(threadId);
+        // Read only genuine durable usage while the original receipt window is
+        // open; a failed/late read never replaces known earlier evidence.
+        if (assistant?.failureUsage)
+          failedUsage =
+            (await stopWindow
+              .within(() => assistant.failureUsage!())
+              .catch(() => undefined)) ?? failedUsage;
+        await dropOwnedHost();
       }
       const attachUsage = (failure: unknown) => {
         const runId =
@@ -966,12 +1005,23 @@ export class DshHarnessAdapter implements HarnessAdapter {
       try {
         if (cancellationTimer) clearInterval(cancellationTimer);
         input.signal.removeEventListener('abort', stopAssistants);
-        await cancellationTask?.catch(() => {});
-        if (assistant)
-          await runtime.client.assistant('flush', {}).catch(() => {});
+        if (stopWindow.started) {
+          await stopWindow
+            .within(() => rootStopTask ?? cancellationTask ?? Promise.resolve())
+            .catch(() => {});
+          if (assistant)
+            await stopWindow
+              .within(() => runtime.client.assistant('flush', {}))
+              .catch(() => {});
+        } else {
+          await cancellationTask?.catch(() => {});
+          if (assistant)
+            await runtime.client.assistant('flush', {}).catch(() => {});
+        }
         this.runtimePool.touch(runtime);
         runtime.client.setRequestHandler(null);
       } finally {
+        stopWindow.dispose();
         unsubscribeModelTiming();
       }
     }

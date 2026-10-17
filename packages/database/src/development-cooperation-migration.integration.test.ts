@@ -25,6 +25,20 @@ integration('MET-144 incremental migration and fresh connection', () => {
       });
       let fresh: ReturnType<typeof postgres> | undefined;
       try {
+        // Current runtime admission requires the independent receipt columns.
+        // Keep 0101/0102 absent so this still tests the historical migration,
+        // rather than running the current binary against an unsupported schema.
+        await fixture.db.begin(async (tx) =>
+          tx.unsafe(
+            await readFile(
+              new URL(
+                '../migrations/0186_job_receipt_drain.sql',
+                import.meta.url,
+              ),
+              'utf8',
+            ),
+          ),
+        );
         const f = await assistantFixture(fixture.db);
         await f.delegate();
         const before = await f.runtime.getTree(f.context, {
