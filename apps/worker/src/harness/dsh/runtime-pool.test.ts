@@ -15,10 +15,51 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { HarnessExecutionInput } from '../adapter.js';
 import * as CodexSubscription from '../../codex-subscription-home.js';
-import { DshRuntimePool } from './runtime-pool.js';
+import { DshRuntimePool, configuredDshNativeLaunch } from './runtime-pool.js';
 
 let root: string;
 const pools: DshRuntimePool[] = [];
+
+it('uses identical deployment defaults for startup and runtime construction', () => {
+  expect(configuredDshNativeLaunch()).toEqual({
+    command: process.execPath,
+    args: [
+      resolve(import.meta.dirname, '../../../dsh/allrice-jsonrpc-runtime.mjs'),
+    ],
+    profile: resolve(
+      import.meta.dirname,
+      '../../../dsh/allrice-restricted.cordis.yml',
+    ),
+  });
+});
+
+it('retains explicit constructor precedence over parsed deployment overrides', () => {
+  vi.stubEnv('ALLRICE_DSH_RUNTIME_COMMAND', '/deployment/node');
+  vi.stubEnv('ALLRICE_DSH_RUNTIME_ARGS', '["/deployment/entry.mjs"]');
+  vi.stubEnv('ALLRICE_DSH_CORDIS_CONFIG', '/deployment/profile.yml');
+  expect(configuredDshNativeLaunch()).toEqual({
+    command: '/deployment/node',
+    args: ['/deployment/entry.mjs'],
+    profile: '/deployment/profile.yml',
+  });
+  expect(
+    configuredDshNativeLaunch({
+      runtimeCommand: process.execPath,
+      runtimeArgs: ['/approved/entry.mjs'],
+      cordisConfig: '/approved/profile.yml',
+    }),
+  ).toEqual({
+    command: process.execPath,
+    args: ['/approved/entry.mjs'],
+    profile: '/approved/profile.yml',
+  });
+});
+
+it('rejects malformed deployment arguments before any launch', () => {
+  vi.stubEnv('ALLRICE_DSH_RUNTIME_ARGS', '{"not":"arguments"}');
+  expect(() => configuredDshNativeLaunch()).toThrow('ALLRICE_DSH_RUNTIME_ARGS');
+});
+
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'allrice-runtime-reuse-'));
   vi.stubEnv('ALLRICE_DSH_PLATFORM_HOME', join(root, 'platform'));

@@ -1,16 +1,32 @@
 # Development workflow
 
-The supported fresh-clone path is intentionally executable, not a sequence of manual database steps:
+The fresh-clone path prepares the native Worker before database setup:
 
 ```bash
 git clone https://github.com/semiok/allrice.git
 cd allrice
 corepack enable
 pnpm install
+pnpm --filter @allrice/worker... build
+node apps/worker/scripts/prepare-native-artifact.mjs --root="$PWD"
+# Review the measured ID; put this line with its actual digest in .env:
+# ALLRICE_DSH_NATIVE_ARTIFACT_ID=sha256:<reviewed 64-character digest>
 pnpm dev
 ```
 
-An `.env` file is optional. The default path provisions a private development database, migrates and verifies it, creates local storage and starts the isolated Office renderer, then starts both application processes.
+The measured ID must be explicitly supplied in `.env` or the environment. Missing
+preparation is rejected before database setup. The default path then provisions a
+private development database, migrates and verifies it, creates local storage
+and starts the isolated Office renderer and both application processes.
+
+Worker development uses `node --watch dist/index.js`, the same compiled entry as
+normal startup, without a TypeScript loader exemption. While editing Worker
+TypeScript, run `pnpm --filter @allrice/worker exec tsc -p tsconfig.build.json --watch`
+in a second terminal. Node restarts when compiled files change. Changes to native
+modules, profiles, contracts dist or dependencies require repeating preparation,
+reviewing the new ID, and restarting with that ID. The preparation command never
+automatically approves shared Dev or Prod, and neither development nor production
+startup bypasses native content verification.
 
 ## Requirements
 

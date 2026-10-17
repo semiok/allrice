@@ -28,6 +28,23 @@ export function loadDevelopmentEnvironment() {
   return process.env;
 }
 
+export function assertDevelopmentWorkerPrepared() {
+  loadDevelopmentEnvironment();
+  if (
+    !/^sha256:[a-f0-9]{64}$/.test(
+      process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID ?? '',
+    ) ||
+    !existsSync(
+      new URL('../.local/dsh-native-artifact.json', import.meta.url),
+    ) ||
+    !existsSync(new URL('../apps/worker/dist/index.js', import.meta.url))
+  ) {
+    throw new Error(
+      'Prepare and review the native Worker artifact, then set ALLRICE_DSH_NATIVE_ARTIFACT_ID. See docs/development/README.md. No database setup was started.',
+    );
+  }
+}
+
 export function getDevelopmentDatabaseUrl() {
   const database = process.env.POSTGRES_DB || 'allrice';
   const user = process.env.POSTGRES_USER || 'allrice';
@@ -122,11 +139,25 @@ export async function prepareDevelopmentDatabase() {
 }
 
 export function spawnDevelopmentServices() {
-  return spawn(pnpmCommand, ['dev:services'], {
-    cwd: repositoryRoot,
-    env: process.env,
-    stdio: 'inherit',
-  });
+  assertDevelopmentWorkerPrepared();
+  return spawn(
+    pnpmCommand,
+    [
+      'exec',
+      'concurrently',
+      '-n',
+      'web,worker',
+      '-c',
+      'blue,green',
+      'pnpm dev:web',
+      'pnpm dev:worker',
+    ],
+    {
+      cwd: repositoryRoot,
+      env: process.env,
+      stdio: 'inherit',
+    },
+  );
 }
 
 export async function prepareOfficeRenderer() {

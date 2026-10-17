@@ -67,3 +67,44 @@ turn to an explicitly approved fallback, but never grants broader capabilities.
 Codex subscription traffic uses DSH's `openai-codex` Provider plugin and the
 same restricted runtime boundary as every other model route. A DSH candidate
 cannot be promoted unless that OAuth Provider passes replay and refresh tests.
+
+## Native artifact content and deployment approval
+
+`scripts/dev-release/prepare-identity.mjs` prepares the existing service identity
+and a separate `.local/dsh-native-artifact.json`. The latter measures production
+AllRice native modules, both approved profiles, public ESM import targets, the
+resolved dependency/optional/peer graph, package bytes, contracts dist, and
+lock/patch evidence. Peer contexts are physical package instances. Missing
+optional edges remain explicit; required missing edges, nearer native or nested
+package module overrides, package file links and paths outside the release fail.
+Profile `!!js` values are never evaluated while measuring.
+
+The content ID excludes the absolute release root, time and source provenance;
+unchanged relative layouts can move without changing it. It includes Node ABI,
+platform and architecture prerequisites. Different installation layouts may
+produce different IDs. The operating system, external programs, credentials,
+evaluated environment, personal Skill content and Session data are outside this
+content claim. This is a measured declared runtime graph, not a general proof of
+all possible JavaScript dynamic behavior or native child execution outcomes.
+
+Preparation is not approval. The deployment operator reviews the prepared ID
+alongside the frozen source/CI/build, then sets
+`ALLRICE_DSH_NATIVE_ARTIFACT_ID` to that exact approved value in the Worker
+environment. The Worker remeasures before starting producers; a missing,
+unapproved or mismatched manifest prevents startup. The pool checks its actual
+command, entrypoint and profile against the verified artifact even on reuse.
+Only immutable release directories may use this per-Worker verification cache.
+Standalone offline protocol fixtures carry no verified artifact or Worker
+authority; they are not evidence that a production release was approved.
+
+The Worker Docker build also writes the content file through
+`apps/worker/scripts/prepare-native-artifact.mjs --root=/app`. Its build output
+prints the ID with `approvalGranted=false`. Image deployment must pass the
+reviewed image's ID through the same environment setting; do not auto-approve a
+runtime-generated file or read the expected ID back from the file during boot.
+The existing service manifest and release acceptance keep their original roles.
+The disposable Compose smoke test separately builds, verifies and approves only
+its own newly built fixture image before starting its isolated Worker. This
+test-only script does not approve or change a shared Dev/Prod deployment.
+This slice does not create immutable native root bindings, migrate journals,
+select another generation, or implement automatic release ACK/publishing.

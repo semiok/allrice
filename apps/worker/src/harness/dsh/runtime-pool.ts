@@ -27,6 +27,7 @@ import {
 } from '../dsh-distribution.js';
 import { dshEgressEnvironment } from '../dsh-egress-environment.js';
 import { DshProtocolClient } from '../dsh-protocol-client.js';
+import { checkedDshNativeLaunch } from '../dsh-native-artifact.js';
 import {
   dshHostCapabilityInstructions,
   isDshNativeTool,
@@ -49,6 +50,8 @@ export interface DshRuntime {
   nativeTools: string[];
   startedAt: string;
   lastActivityAt: string;
+  nativeArtifactId?: string;
+  nativeProfileId?: string;
 }
 
 export interface DshRuntimePoolOptions {
@@ -103,6 +106,35 @@ function deepseekReasoning(
   return effort;
 }
 
+/** One interpretation of deployment overrides for startup and pool launches. */
+export function configuredDshNativeLaunch(options: DshRuntimePoolOptions = {}) {
+  const configuredCommand =
+    options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
+  return {
+    command: configuredCommand ?? process.execPath,
+    args:
+      options.runtimeArgs ??
+      (process.env.ALLRICE_DSH_RUNTIME_ARGS
+        ? parseRuntimeArgs(process.env.ALLRICE_DSH_RUNTIME_ARGS)
+        : configuredCommand
+          ? []
+          : [
+              resolve(
+                import.meta.dirname,
+                '../../../dsh/allrice-jsonrpc-runtime.mjs',
+              ),
+            ]),
+    profile: resolve(
+      options.cordisConfig ??
+        process.env.ALLRICE_DSH_CORDIS_CONFIG ??
+        resolve(
+          import.meta.dirname,
+          '../../../dsh/allrice-restricted.cordis.yml',
+        ),
+    ),
+  };
+}
+
 export class DshRuntimePool {
   private readonly runtimes = new Map<string, DshRuntime>();
   private readonly credentialResolver: DshCredentialResolver;
@@ -115,34 +147,15 @@ export class DshRuntimePool {
   constructor(options: DshRuntimePoolOptions = {}) {
     this.credentialResolver =
       options.credentialResolver ?? new DeploymentDshCredentialResolver();
-    const configuredRuntimeCommand =
-      options.runtimeCommand ?? process.env.ALLRICE_DSH_RUNTIME_COMMAND;
-    this.runtimeCommand = configuredRuntimeCommand ?? process.execPath;
-    this.runtimeArgs =
-      options.runtimeArgs ??
-      (process.env.ALLRICE_DSH_RUNTIME_ARGS
-        ? parseRuntimeArgs(process.env.ALLRICE_DSH_RUNTIME_ARGS)
-        : configuredRuntimeCommand
-          ? []
-          : [
-              resolve(
-                import.meta.dirname,
-                '../../../dsh/allrice-jsonrpc-runtime.mjs',
-              ),
-            ]);
+    const launch = configuredDshNativeLaunch(options);
+    this.runtimeCommand = launch.command;
+    this.runtimeArgs = launch.args;
     this.runtimeRoot = resolve(
       options.runtimeRoot ??
         process.env.ALLRICE_DSH_RUNTIME_ROOT ??
         '.local/dsh-runtime',
     );
-    this.cordisConfig = resolve(
-      options.cordisConfig ??
-        process.env.ALLRICE_DSH_CORDIS_CONFIG ??
-        resolve(
-          import.meta.dirname,
-          '../../../dsh/allrice-restricted.cordis.yml',
-        ),
-    );
+    this.cordisConfig = launch.profile;
     this.requestTimeoutMs = requestTimeout(
       options.requestTimeoutMs ??
         Number(process.env.ALLRICE_DSH_REQUEST_TIMEOUT_MS ?? 300_000),
@@ -169,6 +182,25 @@ export class DshRuntimePool {
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
   }) {
     const acquireStarted = performance.now();
+    let nativeIdentity: ReturnType<typeof checkedDshNativeLaunch>;
+    try {
+      nativeIdentity = checkedDshNativeLaunch({
+        command: this.runtimeCommand ?? '',
+        args: this.runtimeArgs,
+        profile: this.cordisConfig,
+      });
+    } catch (error) {
+      const code =
+        error instanceof Error &&
+        /^DSH_NATIVE_ARTIFACT_[A-Z_]+$/.test(error.message)
+          ? error.message
+          : 'DSH_NATIVE_ARTIFACT_UNAVAILABLE';
+      throw new HandlerError(
+        code,
+        '当前执行环境暂不可用，请联系平台维护。',
+        false,
+      );
+    }
     const frozenGeneration = input.input.kernel.runtimeDistributionGeneration;
     if (
       frozenGeneration !== undefined &&
@@ -247,6 +279,7 @@ export class DshRuntimePool {
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.
     const fingerprintInput = {
+      ...(nativeIdentity ? { nativeArtifact: nativeIdentity } : {}),
       snapshot: input.snapshot,
       codexSubscriptionHome: dshPlatformHome,
       runtimePackageChecksum: input.input.kernel.runtimePackageChecksum,
@@ -333,6 +366,16 @@ export class DshRuntimePool {
       acquireMs: 0,
     };
     if (existing?.fingerprint === fingerprint) {
+      if (
+        nativeIdentity &&
+        (existing.nativeArtifactId !== nativeIdentity.artifactId ||
+          existing.nativeProfileId !== nativeIdentity.profileId)
+      )
+        throw new HandlerError(
+          'DSH_NATIVE_ARTIFACT_CACHE_MISMATCH',
+          '当前执行环境暂不可用，请联系平台维护。',
+          false,
+        );
       preparation.acquireMs = performance.now() - acquireStarted;
       return { runtime: existing, fresh: false, preparation };
     }
@@ -418,6 +461,12 @@ export class DshRuntimePool {
       .filter(isDshNativeTool);
     const startedAt = new Date().toISOString();
     const runtime: DshRuntime = {
+      ...(nativeIdentity
+        ? {
+            nativeArtifactId: nativeIdentity.artifactId,
+            nativeProfileId: nativeIdentity.profileId,
+          }
+        : {}),
       client: new DshProtocolClient({
         command: this.runtimeCommand,
         args: this.runtimeArgs,

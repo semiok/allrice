@@ -3,9 +3,11 @@ import {
   prepareOfficeRenderer,
   prepareDevelopmentDatabase,
   spawnDevelopmentServices,
+  assertDevelopmentWorkerPrepared,
 } from './dev-environment.mjs';
 
 try {
+  assertDevelopmentWorkerPrepared();
   await ensureStorageDirectory();
   await prepareDevelopmentDatabase();
   await prepareOfficeRenderer();

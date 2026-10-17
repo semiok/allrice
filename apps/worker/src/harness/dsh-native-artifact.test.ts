@@ -1,0 +1,300 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  mkdtemp,
+  mkdir,
+  writeFile,
+  readFile,
+  rm,
+  cp,
+  realpath,
+  symlink,
+} from 'node:fs/promises';
+import { join, relative } from 'node:path';
+import { tmpdir } from 'node:os';
+import {
+  measureDshNativeArtifact,
+  verifyDshNativeArtifact,
+  assertDshNativeLaunch,
+  nativeArtifactPath,
+  nativeProfiles,
+  checkedDshNativeLaunch,
+} from './dsh-native-artifact.js';
+
+const roots: string[] = [];
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await Promise.all(
+    roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
+  );
+});
+async function put(root: string, path: string, value: string | object) {
+  await mkdir(join(root, path, '..'), { recursive: true });
+  await writeFile(
+    join(root, path),
+    typeof value === 'string' ? value : JSON.stringify(value),
+  );
+}
+async function fixture() {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-native-artifact-')),
+  );
+  roots.push(root);
+  await put(root, 'apps/worker/package.json', {
+    name: '@allrice/worker',
+    dependencies: { '@deepseek-ai/test-root': '1.0.0' },
+  });
+  await put(root, 'node_modules/@deepseek-ai/test-root/package.json', {
+    name: '@deepseek-ai/test-root',
+    version: '1.0.0',
+    type: 'module',
+    exports: {
+      '.': { import: './lib/import.js', require: './lib/require.cjs' },
+      './plugin': './lib/plugin.js',
+    },
+    peerDependencies: { 'peer-only': '1.0.0', 'optional-peer': '1.0.0' },
+    peerDependenciesMeta: { 'optional-peer': { optional: true } },
+  });
+  for (const path of ['lib/import.js', 'lib/plugin.js', 'lib/require.cjs'])
+    await put(
+      root,
+      'node_modules/@deepseek-ai/test-root/' + path,
+      'export const fixture = 1;',
+    );
+  await put(root, 'node_modules/peer-only/package.json', {
+    name: 'peer-only',
+    version: '1.0.0',
+    type: 'module',
+    main: 'index.js',
+  });
+  await put(root, 'node_modules/peer-only/index.js', 'export const value = 1;');
+  await put(
+    root,
+    'apps/worker/dsh/allrice-jsonrpc-runtime.mjs',
+    "import '@deepseek-ai/test-root';",
+  );
+  for (const path of Object.values(nativeProfiles))
+    await put(
+      root,
+      path,
+      "- id: fixture\n  name: '@deepseek-ai/test-root/plugin'\n  config:\n    value: !!js process.env.SECRET_MUST_NOT_BE_EVALUATED\n",
+    );
+  await put(root, 'pnpm-lock.yaml', 'lockfileVersion: 9');
+  await put(root, 'pnpm-workspace.yaml', 'packages: []');
+  await put(root, 'patches/@deepseek-ai__fixture.patch', 'fixture patch');
+  return root;
+}
+async function seal(root: string) {
+  const measured = await measureDshNativeArtifact(root);
+  await put(root, nativeArtifactPath, {
+    ...measured,
+    source: { sha: 'a'.repeat(40), tree: 'b'.repeat(40) },
+  });
+  return measured;
+}
+describe('native artifact content and launch boundary', () => {
+  it('refuses production Worker launch before a verified artifact is installed', () => {
+    vi.stubEnv('ALLRICE_SERVICE_ROLE', 'worker');
+    expect(() =>
+      checkedDshNativeLaunch({
+        command: process.execPath,
+        args: [],
+        profile: '',
+      }),
+    ).toThrow('NOT_INSTALLED');
+  });
+  it('measures recursive peer-only code and real ESM entry conditions', async () => {
+    const root = await fixture(),
+      first = await seal(root);
+    expect(first.content.packages.map((p) => p.name)).toContain('peer-only');
+    expect(
+      first.content.imports.find(
+        (i) => i.specifier === '@deepseek-ai/test-root',
+      )?.target,
+    ).toBe('node_modules/@deepseek-ai/test-root/lib/import.js');
+    await put(
+      root,
+      'node_modules/peer-only/index.js',
+      'export const value = 2;',
+    );
+    expect((await measureDshNativeArtifact(root)).artifactId).not.toBe(
+      first.artifactId,
+    );
+    await expect(
+      verifyDshNativeArtifact({ root, expectedId: first.artifactId }),
+    ).rejects.toThrow('CONTENT_MISMATCH');
+  });
+  it('records absent optional peers and observes appearance and disappearance without installing', async () => {
+    const root = await fixture(),
+      before = await measureDshNativeArtifact(root);
+    expect(before.content.dependencyEdges).toContainEqual(
+      expect.objectContaining({
+        name: 'optional-peer',
+        kind: 'peer',
+        optional: true,
+        target: null,
+      }),
+    );
+    await put(root, 'node_modules/optional-peer/package.json', {
+      name: 'optional-peer',
+      version: '1.0.0',
+      main: 'index.js',
+    });
+    await put(
+      root,
+      'node_modules/optional-peer/index.js',
+      'module.exports = {};',
+    );
+    expect((await measureDshNativeArtifact(root)).artifactId).not.toBe(
+      before.artifactId,
+    );
+    await rm(join(root, 'node_modules/optional-peer'), { recursive: true });
+    expect((await measureDshNativeArtifact(root)).artifactId).toBe(
+      before.artifactId,
+    );
+    await rm(join(root, 'node_modules/peer-only'), { recursive: true });
+    await expect(measureDshNativeArtifact(root)).rejects.toThrow(
+      'REQUIRED_DEPENDENCY_MISSING',
+    );
+  });
+  it('rejects nearer native and nested package resolver overrides', async () => {
+    const root = await fixture();
+    await mkdir(join(root, 'apps/worker/dsh/node_modules'));
+    await expect(measureDshNativeArtifact(root)).rejects.toThrow();
+    await rm(join(root, 'apps/worker/dsh/node_modules'), { recursive: true });
+    await mkdir(
+      join(root, 'node_modules/@deepseek-ai/test-root/lib/node_modules'),
+    );
+    await expect(measureDshNativeArtifact(root)).rejects.toThrow(
+      'NESTED_MODULE_OVERRIDE',
+    );
+  });
+
+  it('keeps same-name/version peer contexts distinct and terminates dependency cycles', async () => {
+    const root = await fixture();
+    const worker = JSON.parse(
+      await readFile(join(root, 'apps/worker/package.json'), 'utf8'),
+    );
+    worker.dependencies['@deepseek-ai/test-other'] = '1.0.0';
+    await put(root, 'apps/worker/package.json', worker);
+    await put(root, 'node_modules/@deepseek-ai/test-other/package.json', {
+      name: '@deepseek-ai/test-other',
+      version: '1.0.0',
+      peerDependencies: { 'peer-only': '1.0.0' },
+    });
+    await put(
+      root,
+      'node_modules/@deepseek-ai/test-other/node_modules/peer-only/package.json',
+      {
+        name: 'peer-only',
+        version: '1.0.0',
+        dependencies: { '@deepseek-ai/test-other': '1.0.0' },
+      },
+    );
+    await put(
+      root,
+      'node_modules/@deepseek-ai/test-other/node_modules/peer-only/index.js',
+      'module.exports=2;',
+    );
+    const result = await measureDshNativeArtifact(root);
+    const peers = result.content.packages.filter((p) => p.name === 'peer-only');
+    expect(peers).toHaveLength(2);
+    expect(new Set(peers.map((p) => p.path)).size).toBe(2);
+    expect(new Set(peers.map((p) => p.checksum)).size).toBe(2);
+  });
+
+  it('rejects package resource symlinks instead of attesting bytes outside the sealed tree', async () => {
+    const root = await fixture();
+    await symlink(
+      join(root, 'pnpm-lock.yaml'),
+      join(root, 'node_modules/peer-only/redirected-resource'),
+    );
+    await expect(measureDshNativeArtifact(root)).rejects.toThrow(
+      'PACKAGE_FILE_LINK',
+    );
+  });
+  it('re-enumerates added bytes and preserves identity only for an unchanged relative layout', async () => {
+    const root = await fixture(),
+      first = await measureDshNativeArtifact(root);
+    const clone = await mkdtemp(join(tmpdir(), 'allrice-native-clone-'));
+    roots.push(clone);
+    await cp(root, clone, { recursive: true });
+    expect((await measureDshNativeArtifact(clone)).artifactId).toBe(
+      first.artifactId,
+    );
+    await put(
+      clone,
+      'node_modules/peer-only/new-resource.wasm',
+      'new resource',
+    );
+    expect((await measureDshNativeArtifact(clone)).artifactId).not.toBe(
+      first.artifactId,
+    );
+    for (const path of [
+      'patches/@deepseek-ai__fixture.patch',
+      'pnpm-lock.yaml',
+      nativeProfiles.technical,
+    ]) {
+      const bytes = await readFile(join(root, path));
+      await writeFile(
+        join(root, path),
+        Buffer.concat([bytes, Buffer.from('\n# changed')]),
+      );
+      expect((await measureDshNativeArtifact(root)).artifactId).not.toBe(
+        first.artifactId,
+      );
+      await writeFile(join(root, path), bytes);
+    }
+  });
+  it('never treats a self-generated manifest as independent deployment approval', async () => {
+    const root = await fixture(),
+      first = await seal(root);
+    await expect(
+      verifyDshNativeArtifact({ root, expectedId: '' }),
+    ).rejects.toThrow('APPROVAL_REQUIRED');
+    await expect(
+      verifyDshNativeArtifact({ root, expectedId: 'sha256:' + '0'.repeat(64) }),
+    ).rejects.toThrow('MANIFEST_DIGEST');
+    await expect(
+      verifyDshNativeArtifact({
+        root,
+        expectedId: first.artifactId,
+        sourceSha: 'c'.repeat(40),
+      }),
+    ).rejects.toThrow('SOURCE_MISMATCH');
+    const artifact = await verifyDshNativeArtifact({
+      root,
+      expectedId: first.artifactId,
+      sourceSha: 'a'.repeat(40),
+    });
+    const launch = {
+      artifact,
+      command: process.execPath,
+      args: [join(root, artifact.content.entrypoint)],
+      profile: join(root, nativeProfiles.restricted),
+    };
+    expect(assertDshNativeLaunch(launch)).toEqual({
+      artifactId: first.artifactId,
+      profileId: 'restricted',
+    });
+    // Child cwd is the tenant runtime directory, not the Worker cwd. Even a
+    // relative argument that resolves correctly here cannot attest that child.
+    expect(() =>
+      assertDshNativeLaunch({
+        ...launch,
+        args: [relative(process.cwd(), launch.args[0]!)],
+      }),
+    ).toThrow('COMMAND_OVERRIDE');
+    expect(() =>
+      assertDshNativeLaunch({
+        ...launch,
+        args: ['--import', 'unapproved-loader', ...launch.args],
+      }),
+    ).toThrow('COMMAND_OVERRIDE');
+    expect(() =>
+      assertDshNativeLaunch({
+        ...launch,
+        profile: join(root, 'unapproved.yml'),
+      }),
+    ).toThrow('PROFILE_OVERRIDE');
+  });
+});

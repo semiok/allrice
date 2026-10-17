@@ -20,7 +20,7 @@
     "db:setup": "node scripts/setup-dev-db.mjs",
     "db:verify": "pnpm --filter @allrice/database verify",
     "dev": "node scripts/dev.mjs",
-    "dev:services": "concurrently -n web,worker -c blue,green \"pnpm --filter @allrice/web dev\" \"pnpm --filter @allrice/worker dev\"",
+    "dev:services": "node scripts/dev-services.mjs",
     "dev:web": "pnpm --filter @allrice/web dev",
     "dev:worker": "pnpm --filter @allrice/worker dev",
     "doctor": "node scripts/doctor.mjs",
