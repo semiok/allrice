@@ -4,17 +4,29 @@ AllRice consumes DeepSeek Harness as a thin, isolated runtime distribution. It
 does not use the DSH Web Host as a tenant-facing backend and does not store
 AllRice product customizations in upstream packages.
 
-## Distribution channels
+## Distribution facts
 
-- `current`: the only DSH generation eligible for normal traffic.
-- `candidate`: an exact version under contract replay, security and MET-62
-  release-gate evaluation.
-- `rollback`: the previous approved generation retained until promotion is
-  proven stable.
+- `installedGeneration`: the composition actually pinned by this build.
+- `declaredPromotedGeneration`: the recorded manual promotion decision. This
+  declaration is not proof of the current Dev or Prod process version.
+- `upgradeCandidateGeneration`: a fixed composition under evaluation. It is
+  excluded from frozen employee profiles until explicitly approved and pinned.
+- `missingFrozenGeneration`: the pre-upgrade compatibility meaning of an absent
+  historical profile field. It never follows a new installed default and does
+  not identify an original journal writer.
 
-The channels are declared in `apps/worker/dsh/distribution.json`. Production
-promotion is always manual. A chat session remains bound to its frozen employee
-and runtime generation; an in-flight session is never silently migrated.
+The pointers select unique records in `apps/worker/dsh/distribution.json`.
+`pnpm dsh:generate` derives the committed shared constants; `pnpm dsh:verify`
+rejects drift and checks the installed dependency lock and physical patches.
+The Worker guard and new employee publications consume those constants. The
+native adapter reports actual public package metadata for its loaded boot,
+loop, Session and SDK, rather than echoing `DSH_DISTRIBUTION_VERSION`.
+
+Live Dev acceptance remains in the verified deployment record and actual
+service build identities. Production promotion is always manual. Frozen
+historical values and checksums are not rewritten by this foundation. The
+immutable native-root/artifact binding and two-generation routing remain a
+separate MET192 gate; the declaration alone does not implement or prove them.
 
 ## Update procedure
 
@@ -41,8 +53,11 @@ and runtime generation; an in-flight session is never silently migrated.
    before migration and preserve original bytes. Unknown private events and
    missing migration/rollback evidence block promotion; never mark them ignorable
    to bypass a reader. A format-only probe is not full runtime acceptance.
-7. Canary the candidate by employee and tenant. Promote it to `current` only
-   after approval, moving the previous current generation to `rollback`.
+7. Canary the candidate by employee and tenant only after native-root binding,
+   artifact identity, permission and journal gates pass. Update the installed
+   and declared-promotion pointers explicitly; retain all still-referenced
+   compatibility artifacts. A failed new reader must not retry an old reader
+   after dispatch, and an old reader must not open new-format data.
 
 ## Failure policy
 

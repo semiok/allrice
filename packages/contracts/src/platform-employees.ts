@@ -7,8 +7,14 @@ import { employeeModelPolicyProblem } from './employee-model-settings.ts';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
 import { TaskSuggestionsSchema } from './task-suggestions.ts';
 
+import {
+  DSH_INSTALLED_DISTRIBUTION,
+  DSH_MISSING_FROZEN_GENERATION,
+  DSH_FROZEN_PROFILE_GENERATIONS,
+} from './dsh-distribution.generated.ts';
+
 export const PLATFORM_EMPLOYEE_DSH_DISTRIBUTION =
-  'dsh-0.1.5-rc.3-a4c74a9' as const;
+  DSH_INSTALLED_DISTRIBUTION.generation;
 export const PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS = [
   '@deepseek-ai/dsh-llm-retry',
   '@deepseek-ai/dsh-tool-call-timeout-policy',
@@ -129,8 +135,8 @@ export const PlatformEmployeeRuntimeProfileSchema = z
     schemaVersion: z.literal(1),
     harness: z.literal('dsh'),
     distributionGeneration: z
-      .enum([PLATFORM_EMPLOYEE_DSH_DISTRIBUTION, 'dsh-0.1.1-rc.2-b150a55'])
-      .default(PLATFORM_EMPLOYEE_DSH_DISTRIBUTION),
+      .enum(DSH_FROZEN_PROFILE_GENERATIONS)
+      .default(DSH_MISSING_FROZEN_GENERATION),
     approvedPluginIds: z
       .array(z.enum(PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS))
       .default([...PLATFORM_EMPLOYEE_DSH_APPROVED_PLUGINS]),

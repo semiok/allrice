@@ -1,3 +1,4 @@
+import { distributionFacts } from './dsh-distribution-facts.mjs';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
@@ -53,16 +54,8 @@ const [
   readFile(resolve(root, 'pnpm-lock.yaml'), 'utf8').then(parse),
 ]);
 
-const installedChannel = distribution.installedChannel ?? 'current';
-assert(
-  ['current', 'candidate'].includes(installedChannel),
-  'invalid installed DSH channel',
-);
-const installed = distribution[installedChannel];
-assert(installed, 'installed DSH generation is required');
+const { installed, promoted, candidate } = distributionFacts(distribution);
 
-assert(distribution.schemaVersion === 1, 'distribution schema must be v1');
-assert(distribution.current, 'a current DSH generation is required');
 assert(
   installed.version === upstream.version,
   'installed version must match upstream manifest',
@@ -81,9 +74,14 @@ assert(
   'DSH must never promote automatically to production',
 );
 assert(
-  runtimePin.includes(`'${installed.version}'`) &&
-    runtimePin.includes('PLATFORM_EMPLOYEE_DSH_DISTRIBUTION') &&
-    platformEmployeeContract.includes(`'${installed.generation}'`),
+  runtimePin.includes('DSH_INSTALLED_DISTRIBUTION.version') &&
+    runtimePin.includes('DSH_INSTALLED_DISTRIBUTION.generation') &&
+    platformEmployeeContract.includes(
+      'DSH_INSTALLED_DISTRIBUTION.generation',
+    ) &&
+    platformEmployeeContract.includes(
+      '.default(DSH_MISSING_FROZEN_GENERATION)',
+    ),
   'runtime version guard must match the installed distribution',
 );
 assert(
@@ -261,12 +259,13 @@ assert(
 console.log(
   JSON.stringify({
     status: 'ok',
-    installedChannel,
+    installedGeneration: installed.generation,
+    declaredPromotedGeneration: promoted.generation,
     generation: installed.generation,
     version: installed.version,
     ...patchInventory,
-    candidate: distribution.candidate?.generation ?? null,
-    rollback: distribution.rollback?.generation ?? null,
+    candidate: candidate?.generation ?? null,
+    rollback: null,
     wireProtocol: compatibility.wireProtocol,
     sessionFormat: compatibility.sessionFormat,
     goldenReplayScenarios: requiredReplayScenarios,

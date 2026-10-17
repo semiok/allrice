@@ -196,7 +196,7 @@ describe('AllRice DSH protocol runtime', () => {
           import.meta.dirname,
           '../../dsh/allrice-restricted.cordis.yml',
         ),
-        DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+        DSH_DISTRIBUTION_VERSION: '0.0.0-forged-environment-claim',
         DSH_SESSION_ROOT: resolve(root, 'sessions'),
         DSH_HOME: root,
         DSH_CREDENTIALS_PATH: resolve(root, '.credentials.yaml'),

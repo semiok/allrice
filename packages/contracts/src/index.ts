@@ -148,3 +148,5 @@ export * from './experience-validation.ts';
 export * from './experience-adoption.ts';
 export * from './experience-provenance.ts';
 export * from './memory-context.ts';
+
+export * from './dsh-distribution.generated.ts';
