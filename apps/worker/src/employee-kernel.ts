@@ -1,5 +1,6 @@
 import {
   EmployeeKernelRequestSchema,
+  renderMemoryContext,
   type ContextCheckpoint,
   type EmployeeKernelRequest,
   type WorkAutomation,
@@ -142,8 +143,8 @@ export function assembleEmployeeKernel(input: {
     input.resolved.promptSnapshot.conversation,
     input.checkpoint,
   );
-  const memories = input.resolved.promptSnapshot.memories
-    .filter(
+  const memories = renderMemoryContext(
+    input.resolved.promptSnapshot.memories.filter(
       (memory) =>
         !input.commonContent?.some(
           (source) =>
@@ -151,12 +152,8 @@ export function assembleEmployeeKernel(input: {
             source.reference.contentId === memory.id &&
             source.body === memory.content,
         ),
-    )
-    .map(
-      (memory) =>
-        `- [${memory.id}${memory.revision === undefined ? '' : ` · revision ${memory.revision}`}] ${memory.content}`,
-    )
-    .join('\n');
+    ),
+  );
   // Durable v1/v2 snapshots may still say `codex`, but new execution has one
   // production harness only. Codex subscription access is a DSH Provider.
   const runtimeHarness = 'dsh';
@@ -307,9 +304,7 @@ export function assembleEmployeeKernel(input: {
         : []),
     ].join('\n\n'),
     bootstrapConversation,
-    authorizedMemoryContext: memories
-      ? `Authorized memory snapshot:\n${memories}`
-      : '',
+    authorizedMemoryContext: memories,
     grantedCapabilities: input.resolved.grantedCapabilities,
     skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
     runtimePackageChecksum:

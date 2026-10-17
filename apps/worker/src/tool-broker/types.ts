@@ -3,6 +3,7 @@ import type {
   isManagedBrowserTaskCancelRequested,
   TechnicalTaskLease,
   QualityLease,
+  RunMemoryAuthority,
 } from '@allrice/database';
 import type {
   ExecutionContext,
@@ -59,6 +60,8 @@ export interface RiceToolExecutionInput {
   userRequest?: string;
   /** Private Worker binding, never accepted in tool arguments. */
   technicalTaskLease?: TechnicalTaskLease;
+  /** Worker-owned scope and lease; never parsed from model arguments. */
+  memoryReadAuthority?: RunMemoryAuthority;
   technicalTaskId?: string;
   /** Private fixed-case driver hook, never parsed from model/tool JSON. */
   qualityLiveProbe?: {

@@ -43,6 +43,7 @@ import {
   readWorkspaceFile,
   rememberWorkspaceMemory,
   searchWorkspaceMemory,
+  readExperienceSource,
   searchWorkspaceSessions,
 } from './handlers/workspace.js';
 import type {
@@ -159,6 +160,7 @@ export const riceToolHandlerRegistry = Object.freeze({
   'workspace.file.read': registration('workspace', readWorkspaceFile),
   'workspace.document.read': registration('workspace', readWorkspaceDocument),
   'workspace.memory.search': registration('workspace', searchWorkspaceMemory),
+  'workspace.experience.read': registration('workspace', readExperienceSource),
   'workspace.memory.remember': registration(
     'workspace',
     rememberWorkspaceMemory,

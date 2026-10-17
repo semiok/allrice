@@ -80,7 +80,10 @@ vi.mock('@allrice/database', async (original) => ({
   publishWorkbenchChangesetProposal,
   workbenchEnabled,
   registerManagedBrowserEvidenceArtifact,
-  searchToolBrokerMemories: vi.fn(),
+  readToolBrokerMemoryContext: vi.fn(),
+  readRunExperienceSource: vi.fn(),
+  MemoryContextError: (await original<typeof Database>()).MemoryContextError,
+  ExperienceError: (await original<typeof Database>()).ExperienceError,
   searchToolBrokerSessions: vi.fn(),
   startManagedBrowserTask,
 }));

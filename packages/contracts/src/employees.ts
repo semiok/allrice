@@ -809,6 +809,10 @@ export const EmployeePromptSnapshotSchema = z
             trust: MemoryTrustSchema.optional(),
             confidence: z.number().min(0).max(1).optional(),
             capturedAt: TimestampSchema.optional(),
+            sourceHandle: z
+              .string()
+              .regex(/^experience:sha256:[a-f0-9]{64}$/)
+              .optional(),
           })
           .strict(),
       )

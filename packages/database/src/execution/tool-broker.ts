@@ -1,3 +1,7 @@
+import {
+  readRunMemoryContext,
+  type RunMemoryAuthority,
+} from '../run-memory-context.ts';
 import { searchRunExperiences } from '../experience-runtime.ts';
 import { assertMethodFilePublication } from '../employees/employee-method-file-runtime.ts';
 import { randomUUID } from 'node:crypto';
@@ -714,9 +718,10 @@ export async function searchToolBrokerMemories(
   context: ExecutionContext,
   query: string,
   limit: number,
+  transaction?: TransactionSql,
 ) {
   if (!context.workspaceId) throw new DataAccessError('authorization_denied');
-  const sql = getDatabase();
+  const sql = transaction ?? getDatabase();
   const pattern = `%${query.trim().slice(0, 500)}%`;
   const rows = await sql<
     (ResourceRow & {
@@ -745,12 +750,15 @@ export async function searchToolBrokerMemories(
     order by updated_at desc
     limit ${Math.min(Math.max(limit, 1), 20)}
   `;
-  const experience = await searchRunExperiences({
-    organizationId: context.organizationId,
-    workspaceId: context.workspaceId,
-    ownerId: context.policySnapshot.subjectId,
-    runId: context.runId,
-  });
+  const experience = await searchRunExperiences(
+    {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId,
+      ownerId: context.policySnapshot.subjectId,
+      runId: context.runId,
+    },
+    transaction,
+  );
   return [
     ...experience
       .filter(
@@ -758,6 +766,7 @@ export async function searchToolBrokerMemories(
       )
       .map((m) => ({
         id: m.id,
+        sourceHandle: m.sourceHandle,
         content: m.content,
         provenance: {
           trust: m.trust,
@@ -770,7 +779,7 @@ export async function searchToolBrokerMemories(
       authorizeRead(context, 'memory', row);
       return {
         id: row.id,
-        content: row.content.slice(0, 4_000),
+        content: row.content,
         provenance: {
           trust: row.trust_level,
           confidence: Number(row.confidence),
@@ -780,6 +789,24 @@ export async function searchToolBrokerMemories(
       };
     }),
   ].slice(0, Math.min(Math.max(limit, 1), 20));
+}
+
+export async function readToolBrokerMemoryContext(
+  context: ExecutionContext,
+  query: string,
+  limit: number,
+  authority: RunMemoryAuthority,
+) {
+  if (
+    authority.scope.runId !== context.runId ||
+    authority.scope.organizationId !== context.organizationId ||
+    authority.scope.workspaceId !== context.workspaceId ||
+    authority.scope.ownerId !== context.policySnapshot.subjectId
+  )
+    throw new DataAccessError('authorization_denied');
+  return readRunMemoryContext(authority, 'memory_search', (tx) =>
+    searchToolBrokerMemories(context, query, limit, tx),
+  );
 }
 
 export async function searchToolBrokerSessions(

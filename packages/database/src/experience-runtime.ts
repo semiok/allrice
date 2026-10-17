@@ -1,3 +1,4 @@
+import { hasMemorySourceTool } from '@allrice/contracts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
 import { readTaskClock } from './task-clock.ts';
 import type postgres from 'postgres';
@@ -88,6 +89,8 @@ async function memoriesForPins(
   who: ContentIdentity,
   pins: ExperienceReadPin[],
   runSkills: unknown,
+  runId: string,
+  snapshot: unknown,
 ) {
   const memories = [];
   for (const pin of pins) {
@@ -112,6 +115,9 @@ async function memoriesForPins(
       confidence: Number(m.row.confidence),
       sourceLabel: '私人经验 · 自动验证后采用',
       capturedAt: m.row.captured_at.toISOString(),
+      ...(hasMemorySourceTool(snapshot)
+        ? { sourceHandle: `experience:${runtimePolicyDigest({ runId, pin })}` }
+        : {}),
     });
   }
   return memories;
@@ -120,16 +126,17 @@ async function memoriesForPins(
 /** Run-bound preparation before native context selection. Never trust a model's
  * instance/source ID. An explicit forget request is applied before loading old
  * native history, so its confirmation can be delivered in a fresh context. */
-type ExperienceWorker = {
+export type ExperienceWorker = {
   workerId: string;
   jobId: string;
   leaseToken: string;
   attempt: number;
 };
-async function assertExperienceWorker(
+export async function assertExperienceWorker(
   tx: Tx,
   scope: ExperienceRunScope,
   worker: ExperienceWorker,
+  exclusiveRun = false,
 ) {
   const roots =
     await tx`select root_run_id,(cancel_requested_at is null and cancel_request_id is null and deadline_at>clock_timestamp()) live
@@ -146,7 +153,7 @@ async function assertExperienceWorker(
       and j.worker_id=${worker.workerId} and j.attempt=${worker.attempt} and j.lease_token=${worker.leaseToken}
       and j.cancel_requested_at is null and j.timeout_at>clock_timestamp() and j.lease_expires_at>clock_timestamp()
       and not exists(select 1 from allrice_runtime_run_links l where l.run_id=r.id and l.root_run_id<>r.id)
-    for share of r,j,er nowait`;
+    for share of r,j ${exclusiveRun ? tx`for no key update of er` : tx`for share of er nowait`}`;
   if (!live) return deny();
   const clock = await readTaskClock(tx, scope.runId);
   if (
@@ -201,6 +208,8 @@ export async function prepareRunExperiences(
         who,
         pins,
         run.execution_snapshot?.personalSkills,
+        scope.runId,
+        run.execution_snapshot,
       );
       await assertExperienceWorker(tx, scope, worker);
       return {
@@ -293,6 +302,8 @@ export async function prepareRunExperiences(
       who,
       pins,
       run.execution_snapshot?.personalSkills,
+      scope.runId,
+      run.execution_snapshot,
     );
     await assertExperienceWorker(tx, scope, worker);
     return { memories, receipt };
@@ -301,13 +312,16 @@ export async function prepareRunExperiences(
 
 /** Explicit search can return only the same eligible, Run-bound rules; generic
  * search cannot bypass instance/applicability or revive a revoked rule. */
-export async function searchRunExperiences(input: {
-  organizationId: string;
-  workspaceId: string;
-  ownerId: string;
-  runId: string;
-}) {
-  return getDatabase().begin(async (tx) => {
+export async function searchRunExperiences(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    runId: string;
+  },
+  transaction?: Tx,
+) {
+  const read = async (tx: Tx) => {
     const who: ContentIdentity = {
       actor: { type: 'user', id: input.ownerId },
       organizationId: input.organizationId,
@@ -324,6 +338,9 @@ export async function searchRunExperiences(input: {
       who,
       pins,
       row.execution_snapshot?.personalSkills,
+      input.runId,
+      row.execution_snapshot,
     );
-  });
+  };
+  return transaction ? read(transaction) : getDatabase().begin(read);
 }

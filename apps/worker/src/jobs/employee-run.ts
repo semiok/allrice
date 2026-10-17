@@ -37,6 +37,7 @@ import {
   filterEmployeeMethodMemories,
   prepareEmployeeContentContext,
   prepareRunExperiences,
+  prepareRunMemoryContext,
   assertEmployeeContentContext,
   loadEmployeeRuntimeScene,
   loadEmployeeRuntimeReferences,
@@ -534,6 +535,13 @@ export async function executeEmployeeRun({
       ),
     },
   };
+  resolved.promptSnapshot.memories = await prepareRunMemoryContext(
+    {
+      scope: contentScope,
+      worker: { ...workflowLease, attempt: execution.job.attempt },
+    },
+    resolved.promptSnapshot.memories,
+  );
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
     employeeVersionId: input.employeeVersionId,
@@ -1481,6 +1489,13 @@ export async function executeEmployeeRun({
                         ? executionSnapshot.mcpTools
                         : [],
                     context: execution.context,
+                    memoryReadAuthority: {
+                      scope: contentScope,
+                      worker: {
+                        ...workflowLease,
+                        attempt: execution.job.attempt,
+                      },
+                    },
                     managedBrowserJobAttempt: execution.job.attempt,
                     managedBrowserJobLeaseToken: workflowLease.leaseToken,
                     capabilities: resolved.grantedCapabilities,
@@ -1695,6 +1710,13 @@ export async function executeEmployeeRun({
                                   ? executionSnapshot.mcpTools
                                   : [],
                               context: execution.context,
+                              memoryReadAuthority: {
+                                scope: contentScope,
+                                worker: {
+                                  ...workflowLease,
+                                  attempt: execution.job.attempt,
+                                },
+                              },
                               managedBrowserJobAttempt: execution.job.attempt,
                               managedBrowserJobLeaseToken:
                                 workflowLease.leaseToken,

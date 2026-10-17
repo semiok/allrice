@@ -78,3 +78,15 @@ Earlier proofs without this metadata remain readable. A direct-preference proof
 records explicit source feedback under the current platform policy; it does not
 claim that a model-proposed A/B comparison was performed. Completed batches are
 not automatically reopened after a recognizer update.
+
+## MET184: memory loading scope and limit
+
+“加载范围” means which memories this Run can currently use; “加载上限” means how much content may be loaded. The existing tenant/owner/instance/source and Skill checks define scope. The new limit counts UTF-8 bytes of serialized memory content, **not billed tokens, money or user credits**. Actual model usage remains in the existing usage ledger.
+
+Initial ordinary memories and validated experiences share a 6,000-byte limit, including kernel formatting and exact source handles. Complete entries are selected; an oversized entry is skipped rather than losing a condition, number or negation. `memory_context_state` freezes the selection/digest and limits in the employee Run before the first native prompt. Recovery validates the selection and retains accumulated usage. Pre-migration NULL Runs receive no fresh memory allowance; corrupt state cannot reset accounting.
+
+`workspace.memory.search` and `workspace.experience.read` share the same Run allowance: 8,000 bytes per returned envelope, 24,000 cumulative bytes including initial loading, and 12 reads. Repeated reads consume the allowance again. This measures one initial assembly plus delivered tool content; it is not a measurement of every model context resend, compaction token cost, or a promise of cost savings. Omitted entries and unavailable sources remain explicit. These tools never export an overlarge body into a static file.
+
+Source expansion accepts only a handle issued for this Run's exact experience pin. It rechecks the frozen tool grant, current Worker job/lease/task clock, current identity, instance, source and Skill in the same transaction that updates the allowance. Original feedback is evidence, not authorization. A derived-index failure may return the same authorized complete original, never bypass a source check. Existing experience pins remain conservative dependencies for history, compaction and references even if the initial byte limit skips a candidate.
+
+For new Runs only, an existing `workspace.memory.search` + `storage:read` grant includes the narrower source-read companion. An old frozen tool list is never rewritten. No source locator is emitted when the tool is unavailable. Unbound platform previews cannot use these two Run-accounted memory tools. AllRice's native registration, Broker and database implement this boundary; DSH core and dependencies are unchanged.

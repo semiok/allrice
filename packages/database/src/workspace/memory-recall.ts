@@ -1,3 +1,4 @@
+import { selectWholeMemories } from '@allrice/contracts';
 import { createHash } from 'node:crypto';
 
 import type {
@@ -46,7 +47,7 @@ export const workspaceMemoryRecallPolicy = {
   explicitThreshold: 0.14,
   maximumAutomaticResults: 3,
   maximumCandidatePool: 240,
-  maximumAutomaticTokens: 1_500,
+  maximumAutomaticBytes: 6_000,
 } as const;
 
 function clampRecallScore(value: number) {
@@ -70,32 +71,11 @@ function normalizedMemoryContent(content: string) {
   return content.trim().toLocaleLowerCase().replace(/\s+/gu, ' ');
 }
 
-function estimatedMemoryTokens(content: string) {
-  return Math.max(1, Math.ceil(content.length / 4));
-}
-
 export function applyWorkspaceMemoryRecallBudget(
   candidates: RankedMemoryRecallCandidate[],
-  maximumTokens: number,
+  maximumBytes: number,
 ) {
-  let remainingTokens = Math.max(0, Math.floor(maximumTokens));
-  return candidates.flatMap((candidate) => {
-    if (remainingTokens <= 0) return [];
-    const estimatedTokens = estimatedMemoryTokens(candidate.content);
-    if (estimatedTokens <= remainingTokens) {
-      remainingTokens -= estimatedTokens;
-      return [candidate];
-    }
-    const maximumCharacters = remainingTokens * 4;
-    if (maximumCharacters < 80) return [];
-    remainingTokens = 0;
-    return [
-      {
-        ...candidate,
-        content: `${candidate.content.slice(0, Math.max(0, maximumCharacters - 23)).trimEnd()}\n[记忆内容已按预算截断]`,
-      },
-    ];
-  });
+  return selectWholeMemories(candidates, Math.max(0, Math.floor(maximumBytes)));
 }
 
 export function rankWorkspaceMemoryRecallCandidates(
