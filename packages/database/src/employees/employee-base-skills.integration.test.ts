@@ -147,12 +147,7 @@ suite('foundation Skills: catalog → ordinary Run → frozen execution', () => 
       expect(resolved.grantedCapabilities).toEqual(expectedGrants);
       expect(snapshot.capabilitySnapshot.bindings.toolNames).toEqual([
         'workspace.skill.read',
-        ...(kind === 'custom'
-          ? [
-              'workspace.employee.method.inspect',
-              'workspace.employee.method.test_status',
-            ]
-          : []),
+        ...(kind === 'custom' ? ['workspace.employee.method.inspect'] : []),
       ]);
       expect(resolved.grantedCapabilities).not.toContain('storage:write');
       const office = resolved.nativeSkills.find((s) => s.name === 'office')!;

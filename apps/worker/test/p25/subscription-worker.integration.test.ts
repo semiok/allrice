@@ -446,6 +446,15 @@ integration(
                 expect(input.authorizedToolNames).toEqual(
                   expect.arrayContaining([inspectTool, saveTool]),
                 );
+                for (const stage of [
+                  'test',
+                  'test_status',
+                  'prepare_activation',
+                  'activate',
+                ])
+                  expect(input.authorizedToolNames).not.toContain(
+                    `workspace.employee.method.${stage}`,
+                  );
                 const call = (name: string, callId: string, args: unknown) =>
                   bridge.handle('tool', {
                     nativeSessionId: `dsh-${task.sessionId}`,
@@ -471,17 +480,20 @@ integration(
                   procedure: '先核对原始数据',
                   changeSummary: '新增周核对',
                 });
-                expect(JSON.parse(String(saved.modelContent))).toMatchObject({
+                const receipt = JSON.parse(String(saved.modelContent));
+                expect(receipt).toMatchObject({
                   revision: 1,
-                  enabled: false,
-                  active: null,
+                  enabled: true,
+                  status: 'saved',
                 });
+                expect(receipt.active).toEqual(receipt.candidate);
                 const [row] =
-                  await fixture.db`select s.revision,s.active_revision_id from allrice_employee_content_sets s
+                  await fixture.db`select s.revision,s.candidate_revision_id,s.active_revision_id from allrice_employee_content_sets s
                   join allrice_chat_sessions c on c.employee_instance_id=s.instance_id where c.id=${task.sessionId}`;
                 expect(row).toMatchObject({
                   revision: 1,
-                  active_revision_id: null,
+                  candidate_revision_id: receipt.candidate.id,
+                  active_revision_id: receipt.candidate.id,
                 });
                 const usage =
                   await fixture.db`select amount,settled_amount from allrice_assistant_usage where run_id=${task.runId} and metric='tool_calls'`;

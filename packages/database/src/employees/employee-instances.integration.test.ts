@@ -15,6 +15,7 @@ import {
   updateOrganizationPerson,
 } from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import * as toolSelection from '@allrice/contracts';
 import {
   prepareEmployeeMethodActivationFromChat,
   activateEmployeeMethodFromChat,
@@ -48,6 +49,8 @@ import {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
   restoreEmployeeMethodFromChat,
+  saveEmployeeMethodAndPublishFromChat,
+  restoreEmployeeMethodAndPublishFromChat,
   filterEmployeeMethodMemories,
 } from './employee-method-chat.ts';
 import {
@@ -69,6 +72,7 @@ import {
 import {
   getEmployeeContentSet,
   getEffectiveEmployeeContent,
+  getEmployeeDetails,
   getEmployeeContentHistory,
   mutateEmployeeContent,
   mutateEmployeeContentInTransaction,
@@ -84,7 +88,15 @@ import {
   claimReferenceProcessing,
   finishReferenceProcessing,
 } from '../reference-processing.ts';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
@@ -156,10 +168,33 @@ const suite =
     : describe.skip;
 suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
+  // Preserve regression coverage for the historical draft/test/activation
+  // protocol by freezing its original grants only in legacy fixtures.
+  const currentMethodTools = toolSelection.withEmployeeCustomizationTools;
+  let legacyMethodTools = true;
   beforeAll(async () => {
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+    vi.spyOn(
+      toolSelection,
+      'withEmployeeCustomizationTools',
+    ).mockImplementation((names, capabilities, kind) => [
+      ...currentMethodTools(names, capabilities, kind),
+      ...(legacyMethodTools && kind === 'custom'
+        ? toolSelection
+            .employeeCustomizationToolsForInstance(kind)
+            .filter((tool) => capabilities.includes(tool.capability))
+            .map((tool) => tool.name)
+            .filter(
+              (name) =>
+                !currentMethodTools(names, capabilities, kind).includes(name),
+            )
+        : []),
+    ]);
   }, 120000);
+  afterEach(() => {
+    legacyMethodTools = true;
+  });
   afterAll(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -4819,11 +4854,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it.each([
     '请保存我的第一个工作场景候选「美股监控助手」：我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
     '请保存我的工作场景候选「美股监控助手」：仅在我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
+    '请保存我的工作场景「美股监控助手」：不要自动启用监控，只在我主动询问时查询并回复。',
   ])(
-    'saves a trailing named personal scene as a candidate only: %s',
+    'saves and publishes a trailing named personal scene immediately: %s',
     async (text) => {
       const f = await setup(true),
         instance = await f.custom('小白');
+      legacyMethodTools = false;
       const run = await methodRun(f, instance.id, text);
       expect(
         await inspectEmployeeMethodFromChat({
@@ -4831,7 +4868,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           arguments: { view: 'candidate' },
         }),
       ).toMatchObject({ revision: 0, candidate: null, active: null });
-      const saved = await saveEmployeeMethodFromChat({
+      const input = {
         ...run,
         arguments: {
           expectedRevision: 0,
@@ -4846,8 +4883,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
             '等待用户主动询问，查询并回复后结束，不安排自动监控或推送。',
           changeSummary: '保存首个个人工作场景候选',
         },
-      });
-      expect(saved).toMatchObject({ revision: 1, active: null });
+      };
+      const frozen = JSON.stringify(run.frozen);
+      const saved = await saveEmployeeMethodAndPublishFromChat(input);
+      expect(saved).toMatchObject({ revision: 1, validation: { valid: true } });
+      expect(saved.active).toEqual(saved.candidate);
+      expect(await saveEmployeeMethodAndPublishFromChat(input)).toEqual(saved);
       const content = await getEmployeeContentSet(f.a.context, saved.setId);
       expect(content.set.candidate!.manifest.scenes).toMatchObject([
         {
@@ -4855,15 +4896,315 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
           appliesWhen: '用户主动询问美股相关信息时使用。',
         },
       ]);
+      expect(
+        (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
+      ).toMatchObject([{ name: '美股监控助手' }]);
+      const [unchanged] =
+        await fixture.db`select execution_snapshot from allrice_employee_runs where run_id=${run.context.runId}`;
+      expect(JSON.stringify(unchanged!.execution_snapshot)).toBe(frozen);
+      expect(run.frozen.capabilitySnapshot.bindings.toolNames).not.toContain(
+        'workspace.employee.method.prepare_activation',
+      );
+      const [tests] =
+        await fixture.db`select count(*)::int n from allrice_employee_method_tests where set_id=${saved.setId}`;
+      expect(tests!.n).toBe(0);
       await run.finish();
       const next = await methodRun(f, instance.id, '普通一次性查询');
-      expect(next.frozen.content.layers).toEqual([]);
+      expect(next.frozen.content.layers).toMatchObject([
+        { revisionId: saved.active!.id },
+      ]);
       expect(
         (await getEffectiveEmployeeContent(f.a.context, instance.id)).scenes,
-      ).toEqual([]);
+      ).toMatchObject([{ name: '美股监控助手' }]);
       await next.finish();
+      legacyMethodTools = true;
     },
   );
+
+  it('publishes partial edits, removal and historical restore without losing other scenes or old publications', async () => {
+    const f = await setup(true),
+      instance = await f.custom('Immediate history');
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景：每周对账和每月对账，保留原始数据。',
+    );
+    const first = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '每周对账', appliesWhen: '每周' },
+        requirements: '保留原始数据',
+        changeSummary: '保存每周场景',
+      },
+    });
+    const second = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      callId: randomUUID(),
+      arguments: {
+        expectedRevision: 1,
+        section: 'scene',
+        scene: { name: '每月对账', appliesWhen: '每月' },
+        procedure: '按原始记录核对',
+        changeSummary: '添加每月场景',
+      },
+    });
+    expect(second.active).toEqual(second.candidate);
+    const initial = (await getEmployeeDetails(f.a.context, instance.id)).content
+      .scenes;
+    expect(initial.map((scene) => scene.name)).toEqual([
+      '每周对账',
+      '每月对账',
+    ]);
+    await run.finish();
+    const remove = await methodRun(
+      f,
+      instance.id,
+      '请更新我的工作场景：请移除每月对账场景。',
+    );
+    const removed = await saveEmployeeMethodAndPublishFromChat({
+      ...remove,
+      arguments: {
+        expectedRevision: second.revision,
+        section: 'scene',
+        operation: 'remove_scene',
+        scene: { id: initial[1]!.id },
+        changeSummary: '移除每月场景',
+      },
+    });
+    expect(removed.active).toEqual(removed.candidate);
+    expect(
+      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
+    ).toMatchObject([{ id: initial[0]!.id }]);
+    await remove.finish();
+    const restore = await methodRun(
+      f,
+      instance.id,
+      '请恢复我的整份工作方法到第2版。',
+    );
+    const restored = await restoreEmployeeMethodAndPublishFromChat({
+      ...restore,
+      arguments: {
+        expectedRevision: removed.revision,
+        sourceRevisionId: second.active!.id,
+        changeSummary: '恢复第二版',
+      },
+    });
+    expect(restored.active).toEqual(restored.candidate);
+    expect(
+      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
+    ).toEqual(initial);
+    const history = await getEmployeeContentHistory(f.a.context, first.setId);
+    expect(history.revisions).toHaveLength(4);
+    const publications =
+      await fixture.db`select revision_id,invalidated_at from allrice_employee_content_publications where set_id=${first.setId}`;
+    expect(publications).toHaveLength(4);
+    expect(publications.every((row) => row.invalidated_at === null)).toBe(true);
+    await restore.finish();
+  });
+
+  it('rolls back both saved text and publication when a referenced source is unavailable, and never saves against a stale version', async () => {
+    const f = await setup(true),
+      instance = await f.custom('Atomic immediate save');
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景。请将这份资料长期引用。',
+    );
+    await expect(
+      saveEmployeeMethodAndPublishFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: '资料检查', appliesWhen: '收到资料时' },
+          requirements: '保留资料',
+          references: [
+            {
+              sourceKind: 'knowledge',
+              contentId: randomUUID(),
+              revisionId: randomUUID(),
+              digest: 'sha256:' + 'a'.repeat(64),
+            },
+          ],
+          changeSummary: '不应留下半次保存',
+        },
+      }),
+    ).rejects.toBeDefined();
+    expect(
+      await fixture.db`select id from allrice_employee_content_sets where instance_id=${instance.id}`,
+    ).toHaveLength(0);
+    expect(
+      await fixture.db`select id from allrice_company_assets where owner_id=${f.a.user.id}`,
+    ).toHaveLength(0);
+    const good = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      callId: randomUUID(),
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '资料检查', appliesWhen: '收到资料时' },
+        requirements: '保留资料',
+        changeSummary: '保存有效内容',
+      },
+    });
+    await expect(
+      saveEmployeeMethodAndPublishFromChat({
+        ...run,
+        callId: randomUUID(),
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: '不应覆盖', appliesWhen: '收到资料时' },
+          requirements: '过时保存',
+          changeSummary: '拒绝旧版本',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    expect(
+      (await getEmployeeContentHistory(f.a.context, good.setId)).revisions,
+    ).toHaveLength(1);
+    expect(
+      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
+    ).toMatchObject([{ name: '资料检查' }]);
+    await run.finish();
+  });
+
+  it('does not make a draft-only request effective', async () => {
+    const f = await setup(true),
+      instance = await f.custom('Explicit draft only');
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景：每周核对。只保存草稿，先不启用。',
+    );
+    await expect(
+      saveEmployeeMethodAndPublishFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          section: 'scene',
+          scene: { name: '每周核对', appliesWhen: '每周' },
+          requirements: '核对记录',
+          changeSummary: '不应生效',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'save_takes_effect' });
+    expect(
+      await fixture.db`select id from allrice_employee_content_sets where instance_id=${instance.id}`,
+    ).toHaveLength(0);
+    await run.finish();
+  });
+
+  it.each(['company', 'department'] as const)(
+    'makes an authorized %s text scene effective at save, with no private scope expansion',
+    async (scope) => {
+      const f = await setup(true),
+        instance = await f.custom('Shared immediate save');
+      const department = await departmentFixture(f);
+      await department.configure(
+        f.a.user.id,
+        department.department.id,
+        scope === 'company' ? 'company' : 'department',
+      );
+      const run = await methodRun(
+        f,
+        instance.id,
+        scope === 'company'
+          ? '请保存本公司的工作场景：每周核对。'
+          : '请保存本部门的工作场景：每周核对。',
+      );
+      const selected = await inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate', scope },
+      });
+      if (!('sharedTarget' in selected) || !selected.sharedTarget)
+        throw Error('fixture shared target');
+      const saved = await saveEmployeeMethodAndPublishFromChat({
+        ...run,
+        arguments: {
+          expectedRevision: 0,
+          sharedTarget: selected.sharedTarget,
+          section: 'scene',
+          scene: { name: '共享每周核对', appliesWhen: '每周' },
+          requirements: '保留原始记录',
+          changeSummary: '保存共享场景',
+        },
+      });
+      expect(saved.active).toEqual(saved.candidate);
+      const [set] =
+        await fixture.db`select scope,owner_id,instance_id,active_revision_id from allrice_employee_content_sets where id=${saved.setId}`;
+      expect(set).toMatchObject({
+        scope,
+        owner_id: null,
+        instance_id: null,
+        active_revision_id: saved.active!.id,
+      });
+      expect(
+        (await getEmployeeDetails(f.a.context, instance.id)).content.scenes,
+      ).toMatchObject([{ name: '共享每周核对' }]);
+      await run.finish();
+    },
+  );
+
+  it('keeps historical unenabled drafts out of a later immediate partial save', async () => {
+    const f = await setup(true),
+      instance = await f.custom('Historical draft boundary');
+    const oldRun = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景：旧的待定方案。只保存候选，不启用。',
+    );
+    const draft = await saveEmployeeMethodFromChat({
+      ...oldRun,
+      arguments: {
+        expectedRevision: 0,
+        section: 'scene',
+        scene: { name: '旧的待定方案', appliesWhen: '尚未决定' },
+        requirements: '这不是生效内容',
+        changeSummary: '保留历史草稿',
+      },
+    });
+    await oldRun.finish();
+    legacyMethodTools = false;
+    const run = await methodRun(
+      f,
+      instance.id,
+      '请保存我的工作场景：每周核对记录。',
+    );
+    expect(
+      await inspectEmployeeMethodFromChat({
+        ...run,
+        arguments: { view: 'candidate' },
+      }),
+    ).toMatchObject({ revision: 1, candidate: null, active: null });
+    const saved = await saveEmployeeMethodAndPublishFromChat({
+      ...run,
+      arguments: {
+        expectedRevision: 1,
+        section: 'scene',
+        scene: { name: '每周核对记录', appliesWhen: '每周' },
+        requirements: '核对记录',
+        changeSummary: '仅保存明确要求的场景',
+      },
+    });
+    expect(saved.active).toEqual(saved.candidate);
+    expect(
+      (await getEmployeeDetails(f.a.context, instance.id)).content.scenes.map(
+        (scene) => scene.name,
+      ),
+    ).toEqual(['每周核对记录']);
+    const history = await getEmployeeContentHistory(f.a.context, saved.setId);
+    expect(history.revisions).toHaveLength(2);
+    expect(
+      history.revisions.some((revision) => revision.id === draft.candidate.id),
+    ).toBe(true);
+    expect(
+      await fixture.db`select revision_id from allrice_employee_content_publications where set_id=${saved.setId} and revision_id=${draft.candidate.id}`,
+    ).toHaveLength(0);
+    await run.finish();
+  });
 
   it('does not save a trailing named scene when the original request denies persistence', async () => {
     const f = await setup(true),

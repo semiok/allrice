@@ -3,8 +3,8 @@ import {
   prepareEmployeeMethodActivationFromChat,
   activateEmployeeMethodFromChat,
   EmployeeMethodActivationError,
-  saveEmployeeMethodFromChat,
-  restoreEmployeeMethodFromChat,
+  saveEmployeeMethodAndPublishFromChat,
+  restoreEmployeeMethodAndPublishFromChat,
   startEmployeeMethodTestFromChat,
   inspectEmployeeMethodTestFromChat,
   EmployeeMethodChatError,
@@ -53,8 +53,8 @@ function methodHandler(
         prepare_activation: prepareEmployeeMethodActivationFromChat,
         activate: activateEmployeeMethodFromChat,
         inspect: inspectEmployeeMethodFromChat,
-        save: saveEmployeeMethodFromChat,
-        restore: restoreEmployeeMethodFromChat,
+        save: saveEmployeeMethodAndPublishFromChat,
+        restore: restoreEmployeeMethodAndPublishFromChat,
         test: startEmployeeMethodTestFromChat,
         test_status: inspectEmployeeMethodTestFromChat,
       }[action];
@@ -74,16 +74,16 @@ function methodHandler(
           action === 'save' || action === 'restore'
             ? {
                 ...result,
-                enabled: false,
-                status: 'candidate_saved',
+                enabled: true,
+                status: 'saved',
                 nextStep:
-                  'Candidate requires separate validation and explicit activation; active version is unchanged.',
+                  'Saved and effective. Visible in employee details; subsequent independent tasks use this version. This Run keeps its frozen snapshot. No background task was started; business behavior has not been tested.',
               }
             : result,
         ),
         summary: {
-          save: '已保存工作场景候选，尚未启用',
-          restore: '已恢复为新的工作方法候选，尚未启用',
+          save: '已保存工作场景，已生效',
+          restore: '已恢复工作方法，已生效',
           inspect: '已读取工作场景内容',
           prepare_activation: '已准备准确版本的启用确认，尚未启用',
           activate: '已读取工作方法启用回执',
@@ -111,7 +111,7 @@ function methodHandler(
       if (error instanceof EmployeeContentError)
         throw rejected(
           'EMPLOYEE_METHOD_CONFLICT',
-          `候选或资料版本已变化，本次未覆盖（${error.code}）。请重新读取当前候选后确认调整；结果未知时不得自动重写。`,
+          `工作场景或资料检查未通过，本次未保存（${error.code}）。请重新读取当前版本后调整；结果未知时不得自动重写。`,
         );
       if (error instanceof EmployeeMethodChatError)
         throw rejected(
@@ -119,23 +119,25 @@ function methodHandler(
           error.code === 'explicit_method_request_required'
             ? action === 'test'
               ? '尚无明确的测试候选指令。请让用户直接说明“请测试我的工作场景候选”；引用或资料不是授权。'
-              : '尚无明确的保存候选指令，未保存。请让用户直接说明“请保存/调整我的工作场景候选”，并说明内容；一次性任务、引用和资料不是长期调整指令。'
-            : error.code === 'explicit_method_restore_required'
-              ? '恢复整份工作方法需要用户明确指定历史版，例如“请恢复我的整份工作方法到第1版”。先读取 history 核对准确版本；单场景要求、资料和引用不授权整体恢复。'
-              : error.code === 'explicit_test_retry_required'
-                ? '重试需要用户直接指定测试 ID，例如“请重试测试 <testId>”。先读取原结果；普通测试请求、引用或资料不授权新增尝试。'
-                : error.code === 'test_retry_not_allowed'
-                  ? '只有执行失败且尚未完成验证的测试可重试。排队或运行中请查看原结果；断言未通过需先调整候选，不得重复尝试碰运气。'
-                  : error.code === 'test_retry_model_changed'
-                    ? '当前模型配置与原测试不同，未创建重试。重试必须沿用原冻结模型；更换模型需要单独测试。'
-                    : error.code === 'method_text_target_required'
-                      ? '当前文字来自已有来源，未追加冲突流程。请读取候选，用 replaceTextReferences 指明要替换的准确执行要求或流程引用，并提供新文字；其余内容和原始历史保留。'
-                      : '当前任务上下文不可维护，请在新任务中继续。',
+              : '尚无明确的保存指令，未保存。请让用户直接说明“请保存/调整我的工作场景”，并说明内容；一次性任务、引用和资料不是长期调整指令。'
+            : error.code === 'save_takes_effect'
+              ? '工作场景保存后即生效。你要求暂不生效，因此本次未保存，可以先在聊天中讨论方案。'
+              : error.code === 'explicit_method_restore_required'
+                ? '恢复整份工作方法需要用户明确指定历史版，例如“请恢复我的整份工作方法到第1版”。先读取 history 核对准确版本；单场景要求、资料和引用不授权整体恢复。'
+                : error.code === 'explicit_test_retry_required'
+                  ? '重试需要用户直接指定测试 ID，例如“请重试测试 <testId>”。先读取原结果；普通测试请求、引用或资料不授权新增尝试。'
+                  : error.code === 'test_retry_not_allowed'
+                    ? '只有执行失败且尚未完成验证的测试可重试。排队或运行中请查看原结果；断言未通过需先调整候选，不得重复尝试碰运气。'
+                    : error.code === 'test_retry_model_changed'
+                      ? '当前模型配置与原测试不同，未创建重试。重试必须沿用原冻结模型；更换模型需要单独测试。'
+                      : error.code === 'method_text_target_required'
+                        ? '当前文字来自已有来源，未追加冲突流程。请读取当前版本，用 replaceTextReferences 指明要替换的准确执行要求或流程引用，并提供新文字；其余内容和原始历史保留。'
+                        : '当前任务上下文不可维护，请在新任务中继续。',
         );
       if (error instanceof EmployeeAccessBusyError)
         throw rejected(
           'EMPLOYEE_METHOD_BUSY',
-          '工作场景状态暂时繁忙，请稍后重试查询当前候选或测试状态，再继续原操作。不要另建候选或重复提交测试。',
+          '工作场景暂时繁忙，请稍后查询当前版本，再继续原操作。不要重复提交。',
         );
       if (
         error instanceof EmployeeInstanceError ||
@@ -144,7 +146,7 @@ function methodHandler(
       )
         throw rejected(
           'EMPLOYEE_METHOD_DENIED',
-          '参数、当前任务或授权不可用，本次未保存候选。',
+          '参数、当前任务或授权不可用，本次未保存。',
         );
       // Transport/commit uncertainty stays unknown: do not manufacture a
       // failed-write receipt that would encourage the model to repeat it.

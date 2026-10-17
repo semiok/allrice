@@ -74,7 +74,18 @@ export function withEmployeeCustomizationTools(
           !employeeCustomizationTools.some((tool) => tool.name === name),
       ),
       ...employeeCustomizationToolsForInstance(kind)
-        .filter((tool) => capabilities.includes(tool.capability))
+        .filter(
+          (tool) =>
+            capabilities.includes(tool.capability) &&
+            // Old frozen Runs retain their original grants. New saves take
+            // effect directly, so new Runs do not expose the old draft gates.
+            ![
+              'workspace.employee.method.test',
+              'workspace.employee.method.test_status',
+              'workspace.employee.method.prepare_activation',
+              'workspace.employee.method.activate',
+            ].includes(tool.name),
+        )
         .map((tool) => tool.name),
     ]),
   ];
