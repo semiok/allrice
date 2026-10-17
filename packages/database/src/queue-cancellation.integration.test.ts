@@ -7,6 +7,8 @@ import {
 import { closeDatabase } from './core/client.ts';
 import { createRuntimeOperationLedger } from './runtime-ledger/ledger.ts';
 import { defaultAssistantRunConfiguration } from '@allrice/contracts';
+import { refreshTaskClock } from './task-clock.ts';
+import { resolveTaskRuntimePolicy } from './task-runtime-policy.ts';
 import {
   cancelRun,
   completeJob,
@@ -427,4 +429,54 @@ suite('MET193 original-incarnation receipt drain — isolated PostgreSQL', () =>
       ]);
     }
   }, 120000);
+  it.each(['heartbeat', 'maintenance', 'authority'] as const)(
+    'durable active-time projection reaches %s without reopening its receipt deadline',
+    async (trigger) => {
+      const s = await setup(),
+        f = s.f;
+      const policy = resolveTaskRuntimePolicy([
+        { scope: 'user', scopeId: f.context.actor.id, timeoutMs: 1000 },
+      ]);
+      await database.db`update allrice_jobs set created_at=clock_timestamp()-interval '10 seconds' where id=${f.worker.jobId}`;
+      // Existing clock-test technique: advance only this isolated persisted
+      // checkpoint, then execute the actual production projection on DB time.
+      await database.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy,phase,changed_at,started_at)
+      values(${f.task.runId},${f.task.scope.organizationId},${f.task.scope.workspaceId},${database.db.json({ ...policy })},'active',clock_timestamp()-interval '2 seconds',clock_timestamp()-interval '2 seconds')`;
+      await database.db.begin((tx) => refreshTaskClock(tx, f.task.runId));
+      if (trigger === 'heartbeat')
+        expect(await s.heartbeat()).toMatchObject({
+          active: false,
+          draining: true,
+        });
+      else if (trigger === 'maintenance') await maintainQueue();
+      else
+        expect(await f.runtime.assertCurrentAuthority(f.base)).toMatchObject({
+          cancelRequested: true,
+          stopReason: 'timeout',
+        });
+      const first = await s.row();
+      expect(first.drain_reason).toBe('timeout');
+      expect(first.status).toBe('running');
+      await database.db.begin((tx) => refreshTaskClock(tx, f.task.runId));
+      await s.heartbeat();
+      await maintainQueue();
+      expect((await s.row()).drain_deadline_at).toEqual(
+        first.drain_deadline_at,
+      );
+      await expect(
+        f.runtime.prepareModelUsage({
+          ...f.base,
+          runId: f.task.runId,
+          callId: randomUUID(),
+          requestedOutputTokens: 100,
+        }),
+      ).rejects.toThrow('lease_lost');
+      await s.settle();
+      await f.runtime.confirmStopped({ ...f.base, runId: f.task.runId });
+      await s.finish();
+      const final = await s.row();
+      expect(final.status).toBe('failed');
+      expect(final.last_error_code).toBe('JOB_TIMEOUT');
+    },
+  );
 });
