@@ -74,7 +74,8 @@ describe('EmployeeProfileDetails', () => {
       <EmployeeProfileDetails details={details} onPreview={() => {}} />,
     );
     expect(personal).toContain('工作场景');
-    expect(personal).toContain('暂无已启用的工作场景');
+    expect(personal).toContain('暂无已保存的工作场景');
+    expect(personal).toContain('保存后即生效并显示在这里');
     expect(personal).toContain('可在聊天中说明希望它负责哪些工作');
     expect(personal).not.toContain('<select');
     const shared = renderToStaticMarkup(
@@ -84,7 +85,7 @@ describe('EmployeeProfileDetails', () => {
         onPreview={() => {}}
       />,
     );
-    expect(shared).toContain('暂无可查看的已启用共享场景');
+    expect(shared).toContain('暂无可查看的共享场景');
     expect(shared).not.toContain('可在聊天中说明');
   });
   it('retains legacy published requirements without inventing platform ownership', () => {

@@ -22,6 +22,8 @@ export {
   inspectEmployeeMethodFromChat,
   saveEmployeeMethodFromChat,
   restoreEmployeeMethodFromChat,
+  saveEmployeeMethodAndPublishFromChat,
+  restoreEmployeeMethodAndPublishFromChat,
   EmployeeMethodChatError,
   isEmployeeMethodAuthoringRun,
   filterEmployeeMethodMemories,

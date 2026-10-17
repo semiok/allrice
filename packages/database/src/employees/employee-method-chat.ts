@@ -50,6 +50,7 @@ export class EmployeeMethodChatError extends Error {
       | 'test_retry_not_allowed'
       | 'test_retry_model_changed'
       | 'method_text_target_required'
+      | 'save_takes_effect'
       | 'method_context_unavailable',
   ) {
     super(code);
@@ -558,6 +559,17 @@ function assertMethodEditIntent(
     throw new EmployeeMethodChatError('explicit_method_request_required');
 }
 
+function assertImmediateSaveIntent(text: string) {
+  if (
+    methodOperationClauses(text).some((clause) =>
+      /(?:不要|先不|暂不|不|别|勿)(?:要|立即|马上|自动)?(?:启用|生效)|(?:只|仅)(?:保存|存为)(?:为)?(?:候选|草稿)|(?:do not|don't) (?:activate|enable)/iu.test(
+        clause,
+      ),
+    )
+  )
+    throw new EmployeeMethodChatError('save_takes_effect');
+}
+
 const emptyManifest = () => ({
   schemaVersion: 1 as const,
   common: [],
@@ -706,6 +718,9 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
           selectedReferences: [],
         };
       }
+      const [binding] = await tx<{ legacy_activation: boolean }[]>`
+        select coalesce(execution_snapshot#>'{capabilitySnapshot,bindings,toolNames}' ? 'workspace.employee.method.prepare_activation',false) legacy_activation
+        from allrice_employee_runs where run_id=${input.context.runId}`;
       const content = await inspectEmployeeMethodContent(
         scope,
         instance.id,
@@ -713,6 +728,7 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
         tx,
         selected?.sharedTarget,
         args.beforeTestId,
+        !binding?.legacy_activation,
       );
       if (selected)
         return {
@@ -768,6 +784,20 @@ export async function inspectEmployeeMethodFromChat(input: EmployeeChatCall) {
 }
 
 export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
+  return restoreEmployeeMethod(input, false);
+}
+
+/** Current chat flow: a successful restore is immediately effective. */
+export async function restoreEmployeeMethodAndPublishFromChat(
+  input: EmployeeChatCall,
+) {
+  return restoreEmployeeMethod(input, true);
+}
+
+async function restoreEmployeeMethod(
+  input: EmployeeChatCall,
+  publishOnSave: boolean,
+) {
   const args = EmployeeMethodRestoreSchema.parse(input.arguments);
   const { scope, requestId } = employeeChatIdentity(input);
   const tool = 'workspace.employee.method.restore_candidate';
@@ -803,7 +833,9 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
       },
       tx,
       {
+        publishOnSave,
         inputDigest: runtimePolicyDigest({
+          ...(publishOnSave ? { publication: 'save_and_publish' } : {}),
           instanceId: instance.id,
           runId: input.context.runId,
           userMessageId: input.userMessageId,
@@ -823,6 +855,7 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
             current,
             tool,
           );
+          if (publishOnSave) assertImmediateSaveIntent(original);
           const [source] = await tx<
             { id: string; number: number }[]
           >`select id,number from allrice_employee_content_revisions
@@ -852,6 +885,20 @@ export async function restoreEmployeeMethodFromChat(input: EmployeeChatCall) {
 }
 
 export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
+  return saveEmployeeMethod(input, false);
+}
+
+/** Current chat flow: save, source checks and publication commit atomically. */
+export async function saveEmployeeMethodAndPublishFromChat(
+  input: EmployeeChatCall,
+) {
+  return saveEmployeeMethod(input, true);
+}
+
+async function saveEmployeeMethod(
+  input: EmployeeChatCall,
+  publishOnSave: boolean,
+) {
   const args = EmployeeMethodSaveSchema.parse(input.arguments);
   const { scope, requestId } = employeeChatIdentity(input);
   if (
@@ -877,6 +924,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
     },
   );
   assertMethodEditIntent(text, args);
+  if (publishOnSave) assertImmediateSaveIntent(text);
   const base: Extract<EmployeeContentMutation, { operation: 'save_draft' }> = {
     operation: 'save_draft',
     workspaceId: scope.workspaceId,
@@ -891,7 +939,9 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
   };
   return employeeAccessTransaction(getDatabase(), (tx) =>
     mutateEmployeeContentInTransaction(scope, base, tx, {
+      publishOnSave,
       inputDigest: runtimePolicyDigest({
+        ...(publishOnSave ? { publication: 'save_and_publish' } : {}),
         instanceId: instance.id,
         runId: input.context.runId,
         userMessageId: input.userMessageId,
@@ -912,6 +962,7 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
           tx,
         );
         assertMethodEditIntent(original, args);
+        if (publishOnSave) assertImmediateSaveIntent(original);
         await assertEmployeeMethodDepartmentRequest(
           scope,
           instance.id,
@@ -921,13 +972,17 @@ export async function saveEmployeeMethodFromChat(input: EmployeeChatCall) {
         );
       },
       buildInput: async (row) => {
-        const [revision] =
-          row?.candidate_revision_id || row?.active_revision_id
-            ? await tx<
-                { manifest: unknown }[]
-              >`select manifest from allrice_employee_content_revisions
-            where id=${row.candidate_revision_id ?? row.active_revision_id}`
-            : [];
+        // Old unenabled drafts stay in history. A new partial save starts
+        // from the effective version, never silently enables unrelated edits.
+        const revisionId = publishOnSave
+          ? row?.active_revision_id
+          : (row?.candidate_revision_id ?? row?.active_revision_id);
+        const [revision] = revisionId
+          ? await tx<
+              { manifest: unknown }[]
+            >`select manifest from allrice_employee_content_revisions
+            where id=${revisionId}`
+          : [];
         const manifest = EmployeeContentManifestSchema.parse(
           revision?.manifest ?? emptyManifest(),
         );
