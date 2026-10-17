@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type postgres from 'postgres';
 import {
   ExperienceAdoptionProofSchema,
@@ -9,9 +10,13 @@ import {
   supportsDirectReportPreference,
   type ExperienceAdoptionProof,
   type ExperienceReadPin,
+  UuidSchema,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
-import { type ContentIdentity } from './content-maintenance.ts';
+import {
+  readContentPrincipal,
+  type ContentIdentity,
+} from './content-maintenance.ts';
 import {
   readExperiencePolicy,
   readExperienceValidationSource,
@@ -43,11 +48,61 @@ const deny = (): never => {
 const contentFor = (d: { rule: string; applicability: string }) =>
   `${d.rule}\n适用范围：${d.applicability}`;
 
+const digestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
+const ReportStyleReassessmentInputSchema = z
+  .object({
+    occurrenceId: UuidSchema,
+    draftIndex: z.number().int().min(0).max(7),
+    expectedOutputDigest: digestSchema,
+    expectedPlanDigest: digestSchema,
+  })
+  .strict();
+const ReportStyleReassessmentResultSchema = z.object({
+  auditId: UuidSchema,
+  occurrenceId: UuidSchema,
+  draftIndex: z.number().int().min(0).max(7),
+  recognizerVersion: z.literal(REPORT_STYLE_RECOGNIZER_VERSION),
+  decision: z.enum(['adopted', 'not_adopted']),
+  memoryId: UuidSchema.nullable(),
+  reason: z.string().nullable(),
+});
+type Reassessment = {
+  who: ContentIdentity;
+  input: z.infer<typeof ReportStyleReassessmentInputSchema>;
+};
+
 /** Bounded deterministic consumer on the existing tick. No model or new queue. */
 export async function syncExperienceAdoptions() {
+  await consumeExperienceAdoptions();
+}
+
+/** Internal, explicitly targeted continuation after a recognizer correction.
+ * Reuses the same consumer, preserves the prior decision in an append-only audit,
+ * and never reopens other completed batches or invokes a model/test. */
+export async function reassessReportStyleAdoption(
+  who: ContentIdentity,
+  input: z.input<typeof ReportStyleReassessmentInputSchema>,
+) {
+  if (!experienceReviewEnabled()) throw new ExperienceError('disabled');
+  if (who.actor.type !== 'user' || !who.workspaceId) return deny();
+  UuidSchema.parse(who.actor.id);
+  UuidSchema.parse(who.organizationId);
+  UuidSchema.parse(who.workspaceId);
+  const result = await consumeExperienceAdoptions({
+    who,
+    input: ReportStyleReassessmentInputSchema.parse(input),
+  });
+  if (!result) throw new ExperienceError('conflict');
+  return result;
+}
+
+async function consumeExperienceAdoptions(reassessment?: Reassessment) {
   if (!experienceReviewEnabled()) return;
   const db = getDatabase();
-  const rows = await db`select a.id from allrice_automation_runs a
+  let result: z.infer<typeof ReportStyleReassessmentResultSchema> | undefined;
+  const rows = reassessment
+    ? [{ id: reassessment.input.occurrenceId }]
+    : await db`select a.id from allrice_automation_runs a
     left join allrice_settings org on org.scope_type='organization' and org.scope_id=a.organization_id and org.key='employee_experience_policy'
     left join allrice_settings sys on sys.scope_type='system' and sys.scope_id is null and sys.key='employee_experience_policy'
     where a.status='succeeded' and a.experience_receipt is not null and (a.experience_adoption_plan is null or (a.experience_adoption_plan->>'status'='awaiting_validation' and exists(
@@ -62,22 +117,32 @@ export async function syncExperienceAdoptions() {
     order by a.created_at,a.id limit 8`;
   for (const row of rows) {
     try {
-      await db.begin(async (tx) => {
-        await tx`set local lock_timeout='100ms'`;
+      const committedResult = await db.begin(async (tx) => {
+        if (reassessment) await tx`set local lock_timeout='3s'`;
+        else await tx`set local lock_timeout='100ms'`;
         await tx`set local statement_timeout='3000ms'`;
-        const [batch] =
-          await tx`select id,organization_id,experience_adoption_plan from allrice_automation_runs where id=${row.id} and (experience_adoption_plan is null or experience_adoption_plan->>'status'='awaiting_validation') for update skip locked`;
+        const [batch] = reassessment
+          ? await tx`select id,organization_id,experience_adoption_plan from allrice_automation_runs where id=${row.id} and status='succeeded' for update`
+          : await tx`select id,organization_id,experience_adoption_plan from allrice_automation_runs where id=${row.id} and (experience_adoption_plan is null or experience_adoption_plan->>'status'='awaiting_validation') for update skip locked`;
         if (!batch) return;
+        if (
+          reassessment &&
+          !Array.isArray(batch.experience_adoption_plan?.drafts)
+        )
+          return deny();
         const policy = await readExperiencePolicy(batch.organization_id, tx);
         if (
           policy.schemaVersion !== 4 ||
           policy.adoptionMode !== 'supported_private' ||
           !policy.adoptionAuthorizedBy ||
           policy.frequency === 'off'
-        )
+        ) {
+          if (reassessment) return deny();
           return;
-        const pending =
-          batch.experience_adoption_plan?.status === 'awaiting_validation'
+        }
+        const pending = reassessment
+          ? new Set<number>([reassessment.input.draftIndex])
+          : batch.experience_adoption_plan?.status === 'awaiting_validation'
             ? new Set<number>(batch.experience_adoption_plan.pendingDrafts)
             : null;
         // A newly covered draft does not rewrite completed siblings' records.
@@ -94,6 +159,7 @@ export async function syncExperienceAdoptions() {
         try {
           source = await readExperienceValidationSource(tx, row.id);
         } catch (e) {
+          if (reassessment) throw e;
           if (!experienceUnavailable(e)) throw e;
           const reason = '来源或有效要求已变化，未采用。';
           await tx`update allrice_automation_runs set experience_adoption_plan=${tx.json(
@@ -114,6 +180,53 @@ export async function syncExperienceAdoptions() {
           return;
         }
         const { occurrence: o, receipt } = source;
+        const requestDigest = reassessment
+          ? runtimePolicyDigest({
+              ...reassessment.input,
+              recognizerVersion: REPORT_STYLE_RECOGNIZER_VERSION,
+            })
+          : null;
+        if (reassessment) {
+          const { who, input } = reassessment;
+          const principal = await readContentPrincipal(who, tx, true);
+          if (
+            !principal?.writable ||
+            who.actor.id !== o.ownerId ||
+            who.organizationId !== o.organizationId ||
+            who.workspaceId !== o.workspaceId ||
+            receipt.outputDigest !== input.expectedOutputDigest
+          )
+            return deny();
+          // The same row lock serializes concurrent and uncertain retries. A
+          // saved result is historical; runtime reads still reauthorize it.
+          const [previous] = await tx`select metadata from allrice_audit_events
+            where action='experience.adoption.reassess' and resource_id=${o.id}
+              and organization_id=${o.organizationId} and actor_id=${who.actor.id}
+              and metadata->>'requestDigest'=${requestDigest}`;
+          if (previous) {
+            return ReportStyleReassessmentResultSchema.parse(
+              previous.metadata.result,
+            );
+          }
+          const oldPlan = batch.experience_adoption_plan;
+          const entries = Array.isArray(oldPlan?.drafts)
+            ? oldPlan.drafts.filter(
+                (d: { draftIndex: number }) =>
+                  d.draftIndex === input.draftIndex,
+              )
+            : [];
+          const draft = receipt.output.drafts[input.draftIndex];
+          if (
+            !draft ||
+            oldPlan?.status !== 'complete' ||
+            runtimePolicyDigest(oldPlan) !== input.expectedPlanDigest ||
+            entries.length !== 1 ||
+            entries[0].memoryId ||
+            entries[0].reason !== '尚无覆盖完整规则及依赖的验证，未采用。' ||
+            supportedExperienceRule(draft)?.kind !== 'report_style'
+          )
+            return deny();
+        }
         const pendingDrafts: number[] = [];
         for (const [draftIndex, draft] of receipt.output.drafts.entries()) {
           if (pending && !pending.has(draftIndex)) continue;
@@ -266,15 +379,51 @@ export async function syncExperienceAdoptions() {
             values(${o.organizationId},${o.workspaceId},${policy.adoptionAuthorizedBy},'experience.auto_adopt','memory',${id},'allowed','platform_automatic_experience_policy',${o.id})`;
           plan.push({ draftIndex, memoryId: id });
         }
-        await tx`update allrice_automation_runs set experience_adoption_plan=${tx.json(
-          {
-            status: pendingDrafts.length ? 'awaiting_validation' : 'complete',
-            pendingDrafts,
-            drafts: plan,
-          },
-        )} where id=${row.id}`;
+        const nextPlan = {
+          status: pendingDrafts.length ? 'awaiting_validation' : 'complete',
+          pendingDrafts,
+          drafts: plan,
+        };
+        let decisionResult:
+          z.infer<typeof ReportStyleReassessmentResultSchema> | undefined;
+        if (reassessment) {
+          const decision = plan.find(
+            (d) => d.draftIndex === reassessment.input.draftIndex,
+          )!;
+          decisionResult = ReportStyleReassessmentResultSchema.parse({
+            auditId: randomUUID(),
+            occurrenceId: o.id,
+            draftIndex: reassessment.input.draftIndex,
+            recognizerVersion: REPORT_STYLE_RECOGNIZER_VERSION,
+            decision: decision.memoryId ? 'adopted' : 'not_adopted',
+            memoryId: decision.memoryId ?? null,
+            reason: decision.reason ?? null,
+          });
+          await tx`insert into allrice_audit_events(id,organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
+            values(${decisionResult.auditId},${o.organizationId},${o.workspaceId},${reassessment.who.actor.id},'experience.adoption.reassess','experience_occurrence',${o.id},'recorded','explicit_report_grammar_continuation',${o.id},${tx.json(
+              {
+                requestDigest,
+                input: reassessment.input,
+                recognizerVersion: REPORT_STYLE_RECOGNIZER_VERSION,
+                previousDecision: batch.experience_adoption_plan,
+                nextDecision: nextPlan,
+                sourceDigest: runtimePolicyDigest(o.sources),
+                outputDigest: receipt.outputDigest,
+                draftDigest: runtimePolicyDigest(
+                  receipt.output.drafts[reassessment.input.draftIndex],
+                ),
+                result: decisionResult,
+              },
+            )})`;
+        }
+        await tx`update allrice_automation_runs set experience_adoption_plan=${tx.json(nextPlan)} where id=${row.id}`;
+        return decisionResult;
       });
+      if (committedResult) result = committedResult;
     } catch (e) {
+      // A targeted request must report a rolled-back transaction as failure.
+      // Only the background tick may skip a contended batch until its next tick.
+      if (reassessment) throw e;
       if (
         e instanceof Error &&
         'code' in e &&
@@ -284,6 +433,7 @@ export async function syncExperienceAdoptions() {
       throw e;
     }
   }
+  return result;
 }
 
 /** Common authorization for dispatch, native history, explicit tool reads and
