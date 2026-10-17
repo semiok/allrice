@@ -118,10 +118,24 @@ function withoutMethodRetryPreface(text: string) {
   );
 }
 
+/** Reorder an explicit 把/将 save request, keeping its grammatical destination.
+ * Never search quoted/source passages or infer scope from the text being saved. */
+function normalizeMethodSaveDestination(request: string) {
+  const header = request.split(/[。；;！!\n：:]/, 1)[0]!;
+  const into = header.match(
+    /^(?:(?:请)?(?:为我|帮我)?|我(?:希望|想要?)(?:你)?)(?:把|将)[^。；;！!\n：:]{1,1000}?(?:保存|补充|添加|加入|补)(?:到|进|入|至)(?<target>[^。；;！!\n：:]{1,200}?(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?(?:\s*(?:“[^“”\r\n]{1,80}”|「[^「」\r\n]{1,80}」|『[^『』\r\n]{1,80}』|"[^"\r\n]{1,80}"|`[^`\r\n]{1,80}`))?)(?:里|中)?$/u,
+  );
+  return into?.groups
+    ? `请保存${into.groups.target}${request.slice(header.length)}`
+    : request;
+}
+
 /** A colon separates the authoring request from candidate content. */
 function methodAuthoringHeader(clause: string) {
   const raw = clause.replace(/^(?:[ \t]*\r?\n)+/, '');
-  const request = namedMethodDepartmentRequest(raw)?.normalized ?? raw;
+  const reordered = normalizeMethodSaveDestination(raw);
+  const request =
+    namedMethodDepartmentRequest(reordered)?.normalized ?? reordered;
   if (/^(?: {4}|\t)/u.test(request)) return false;
   let first = request.split(/[。；;！!\n：:]/, 1)[0]!.trim();
   // A quoted literal scene name is an argument to an unquoted direct request.
@@ -444,7 +458,9 @@ export function explicitEmployeeMethodRemovalIntent(
  * source text and an employee's maintenance level cannot supply that consent. */
 export function employeeMethodRequestedScope(text: string) {
   const raw = withoutMethodRetryPreface(text).replace(/^(?:[ \t]*\r?\n)+/u, '');
-  const request = namedMethodDepartmentRequest(raw)?.normalized ?? raw;
+  const reordered = normalizeMethodSaveDestination(raw);
+  const request =
+    namedMethodDepartmentRequest(reordered)?.normalized ?? reordered;
   const clauses = methodOperationClauses(request);
   const leading = (clauses.find(Boolean) ?? '').split(/[：:]/u, 1)[0]!;
   const object = leading

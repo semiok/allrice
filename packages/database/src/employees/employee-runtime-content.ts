@@ -670,12 +670,28 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       ? await tx<{ id: string }[]>`select m.id from allrice_messages m
           join allrice_messages boundary on boundary.id=${context!.history_from_message_id} and boundary.session_id=m.session_id
           where m.session_id=${scope.sessionId} and m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
-            and m.created_at>=boundary.created_at
-            and (m.id=${run.user_message_id} or exists(select 1 from allrice_employee_runs er
-              where er.session_id=m.session_id and er.content_generation_id=${context!.generation_id}
-                and (er.user_message_id=m.id or er.assistant_message_id=m.id))
-              )`
+            and (
+              (m.created_at>=boundary.created_at
+                and (m.id=${run.user_message_id} or exists(select 1 from allrice_employee_runs er
+                  where er.session_id=m.session_id and er.content_generation_id=${context!.generation_id}
+                    and (er.user_message_id=m.id or er.assistant_message_id=m.id))))
+              or (m.role='user' and m.owner_id=${scope.ownerId} and exists(
+                select 1 from allrice_employee_runs er
+                join allrice_employee_content_contexts previous on previous.generation_id=er.content_generation_id
+                where er.user_message_id=m.id and er.session_id=m.session_id
+                  and er.organization_id=${scope.organizationId} and er.workspace_id=${scope.workspaceId}
+                  and er.owner_id=${scope.ownerId} and er.status in ('succeeded','failed')
+                  and previous.organization_id=${scope.organizationId} and previous.workspace_id=${scope.workspaceId}
+                  and previous.owner_id=${scope.ownerId} and previous.session_id=m.session_id
+                  and not er.method_authoring and previous.retired_at is not null
+                  and previous.invalidated_at is null))
+            )`
       : null;
+    // Retiring scene/candidate context must not erase the owner's ordinary
+    // words (for example a watchlist). Only original text from terminal,
+    // non-authoring user turns survives; prior answers, tool results,
+    // checkpoints, candidate prose and invalidated generations stay excluded.
+    // The Worker intersects these IDs with its frozen text-only conversation.
     // A new task must not inherit previous scene tool results or native
     // summaries. Ordinary visible messages retain their provenance above.
     const [priorScene] =

@@ -15,6 +15,7 @@ import {
   updateOrganizationPerson,
 } from '../organization-administration.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
+import { searchToolBrokerMemories } from '../execution/tool-broker.ts';
 import * as toolSelection from '@allrice/contracts';
 import {
   prepareEmployeeMethodActivationFromChat,
@@ -4855,6 +4856,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     '请保存我的第一个工作场景候选「美股监控助手」：我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
     '请保存我的工作场景候选「美股监控助手」：仅在我主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
     '请保存我的工作场景「美股监控助手」：不要自动启用监控，只在我主动询问时查询并回复。',
+    '请将 NVDA、COIN、CRCL、MSTR、HOOD、SK 海力士（000660.KS）、闪迪（SNDK）、美光（MU）保存到我的「美股监控助手」工作场景。',
   ])(
     'saves and publishes a trailing named personal scene immediately: %s',
     async (text) => {
@@ -4877,8 +4879,9 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
             name: '美股监控助手',
             appliesWhen: '用户主动询问美股相关信息时使用。',
           },
-          requirements:
-            '仅在用户主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
+          requirements: text.includes('NVDA')
+            ? '仅在用户主动询问时查询并回复；不自动监控或推送；标的：NVDA、COIN、CRCL、MSTR、HOOD、000660.KS、SNDK、MU。'
+            : '仅在用户主动询问时查询并回复；不自动监控或推送；监控标的和信号条件待补充。',
           procedure:
             '等待用户主动询问，查询并回复后结束，不安排自动监控或推送。',
           changeSummary: '保存首个个人工作场景候选',
@@ -4890,6 +4893,10 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       expect(saved.active).toEqual(saved.candidate);
       expect(await saveEmployeeMethodAndPublishFromChat(input)).toEqual(saved);
       const content = await getEmployeeContentSet(f.a.context, saved.setId);
+      if (text.includes('NVDA'))
+        expect(
+          content.sources.some((source) => source.body?.includes('NVDA、COIN')),
+        ).toBe(true);
       expect(content.set.candidate!.manifest.scenes).toMatchObject([
         {
           name: '美股监控助手',
@@ -5392,6 +5399,68 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     },
     60000,
   );
+
+  it("keeps the owner's ordinary watchlist across scene inspection while excluding candidate turns and prior answers", async () => {
+    const f = await setup(true),
+      instance = await f.custom('小白');
+    const first = await methodRun(
+      f,
+      instance.id,
+      '观察名单：NVDA、COIN、CRCL、MSTR、HOOD、000660.KS、SNDK、MU。你要记住。',
+    );
+    const memory = await createTraceableMemory(f.a.context, {
+      workspaceId: f.a.workspaceId,
+      employeeId: first.frozen.employee.id,
+      content:
+        '用户的股票观察名单共8个标的：NVDA、COIN、CRCL、MSTR、HOOD、000660.KS、SNDK、MU。',
+      visibility: 'private',
+      sourceType: 'message',
+      sourceId: first.userMessageId,
+      sourceLabel: '用户明确要求记住',
+      lifecycleState: 'durable',
+      memoryClass: 'user_preference',
+      confidence: 1,
+      expiresAt: null,
+    });
+    await first.finish();
+    const inspect = await methodRun(
+      f,
+      instance.id,
+      '查看当前工作场景。',
+      first.sessionId,
+    );
+    await inspectEmployeeMethodFromChat({
+      ...inspect,
+      arguments: { view: 'candidate' },
+    });
+    await inspect.finish();
+    const next = await methodRun(
+      f,
+      instance.id,
+      '将上述名单保存到我的「美股监控助手」工作场景。',
+      first.sessionId,
+    );
+    expect(next.runtime.generationId).not.toBe(first.runtime.generationId);
+    expect(next.runtime.allowedMessageIds).toContain(first.userMessageId);
+    expect(next.runtime.allowedMessageIds).toContain(next.userMessageId);
+    expect(next.runtime.allowedMessageIds).not.toContain(inspect.userMessageId);
+    const answers =
+      await fixture.db`select assistant_message_id from allrice_employee_runs where run_id in (${first.scope.runId},${inspect.scope.runId})`;
+    for (const answer of answers)
+      expect(next.runtime.allowedMessageIds).not.toContain(
+        answer.assistant_message_id,
+      );
+    expect(
+      await searchToolBrokerMemories(
+        next.context,
+        '美股监控助手 8个标的 NVDA',
+        5,
+      ),
+    ).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: memory.id })]),
+    );
+    await next.finish();
+  }, 60000);
 
   it('does not recall memory saved before candidate entry and blocks later memory or implicit reference binding', async () => {
     const f = await setup(true),

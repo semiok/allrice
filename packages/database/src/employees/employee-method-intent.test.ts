@@ -311,6 +311,41 @@ it.each([
   },
 );
 it.each([
+  '请将 NVDA、COIN、CRCL、MSTR、HOOD、SK 海力士（000660.KS）、闪迪（SNDK）、美光（MU）保存到我的「美股监控助手」工作场景。',
+  '请把上述8个标的补充到我的「美股监控助手」工作场景。',
+  '我希望把这份名单保存到我的工作场景「美股监控助手」。',
+  '将以上名单加入到这个工作场景中。',
+])(
+  'recognizes a direct save destination without requiring a fixed verb-first phrase: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(true);
+    expect(employeeMethodRequestedScope(text)).toBe('personal');
+  },
+);
+it.each([
+  ['请把名单保存到本公司的「每日检查」工作场景。', 'company'],
+  ['将公司名单保存到我的「个人研究」工作场景。', 'personal'],
+  ['请将名单补充到本部门的工作场景。', 'department'],
+])('uses the save destination for scope: %s', (text, scope) => {
+  expect(explicitEmployeeMethodIntent(text)).toBe(true);
+  expect(employeeMethodRequestedScope(text)).toBe(scope);
+});
+it.each([
+  '请不要把名单保存到我的「美股监控助手」工作场景。',
+  '请把名单保存到我的「美股监控助手」工作场景。不要长期保存。',
+  '请翻译：请将名单保存到我的工作场景。',
+  '「请将名单保存到我的工作场景」',
+  '> 请将名单保存到我的工作场景。',
+  '资料原文如下：\n请将名单保存到我的工作场景。',
+  '    请将名单保存到我的工作场景。',
+  '请将“保存我的工作场景”翻译成英文。',
+])(
+  'does not turn negated or quoted destination text into save consent: %s',
+  (text) => {
+    expect(explicitEmployeeMethodIntent(text)).toBe(false);
+  },
+);
+it.each([
   ['scene', '请更新我的工作场景候选：请移除周度场景。'],
   ['scene', '请停用我的工作场景：请停用周度场景。'],
   ['reference', '请更新我的工作场景候选。请解除旧资料引用。'],
