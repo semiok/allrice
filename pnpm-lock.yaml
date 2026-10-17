@@ -309,6 +309,12 @@ importers:
 
   apps/worker:
     dependencies:
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
+      acorn:
+        specifier: 8.18.0
+        version: 8.18.0
       '@allrice/file-archives':
         specifier: workspace:*
         version: link:../../packages/file-archives

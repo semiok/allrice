@@ -179,6 +179,7 @@ services:
       ALLRICE_CODEX_REASONING_EFFORT: ${ALLRICE_CODEX_REASONING_EFFORT:-high}
       ALLRICE_DSH_PLATFORM_HOME: /var/lib/allrice/dsh-platform
       ALLRICE_DSH_RUNTIME_ROOT: /var/lib/allrice/dsh-runtime
+      ALLRICE_DSH_NATIVE_ARTIFACT_ID: ${ALLRICE_DSH_NATIVE_ARTIFACT_ID:-}
       DATABASE_URL: postgres://${POSTGRES_USER:-allrice}:${POSTGRES_PASSWORD:-allrice}@postgres:5432/${POSTGRES_DB:-allrice}
     healthcheck:
       test:

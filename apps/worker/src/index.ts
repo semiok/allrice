@@ -40,6 +40,8 @@ import {
   probeDshCodexProvider,
 } from './codex-auth-broker.js';
 import { executeClaimedJob } from './runtime.js';
+import { installDshNativeArtifact } from './harness/dsh-native-artifact.js';
+import { fileURLToPath } from 'node:url';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
 import { executeNextMcpDiscovery } from './mcp/lifecycle.js';
@@ -104,6 +106,18 @@ const codexAuthorizationBroker = new CodexAuthorizationBroker(
   executionRoot,
 );
 const serviceBuildIdentity = await readServiceBuildIdentity('worker');
+// The expected content ID comes from the reviewed deployment/image release,
+// not the manifest's own claim. Verify before any producer can consume work.
+const nativeArtifact = await installDshNativeArtifact({
+  root: fileURLToPath(new URL('../../..', import.meta.url)),
+  expectedId: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID ?? '',
+  ...(serviceBuildIdentity
+    ? {
+        sourceSha: serviceBuildIdentity.sourceSha,
+        sourceTree: serviceBuildIdentity.sourceTree,
+      }
+    : {}),
+});
 const producerLifecycle = await installDevProducerLifecycle('worker');
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
@@ -311,6 +325,7 @@ const server = createServer(async (request, response) => {
           lastDatabaseError,
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
+        nativeArtifact,
         ...(maintenance ? { maintenance } : {}),
         ...(maintenance
           ? { producerLifecycle: readDevProducerLifecycle('worker') }

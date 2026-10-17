@@ -81,7 +81,9 @@
     "zod": "^4.4.3",
     "@allrice/project-runtime": "workspace:*",
     "ws": "8.21.3",
-    "@allrice/file-archives": "workspace:*"
+    "@allrice/file-archives": "workspace:*",
+    "acorn": "8.18.0",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/pdfkit": "0.17.4",

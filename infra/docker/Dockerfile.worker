@@ -18,7 +18,8 @@ COPY packages/storage/package.json packages/storage/package.json
 COPY patches patches
 RUN pnpm install --frozen-lockfile
 COPY . .
-RUN pnpm --filter @allrice/worker... build
+RUN pnpm --filter @allrice/worker... build \
+    && node apps/worker/scripts/prepare-native-artifact.mjs --root=/app
 
 FROM node:22-alpine AS runtime
 WORKDIR /app

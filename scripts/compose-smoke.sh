@@ -45,6 +45,21 @@ wait_for_proxy_ready() {
 }
 
 docker compose config --quiet
+# Only this disposable CI project approves its freshly built fixture image.
+# Real deployments provide the reviewed image ID through their environment.
+docker compose --project-name "${compose_project}" build worker
+ALLRICE_DSH_NATIVE_ARTIFACT_ID="$(
+  docker compose --project-name "${compose_project}" run --no-deps --rm \
+    --entrypoint node worker --input-type=module -e '
+      import {readFile} from "node:fs/promises";
+      import {verifyDshNativeArtifact} from "./apps/worker/dist/harness/dsh-native-artifact.js";
+      const manifest=JSON.parse(await readFile(".local/dsh-native-artifact.json","utf8"));
+      const verified=await verifyDshNativeArtifact({root:process.cwd(),expectedId:manifest.artifactId});
+      process.stdout.write(verified.artifactId);
+    '
+)"
+[[ "${ALLRICE_DSH_NATIVE_ARTIFACT_ID}" =~ ^sha256:[a-f0-9]{64}$ ]]
+export ALLRICE_DSH_NATIVE_ARTIFACT_ID
 docker compose --project-name "${compose_project}" up --build --wait --wait-timeout 300
 
 wait_for_proxy_ready

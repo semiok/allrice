@@ -3,6 +3,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile, rename, realpath } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { prepareServiceBuildManifest } from '../../packages/database/dist/service-build-identity.js';
+import {
+  measureDshNativeArtifact,
+  nativeArtifactPath,
+} from '../../apps/worker/dist/harness/dsh-native-artifact.js';
 
 const args = process.argv.slice(2);
 const option = (key) => {
@@ -27,6 +31,8 @@ const manifest = await prepareServiceBuildManifest({
   sourceSha,
   sourceTree: git('rev-parse', 'HEAD^{tree}'),
 });
+const nativeArtifact = await measureDshNativeArtifact(root);
+nativeArtifact.source = { sha: sourceSha, tree: manifest.sourceTree };
 await mkdir(join(root, '.local'), { recursive: true, mode: 0o700 });
 const target = join(root, '.local/dev-build-identity.json'),
   temp = target + '.tmp';
@@ -34,7 +40,14 @@ await writeFile(temp, JSON.stringify(manifest, null, 2) + '\n', {
   mode: 0o600,
   flag: 'wx',
 });
+const nativeTarget = join(root, nativeArtifactPath),
+  nativeTemp = nativeTarget + '.tmp';
+await writeFile(nativeTemp, JSON.stringify(nativeArtifact, null, 2) + '\n', {
+  mode: 0o600,
+  flag: 'wx',
+});
 await rename(temp, target);
+await rename(nativeTemp, nativeTarget);
 console.log(
   JSON.stringify({
     sourceSha,
@@ -43,5 +56,8 @@ console.log(
     fileCount: manifest.files.length,
     webBuildId: manifest.webBuildId,
     releaseAdmission: 'disabled',
+    nativeArtifactId: nativeArtifact.artifactId,
+    nativePackageCount: nativeArtifact.content.packages.length,
+    nativeArtifactApprovalGranted: false,
   }),
 );
