@@ -125,6 +125,12 @@ function methodAuthoringHeader(clause: string) {
   let first = request.split(/[。；;！!\n：:]/, 1)[0]!.trim();
   // A quoted literal scene name is an argument to an unquoted direct request.
   // Do not unquote an entire instruction, translation or supplied document.
+  first = first
+    .replace(
+      /(?:“[^“”\r\n]{1,80}”|「[^「」\r\n]{1,80}」|『[^『』\r\n]{1,80}』|"[^"\r\n]{1,80}"|`[^`\r\n]{1,80}`)$/u,
+      '',
+    )
+    .trimEnd();
   const named = first.match(
     /^(?<verb>(?:请)?(?:为我|帮我)?(?:保存|更新|调整|修改|创建|新增|定制|重命名|移除|删除|停用)(?:我的|这个|该|本人的|本部门的|我们部门的|本公司的|我们公司的|全公司的|公司的)?)(?:“[^“”\r\n]{1,80}”|「[^「」\r\n]{1,80}」|『[^『』\r\n]{1,80}』|"[^"\r\n]{1,80}"|`[^`\r\n]{1,80}`)(?<target>的?(?:工作场景|执行要求|执行流程|工作方法)(?:候选|草稿)?)$/u,
   );
@@ -171,7 +177,9 @@ export function explicitEmployeeMethodIntent(text: string) {
       // grammar to a denial, rather than requiring the type next to “我的”.
       if (
         affirmative !== clause &&
-        methodAuthoringHeader(affirmative.replace(/\.$/u, ''))
+        methodAuthoringHeader(
+          affirmative.replace(/\.$/u, '').replace(/\s+QUOTED$/u, ''),
+        )
       )
         return true;
       if (limitsMethodPersistence(clause)) return true;
