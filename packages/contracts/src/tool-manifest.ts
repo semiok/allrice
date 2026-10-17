@@ -80,8 +80,8 @@ export function withEmployeeCustomizationTools(
   ];
 }
 
-/** Source expansion is a narrower companion to an existing memory-read grant.
- * Apply only while freezing a new Run; never widen a previous Run's allowlist. */
+/** Derive source authority from an existing memory-read grant. Use while
+ * freezing a new Run or checking declarations; never augment an old allowlist. */
 export function withEmployeeMemorySourceTool(
   toolNames: readonly string[],
   capabilities: readonly SkillCapability[],

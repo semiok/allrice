@@ -8,6 +8,7 @@ import {
   RuntimeTaskRefSchema,
   runtimeContractEqual,
   withPlatformImageTools,
+  withEmployeeMemorySourceTool,
   employeeCustomizationTools,
   employeeCustomizationToolsForInstance,
 } from '@allrice/contracts';
@@ -292,7 +293,10 @@ export async function assertAssistantAuthority(
       model,
     ),
     declaredTools = withPlatformImageTools(
-      manifest.data.capabilityBindings.toolNames,
+      withEmployeeMemorySourceTool(
+        manifest.data.capabilityBindings.toolNames,
+        snapshot.data.capabilitySnapshot.grantedCapabilities,
+      ),
       manifest.data.capabilities.filter(
         (c) => !definition.securityPolicy.deniedCapabilities.includes(c),
       ),

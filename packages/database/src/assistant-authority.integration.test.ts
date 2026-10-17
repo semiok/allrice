@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   SessionModelSnapshotSchema,
+  withEmployeeMemorySourceTool,
   type EmployeeExecutionSnapshot,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
@@ -55,6 +56,74 @@ integration(
     const authorityFixture = (
       options: Parameters<typeof createAssistantAuthorityFixture>[1] = {},
     ) => createAssistantAuthorityFixture(fixture.db, options);
+
+    const sourceTool = 'workspace.experience.read';
+    const sourceFixture = (missing?: 'frozen' | 'read' | 'search') =>
+      authorityFixture({
+        configure: false,
+        toolNames: [
+          ...selectedTools,
+          missing === 'search'
+            ? 'workspace.document.read'
+            : 'workspace.memory.search',
+        ],
+        allowedTools: [...selectedTools, sourceTool],
+        snapshot: (value) => ({
+          ...value,
+          capabilitySnapshot: {
+            ...value.capabilitySnapshot,
+            grantedCapabilities:
+              value.capabilitySnapshot.grantedCapabilities.filter(
+                (capability) =>
+                  missing !== 'read' || capability !== 'storage:read',
+              ),
+            bindings: {
+              ...value.capabilitySnapshot.bindings,
+              toolNames:
+                missing === 'frozen'
+                  ? value.capabilitySnapshot.bindings.toolNames
+                  : [
+                      ...new Set([
+                        ...withEmployeeMemorySourceTool(
+                          value.capabilitySnapshot.bindings.toolNames,
+                          value.capabilitySnapshot.grantedCapabilities,
+                        ),
+                        sourceTool,
+                      ]),
+                    ],
+            },
+          },
+        }),
+      });
+
+    it('admits the source companion frozen by a new memory-read Run', async () => {
+      const f = await sourceFixture();
+      await expect(f.configure()).resolves.toBeDefined();
+      await expect(f.authorize('tool', [sourceTool])).resolves.toBeUndefined();
+    });
+
+    it.each(['frozen', 'read', 'search'] as const)(
+      'rejects a source companion missing its %s authority',
+      async (missing) => {
+        const f = await sourceFixture(missing);
+        await expect(f.configure()).rejects.toThrow(
+          'assistant_authority_denied',
+        );
+      },
+    );
+
+    it('keeps an older memory-read Run usable without adding the source tool', async () => {
+      const f = await authorityFixture({
+        toolNames: [...selectedTools, 'workspace.memory.search'],
+        allowedTools: [...selectedTools, 'workspace.memory.search'],
+      });
+      await expect(
+        f.authorize('tool', ['workspace.memory.search']),
+      ).resolves.toBeUndefined();
+      await expect(f.authorize('tool', [sourceTool])).rejects.toThrow(
+        'assistant_authority_denied',
+      );
+    });
 
     const profileTool = 'workspace.employee.profile.update';
     const profileFixture = (

@@ -19,6 +19,7 @@ import {
   ResolvedModelTargetSchema,
   FrozenWorkflowBindingSchema,
   resolveAssistantSubscriptionSnapshot,
+  freezeMemorySourceToolNames,
 } from '@allrice/contracts';
 import type * as Workflow from '../../src/workflow-engine.js';
 import type { ClaimedJobHandlerInput } from '../../src/job-runner.js';
@@ -252,6 +253,7 @@ integration(
         workflow?: boolean;
         subscriptionFallback?: boolean;
         subscriptionFallbackModel?: string;
+        memoryRead?: boolean;
       } = {},
     ) {
       const connectionId = randomUUID(),
@@ -336,7 +338,11 @@ integration(
       }
       const f = await createAssistantAuthorityFixture(database.db, {
         configure: false,
-        allowedTools: ['assistant.delegate', 'assistant.report'],
+        allowedTools: [
+          'assistant.delegate',
+          'assistant.report',
+          ...(options.memoryRead ? ['workspace.memory.search'] : []),
+        ],
         ...(options.compatible
           ? {
               runtimePolicy: {
@@ -355,6 +361,21 @@ integration(
               ) => {
                 capturedSnapshot = {
                   ...value,
+                  ...(options.memoryRead
+                    ? {
+                        capabilitySnapshot: {
+                          ...value.capabilitySnapshot,
+                          bindings: {
+                            ...value.capabilitySnapshot.bindings,
+                            toolNames: freezeMemorySourceToolNames(
+                              value.capabilitySnapshot.bindings.toolNames,
+                              value.capabilitySnapshot.grantedCapabilities,
+                              undefined,
+                            ),
+                          },
+                        },
+                      }
+                    : {}),
                   ...(workflow && value.schemaVersion === 2
                     ? {
                         capabilitySnapshot: {
@@ -448,7 +469,10 @@ integration(
         },
         nativeSkills: [],
         skillArtifacts: [],
-        grantedCapabilities: ['model:invoke'],
+        grantedCapabilities: [
+          'model:invoke',
+          ...(options.memoryRead ? ['storage:read'] : []),
+        ],
       });
       if (options.price) {
         vi.stubEnv('ALLRICE_ASSISTANT_PRICING_CURRENCY', 'USD');
@@ -685,6 +709,46 @@ integration(
       expect(state.bind).not.toHaveBeenCalled();
       expect(adapter.runtimeInventory()).toEqual([]);
     }
+    it('starts an empty-memory Worker with the frozen source tool through real root admission', async () => {
+      const { f, job } = await fixture({
+        compatible: true,
+        price: true,
+        memoryRead: true,
+      });
+      // Let the production controller create its exact budget/root admission;
+      // the permissive assistant fixture's pre-existing root is not that task.
+      await database.db`delete from allrice_runtime_run_links where root_run_id=${f.rootRunId}`;
+      await database.db`delete from allrice_runtime_budgets where root_run_id=${f.rootRunId}`;
+      await database.db`delete from allrice_runtime_roots where root_run_id=${f.rootRunId}`;
+      execute.mockImplementationOnce(async (input) => {
+        expect(input.authorizedToolNames).toContain(
+          'workspace.experience.read',
+        );
+        expect(input.assistants).toBeDefined();
+        // The real DSH adapter binds before prompting. Exercise that shared
+        // admission boundary instead of returning from an unbound adapter.
+        await input.assistants!.bind(`dsh-${f.session}`, 1);
+        const [root] = await database.db`
+          select allowed_tools from allrice_assistant_instances
+          where run_id=${f.rootRunId} and parent_run_id is null`;
+        expect(root?.allowed_tools).toContain('workspace.experience.read');
+        return {
+          answer: 'Synthetic ordinary report',
+          provider: 'openai-compatible',
+          model: input.providerSnapshot.model,
+          usage: { inputTokens: 10, cachedInputTokens: 0, outputTokens: 3 },
+          usageComplete: true,
+          cacheUsageKnown: false,
+        };
+      });
+      await expect(executeEmployeeRun(job)).resolves.toMatchObject({
+        usageComplete: true,
+      });
+      expect(state.bind).toHaveBeenCalledTimes(1);
+      expect(state.credentials).not.toHaveBeenCalled();
+      expect(state.spawn).not.toHaveBeenCalled();
+      expect(adapter.runtimeInventory()).toEqual([]);
+    });
     it.each([false, true])(
       'refuses unverified Codex assistants before execution (legacy snapshot %s), preserving real known-zero quota',
       async (legacy) => {
