@@ -8,6 +8,8 @@ import {
 } from './allrice-model-transport.mjs';
 /* global AbortController, Buffer */
 import { createHash, randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
+import { createModelTiming } from './allrice-model-timing.mjs';
 import { types } from 'node:util';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
@@ -463,6 +465,8 @@ export function createGovernedAssistantNativeRuntime(
   }
   const modelAdmissions = new Map();
   async function prepareModel(id, requested, signal) {
+    const startedMono = performance.now(),
+      startedAt = new Date().toISOString();
     if (modelAdmissions.has(id))
       throw Error('assistant_model_unknown_no_replay');
     if (!Number.isSafeInteger(requested) || requested <= 0)
@@ -470,6 +474,7 @@ export function createGovernedAssistantNativeRuntime(
     await Promise.all([...pendingWrites]);
     await checkpoints(id);
     const callId = randomUUID();
+    const ledgerStarted = performance.now();
     const prepared = await bridge(
       'model-prepare',
       { nativeSessionId: id, callId, outputTokens: requested },
@@ -482,8 +487,19 @@ export function createGovernedAssistantNativeRuntime(
       prepared.outputTokens > requested
     )
       throw Error('assistant_model_output_grant_invalid');
+    const timing = createModelTiming({
+      startedMono,
+      startedAt,
+      preparationMs: Math.round(performance.now() - startedMono),
+      ledgerPreparationMs: Math.round(performance.now() - ledgerStarted),
+      emit: (timing) =>
+        optionsForRuntime.onModelTiming?.({ sessionId: id, callId, timing }),
+    });
+    timing.prepared();
     modelAdmissions.set(id, {
       callId,
+      startedMono,
+      timing,
       outputTokens: prepared.outputTokens,
     });
     return prepared.outputTokens;
@@ -521,7 +537,8 @@ export function createGovernedAssistantNativeRuntime(
     const admission = modelAdmissions.get(id);
     if (!admission || options.maxTokens !== admission.outputTokens)
       throw Error('assistant_model_preparation_required');
-    const { callId } = admission;
+    const { callId, timing } = admission;
+    const serializationStarted = performance.now();
     const inputTokens = Buffer.byteLength(
       JSON.stringify({
         messages: options.messages,
@@ -547,6 +564,10 @@ export function createGovernedAssistantNativeRuntime(
         }),
       )
       .digest('hex')}`;
+    const serializationMs = Math.round(
+      performance.now() - serializationStarted,
+    );
+    const admissionStarted = performance.now();
     const reservation = await bridge(
       'model-dispatch',
       {
@@ -561,6 +582,17 @@ export function createGovernedAssistantNativeRuntime(
     if (!reservation.reserved) throw Error('assistant_model_unknown_no_replay');
     if (reservation.outputTokens !== outputTokens)
       throw Error('assistant_model_output_grant_invalid');
+    const transport = createModelTransport({
+      provider: options.provider,
+      sessionId: id,
+      startedMono: admission.startedMono,
+    });
+    timing.dispatched(transport, {
+      serializationMs,
+      admissionMs: Math.round(performance.now() - admissionStarted),
+      inputBytes: inputTokens,
+      toolCount: options.tools?.length ?? 0,
+    });
     let usage;
     let observedOutput = false;
     let stopKind = 'unknown';
@@ -576,13 +608,17 @@ export function createGovernedAssistantNativeRuntime(
       for await (const chunk of boundedModelStream(next(), {
         ...optionsForRuntime.modelStreamOptions,
         signal: options.signal,
-        transport: createModelTransport(options),
+        transport,
         onDiagnostic: (diagnostic) => {
           streamDiagnostic = diagnostic;
         },
-        onWait: (status) =>
-          optionsForRuntime.onModelWait?.({ sessionId: id, callId, status }),
+        onWait: (status) => {
+          if (status === 'started') timing.wait();
+          optionsForRuntime.onModelWait?.({ sessionId: id, callId, status });
+        },
       })) {
+        const content = hasModelOutput(chunk);
+        timing.chunk(chunk, content);
         if (chunk.type === 'usage') usage = chunk.usage;
         if (chunk.type === 'finish') {
           const kind = ownData(chunk.reason, 'kind');
@@ -599,7 +635,7 @@ export function createGovernedAssistantNativeRuntime(
               stopKind,
             );
         }
-        if (hasModelOutput(chunk)) observedOutput = true;
+        if (content) observedOutput = true;
         yield chunk;
       }
     } catch (error) {
@@ -616,6 +652,7 @@ export function createGovernedAssistantNativeRuntime(
       if (localRecoveryConfirmed) recoveryError = error;
       else throw error;
     } finally {
+      const settlementStarted = performance.now();
       const settled = usage ? settledTokenUsage(usage, observedOutput) : {};
       if (
         settled.inputTokens === undefined ||
@@ -705,6 +742,15 @@ export function createGovernedAssistantNativeRuntime(
         modelAdmissions.delete(id);
         recoveryReleased = localRecoveryConfirmed && !options.signal?.aborted;
       }
+      timing.finished({
+        failed:
+          streamFailed ||
+          !['stop', 'tool-calls'].includes(stopKind) ||
+          acknowledgement?.settled !== true,
+        stopKind,
+        settlementMs: Math.round(performance.now() - settlementStarted),
+        settlementConfirmed: acknowledgement?.settled === true,
+      });
     }
     if (settlementThrew) throw settlementError;
     if (recoveryError) {

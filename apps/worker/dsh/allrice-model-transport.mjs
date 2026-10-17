@@ -1,5 +1,7 @@
 /* global AbortController, AbortSignal, ReadableStream, Response, TextDecoder */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { subscribe } from 'node:diagnostics_channel';
+import { performance } from 'node:perf_hooks';
 import { types } from 'node:util';
 import { ModelTransportFailureCodeSchema } from '@allrice/contracts';
 import {
@@ -8,6 +10,8 @@ import {
 } from '@earendil-works/pi-ai/api/openai-codex-responses';
 
 const requests = new AsyncLocalStorage();
+const httpAttempts = new AsyncLocalStorage();
+const undiciAttempts = new WeakMap();
 let installed = false;
 const failureCodes = new Set(ModelTransportFailureCodeSchema.options);
 
@@ -33,6 +37,27 @@ function transportFailureCode(error) {
 export function installModelTransportObservation() {
   if (installed) return;
   installed = true;
+  // Public Node diagnostics only. A pooled connection may have no connect
+  // events for this request: leave those fields unknown, never infer zero.
+  subscribe('undici:request:create', (message) => {
+    const request = ownData(message, 'request');
+    const attempt = httpAttempts.getStore();
+    if (attempt && request && typeof request === 'object')
+      undiciAttempts.set(request, attempt);
+  });
+  subscribe('undici:client:beforeConnect', () => {
+    const attempt = httpAttempts.getStore();
+    if (attempt) attempt.connectionStartedAt ??= performance.now();
+  });
+  subscribe('undici:client:connected', () => {
+    const attempt = httpAttempts.getStore();
+    if (attempt) attempt.connectionReadyAt ??= performance.now();
+  });
+  subscribe('undici:request:bodySent', (message) => {
+    const request = ownData(message, 'request');
+    const attempt = undiciAttempts.get(request);
+    if (attempt) attempt.bodySentAt ??= performance.now();
+  });
   const original = globalThis.fetch;
   globalThis.fetch = function (input, init) {
     const scope = requests.getStore();
@@ -40,7 +65,11 @@ export function installModelTransportObservation() {
   };
 }
 
-export function createModelTransport({ provider, sessionId } = {}) {
+export function createModelTransport({
+  provider,
+  sessionId,
+  startedMono = performance.now(),
+} = {}) {
   const controller = new AbortController();
   const bodies = new Set();
   const now = () => Date.now();
@@ -59,6 +88,10 @@ export function createModelTransport({ provider, sessionId } = {}) {
   let readFailed = false;
   let stopped = false;
   let lastRequest;
+  const attempts = [];
+  let requestCount = 0;
+  const offset = (value) =>
+    value === undefined ? null : Math.max(0, Math.round(value - startedMono));
   const websocketRequests = () =>
     provider === 'openai-codex' && sessionId
       ? (getOpenAICodexWebSocketDebugStats(String(sessionId))?.requests ?? 0)
@@ -66,13 +99,14 @@ export function createModelTransport({ provider, sessionId } = {}) {
   const initialWebsocketRequests = websocketRequests();
   let closedWebsocket = false;
 
-  function parser() {
+  function parser(request) {
     const decoder = new TextDecoder();
     let line = '';
     let oversized = false;
     return (chunk) => {
       bytes += chunk.byteLength;
       lastByteAt = now();
+      request.firstByteAt ??= performance.now();
       // Parse only bounded SSE lines. Large payloads still pass through intact;
       // diagnostics never accumulate a response, arguments, or model thoughts.
       for (const part of decoder
@@ -105,6 +139,7 @@ export function createModelTransport({ provider, sessionId } = {}) {
             } else {
               events++;
               lastEventAt = lastByteAt;
+              request.firstEventAt ??= performance.now();
               if (value?.type === 'response.output_item.done')
                 outputItemEnded = true;
               if (
@@ -132,7 +167,13 @@ export function createModelTransport({ provider, sessionId } = {}) {
       // An abandoned producer must not start a late fallback/reconnect.
       if (stopped) throw controller.signal.reason;
       pendingFetches++;
-      const request = { phase: 'awaiting_headers', startedAt: now() };
+      const request = {
+        phase: 'awaiting_headers',
+        startedAt: now(),
+        startedMono: performance.now(),
+      };
+      requestCount++;
+      if (attempts.length < 8) attempts.push(request);
       lastRequest = request;
       request.signal = controller.signal;
       const failed = (phase, error) => {
@@ -147,12 +188,15 @@ export function createModelTransport({ provider, sessionId } = {}) {
           ? AbortSignal.any([incoming, controller.signal])
           : controller.signal;
         request.signal = signal;
-        const response = await original(input, {
-          ...init,
-          signal,
-        });
+        const response = await httpAttempts.run(request, () =>
+          original(input, {
+            ...init,
+            signal,
+          }),
+        );
         request.phase = 'headers_received';
         request.finishedAt = now();
+        request.headersAt = performance.now();
         request.status = response.status;
         if (
           !response.body ||
@@ -161,10 +205,11 @@ export function createModelTransport({ provider, sessionId } = {}) {
           return response;
         observed = true;
         const reader = response.body.getReader();
-        const observe = parser();
+        const observe = parser(request);
         const state = { cancel: undefined };
         bodies.add(state);
         const finish = () => {
+          request.closedAt ??= performance.now();
           bodies.delete(state);
           controller.signal.removeEventListener('abort', onAbort);
         };
@@ -220,6 +265,36 @@ export function createModelTransport({ provider, sessionId } = {}) {
       } finally {
         pendingFetches--;
       }
+    },
+    timing() {
+      return {
+        transport: observed
+          ? 'sse'
+          : websocketRequests() > initialWebsocketRequests
+            ? 'websocket'
+            : 'unobserved',
+        requestCount,
+        websocketRequests: Math.max(
+          0,
+          websocketRequests() - initialWebsocketRequests,
+        ),
+        requestsTruncated: requestCount > attempts.length,
+        // Raw URL/headers/body/socket/credentials are never retained here.
+        httpRequests: attempts.map((request) => ({
+          startedMs: offset(request.startedMono),
+          connectionStartedMs: offset(request.connectionStartedAt),
+          connectionReadyMs: offset(request.connectionReadyAt),
+          bodySentMs: offset(request.bodySentAt),
+          headersMs: offset(request.headersAt),
+          firstByteMs: offset(request.firstByteAt),
+          firstEventMs: offset(request.firstEventAt),
+          closedMs: offset(request.closedAt),
+          ...(request.status >= 100 && request.status <= 599
+            ? { status: request.status }
+            : {}),
+          ...(request.errorCode ? { errorCode: request.errorCode } : {}),
+        })),
+      };
     },
     snapshot(lastChunkAt) {
       const websocket = websocketRequests() > initialWebsocketRequests;

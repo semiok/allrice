@@ -1,4 +1,4 @@
-/* global fetch, Response, ReadableStream, AbortController, TextEncoder */
+/* global fetch, Response, ReadableStream, AbortController, TextEncoder, setTimeout */
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,6 +9,129 @@ import {
 } from './allrice-model-transport.mjs';
 
 describe('request-scoped transport observation', () => {
+  it('isolates two real concurrent HTTP scopes and an unscoped request', async () => {
+    installModelTransportObservation();
+    let count = 0;
+    const bodyA = 'data: {"type":"response.completed","value":"PRIVATE_A"}\n\n',
+      bodyB = 'data: {"type":"response.created"}\n\n';
+    const server = createServer((req, res) => {
+      count++;
+      setTimeout(
+        () => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          res.end(req.url === '/a' ? bodyA : bodyB);
+        },
+        req.url === '/a' ? 80 : 10,
+      );
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const a = createModelTransport(),
+        b = createModelTransport(),
+        base = `http://127.0.0.1:${server.address().port}`;
+      await Promise.all([
+        a.run(async () => {
+          await (await fetch(base + '/a')).text();
+        }),
+        b.run(async () => {
+          await (await fetch(base + '/b')).text();
+        }),
+        (async () => {
+          await (await fetch(base + '/outside')).text();
+        })(),
+      ]);
+      expect(count).toBe(3);
+      expect(a.timing().requestCount).toBe(1);
+      expect(b.timing().requestCount).toBe(1);
+      expect(a.snapshot(0).bytes).toBe(new TextEncoder().encode(bodyA).length);
+      expect(b.snapshot(0).bytes).toBe(new TextEncoder().encode(bodyB).length);
+      expect(a.timing().httpRequests[0].headersMs).toBeGreaterThan(
+        b.timing().httpRequests[0].headersMs + 30,
+      );
+      expect(JSON.stringify([a.timing(), b.timing()])).not.toMatch(
+        /PRIVATE|outside|127\.0\.0\.1/,
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+  });
+  it('separates actual HTTP headers, first heartbeat byte and first event without retaining a payload', async () => {
+    installModelTransportObservation();
+    const server = createServer((req, res) => {
+      setTimeout(() => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.flushHeaders();
+        setTimeout(() => {
+          res.write(': ping\n\n');
+          setTimeout(
+            () =>
+              res.end(
+                'data: {"type":"response.completed","private":"PRIVATE_BODY"}\n\n',
+              ),
+            30,
+          );
+        }, 30);
+      }, 30);
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      const scope = createModelTransport();
+      await scope.run(async () => {
+        const r = await fetch(
+          `http://127.0.0.1:${server.address().port}/PRIVATE_PATH`,
+          {
+            method: 'POST',
+            headers: { authorization: 'Bearer PRIVATE_TOKEN' },
+            body: 'PRIVATE_PROMPT',
+          },
+        );
+        await r.text();
+      });
+      const timing = scope.timing(),
+        request = timing.httpRequests[0];
+      expect(timing).toMatchObject({
+        transport: 'sse',
+        requestCount: 1,
+        requestsTruncated: false,
+      });
+      expect(request.headersMs - request.startedMs).toBeGreaterThanOrEqual(20);
+      expect(request.firstByteMs - request.headersMs).toBeGreaterThanOrEqual(
+        15,
+      );
+      expect(request.firstEventMs - request.firstByteMs).toBeGreaterThanOrEqual(
+        15,
+      );
+      expect(request.closedMs).toBeGreaterThanOrEqual(request.firstEventMs);
+      expect(
+        request.connectionStartedMs === null ||
+          request.connectionStartedMs >= request.startedMs,
+      ).toBe(true);
+      expect(JSON.stringify(timing)).not.toMatch(
+        /PRIVATE|Bearer|127\.0\.0\.1|http:/,
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise((r) => server.close(r));
+    }
+  });
+  it('bounds HTTP attempts and leaves unobserved or reused connection details unknown', async () => {
+    const scope = createModelTransport();
+    for (let i = 0; i < 12; i++)
+      await scope.fetch(async () => new Response('ok'), 'private');
+    const timing = scope.timing();
+    expect(timing.requestCount).toBe(12);
+    expect(timing.httpRequests).toHaveLength(8);
+    expect(timing.requestsTruncated).toBe(true);
+    expect(timing.httpRequests[0]).toMatchObject({
+      connectionStartedMs: null,
+      connectionReadyMs: null,
+      firstByteMs: null,
+      firstEventMs: null,
+    });
+  });
   it('records a real pre-header disconnect without storing the request or inventing SSE activity', async () => {
     installModelTransportObservation();
     let requests = 0;

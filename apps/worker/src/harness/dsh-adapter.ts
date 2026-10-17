@@ -11,6 +11,7 @@ import {
   EmployeeSceneReadSchema,
   EmployeeSceneStateSchema,
   ModelStreamDiagnosticSchema,
+  ModelCallTimingNotificationSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
 import { AssistantRuntimeError } from '@allrice/database';
@@ -523,6 +524,42 @@ export class DshHarnessAdapter implements HarnessAdapter {
           ReturnType<NonNullable<NonNullable<typeof assistant>['finish']>>
         >
       | undefined;
+    const timingReceipts = new Set<string>();
+    // Keep the operator subscription for the entire Run, including child join,
+    // failure drain and final flush. Chat events retain their own turn listener.
+    const unsubscribeModelTiming = runtime.client.subscribe((notification) => {
+      if (notification.method !== 'allrice.modelTiming') return;
+      const parsed = ModelCallTimingNotificationSchema.safeParse(
+        notification.params,
+      );
+      if (!parsed.success || timingReceipts.size >= 1024) return;
+      const entry = parsed.data,
+        receipt = `${entry.callId}:${entry.timing.phase}`;
+      if (timingReceipts.has(receipt)) return;
+      timingReceipts.add(receipt);
+      try {
+        console.info(
+          '[AllRice:model-timing]',
+          JSON.stringify({
+            event: 'allrice.model_timing',
+            runId:
+              input.executionEnvironment.ALLRICE_RUN_ID ??
+              input.assistants?.rootRunId ??
+              null,
+            sessionId: runtime.productSessionId,
+            nativeSessionId: entry.sessionId,
+            callId: entry.callId,
+            provider: snapshot.route,
+            model: snapshot.model,
+            attempt: input.attempt,
+            generation,
+            timing: entry.timing,
+          }),
+        );
+      } catch {
+        /* Logging never changes execution, settlement or retry. */
+      }
+    });
     try {
       const preparationMs = performance.now() - preparationStarted;
       // This receipt measures preparation before prompting. Its own write is
@@ -926,13 +963,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
       attachUsage(error);
       throw error;
     } finally {
-      if (cancellationTimer) clearInterval(cancellationTimer);
-      input.signal.removeEventListener('abort', stopAssistants);
-      await cancellationTask?.catch(() => {});
-      if (assistant)
-        await runtime.client.assistant('flush', {}).catch(() => {});
-      this.runtimePool.touch(runtime);
-      runtime.client.setRequestHandler(null);
+      try {
+        if (cancellationTimer) clearInterval(cancellationTimer);
+        input.signal.removeEventListener('abort', stopAssistants);
+        await cancellationTask?.catch(() => {});
+        if (assistant)
+          await runtime.client.assistant('flush', {}).catch(() => {});
+        this.runtimePool.touch(runtime);
+        runtime.client.setRequestHandler(null);
+      } finally {
+        unsubscribeModelTiming();
+      }
     }
     const result: HarnessExecutionResult = {
       answer,
