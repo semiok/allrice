@@ -3039,7 +3039,15 @@ export class CloudRunnerBackend {
         }, 1000);
       }
       await this.call('POST', `/containers/${c.Id}/start`);
-      executionOptions.signal.throwIfAborted();
+      // Start has acknowledged this exact process. An interruption while its
+      // acknowledgement was in flight still has a known control cause; collect
+      // it only after confirming the original process has physically stopped.
+      // A failed/lost start acknowledgement above remains uncertain.
+      if (executionOptions.signal.aborted) {
+        const reason = Date.now() >= deadline ? 'deadline' : 'canceled';
+        await this.stop(attemptId);
+        return await collectResult(reason);
+      }
       if (options.networkLease) {
         try {
           networkSession = await openSandboxNetwork(this, {
@@ -3143,7 +3151,10 @@ export class CloudRunnerBackend {
         await plan.afterStart?.(c.Id, executionOptions.signal);
         executionOptions.signal.throwIfAborted();
       } catch (error) {
-        if (!executionOptions.signal.aborted) {
+        const revoked =
+          error instanceof CloudRunnerError &&
+          error.message === 'CLOUD_EXECUTION_REVOKED';
+        if (!executionOptions.signal.aborted && !revoked) {
           if (
             plan.config &&
             (plan.config.Labels as Record<string, string> | undefined)?.[
@@ -3163,8 +3174,11 @@ export class CloudRunnerBackend {
         }
         // A lost relay/physical lease must cancel staging as well as execution.
         // Never release the tenant start marker after the controller has stopped.
+        const reason = Date.now() >= deadline ? 'deadline' : 'canceled';
         await this.stop(attemptId);
-        return collectResult(Date.now() >= deadline ? 'deadline' : 'canceled');
+        const result = await collectResult(reason);
+        if (revoked && !result.errorCode) result.errorCode = error.message;
+        return result;
       }
       let reason: CloudRunResult['reason'] = 'completed';
       if (stdin) {
