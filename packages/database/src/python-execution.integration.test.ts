@@ -226,7 +226,11 @@ suite(
       outputs,
       limits: { artifactBytes: 4_000_000 },
     });
-    const running = async (f: F, a: Record<string, unknown>) => {
+    const running = async (
+      f: F,
+      a: Record<string, unknown>,
+      outputMediaTypes: string[] = [],
+    ) => {
       const d = await device(f);
       if (a.execution)
         await reportLocalPythonProfile(
@@ -271,7 +275,7 @@ suite(
           })),
           outputs: normalized.outputs.map((o, index) => ({
             ...o,
-            mediaType: media[o.format],
+            mediaType: outputMediaTypes[index] ?? media[o.format],
             objectId: cloudStableId(
               `managed-python-output:${f.run}:${r.callId}:${index}`,
             ),
@@ -1349,6 +1353,86 @@ suite(
         png,
       );
     });
+
+    it.each([
+      ['text/markdown', 'markdown'],
+      ['text/plain', 'text'],
+    ] as const)(
+      'retains ready Markdown bytes and legacy %s metadata on publication and replay',
+      async (mediaType, format) => {
+        const f = await fixture(),
+          run = await running(
+            f,
+            args([{ path: 'report.md', fileName: '报告.md', format: 'txt' }]),
+            [mediaType],
+          );
+        const bytes = Buffer.from('# 对账结果\n\n差额为 **0.00 元**。\n');
+        const artifact = await run.upload(0, bytes);
+        await run.succeed([artifact]);
+        const tracked = {
+          get: f.storage.get.bind(f.storage),
+          exists: f.storage.exists.bind(f.storage),
+          delete: f.storage.delete.bind(f.storage),
+          put: vi.fn(async () => {
+            throw Error('must not rewrite ready bytes');
+          }),
+        };
+        const published = await publishLocalPythonArtifacts(
+          { context: f.execution, operationId: run.identity.operationId },
+          tracked,
+          isolated.db,
+        );
+        expect(published[0]!.object).toMatchObject({
+          id: artifact.objectId,
+          mediaType,
+          checksum: sha(bytes),
+        });
+        const [version] =
+          await isolated.db`select format from allrice_deliverable_versions where id=${published[0]!.versionId}`;
+        expect(version!.format).toBe(format);
+        expect(
+          Buffer.from(
+            await new Response(
+              await f.storage.get(published[0]!.object),
+            ).arrayBuffer(),
+          ),
+        ).toEqual(bytes);
+        expect(
+          await publishLocalPythonArtifacts(
+            { context: f.execution, operationId: run.identity.operationId },
+            tracked,
+            isolated.db,
+          ),
+        ).toEqual(published);
+        expect(tracked.put).not.toHaveBeenCalled();
+        expect(
+          await isolated.db`select id from allrice_deliverable_versions where object_id=${artifact.objectId}`,
+        ).toHaveLength(1);
+      },
+    );
+
+    it.each([
+      ['script.txt', 'txt', 'text/markdown'],
+      ['report.md', 'txt', 'text/html'],
+      ['metrics.md', 'json', 'text/markdown'],
+    ])(
+      'refuses a changed presentation type for %s before local dispatch',
+      async (fileName, format, mediaType) => {
+        const f = await fixture();
+        await expect(
+          running(
+            f,
+            args([
+              { path: fileName, fileName, format: format as 'txt' | 'json' },
+            ]),
+            [mediaType],
+          ),
+        ).rejects.toThrow('unavailable');
+        expect(
+          await isolated.db`select version_id from allrice_workbench_artifacts where organization_id=${f.org}`,
+        ).toHaveLength(0);
+      },
+    );
 
     it('accepts stdout-only stopped success without StorageObject, quota or deliverable creation', async () => {
       const f = await fixture(),

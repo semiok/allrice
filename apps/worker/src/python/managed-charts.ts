@@ -2,6 +2,7 @@ import {
   RuntimeLocalPythonPayloadSchema,
   RuntimeLocalPythonResultSchema,
   localPythonResultMatchesPayload,
+  localFileMediaType,
   type PythonExecuteArgs,
   type RuntimeLocalPythonPayload,
 } from '@allrice/contracts';
@@ -184,7 +185,11 @@ async function executeManagedChartsAttempt(
         inputs,
         outputs: args.outputs.map((file, index) => ({
           ...file,
-          mediaType: mediaTypes[file.format],
+          mediaType:
+            file.format === 'txt' &&
+            localFileMediaType(file.fileName) === 'text/markdown'
+              ? 'text/markdown'
+              : mediaTypes[file.format],
           objectId: cloudStableId(
             `managed-python-output:${input.context.runId}:${input.call.id}:${index}`,
           ),
