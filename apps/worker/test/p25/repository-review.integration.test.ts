@@ -89,6 +89,11 @@ suite(
     let f: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
     const emails = new Set<string>();
     beforeAll(async () => {
+      // Explicit SQL-only current-root issuer; no installed artifact approval.
+      vi.stubEnv(
+        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+        'sha256:' + 'a'.repeat(64),
+      );
       f = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       vi.stubEnv('ALLRICE_ENV', 'development');

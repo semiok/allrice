@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readWorkerCapabilities } from './runtime-capabilities.js';
+import { DSH_DISTRIBUTION_CURRENT_VERSION } from './dsh-distribution.js';
 
 let directory: string;
 afterEach(() => {
@@ -25,7 +26,7 @@ describe('Worker capability facts', () => {
   it('reads the installed composition, including entries absent from the old UI catalog', () => {
     const result = readWorkerCapabilities(randomUUID());
     expect(result.profileStatus).toBe('read');
-    expect(result.version).toBe('0.1.5-rc.3');
+    expect(result.version).toBe(DSH_DISTRIBUTION_CURRENT_VERSION);
     expect(result.components.find((c) => c.id === 'agent-loop')).toMatchObject({
       packageName: '@deepseek-ai/dsh-agent-loop',
       version: result.version,

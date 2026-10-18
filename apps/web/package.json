@@ -56,7 +56,9 @@
     "simple-icons": "16.31.0",
     "ws": "8.21.3",
     "zod": "^4.3.6",
-    "zustand": "4.4.7"
+    "zustand": "4.4.7",
+    "@deepseek-ai/cordis-plugin-include": "1.0.9",
+    "@deepseek-ai/cordis-plugin-loader": "1.0.5"
   },
   "devDependencies": {
     "@types/react": "^19.2.7",

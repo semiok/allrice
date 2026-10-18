@@ -1,4 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import {
+  newEmployeeNativeRootOrigin,
+  retryNativeRootOrigin,
+} from '../conversation/native-root-origin.ts';
 import type postgres from 'postgres';
 import {
   EmployeeMethodTestStartSchema,
@@ -428,7 +432,7 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
       )
         throw new EmployeeMethodChatError('explicit_method_request_required');
       const [base] = retry
-        ? await tx`select employee_id,revision_id id,frozen_runtime_profile runtime_profile,frozen_definition definition
+        ? await tx`select employee_id,revision_id id,frozen_runtime_profile runtime_profile,frozen_definition definition,native_root_origin
           from allrice_platform_employee_test_runs where id=${retry.test_id} and purpose='method_candidate'`
         : await tx`select r.employee_id,r.id,r.runtime_profile,r.definition
       from allrice_employee_version_sources s join allrice_platform_employee_revisions r
@@ -479,10 +483,17 @@ export async function startEmployeeMethodTestFromChat(input: EmployeeChatCall) {
         if (same) return dto(tx, scope, same.test_id);
       }
       const id = randomUUID();
+      const origin = retry
+        ? retryNativeRootOrigin(base.native_root_origin, id)
+        : newEmployeeNativeRootOrigin(
+            'platform_employee_test',
+            id,
+            profile.runtimePackage,
+          );
       await tx`insert into allrice_platform_employee_test_runs(id,employee_id,revision_id,requested_by_label,status,input,
-      frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose)
+      frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,native_root_origin)
       values(${id},${base.employee_id},${base.id},${scope.actor.id},'queued',${tx.json({ prompt: args.caseId === employeeMethodFileCase.id ? employeeMethodFileCase.prompt : employeeMethodAmountCase.prompt, environment: 'platform', workspaceId: scope.workspaceId, ownerId: scope.actor.id })},
-        ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'method_candidate')`;
+        ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'method_candidate',${origin ? tx.json(origin) : null})`;
       await tx`insert into allrice_employee_method_tests(test_id,organization_id,workspace_id,owner_id,employee_id,instance_id,set_id,
       candidate_revision_id,candidate_digest,dependency_digest,scene_id,case_id,environment,request_id,request_digest,binding_digest,
       source_run_id,source_session_id,employee_version_id,model_snapshot,candidate_snapshot,snapshot_digest,retry_of_test_id)

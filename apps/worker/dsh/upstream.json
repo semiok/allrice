@@ -1,9 +1,9 @@
 {
   "repository": "https://github.com/deepseek-ai/deepseek-harness",
-  "version": "0.1.5-rc.3",
-  "commit": "a4c74a91e06b00fe0b0937bde982170c526cc842",
-  "tree": "bf4fd1ddccc211107ffb8b7074c83afac2bd7ea1",
+  "version": "0.2.1-rc.2",
+  "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "tree": "f127f0f96a815eac4dea336a2ae0d9cd0f2aa82d",
   "license": "MIT",
-  "sourceArchiveSha256": "857c87442fd522ccdbd8c1091d8e2a516469a9b53c6b94948b3d174162b3370b",
+  "sourceArchiveSha256": "157903b22c2881d3678d846755afe957a48df834e747deda805a1195ce25a146",
   "wireServerName": "deepseek-harness-sdk-runtime"
 }

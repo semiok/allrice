@@ -52,6 +52,8 @@ import {
   type WorkspaceMemorySchema,
 } from '@allrice/contracts';
 import { z } from 'zod';
+import { newEmployeeNativeRootOrigin } from '../conversation/native-root-origin.ts';
+import { EmployeeManifestSchema } from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 
 import {
@@ -590,8 +592,8 @@ export async function createAssignedChatSession(
   // Browser state can be stale after an administrator updates an employee;
   // accepting its version would silently pin a new Session to old abilities.
   const employeeVersionId = assignment.employeeVersionId;
-  const versions = await sql<{ id: string }[]>`
-    select id from allrice_employee_versions
+  const versions = await sql<{ id: string; manifest: unknown }[]>`
+    select id,manifest from allrice_employee_versions
     where id = ${employeeVersionId}
       and organization_id = ${context.organizationId}
       and workspace_id = ${workspaceId}
@@ -602,13 +604,26 @@ export async function createAssignedChatSession(
   const fixedSessionId = options.sessionId
     ? UuidSchema.parse(options.sessionId)
     : randomUUID();
+  const [existing] =
+    await sql`select id from allrice_chat_sessions where id=${fixedSessionId}`;
+  const manifest = !existing
+    ? EmployeeManifestSchema.parse(versions[0].manifest)
+    : null;
+  const origin = !existing
+    ? newEmployeeNativeRootOrigin(
+        'chat',
+        fixedSessionId,
+        manifest?.schemaVersion === 2 ? manifest.runtimePackage : null,
+        employeeVersionId,
+      )
+    : null;
   const rows = await sql<SessionRow[]>`
     insert into allrice_chat_sessions (
       id, organization_id, workspace_id, owner_id, employee_assignment_id,
-      employee_instance_id, employee_version_id, title, visibility
+      employee_instance_id, employee_version_id, title, visibility, native_root_origin
     ) values (
       ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
-      ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private'
+      ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private', ${origin ? sql.json(origin) : null}
     )
     on conflict(id) do nothing
     returning *
@@ -1363,17 +1378,22 @@ export async function sendChatMessage(
     const employeeRows = await transaction<
       { employee_id: string; employee_version_id: string }[]
     >`
-      select employee_id, employee_version_id from allrice_employee_assignments
-      where id = ${session.employee_assignment_id}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and active
+      select a.employee_id, case when allrice_native_session_version_compatible(s.native_root_origin,v.manifest)
+        then a.employee_version_id else s.employee_version_id end employee_version_id
+      from allrice_employee_assignments a
+      join allrice_employee_versions v on v.id=a.employee_version_id
+      join allrice_chat_sessions s on s.id=${session.id} and s.employee_assignment_id=a.id
+      where a.id = ${session.employee_assignment_id}
+        and a.organization_id = ${context.organizationId}
+        and a.workspace_id = ${workspaceId}
+        and a.active
     `;
     const currentAssignment = employeeRows[0];
     if (!currentAssignment) throw new DataAccessError('not_found');
-    // A published employee revision applies to the next turn of an existing
-    // Session. Already-enqueued Runs keep their immutable execution snapshot,
-    // while the tenant gets new Skills and policy without opening a new chat.
+    // Same-engine publications apply on the next turn. Cross-engine updates
+    // require a new Session; both the stored version and this Run's selected
+    // version must remain compatible with the immutable birth/legacy reader.
+    // Already-enqueued Runs keep their own frozen package.
     const effectiveEmployeeVersionId = currentAssignment.employee_version_id;
     if (session.employee_version_id !== effectiveEmployeeVersionId) {
       await transaction`

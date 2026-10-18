@@ -81,6 +81,23 @@ function fail(reason: string): never {
   throw Error('DSH_NATIVE_ARTIFACT_' + reason);
 }
 
+/** Match the loaded process's libc, without executing an unapproved package or
+ * the expensive process.report CPU inventory. Ambiguous Linux facts fail closed. */
+export function nativeLoaderPlatformPackage(input: {
+  platform: string;
+  arch: string;
+  mappedLibraries?: string;
+}) {
+  const base = `node-addon-require-builtin-${input.platform}-${input.arch}`;
+  if (input.platform === 'win32') return base + '-msvc';
+  if (input.platform !== 'linux') return base;
+  const maps = input.mappedLibraries ?? '';
+  const musl = /\/ld-musl-|\/libc\.musl-/.test(maps);
+  const gnu = /\/libc\.so\.6|\/libc-2\.\d+\.so/.test(maps);
+  if (musl === gnu) fail('NATIVE_LOADER_LIBC_UNKNOWN');
+  return base + (gnu ? '-gnu' : '-musl');
+}
+
 /** Read data from the measured root, never execute that root's Worker. An
  * independently approved content ID still authorizes the actual artifact. */
 function rootDistribution(bytes: Buffer) {
@@ -239,9 +256,83 @@ export async function measureDshNativeArtifact(
     item.files = packageFiles.length;
     item.bytes = packageFiles.reduce((n, f) => n + f.bytes, 0);
     item.checksum = hash(JSON.stringify(packageFiles));
+    let effectiveOptional = metadata.optionalDependencies ?? {};
+    // pnpm extensions do not rewrite published package.json. This one known
+    // helper performs a dynamic require from its own path, so measure its
+    // effective optional edges explicitly. Historical approved roots retain
+    // their original v1 identity and are never reinterpreted by this rule.
+    if (
+      distribution.version === '0.2.1-rc.2' &&
+      metadata.name === 'node-addon-native-custom-loader' &&
+      metadata.version === '0.1.9'
+    ) {
+      const loader = await locate(worker, '@deepseek-ai/cordis-plugin-loader');
+      const entry =
+        loader && (await locate(loader, 'node-addon-require-builtin'));
+      if (!entry) fail('NATIVE_LOADER_ENTRY_MISSING');
+      const published = JSON.parse(
+        (await bytesAt(join(entry, 'package.json'))).toString(),
+      ) as PackageMetadata;
+      const platforms = published.optionalDependencies ?? {};
+      const workspace = parseDocument(
+        (await bytesAt(join(root, 'pnpm-workspace.yaml'))).toString(),
+      );
+      if (workspace.errors.length) fail('NATIVE_LOADER_EXTENSION');
+      const extension =
+        workspace.toJS()?.packageExtensions?.[
+          'node-addon-native-custom-loader@0.1.9'
+        ]?.optionalDependencies;
+      const expected = [
+        'darwin-arm64',
+        'darwin-x64',
+        'linux-arm64-gnu',
+        'linux-arm64-musl',
+        'linux-x64-gnu',
+        'linux-x64-musl',
+        'win32-arm64-msvc',
+        'win32-ia32-msvc',
+        'win32-x64-msvc',
+      ]
+        .map((suffix) => 'node-addon-require-builtin-' + suffix)
+        .sort(order);
+      if (
+        published.name !== 'node-addon-require-builtin' ||
+        published.version !== '0.1.9' ||
+        !extension ||
+        JSON.stringify(Object.keys(platforms).sort(order)) !==
+          JSON.stringify(expected) ||
+        JSON.stringify(Object.keys(extension).sort(order)) !==
+          JSON.stringify(expected) ||
+        expected.some(
+          (name) => platforms[name] !== '0.1.9' || extension[name] !== '0.1.9',
+        )
+      )
+        fail('NATIVE_LOADER_EXTENSION');
+      let hostPresent = false;
+      const host = nativeLoaderPlatformPackage({
+        platform: process.platform,
+        arch: process.arch,
+        mappedLibraries:
+          process.platform === 'linux'
+            ? await readFile('/proc/self/maps', 'utf8').catch(() => '')
+            : undefined,
+      });
+      for (const name of expected) {
+        const target = await locate(path, name);
+        if (!target) continue;
+        const binary = JSON.parse(
+          (await bytesAt(join(target, 'package.json'))).toString(),
+        ) as PackageMetadata;
+        if (binary.name !== name || binary.version !== '0.1.9')
+          fail('NATIVE_LOADER_PLATFORM_MISMATCH');
+        if (name === host) hostPresent = true;
+      }
+      if (!hostPresent) fail('NATIVE_LOADER_PLATFORM_MISSING');
+      effectiveOptional = { ...effectiveOptional, ...platforms };
+    }
     const groups = [
       ['dependency', metadata.dependencies ?? {}],
-      ['optional', metadata.optionalDependencies ?? {}],
+      ['optional', effectiveOptional],
       ['peer', metadata.peerDependencies ?? {}],
     ] as const;
     for (const [kind, group] of groups)

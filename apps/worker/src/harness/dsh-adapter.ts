@@ -1,3 +1,4 @@
+import { readDshToolResult } from '@allrice/contracts';
 import type { SessionReferenceSnapshot } from '@allrice/contracts';
 import { randomUUID, createHash } from 'node:crypto';
 
@@ -167,6 +168,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       input,
       threadId,
       prepared?.binding ?? undefined,
+      prepared?.origin,
     );
     let nativePin: NativeSessionPin | undefined;
     if (nativeDescriptor) {
@@ -183,6 +185,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           input,
           threadId,
           prepared.binding ?? undefined,
+          prepared.origin,
         );
       const bound = prepared?.binding
         ? { binding: prepared.binding, generation: prepared.generation }
@@ -1462,7 +1465,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       const data = record(event?.data);
       if (!event || !data) return;
       // Native compaction replaces context history, not execution activity.
-      if (record(event.surfaceOp)?.op === 'replace') return;
+      if (
+        event.surfaceOp === 'replace' ||
+        record(event.surfaceOp)?.op === 'replace'
+      )
+        return;
       const source = sourceMetadata(event);
       if (event.type === 'allrice/wait/checkpoint' && parking) {
         parkingQuestion = true;
@@ -1517,9 +1524,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
       if (event.type === 'tool/result') {
         const message = record(data.message);
-        const firstBlock = Array.isArray(message?.content)
-          ? record(message.content[0])
-          : null;
+        const firstBlock = readDshToolResult(message);
         const callId = shortText(
           firstBlock?.toolCallId ?? message?.toolCallId ?? message?.callId,
           240,
@@ -1536,9 +1541,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         // its single tool-result block; event.error is optional diagnostics.
         // Keep legacy event errors, but never infer status from result text or
         // truthy strings and never copy raw arguments/results into the stream.
-        const failed =
-          Boolean(data.error) ||
-          (firstBlock?.type === 'tool-result' && firstBlock.isError === true);
+        const failed = Boolean(data.error) || firstBlock?.isError === true;
         const parkedQuestion =
           failed && parkingQuestion && name === 'ask_user_question';
         await input.onNative({

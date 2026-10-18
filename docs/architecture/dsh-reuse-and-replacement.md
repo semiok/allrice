@@ -571,3 +571,17 @@ Run `9620a5c1` 的本地五分钟等待截止只能证明没有新的归一化�
 ## MET187 PR1：个人 Skill 安装与原生采用
 
 复用公开 `FileSystemSkillProvider` 解析独立附件、现有 AllRice frozen Provider 和 DSH `skill`/slash 加载；不增加 DSH 核心补丁。原始来源与解析正文各自固定，个人版本不进入平台审核目录。`allrice-jsonrpc-lifecycle-v1` 内部窄 RPC 在返回个人正文前核对精确绑定，继续由 `allrice-employee-content-authorization-v1` 的 generation/llm-stream 检查守住重试、压缩与历史撤权。普通执行权限在个人 Skill 装配之前计算，现有 catalog 摘要覆盖组合后全部正文。详见 [个人技能](../features/personal-skills.md)。
+
+## MET192 public SDK / approved new roots (0.2.1-rc.2)
+
+`allrice-jsonrpc-lifecycle-v1` now composes the public SDK through `allrice-sdk-root.mjs`. One process Host owns one business root; only the SDK owns and releases its AgentHandles. Existing MET193 bounded drain governs recovery/close failures. No private SDK session map or creation methods are accessed.
+
+Managed children use public `startActivation` with parent delivery and `drainDescendants`. Scoped `agent/created` hooks register the delegated persona and intersect the frozen tool allowlist before the first model request; per-tool guards and durable platform adoption still apply. The existing host-only `queueHostSubagentPrompt` import remains an explicitly retained internal seam for trusted recovery delivery. A test-only probe of native settlement uses the pinned manager module; it is not loaded by production.
+
+`allrice-managed-native-mcp-public-v2` composes official SDK 2.2 transport with the exported DSH tool-definition adapter. Per-request AllRice authorization, DNS-pinned egress, cancellation, frozen names/schema, unknown-effect classification and zero automatic transport reconnect retries remain required. It does not copy the upstream client plugin.
+
+`allrice-private-v4-payload-validation-v2` keeps the four exact AllRice event payloads and chronology in AllRice. Historical private V0/V3 files are served by their exact approved retained 0.1.5 reader, not opened as new V4 roots or rewritten on upgrade. Unsupported migration remains an explicit refusal.
+
+The five physical 0.1.5 patches still exist for the independently versioned old administrator/retained hosts. Their version, owner, file and lock digest are verified separately from the new Worker. Retention is not a claim that new upstream behavior superseded every old patch. Strict peer pins in the respective importers prevent the old administrator and new Worker borrowing one another's Cordis/DSH services; the installed graph is measured independently.
+
+New 0.2.1 execution additionally requires an immutable business INSERT origin and `ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` matching the actually approved primary artifact. NULL historical facts are never backfilled, and old queued tests/repeated requests/old packages stay legacy. Content generations and explicit retries inherit their original reader. Removed invariant plugins have no published 0.2.1 exports: native factory ownership/session persistence validation and AllRice lease/pin/deadline/cancel gates are verified by actual SDK and SQL tests, rather than loading unsupported paths.

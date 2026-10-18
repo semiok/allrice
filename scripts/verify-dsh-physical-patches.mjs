@@ -25,6 +25,7 @@ export async function verifyDshPhysicalPatches({
   workspace,
   lock,
   upstreamVersion,
+  approvedVersions = [upstreamVersion],
 }) {
   check(
     Array.isArray(ledger.physicalPatches),
@@ -53,7 +54,7 @@ export async function verifyDshPhysicalPatches({
       `invalid package ${mapping.package}`,
     );
     check(
-      mapping.version === upstreamVersion,
+      approvedVersions.includes(mapping.version),
       `version drift for ${mapping.package}`,
     );
     const key = `${mapping.package}@${mapping.version}`;
@@ -73,7 +74,7 @@ export async function verifyDshPhysicalPatches({
     const owner = responsibilities.get(mapping.responsibilityId);
     check(owner, `unknown responsibility ${mapping.responsibilityId}`);
     check(
-      owner.upstreamVersion === upstreamVersion,
+      owner.upstreamVersion === mapping.version,
       `responsibility version drift for ${key}`,
     );
     check(

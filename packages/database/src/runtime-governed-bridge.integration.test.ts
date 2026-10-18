@@ -70,7 +70,10 @@ import { claimNextJob, cancelRun } from './execution/queue.ts';
 import { runClaimedJob } from '../../../apps/worker/src/job-runner.js';
 import { executeEmployeeRun } from '../../../apps/worker/src/jobs/employee-run.js';
 import { listChangesetRuns } from './changeset-service.ts';
-import { p24Fixture } from '../../../apps/worker/test/p24/fixture.js';
+import {
+  p24Fixture,
+  latestTaskMessage,
+} from '../../../apps/worker/test/p24/fixture.js';
 import {
   claimConversationSteer,
   consumeConversationSteer,
@@ -1273,7 +1276,10 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           // The native parent also receives a user-like settled notification.
           // This fixture requests one proposal from the delegated child, not a
           // second unrelated proposal from that parent's notification turn.
-          const last = request.messages.at(-1);
+          // A new runtime-context snapshot may follow the delegated task.
+          // Ignore that exact native metadata when choosing this fixture's
+          // synthetic response; retain real tool replies and parent notices.
+          const last = latestTaskMessage(request);
           if (
             !childRequestedProposal &&
             last?.role === 'user' &&

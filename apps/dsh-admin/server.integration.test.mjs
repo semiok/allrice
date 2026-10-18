@@ -1,7 +1,7 @@
 /* global URLSearchParams, fetch, process */
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { get, createServer as httpServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -170,6 +170,20 @@ it('boots the pinned native WebUI behind both authentication boundaries', async 
     );
     expect(html).toContain('__ModuleLoader__');
     expect(html).not.toContain('?token=');
+    // The administrator intentionally remains rc.3 while the Worker upgrades.
+    // Inspect the actual native CLI fallback, whose symlink-based lookup is
+    // different from canonical Node dependency resolution.
+    const nativeModules = join(root, 'profiles/node_modules/@deepseek-ai');
+    const nativeNames = (await readdir(nativeModules)).filter((name) =>
+      name.startsWith('dsh-'),
+    );
+    expect(nativeNames.length).toBeGreaterThan(100);
+    for (const name of nativeNames) {
+      const metadata = JSON.parse(
+        await readFile(join(nativeModules, name, 'package.json'), 'utf8'),
+      );
+      expect(metadata.version, name).toBe('0.1.5-rc.3');
+    }
     expect((await fetch(native + '/', { redirect: 'manual' })).status).toBe(
       401,
     );

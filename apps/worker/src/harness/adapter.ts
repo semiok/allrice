@@ -1,3 +1,4 @@
+import type { NativeRootOrigin } from '@allrice/database';
 import type {
   EmployeeKernelRequest,
   InternalKernelRequest,
@@ -154,6 +155,7 @@ export interface HarnessExecutionInput {
       >,
     ) => Promise<{
       binding: NativeSessionPin | null;
+      origin?: NativeRootOrigin | null;
       /** A pin/prior adoption/retry cannot create an empty replacement. */
       requiresRecovery: boolean;
       generation?: number;

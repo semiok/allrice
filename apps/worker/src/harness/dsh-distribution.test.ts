@@ -14,8 +14,12 @@ describe('AllRice DSH distribution', () => {
   });
 
   it('accepts the pinned server and test builds derived from it', () => {
-    expect(isCompatibleDshRuntimeVersion('0.1.5-rc.3')).toBe(true);
-    expect(isCompatibleDshRuntimeVersion('0.1.5-rc.3-fake')).toBe(true);
+    expect(
+      isCompatibleDshRuntimeVersion(DSH_DISTRIBUTION_CURRENT_VERSION),
+    ).toBe(true);
+    expect(
+      isCompatibleDshRuntimeVersion(DSH_DISTRIBUTION_CURRENT_VERSION + '-fake'),
+    ).toBe(true);
     expect(isCompatibleDshRuntimeVersion('0.1.2')).toBe(false);
   });
 });

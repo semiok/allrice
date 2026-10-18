@@ -1,3 +1,4 @@
+import { readDshToolResult } from '@allrice/contracts';
 /** Persist only quiescent user-question boundaries. This does not serialize a
  * JavaScript continuation or restart the original task prompt. */
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';
@@ -24,10 +25,10 @@ export function pendingNativeWait(agent) {
 }
 
 export async function checkpointNativeQuestion(server, sessionId, questionId) {
-  const record = server.sessions.get(sessionId);
+  const record = server.requireRoot(sessionId);
   const question = server.pendingUserQuestions.get(sessionId);
   if (!record || !question || question.questionId !== questionId) return null;
-  const agent = record.handle.agent;
+  const agent = record.agent;
   // Another agent/tool may still be doing real work. Never interrupt it just
   // because the root is asking a question.
   if (server.ctx.agents.list().some((a) => a !== agent)) return null;
@@ -35,7 +36,7 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   for (const e of agent.session.snapshotEvents()) {
     if (e.type === 'tool/call') open.set(e.data.callId, e.data.name);
     if (e.type === 'tool/result') {
-      const b = e.data.message?.content?.find((b) => b.type === 'tool-result');
+      const b = readDshToolResult(e.data.message);
       open.delete(
         b?.toolCallId ?? e.data.message?.toolCallId ?? e.data.message?.callId,
       );
@@ -57,7 +58,11 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
     return null;
   await server.taskProgress?.flush();
   // A user answer can race the preceding flush.
-  if (server.pendingUserQuestions.get(sessionId) !== question) return null;
+  if (
+    !server.isRootCurrent(record, sessionId) ||
+    server.pendingUserQuestions.get(sessionId) !== question
+  )
+    return null;
   const turn = agent.session
     .snapshotEvents()
     .findLast((e) => e.type === 'turn/start')?.data.turn;
@@ -72,7 +77,11 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
   await server.ctx.sessions.flush(agent.session);
   // No await between the final identity check and cancel. The only interrupted
   // callback is this non-executing question; its answer is stored on recovery.
-  if (server.pendingUserQuestions.get(sessionId) !== question) return null;
+  if (
+    !server.isRootCurrent(record, sessionId) ||
+    server.pendingUserQuestions.get(sessionId) !== question
+  )
+    return null;
   agent.cancel({ kind: 'user' }, { keepInbox: true });
   await agent.whenIdle();
   await server.taskProgress?.flush();
@@ -81,8 +90,10 @@ export async function checkpointNativeQuestion(server, sessionId, questionId) {
 }
 
 export async function answerNativeWait(server, params) {
-  const record = await server.getOrCreateSession(params.sessionId);
-  const agent = record.handle.agent;
+  const record = await server.ensureRoot(params.sessionId, {
+    resumeOnly: true,
+  });
+  const agent = record.agent;
   const wait = pendingNativeWait(agent);
   if (
     !wait ||
@@ -107,6 +118,7 @@ export async function answerNativeWait(server, params) {
         },
       },
       isCurrent: () =>
+        server.isRootCurrent(record, params.sessionId) &&
         pendingNativeWait(agent)?.questionId === wait.questionId &&
         agent.status === 'idle',
       flush: () => server.ctx.sessions.flush(agent.session),
@@ -130,18 +142,22 @@ export async function answerNativeWait(server, params) {
 }
 
 export async function continueNativeWait(server, params) {
-  const record = await server.getOrCreateSession(params.sessionId);
-  const agent = record.handle.agent;
+  const record = await server.ensureRoot(params.sessionId, {
+    resumeOnly: true,
+  });
+  const agent = record.agent;
   const wait = pendingNativeWait(agent);
   if (!wait || wait.questionId !== params.questionId || agent.status !== 'idle')
     throw Error('NATIVE_WAIT_CHANGED');
   const answered = await answerNativeWait(server, params);
+  server.assertRoot(record, params.sessionId);
   if (wait.questions.some((q) => q.id === 'runtime-progress')) {
     if (!server.progressBridge) throw Error('task_progress_disabled');
     const status = await server.progressBridge({
       action: 'check',
       nativeSessionId: params.sessionId,
     });
+    server.assertRoot(record, params.sessionId);
     if (!status.paused) throw Error('task_progress_stale_pause');
     const chosen = structuredUserQuestionAnswer(wait, params.text).answers.find(
       (a) => a.id === 'runtime-progress',
@@ -159,15 +175,18 @@ export async function continueNativeWait(server, params) {
       pauseId: status.pauseId,
       decision: cancel ? 'cancel' : 'continue',
     });
+    server.assertRoot(record, params.sessionId);
     if (cancel) throw Error('task_progress_canceled');
   }
   // Persist dispatch intent first. Losing its ACK is outcome unknown; a later
   // Worker must not resend this continuation and execute its tools twice.
+  server.assertRoot(record, params.sessionId);
   agent.session.append('allrice/wait/continued', {
     questionId: wait.questionId,
     inputId: params.inputId,
   });
   await server.ctx.sessions.flush(agent.session);
+  server.assertRoot(record, params.sessionId);
   return server.prompt({
     sessionId: params.sessionId,
     contentBlocks: [{ type: 'text', text: answered.prompt }],

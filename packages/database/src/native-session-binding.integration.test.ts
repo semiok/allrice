@@ -107,7 +107,11 @@ suite(
       ).toHaveLength(0);
       const bound = await bindJobNativeSession(f.input);
       const prepared = await prepareJobNativeSession(request);
-      expect(prepared).toEqual({ ...bound, requiresRecovery: true });
+      expect(prepared).toEqual({
+        ...bound,
+        origin: null,
+        requiresRecovery: true,
+      });
       await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_request' where id=${f.input.jobId}`;
       await expect(prepareJobNativeSession(request)).rejects.toMatchObject({
         code: 'NATIVE_SESSION_ADMISSION_DENIED',
@@ -196,7 +200,11 @@ suite(
         leaseToken: test.previewExecution.leaseToken,
         attempt: test.previewExecution.jobAttempt,
         subject: { kind: 'platform_employee_test', id: test.id },
-        descriptor: nativeBindingDescriptor(test.previewContext),
+        descriptor: nativeBindingDescriptor({
+          ...test.previewContext,
+          contextKey: test.id,
+          distributionGeneration: test.runtimeProfile.distributionGeneration,
+        }),
       };
       return { test, input };
     }

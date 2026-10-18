@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { newInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
 import type postgres from 'postgres';
 import {
   DshExecutionSnapshotSchema,
@@ -94,11 +95,16 @@ export async function bindPlatformTechnicalTask(
   );
   if (internal.organization_id !== context.organizationId)
     throw new DataAccessError('authorization_denied');
+  const origin = newInternalNativeRootOrigin(
+    'platform_technical',
+    binding.id,
+    binding.frozen,
+  );
   await tx`insert into allrice_platform_technical_tasks
-    (id,request_id,owner_id,issue_id,run_id,job_id,organization_id,workspace_id,environment,input_digest,frozen_configuration)
+    (id,request_id,owner_id,issue_id,run_id,job_id,organization_id,workspace_id,environment,input_digest,frozen_configuration,native_root_origin)
     values(${binding.id},${binding.request.requestId},${owner},${binding.request.issueId},${runId},${jobId},
       ${context.organizationId},${context.workspaceId},${binding.environment},${binding.inputDigest},
-      ${tx.json(JSON.parse(JSON.stringify({ ...binding.frozen, question: binding.request.question })))})`;
+      ${tx.json(JSON.parse(JSON.stringify({ ...binding.frozen, question: binding.request.question })))},${origin ? tx.json(origin) : null})`;
 }
 
 /** Shared queue guard; ordinary Jobs have no additional database read. */

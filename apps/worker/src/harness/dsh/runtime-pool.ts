@@ -11,6 +11,7 @@ import {
 } from '@allrice/contracts';
 import type {
   NativeSessionDescriptor,
+  NativeRootOrigin,
   NativeSessionPin,
 } from '@allrice/database';
 
@@ -40,6 +41,7 @@ import {
 } from '../dsh-native-artifact.js';
 import {
   legacyDshNativeLaunch,
+  newRootDshNativeLaunch,
   retainedDshStorageRoot,
   assertDshFrozenCompatibility,
 } from '../dsh-native-retention.js';
@@ -261,7 +263,11 @@ export class DshRuntimePool {
     };
   }
 
-  private launch(input: HarnessExecutionInput, pin?: NativeSessionPin) {
+  private launch(
+    input: HarnessExecutionInput,
+    pin?: NativeSessionPin,
+    origin?: NativeRootOrigin | null,
+  ) {
     // Even a pin cannot turn a deployment/constructor override into approval.
     const identity = checkedDshNativeLaunch({
       command: this.runtimeCommand ?? '',
@@ -294,10 +300,23 @@ export class DshRuntimePool {
     });
     const selected = pin
       ? nativeArtifactLaunchForPin(pin)
-      : legacyDshNativeLaunch(fallback, profileId);
+      : origin
+        ? newRootDshNativeLaunch(origin, fallback, profileId)
+        : legacyDshNativeLaunch(fallback, profileId);
+    if (origin && origin.rootSeed !== harnessContextKey(input.kernel))
+      throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');
+    // Birth package provenance is checked by SQL against the original immutable
+    // publication. A later same-generation Run may carry an updated package;
+    // its own checksum is verified by the normal frozen Run binding below.
     checkedDshNativeLaunch(selected);
     assertDshFrozenCompatibility(
-      input.kernel.runtimeDistributionGeneration,
+      input.kernel.runtimeDistributionGeneration ??
+        (origin?.frozenIdentity.kind === 'internal_recipe'
+          ? origin.distributionGeneration
+          : pin?.bindingBasis === 'business_root_origin' &&
+              ('internalTask' in input.kernel || profileId === 'technical')
+            ? pin.distributionGeneration
+            : undefined),
       selected,
       profileId,
     );
@@ -308,8 +327,9 @@ export class DshRuntimePool {
     input: HarnessExecutionInput,
     threadId: string,
     pin?: NativeSessionPin,
+    origin?: NativeRootOrigin | null,
   ): NativeSessionDescriptor | null {
-    const identity = this.launch(input, pin);
+    const identity = this.launch(input, pin, origin);
     if (!identity) return null; // Standalone fixture, no approved artifact.
     const generation = DSH_FROZEN_PROFILE_GENERATIONS.find(
       (value) => value === identity.generation,
@@ -348,9 +368,10 @@ export class DshRuntimePool {
     input: HarnessExecutionInput,
     threadId: string,
     pin?: NativeSessionPin,
+    origin?: NativeRootOrigin | null,
   ) {
-    const launch = this.launch(input, pin);
-    const descriptor = this.describeNativeSession(input, threadId, pin);
+    const launch = this.launch(input, pin, origin);
+    const descriptor = this.describeNativeSession(input, threadId, pin, origin);
     if (launch && descriptor)
       await assertStoredNativeSession(
         launch.args[0]!,

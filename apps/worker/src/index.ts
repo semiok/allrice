@@ -126,6 +126,12 @@ const nativeArtifact = await installDshNativeArtifact({
 // Provider probes/authentication also use the configured profile before a Run
 // reaches the pool. Reject unapproved deployment overrides before producers.
 checkedDshNativeLaunch(configuredDshNativeLaunch());
+if (
+  process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID &&
+  (nativeArtifact.artifactId !== process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID ||
+    nativeArtifact.generation !== 'dsh-0.2.1-rc.2-687f282')
+)
+  throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
 const retainedNativeArtifacts = await installConfiguredDshNativeRetention();
 const producerLifecycle = await installDevProducerLifecycle('worker');
 const maintenanceDiagnosticRuntime =

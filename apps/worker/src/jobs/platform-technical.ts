@@ -50,7 +50,7 @@ export async function executePlatformTechnicalTask(
       '../../dsh/allrice-technical.cordis.yml',
     ),
   });
-  const sessionId = randomUUID();
+  const sessionId = task.id;
   const modelCalls = new Set<string>();
   const progressReceipts = new Set<string>();
   try {

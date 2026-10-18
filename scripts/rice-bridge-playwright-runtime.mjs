@@ -37,6 +37,9 @@ export async function preparePlaywrightRuntime(
   const files = [];
   async function scan(directory, prefix = '') {
     for (const name of (await readdir(directory)).sort()) {
+      // pnpm can materialize package-local command shims. They are installer
+      // state, not part of Playwright's self-contained runtime distribution.
+      if (!prefix && name === 'node_modules') continue;
       if (name.startsWith('.') || !/^[A-Za-z0-9_+@. -]+$/.test(name))
         throw Error('BRIDGE_PLAYWRIGHT_SOURCE_UNEXPECTED');
       const path = prefix + name,

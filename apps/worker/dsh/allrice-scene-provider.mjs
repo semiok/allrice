@@ -1,3 +1,4 @@
+import { readDshToolResult } from '@allrice/contracts';
 import { renderSkillContent } from '@deepseek-ai/dsh-skill';
 import {
   EmployeeRuntimeSceneSchema,
@@ -101,7 +102,8 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
     },
   }));
   function observe(session, event) {
-    if (event.surfaceOp?.op === 'replace') return;
+    if (event.surfaceOp === 'replace' || event.surfaceOp?.op === 'replace')
+      return;
     const d = event.data;
     if (event.type === 'tool/call' && d.name === 'skill') {
       let args = d.arguments;
@@ -117,7 +119,7 @@ export function installSceneProvider(ctx, rawScenes, bridge) {
       }
       calls.set(`${session.id}:${d.callId}`, args.name);
     } else if (event.type === 'tool/result') {
-      const block = d.message?.content?.find((b) => b.type === 'tool-result');
+      const block = readDshToolResult(d.message);
       const callId =
         block?.toolCallId ?? d.message?.toolCallId ?? d.message?.callId;
       const key = `${session.id}:${callId}`,

@@ -14,7 +14,7 @@ import {
   nativeContextProjection,
   installNativeContextProjection,
 } from './allrice-context-projection.mjs';
-/* global AbortController, AbortSignal, Buffer, fetch, process, setImmediate */
+/* global AbortSignal, Buffer, fetch, process, setImmediate */
 
 import { existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
@@ -42,7 +42,7 @@ import {
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { credentialKey } from '@deepseek-ai/dsh-credentials';
 import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol';
-import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server';
+import { AllRiceSdkRoot } from './allrice-sdk-root.mjs';
 import { createModels } from '@earendil-works/pi-ai';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 
@@ -74,7 +74,6 @@ import { installTaskProgress } from './allrice-task-progress.mjs';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
 import { installSceneProvider } from './allrice-scene-provider.mjs';
-import { readStoredDshSession } from './allrice-session-compatibility.mjs';
 import {
   checkpointNativeQuestion,
   answerNativeWait,
@@ -836,7 +835,7 @@ function nativeSkillSnapshot(value) {
   });
 }
 
-class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
+class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
   authorizationNotify = () => undefined;
   modelWaitNotify = () => undefined;
   modelStreamNotify = () => undefined;
@@ -877,8 +876,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       !/^[a-f0-9-]{36}$/.test(result.connection?.id ?? '')
     )
       return { content: response.modelContent };
-    const session = [...this.sessions.entries()].find(
-      ([, record]) => record.handle.agent === agent,
+    const session = [...this.roots.entries()].find(
+      ([, record]) => record.agent === agent,
     );
     if (!session) throw Error('connection_wait_session_missing');
     const [sessionId] = session;
@@ -917,8 +916,8 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
   installUserQuestionProvider() {
     if (!this.ctx.userQuestions) return;
     this.ctx.on('user-questions/request', async (request) => {
-      const session = [...this.sessions.entries()].find(
-        ([, record]) => record.handle.agent === request.agent,
+      const session = [...this.roots.entries()].find(
+        ([, record]) => record.agent === request.agent,
       );
       if (!session) {
         throw new Error(
@@ -941,7 +940,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         });
       }
       request.signal?.throwIfAborted();
-      if (this.sessions.get(sessionId)?.handle.agent !== request.agent)
+      if (this.requireRoot(sessionId).agent !== request.agent)
         throw Error('INPUT_SESSION_NOT_LIVE');
       const questions = this.preparedMethodQuestions.take(
         request.agent,
@@ -1013,17 +1012,18 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         )
       : [];
     const contentBlocks = [...(params.contentBlocks ?? []), ...imageBlocks];
-    if (!params.sessionReferences?.length)
-      return super.prompt({ ...params, contentBlocks });
-    if (!this.initialized) throw new Error('SDK server is not initialized');
-    const record = await this.getOrCreateSession(params.sessionId);
-    this.assertLiveAgent(record, params.sessionId);
-    const agent = record.handle.agent;
+    const record = await this.ensureRoot(params.sessionId);
+    if (!params.sessionReferences?.length) {
+      this.assertRoot(record, params.sessionId);
+      return this.sdk.prompt({ ...params, contentBlocks });
+    }
+    this.assertRoot(record, params.sessionId);
+    const agent = record.agent;
     const context = await prepareSessionReferenceContext(
       agent,
       params.sessionReferences,
     );
-    this.assertLiveAgent(record, params.sessionId);
+    this.assertRoot(record, params.sessionId);
     const message = createUserMessage({
       content: contentBlocks,
       source: { kind: 'user', allriceSessionReference: context },
@@ -1114,7 +1114,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       );
     }
     this.registerNativeTools();
-    await super.initialize(forwardedParams);
+    await this.initializeSdk(forwardedParams);
     if (!this.modelErrorNormalization)
       this.modelErrorNormalization = installModelErrorNormalization(this.ctx);
     return {
@@ -1504,47 +1504,19 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     }
   }
 
-  async createSession(sessionId, resumeOnly = false) {
-    try {
-      await readStoredDshSession(this.ctx, sessionId);
-    } catch (error) {
-      // Only the persistence service's exact absent identity allows creation.
-      // A missing reference inside an existing log must never become a new task.
-      if (
-        !resumeOnly &&
-        error instanceof Error &&
-        error.name === 'SessionPersistenceNotFoundError' &&
-        error.sessionId === sessionId
-      )
-        return super.createSession(sessionId);
-      throw error;
-    }
-    const handle = await this.ctx.agents.resume({
-      resumeSessionId: sessionId,
-      agentOptions: {
-        provider: this.provider,
-        model: this.model,
-        ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
-      },
-    });
-    const record = { handle };
-    this.sessions.set(sessionId, record);
-    return record;
-  }
-
   async interrupt(params) {
     const sessionId = requiredSessionId(params);
-    const record = this.sessions.get(sessionId);
+    const record = this.roots.get(sessionId);
     if (!record) return { interrupted: false };
-    this.preparedMethodQuestions.clear(record.handle.agent);
-    discardPendingDshInputs(record.handle.agent);
+    this.preparedMethodQuestions.clear(record.agent);
+    discardPendingDshInputs(record.agent);
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
     if (pendingQuestion) {
       this.pendingUserQuestions.delete(sessionId);
       pendingQuestion.reject(new Error('User question was interrupted'));
     }
-    record.handle.agent.cancel({ kind: 'user' }, { keepInbox: true });
-    await record.handle.agent.whenIdle();
+    record.agent.cancel({ kind: 'user' }, { keepInbox: true });
+    await record.agent.whenIdle();
     return { interrupted: true };
   }
 
@@ -1555,19 +1527,18 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
     }
     const pendingQuestion = this.pendingUserQuestions.get(sessionId);
     if (params.inputId !== undefined) {
-      const record = this.sessions.get(sessionId);
-      if (!record) throw new TypeError('INPUT_SESSION_NOT_LIVE');
+      const record = this.requireRoot(sessionId);
       return deliverDshInput(
         {
-          agent: record.handle.agent,
+          agent: record.agent,
           sessionId,
           pendingQuestion,
-          flush: () => this.ctx.sessions.flush(record.handle.agent.session),
+          flush: () => this.ctx.sessions.flush(record.agent.session),
           isCurrent: () =>
-            this.sessions.get(sessionId) === record &&
+            this.isRootCurrent(record, sessionId) &&
             this.pendingUserQuestions.get(sessionId) === pendingQuestion &&
             params.turnId ===
-              `${sessionId}:turn:${record.handle.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
+              `${sessionId}:turn:${record.agent.session.snapshotEvents().findLast((e) => e.type === 'turn/start')?.data.turn}`,
           notify: () => {
             this.pendingUserQuestions.delete(sessionId);
             this.userQuestionNotify({
@@ -1581,6 +1552,7 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
       );
     }
     if (pendingQuestion) {
+      this.requireRoot(sessionId);
       const structured = structuredUserQuestionAnswer(
         pendingQuestion,
         params.text,
@@ -1613,67 +1585,52 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         answeredQuestion: true,
       };
     }
-    const record = await this.getOrCreateSession(sessionId);
+    const record = await this.ensureRoot(sessionId);
+    this.assertRoot(record, sessionId);
     return {
-      messageId: steerDshAgent(record.handle.agent, params.text),
+      messageId: steerDshAgent(record.agent, params.text),
     };
   }
 
   async compact(params) {
-    const sessionId = requiredSessionId(params);
-    const record = this.sessions.get(sessionId);
-    if (!record) return { compacted: false, reason: 'session_not_live' };
-    const result = await this.ctx.compaction.compactNow(
-      record.handle.agent,
-      new AbortController().signal,
-    );
-    return {
-      compacted: result !== null,
-      ...(result === null
-        ? { reason: 'no_safe_range' }
-        : { compactionId: String(result.compactionId) }),
-    };
+    return this.compactRoot(requiredSessionId(params));
   }
 
   async sessionProjection(params) {
     const sessionId = requiredSessionId(params);
-    const record = this.sessions.get(sessionId);
+    const record = this.roots.get(sessionId);
     if (!record) {
       return { asOfSeq: null, contextPressure: null };
     }
-    return nativeContextProjection(this.ctx, record.handle.agent.session);
+    return nativeContextProjection(this.ctx, record.agent.session);
   }
 
   async recover(params) {
     const sessionId = requiredSessionId(params);
-    const current = this.sessions.get(sessionId);
-    if (current) {
-      this.preparedMethodQuestions.clear(current.handle.agent);
-      this.sessions.delete(sessionId);
-      await current.handle.dispose();
+    const recovery = this.recoverRoot(sessionId);
+    await this.clearRootQuestion(sessionId, 'Session recovery');
+    const record = await recovery;
+    return { recovered: true, sequence: record.agent.session.seq };
+  }
+
+  async clearRootQuestion(sessionId, reason) {
+    const record = this.roots.get(sessionId);
+    if (record) this.preparedMethodQuestions.clear(record.agent);
+    const pending = this.pendingUserQuestions.get(sessionId);
+    if (pending) {
+      this.pendingUserQuestions.delete(sessionId);
+      pending.reject(new Error(reason));
     }
-    const record = await this.createSession(sessionId, true);
-    return {
-      recovered: true,
-      sequence: record.handle.agent.session.seq,
-    };
   }
 
   async closeSession(params) {
     const sessionId = requiredSessionId(params);
-    const record = this.sessions.get(sessionId);
-    if (!record) return { closed: false };
-    this.preparedMethodQuestions.clear(record.handle.agent);
-    const pendingQuestion = this.pendingUserQuestions.get(sessionId);
-    if (pendingQuestion) {
-      this.pendingUserQuestions.delete(sessionId);
-      pendingQuestion.reject(
-        new Error('Session closed while awaiting an answer'),
-      );
-    }
-    this.sessions.delete(sessionId);
-    await record.handle.dispose();
-    return { closed: true };
+    const closing = this.closeRoot(sessionId);
+    await this.clearRootQuestion(
+      sessionId,
+      'Session closed while awaiting an answer',
+    );
+    return closing;
   }
 
   async providerStatus() {
@@ -1871,8 +1828,19 @@ class AllRiceHarnessSdkJsonRpcServer extends HarnessSdkJsonRpcServer {
         return generateCodexImage(this.modelsForCodex(), params);
       case 'provider/web-search':
         return this.searchCodex(params);
+      case 'initialize':
+        return this.initialize(params);
+      case 'session/prompt':
+        return this.prompt(params);
+      case 'session/resume':
+        await this.ensureRoot(requiredSessionId(params), { resumeOnly: true });
+        return {};
+      case 'session/wait':
+        return this.waitRoot(requiredSessionId(params));
+      case 'shutdown':
+        return this.shutdown();
       default:
-        return super.handleRequest(method, params);
+        throw Error('SDK_METHOD_NOT_ALLOWED');
     }
   }
 }
@@ -1912,7 +1880,7 @@ const server = new AllRiceHarnessSdkJsonRpcServer(ctx, transport, {
 });
 // Since Session v2, live chunks use a separate Agent channel. The pinned SDK
 // forwards durable Session events only; keep the native frame identity intact.
-server.disposers.push(
+server.ownDisposers.push(
   ctx.on('agent/assistant-stream', ({ agent, frame }) => {
     transport.notify('session.assistant-stream', {
       sessionId: String(agent.session.id),
