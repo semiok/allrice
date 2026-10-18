@@ -65,6 +65,16 @@ policy, not permission to issue a new origin during execution.
 
 ## Cleanup and limits
 
+Platform diagnostics and experience consolidation use the configured persistent
+`ALLRICE_DSH_RUNTIME_ROOT` for native journals, including the original immutable
+tenant/owner/context namespace. Their business `workDirectory` and the diagnostic
+Broker's `storageRoot` remain the disposable attempt directory. Native home/cwd
+follows the persistent namespace; it is not the business scratch directory.
+Attempt cleanup, including preparation of another attempt, must not remove the
+journal or change the original pin. A service-only release with the same native
+content ID keeps the same configured storage root. Missing historical scratch
+journals are still rejected; this does not migrate or rebind old histories.
+
 Keep explicit absolute code/storage paths in launchd/environment configuration
 so the existing cleanup tool protects running and retained roots. Retained
 compact code also carries `.KEEP`; remove it only after a fresh complete
