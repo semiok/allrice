@@ -4,6 +4,7 @@ import {
   listKnowledgeSourceFilesForExecution,
   retrieveKnowledgeForExecution,
   retrieveSelectedReferenceKnowledge,
+  maximumKnowledgeTextBytes,
   type ContentIdentity,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
@@ -14,7 +15,6 @@ import type {
   KnowledgeRetrievalResult,
 } from '@allrice/contracts';
 
-const maximumKnowledgeFileBytes = 2_000_000;
 const chunkCharacters = 2_400;
 const chunkOverlap = 240;
 
@@ -23,7 +23,7 @@ export async function readKnowledgeText(
   object: Parameters<LocalStorageAdapter['get']>[0],
   verifyChecksum = false,
 ) {
-  if (object.sizeBytes > maximumKnowledgeFileBytes) {
+  if (object.sizeBytes > maximumKnowledgeTextBytes) {
     throw new Error('knowledge source file exceeds the indexing limit');
   }
   const stream = await storage.get(object);
@@ -35,7 +35,7 @@ export async function readKnowledgeText(
       const chunk = await reader.read();
       if (chunk.done) break;
       size += chunk.value.byteLength;
-      if (size > maximumKnowledgeFileBytes) {
+      if (size > maximumKnowledgeTextBytes) {
         throw new Error('knowledge source file exceeds the indexing limit');
       }
       chunks.push(chunk.value);

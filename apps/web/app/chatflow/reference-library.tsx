@@ -538,7 +538,8 @@ export function ReferenceLibrary({
               )}
               {r.companyTemplate &&
                 r.canRetryProcessing &&
-                r.processing === 'failed' && (
+                (r.processing === 'failed' ||
+                  r.processing === 'unsupported') && (
                   <Button
                     disabled={busy}
                     onClick={() => void action(r, 'retry')}
@@ -577,7 +578,9 @@ export function ReferenceLibrary({
                       >
                         更新文件
                       </Button>
-                      {r.processing === 'failed' && (
+                      {(r.processing === 'failed' ||
+                        (r.processing === 'unsupported' &&
+                          r.canRetryProcessing)) && (
                         <Button
                           disabled={busy}
                           onClick={() => void action(r, 'retry')}

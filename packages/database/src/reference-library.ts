@@ -24,6 +24,7 @@ import {
 } from './artifact-review.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { getDatabase } from './core/client.ts';
+import { isIndexableKnowledgeTextSource } from './memory/knowledge-retrieval.ts';
 import { isPlatformAdmin } from './providers/model-pool.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { createStorageMetadata, DataAccessError } from './data.ts';
@@ -231,7 +232,13 @@ export async function listReferenceRevisions(
           processing: r.file_state === 'pending' ? 'uploading' : r.state,
           failure: r.failure,
           canMaintain: !s.legacy_company_asset_id && access.canMaintain,
-          canRetryProcessing: access.canMaintain,
+          canRetryProcessing:
+            access.canMaintain &&
+            (r.state !== 'unsupported' ||
+              isIndexableKnowledgeTextSource({
+                mediaType: r.media_type,
+                sizeBytes: Number(r.size_bytes),
+              })),
           createdAt: r.created_at.toISOString(),
           ...(s.legacy_company_asset_id
             ? {
@@ -774,17 +781,24 @@ export async function changeReference(
         throw new ReferenceLibraryError('request_conflict');
       return { sourceId: source.id };
     }
-    const [r] =
-      await tx`select id,revision from allrice_knowledge_revisions where knowledge_source_id=${source.id}
-      and (${!legacy} or revision=${v.expectedRevision}) order by revision desc limit 1`;
+    const [r] = await tx`select r.id,r.revision,o.media_type,o.size_bytes
+      from allrice_knowledge_revisions r left join allrice_storage_objects o on o.id=r.file_object_id
+      where r.knowledge_source_id=${source.id}
+      and (${!legacy} or r.revision=${v.expectedRevision}) order by r.revision desc limit 1`;
     if (!r || r.revision !== v.expectedRevision)
       throw new ReferenceLibraryError('version_conflict');
     if (v.action === 'retry') {
       if (source.status !== 'active') throw new DataAccessError('not_found');
       if (legacy) await assertLegacyReferenceRevision(tx, r.id, legacy.id);
+      const retryUnsupported =
+        r.size_bytes !== null &&
+        isIndexableKnowledgeTextSource({
+          mediaType: r.media_type ?? '',
+          sizeBytes: Number(r.size_bytes),
+        });
       const rows =
         await tx`update allrice_knowledge_processing set state='saved',attempts=0,failure=null,updated_at=clock_timestamp()
-        where revision_id=${r.id} and state='failed' returning revision_id`;
+        where revision_id=${r.id} and (state='failed' or (state='unsupported' and ${retryUnsupported})) returning revision_id`;
       if (!rows.length) {
         const [p] =
           await tx`select state from allrice_knowledge_processing where revision_id=${r.id}`;
