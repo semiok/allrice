@@ -11,15 +11,24 @@ export function normalizeModelFailure(chunk, options) {
     options.signal?.aborted ||
     chunk.type !== 'finish' ||
     chunk.reason?.kind !== 'error' ||
-    chunk.reason.failure?.code !== 'PI_AI_ERROR' ||
-    chunk.reason.failure.message !== codexOverloadMessage
+    chunk.reason.failure?.code !== 'PI_AI_ERROR'
   )
     return chunk;
+  const message = chunk.reason.failure.message;
+  const code =
+    message === codexOverloadMessage
+      ? 'SERVER'
+      : typeof message === 'string' &&
+          (/^WebSocket closed 1006(?:\s|$)/i.test(message) ||
+            /^WebSocket closed 1000$/i.test(message))
+        ? 'TRANSPORT'
+        : null;
+  if (!code) return chunk;
   return {
     ...chunk,
     reason: {
       ...chunk.reason,
-      failure: { ...chunk.reason.failure, code: 'SERVER' },
+      failure: { ...chunk.reason.failure, code },
     },
   };
 }

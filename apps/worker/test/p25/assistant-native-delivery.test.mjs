@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+import { finalAssistantOutput } from '@deepseek-ai/dsh-subagent';
 import { createGovernedAssistantNativeRuntime } from '../../dsh/allrice-assistant-runtime.mjs';
 
 // The pinned native notification/output selector, not a reimplementation of
@@ -10,11 +11,10 @@ const require = createRequire(import.meta.url);
 const nativeRoot = dirname(
   require.resolve('@deepseek-ai/dsh-subagent/package.json'),
 );
-const { ContinuableActivationRegistry } = await import(
-  pathToFileURL(join(nativeRoot, 'lib/types/continuation-activation.js')).href
-);
-const { finalAssistantOutput } = await import(
-  pathToFileURL(join(nativeRoot, 'lib/types/assistant-output.js')).href
+// Version-bound test probe only: production uses the published Service/host
+// seam, never constructs this private manager or accesses its activation map.
+const { SubagentManager } = await import(
+  pathToFileURL(join(nativeRoot, 'lib/types/manager.js')).href
 );
 const storedResult = {
   deliveryId: 'b4f9f726-f4e0-499d-8331-ed88767dfe09',
@@ -76,15 +76,12 @@ function fixture(result = storedResult) {
     nativeSessionId: 'synthetic-child',
     parentNativeSessionId: parent.id,
   });
-  const manager = Object.assign(
-    Object.create(ContinuableActivationRegistry.prototype),
-    {
-      ctx,
-      resident: new Map(),
-      closingScopes: new Map(),
-      draining: false,
-    },
-  );
+  const manager = Object.assign(Object.create(SubagentManager.prototype), {
+    ctx,
+    resident: new Map(),
+    closingScopes: new Map(),
+    draining: false,
+  });
   const nativeOutput = finalAssistantOutput([
     {
       type: 'assistant/message',
@@ -120,7 +117,13 @@ function fixture(result = storedResult) {
   ]);
   const notify = (childId = 'synthetic-child', output = nativeOutput) =>
     manager.notifySettlement(
-      { announced: true, childId, parentSession: parent.id },
+      {
+        announced: true,
+        kind: 'local',
+        handle: { agent: agents.get(childId) },
+        childId,
+        parent,
+      },
       { stopReason: 'completed', output },
     );
   return {

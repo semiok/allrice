@@ -1,3 +1,4 @@
+import { DSH_DISTRIBUTION_CURRENT_VERSION } from './dsh-distribution.js';
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
@@ -36,7 +37,9 @@ describe('AllRice restricted DSH profile', () => {
 
     for (const plugin of approvedPlugins) {
       expect(profile).toContain(`name: '${plugin}'`);
-      expect(workerPackage.dependencies[plugin]).toBe('0.1.5-rc.3');
+      expect(workerPackage.dependencies[plugin]).toBe(
+        DSH_DISTRIBUTION_CURRENT_VERSION,
+      );
     }
     for (const plugin of deniedHostPlugins) {
       expect(profile).not.toContain(`name: '${plugin}'`);
@@ -63,7 +66,7 @@ describe('AllRice restricted DSH profile', () => {
       '@deepseek-ai/dsh-subagent-spawn-in-process',
       '@deepseek-ai/dsh-user-approval',
     ]) {
-      expect(pkg.dependencies[name]).toBe('0.1.5-rc.3');
+      expect(pkg.dependencies[name]).toBe(DSH_DISTRIBUTION_CURRENT_VERSION);
       expect(pkg.devDependencies[name]).toBeUndefined();
     }
     const production = await readFile(

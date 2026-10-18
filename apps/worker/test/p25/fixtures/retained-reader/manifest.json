@@ -1,0 +1,231 @@
+{
+  "schemaVersion": 1,
+  "sourceCommit": "c65c15675ace31bef105b879ac7b3217f427af5d",
+  "sourceDirectory": "apps/worker/dsh",
+  "version": "0.1.5-rc.3",
+  "bundleSha256": "a10882ec1c15778f980db762deda951735b28d0d824e8fd1c660c427161db34f",
+  "sourceLicense": "Apache-2.0 (AllRice-owned adapter only; published DSH modules installed separately under MIT)",
+  "purpose": "Isolated historical regression fixture, not deployment approval or a shipped alternative runtime",
+  "files": [
+    {
+      "name": "allrice-assistant-runtime.mjs",
+      "bytes": 44670,
+      "sha256": "7fec18eb6c2fa4c0a23ba3446cb43e57f87502def8f1903d78dff6e0182104b2"
+    },
+    {
+      "name": "allrice-browser-workspace-native-tools.mjs",
+      "bytes": 8357,
+      "sha256": "f3c29d929917ce2884a868236b072cfd18099ce1de567bb181a57ff803ee96c2"
+    },
+    {
+      "name": "allrice-cloud-native-tools.mjs",
+      "bytes": 14501,
+      "sha256": "947435e88428a9174a630461dafda158571c5f70c1f8e97c1026dc0621a0a71e"
+    },
+    {
+      "name": "allrice-codex-auth-transport.mjs",
+      "bytes": 2397,
+      "sha256": "a04207ecfb9964a326eee2aae4070e5a08981e4e05a6fb12e4339b6a0f73e9e5"
+    },
+    {
+      "name": "allrice-codex-cap-probe.cordis.yml",
+      "bytes": 292,
+      "sha256": "391d034da5b03140687d1f0021c9f748ce6638a50f98d7b2b399a6cbcedd754b"
+    },
+    {
+      "name": "allrice-codex-images.mjs",
+      "bytes": 6233,
+      "sha256": "5f7b753a43546474637546b6a107a2809255738599276c2c84d2f5d1746e5877"
+    },
+    {
+      "name": "allrice-codex-subscription-cap-probe-host.mjs",
+      "bytes": 1535,
+      "sha256": "98226e06d92432fb8da0c6d0580dff0ac8a70434f1b97531c31e14d4841592b3"
+    },
+    {
+      "name": "allrice-codex-subscription-cap-probe.mjs",
+      "bytes": 8716,
+      "sha256": "177d176fa1dfdbd0d7515f48f7a7eb40e91182448e54086646c5a9d115545926"
+    },
+    {
+      "name": "allrice-codex-subscription-quota.mjs",
+      "bytes": 18425,
+      "sha256": "c0952fb0dad74eb45aa8ca650756957cb972c697c2540e38b0b921f1e0f34729"
+    },
+    {
+      "name": "allrice-content-guard.mjs",
+      "bytes": 564,
+      "sha256": "054dafa7c2dfd3564398df4ee82774af369c7e5b5fd232f06112d126c6573591"
+    },
+    {
+      "name": "allrice-context-projection.mjs",
+      "bytes": 1358,
+      "sha256": "4a93ac29ce898fc563a4b80d52fefa882beb9d654d5df9233e41a36c1c52bbd9"
+    },
+    {
+      "name": "allrice-dsh-inputs.mjs",
+      "bytes": 5812,
+      "sha256": "bcdc7b56aece7b6c1958f1cdf53d34372280539bf3980c4601f64d91c27599d9"
+    },
+    {
+      "name": "allrice-dsh-runtime-compatibility.mjs",
+      "bytes": 2930,
+      "sha256": "4e495c5ad6607cd2e61019f76f61f558df5f9a55088efe443b9cc6522e217c8d"
+    },
+    {
+      "name": "allrice-dsh-waits.mjs",
+      "bytes": 6745,
+      "sha256": "4e417b61646b5512bd5d2a99b1ab97092b423264a477633c0d487be4fcddcb5b"
+    },
+    {
+      "name": "allrice-employee-method-native-tools.mjs",
+      "bytes": 14611,
+      "sha256": "0fa638c0f677261c267b2c8576a2a49cfd46658632677704d64b4b4cd26e1d1a"
+    },
+    {
+      "name": "allrice-employee-profile-native-tools.mjs",
+      "bytes": 1701,
+      "sha256": "ff92d4266760a04fc936a71734d084188c33811f3ade9b98fd58e61309739b5b"
+    },
+    {
+      "name": "allrice-jsonrpc-runtime.mjs",
+      "bytes": 76383,
+      "sha256": "64353f554be1fa65a5b3252ab51c61191297eabe7c0978431bca4994acf55861"
+    },
+    {
+      "name": "allrice-local-file-native-tools.mjs",
+      "bytes": 6774,
+      "sha256": "a0a299943020b54e3cf83641d36ea11d2a3437050bf42d008a01d7bea58596bb"
+    },
+    {
+      "name": "allrice-local-mcp-native-tools.mjs",
+      "bytes": 2301,
+      "sha256": "3a1c3938e0640eb8a5937902339848d317dd1e70b77a11583412cc68d2e83ce9"
+    },
+    {
+      "name": "allrice-mcp-native-tools.mjs",
+      "bytes": 2986,
+      "sha256": "46368e08614c89e88b461d746164b99f9ebd83782f880a45c488f0266cc9f2b7"
+    },
+    {
+      "name": "allrice-method-questions.mjs",
+      "bytes": 2326,
+      "sha256": "7ed609c3abd9407fb92a0811e0715d95224ebab21319e4ec011af07d647a3601"
+    },
+    {
+      "name": "allrice-method-test-native-tools.mjs",
+      "bytes": 1541,
+      "sha256": "595ca366493280ebe732c7587215fbcb328f4278a30eef3406b39f1478b99592"
+    },
+    {
+      "name": "allrice-model-errors.mjs",
+      "bytes": 1323,
+      "sha256": "03ed9386ec651660eec40f1f96f740ce2f47b0d9d295d1f8617f1b9e649b39bb"
+    },
+    {
+      "name": "allrice-model-stream.mjs",
+      "bytes": 5006,
+      "sha256": "22ed785415f4d30802749dd0af9576832900ec8f7fc252d6c8d35dbe109a7890"
+    },
+    {
+      "name": "allrice-model-timing.mjs",
+      "bytes": 2217,
+      "sha256": "2de72f4e1f872d064e3c99c31bcb5f72da71052719cb1703403b0a4299e42a74"
+    },
+    {
+      "name": "allrice-model-transport.mjs",
+      "bytes": 12784,
+      "sha256": "91572648c09a42a643df5e0e01c5e67f3570518bba093e77dd66515988e51f44"
+    },
+    {
+      "name": "allrice-personal-skill-native-tools.mjs",
+      "bytes": 6144,
+      "sha256": "4fc82169d7bc341a675821d708ce0771e1d7a03e01147d01e9c7c3d201a5a041"
+    },
+    {
+      "name": "allrice-project-native-tools.mjs",
+      "bytes": 12366,
+      "sha256": "11d59c0a97fb90efb2b82c46c2f7a2feb5013b22c204e9c567957d149e6a5d88"
+    },
+    {
+      "name": "allrice-reconciliation-native-tools.mjs",
+      "bytes": 1560,
+      "sha256": "ee38154714827287209c89a3404b8572f18d5ddbe137a0acd60da94fc93ebadc"
+    },
+    {
+      "name": "allrice-restricted.cordis.yml",
+      "bytes": 5353,
+      "sha256": "4f49ba1c9d69c05a7f881e1983110757b423838b09fd7345e6f9b14e05b87f65"
+    },
+    {
+      "name": "allrice-sandbox-native-parameters.mjs",
+      "bytes": 1331,
+      "sha256": "fb037d571e63b671349fada95a1177522f603e32e763603c2783b2745bd04577"
+    },
+    {
+      "name": "allrice-scene-provider.mjs",
+      "bytes": 5667,
+      "sha256": "fda54e306227ccba812ce7591f5a8cc10a45b41f9d00b57173295907f7a531fa"
+    },
+    {
+      "name": "allrice-session-compatibility.mjs",
+      "bytes": 3048,
+      "sha256": "935bc8b70552a80d756b6e9f3bed55f4a5ec2863ab48b427452aef445fb84a09"
+    },
+    {
+      "name": "allrice-session-references.mjs",
+      "bytes": 4296,
+      "sha256": "4387d9598da16f985cfc6b9f4f5ab5735660a1d58a999d9b4ebcb206e76b6d0f"
+    },
+    {
+      "name": "allrice-skill-native-tools.mjs",
+      "bytes": 1533,
+      "sha256": "e65b8f05922fd983bacae62ee726b30eb66a411aa26f64c5e7656e3a9eac48a1"
+    },
+    {
+      "name": "allrice-task-progress.mjs",
+      "bytes": 11848,
+      "sha256": "7f2be8e0fe3c2803028500d493be35ec13678accfd8e16dacc8a89f2a2b628b4"
+    },
+    {
+      "name": "allrice-technical-native-tools.mjs",
+      "bytes": 4316,
+      "sha256": "38f2e004bb3e3ca8404b3b09e81645f78ffd531683bd254b4b7cdabc3b0f32be"
+    },
+    {
+      "name": "allrice-technical.cordis.yml",
+      "bytes": 5136,
+      "sha256": "7e5095b07dd99057e767d0414edf95671cb474bab5885298e746a6ee5bcb4a71"
+    },
+    {
+      "name": "allrice-tool-timeouts.mjs",
+      "bytes": 284,
+      "sha256": "f8c11bd7ad44af80faada3388a9f1c30fee0b7d293f1cf4e4043b44f3cdb92ac"
+    },
+    {
+      "name": "allrice-workbench-native-tools.mjs",
+      "bytes": 11491,
+      "sha256": "a756b4a8fead99b8b84a8ae6c304b5b9c29819c80b3e76f1475edf5d4edde7a2"
+    },
+    {
+      "name": "compatibility.json",
+      "bytes": 4360,
+      "sha256": "4a2305c6a6af618763fb1c8ee7f07dfe9c8864119180fa81b26b2265090c9f29"
+    },
+    {
+      "name": "distribution.json",
+      "bytes": 1392,
+      "sha256": "1257713a6a362e819a404741a8377f3e77154d5b1224a38cc2188109be54e4e4"
+    },
+    {
+      "name": "patch-ledger.json",
+      "bytes": 11678,
+      "sha256": "6ef7b42aaf082e9c539feac56cdf8b998b9fbaa44cbcd3658d76e99db97bfc03"
+    },
+    {
+      "name": "upstream.json",
+      "bytes": 372,
+      "sha256": "4ea363182ca1e5aadce6d455917910cf2c8e00c5960d573f65b4f8244f176410"
+    }
+  ]
+}

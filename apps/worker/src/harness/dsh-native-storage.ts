@@ -5,6 +5,7 @@ import { HandlerError } from '../errors.js';
 import type * as NativeCordis from '@deepseek-ai/cordis';
 import type * as NativePersistence from '@deepseek-ai/dsh-session-persistence-jsonl';
 import type * as NativeSession from '@deepseek-ai/dsh-session';
+import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence';
 
 /** Metadata-only read through the approved reader's public backend. No model,
  * AgentLoop, writer, path-layout copy or new storage materialization. */
@@ -17,21 +18,22 @@ export async function assertStoredNativeSession(
   const { Context } = (await import(
     pathToFileURL(require.resolve('@deepseek-ai/cordis')).href
   )) as typeof NativeCordis;
-  const { default: Backend } = (await import(
+  const backend = (await import(
     pathToFileURL(require.resolve('@deepseek-ai/dsh-session-persistence-jsonl'))
       .href
-  )) as typeof NativePersistence;
+  )) as typeof NativePersistence & { default?: typeof NativePersistence };
   const { SessionId } = (await import(
     pathToFileURL(require.resolve('@deepseek-ai/dsh-session')).href
   )) as typeof NativeSession;
   const ctx = new Context();
-  const reader = ctx.plugin(Backend, {
+  const reader = ctx.plugin(backend.default ?? backend, {
     root: descriptor.storageNamespace,
     compression: 'none',
   });
   try {
     await reader.await();
-    const stored = await ctx.sessionPersistence.stat(
+    const persistence = ctx.get('sessionPersistence') as SessionPersistence;
+    const stored = await persistence.stat(
       SessionId(descriptor.nativeSessionId),
       { signal },
     );

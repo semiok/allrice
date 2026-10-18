@@ -1,4 +1,61 @@
-import { assertReleasedEventPayload } from '@deepseek-ai/dsh-session-format-v0-to-v1';
+import { z } from 'zod';
+
+// AllRice owns the exact private payload contract. Released native vocabulary
+// remains upstream-owned; no unknown required event becomes ignorable.
+const text = z.string().min(1);
+const inputId = z
+  .string()
+  .regex(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+const turnId = text.regex(/:turn:[1-9][0-9]*$/);
+const question = z
+  .object({
+    id: text,
+    question: text,
+    header: z.string().optional(),
+    detail: z.string().optional(),
+    options: z
+      .array(
+        z.object({ label: text, description: z.string().optional() }).strict(),
+      )
+      .optional(),
+    multiSelect: z.boolean().optional(),
+    intent: z
+      .object({ kind: z.literal('plan-review'), approve: text })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine(
+    (q) =>
+      !q.intent ||
+      (typeof q.detail === 'string' &&
+        q.options?.some((o) => o.label === q.intent.approve)),
+  );
+const privatePayloads = {
+  'allrice/wait/checkpoint': z
+    .object({
+      sessionId: text,
+      questionId: text,
+      turnId,
+      questions: z.array(question).min(1),
+    })
+    .strict()
+    .refine((p) => p.turnId.startsWith(p.sessionId + ':turn:')),
+  'allrice/input/request': z
+    .object({
+      inputId,
+      digest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+      messageId: text,
+      turnId,
+    })
+    .strict(),
+  'allrice/input/answered': z
+    .object({ inputId, questionId: text, turnId })
+    .strict(),
+  'allrice/wait/continued': z.object({ questionId: text, inputId }).strict(),
+};
 
 const privateTypes = new Set([
   'allrice/wait/checkpoint',
@@ -23,7 +80,7 @@ export function validateAllriceSessionJournal(header, events) {
   for (const event of events) {
     if (event.type === 'turn/start') turn = event.data.turn;
     if (!privateTypes.has(event.type)) continue;
-    assertReleasedEventPayload(event, 3);
+    privatePayloads[event.type].parse(event.data);
     const data = event.data;
     // Seeded child histories require a separately reviewed migration path.
     // Never attribute an inherited root question to the child reading it.

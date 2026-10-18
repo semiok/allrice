@@ -1,3 +1,4 @@
+import { retainedReaderFixture } from './retained-reader-fixture.js';
 import { join, resolve } from 'node:path';
 
 import { DSH_DISTRIBUTION_CURRENT_VERSION } from '../../src/harness/dsh-distribution.js';
@@ -10,26 +11,36 @@ import { p24Fixture } from '../p24/fixture.js';
 /** Production stdio adapter, disposable storage, synthetic loopback model only. */
 export async function legacySessionFixture(
   model: Parameters<typeof p24Fixture>[0],
+  reader: 'retained' | 'candidate' = 'retained',
 ) {
   const fixture = await p24Fixture(model);
+  const legacy =
+    reader === 'retained'
+      ? await retainedReaderFixture(fixture.root)
+      : {
+          entrypoint: resolve(
+            import.meta.dirname,
+            '../../dsh/allrice-jsonrpc-runtime.mjs',
+          ),
+          profile: resolve(
+            import.meta.dirname,
+            '../../dsh/allrice-restricted.cordis.yml',
+          ),
+          version: DSH_DISTRIBUTION_CURRENT_VERSION,
+        };
   const clients: DshProtocolClient[] = [];
   return {
     ...fixture,
     async runtime(nativeTools: string[] = []) {
       const client = new DshProtocolClient({
         command: process.execPath,
-        args: [
-          resolve(import.meta.dirname, '../../dsh/allrice-jsonrpc-runtime.mjs'),
-        ],
+        args: [legacy.entrypoint],
         cwd: fixture.root,
         requestTimeoutMs: 15_000,
         environment: {
           PATH: process.env.PATH ?? '/usr/bin:/bin',
-          DSH_CORDIS_CONFIG: resolve(
-            import.meta.dirname,
-            '../../dsh/allrice-restricted.cordis.yml',
-          ),
-          DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+          DSH_CORDIS_CONFIG: legacy.profile,
+          DSH_DISTRIBUTION_VERSION: legacy.version,
           DSH_SESSION_ROOT: join(fixture.root, 'sessions'),
           DSH_HOME: fixture.root,
           DSH_CWD: fixture.root,
@@ -48,7 +59,7 @@ export async function legacySessionFixture(
         provider: 'openai-compatible',
         model: 'legacy-replay',
         nativeTools,
-        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        expectedVersion: legacy.version,
         requireDurableQuestions: true,
       });
       return { client, notices };

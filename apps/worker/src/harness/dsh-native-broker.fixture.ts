@@ -1,3 +1,4 @@
+import { readDshToolResult } from '@allrice/contracts';
 /** Real pinned DSH child + real JSON-RPC + synthetic loopback provider.
  * Transport contract only; this is not real-model/business acceptance. */
 import { randomUUID } from 'node:crypto';
@@ -159,7 +160,7 @@ export async function nativeBrokerRoundtrip(input: {
       nativeRetries++;
     if (notice.method === 'session.event' && event?.type === 'tool/result')
       nativeToolFailures.push(
-        event.data?.message?.content?.[0]?.isError === true,
+        readDshToolResult(event.data?.message)?.isError === true,
       );
   });
   const inbound = dshInboundToolHandler({

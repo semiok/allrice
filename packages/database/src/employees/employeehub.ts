@@ -907,12 +907,14 @@ export async function manageEmployeeAssignments(
     await transaction`
       update allrice_chat_sessions session
       set employee_version_id = assignment.employee_version_id
-      from allrice_employee_assignments assignment
+      from allrice_employee_assignments assignment, allrice_employee_versions version
       where assignment.id = session.employee_assignment_id
         and assignment.organization_id = ${context.organizationId}
         and assignment.workspace_id = ${workspaceId}
         and assignment.employee_id = ${employee.id}
         and assignment.active
+        and version.id=assignment.employee_version_id
+        and allrice_native_session_version_compatible(session.native_root_origin,version.manifest)
         and session.organization_id = assignment.organization_id
         and session.workspace_id = assignment.workspace_id
         and session.employee_version_id <> assignment.employee_version_id
@@ -1080,12 +1082,15 @@ export async function assignEmployeeVersion(
   const row = rows[0];
   if (!row) throw new EmployeeHubError('not_found');
   await sql`
-    update allrice_chat_sessions
+    update allrice_chat_sessions session
     set employee_version_id = ${update.employeeVersionId}
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and employee_assignment_id = ${assignmentId}
-      and employee_version_id <> ${update.employeeVersionId}
+    from allrice_employee_versions version
+    where session.organization_id = ${context.organizationId}
+      and session.workspace_id = ${workspaceId}
+      and session.employee_assignment_id = ${assignmentId}
+      and session.employee_version_id <> ${update.employeeVersionId}
+      and version.id=${update.employeeVersionId}
+      and allrice_native_session_version_compatible(session.native_root_origin,version.manifest)
   `;
   await sql`
     insert into allrice_audit_events (

@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import { z } from 'zod';
+import { newInternalNativeRootOrigin } from './conversation/native-root-origin.ts';
 import {
   ExperienceCollectionPolicySchema,
   ExperiencePolicySettingsSchema,
@@ -414,10 +415,16 @@ export async function claimExperienceOccurrence(
     createdAt: new Date().toISOString(),
     sources,
   });
+  const origin = sources.length
+    ? newInternalNativeRootOrigin('experience_consolidation', occurrence.id, {
+        recipe: 'allrice-experience-consolidation/v1',
+        occurrence,
+      })
+    : null;
   const [written] =
     await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,status,
-    experience_occurrence,completed_at,error_code) values(${occurrence.id},${rule.organization_id},${rule.workspace_id},${rule.id},
-      ${rule.next_run_at!},${sources.length ? 'queued' : 'succeeded'},${tx.json(occurrence)},${sources.length ? null : new Date()},${sources.length ? null : 'EXPERIENCE_NO_NEW_EVIDENCE'})
+    experience_occurrence,completed_at,error_code,native_root_origin) values(${occurrence.id},${rule.organization_id},${rule.workspace_id},${rule.id},
+      ${rule.next_run_at!},${sources.length ? 'queued' : 'succeeded'},${tx.json(occurrence)},${sources.length ? null : new Date()},${sources.length ? null : 'EXPERIENCE_NO_NEW_EVIDENCE'},${origin ? tx.json(origin) : null})
     on conflict(automation_id,scheduled_for) where folder_event_id is null do nothing returning id`;
   if (!written) return null;
   if (!sources.length) return null; // No job, route, native runtime or model charge.

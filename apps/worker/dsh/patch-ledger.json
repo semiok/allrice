@@ -4,7 +4,7 @@
     {
       "id": "allrice-observed-model-recovery-v1",
       "issue": "Run 12a3b810; Run 9620a5c1",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-model-transport.mjs",
       "reason": "Request-scoped SSE diagnostics and session-scoped public pi-ai cleanup. A local idle failure reaches existing bounded native retry only after read/iterator/transport drain, quiescent tools and acknowledged observational accounting. Preserve completed tools, files, unknown usage and current authority; no DSH core edits or whole-Run replay."
@@ -12,7 +12,7 @@
     {
       "id": "allrice-progressive-scene-provider-v1",
       "issue": "MET-179",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-scene-provider.mjs",
       "reason": "Public native Skill Provider freezes metadata only, reads exact scene content through Worker ACL/lease and persists dependencies before returning bytes. Successful native tool results register adoption before dispatch. No core patch, new agent loop, or permission grant."
@@ -20,7 +20,7 @@
     {
       "id": "allrice-employee-content-authorization-v1",
       "issue": "MET-179",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-content-guard.mjs",
       "reason": "Recheck Worker-owned frozen content provenance at the public llm/stream seam, including native retry and compaction with assistants enabled or disabled. A revoked generation cannot dispatch or replay its old native log. No DSH core edit, alternative loop or model-supplied permission is introduced."
@@ -28,15 +28,15 @@
     {
       "id": "allrice-codex-overload-normalization-v1",
       "issue": "Run 95cc7925; Run 22664651",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-model-errors.mjs",
-      "reason": "Normalize only the exact openai-codex PI_AI_ERROR overload receipt to SERVER at the public llm/stream seam, before accounting observers. Reuse native bounded request retries; preserve unknown usage, settlement ACK gates and completed tools. Generic processing errors remain unchanged. No DSH source, dependency, policy or whole-Run replay changes. Retirement criteria and wire evidence are recorded in the reuse decisions."
+      "reason": "Normalize only the exact openai-codex PI_AI_ERROR overload receipt to SERVER at the public llm/stream seam, before accounting observers. Reuse native bounded request retries; preserve unknown usage, settlement ACK gates and completed tools. Generic processing errors remain unchanged. No DSH source, dependency, policy or whole-Run replay changes. Retirement criteria and wire evidence are recorded in the reuse decisions. In 0.2.1 the exact premature Codex WebSocket 1000/1006 PI_AI_ERROR forms also map to TRANSPORT here; native retry priority, bounds, no whole-Run replay and unknown settlement remain unchanged."
     },
     {
       "id": "allrice-office-native-v1",
       "issue": "MET-157",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-workbench-native-tools.mjs",
       "reason": "Expose structured Office creation/edit arguments and document structure reads to the actual native model; move authorized file listing into the same native loop. Broker validation, source checksums and tenant permissions remain authoritative. Real pinned-DSH transport tests cover all three formats and edits."
@@ -44,7 +44,7 @@
     {
       "id": "allrice-durable-native-question-wait-v1",
       "issue": "MET-153",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-dsh-waits.mjs",
       "reason": "Checkpoint a sole root's quiescent user question, drain and release its host, adopt the exact typed answer from the durable journal and continue the existing conversation once. Active tools/children exclude parking; unknown dispatch is never replayed. No second Agent loop or implicit action approval."
@@ -52,7 +52,7 @@
     {
       "id": "allrice-durable-progress-guard-v1",
       "issue": "MET-153",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-task-progress.mjs",
       "reason": "Native middleware records request/tool receipts and pauses repeated failures through the root Ask User transport. Verified new subscription Runs observe call counts instead of fixed task caps. Durable Worker port preserves ownership, lease, cancellation, bounded state and unknown-side-effect no-replay; no extra Agent loop, LLM judge or implicit approval."
@@ -60,7 +60,7 @@
     {
       "id": "allrice-durable-task-clock-v1",
       "issue": "MET-153",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
       "reason": "Report actual coordinator idle for the durable root clock; join waits under Worker lease/cancel supervision, while single requests and tools retain bounded lifetimes. No second agent loop or implicit authority."
@@ -68,7 +68,7 @@
     {
       "id": "allrice-development-workflow-v1",
       "issue": "MET-144",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
       "reason": "Bounded native development coordination: pre-dispatch assignments, real attributed proposals, exact-version tests and independent reviews; no new loop, implicit tools, direct file writes or approval."
@@ -76,7 +76,7 @@
     {
       "id": "allrice-assistant-required-delivery-v1",
       "issue": "MET-151",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-assistant-runtime.mjs",
       "reason": "Describe required explicit assistant.report permission and exact artifact/output result schema. Worker rejects an undeliverable child before provisioning and returns correctable validation errors without ending the child turn; no implicit tool grant, fabricated evidence or native-idle success."
@@ -84,7 +84,7 @@
     {
       "id": "allrice-workbench-native-changeset-v1",
       "issue": "MET-147",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-workbench-native-tools.mjs",
       "reason": "Expose the existing Broker changeset proposal schema to the actual native model; preserve server target binding, exact approval and file CAS. Contract tests keep native/Broker artifact and format enums aligned."
@@ -92,7 +92,7 @@
     {
       "id": "allrice-bounded-native-search-v1",
       "issue": "MET-150",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
       "reason": "Route ordinary native web_search through the tenant Tool Broker for audited bounded results and durable full-result files; keep upstream DSH unchanged."
@@ -100,10 +100,10 @@
     {
       "id": "allrice-jsonrpc-lifecycle-v1",
       "issue": "MET-85",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
-      "reason": "Expose native session lifecycle and report the installed distribution version. Image admission and ordered durable-reference projection reuse rc.3 AttachmentStore.admitPromptContent; the AllRice wire bridge retains display names omitted by SDK inline images. No upstream source patch or additional tool authority. Restore method-confirmation detail omitted by rc.3's ask_user_question only from the same live agent's latest server receipt; keep exact persisted approval checks and native durable wait/answer semantics."
+      "reason": "Single existing Host composes the published public SDK, one business root and SDK-owned AgentHandles. AllRice retains its own exact-Agent/epoch lifecycle fence, public event forwarding through bounded teardown, resume-only recovery, questions, references and authorization. No SDK private access, alternate loop or second Worker."
     },
     {
       "id": "dsh-admin-webui-private-entrypoint-v1",
@@ -131,7 +131,7 @@
     },
     {
       "id": "allrice-session-reference-v1",
-      "upstreamVersion": "0.1.5-rc.3",
+      "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-session-references.mjs",
       "reason": "Adapt server-authorized frozen Allrice message text to the native SessionReferenceResolver. Use an isolated query port and native pre-step durable context; no runtime journal discovery, new tools or additional model loop. Platform ACL, input idempotency, visibility and queued-start rechecks remain authoritative."
@@ -151,6 +151,22 @@
       "kind": "upstream-source-patch",
       "path": "patches/@deepseek-ai__dsh-client-connection@0.1.5-rc.3.patch",
       "reason": "The existing native client recognizes the authenticated administrator gateway HTML marker while preserving native server authentication, Host/Origin checks and loopback restrictions. The marker itself is not an authorization credential. Retirement and rollback conditions remain in the governed administrator architecture."
+    },
+    {
+      "id": "allrice-managed-native-mcp-public-v2",
+      "issue": "MET-192",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/src/mcp/native-transport.ts",
+      "reason": "Official MCP SDK 2.2 owns connection/pagination. Its explicit injected fetch preserves AllRice current authorization, pinned egress and OAuth, with reconnect retries disabled. The exported DSH createMcpToolDefinition owns native tool output validation/materialization; frozen qualified names remain deterministic. No plugin fork or automatic write replay."
+    },
+    {
+      "id": "allrice-private-v4-payload-validation-v2",
+      "issue": "MET-192",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-session-compatibility.mjs",
+      "reason": "AllRice validates its own exact four private payloads and chronology before public V4 resume. Old private V0/V3 histories stay on the independently approved exact retained reader. No unknown required event is ignored and no original journal is rewritten to bypass refusal."
     }
   ],
   "physicalPatches": [
@@ -184,5 +200,6 @@
       "path": "patches/@deepseek-ai__dsh-session-persistence-jsonl@0.1.5-rc.3.patch",
       "responsibilityId": "allrice-private-session-migration-v1"
     }
-  ]
+  ],
+  "retainedPhysicalVersions": ["0.1.5-rc.3"]
 }

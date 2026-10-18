@@ -43,21 +43,6 @@
 - id: agent
   name: '@deepseek-ai/dsh-agent'
 
-- id: invariants
-  name: '@deepseek-ai/dsh-invariants'
-
-- id: session-invariant
-  name: '@deepseek-ai/dsh-session/invariant'
-
-- id: agent-invariant
-  name: '@deepseek-ai/dsh-agent/invariant'
-
-- id: scope-invariant
-  name: '@deepseek-ai/dsh-scope/invariant'
-
-- id: agent-loop-invariant
-  name: '@deepseek-ai/dsh-agent-loop/invariant'
-
 - id: agent-loop
   name: '@deepseek-ai/dsh-agent-loop'
   config:
@@ -81,6 +66,10 @@
   config:
     path: ':memory:'
     openAt: never
+- id: native-fs
+  name: '@deepseek-ai/dsh-fs-local'
+- id: native-working-directory
+  name: '@deepseek-ai/dsh-working-directory'
 - id: subagents
   name: '@deepseek-ai/dsh-subagent'
 - id: spawn

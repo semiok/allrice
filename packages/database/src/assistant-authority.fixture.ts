@@ -22,6 +22,7 @@ import {
   employeeManifestChecksum,
 } from './employees/employee-config.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
 const defaultControls = (): RuntimePolicyControls => ({
   version: 1,
   enabled: true,
@@ -46,6 +47,8 @@ export async function createAssistantAuthorityFixture(
     /** Frozen at fixture creation; never rewrite an immutable published version. */
     runtimePolicy?: EmployeeRuntimePolicy;
     runtimePackage?: EmployeeRuntimePackage;
+    /** Test-only first-INSERT issuance; historical fixtures remain NULL. */
+    businessCreationOrigin?: boolean;
   } = {},
 ) {
   const selectedTools = options.allowedTools ?? [
@@ -201,8 +204,16 @@ export async function createAssistantAuthorityFixture(
     values(${version},${org},${workspace},${employee},1,'P25 authority',${manifest.provider.model},${manifest.systemPrompt},${tx.json(manifest.capabilities)},${checksum},${tx.json(manifest)},${tx.json(manifest.provider)})`;
     await tx`insert into allrice_employee_assignments(id,organization_id,workspace_id,employee_id,employee_version_id,user_id,is_default)
         values(${assignment},${org},${workspace},${employee},${version},${user},false)`;
-    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,project_id,owner_id,title,employee_assignment_id,employee_version_id)
-        values(${session},${org},${workspace},${task.scope.projectId},${user},'P25 authority',${assignment},${version})`;
+    const origin = options.businessCreationOrigin
+      ? newEmployeeNativeRootOrigin(
+          'chat',
+          session,
+          options.runtimePackage,
+          version,
+        )
+      : null;
+    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,project_id,owner_id,title,employee_assignment_id,employee_version_id,native_root_origin)
+        values(${session},${org},${workspace},${task.scope.projectId},${user},'P25 authority',${assignment},${version},${origin ? tx.json(origin) : null})`;
     await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
     values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),
       (${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;

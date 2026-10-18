@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "harness": "dsh",
   "wireProtocol": "allrice-dsh-jsonrpc-v1",
-  "sessionFormat": "dsh-session-jsonl-v3@0.1.5-rc.3",
+  "sessionFormat": "dsh-session-jsonl-v4@0.2.1-rc.2",
   "runtimeProfile": "apps/worker/dsh/allrice-restricted.cordis.yml",
   "runtimeAdapter": "apps/worker/dsh/allrice-jsonrpc-runtime.mjs",
   "privateInterfaces": [
@@ -10,7 +10,8 @@
       "id": "dsh-admin-webui-entrypoint",
       "upstreamInterface": "@deepseek-ai/dsh/lib/bin.js",
       "adapter": "apps/dsh-admin/dsh-webui-compatibility.mjs",
-      "overrideEnvironmentVariable": "ALLRICE_DSH_COMMAND"
+      "overrideEnvironmentVariable": "ALLRICE_DSH_COMMAND",
+      "upstreamVersion": "0.1.5-rc.3"
     }
   ],
   "configurationTree": [
@@ -26,11 +27,6 @@
     "system-prompt",
     "tools",
     "agent",
-    "invariants",
-    "session-invariant",
-    "agent-invariant",
-    "scope-invariant",
-    "agent-loop-invariant",
     "agent-loop",
     "skill-registry",
     "tool-skill",
@@ -45,7 +41,9 @@
     "session-projection",
     "token-meter",
     "tool-result-pruner",
-    "compaction-basic"
+    "compaction-basic",
+    "native-fs",
+    "native-working-directory"
   ],
   "securityBoundaries": {
     "shell": false,
@@ -128,5 +126,10 @@
       "testFile": "apps/worker/test/p25/task-progress-native.integration.test.ts",
       "testName": "pauses after actual repeated tool errors and handles %s"
     }
-  ]
+  ],
+  "historicalReaderPolicy": {
+    "unpinnedDefault": "approved-retained-0.1.5",
+    "newRoots": "immutable-business-insert-and-independent-artifact-approval",
+    "automaticV0V3PrivateMigration": false
+  }
 }

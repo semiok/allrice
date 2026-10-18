@@ -185,8 +185,17 @@ describe('MET154 native prompt image admission', () => {
         .toBe(true);
       const userEvents = notices
         .filter((n) => n.method === 'session.event')
-        .map((n) => n.params.event as { type: string; data: unknown })
-        .filter((event) => event.type === 'user/message');
+        .map(
+          (n) =>
+            n.params.event as {
+              type: string;
+              data: { source?: { kind?: string } };
+            },
+        )
+        .filter(
+          (event) =>
+            event.type === 'user/message' && event.data.source?.kind === 'user',
+        );
       expect(userEvents).toHaveLength(1);
       const content = [
         { type: 'text', text: 'Compare these two images.' },
@@ -216,8 +225,17 @@ describe('MET154 native prompt image admission', () => {
       const history = (await model.logs())
         .split('\n')
         .filter(Boolean)
-        .map((line) => JSON.parse(line) as { type: string; data: unknown })
-        .filter((event) => event.type === 'user/message');
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              type: string;
+              data: { source?: { kind?: string } };
+            },
+        )
+        .filter(
+          (event) =>
+            event.type === 'user/message' && event.data.source?.kind === 'user',
+        );
       expect(history).toHaveLength(1);
       expect(history[0]?.data).toMatchObject({ id: messageId, content });
       const recovered = await launch();

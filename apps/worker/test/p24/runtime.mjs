@@ -138,8 +138,9 @@ async function request(method, p) {
     roots.set(p.id, handle);
     return { id: handle.agent.id };
   }
-  if (method === 'start')
-    return ctx.subagents.startContinuable({
+  if (method === 'start') {
+    const accepted = await ctx.subagents.startActivation({
+      delivery: 'parent',
       provider: 'spawn',
       label: p.label ?? 'P24 synthetic child',
       childId: p.id,
@@ -150,6 +151,9 @@ async function request(method, p) {
       },
       signal: signal(),
     });
+    accepted.result.catch(() => {});
+    return { childId: accepted.childId, messageId: accepted.messageId };
+  }
   if (method === 'followup')
     return {
       messageId: await queueHostSubagentPrompt(
@@ -194,7 +198,7 @@ async function request(method, p) {
     return { admitted: true };
   }
   if (method === 'drain') {
-    await ctx.subagents.drainContinuableDescendants([live(p.id)]);
+    await ctx.subagents.drainDescendants([live(p.id)]);
     return { drained: true };
   }
   if (method === 'list')
@@ -222,7 +226,7 @@ async function request(method, p) {
   }
   if (method === 'shutdown') {
     for (const handle of roots.values()) {
-      await ctx.subagents.drainContinuableDescendants([handle.agent]);
+      await ctx.subagents.drainDescendants([handle.agent]);
       await handle.dispose();
     }
     setImmediate(async () => {

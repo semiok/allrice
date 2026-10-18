@@ -73,6 +73,28 @@ function questionAnswer(text: string) {
 }
 
 describe('DSH immutable legacy session replay', () => {
+  it('candidate refuses historical private V0 instead of rewriting it or creating an empty substitute', async () => {
+    const fixture = await legacySessionFixture(
+      async () => ({ text: 'Unexpected' }),
+      'candidate',
+    );
+    try {
+      const old = await journal('parked-question.jsonl');
+      const path = await install(fixture.root, old.sessionId, old.text);
+      const { client } = await fixture.runtime();
+      await expect(client.recover(old.sessionId)).rejects.toThrow();
+      expect(fixture.requests).toHaveLength(0);
+      expect(await readFile(path, 'utf8')).toBe(old.text);
+      expect(
+        (await readdir(dirname(path))).filter((name) =>
+          /^session\.v[34]\.jsonl$/.test(name),
+        ),
+      ).toEqual([]);
+    } finally {
+      await fixture.close();
+    }
+  }, 30000);
+
   it('keeps one native writer across migration and releases its lease on close', async () => {
     const fixture = await legacySessionFixture(async () => ({
       text: 'Unexpected',

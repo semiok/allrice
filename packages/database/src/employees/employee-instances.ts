@@ -620,6 +620,29 @@ export async function resolveEmployeeSessionInstance(
   return instance;
 }
 
+/** Read the current personal profile with the Session's compatible engine
+ * version. Assignment/owner/archive checks stay current; only an explicit
+ * cross-engine publication keeps the Session's original package. */
+async function sessionEmployeeInstance(
+  context: Identity,
+  instanceId: string,
+  sessionId: string,
+  sql: Sql,
+) {
+  await getEmployeeInstance(context, instanceId, sql);
+  const rows = await sql<InstanceRow[]>`
+    select i.*,case when allrice_native_session_version_compatible(c.native_root_origin,v.manifest)
+      then a.employee_version_id else c.employee_version_id end current_version_id
+    from allrice_employee_instances i
+    join allrice_employee_assignments a on a.id=i.assignment_id
+    join allrice_employee_versions v on v.id=a.employee_version_id
+    join allrice_chat_sessions c on c.employee_assignment_id=a.id and coalesce(c.employee_instance_id,c.employee_assignment_id)=i.id
+    where i.id=${instanceId} and c.id=${sessionId} and c.organization_id=${context.organizationId}
+      and c.workspace_id=${context.workspaceId} and c.owner_id=${actorId(context)} and c.archived_at is null`;
+  if (!rows[0]) throw new DataAccessError('authorization_denied');
+  return (await mapInstances(rows, sql))[0]!;
+}
+
 export async function prepareEmployeeInstanceSnapshot(
   context: Identity,
   sessionId: string,
@@ -636,7 +659,12 @@ export async function prepareEmployeeInstanceSnapshot(
   // Legacy/default mappings may have been materialized outside the publication path.
   if (session.instance_id === assignmentId)
     await ensureGeneralEmployeeInstance(sql, assignmentId);
-  const instance = await getEmployeeInstance(context, session.instance_id, sql);
+  const instance = await sessionEmployeeInstance(
+    context,
+    session.instance_id,
+    sessionId,
+    sql,
+  );
   if (
     instance.assignmentId !== assignmentId ||
     instance.source.employeeVersionId !== versionId
@@ -666,15 +694,20 @@ export async function assertEmployeeInstanceAdmission(
   )
     throw new DataAccessError('authorization_denied');
   await authority(context, tx, 'update_user');
-  const current = await assignment(context, snapshot.assignmentId, tx, true);
+  await assignment(context, snapshot.assignmentId, tx, true);
   await tx`select id from allrice_employee_instances where id=${snapshot.id} for share`;
-  const instance = await getEmployeeInstance(context, snapshot.id, tx);
+  const instance = await sessionEmployeeInstance(
+    context,
+    snapshot.id,
+    sessionId,
+    tx,
+  );
   const currentSnapshot = { ...instance } as Record<string, unknown>;
   delete currentSnapshot.createdAt;
   delete currentSnapshot.updatedAt;
   delete currentSnapshot.archivedAt;
   if (
-    current.employee_version_id !== snapshot.source.employeeVersionId ||
+    instance.source.employeeVersionId !== snapshot.source.employeeVersionId ||
     JSON.stringify(currentSnapshot) !== JSON.stringify(snapshot)
   )
     throw new EmployeeInstanceError('instance_conflict');

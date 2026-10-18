@@ -24,6 +24,7 @@ import {
   PlatformPreviewContextError,
   resolvePlatformPreviewContext,
 } from '../platform-employees/preview-context.ts';
+import { newEmployeeNativeRootOrigin } from '../conversation/native-root-origin.ts';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type postgres from 'postgres';
@@ -571,18 +572,24 @@ export async function queuePlatformEmployeeTestRun(
       nativeSkills: runtimePackage.skills,
       packageChecksum: runtimePackage.checksum,
     });
+    const testId = randomUUID();
+    const origin = newEmployeeNativeRootOrigin(
+      'platform_employee_test',
+      testId,
+      runtimePackage,
+    );
     return transaction<TestRunRow[]>`
       insert into allrice_platform_employee_test_runs (
-        employee_id, revision_id, requested_by_label, status, input,
+        id, employee_id, revision_id, requested_by_label, status, input,
         frozen_runtime_profile, frozen_definition, frozen_native_skills,
-        frozen_package_checksum
+        frozen_package_checksum, native_root_origin
       ) values (
-        ${employeeId}, ${compilation.revisionId}, ${actorLabel}, 'queued',
+        ${testId}, ${employeeId}, ${compilation.revisionId}, ${actorLabel}, 'queued',
         ${transaction.json(testInput)},
         ${transaction.json(frozen.runtimeProfile)},
         ${transaction.json(frozen.definition)},
         ${transaction.json(frozen.nativeSkills)},
-        ${runtimePackage.checksum}
+        ${runtimePackage.checksum}, ${origin ? transaction.json(origin) : null}
       )
       returning id, employee_id, revision_id, requested_by_label, purpose, status,
         input, output, frozen_runtime_profile, frozen_definition,

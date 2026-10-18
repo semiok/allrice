@@ -1,9 +1,14 @@
+import { createHash } from 'node:crypto';
 import { Context } from '@deepseek-ai/cordis';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
 import ToolRuntime from '@deepseek-ai/dsh-tools';
 import { ToolCallId } from '@deepseek-ai/dsh-llm';
-import { apply } from '@deepseek-ai/dsh-mcp-client';
-import { auth } from '@modelcontextprotocol/sdk/client/auth.js';
+import { createMcpToolDefinition } from '@deepseek-ai/dsh-mcp-client';
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  auth,
+} from '@modelcontextprotocol/client';
 import {
   McpDiscoveredToolSchema,
   McpError,
@@ -39,6 +44,10 @@ export function createNativeMcpTransport(
     ) => Promise<T>,
   ) {
     const ctx = new Context();
+    const client = new Client(
+      { name: 'allrice-managed-mcp', version: '1' },
+      { capabilities: {} },
+    );
     let callReplyReceived = false;
     let networkError: unknown;
     const provider = input.oauth
@@ -106,6 +115,7 @@ export function createNativeMcpTransport(
       return response;
     };
     const stop = () => {
+      void client.close().catch(() => {});
       void ctx.fiber.dispose();
     };
     input.signal.addEventListener('abort', stop, { once: true });
@@ -120,19 +130,73 @@ export function createNativeMcpTransport(
           fetchFn: boundedFetch,
         });
       }
-      await apply(ctx, {
-        transport: 'streamable-http',
-        serverName: 'app',
-        url: input.endpoint,
-        headers: input.bearerToken
-          ? { authorization: `Bearer ${input.bearerToken}` }
-          : {},
-        fetch: boundedFetch,
-        ...(provider ? { authProvider: provider } : {}),
-        toolCallTimeoutMs: 30_000,
-        failOnStartupError: true,
-        reconnect: { enabled: false },
+      const transport = new StreamableHTTPClientTransport(
+        new URL(input.endpoint),
+        {
+          requestInit: {
+            headers: input.bearerToken
+              ? { authorization: `Bearer ${input.bearerToken}` }
+              : {},
+          },
+          fetch: boundedFetch,
+          ...(provider ? { authProvider: provider } : {}),
+          reconnectionOptions: {
+            maxRetries: 0,
+            initialReconnectionDelay: 1000,
+            maxReconnectionDelay: 1000,
+            reconnectionDelayGrowFactor: 1,
+          },
+        },
+      );
+      await client.connect(transport, {
+        signal: input.signal,
+        timeout: 30_000,
       });
+      // SDK owns pagination and the advertised schemas. AllRice owns the
+      // frozen public identity, admission and transport lifecycle. The DSH
+      // exported adapter still owns result validation/materialization.
+      const response =
+        client.getServerCapabilities()?.tools === undefined
+          ? { tools: [] }
+          : await client.listTools(undefined, {
+              cacheMode: 'refresh',
+              signal: input.signal,
+              timeout: 30_000,
+            });
+      if (response.tools.length > 128) throw new McpError('MCP_LIMIT');
+      const names = new Set<string>();
+      for (const tool of response.tools) {
+        const identity = `app\0${tool.name}`;
+        const joined = `mcp__app__${tool.name}`;
+        const normalized = joined.replace(/[^A-Za-z0-9_-]/g, '_');
+        const name =
+          normalized === joined && joined.length <= 64
+            ? joined
+            : normalized.slice(0, 51) +
+              '_' +
+              createHash('sha256').update(identity).digest('hex').slice(0, 12);
+        if (names.has(name)) throw new McpError('MCP_DENIED');
+        names.add(name);
+        ctx.tools.register(
+          createMcpToolDefinition(ctx, {
+            name,
+            rawName: tool.name,
+            description: tool.description ?? '',
+            inputSchema: tool.inputSchema,
+            outputSchema: tool.outputSchema,
+            taskRequired: tool.execution?.taskSupport === 'required',
+            call: (args, execution) =>
+              client.callTool(
+                { name: tool.name, arguments: args },
+                {
+                  signal: execution.signal,
+                  timeout: 30_000,
+                  toolDefinition: tool,
+                },
+              ),
+          }),
+        );
+      }
       networkError = undefined;
       return await action(
         ctx,
@@ -146,6 +210,7 @@ export function createNativeMcpTransport(
       throw networkError ?? diagnostics.error(error);
     } finally {
       input.signal.removeEventListener('abort', stop);
+      await client.close().catch(() => {});
       await ctx.fiber.dispose();
     }
   }

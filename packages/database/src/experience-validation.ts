@@ -1,6 +1,7 @@
 import { readContentPrincipal } from './content-maintenance.ts';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+import { newEmployeeNativeRootOrigin } from './conversation/native-root-origin.ts';
 import type postgres from 'postgres';
 import {
   ExperienceModelSnapshotSchema,
@@ -443,10 +444,15 @@ export async function syncExperienceValidations() {
           model,
           timeoutMs: Math.min(model.runLimits.timeoutMs, 300000),
         });
+        const origin = newEmployeeNativeRootOrigin(
+          'platform_employee_test',
+          testId,
+          profile.runtimePackage,
+        );
         await tx`insert into allrice_platform_employee_test_runs(id,employee_id,revision_id,requested_by_label,status,input,
-          frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,experience_binding)
+          frozen_runtime_profile,frozen_definition,frozen_native_skills,frozen_package_checksum,purpose,experience_binding,native_root_origin)
           values(${testId},${base.employee_id},${base.id},${o.ownerId},'queued',${tx.json({ prompt: prompt(), environment: 'platform', workspaceId: o.workspaceId, ownerId: o.ownerId })},
-            ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'experience_validation',${tx.json(b)})`;
+            ${tx.json(frozen.runtimeProfile)},${tx.json(frozen.definition)},${tx.json(frozen.nativeSkills)},${profile.runtimePackage!.checksum},'experience_validation',${tx.json(b)},${origin ? tx.json(origin) : null})`;
         plan.push({ draftIndex, testId });
       }
       await savePlan(plan);

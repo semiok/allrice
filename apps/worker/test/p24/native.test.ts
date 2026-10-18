@@ -7,7 +7,20 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
     const proposals: Record<string, unknown>[] = [];
     const f = await p24Fixture(
       async (request) => {
-        const last = request.messages.at(-1);
+        // Native runtime-context snapshots are metadata, not this fixture's
+        // task. Keep tool replies in order so the marker is invoked only once.
+        const last = request.messages
+          .filter(
+            (message) =>
+              !(
+                message.role === 'user' &&
+                typeof message.content === 'string' &&
+                message.content.startsWith(
+                  'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+                )
+              ),
+          )
+          .at(-1);
         return last?.role === 'user' &&
           JSON.stringify(last).includes('CHECK_APPROVAL')
           ? { tool: { marker: 'CHECK_APPROVAL' } }

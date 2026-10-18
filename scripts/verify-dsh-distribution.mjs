@@ -55,6 +55,8 @@ const [
 ]);
 
 const { installed, promoted, candidate } = distributionFacts(distribution);
+const adminUpstreamVersion = (await json('apps/dsh-admin/package.json'))
+  .dependencies['@deepseek-ai/dsh'];
 
 assert(
   installed.version === upstream.version,
@@ -94,6 +96,14 @@ const patchInventory = await verifyDshPhysicalPatches({
   workspace,
   lock,
   upstreamVersion: installed.version,
+  approvedVersions: [
+    installed.version,
+    ...(ledger.retainedPhysicalVersions ?? []).filter((version) =>
+      distribution.generations.some(
+        (g) => g.version === version && g.frozenProfileAllowed,
+      ),
+    ),
+  ],
 });
 for (const patch of ledger.patches) {
   assert(
@@ -150,7 +160,8 @@ assert(
   ledger.patches.some(
     (patch) =>
       patch.id === 'dsh-admin-webui-private-entrypoint-v1' &&
-      patch.upstreamVersion === installed.version &&
+      patch.upstreamVersion === adminPrivateInterface.upstreamVersion &&
+      patch.upstreamVersion === adminUpstreamVersion &&
       patch.path === adminPrivateInterface.adapter,
   ),
   'DSH Admin private WebUI entrypoint must be recorded against the approved upstream',
@@ -222,11 +233,8 @@ const allowedProfilePackages = new Set(
     'system-prompt',
     'tools',
     'agent',
-    'invariants',
-    'session/invariant',
-    'agent/invariant',
-    'scope/invariant',
-    'agent-loop/invariant',
+    'fs-local',
+    'working-directory',
     'agent-loop',
     'skill',
     'tool-skill',

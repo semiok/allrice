@@ -572,6 +572,9 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: `experience-${f.occurrence.id}`,
+          distributionGeneration: process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID
+            ? 'dsh-0.2.1-rc.2-687f282'
+            : 'dsh-0.1.5-rc.3-a4c74a9',
         });
         await expect(
           bindJobNativeSession({
@@ -593,6 +596,9 @@ suite(
           workspaceId: f.workspace,
           ownerId: f.user,
           contextKey: `experience-${f.occurrence.id}`,
+          distributionGeneration: process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID
+            ? 'dsh-0.2.1-rc.2-687f282'
+            : 'dsh-0.1.5-rc.3-a4c74a9',
         });
       const input = {
         ...f.lease,
@@ -661,7 +667,8 @@ suite(
         subject: { kind: 'platform_employee_test', id: test.id },
         descriptor: nativeBindingDescriptor({
           ...test.previewContext,
-          contextKey: `experience-${test.id}`,
+          contextKey: test.id,
+          distributionGeneration: test.runtimeProfile.distributionGeneration,
         }),
       });
       expect(pin.binding.contextId).toBe(test.id);

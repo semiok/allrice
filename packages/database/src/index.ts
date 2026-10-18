@@ -251,3 +251,8 @@ export {
 } from './run-memory-context.ts';
 export { readRunExperienceSource } from './run-experience-source.ts';
 export { getExperienceProvenance } from './experience-provenance.ts';
+
+export {
+  NativeRootOriginSchema,
+  type NativeRootOrigin,
+} from './conversation/native-root-origin.ts';

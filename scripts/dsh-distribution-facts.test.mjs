@@ -13,16 +13,21 @@ const source = JSON.parse(
 );
 
 describe('authoritative DSH distribution facts', () => {
-  it('separates installed, declared promotion, and evaluation-only candidate', () => {
+  it('separates the reviewed installed generation from declared production promotion', () => {
     const facts = distributionFacts(source);
-    expect(facts.installed.version).toBe('0.1.5-rc.3');
+    expect(facts.installed.version).toBe('0.2.1-rc.2');
     expect(facts.promoted.version).toBe('0.1.1-rc.2');
     expect(facts.candidate.version).toBe('0.2.1-rc.2');
-    expect(facts.frozenGenerations).not.toContain(facts.candidate.generation);
+    expect(facts.frozenGenerations).toContain(facts.installed.generation);
   });
 
   it('cannot silently install an evaluation-only composition', () => {
     const next = globalThis.structuredClone(source);
+    const candidate = next.generations.find(
+      (g) => g.generation === next.upgradeCandidateGeneration,
+    );
+    candidate.frozenProfileAllowed = false;
+    candidate.sourceArchiveSha256 = null;
     next.installedGeneration = next.upgradeCandidateGeneration;
     expect(() => distributionFacts(next)).toThrow(
       'installed generation must be pinned and allowed',

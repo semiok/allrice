@@ -119,7 +119,7 @@ export async function executeNextPlatformEmployeeTest(input: {
   const ids = {
     assignmentId: randomUUID(),
     versionId: randomUUID(),
-    sessionId: randomUUID(),
+    sessionId: test.id,
     userMessageId: randomUUID(),
     assistantMessageId: randomUUID(),
   };
@@ -224,6 +224,7 @@ export async function executeNextPlatformEmployeeTest(input: {
         ? InternalKernelRequestSchema.parse({
             schemaVersion: 1,
             harness: 'dsh',
+            nativeContextId: test.id,
             internalTask: {
               kind: 'experience_validation',
               occurrenceId: experience.occurrenceId,
@@ -239,6 +240,10 @@ export async function executeNextPlatformEmployeeTest(input: {
             authorizedMemoryContext: '',
             grantedCapabilities,
             skillVersionIds: experience.nativeSkills?.map((s) => s.id) ?? [],
+            runtimePackageChecksum:
+              test.runtimeProfile.runtimePackage?.checksum,
+            runtimeDistributionGeneration:
+              test.runtimeProfile.distributionGeneration,
           })
         : EmployeeKernelRequestSchema.parse({
             schemaVersion: 1,
@@ -259,6 +264,10 @@ export async function executeNextPlatformEmployeeTest(input: {
             authorizedMemoryContext: '',
             grantedCapabilities,
             skillVersionIds: method ? [] : test.runtimeProfile.nativeSkillIds,
+            runtimePackageChecksum:
+              test.runtimeProfile.runtimePackage?.checksum,
+            runtimeDistributionGeneration:
+              test.runtimeProfile.distributionGeneration,
           }),
       providerSnapshot: snapshot,
       storageObjects: [],

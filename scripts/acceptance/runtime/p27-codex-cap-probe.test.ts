@@ -98,10 +98,10 @@ describe('standalone Codex cap-probe authorization (no live credentials)', () =>
       shapeValidated: true,
     },
     {
-      name: 'legacy migration forbidden by filesystem write denial',
+      name: 'legacy entries remain unchanged and are not subscription grants',
       document: 'SYNTHETIC_KEY: synthetic-must-not-be-migrated\n',
-      outcome: 'host_failed',
-      shapeValidated: undefined,
+      outcome: 'subscription_grant_required',
+      shapeValidated: false,
     },
   ])(
     'boots read-only native host: $name',

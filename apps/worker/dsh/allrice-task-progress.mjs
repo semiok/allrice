@@ -1,3 +1,4 @@
+import { readDshToolResult } from '@allrice/contracts';
 /* Native DSH middleware only; no Agent loop, extra model or action authority. */
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -216,7 +217,8 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
   ctx.on('session/event', (session, event) => {
     // Native pruning rewrites tool/result surface nodes, including earlier
     // turns. Replacements change model context, not execution receipts.
-    if (event.surfaceOp?.op === 'replace') return;
+    if (event.surfaceOp === 'replace' || event.surfaceOp?.op === 'replace')
+      return;
     const d = event.data;
     if (event.type === 'tool/call') {
       let args = d.arguments;
@@ -240,7 +242,7 @@ export function installTaskProgress(ctx, bridge, configuration = {}) {
         argumentsDigest: progressDigest(args),
       });
     } else if (event.type === 'tool/result') {
-      const b = d.message?.content?.find((b) => b.type === 'tool-result');
+      const b = readDshToolResult(d.message);
       const callId =
         b?.toolCallId ?? d.message?.toolCallId ?? d.message?.callId;
       if (!callId) return;

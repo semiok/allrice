@@ -1,4 +1,5 @@
 /* global AbortSignal, Buffer */
+import { normalizeModelFailure } from './allrice-model-errors.mjs';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { zstdDecompressSync } from 'node:zlib';
@@ -344,6 +345,7 @@ async function runWire({
     const prepared = await adapter.prepareCall('openai-codex', model.id);
     const chunks = [];
     const sessionId = guarded ? `wire-close-${Date.now()}` : undefined;
+    const signal = AbortSignal.timeout(websocket === 'cancel' ? 200 : 4000);
     const source = prepared.stream({
       ...(sessionId ? { sessionId } : {}),
       provider: 'openai-codex',
@@ -352,7 +354,7 @@ async function runWire({
       messages: [
         { role: 'user', content: [{ type: 'text', text: 'Synthetic test.' }] },
       ],
-      signal: AbortSignal.timeout(websocket === 'cancel' ? 200 : 4000),
+      signal,
       // This is deliberately unsupported DSH input: the regression verifies
       // that copying pi-ai's option onto a DSH request does NOT forward it.
       onPayload() {
@@ -374,7 +376,12 @@ async function runWire({
         })
       : source;
     try {
-      for await (const chunk of stream) chunks.push(chunk);
+      // The old physical provider patch is retained only for the old reader.
+      // New DSH uses this production public-stream normalization seam.
+      for await (const chunk of stream)
+        chunks.push(
+          normalizeModelFailure(chunk, { provider: 'openai-codex', signal }),
+        );
     } catch (error) {
       if (!guarded) throw error;
       recovery = modelStreamRecoveryReceipt(error);

@@ -149,7 +149,7 @@ lines.on('line', (line) => {
     respond(frame.id, {
       serverInfo: {
         name: 'deepseek-harness-sdk-runtime',
-        version: '0.1.5-rc.3-fake',
+        version: `${process.env.DSH_DISTRIBUTION_VERSION ?? '0.2.1-rc.2'}-fake`,
       },
       capabilities: {
         taskProgress:

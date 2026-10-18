@@ -194,12 +194,14 @@ export const InternalKernelRequestSchema = EmployeeKernelRequestSchema.extend({
   userMessageId: z.null(),
   assistantMessageId: z.null(),
   internalTask: InternalHarnessTaskSchema,
+  nativeContextId: UuidSchema.optional(),
 }).strict();
 export type InternalKernelRequest = z.infer<typeof InternalKernelRequestSchema>;
 export function harnessContextKey(
   kernel: EmployeeKernelRequest | InternalKernelRequest,
 ) {
   return 'internalTask' in kernel
-    ? `experience-${kernel.internalTask.occurrenceId}`
+    ? (kernel.nativeContextId ??
+        `experience-${kernel.internalTask.occurrenceId}`)
     : kernel.sessionId;
 }

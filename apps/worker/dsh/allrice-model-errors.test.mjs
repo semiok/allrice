@@ -67,3 +67,25 @@ describe('AllRice model failure compatibility', () => {
       expect(normalizeModelFailure(chunk, options)).toBe(chunk);
   });
 });
+
+it.each([
+  'WebSocket closed 1006',
+  'WebSocket closed 1006 abnormal',
+  'WebSocket closed 1000',
+])(
+  'maps the precise Codex premature transport receipt without a second retry loop: %s',
+  (message) => {
+    expect(
+      normalizeModelFailure(finish({ message }), options).reason.failure,
+    ).toEqual({ code: 'TRANSPORT', message });
+  },
+);
+it.each([
+  'WebSocket closed 1000 policy denied',
+  'WebSocket closed 1008',
+  'prefix WebSocket closed 1006',
+  'WebSocket closed 10000',
+])('keeps unproven close messages unchanged: %s', (message) => {
+  const original = finish({ message });
+  expect(normalizeModelFailure(original, options)).toBe(original);
+});

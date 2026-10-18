@@ -1,3 +1,4 @@
+import type { NativeRootOrigin } from '@allrice/database';
 import { lstat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
@@ -80,9 +81,9 @@ export async function installConfiguredDshNativeRetention() {
   return entries;
 }
 
-/** Absence of a pin is never evidence of a new candidate root. Until explicit
- * new-root issuance is implemented, only the approved compatibility reader may
- * receive an unbound context, and its ordinary bind still precedes acquisition. */
+/** Absence of a pin is never evidence of a new candidate root. Contexts without
+ * an immutable business origin stay on the approved compatibility reader;
+ * their ordinary bind still precedes acquisition. */
 export function legacyDshNativeLaunch(fallback: Launch, profileId: Profile) {
   const launch = defaultLegacyId
     ? nativeArtifactLaunchForPin({ artifactId: defaultLegacyId, profileId })
@@ -110,4 +111,24 @@ export function assertDshFrozenCompatibility(
   )
     return;
   fail('FROZEN_GENERATION_MISMATCH');
+}
+
+/** The exact independently approved candidate must agree with the immutable
+ * business INSERT fact. Neither absence of a pin nor generation alone suffices. */
+export function newRootDshNativeLaunch(
+  origin: NativeRootOrigin,
+  fallback: Launch,
+  profileId: Profile,
+) {
+  const expected = process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID;
+  if (
+    !expected ||
+    origin.artifactId !== expected ||
+    fallback.artifactId !== expected ||
+    fallback.generation !== 'dsh-0.2.1-rc.2-687f282' ||
+    origin.distributionGeneration !== fallback.generation ||
+    origin.profileId !== profileId
+  )
+    fail('NEW_ROOT_APPROVAL');
+  return fallback;
 }

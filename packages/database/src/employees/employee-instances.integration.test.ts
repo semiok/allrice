@@ -736,7 +736,11 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       leaseToken: test.previewExecution.leaseToken,
       attempt: test.previewExecution.jobAttempt,
       subject: { kind: 'platform_employee_test' as const, id: test.id },
-      descriptor: nativeBindingDescriptor(test.previewContext),
+      descriptor: nativeBindingDescriptor({
+        ...test.previewContext,
+        contextKey: test.id,
+        distributionGeneration: test.runtimeProfile.distributionGeneration,
+      }),
     };
     expect((await bindJobNativeSession(input)).binding.contextId).toBe(test.id);
     await x.fail(test.id);

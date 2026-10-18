@@ -1,3 +1,4 @@
+import { readDshToolResult } from '@allrice/contracts';
 /* global Buffer, process, setInterval, clearInterval */
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -672,7 +673,7 @@ describe('governed root uses the actual native Skill loader', () => {
     const loaded = result.events.filter((e) => e.type === 'tool/result');
     expect(loaded).toHaveLength(2);
     for (const event of loaded) {
-      expect(event.data.message.content[0].isError).toBe(false);
+      expect(readDshToolResult(event.data.message).isError).toBe(false);
       expect(JSON.stringify(event.data)).toContain(
         'FROZEN_NATIVE_SKILL_BODY_42',
       );
