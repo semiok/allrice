@@ -147,6 +147,17 @@ export interface HarnessExecutionInput {
   /** Trusted Worker closure only. Real lease tokens never enter the kernel,
    * native environment, RPC or events. A returned pin has committed in SQL. */
   nativeBinding?: {
+    prepare: (
+      request: Pick<
+        NativeSessionDescriptor,
+        'nativeSessionId' | 'storageContextKey'
+      >,
+    ) => Promise<{
+      binding: NativeSessionPin | null;
+      /** A pin/prior adoption/retry cannot create an empty replacement. */
+      requiresRecovery: boolean;
+      generation?: number;
+    }>;
     bind: (descriptor: NativeSessionDescriptor) => Promise<{
       binding: NativeSessionPin;
       generation?: number;

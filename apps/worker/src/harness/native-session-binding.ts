@@ -1,5 +1,6 @@
 import {
   bindJobNativeSession,
+  prepareJobNativeSession,
   NativeSessionBindingError,
 } from '@allrice/database';
 import type { HarnessExecutionInput } from './adapter.js';
@@ -18,33 +19,65 @@ export function createJobNativeBinding(input: {
     descriptor: BindInput['descriptor'],
   ) => Promise<void>;
 }): NonNullable<HarnessExecutionInput['nativeBinding']> {
+  const lease = () => ({
+    workerId: input.lease.workerId,
+    jobId: input.lease.jobId,
+    leaseToken: input.lease.leaseToken,
+    attempt: input.attempt,
+    subject: input.subject(),
+  });
+  const failed = (error: unknown) =>
+    new HandlerError(
+      error instanceof NativeSessionBindingError
+        ? error.code
+        : 'NATIVE_SESSION_ADMISSION_DENIED',
+      '当前任务或原生会话的执行授权已变化，请查看任务记录。',
+      false,
+    );
+  const adopted = async (
+    value: Awaited<ReturnType<typeof bindJobNativeSession>>,
+    descriptor: BindInput['descriptor'],
+  ) => {
+    await input.onBound?.(value, descriptor);
+    return {
+      binding: value.binding,
+      ...(value.conversation
+        ? { generation: value.conversation.generation }
+        : {}),
+    };
+  };
   return {
+    prepare: async (request) => {
+      try {
+        await input.beforeBind?.();
+        const value = await prepareJobNativeSession({
+          ...lease(),
+          nativeSessionId: request.nativeSessionId,
+          storageContextKey: request.storageContextKey,
+        });
+        return {
+          ...(value.binding
+            ? await adopted(
+                { binding: value.binding, conversation: value.conversation },
+                value.binding,
+              )
+            : { binding: null }),
+          requiresRecovery: value.requiresRecovery,
+        };
+      } catch (error) {
+        throw failed(error);
+      }
+    },
     bind: async (descriptor) => {
       try {
         await input.beforeBind?.();
         const value = await bindJobNativeSession({
-          workerId: input.lease.workerId,
-          jobId: input.lease.jobId,
-          leaseToken: input.lease.leaseToken,
-          attempt: input.attempt,
-          subject: input.subject(),
+          ...lease(),
           descriptor,
         });
-        await input.onBound?.(value, descriptor);
-        return {
-          binding: value.binding,
-          ...(value.conversation
-            ? { generation: value.conversation.generation }
-            : {}),
-        };
+        return await adopted(value, descriptor);
       } catch (error) {
-        throw new HandlerError(
-          error instanceof NativeSessionBindingError
-            ? error.code
-            : 'NATIVE_SESSION_ADMISSION_DENIED',
-          '当前任务或原生会话的执行授权已变化，请查看任务记录。',
-          false,
-        );
+        throw failed(error);
       }
     },
   };

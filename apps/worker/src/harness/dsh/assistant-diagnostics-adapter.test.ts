@@ -36,6 +36,7 @@ function fixture(options: {
   drainError?: boolean;
   drainHang?: boolean;
   nativeReadmissionFailure?: Error;
+  recoverHang?: boolean;
   admissionFailure?: boolean;
   admissionFailureReturned?: boolean;
   admissionMethod?: string;
@@ -55,6 +56,7 @@ function fixture(options: {
   };
   let cleared = false;
   let rejectPrompt: ((error: Error) => void) | undefined;
+  let rejectRecover: ((error: Error) => void) | undefined;
   let handler:
     | ((method: string, params: Record<string, unknown>) => Promise<unknown>)
     | null;
@@ -76,6 +78,14 @@ function fixture(options: {
   };
   const client = {
     interrupt: vi.fn(async () => ({})),
+    recover: vi.fn(async () => {
+      order.push('recover');
+      return options.recoverHang
+        ? new Promise((_, reject) => {
+            rejectRecover = reject;
+          })
+        : { recovered: true };
+    }),
     onFailure: vi.fn(() => () => {}),
     setRequestHandler: vi.fn((value) => {
       handler = value;
@@ -194,6 +204,7 @@ function fixture(options: {
   vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
   vi.spyOn(DshRuntimePool.prototype, 'drop').mockImplementation(async () => {
     order.push('drop');
+    rejectRecover?.(Error('owned recovery host closed'));
     rejectPrompt?.(new Error('native runtime closed'));
   });
   const input: HarnessExecutionInput = {
@@ -242,7 +253,7 @@ function fixture(options: {
               return {};
             },
             cancellation: async () => {
-              if (options.nativeReadmissionFailure) {
+              if (options.nativeReadmissionFailure || options.recoverHang) {
                 order.push('cancellation');
                 return {
                   nativeSessionId: threadId,
@@ -298,6 +309,7 @@ function fixture(options: {
       descriptor,
     );
     input.nativeBinding = {
+      prepare: async () => ({ binding: null, requiresRecovery: false }),
       bind: vi
         .fn<NonNullable<HarnessExecutionInput['nativeBinding']>['bind']>()
         .mockResolvedValueOnce({
@@ -319,6 +331,21 @@ function fixture(options: {
         .mockRejectedValue(options.nativeReadmissionFailure),
     };
   }
+  if (options.recoverHang) {
+    vi.spyOn(
+      DshRuntimePool.prototype,
+      'hasApprovedNativeLaunch',
+    ).mockReturnValue(true);
+    vi.spyOn(
+      DshRuntimePool.prototype,
+      'assertStoredSession',
+    ).mockResolvedValue();
+    const bound = syntheticPin(input);
+    input.nativeBinding = {
+      prepare: async () => ({ ...bound, requiresRecovery: true }),
+      bind: vi.fn(async () => bound),
+    };
+  }
   return {
     input,
     client,
@@ -329,7 +356,51 @@ function fixture(options: {
   };
 }
 
+function syntheticPin(input: HarnessExecutionInput) {
+  const descriptor = DshRuntimePool.prototype.describeNativeSession(
+    input,
+    input.threadId!,
+  )!;
+  return {
+    binding: {
+      ...descriptor,
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      ownerId: randomUUID(),
+      contextKind: 'chat' as const,
+      contextId: input.kernel.sessionId!,
+      firstRunId: input.assistants?.rootRunId ?? randomUUID(),
+      firstJobId: randomUUID(),
+      firstAttempt: 1,
+      boundAt: new Date().toISOString(),
+      bindingBasis: 'approved_compatibility_reader' as const,
+    },
+    generation: 1,
+  };
+}
+
 describe('bounded assistant diagnostic consumption', () => {
+  it.each([true, false])(
+    'bounds cancellation while cold recovery is waiting (ordinary %s)',
+    async (ordinary) => {
+      vi.useFakeTimers();
+      const f = fixture({ ordinary, recoverHang: true });
+      const cancel = new AbortController();
+      f.input.signal = cancel.signal;
+      const outcome = f.adapter
+        .execute(f.input)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(f.client.recover).toHaveBeenCalledOnce();
+      expect(f.client.prompt).not.toHaveBeenCalled();
+      cancel.abort();
+      await vi.advanceTimersByTimeAsync(25000);
+      expect(await outcome).toMatchObject({ code: 'EXECUTION_ABORTED' });
+      expect(f.order.filter((entry) => entry === 'drop')).toHaveLength(1);
+      expect(f.order).not.toContain('finish');
+      expect(f.client.prompt).not.toHaveBeenCalled();
+    },
+  );
   it.each(['available', 'unavailable', 'hanging'] as const)(
     'a post-initialize admission refusal preserves bounded assistant cleanup with %s drain',
     async (drain) => {

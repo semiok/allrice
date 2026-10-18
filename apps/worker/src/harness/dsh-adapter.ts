@@ -157,9 +157,16 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const systemInstructions = input.kernel.systemInstructions;
     let generation = input.generation;
     const threadBindingStarted = performance.now();
+    const prepared = this.runtimePool.hasApprovedNativeLaunch()
+      ? await input.nativeBinding?.prepare({
+          nativeSessionId: threadId,
+          storageContextKey: harnessContextKey(input.kernel),
+        })
+      : undefined;
     const nativeDescriptor = this.runtimePool.describeNativeSession(
       input,
       threadId,
+      prepared?.binding ?? undefined,
     );
     let nativePin: NativeSessionPin | undefined;
     if (nativeDescriptor) {
@@ -169,7 +176,28 @@ export class DshHarnessAdapter implements HarnessAdapter {
           '原生会话尚未获得当前任务授权。',
           false,
         );
-      const bound = await input.nativeBinding.bind(nativeDescriptor);
+      // A missing pin is not proof that a known history may be recreated.
+      // Read through the selected artifact's public backend before any new pin.
+      if (prepared?.requiresRecovery)
+        await this.runtimePool.assertStoredSession(
+          input,
+          threadId,
+          prepared.binding ?? undefined,
+        );
+      const bound = prepared?.binding
+        ? { binding: prepared.binding, generation: prepared.generation }
+        : await input.nativeBinding.bind(nativeDescriptor);
+      if (
+        Object.entries(nativeDescriptor).some(
+          ([key, value]) =>
+            bound.binding[key as keyof NativeSessionPin] !== value,
+        )
+      )
+        throw new HandlerError(
+          'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+          '原生会话的制品或数据位置与绑定不一致。',
+          false,
+        );
       nativePin = bound.binding;
       generation = bound.generation ?? generation;
     } else if (!input.threadId || input.threadId !== threadId) {
@@ -194,6 +222,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       systemInstructions,
       nativeSkills,
       nativePin,
+      requireRecovery: prepared?.requiresRecovery,
     });
     const runtimeBindingStarted = performance.now();
     this.runtimePool.touch(runtime);
@@ -617,6 +646,27 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
     });
     try {
+      // Cold resume belongs inside the existing cancellation/receipt window.
+      // Its host is already owned by the pool, so a stalled read is bounded by
+      // MET193 and cannot fall back to an empty same-ID Session. Never reopen a
+      // matching live host. This happens before the first possible prompt.
+      if (fresh && prepared?.requiresRecovery) {
+        if (executionSignal.aborted)
+          throw new HandlerError(
+            'EXECUTION_ABORTED',
+            'DSH execution was interrupted',
+            false,
+          );
+        try {
+          await runtime.client.recover(threadId);
+        } catch {
+          throw new HandlerError(
+            'DSH_NATIVE_SESSION_STORAGE_UNAVAILABLE',
+            '原会话资料暂不可用，已保留绑定与执行记录。',
+            false,
+          );
+        }
+      }
       const preparationMs = performance.now() - preparationStarted;
       // This receipt measures preparation before prompting. Its own write is
       // excluded; native Skill body loads are measured on their tool receipts.
