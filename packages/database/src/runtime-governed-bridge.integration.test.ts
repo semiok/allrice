@@ -1273,7 +1273,21 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
           // The native parent also receives a user-like settled notification.
           // This fixture requests one proposal from the delegated child, not a
           // second unrelated proposal from that parent's notification turn.
-          const last = request.messages.at(-1);
+          // A new runtime-context snapshot may follow the delegated task.
+          // Ignore that exact native metadata when choosing this fixture's
+          // synthetic response; retain real tool replies and parent notices.
+          const last = request.messages
+            .filter(
+              (message) =>
+                !(
+                  message.role === 'user' &&
+                  typeof message.content === 'string' &&
+                  message.content.startsWith(
+                    'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+                  )
+                ),
+            )
+            .at(-1);
           if (
             !childRequestedProposal &&
             last?.role === 'user' &&
