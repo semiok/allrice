@@ -585,3 +585,13 @@ Managed children use public `startActivation` with parent delivery and `drainDes
 The five physical 0.1.5 patches still exist for the independently versioned old administrator/retained hosts. Their version, owner, file and lock digest are verified separately from the new Worker. Retention is not a claim that new upstream behavior superseded every old patch. Strict peer pins in the respective importers prevent the old administrator and new Worker borrowing one another's Cordis/DSH services; the installed graph is measured independently.
 
 New 0.2.1 execution additionally requires an immutable business INSERT origin and `ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` matching the actually approved primary artifact. NULL historical facts are never backfilled, and old queued tests/repeated requests/old packages stay legacy. Content generations and explicit retries inherit their original reader. Removed invariant plugins have no published 0.2.1 exports: native factory ownership/session persistence validation and AllRice lease/pin/deadline/cancel gates are verified by actual SDK and SQL tests, rather than loading unsupported paths.
+
+## MET192 固定 UI 0.2.1-rc.2 兼容升级（2026-10-18）
+
+Web 九个已用包固定0.2.1-rc.2，另显式登记 primitives 实际引用的同版 util-code-language。12组来源在官方 commit `687f282e8625c6b8d11ff58211a90524be2e4317` 上重放；新的 ProcessState 复用同源小型 group-tree 分类器。来源账本分别核实组件、原文、适配补丁、实际PDF/Excel软件资产，以及10个Web公共包间所用依赖的解析版本，避免未声明的上游依赖借到旧CLI的brand类型或运行代码。版本补全仅作用于这些确切0.2.1-rc.2包，不全局覆盖旧引擎依赖。
+
+保留 AllRice 身份/权限/store、对象文件服务、公开进度和既有队列；设置modal与归档toast继续用现有宿主，不装上游设置/onboarding/快捷键或另一套后台。会话标题接AllRice displayTitle；未接入的新原生动作槽不会转交旧动作回调。上下文/隐藏思考仍遵循现有展示边界。
+
+`collapsedSessionRows` 在新版消失且watermark语义不同，因此明确独立固定旧0.1.7-rc.1来源，保留五条普通会话与运行项；不将其冒称新版watermark实现。顶层0.1.1-rc.2样式/独立摘录仍如实保留旧来源pin。本次只升级12组组件与实际npmUI软件，不声称旧样式已全部迁移。
+
+PDF/Excel将现有LoadingIndicator传给真实原生正文的必需loading注入值，动态chunk仍仅在打开文件时从本地同源接口加载。真实并发预览回归覆盖chunk注册、解析阶段反馈和原生可读内容；类型、来源、浏览器和实际Dev按版本留证。MCP/调度依旧复用当前Worker和原生Host，未因为UI升级增加另一套执行服务。

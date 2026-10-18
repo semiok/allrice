@@ -12,8 +12,10 @@ import {
 import { zh, type PdfLocaleKey } from './dsh-upstream/document/pdf/locales';
 import styles from './workbench.module.css';
 import { loadNativeDocumentModule } from './native-document-module';
+import { LoadingIndicator } from './dsh-upstream/document/LoadingIndicator';
 
 type NativePdfProps = {
+  loading: React.ReactNode;
   content: { kind: 'bytes'; data: Uint8Array<ArrayBuffer> };
   useTabInfo: () => { tab: { id: TabId; signal: AbortSignal } };
   useStore: <T>(select: (state: PdfState) => T) => T;
@@ -77,6 +79,7 @@ export function NativePdfPreview({ base64 }: { base64: string }) {
   return (
     <div className={styles.zoomPreview}>
       <Body
+        loading={<LoadingIndicator label={zh.loading} />}
         content={{ kind: 'bytes', data }}
         useTabInfo={() => ({
           tab: { id: 'tab1' as TabId, signal: lifetime.signal },

@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import {
+  readFile,
+  writeFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  realpath,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, resolve, join } from 'node:path';
@@ -35,6 +42,29 @@ const source = values.source && resolve(values.source);
 const git = (args, cwd = source) =>
   execFileSync('git', args, { cwd, encoding: 'utf8' });
 const upstream = (commit, path) => git(['show', `${commit}:${path}`]);
+async function dependencyMetadata(resolver, name) {
+  try {
+    return JSON.parse(
+      await readFile(resolver.resolve(`${name}/package.json`), 'utf8'),
+    );
+  } catch (error) {
+    if (error.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') throw error;
+  }
+  let directory = dirname(resolver.resolve(name));
+  for (;;) {
+    try {
+      const metadata = JSON.parse(
+        await readFile(join(directory, 'package.json'), 'utf8'),
+      );
+      if (metadata.name === name) return metadata;
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    const parent = dirname(directory);
+    assert.notEqual(parent, directory, `Missing package metadata: ${name}`);
+    directory = parent;
+  }
+}
 const staged = await mkdtemp(join(tmpdir(), 'allrice-dsh-ui-'));
 const writes = new Map();
 const probes = [];
@@ -116,7 +146,27 @@ try {
         `Excerpt drift: ${excerpt.target}`,
       );
       if (source) {
-        const text = upstream(commit, excerpt.source);
+        // A removed upstream helper may retain its reviewed behavior and source
+        // pin independently of the surrounding component's upgrade.
+        const excerptCommit = excerpt.commit ?? commit;
+        if (excerpt.commit) {
+          assert.equal(
+            git(['rev-parse', `${excerptCommit}^{commit}`]).trim(),
+            excerptCommit,
+            'Use a full official excerpt commit SHA',
+          );
+          assert.equal(
+            JSON.parse(
+              upstream(
+                excerptCommit,
+                'packages/client/ui-workspace/package.json',
+              ),
+            ).version,
+            excerpt.version,
+            'Excerpt version must match its independently pinned source',
+          );
+        }
+        const text = upstream(excerptCommit, excerpt.source);
         const parsed = ts.createSourceFile(
           excerpt.source,
           text,
@@ -163,6 +213,33 @@ try {
         expected,
         `Pin ${pkg.name} exactly`,
       );
+      // Published UI declarations and bundle imports must resolve within the
+      // reviewed generation, rather than borrowing an older hoisted CLI copy.
+      const packageRequire = createRequire(packagePath);
+      for (const dependency of pkg.resolvedDependencies ?? []) {
+        const resolvedPackage = await dependencyMetadata(
+          packageRequire,
+          dependency.name,
+        );
+        assert.equal(
+          resolvedPackage.version,
+          dependency.version,
+          `Wrong dependency generation: ${pkg.name} -> ${dependency.name}`,
+        );
+        assert(manifest.dependencies[dependency.name]);
+        assert.equal(
+          (await dependencyMetadata(require, dependency.name)).version,
+          dependency.version,
+          `Host dependency differs: ${dependency.name}`,
+        );
+        if (['react', 'react-dom'].includes(dependency.name)) {
+          assert.equal(
+            await realpath(packageRequire.resolve(dependency.name)),
+            await realpath(require.resolve(dependency.name)),
+            `UI must share the host framework instance: ${pkg.name} -> ${dependency.name}`,
+          );
+        }
+      }
       if (syncing) pkg.version = expected;
       if (pkg.exports?.length)
         probes.push(
@@ -215,6 +292,16 @@ try {
         version,
         commit,
       })),
+      independentlyPinnedExcerpts: ledger.componentSets.flatMap((group) =>
+        (group.excerpts ?? [])
+          .filter((excerpt) => excerpt.commit)
+          .map(({ symbol, commit, version, reason }) => ({
+            symbol,
+            commit,
+            version,
+            reason,
+          })),
+      ),
     }),
   );
 } finally {

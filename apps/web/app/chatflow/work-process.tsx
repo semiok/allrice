@@ -190,6 +190,13 @@ export function WorkProcess({
         <DisclosureRow
           icon={<IconThinkOutline14 />}
           title={title}
+          headerAccessory={
+            timing ? (
+              <span className={styles.processTiming} aria-label="本轮运行时间">
+                用时 <RunElapsedTime timing={timing} running={running} />
+              </span>
+            ) : undefined
+          }
           running={running && !waiting}
           open={canFold && expanded}
           expandable={canFold}
@@ -200,20 +207,6 @@ export function WorkProcess({
           titleClassName={styles.processTitle}
           collapsedContent={
             <>
-              {timing ? (
-                <>
-                  <span
-                    className={`${reasoning.separator} ${styles.processSeparator}`}
-                    aria-hidden
-                  />
-                  <span
-                    className={styles.processTiming}
-                    aria-label="本轮运行时间"
-                  >
-                    用时 <RunElapsedTime timing={timing} running={running} />
-                  </span>
-                </>
-              ) : null}
               {summary ? (
                 <>
                   <span
@@ -257,6 +250,13 @@ export function WorkProcess({
       <DisclosureRow
         icon={<IconThinkOutline14 />}
         title={title}
+        headerAccessory={
+          timing ? (
+            <span className={styles.processTiming} aria-label="本轮运行时间">
+              用时 <RunElapsedTime timing={timing} running={running} />
+            </span>
+          ) : undefined
+        }
         running={microStatus && !waiting}
         open={open}
         expandable={expandable}
@@ -269,20 +269,6 @@ export function WorkProcess({
         onToggle={() => setExpanded((value) => !value)}
         collapsedContent={
           <>
-            {timing ? (
-              <>
-                <span
-                  className={`${reasoning.separator} ${styles.processSeparator}`}
-                  aria-hidden
-                />
-                <span
-                  className={styles.processTiming}
-                  aria-label="本轮运行时间"
-                >
-                  用时 <RunElapsedTime timing={timing} running={running} />
-                </span>
-              </>
-            ) : null}
             {summary ? (
               <>
                 <span

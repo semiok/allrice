@@ -1849,6 +1849,8 @@ div.composerAttachmentMenu,
 }
 .processTiming {
   flex: none;
+  /* Native header accessory has an 8px gap; keep AllRice 12px timing spacing. */
+  margin-left: 4px;
   color: var(--dsw-alias-label-tertiary);
   font-size: 13px;
   line-height: 24px;

@@ -1,0 +1,42 @@
+/* Limited DeepSeek UI host tokens, pinned to 687f282e8625c6b8d11ff58211a90524be2e4317. MIT.
+ * Existing base/theme source remains independently pinned. */
+body {
+  --dsw-static-green-500-a08: rgb(34 197 94 / 8%);
+  --dsw-static-green-500-a12: rgb(34 197 94 / 12%);
+  --dsw-static-red-400-a12: rgb(242 90 90 / 12%);
+  --dsw-static-red-600-a08: rgb(236 19 19 / 8%)
+}
+body[data-ds-dark-theme] {
+  --dsw-static-green-500-a08: rgb(34 197 94 / 8%);
+  --dsw-static-green-500-a12: rgb(34 197 94 / 12%);
+  --dsw-static-red-400-a12: rgb(242 90 90 / 12%);
+  --dsw-static-red-600-a08: rgb(236 19 19 / 8%)
+}
+body {
+  --dsw-alias-bg-document-preview: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-label-shimmer: color-mix(in srgb, var(--dsw-static-neutral-1000) 30%, transparent);
+  --dsw-alias-menu-icon: var(--dsw-static-neutral-bluish-800);
+  --dsw-alias-link: var(--dsw-static-deepseek-500);
+  --dsw-alias-code-diff-added: var(--dsw-static-green-500-a08);
+  --dsw-alias-code-diff-deleted: var(--dsw-static-red-600-a08);
+  --dsw-alias-state-idle-primary: var(--dsw-static-neutral-300);
+  --dsw-alias-switch-thumb: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-toast-label: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-tooltip-key-bg: color-mix(in srgb, var(--dsw-alias-tooltip-bg), white 18%);
+  --dsw-menu-surface-fill: rgba(248, 249, 250, 0.58);
+  --dsw-alias-menu-group-header-fill: rgba(248, 249, 250, 0.94)
+}
+body[data-ds-dark-theme] {
+  --dsw-alias-bg-document-preview: var(--dsw-static-neutral-bluish-950);
+  --dsw-alias-label-shimmer: color-mix(in srgb, var(--dsw-static-neutral-00) 45%, transparent);
+  --dsw-alias-menu-icon: var(--dsw-alias-label-primary-dimmed);
+  --dsw-alias-link: var(--dsw-static-deepseek-400);
+  --dsw-alias-code-diff-added: var(--dsw-static-green-500-a12);
+  --dsw-alias-code-diff-deleted: var(--dsw-static-red-400-a12);
+  --dsw-alias-state-idle-primary: var(--dsw-static-neutral-600);
+  --dsw-alias-switch-thumb: var(--dsw-static-neutral-bluish-400);
+  --dsw-alias-toast-label: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-tooltip-key-bg: color-mix(in srgb, var(--dsw-alias-tooltip-bg), white 18%);
+  --dsw-menu-surface-fill: rgba(67, 69, 74, 0.45);
+  --dsw-alias-menu-group-header-fill: rgba(48, 49, 54, 0.94)
+}

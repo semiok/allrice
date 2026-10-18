@@ -6,14 +6,14 @@
  * draw for each absolute path and what a click means: a directory toggles, a
  * file opens through the owner's `tabActions` for a `file:` viewer to claim, and
  * anything else is shown but refuses to open. The header uses the shared
- * PathLabel for the root, followed by reload for the expanded directories.
+ * PathLabel for the root, followed by reload and workspace directory actions.
  */
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
 import type { RemoteFailure, FilesBodyHostProps, TranslateNS } from './contracts'
 import {
-  FileTypeIcon, IconFolderCloseRegular, IconFolderOpenRegular, IconRefreshOutlineRegular, classifyFileType,
+  FileTypeIcon, IconFolderCloseRegular, IconFolderOpenRegular, IconRefreshOutlineRegular, Tooltip, classifyFileType,
   IconPauseOutlineRegular, IconPlayOutlineRegular, PathLabel,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
@@ -130,7 +130,8 @@ function Level({ path, tree }: { path: string; tree: TreeContext }): ReactNode {
 
 /** The file tree's body: the workspace root and whatever the reader has opened under it. */
 export function FilesBody({
-  useTabInfo, sessionId, useSessions, useStore, actions, start, refresh, setAutoRefresh, toggle, t,
+  useTabInfo, sessionId, useSessions, useStore, actions,
+  start, refresh, setAutoRefresh, toggle, t,
 }: FilesBodyProps): ReactNode {
   const { tab } = useTabInfo()
   const { signal, actions: tabActions } = tab
@@ -192,16 +193,17 @@ export function FilesBody({
             {state.autoRefresh ? <IconPauseOutlineRegular /> : <IconPlayOutlineRegular />}
           </button>
         </span>
-        <button
-          type="button"
-          className={css.tool}
-          aria-label={t('reload')}
-          title={t('reload')}
-          data-files-reload
-          onClick={reload}
-        >
-          <IconRefreshOutlineRegular />
-        </button>
+        <Tooltip label={t('reload')} side="bottom" delayMs={500}>
+          <button
+            type="button"
+            className={css.tool}
+            aria-label={t('reload')}
+            data-files-reload
+            onClick={reload}
+          >
+            <IconRefreshOutlineRegular />
+          </button>
+        </Tooltip>
       </div>
       <div
         ref={bodyRef}

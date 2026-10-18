@@ -2694,6 +2694,38 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }
 
+  it('native Markdown receives the global heading, table and code typography tokens', async () => {
+    const f = await fixture();
+    try {
+      f.state.reply =
+        '# 样式验收\n\n| 项目 | 金额 |\n| --- | --- |\n| 合成数据 | 123 |\n\n```javascript\nconst total = 123;\n```';
+      await f.page.reload();
+      const row = f.page.locator(`#message-${id(20)}`);
+      const heading = row.getByRole('heading', { name: '样式验收' });
+      await heading.waitFor();
+      expect(
+        await heading.evaluate((node) => ({
+          size: getComputedStyle(node).fontSize,
+          weight: getComputedStyle(node).fontWeight,
+        })),
+      ).toEqual({ size: '21px', weight: '700' });
+      expect(
+        await row
+          .locator('td')
+          .first()
+          .evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('13px');
+      const code = row.locator('pre code').first();
+      await code.waitFor();
+      expect(
+        await code.evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('11px');
+      expect(f.errors).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
+
   it('native feedback hover, copy, rating dialog, retry, withdrawal and platform follow-up work together', async () => {
     const f = await fixture();
     try {
@@ -2717,9 +2749,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await dialog.waitFor();
-      await dialog
-        .getByRole('button', { name: '任务结果', exact: true })
-        .click();
+      expect(
+        await dialog.evaluate((node) => getComputedStyle(node).borderRadius),
+      ).toBe('28px');
+      const category = dialog.getByRole('button', {
+        name: '任务结果',
+        exact: true,
+      });
+      await f.page.keyboard.press('Tab');
+      await category.focus();
+      expect(
+        await category.evaluate((node) => ({
+          radius: getComputedStyle(node).borderRadius,
+          outlineWidth: getComputedStyle(node).outlineWidth,
+          outlineStyle: getComputedStyle(node).outlineStyle,
+        })),
+      ).toEqual({ radius: '8px', outlineWidth: '2px', outlineStyle: 'solid' });
+      await category.click();
       await dialog
         .getByRole('textbox', { name: '反馈详情' })
         .fill('请补充数据来源');
@@ -6053,7 +6099,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const timer = process.getByLabel('本轮运行时间');
       await timer.waitFor();
       const gap = await timer.evaluate((el) => {
-        const title = el.previousElementSibling?.previousElementSibling;
+        const title = el
+          .closest('[data-disclosure-header]')
+          ?.querySelector('[data-disclosure-row]');
         return title
           ? el.getBoundingClientRect().left -
               title.getBoundingClientRect().right
@@ -6970,9 +7018,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(headerMotion!.name).toBe('none');
       expect(headerMotion!.opacity).toBe(1);
       expect(
-        await f.page
-          .locator('[aria-label="工作过程"] [data-text-shimmer="true"]')
-          .count(),
+        await f.page.locator('[aria-label="工作过程"] [data-shimmer]').count(),
       ).toBe(1);
       await f.page.emulateMedia({ reducedMotion: 'reduce' });
       expect((await motion()).map((item) => item.name)).toEqual([
@@ -10125,8 +10171,41 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .getByRole('button', { name: '展开侧边栏', exact: true })
         .click();
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
+      expect(
+        await row.evaluate((node) => getComputedStyle(node).borderRadius),
+      ).toBe('12px');
       const menu = row.getByRole('button', { name: /会话.*的操作/ });
       await menu.click();
+      expect(
+        await f.page
+          .getByRole('menu')
+          .evaluate((node) => getComputedStyle(node).borderRadius),
+      ).toBe('16px');
+      const colors = [];
+      for (const dark of [false, true]) {
+        await f.page.evaluate((enabled) => {
+          document.body.toggleAttribute('data-ds-dark-theme', enabled);
+        }, dark);
+        const appearance = await f.page.getByRole('menu').evaluate((node) => {
+          const material = node.querySelector('[class*="material"]');
+          return {
+            portal: !node.closest('#root'),
+            shadow: getComputedStyle(node).boxShadow,
+            background: material
+              ? getComputedStyle(material).backgroundColor
+              : null,
+          };
+        });
+        expect(appearance.portal).toBe(true);
+        expect(appearance.shadow).not.toBe('none');
+        expect(appearance.background).not.toBeNull();
+        expect(appearance.background).not.toBe('rgba(0, 0, 0, 0)');
+        colors.push(appearance.background);
+      }
+      expect(colors[0]).not.toBe(colors[1]);
+      await f.page.evaluate(() =>
+        document.body.removeAttribute('data-ds-dark-theme'),
+      );
       await f.page
         .getByRole('menuitem', { name: '归档会话', exact: true })
         .click();

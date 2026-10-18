@@ -1,14 +1,16 @@
 --- a/packages/client/ui-sidebar-files/src/client/FilesBody.tsx
 +++ b/packages/client/ui-sidebar-files/src/client/FilesBody.tsx
-@@ -11,26 +11,21 @@
+@@ -11,29 +11,21 @@
  import { useEffect, useLayoutEffect, useRef } from 'react'
  import type { ReactNode } from 'react'
  import clsx from 'clsx'
 -import type { RemoteFailure } from '@deepseek-ai/dsh-api-remotes/client'
--import type { PropsLocale, PropsRuntime, PropsStore, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+-import type {
+-  PropsLocale, PropsRenderSlots, PropsRuntime, PropsStore, TranslateNS,
+-} from '@deepseek-ai/dsh-client-ui-slots'
 +import type { RemoteFailure, FilesBodyHostProps, TranslateNS } from './contracts'
  import {
-   FileTypeIcon, IconFolderCloseRegular, IconFolderOpenRegular, IconRefreshOutlineRegular, classifyFileType,
+   FileTypeIcon, IconFolderCloseRegular, IconFolderOpenRegular, IconRefreshOutlineRegular, Tooltip, classifyFileType,
    IconPauseOutlineRegular, IconPlayOutlineRegular, PathLabel,
  } from '@deepseek-ai/dsh-client-ui-primitives'
  import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
@@ -24,6 +26,7 @@
  /** The body's composed props: the tab it draws, its store, its face, and its copy. */
 -export type FilesBodyProps =
 -  & PropsRuntime<'sidebar.right.pane.tab'>
+-  & PropsRenderSlots<'sidebar.right.tab.files.actions'>
 -  & PropsStore<ReturnType<typeof createFilesStore>>
 -  & FilesInjected
 -  & PropsLocale<'sidebarFiles'>
@@ -31,7 +34,7 @@
  
  /** Natural, case-insensitive name order, so `file2` precedes `file10`. */
  const byName = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
-@@ -45,7 +40,7 @@
+@@ -48,7 +40,7 @@
  export function orderEntries(entries: readonly WorkspaceDirectoryEntry[]): WorkspaceDirectoryEntry[] {
    return [...entries].sort((left, right) => {
      const group = Number(right.type === 'directory') - Number(left.type === 'directory')
@@ -40,7 +43,7 @@
    })
  }
  
-@@ -83,7 +78,7 @@
+@@ -86,7 +78,7 @@
        <li className={css.item} data-files-entry="directory" data-files-path={path}>
          <button type="button" className={css.row} aria-expanded={expanded} onClick={() => { tree.onToggle(parent, path) }}>
            {expanded ? <IconFolderOpenRegular className={css.icon} /> : <IconFolderCloseRegular className={css.icon} />}
@@ -49,7 +52,7 @@
          </button>
          {expanded && <ul className={css.level}><Level path={path} tree={tree} /></ul>}
        </li>
-@@ -93,8 +88,8 @@
+@@ -96,8 +88,8 @@
      return (
        <li className={css.item} data-files-entry="file" data-files-path={path}>
          <button type="button" className={css.row} onClick={() => { tree.onOpen(path) }}>
@@ -60,7 +63,7 @@
          </button>
        </li>
      )
-@@ -102,7 +97,7 @@
+@@ -105,7 +97,7 @@
    return (
      <li className={css.item} data-files-entry="other" data-files-path={path}>
        <span className={clsx(css.row, css.other)} aria-disabled="true" title={tree.t('entry.other')}>
@@ -69,3 +72,38 @@
        </span>
      </li>
    )
+@@ -139,10 +131,9 @@
+ /** The file tree's body: the workspace root and whatever the reader has opened under it. */
+ export function FilesBody({
+   useTabInfo, sessionId, useSessions, useStore, actions,
+-  start, refresh, setAutoRefresh, toggle, t, renderSlot,
++  start, refresh, setAutoRefresh, toggle, t,
+ }: FilesBodyProps): ReactNode {
+   const { tab } = useTabInfo()
+-  useEffect(() => tab.actions.bindCommands({ refresh: () => { refresh(tab.id) } }), [tab.actions, tab.id, refresh])
+   const { signal, actions: tabActions } = tab
+   const cwd = useSessions(sessions => sessions.byId[sessionId]?.cwd)
+   const state = useStore(store => store.byTab[tab.id])
+@@ -202,21 +193,17 @@
+             {state.autoRefresh ? <IconPauseOutlineRegular /> : <IconPlayOutlineRegular />}
+           </button>
+         </span>
+-        <Tooltip label={t('reload')} shortcutKeys={tab.refreshShortcut?.keys} side="bottom" delayMs={500}>
++        <Tooltip label={t('reload')} side="bottom" delayMs={500}>
+           <button
+             type="button"
+             className={css.tool}
+             aria-label={t('reload')}
+-            aria-keyshortcuts={tab.refreshShortcut?.aria}
+             data-files-reload
+             onClick={reload}
+           >
+             <IconRefreshOutlineRegular />
+           </button>
+         </Tooltip>
+-        {renderSlot('sidebar.right.tab.files.actions', {
+-          absolutePath: state.root,
+-        })}
+       </div>
+       <div
+         ref={bodyRef}

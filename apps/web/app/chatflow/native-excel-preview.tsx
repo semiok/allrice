@@ -1,5 +1,11 @@
 'use client';
-import { useEffect, useMemo, useState, type ComponentType } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import {
   documentPreviewLimits,
   type SpreadsheetFormat,
@@ -14,6 +20,7 @@ import { LoadingIndicator } from './dsh-upstream/document/LoadingIndicator';
 import styles from './document-reader.module.css';
 const t = previewLocale(zh);
 type Props = {
+  loading: ReactNode;
   content: { kind: 'bytes'; data: Uint8Array<ArrayBuffer> };
   format: SpreadsheetFormat;
   limits: typeof documentPreviewLimits.excel;
@@ -59,6 +66,7 @@ export function NativeExcelPreview({
   return (
     <div className={styles.nativeContent}>
       <module.ExcelBody
+        loading={<LoadingIndicator label={zh.loading} />}
         content={{ kind: 'bytes', data }}
         format={format}
         limits={documentPreviewLimits.excel}

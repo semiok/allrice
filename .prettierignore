@@ -54,3 +54,9 @@ apps/web/app/chatflow/dsh-upstream/images/
 
 # Preserve independently annotated PDF acceptance truth bytes.
 tests/fixtures/pdf/expected-source.json
+
+# Exact rc.2 radius fragment, replayed with recorded provenance.
+apps/web/app/dsh-upstream/ui-radius-tokens.css
+apps/web/app/dsh-upstream/ui-focus-tokens.css
+apps/web/app/dsh-upstream/ui-surface-tokens.css
+apps/web/app/dsh-upstream/ui-content-tokens.css

@@ -213,7 +213,9 @@ describe('historical transcript capability gating', () => {
       { employeeName: 'Alan' },
     );
     expect(html).toContain('Alan');
-    expect(html.match(/思考中…/g)).toHaveLength(1);
+    // Native shimmer repeats presentation text in a hidden data attribute.
+    expect(html.match(/>思考中…</g)).toHaveLength(1);
+    expect(html).toContain('data-shimmer-text="思考中…"');
     expect(html).not.toContain('Rice');
     expect(html).not.toContain('助手任务');
   });
@@ -277,7 +279,7 @@ describe('historical transcript capability gating', () => {
       },
     };
     const interleaved = show([earlierReply, event(1, 'started', 'start')]);
-    expect(interleaved.match(/正在整理上下文…/g)).toHaveLength(1);
+    expect(interleaved.match(/>正在整理上下文…</g)).toHaveLength(1);
     expect(interleaved).not.toContain('回复中…');
     expect(interleaved).toContain('我先检查项目。');
     expect(interleaved).toContain('整理 · 1 项');
