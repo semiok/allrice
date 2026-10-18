@@ -560,7 +560,7 @@ suite(
         });
         const a = {
           artifactId: descriptor.artifactId,
-          generation: descriptor.distributionGeneration,
+          generation: 'dsh-0.2.1-rc.2-687f282' as const,
           storageRoot: '/isolated-native',
           previewStorageRoot: '/existing-executions/platform-employee-tests',
         };
