@@ -6099,7 +6099,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const timer = process.getByLabel('本轮运行时间');
       await timer.waitFor();
       const gap = await timer.evaluate((el) => {
-        const title = el.previousElementSibling?.previousElementSibling;
+        const title = el
+          .closest('[data-disclosure-header]')
+          ?.querySelector('[data-disclosure-row]');
         return title
           ? el.getBoundingClientRect().left -
               title.getBoundingClientRect().right
@@ -7016,9 +7018,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(headerMotion!.name).toBe('none');
       expect(headerMotion!.opacity).toBe(1);
       expect(
-        await f.page
-          .locator('[aria-label="工作过程"] [data-text-shimmer="true"]')
-          .count(),
+        await f.page.locator('[aria-label="工作过程"] [data-shimmer]').count(),
       ).toBe(1);
       await f.page.emulateMedia({ reducedMotion: 'reduce' });
       expect((await motion()).map((item) => item.name)).toEqual([
