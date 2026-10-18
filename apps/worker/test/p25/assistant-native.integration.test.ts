@@ -14,7 +14,7 @@ import {
 } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantWorkerBridge } from '../../src/harness/dsh/assistant-bridge.js';
 import { assistantNativeCheckpointEvidence } from '../../src/harness/dsh/assistant-recovery.js';
-import { p24Fixture, gate } from '../p24/fixture.js';
+import { p24Fixture, gate, latestTaskMessage } from '../p24/fixture.js';
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -56,7 +56,7 @@ integration('P25 actual native DSH + PostgreSQL governed adapter', () => {
     const native = await p24Fixture(
       async (request) => {
         const payload = JSON.stringify(request.messages),
-          last = request.messages.at(-1);
+          last = latestTaskMessage(request);
         if (payload.includes('ANALYZE_A') && !payload.includes('ROOT_PRIVATE'))
           return {
             nativeTool: {

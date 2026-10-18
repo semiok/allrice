@@ -67,6 +67,9 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     catalogRoot: string,
     baseline: RepositoryBaseline;
   beforeAll(async () => {
+    // Explicit SQL-only issuer for current-generation technical roots; not
+    // approval/installation of any native runtime artifact.
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     company = await createExperienceFixture(fixture.db);

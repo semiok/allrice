@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { gate, p24Fixture } from './fixture.js';
+import { gate, p24Fixture, latestTaskMessage } from './fixture.js';
 
 describe('P24 pinned native DSH continuable delegation (test-only composition)', () => {
   it('uses real delegation, isolates parent history, forces child approval=never and routes a separate proposal', async () => {
@@ -9,18 +9,7 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
       async (request) => {
         // Native runtime-context snapshots are metadata, not this fixture's
         // task. Keep tool replies in order so the marker is invoked only once.
-        const last = request.messages
-          .filter(
-            (message) =>
-              !(
-                message.role === 'user' &&
-                typeof message.content === 'string' &&
-                message.content.startsWith(
-                  'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
-                )
-              ),
-          )
-          .at(-1);
+        const last = latestTaskMessage(request);
         return last?.role === 'user' &&
           JSON.stringify(last).includes('CHECK_APPROVAL')
           ? { tool: { marker: 'CHECK_APPROVAL' } }
@@ -99,7 +88,7 @@ describe('P24 pinned native DSH continuable delegation (test-only composition)',
   it('uses native adjacent-agent messages that wake the parent and cold-resumes the same child identity', async () => {
     const hold = gate();
     const f = await p24Fixture(async (request) => {
-      if (JSON.stringify(request.messages.at(-1)).includes('HOLD_CHILD'))
+      if (JSON.stringify(latestTaskMessage(request)).includes('HOLD_CHILD'))
         await hold.promise;
       return { text: 'Synthetic completed.' };
     });

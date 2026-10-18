@@ -209,6 +209,9 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
   beforeAll(async () => {
     const base = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!base) throw Error('Explicit test database required');
+    // This SQL-only publication fixture explicitly issues current-generation
+    // birth facts; it never installs/approves a real native artifact.
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     const url = new URL(base);
     url.search = '';
     admin = postgres(url.toString(), { max: 2, onnotice: () => {} });
@@ -255,6 +258,7 @@ suite('P18 exact package publication authority with real PostgreSQL', () => {
     if (admin && /^p18_publish_[a-f0-9]{32}$/.test(schema))
       await admin.unsafe(`drop schema "${schema}" cascade`);
     await admin?.end({ timeout: 5 });
+    vi.unstubAllEnvs();
   });
   it('inherits platform models despite employee publication and repairs legacy session caches', async () => {
     const f = await fixture();

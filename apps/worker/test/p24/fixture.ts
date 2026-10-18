@@ -16,6 +16,24 @@ export interface ModelReply {
   nativeTool?: { name: string; arguments: Record<string, unknown> };
   usage?: Record<string, unknown> | null;
 }
+
+// Real provider requests stay untouched in `requests`. Synthetic responders
+// choose their task before the native trailing runtime-context metadata, while
+// retaining real tool replies and settled parent notifications in order.
+export function latestTaskMessage(request: ModelRequest) {
+  return request.messages
+    .filter(
+      (message) =>
+        !(
+          message.role === 'user' &&
+          typeof message.content === 'string' &&
+          message.content.startsWith(
+            'Current runtime context. This snapshot supersedes earlier runtime-context snapshots.',
+          )
+        ),
+    )
+    .at(-1);
+}
 export interface NativeSnapshot {
   live: boolean;
   status?: string;

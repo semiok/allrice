@@ -86,6 +86,9 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
     vi.stubEnv('ALLRICE_CLOUD_MCP_ENABLED', '1');
     vi.stubEnv('ALLRICE_RUNTIME_POLICY_ENABLED', '1');
     vi.stubEnv('ALLRICE_MCP_CREDENTIAL_KEY', 'af'.repeat(32));
+    // Explicit synthetic birth issuer for newly compiled current-generation
+    // previews. This is not approval of an installed/native launch artifact.
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     const url = new URL(base);
     url.search = '';
     admin = postgres(url.toString(), { max: 1, onnotice: () => {} });
@@ -565,6 +568,12 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       prompt: 'Synthetic compile and release only',
     });
     expect(trial.queued).toBe(true);
+    const [birth] = await db`
+      select native_root_origin from allrice_platform_employee_test_runs
+      where id=${trial.testRun!.id}`;
+    expect(birth!.native_root_origin.artifactId).toBe(
+      'sha256:' + 'a'.repeat(64),
+    );
     await db`update allrice_platform_employee_test_runs set status='running',started_at=clock_timestamp(),timeout_at=clock_timestamp()+interval '5 minutes' where id=${trial.testRun!.id}`;
     await completePlatformEmployeeTestRun(trial.testRun!.id, {
       answer: 'Synthetic preview complete; no remote tools executed.',

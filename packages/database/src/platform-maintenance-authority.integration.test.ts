@@ -105,6 +105,9 @@ suite('immutable report-bound maintenance authority', () => {
     baseline: RepositoryBaseline,
     proof: MaintenanceDiagnosisProof;
   beforeAll(async () => {
+    // Explicit SQL-only issuer for current-generation technical roots; not
+    // approval/installation of any native runtime artifact.
+    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     fixture = await createAssistantFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
     async function principal(email: string) {
