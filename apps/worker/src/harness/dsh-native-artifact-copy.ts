@@ -32,6 +32,11 @@ export async function copyDshNativeArtifact(input: {
   )
     throw Error('DSH_NATIVE_ARTIFACT_COPY_SOURCE_REQUIRED');
   const original = await verifyDshNativeArtifact(input);
+  // The preserved legacy v1 identity does not record the loader helper's
+  // effective dynamic platform edge. Its approved full root must remain;
+  // remeasurement alone cannot prove a portable legacy copy is runnable.
+  if (original.content.generation !== 'dsh-0.2.1-rc.2-687f282')
+    throw Error('DSH_NATIVE_ARTIFACT_COPY_LEGACY_ORIGINAL_ROOT_REQUIRED');
   const source = original.root;
   const target = resolve(input.target);
   if (

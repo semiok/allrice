@@ -257,6 +257,41 @@ export async function measureDshNativeArtifact(
     item.bytes = packageFiles.reduce((n, f) => n + f.bytes, 0);
     item.checksum = hash(JSON.stringify(packageFiles));
     let effectiveOptional = metadata.optionalDependencies ?? {};
+    // The immutable legacy v1 ID already hashes the entry's optional platform
+    // package, but not the helper's dynamic resolution edge. Preserve that ID
+    // and require its actual lookup to reach the same already-measured target.
+    // This is a consistency guard, not a new edge or a portable legacy copy.
+    if (
+      distribution.version === '0.1.5-rc.3' &&
+      metadata.name === 'node-addon-native-custom-loader' &&
+      metadata.version === '0.1.5'
+    ) {
+      const loader = await locate(worker, '@deepseek-ai/dsh-app-boot');
+      const plugin =
+        loader && (await locate(loader, '@deepseek-ai/cordis-plugin-loader'));
+      const entry =
+        plugin && (await locate(plugin, 'node-addon-require-builtin'));
+      if (!entry) fail('LEGACY_NATIVE_LOADER_ENTRY_MISSING');
+      const published = JSON.parse(
+        (await bytesAt(join(entry, 'package.json'))).toString(),
+      ) as PackageMetadata;
+      const host = nativeLoaderPlatformPackage({
+        platform: process.platform,
+        arch: process.arch,
+        mappedLibraries:
+          process.platform === 'linux'
+            ? await readFile('/proc/self/maps', 'utf8').catch(() => '')
+            : undefined,
+      });
+      const declared = await locate(entry, host),
+        actual = await locate(path, host);
+      if (
+        published.optionalDependencies?.[host] !== '0.1.5' ||
+        !declared ||
+        actual !== declared
+      )
+        fail('LEGACY_NATIVE_LOADER_RESOLUTION');
+    }
     // pnpm extensions do not rewrite published package.json. This one known
     // helper performs a dynamic require from its own path, so measure its
     // effective optional edges explicitly. Historical approved roots retain

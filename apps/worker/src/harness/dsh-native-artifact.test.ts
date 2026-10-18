@@ -108,8 +108,23 @@ async function seal(root: string) {
   });
   return measured;
 }
-it('copies only the measured closure with original provenance and resolves it after the source disappears', async () => {
+async function currentCopyFixture() {
   const root = await fixture();
+  await put(root, 'apps/worker/dsh/distribution.json', {
+    schemaVersion: 2,
+    installedGeneration: 'dsh-0.2.1-rc.2-687f282',
+    generations: [
+      {
+        generation: 'dsh-0.2.1-rc.2-687f282',
+        version: '0.2.1-rc.2',
+        commit: '687f282e8625c6b8d11ff58211a90524be2e4317',
+      },
+    ],
+  });
+  return root;
+}
+it('copies only the measured closure with original provenance and resolves it after the source disappears', async () => {
+  const root = await currentCopyFixture();
   // Unrelated Web/data/credential bytes must never enter a retained runtime.
   await put(root, '.env', 'SYNTHETIC_NOT_A_REAL_SECRET');
   await put(root, 'apps/web/.next/BUILD_ID', 'do-not-copy');
@@ -161,7 +176,7 @@ it('copies only the measured closure with original provenance and resolves it af
   ).rejects.toMatchObject({ code: 'EEXIST' });
 });
 it('rejects wrong original source before creating a retained copy and detects later copied-code tampering', async () => {
-  const root = await fixture(),
+  const root = await currentCopyFixture(),
     value = await seal(root);
   const parent = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
@@ -187,6 +202,25 @@ it('rejects wrong original source before creating a retained copy and detects la
     verifyDshNativeArtifact({ root: target, expectedId: value.artifactId }),
   ).rejects.toThrow('CONTENT_MISMATCH');
 });
+it('retains the full legacy reader rather than presenting an incompletely measured dynamic loader copy as portable', async () => {
+  const root = await fixture(),
+    value = await seal(root);
+  const parent = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
+  );
+  roots.push(parent);
+  const target = join(parent, 'native');
+  await expect(
+    copyDshNativeArtifact({
+      root,
+      target,
+      expectedId: value.artifactId,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    }),
+  ).rejects.toThrow('LEGACY_ORIGINAL_ROOT_REQUIRED');
+  await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
+});
 it('selects the exact mapped Linux libc and refuses ambiguous or absent facts', () => {
   const input = { platform: 'linux', arch: 'x64' };
   const gnu = nativeLoaderPlatformPackage({
@@ -211,6 +245,81 @@ it('selects the exact mapped Linux libc and refuses ambiguous or absent facts', 
       mappedLibraries: '/lib/libc.so.6\n/lib/ld-musl-x86_64.so.1',
     }),
   ).toThrow('NATIVE_LOADER_LIBC_UNKNOWN');
+});
+it('requires a legacy helper to resolve its already-measured platform package without rewriting the v1 content identity', async () => {
+  const root = await fixture();
+  const host = `node-addon-require-builtin-${process.platform}-${process.arch}${process.platform === 'linux' ? '-gnu' : process.platform === 'win32' ? '-msvc' : ''}`;
+  const boot = 'node_modules/@deepseek-ai/dsh-app-boot';
+  const loader = 'node_modules/@deepseek-ai/cordis-plugin-loader';
+  const entry = 'node_modules/node-addon-require-builtin';
+  const helper = 'node_modules/node-addon-native-custom-loader';
+  const definitions = [
+    [
+      boot,
+      {
+        name: '@deepseek-ai/dsh-app-boot',
+        version: '0.1.5-rc.3',
+        dependencies: { '@deepseek-ai/cordis-plugin-loader': '1.0.3' },
+      },
+    ],
+    [
+      loader,
+      {
+        name: '@deepseek-ai/cordis-plugin-loader',
+        version: '1.0.3',
+        dependencies: { 'node-addon-require-builtin': '0.1.5' },
+      },
+    ],
+    [
+      entry,
+      {
+        name: 'node-addon-require-builtin',
+        version: '0.1.5',
+        dependencies: { 'node-addon-native-custom-loader': '0.1.5' },
+        optionalDependencies: { [host]: '0.1.5' },
+      },
+    ],
+    [helper, { name: 'node-addon-native-custom-loader', version: '0.1.5' }],
+    ['node_modules/' + host, { name: host, version: '0.1.5' }],
+  ] as const;
+  for (const [path, metadata] of definitions) {
+    await put(root, path + '/package.json', {
+      ...metadata,
+      type: 'module',
+      main: 'index.js',
+    });
+    await put(root, path + '/index.js', 'export const synthetic=true;');
+  }
+  const worker = JSON.parse(
+    await readFile(join(root, 'apps/worker/package.json'), 'utf8'),
+  );
+  worker.dependencies['@deepseek-ai/dsh-app-boot'] = '0.1.5-rc.3';
+  await put(root, 'apps/worker/package.json', worker);
+  const original = await seal(root);
+  expect(
+    original.content.dependencyEdges.filter(
+      (e) => e.importer === helper && e.name === host,
+    ),
+  ).toHaveLength(0);
+  expect(
+    (await verifyDshNativeArtifact({ root, expectedId: original.artifactId }))
+      .artifactId,
+  ).toBe(original.artifactId);
+  const other = join(root, '.unapproved-platform');
+  await put(root, '.unapproved-platform/package.json', {
+    name: host,
+    version: '0.1.9',
+  });
+  await put(
+    root,
+    '.unapproved-platform/index.js',
+    'export const unapproved=true;',
+  );
+  await mkdir(join(root, helper, 'node_modules'), { recursive: true });
+  await symlink(other, join(root, helper, 'node_modules', host));
+  await expect(
+    verifyDshNativeArtifact({ root, expectedId: original.artifactId }),
+  ).rejects.toThrow('LEGACY_NATIVE_LOADER_RESOLUTION');
 });
 async function dynamicNativeFixture(root: string) {
   await put(root, 'apps/worker/dsh/distribution.json', {

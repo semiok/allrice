@@ -15,6 +15,11 @@ fails before a prompt; it never creates an empty replacement history.
    destination must not exist. This copies measured files, actual package
    instances and resolver links; it does not reinstall, copy Web builds,
    credentials or Session data, change provenance, or grant execution approval.
+   This compact copy is limited to the measured 0.2.1 generation. The legacy
+   0.1.5 v1 identity omits a dynamic loader platform edge; its original approved
+   full release remains protected. A same-ID copy failed actual isolated native
+   loading, so copying that reader is explicitly rejected, without changing its
+   historical ID or borrowing a new reader.
 3. Independently review/register the exact copy and prove native cold recovery
    with the original full source unavailable. Keep the original storage root;
    a content-equivalent code directory is not a storage migration.
