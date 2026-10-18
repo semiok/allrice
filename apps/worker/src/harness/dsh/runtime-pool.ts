@@ -42,6 +42,7 @@ import {
 import {
   legacyDshNativeLaunch,
   originDshNativeLaunch,
+  employeePreviewStorageRoot,
   retainedDshStorageRoot,
   assertDshFrozenCompatibility,
 } from '../dsh-native-retention.js';
@@ -245,11 +246,9 @@ export class DshRuntimePool {
         !(
           pin.contextKind === 'platform_employee_test' &&
           pin.contextId === storageContextKey &&
-          process.env.ALLRICE_EXECUTION_ROOT &&
           pin.storageNamespace ===
             resolve(
-              process.env.ALLRICE_EXECUTION_ROOT,
-              'platform-employee-tests',
+              employeePreviewStorageRoot(),
               storageContextKey,
               organizationId,
               workspaceId,

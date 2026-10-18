@@ -136,20 +136,21 @@ export function retainedDshStorageRoot(artifactId: string) {
   return retained.get(artifactId)?.storageRoot;
 }
 
+/** Same effective execution root as the Worker and its preview executor. */
+export function employeePreviewStorageRoot() {
+  return resolve(
+    process.env.ALLRICE_EXECUTION_ROOT ?? '.local/executions',
+    'platform-employee-tests',
+  );
+}
+
 /** Reused by the pre-stop release check and before Worker producers start.
  * A free slot is not evidence that an unbound origin no longer needs its code. */
 export function verifyConfiguredDshNativeReferences(primary: {
   artifactId: string;
   generation: string;
 }) {
-  const previewStorage = process.env.ALLRICE_EXECUTION_ROOT
-    ? {
-        previewStorageRoot: resolve(
-          process.env.ALLRICE_EXECUTION_ROOT,
-          'platform-employee-tests',
-        ),
-      }
-    : {};
+  const previewStorage = { previewStorageRoot: employeePreviewStorageRoot() };
   return verifyNativeArtifactReferenceCoverage([
     {
       artifactId: primary.artifactId,

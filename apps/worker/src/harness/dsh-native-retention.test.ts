@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 const seam = vi.hoisted(() => ({
   install: vi.fn(),
@@ -55,6 +55,7 @@ function configure() {
 }
 it('projects the actual installed-primary return shape into the strict reference approval contract', async () => {
   vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', root);
+  vi.stubEnv('ALLRICE_EXECUTION_ROOT', undefined);
   const policy = await import('./dsh-native-retention.js');
   const installed = {
     artifactId: id,
@@ -64,7 +65,15 @@ it('projects the actual installed-primary return shape into the strict reference
   };
   await policy.verifyConfiguredDshNativeReferences(installed);
   expect(seam.coverage).toHaveBeenCalledWith([
-    { artifactId: id, generation: current, storageRoot: root },
+    {
+      artifactId: id,
+      generation: current,
+      storageRoot: root,
+      previewStorageRoot: resolve(
+        '.local/executions',
+        'platform-employee-tests',
+      ),
+    },
   ]);
 });
 function configureCurrent() {
