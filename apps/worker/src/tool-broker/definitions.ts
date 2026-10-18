@@ -85,7 +85,7 @@ export const riceToolDefinitions = [
   {
     name: 'workspace.employee.method.save_candidate',
     description:
-      '用户明确要求保存或调整今后使用的工作场景时，保存并立即生效，一次事务完成，不需另行测试、确认或启用。默认只改当前用户的小白；共享修改须用户直接指定准确公司或部门范围并有维护权限，原样携带 inspect 返回的 sharedTarget。共同执行要求须用户直接请求，不能从单场景扩大。先 inspect(view=candidate) 取得 expectedRevision，每次只改通用部分或一个场景；已有 scene.id 沿用，未提供的字段和其他场景保留。requirements/procedure 替换对应文字，references 只追加用户要求长期引用的可读固定版本；共享资料绑定仍不支持。成功回执表示已保存且生效，详情可见，后续独立任务采用；当前任务快照保留。保存不启动后台监控、不改变权限、不代表业务已验证。',
+      '用户明确要求保存或调整今后使用的工作场景时，保存并立即生效，一次事务完成，不需另行测试、确认或启用。默认只改当前用户的小白；共享修改须用户直接指定准确公司或部门范围并有维护权限，原样携带 inspect 返回的 sharedTarget。共同执行要求须用户直接请求，不能从单场景扩大。先 inspect(view=candidate) 取得 expectedRevision，每次只改通用部分或一个场景；已有 scene.id 沿用，未提供的字段和其他场景保留。requirements/procedure 替换对应文字，references 只追加用户要求长期引用的可读固定版本。替换资料用同次调用的准确 removeReferences 与 references，优先只提交引用字段；不同工作场景可固定同一资料的不同版本，同一场景及其通用内容不可混用冲突版本。只有原正文写死旧版本且用户明确要求将该资料换为新版时，才同步该版本标记，其余文字及场景保持不变；不借换资料改写业务规则。新增执行要求以准确资料引用为准，避免重复写死版本号。共享资料绑定仍不支持。成功回执表示已保存且生效，详情可见，后续独立任务采用；当前任务快照保留。保存不启动后台监控、不改变权限、不代表业务已验证。',
     inputSchema: z.toJSONSchema(EmployeeMethodSaveSchema),
   },
   {

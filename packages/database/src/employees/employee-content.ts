@@ -325,7 +325,14 @@ async function assemble(
     for (const ref of sourceRefs) {
       const identity = `${ref.sourceKind}:${ref.contentId}`,
         previous = identities.get(identity);
-      if (previous && previous !== exactKey(ref))
+      // Independent scenes may pin different revisions of a reference. Check
+      // Knowledge after merging all layers, within each effective scene view.
+      // Requirements and other rule-bearing sources retain their existing gate.
+      if (
+        ref.sourceKind !== 'knowledge' &&
+        previous &&
+        previous !== exactKey(ref)
+      )
         issues.push({
           code: 'mandatory_rule_conflict',
           contentId: ref.contentId,
@@ -367,6 +374,28 @@ async function assemble(
       if (!existing) scenes.push(merged);
     }
   }
+  const checkKnowledgeVersions = (
+    references: EmployeeContentReference[],
+    sceneId?: string,
+  ) => {
+    const versions = new Map<string, string>();
+    for (const ref of references) {
+      if (ref.sourceKind !== 'knowledge') continue;
+      const previous = versions.get(ref.contentId);
+      if (previous && previous !== exactKey(ref))
+        issues.push({
+          code: 'mandatory_rule_conflict',
+          contentId: ref.contentId,
+          ...(sceneId ? { sceneId } : {}),
+          message:
+            '同一执行场景引用了同一资料的不同版本；请先统一该场景与通用内容的来源版本。',
+        });
+      versions.set(ref.contentId, exactKey(ref));
+    }
+  };
+  checkKnowledgeVersions(common);
+  for (const scene of scenes)
+    checkKnowledgeVersions([...common, ...scene.references], scene.id);
   const resolved = [...sources.values()];
   if (
     scenes.length > employeeContentLimits.scenes ||

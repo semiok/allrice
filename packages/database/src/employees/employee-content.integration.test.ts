@@ -2181,6 +2181,186 @@ suite(
         f.db`update allrice_employee_content_sets set owner_id=${s.b.actor.id} where id=${input.setId}`,
       ).rejects.toThrow('immutable');
     });
+    it('pins different revisions of one reference independently in weekly and monthly scenes', async () => {
+      const s = await setup();
+      const v1 = await readyReference(
+        s,
+        '部门金额：运营12000元，财务18000元，合计30000元。TOTAL30000',
+      );
+      const v2 = await readyReference(
+        s,
+        '部门金额：运营15000元，财务18000元，合计33000元。TOTAL33000',
+        'company',
+        {
+          sourceId: v1.sourceId,
+          revision: 1,
+        },
+      );
+      const oldPin = await managedRef(s, v1),
+        newPin = await managedRef(s, v2);
+      const weeklyId = randomUUID(),
+        monthlyId = randomUUID();
+      await enable(
+        s,
+        s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: weeklyId,
+                name: '周度对账',
+                appliesWhen: '每周核对部门金额',
+                references: [newPin],
+              },
+              {
+                id: monthlyId,
+                name: '月度复盘',
+                appliesWhen: '每月核对部门金额',
+                references: [oldPin],
+              },
+            ],
+          },
+        }),
+      );
+      const effective = await getEffectiveEmployeeContent(s.a, s.instance.id);
+      expect(effective.validation.valid).toBe(true);
+      expect(
+        effective.sources.map((r) => r.reference.revisionId).sort(),
+      ).toEqual([v1.revisionId, v2.revisionId].sort());
+      for (const [sceneId, revisionId, total, absent] of [
+        [weeklyId, v2.revisionId, 'TOTAL33000', 'TOTAL30000'],
+        [monthlyId, v1.revisionId, 'TOTAL30000', 'TOTAL33000'],
+      ] as const) {
+        const run = await runtimeRun(
+            s,
+            undefined,
+            true,
+            [],
+            [],
+            '请核对运营和财务的部门金额及合计',
+          ),
+          worker = await sceneLease(run);
+        const scene = run.runtime.scenes.find((v) => v.id === sceneId)!;
+        const loaded = await loadEmployeeRuntimeScene(
+          run.scope,
+          run.runtime.generationId,
+          { sceneId, sceneDigest: scene.digest },
+          worker,
+        );
+        expect(loaded.knowledge).toHaveLength(1);
+        expect(loaded.knowledge[0]!.citation.reference!.revisionId).toBe(
+          revisionId,
+        );
+        expect(loaded.knowledge[0]!.content).toContain(total);
+        expect(JSON.stringify(loaded)).not.toContain(absent);
+        const beforeReads = await readEmployeeReferenceCitations(run.scope);
+        const other = run.runtime.scenes.find((v) => v.id !== sceneId)!;
+        await expect(
+          loadEmployeeRuntimeScene(
+            run.scope,
+            run.runtime.generationId,
+            { sceneId: other.id, sceneDigest: other.digest },
+            worker,
+          ),
+        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        expect(await readEmployeeReferenceCitations(run.scope)).toEqual(
+          beforeReads,
+        );
+        await run.finish();
+      }
+    }, 120000);
+    it.each([
+      'common',
+      'common-only',
+      'same-scene',
+      'same-scene-reversed',
+      'inherited-scene',
+      'inherited-common',
+    ] as const)(
+      'still rejects different reference versions within one effective view: %s',
+      async (kind) => {
+        const s = await setup(),
+          v1 = await readyReference(s, 'SOURCE_V1');
+        const v2 = await readyReference(s, 'SOURCE_V2', 'company', {
+          sourceId: v1.sourceId,
+          revision: 1,
+        });
+        const oldPin = await managedRef(s, v1),
+          newPin = await managedRef(s, v2),
+          sceneId = randomUUID();
+        const scene = {
+          id: sceneId,
+          name: '周度核对',
+          appliesWhen: '每周核对',
+          references: [newPin],
+        };
+        if (kind.startsWith('inherited')) {
+          await enable(
+            s,
+            s.draft({
+              setId: randomUUID(),
+              ownership: {
+                scope: 'company',
+                organizationId: s.company.organizationId,
+              },
+              target: { kind: 'employee', employeeId: s.employeeId },
+              manifest: {
+                schemaVersion: 1,
+                common: kind === 'inherited-common' ? [oldPin] : [],
+                declaredConflicts: [],
+                scenes:
+                  kind === 'inherited-scene'
+                    ? [{ ...scene, references: [oldPin] }]
+                    : [],
+              },
+            }),
+          );
+        }
+        const input = s.draft({
+          manifest: {
+            schemaVersion: 1,
+            common:
+              kind === 'common'
+                ? [oldPin]
+                : kind === 'common-only'
+                  ? [oldPin, newPin]
+                  : [],
+            declaredConflicts: [],
+            scenes:
+              kind === 'common-only'
+                ? []
+                : [
+                    {
+                      ...scene,
+                      references:
+                        kind === 'same-scene'
+                          ? [oldPin, newPin]
+                          : kind === 'same-scene-reversed'
+                            ? [newPin, oldPin]
+                            : [newPin],
+                    },
+                  ],
+          },
+        });
+        const saved = await mutateEmployeeContent(s.a, input);
+        const checked = await mutateEmployeeContent(
+          s.a,
+          action(input, saved, 'validate'),
+        );
+        expect(checked.validation?.valid).toBe(false);
+        expect(
+          checked.validation?.issues.some(
+            (v) => v.code === 'mandatory_rule_conflict',
+          ),
+        ).toBe(true);
+        await expect(
+          mutateEmployeeContent(s.a, action(input, checked, 'activate')),
+        ).rejects.toMatchObject({ code: 'validation_required' });
+      },
+      120000,
+    );
     it('replays original receipts after later changes, rejects reused request IDs and atomically loses a concurrent stale edit', async () => {
       const s = await setup(),
         input = s.draft();
