@@ -163,9 +163,7 @@ export async function executeExperienceConsolidation({
   let usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
   const controller = new AbortController(),
     combined = AbortSignal.any([signal, controller.signal]);
-  const adapter = new DshHarnessAdapter({
-    runtimeRoot: isolation.workDirectory,
-  });
+  const adapter = new DshHarnessAdapter();
   const timeout = setTimeout(
     () => controller.abort(Error('EXPERIENCE_TIME_LIMIT')),
     Math.min(

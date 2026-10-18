@@ -43,7 +43,6 @@ export async function executePlatformTechnicalTask(
     AbortSignal.timeout(remainingMs),
   ]);
   const adapter = new DshHarnessAdapter({
-    runtimeRoot: input.isolation.workDirectory,
     requestTimeoutMs: Math.max(1000, remainingMs),
     cordisConfig: resolve(
       import.meta.dirname,
