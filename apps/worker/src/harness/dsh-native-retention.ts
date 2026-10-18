@@ -142,6 +142,14 @@ export function verifyConfiguredDshNativeReferences(primary: {
   artifactId: string;
   generation: string;
 }) {
+  const previewStorage = process.env.ALLRICE_EXECUTION_ROOT
+    ? {
+        previewStorageRoot: resolve(
+          process.env.ALLRICE_EXECUTION_ROOT,
+          'platform-employee-tests',
+        ),
+      }
+    : {};
   return verifyNativeArtifactReferenceCoverage([
     {
       artifactId: primary.artifactId,
@@ -149,11 +157,13 @@ export function verifyConfiguredDshNativeReferences(primary: {
       storageRoot: resolve(
         process.env.ALLRICE_DSH_RUNTIME_ROOT ?? '.local/dsh-runtime',
       ),
+      ...previewStorage,
     },
     ...[...retained.values()].map((value) => ({
       artifactId: value.launch.artifactId,
       generation: value.launch.generation,
       storageRoot: value.storageRoot,
+      ...previewStorage,
     })),
   ] as Parameters<typeof verifyNativeArtifactReferenceCoverage>[0]);
 }

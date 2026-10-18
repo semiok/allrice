@@ -13,7 +13,10 @@ import * as client from '../core/client.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
-import { queuePlatformEmployeeTestRun } from '../employees/platform-employees.ts';
+import {
+  queuePlatformEmployeeTestRun,
+  claimNextPlatformEmployeeTestRun,
+} from '../employees/platform-employees.ts';
 import {
   assignEmployeeVersion,
   manageEmployeeAssignments,
@@ -517,6 +520,107 @@ suite(
         )[0]!.native_root_origin,
       ).toEqual(occurrence);
       setArtifact('a');
+    });
+    it('preserves the exact existing preview directory without granting it to chats or a moved execution root', async () => {
+      const isolated = await createAssistantFixtureDatabase();
+      vi.mocked(client.getDatabase).mockReturnValue(isolated.db);
+      try {
+        vi.stubEnv(
+          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+          'sha256:' + 'a'.repeat(64),
+        );
+        const e = await createEmployeeAdministrationFixture(isolated.db);
+        const queued = await queuePlatformEmployeeTestRun(e.employeeId, {
+          environment: 'company',
+          workspaceId: e.workspaceId,
+          ownerId: e.ownerId,
+          prompt: 'Synthetic retained preview storage only',
+        });
+        const workerId = randomUUID();
+        const test = (await claimNextPlatformEmployeeTestRun(workerId))!;
+        expect(test.id).toBe(queued.testRun!.id);
+        const descriptor = nativeBindingDescriptor({
+          organizationId: test.previewContext.organizationId,
+          workspaceId: test.previewContext.workspaceId,
+          ownerId: test.previewContext.ownerId,
+          contextKey: test.id,
+          distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
+        });
+        descriptor.storageNamespace = descriptor.storageNamespace.replace(
+          '/isolated-native/',
+          `/existing-executions/platform-employee-tests/${test.id}/`,
+        );
+        await bindJobNativeSession({
+          workerId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+          attempt: test.previewExecution.jobAttempt,
+          subject: { kind: 'platform_employee_test', id: test.id },
+          descriptor,
+        });
+        const a = {
+          artifactId: descriptor.artifactId,
+          generation: descriptor.distributionGeneration,
+          storageRoot: '/isolated-native',
+          previewStorageRoot: '/existing-executions/platform-employee-tests',
+        };
+        expect(
+          (await verifyNativeArtifactReferenceCoverage([a])).verified,
+        ).toBe(true);
+        await expect(
+          verifyNativeArtifactReferenceCoverage([
+            {
+              ...a,
+              previewStorageRoot: '/moved-executions/platform-employee-tests',
+            },
+          ]),
+        ).rejects.toThrow('REFERENCES_UNCOVERED');
+        const runtimePackage = test.runtimeProfile.runtimePackage!;
+        const f = await createAssistantAuthorityFixture(isolated.db, {
+          configure: false,
+          runtimePackage,
+          businessCreationOrigin: true,
+        });
+        await isolated.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+        const [r] =
+          await isolated.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
+        const chat = nativeBindingDescriptor({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          contextKey: f.session,
+          distributionGeneration: a.generation,
+        });
+        chat.storageNamespace = chat.storageNamespace.replace(
+          '/isolated-native/',
+          `/existing-executions/platform-employee-tests/${f.session}/`,
+        );
+        await bindJobNativeSession({
+          workerId: f.worker.workerId,
+          jobId: f.worker.jobId,
+          leaseToken: f.worker.leaseToken,
+          attempt: 1,
+          subject: {
+            kind: 'chat',
+            id: f.session,
+            configChecksum: r!.config_checksum,
+            generation: r!.thread_generation,
+            expectedThreadId: r!.thread_id,
+          },
+          descriptor: chat,
+        });
+        await expect(
+          verifyNativeArtifactReferenceCoverage([a]),
+        ).rejects.toThrow('REFERENCES_UNCOVERED');
+        expect(
+          (
+            await isolated.db`select storage_namespace from allrice_native_session_bindings where native_session_id=${descriptor.nativeSessionId}`
+          )[0]!.storage_namespace,
+        ).toBe(descriptor.storageNamespace);
+      } finally {
+        vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
+        await isolated.close();
+      }
     });
     it('protects a pin independently after a legacy Run finishes and its NULL-origin Session is archived', async () => {
       const isolated = await createAssistantFixtureDatabase();

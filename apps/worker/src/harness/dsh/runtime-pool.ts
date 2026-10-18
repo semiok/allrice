@@ -241,7 +241,23 @@ export class DshRuntimePool {
       );
     if (
       pin &&
-      (pin.storageNamespace !== expectedNamespace ||
+      ((pin.storageNamespace !== expectedNamespace &&
+        !(
+          pin.contextKind === 'platform_employee_test' &&
+          pin.contextId === storageContextKey &&
+          process.env.ALLRICE_EXECUTION_ROOT &&
+          pin.storageNamespace ===
+            resolve(
+              process.env.ALLRICE_EXECUTION_ROOT,
+              'platform-employee-tests',
+              storageContextKey,
+              organizationId,
+              workspaceId,
+              ownerId,
+              storageContextKey,
+              'sessions',
+            )
+        )) ||
         pin.storageContextKey !== storageContextKey ||
         pin.organizationId !== organizationId ||
         pin.workspaceId !== workspaceId ||

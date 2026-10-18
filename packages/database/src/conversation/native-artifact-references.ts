@@ -12,6 +12,15 @@ const approval = z
         (value) => posix.isAbsolute(value) && posix.resolve(value) === value,
         'An exact absolute storage root is required',
       ),
+    // Existing employee previews use their stable test directory rather than
+    // the shared chat root. This is the configured executions root plus the
+    // fixed preview subdirectory, never an arbitrary path supplied by a model.
+    previewStorageRoot: z
+      .string()
+      .refine(
+        (value) => posix.isAbsolute(value) && posix.resolve(value) === value,
+      )
+      .optional(),
   })
   .strict();
 export type NativeArtifactReferenceApproval = z.infer<typeof approval>;
@@ -40,7 +49,7 @@ export async function verifyNativeArtifactReferenceCoverage(
       }[]
     >`with approved as (
       select * from jsonb_to_recordset(${tx.json(approved)})
-        as a("artifactId" text,generation text,"storageRoot" text)
+        as a("artifactId" text,generation text,"storageRoot" text,"previewStorageRoot" text)
     ), origins as (
       select 'origin:chat' source,native_root_origin origin from allrice_chat_sessions
       union all select 'origin:platform_technical',native_root_origin from allrice_platform_technical_tasks
@@ -48,16 +57,18 @@ export async function verifyNativeArtifactReferenceCoverage(
       union all select 'origin:platform_employee_test',native_root_origin from allrice_platform_employee_test_runs
     ), refs as (
       select 'binding' source,artifact_id,distribution_generation generation,profile_id,
-        storage_namespace,organization_id,workspace_id,owner_id,storage_context_key
+        storage_namespace,organization_id,workspace_id,owner_id,storage_context_key,context_kind,context_id
       from allrice_native_session_bindings
       union all
       select source,origin->>'artifactId',origin->>'distributionGeneration',origin->>'profileId',
-        null,null,null,null,null from origins where origin is not null
+        null,null,null,null,null,null,null from origins where origin is not null
     ) select r.source,r.artifact_id as "artifactId",r.generation,r.profile_id as "profileId",
       count(*)::int records,
       bool_and(coalesce(a.generation=r.generation and r.profile_id in ('restricted','technical')
         and (r.storage_namespace is null or r.storage_namespace =
-          a."storageRoot"||'/'||r.organization_id||'/'||r.workspace_id||'/'||r.owner_id||'/'||r.storage_context_key||'/sessions'),false)) covered
+          a."storageRoot"||'/'||r.organization_id||'/'||r.workspace_id||'/'||r.owner_id||'/'||r.storage_context_key||'/sessions'
+          or (r.context_kind='platform_employee_test' and r.context_id::text=r.storage_context_key
+            and r.storage_namespace=a."previewStorageRoot"||'/'||r.context_id||'/'||r.organization_id||'/'||r.workspace_id||'/'||r.owner_id||'/'||r.storage_context_key||'/sessions')),false)) covered
     from refs r left join approved a on a."artifactId"=r.artifact_id
     group by r.source,r.artifact_id,r.generation,r.profile_id
     order by r.source,r.artifact_id,r.generation,r.profile_id`;

@@ -89,6 +89,25 @@ function configureCurrent() {
     profile: '/reviewed/current-a/' + input.profileId,
   }));
 }
+it('projects only the existing execution root and fixed employee-preview directory into reference coverage', async () => {
+  configureCurrent();
+  vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', root);
+  vi.stubEnv('ALLRICE_EXECUTION_ROOT', root + '/executions');
+  const policy = await import('./dsh-native-retention.js');
+  await policy.installConfiguredDshNativeRetention();
+  await policy.verifyConfiguredDshNativeReferences({
+    artifactId: 'sha256:' + 'b'.repeat(64),
+    generation: current,
+  });
+  const approved = seam.coverage.mock.calls[0]![0];
+  expect(approved).toHaveLength(3);
+  expect(
+    approved.every(
+      (a: { previewStorageRoot: string }) =>
+        a.previewStorageRoot === root + '/executions/platform-employee-tests',
+    ),
+  ).toBe(true);
+});
 it.each(['sha256:' + 'b'.repeat(64), undefined])(
   'fulfils an approved origin A after new births switch to %s, without replacing its storage or frozen family',
   async (newRoot) => {

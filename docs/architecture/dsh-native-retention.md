@@ -40,6 +40,13 @@ Each `ALLRICE_DSH_RETAINED_<slot>_` entry uses `ROOT`, `ARTIFACT_ID` and
 `SOURCE_SHA` and `SOURCE_TREE`; these are separately checked against its manifest.
 Primary provenance remains checked by the existing service-build identity.
 
+Existing employee previews may have an immutable pin under
+`ALLRICE_EXECUTION_ROOT/platform-employee-tests/<test-id>` rather than the shared
+chat root. Coverage and launch preserve only that exact registered layout, the
+same test ID and tenant/owner suffix; neither arbitrary execution subdirectories
+nor chat pins gain this exception. Moving the configured execution root still
+blocks those histories. Missing original journals continue to fail closed.
+
 - Slot 1 remains the exact approved `dsh-0.1.5-rc.3-a4c74a9` legacy reader.
   Its existing, explicit `FROZEN_PROFILES` tuples may permit only the historical
   `dsh-0.1.1-rc.2-b150a55`/profile relationship. Source fields are optional only
