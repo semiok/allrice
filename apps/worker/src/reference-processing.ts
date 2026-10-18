@@ -2,6 +2,7 @@ import {
   claimReferenceProcessing,
   finishReferenceProcessing,
   failReferenceProcessing,
+  isIndexableKnowledgeTextSource,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { chunkKnowledgeText, readKnowledgeText } from './knowledge.js';
@@ -10,12 +11,7 @@ import { chunkKnowledgeText, readKnowledgeText } from './knowledge.js';
 export async function processNextReference(storageRoot: string) {
   const claim = await claimReferenceProcessing();
   if (!claim) return false;
-  if (
-    !['text/plain', 'text/markdown', 'application/json'].includes(
-      claim.object.mediaType,
-    ) ||
-    claim.object.sizeBytes > 2_000_000
-  ) {
+  if (!isIndexableKnowledgeTextSource(claim.object)) {
     await failReferenceProcessing(
       claim,
       '文件已保存，可预览和下载；当前格式或大小暂不支持检索。',

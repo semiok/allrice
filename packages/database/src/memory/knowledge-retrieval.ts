@@ -14,7 +14,25 @@ import {
 
 import { getDatabase } from '../core/client.ts';
 
-const readableMediaTypes = ['text/plain', 'text/markdown', 'application/json'];
+const readableMediaTypes = [
+  'text/plain',
+  'text/markdown',
+  'application/json',
+  'text/csv',
+];
+
+/** Text indexing preserves CSV values and delimiters; it does not evaluate cells. */
+export const maximumKnowledgeTextBytes = 2_000_000;
+
+export function isIndexableKnowledgeTextSource(
+  source: Pick<StorageObject, 'mediaType' | 'sizeBytes'>,
+) {
+  return (
+    readableMediaTypes.includes(source.mediaType) &&
+    source.sizeBytes >= 0 &&
+    source.sizeBytes <= maximumKnowledgeTextBytes
+  );
+}
 
 function vectorLiteral(values: number[]) {
   return `[${values.join(',')}]`;

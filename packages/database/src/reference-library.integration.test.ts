@@ -481,121 +481,124 @@ suite(
         }),
       ).rejects.toThrow('not_found');
     });
-    it('rejects retained files through legacy broad Knowledge, bindings, tool readers and attachment linking', async () => {
-      const a = await assistantFixture(f.db);
-      const c = {
-        ...(await authenticateSession(
-          (await createSession(a.context.actor.id)).token,
-        ))!,
-        workspaceId: a.context.workspaceId,
-      };
-      const [user] =
-        await f.db`select email from allrice_users where id=${c.actor.id}`;
-      vi.stubEnv(
-        'ALLRICE_PLATFORM_ADMIN_EMAILS',
-        'reference-admin@example.test,' + user!.email,
-      );
-      const retained = await upload(c);
-      const ordinary = await createStorageMetadata(c, {
-        id: randomUUID(),
-        workspaceId: c.workspaceId,
-        category: 'uploads',
-        mediaType: 'text/plain',
-        sizeBytes: retained.object.sizeBytes,
-        checksum: retained.object.checksum,
-        visibility: 'private',
-        immutable: false,
-        retentionUntil: null,
-      });
-      await assistantFixtureStorage(f.db).put(
-        ordinary.object,
-        new Blob([new Uint8Array(retained.bytes)]).stream(),
-      );
-      await markStorageReady(c, ordinary.object.id);
-      const [employee] =
-        await f.db`select id from allrice_employees where organization_id=${c.organizationId} limit 1`;
-      const legacy = await createKnowledgeSource(c, {
-        workspaceId: c.workspaceId,
-        slug: 'legacy-workspace',
-        name: 'Legacy workspace',
-        description: 'Existing wildcard',
-        definition: {
-          schemaVersion: 1,
-          sourceKind: 'workspace_files',
-          resourceRef: 'workspace',
-          allowedScopes: ['user'],
-        },
-        acl: [
-          {
-            principalType: 'user',
-            principalId: c.actor.id,
-            permission: 'read',
-          },
-        ],
-      });
-      await manageEmployeeCapabilities(c, {
-        workspaceId: c.workspaceId,
-        employeeId: employee!.id,
-        knowledgeRevisionIds: [legacy.id],
-      });
-      await expect(
-        manageEmployeeCapabilities(c, {
-          workspaceId: c.workspaceId,
-          employeeId: employee!.id,
-          knowledgeRevisionIds: [retained.revisionId],
-        }),
-      ).rejects.toThrow('invalid_binding');
-      const execution: ExecutionContext = {
-        executionId: randomUUID(),
-        runId: a.task.runId,
-        jobId: a.worker.jobId,
-        worker: { id: a.worker.workerId, type: 'worker' },
-        delegatedBy: { type: 'user', id: c.actor.id },
-        organizationId: c.organizationId,
-        workspaceId: c.workspaceId,
-        startedAt: new Date().toISOString(),
-        policySnapshot: {
+    it.each(['text/plain', 'text/csv'])(
+      'rejects retained %s files through legacy broad Knowledge, bindings, tool readers and attachment linking',
+      async (mediaType) => {
+        const a = await assistantFixture(f.db);
+        const c = {
+          ...(await authenticateSession(
+            (await createSession(a.context.actor.id)).token,
+          ))!,
+          workspaceId: a.context.workspaceId,
+        };
+        const [user] =
+          await f.db`select email from allrice_users where id=${c.actor.id}`;
+        vi.stubEnv(
+          'ALLRICE_PLATFORM_ADMIN_EMAILS',
+          'reference-admin@example.test,' + user!.email,
+        );
+        const retained = await upload(c, input(c, 'personal', { mediaType }));
+        const ordinary = await createStorageMetadata(c, {
           id: randomUUID(),
-          organizationId: c.organizationId,
-          subjectId: c.actor.id,
-          version: 1,
-          issuedAt: new Date().toISOString(),
-          expiresAt: new Date(Date.now() + 600000).toISOString(),
-          memberships: c.memberships,
-          grants: [
+          workspaceId: c.workspaceId,
+          category: 'uploads',
+          mediaType,
+          sizeBytes: retained.object.sizeBytes,
+          checksum: retained.object.checksum,
+          visibility: 'private',
+          immutable: false,
+          retentionUntil: null,
+        });
+        await assistantFixtureStorage(f.db).put(
+          ordinary.object,
+          new Blob([new Uint8Array(retained.bytes)]).stream(),
+        );
+        await markStorageReady(c, ordinary.object.id);
+        const [employee] =
+          await f.db`select id from allrice_employees where organization_id=${c.organizationId} limit 1`;
+        const legacy = await createKnowledgeSource(c, {
+          workspaceId: c.workspaceId,
+          slug: 'legacy-workspace',
+          name: 'Legacy workspace',
+          description: 'Existing wildcard',
+          definition: {
+            schemaVersion: 1,
+            sourceKind: 'workspace_files',
+            resourceRef: 'workspace',
+            allowedScopes: ['user'],
+          },
+          acl: [
             {
-              resourceType: 'storage_object',
-              action: 'resource:read',
-              workspaceId: c.workspaceId,
+              principalType: 'user',
+              principalId: c.actor.id,
+              permission: 'read',
             },
           ],
-        },
-      };
-      const files = await listKnowledgeSourceFilesForExecution({
-        context: execution,
-        employeeId: employee!.id,
-        knowledgeRevisionIds: [legacy.id],
-      });
-      expect(files.map((f) => f.object.id)).toContain(ordinary.object.id);
-      expect(files.map((f) => f.object.id)).not.toContain(retained.object.id);
-      expect(
-        (await getToolBrokerFile(execution, ordinary.object.id)).object.id,
-      ).toBe(ordinary.object.id);
-      await expect(
-        getToolBrokerFile(execution, retained.object.id),
-      ).rejects.toThrow('not_found');
-      expect(
-        (await listToolBrokerFiles(execution, 50)).map((f) => f.id),
-      ).not.toContain(retained.object.id);
-      await expect(
-        linkWorkspaceFileToSession({
-          context: c,
-          workspaceId: c.workspaceId!,
-          sessionId: a.task.chatSessionId!,
-          objectId: retained.object.id,
-        }),
-      ).rejects.toThrow('authorization_denied');
-    });
+        });
+        await manageEmployeeCapabilities(c, {
+          workspaceId: c.workspaceId,
+          employeeId: employee!.id,
+          knowledgeRevisionIds: [legacy.id],
+        });
+        await expect(
+          manageEmployeeCapabilities(c, {
+            workspaceId: c.workspaceId,
+            employeeId: employee!.id,
+            knowledgeRevisionIds: [retained.revisionId],
+          }),
+        ).rejects.toThrow('invalid_binding');
+        const execution: ExecutionContext = {
+          executionId: randomUUID(),
+          runId: a.task.runId,
+          jobId: a.worker.jobId,
+          worker: { id: a.worker.workerId, type: 'worker' },
+          delegatedBy: { type: 'user', id: c.actor.id },
+          organizationId: c.organizationId,
+          workspaceId: c.workspaceId,
+          startedAt: new Date().toISOString(),
+          policySnapshot: {
+            id: randomUUID(),
+            organizationId: c.organizationId,
+            subjectId: c.actor.id,
+            version: 1,
+            issuedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 600000).toISOString(),
+            memberships: c.memberships,
+            grants: [
+              {
+                resourceType: 'storage_object',
+                action: 'resource:read',
+                workspaceId: c.workspaceId,
+              },
+            ],
+          },
+        };
+        const files = await listKnowledgeSourceFilesForExecution({
+          context: execution,
+          employeeId: employee!.id,
+          knowledgeRevisionIds: [legacy.id],
+        });
+        expect(files.map((f) => f.object.id)).toContain(ordinary.object.id);
+        expect(files.map((f) => f.object.id)).not.toContain(retained.object.id);
+        expect(
+          (await getToolBrokerFile(execution, ordinary.object.id)).object.id,
+        ).toBe(ordinary.object.id);
+        await expect(
+          getToolBrokerFile(execution, retained.object.id),
+        ).rejects.toThrow('not_found');
+        expect(
+          (await listToolBrokerFiles(execution, 50)).map((f) => f.id),
+        ).not.toContain(retained.object.id);
+        await expect(
+          linkWorkspaceFileToSession({
+            context: c,
+            workspaceId: c.workspaceId!,
+            sessionId: a.task.chatSessionId!,
+            objectId: retained.object.id,
+          }),
+        ).rejects.toThrow('authorization_denied');
+      },
+    );
     it('does not rewrite v1 when v2 fails, and retry/restart uses the same file and revision', async () => {
       // Finish unrelated saved fixtures to keep the worker queue deterministic.
       for (let n = 0; n < 30; n++) {
@@ -656,6 +659,124 @@ suite(
           .object.checksum,
       ).toBe(one.object.checksum);
     });
+    it('retries a previously unsupported CSV through the current owner and same immutable revision', async () => {
+      for (let n = 0; n < 30; n++) {
+        const c = await claimReferenceProcessing();
+        if (!c) break;
+        await failReferenceProcessing(c, 'controlled queue drain');
+      }
+      const a = await setup(),
+        bytes = Buffer.from('部门,金额\n运营,12000\n财务,18000\n'),
+        p = await upload(
+          a.owner,
+          input(a.owner, 'personal', {
+            fileName: '部门金额.csv',
+            mediaType: 'text/csv',
+            contentBase64: bytes.toString('base64'),
+          }),
+        ),
+        first = await claimReferenceProcessing();
+      expect(first!.revisionId).toBe(p.revisionId);
+      await failReferenceProcessing(
+        first!,
+        'earlier format not supported',
+        true,
+      );
+      expect(
+        (
+          await listReferenceRevisions(
+            a.owner,
+            a.owner.workspaceId!,
+            p.sourceId,
+          )
+        )[0],
+      ).toMatchObject({ processing: 'unsupported', canRetryProcessing: true });
+      await expect(act(a.reader, p, 'retry')).rejects.toThrow();
+      const request = {
+        workspaceId: a.owner.workspaceId!,
+        requestId: randomUUID(),
+        expectedRevision: 1,
+        action: 'retry' as const,
+      };
+      await changeReference(a.owner, p.sourceId, request);
+      await changeReference(a.owner, p.sourceId, request);
+      const retried = await claimReferenceProcessing();
+      expect(retried!.revisionId).toBe(p.revisionId);
+      expect(retried!.object).toEqual(first!.object);
+      await finishReferenceProcessing(retried!, [
+        {
+          content: bytes.toString().trim(),
+          start: 0,
+          end: bytes.toString().trim().length,
+        },
+      ]);
+      const history = await listReferenceRevisions(
+        a.owner,
+        a.owner.workspaceId!,
+        p.sourceId,
+      );
+      expect(history).toHaveLength(1);
+      expect(history[0]).toMatchObject({
+        processing: 'ready',
+        revisionId: p.revisionId,
+        checksum: p.object.checksum,
+      });
+      expect(
+        (
+          await f.db`select count(*)::int n from allrice_knowledge_reference_actions where source_id=${p.sourceId} and request_id=${request.requestId}`
+        )[0]!.n,
+      ).toBe(1);
+      expect(
+        (
+          await f.db`select count(*)::int n from allrice_knowledge_documents where knowledge_revision_id=${p.revisionId}`
+        )[0]!.n,
+      ).toBe(1);
+      expect(
+        (await getReferenceFile(a.owner, a.owner.workspaceId!, p.revisionId))
+          .object.id,
+      ).toBe(p.object.id);
+    });
+    it.each([
+      { mediaType: 'application/pdf', content: '%PDF-unsupported' },
+      { mediaType: 'text/csv', content: 'x'.repeat(2_000_001) },
+    ])(
+      'does not requeue an unsupported format or oversized source: $mediaType',
+      async ({ mediaType, content }) => {
+        const a = await setup(),
+          p = await upload(
+            a.owner,
+            input(a.owner, 'personal', {
+              mediaType,
+              contentBase64: Buffer.from(content).toString('base64'),
+            }),
+          );
+        await f.db`update allrice_knowledge_processing set state='unsupported',failure='controlled prior unsupported state' where revision_id=${p.revisionId}`;
+        expect(
+          (
+            await listReferenceRevisions(
+              a.owner,
+              a.owner.workspaceId!,
+              p.sourceId,
+            )
+          )[0],
+        ).toMatchObject({
+          processing: 'unsupported',
+          canRetryProcessing: false,
+        });
+        await expect(act(a.owner, p, 'retry')).rejects.toThrow(
+          'processing_busy',
+        );
+        expect(
+          (
+            await listReferenceRevisions(
+              a.owner,
+              a.owner.workspaceId!,
+              p.sourceId,
+            )
+          )[0]!.processing,
+        ).toBe('unsupported');
+      },
+    );
     it('serializes duplicate uploads and rejects request substitution, stale updates and immutable manifest changes', async () => {
       const a = await setup(),
         v = input(a.owner),

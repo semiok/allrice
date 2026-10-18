@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import { join, resolve } from 'node:path';
-import { writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, ReferenceRevision } from '@allrice/contracts';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
@@ -23,6 +23,10 @@ import {
   importOrganizationPeople,
 } from '../../../../packages/database/src/organization-administration.ts';
 import { processNextReference } from '../../../worker/src/reference-processing.ts';
+import {
+  claimReferenceProcessing,
+  failReferenceProcessing,
+} from '../../../../packages/database/src/reference-processing.ts';
 import { GET as list, POST as upload } from '../api/v1/references/route';
 import {
   GET as saveOptions,
@@ -599,6 +603,88 @@ suite(
       ).toBe(0);
       await page.context().close();
     });
+    it.each([1440, 390])(
+      'retries the original newly-supported CSV from the ordinary drawer at %ipx',
+      async (width) => {
+        for (let n = 0; n < 50; n++) {
+          const claim = await claimReferenceProcessing();
+          if (!claim) break;
+          await failReferenceProcessing(claim, 'controlled queue drain');
+        }
+        const name = `恢复CSV-${width}.csv`,
+          bytes = Buffer.from('部门,金额\n运营,12000\n财务,18000\n'),
+          saved = await postFile(name, bytes, 'text/csv');
+        const old = await claimReferenceProcessing();
+        expect(old!.revisionId).toBe(saved.revisionId);
+        await failReferenceProcessing(
+          old!,
+          'earlier format not supported',
+          true,
+        );
+        expect(
+          (await references()).find((r) => r.revisionId === saved.revisionId),
+        ).toMatchObject({
+          processing: 'unsupported',
+          canRetryProcessing: true,
+        });
+        const page = await pageFor();
+        await page.setViewportSize({ width, height: 1000 });
+        const card = page
+          .getByRole('button', { name, exact: true })
+          .locator('..');
+        const [response] = await Promise.all([
+          page.waitForResponse(
+            (r) =>
+              r.url().endsWith('/references/' + saved.sourceId) &&
+              r.request().method() === 'POST',
+            { timeout: 10000 },
+          ),
+          card
+            .getByRole('button', { name: '重试处理', exact: true })
+            .click({ timeout: 5000 }),
+        ]);
+        expect(response.status()).toBe(200);
+        await processNextReference(f.storageRoot);
+        await page.getByRole('button', { name: '刷新', exact: true }).click();
+        expect(
+          (await references()).find((r) => r.revisionId === saved.revisionId),
+        ).toMatchObject({
+          processing: 'ready',
+          revision: 1,
+          checksum:
+            'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+        });
+        const [object] =
+          await f.db`select o.id from allrice_storage_objects o join allrice_knowledge_revisions r on r.file_object_id=o.id where r.id=${saved.revisionId}`;
+        expect(object!.id).toBe(old!.object.id);
+        expect(
+          (
+            await f.db`select count(*)::int n from allrice_knowledge_revisions where knowledge_source_id=${saved.sourceId}`
+          )[0]!.n,
+        ).toBe(1);
+        await page.getByRole('button', { name, exact: true }).click();
+        const selected = page.getByRole('combobox', {
+          name: '参考资料版本',
+          exact: true,
+        });
+        await selected.waitFor({ timeout: 5000 });
+        expect(await selected.inputValue()).toBe(saved.revisionId);
+        // The management fixture checks the real retry/download boundary;
+        // the native spreadsheet module is covered by its viewer suite and Dev.
+        const pendingDownload = page.waitForEvent('download', {
+          timeout: 10000,
+        });
+        await page
+          .getByRole('link', { name: '下载', exact: true })
+          .click({ timeout: 5000 });
+        const download = await pendingDownload,
+          path = await download.path();
+        expect(path).toBeTruthy();
+        expect(await readFile(path!)).toEqual(bytes);
+        await page.context().close();
+      },
+      30000,
+    );
     it('keeps corrupt/empty/unsupported files out of the index and retries the original bytes and version', async () => {
       const bytes = Buffer.from('固定文件应校验后索引。'),
         saved = await postFile('重试.txt', bytes);
