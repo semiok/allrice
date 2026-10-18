@@ -7,7 +7,6 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse } from 'acorn';
 import { parseDocument, isMap, isSeq, isScalar } from 'yaml';
-import { DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
 
 const hash = (bytes: string | Buffer) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');
@@ -82,6 +81,39 @@ function fail(reason: string): never {
   throw Error('DSH_NATIVE_ARTIFACT_' + reason);
 }
 
+/** Read data from the measured root, never execute that root's Worker. An
+ * independently approved content ID still authorizes the actual artifact. */
+function rootDistribution(bytes: Buffer) {
+  const catalog = JSON.parse(bytes.toString()) as {
+    schemaVersion?: unknown;
+    installedGeneration?: unknown;
+    generations?: {
+      generation?: unknown;
+      version?: unknown;
+      commit?: unknown;
+    }[];
+  };
+  const selected = Array.isArray(catalog.generations)
+    ? catalog.generations.find(
+        (item) => item && item.generation === catalog.installedGeneration,
+      )
+    : undefined;
+  if (
+    catalog.schemaVersion !== 2 ||
+    typeof selected?.version !== 'string' ||
+    !/^\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/.test(selected.version) ||
+    typeof selected.commit !== 'string' ||
+    !/^[a-f0-9]{40}$/.test(selected.commit) ||
+    selected.generation !==
+      `dsh-${selected.version}-${selected.commit.slice(0, 7)}`
+  )
+    fail('ROOT_DISTRIBUTION');
+  return {
+    generation: selected.generation as string,
+    version: selected.version,
+  };
+}
+
 /** Measures reviewed code and the resolved declared dependency graph, never
  * credentials, prompts, personal Skills or the evaluated !!js profile values. */
 export async function measureDshNativeArtifact(
@@ -109,6 +141,9 @@ export async function measureDshNativeArtifact(
     return { path: inside(path), bytes: bytes.length, checksum: hash(bytes) };
   };
   const native = join(root, nativeDirectory);
+  const distribution = rootDistribution(
+    await bytesAt(join(native, 'distribution.json')),
+  );
   const productionModules: string[] = [];
   for (const entry of (await readdir(native, { withFileTypes: true })).sort(
     (a, b) => order(a.name, b.name),
@@ -161,7 +196,7 @@ export async function measureDshNativeArtifact(
       fail('PACKAGE_METADATA');
     if (
       metadata.name.startsWith('@deepseek-ai/dsh-') &&
-      metadata.version !== DSH_INSTALLED_DISTRIBUTION.version
+      metadata.version !== distribution.version
     )
       fail('GENERATION_MISMATCH');
     const item: PackageFact = {
@@ -384,7 +419,7 @@ export async function measureDshNativeArtifact(
   }
   const content: DshNativeArtifactContent = {
     schemaVersion: 1,
-    generation: DSH_INSTALLED_DISTRIBUTION.generation,
+    generation: distribution.generation,
     prerequisites: {
       nodeMajor: Number(process.versions.node.split('.')[0]),
       platform: process.platform,
@@ -447,7 +482,12 @@ export async function verifyDshNativeArtifact(input: {
     fail('SOURCE_MISMATCH');
   const measured = await measureDshNativeArtifact(root);
   if (measured.artifactId !== input.expectedId) fail('CONTENT_MISMATCH');
-  return { ...measured, source: stored.source, root };
+  return {
+    ...measured,
+    source: stored.source,
+    root,
+    version: measured.content.generation.slice(4, -8),
+  };
 }
 
 export function assertDshNativeLaunch(input: {
@@ -473,11 +513,12 @@ export function assertDshNativeLaunch(input: {
 
 let approvedArtifact:
   Awaited<ReturnType<typeof verifyDshNativeArtifact>> | undefined;
+const retainedArtifacts = new Map<
+  string,
+  Awaited<ReturnType<typeof verifyDshNativeArtifact>>
+>();
 let installing = false;
-export async function installDshNativeArtifact(
-  input: Parameters<typeof verifyDshNativeArtifact>[0],
-) {
-  if (approvedArtifact || installing) fail('ALREADY_INSTALLED');
+function assertNativeLoader() {
   const options = [...process.execArgv, process.env.NODE_OPTIONS ?? ''].join(
     ' ',
   );
@@ -487,6 +528,12 @@ export async function installDshNativeArtifact(
     )
   )
     fail('LOADER_OVERRIDE');
+}
+export async function installDshNativeArtifact(
+  input: Parameters<typeof verifyDshNativeArtifact>[0],
+) {
+  if (approvedArtifact || installing) fail('ALREADY_INSTALLED');
+  assertNativeLoader();
   const began = performance.now();
   installing = true;
   try {
@@ -501,6 +548,59 @@ export async function installDshNativeArtifact(
     verificationMs: performance.now() - began,
   };
 }
+
+/** Deployment configuration only; Session/model parameters cannot register
+ * code. Keep the complete measured layout and dependencies at this root. */
+export async function installRetainedDshNativeArtifact(
+  input: Parameters<typeof verifyDshNativeArtifact>[0],
+) {
+  if (!approvedArtifact || installing) fail('NOT_INSTALLED');
+  if (retainedArtifacts.size >= 4 || retainedArtifacts.has(input.expectedId))
+    fail('RETAINED_DUPLICATE_OR_LIMIT');
+  assertNativeLoader();
+  installing = true;
+  try {
+    if (
+      !isAbsolute(input.root) ||
+      resolve(input.root) !== (await realpath(input.root)) ||
+      !(await lstat(input.root)).isDirectory()
+    )
+      fail('RETAINED_ROOT');
+    const value = await verifyDshNativeArtifact(input);
+    retainedArtifacts.set(value.artifactId, value);
+    return {
+      artifactId: value.artifactId,
+      generation: value.content.generation,
+      version: value.version,
+      root: value.root,
+    };
+  } finally {
+    installing = false;
+  }
+}
+
+/** Exact immutable pin selection. Missing approval never falls back to the
+ * primary artifact, including when another artifact has the same generation. */
+export function nativeArtifactLaunchForPin(input: {
+  artifactId: string;
+  profileId: 'restricted' | 'technical';
+}) {
+  const artifact =
+    retainedArtifacts.get(input.artifactId) ??
+    (approvedArtifact?.artifactId === input.artifactId
+      ? approvedArtifact
+      : undefined);
+  if (!artifact) fail('PIN_NOT_APPROVED');
+  return {
+    artifactId: artifact.artifactId,
+    generation: artifact.content.generation,
+    version: artifact.version,
+    command: process.execPath,
+    args: [join(artifact.root, artifact.content.entrypoint)],
+    profile: join(artifact.root, artifact.content.profiles[input.profileId]),
+  };
+}
+
 export function checkedDshNativeLaunch(input: {
   command: string;
   args: readonly string[];
@@ -512,5 +612,14 @@ export function checkedDshNativeLaunch(input: {
     if (process.env.ALLRICE_SERVICE_ROLE === 'worker') fail('NOT_INSTALLED');
     return null;
   }
-  return assertDshNativeLaunch({ ...input, artifact: approvedArtifact });
+  const selected = [approvedArtifact, ...retainedArtifacts.values()].find(
+    (item) =>
+      input.args.length === 1 &&
+      isAbsolute(input.args[0]!) &&
+      resolve(input.args[0]!) === join(item.root, item.content.entrypoint),
+  );
+  return assertDshNativeLaunch({
+    ...input,
+    artifact: selected ?? approvedArtifact,
+  });
 }

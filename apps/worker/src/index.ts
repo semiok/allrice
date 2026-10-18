@@ -45,6 +45,7 @@ import {
   checkedDshNativeLaunch,
 } from './harness/dsh-native-artifact.js';
 import { configuredDshNativeLaunch } from './harness/dsh/runtime-pool.js';
+import { installConfiguredDshNativeRetention } from './harness/dsh-native-retention.js';
 import { fileURLToPath } from 'node:url';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
@@ -125,6 +126,7 @@ const nativeArtifact = await installDshNativeArtifact({
 // Provider probes/authentication also use the configured profile before a Run
 // reaches the pool. Reject unapproved deployment overrides before producers.
 checkedDshNativeLaunch(configuredDshNativeLaunch());
+const retainedNativeArtifacts = await installConfiguredDshNativeRetention();
 const producerLifecycle = await installDevProducerLifecycle('worker');
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
@@ -333,6 +335,7 @@ const server = createServer(async (request, response) => {
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
         nativeArtifact,
+        retainedNativeArtifacts,
         ...(maintenance ? { maintenance } : {}),
         ...(maintenance
           ? { producerLifecycle: readDevProducerLifecycle('worker') }

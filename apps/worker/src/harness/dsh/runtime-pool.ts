@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { resolve, sep, dirname } from 'node:path';
 
 import {
   harnessContextKey,
   UuidSchema,
+  DSH_FROZEN_PROFILE_GENERATIONS,
   type DshExecutionSnapshot,
   type InternalKernelRequest,
 } from '@allrice/contracts';
@@ -32,7 +33,16 @@ import {
 } from '../dsh-distribution.js';
 import { dshEgressEnvironment } from '../dsh-egress-environment.js';
 import { DshProtocolClient } from '../dsh-protocol-client.js';
-import { checkedDshNativeLaunch } from '../dsh-native-artifact.js';
+import { assertStoredNativeSession } from '../dsh-native-storage.js';
+import {
+  checkedDshNativeLaunch,
+  nativeArtifactLaunchForPin,
+} from '../dsh-native-artifact.js';
+import {
+  legacyDshNativeLaunch,
+  retainedDshStorageRoot,
+  assertDshFrozenCompatibility,
+} from '../dsh-native-retention.js';
 import {
   dshHostCapabilityInstructions,
   isDshNativeTool,
@@ -180,8 +190,22 @@ export class DshRuntimePool {
     runtime.lastActivityAt = new Date().toISOString();
   }
 
+  /** Offline protocol fixtures have no approved artifact or SQL authority.
+   * Every production Worker installs and validates its artifact before producers. */
+  hasApprovedNativeLaunch() {
+    return !!checkedDshNativeLaunch({
+      command: this.runtimeCommand ?? '',
+      args: this.runtimeArgs,
+      profile: this.cordisConfig,
+    });
+  }
+
   /** Pure location calculation, before credentials, mkdir or native launch. */
-  private storage(input: HarnessExecutionInput) {
+  private storage(
+    input: HarnessExecutionInput,
+    pin?: NativeSessionPin,
+    artifactId?: string,
+  ) {
     const organizationId =
       input.executionEnvironment.ALLRICE_ORGANIZATION_ID ?? '';
     const workspaceId = input.executionEnvironment.ALLRICE_WORKSPACE_ID ?? '';
@@ -197,59 +221,142 @@ export class DshRuntimePool {
         false,
       );
     const storageContextKey = harnessContextKey(input.kernel);
-    const tenantRoot = resolve(
-      this.runtimeRoot,
+    const storageRoot =
+      (artifactId && retainedDshStorageRoot(artifactId)) || this.runtimeRoot;
+    const expectedNamespace = resolve(
+      storageRoot,
       organizationId,
       workspaceId,
       ownerId,
       storageContextKey,
+      'sessions',
     );
-    if (!tenantRoot.startsWith(`${this.runtimeRoot}${sep}`))
+    if (!expectedNamespace.startsWith(`${storageRoot}${sep}`))
       throw new HandlerError(
         'DSH_TENANT_CONTEXT_INVALID',
         'DSH runtime path escaped its tenant root',
         false,
       );
+    if (
+      pin &&
+      (pin.storageNamespace !== expectedNamespace ||
+        pin.storageContextKey !== storageContextKey ||
+        pin.organizationId !== organizationId ||
+        pin.workspaceId !== workspaceId ||
+        pin.ownerId !== ownerId)
+    )
+      throw new HandlerError(
+        'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+        '原生会话的数据位置与已登记的范围不一致。',
+        false,
+      );
+    const storageNamespace = pin?.storageNamespace ?? expectedNamespace;
     return {
       organizationId,
       workspaceId,
       ownerId,
       storageContextKey,
-      tenantRoot,
-      storageNamespace: resolve(tenantRoot, 'sessions'),
+      tenantRoot: dirname(storageNamespace),
+      storageNamespace,
     };
   }
 
-  describeNativeSession(
-    input: HarnessExecutionInput,
-    threadId: string,
-  ): NativeSessionDescriptor | null {
+  private launch(input: HarnessExecutionInput, pin?: NativeSessionPin) {
+    // Even a pin cannot turn a deployment/constructor override into approval.
     const identity = checkedDshNativeLaunch({
       command: this.runtimeCommand ?? '',
       args: this.runtimeArgs,
       profile: this.cordisConfig,
     });
-    if (
-      input.kernel.runtimeDistributionGeneration !== undefined &&
-      input.kernel.runtimeDistributionGeneration !==
-        DSH_DISTRIBUTION_CURRENT_GENERATION
-    )
+    if (!identity) {
+      if (
+        input.kernel.runtimeDistributionGeneration !== undefined &&
+        input.kernel.runtimeDistributionGeneration !==
+          DSH_DISTRIBUTION_CURRENT_GENERATION
+      )
+        throw new HandlerError(
+          'DSH_GENERATION_MISMATCH',
+          'The frozen employee package requires a different DSH generation',
+          false,
+        );
+      return null;
+    }
+    const profileId = identity.profileId as 'restricted' | 'technical';
+    if (pin && pin.profileId !== profileId)
       throw new HandlerError(
-        'DSH_GENERATION_MISMATCH',
-        'The frozen employee package requires a different DSH generation',
+        'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+        '原生会话的执行配置与已登记的范围不一致。',
         false,
       );
-    if (!identity) return null; // Standalone protocol fixture, no approved artifact.
-    const storage = this.storage(input);
+    const fallback = nativeArtifactLaunchForPin({
+      artifactId: identity.artifactId,
+      profileId,
+    });
+    const selected = pin
+      ? nativeArtifactLaunchForPin(pin)
+      : legacyDshNativeLaunch(fallback, profileId);
+    checkedDshNativeLaunch(selected);
+    assertDshFrozenCompatibility(
+      input.kernel.runtimeDistributionGeneration,
+      selected,
+      profileId,
+    );
+    return { ...selected, profileId };
+  }
+
+  describeNativeSession(
+    input: HarnessExecutionInput,
+    threadId: string,
+    pin?: NativeSessionPin,
+  ): NativeSessionDescriptor | null {
+    const identity = this.launch(input, pin);
+    if (!identity) return null; // Standalone fixture, no approved artifact.
+    const generation = DSH_FROZEN_PROFILE_GENERATIONS.find(
+      (value) => value === identity.generation,
+    );
+    if (!generation)
+      throw new HandlerError(
+        'DSH_GENERATION_MISMATCH',
+        '当前原生会话版本尚未获得执行批准。',
+        false,
+      );
+    if (
+      pin &&
+      (pin.nativeSessionId !== threadId ||
+        pin.distributionGeneration !== generation)
+    )
+      throw new HandlerError(
+        'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+        '原生会话的版本与绑定不一致。',
+        false,
+      );
+    const storage = this.storage(input, pin, identity.artifactId);
     return {
       nativeSessionId: threadId,
       artifactId: identity.artifactId,
       artifactManifestDigest: identity.artifactId,
-      distributionGeneration: DSH_DISTRIBUTION_CURRENT_GENERATION,
-      profileId: identity.profileId as 'restricted' | 'technical',
+      distributionGeneration: generation,
+      profileId: identity.profileId,
       storageContextKey: storage.storageContextKey,
       storageNamespace: storage.storageNamespace,
     };
+  }
+
+  /** Read-only native metadata check. No SQL locks, credentials, writer or
+   * replacement directories; use the exact selected artifact's public backend. */
+  async assertStoredSession(
+    input: HarnessExecutionInput,
+    threadId: string,
+    pin?: NativeSessionPin,
+  ) {
+    const launch = this.launch(input, pin);
+    const descriptor = this.describeNativeSession(input, threadId, pin);
+    if (launch && descriptor)
+      await assertStoredNativeSession(
+        launch.args[0]!,
+        descriptor,
+        input.signal,
+      );
   }
 
   async acquire(input: {
@@ -259,16 +366,14 @@ export class DshRuntimePool {
     systemInstructions: string;
     nativeSkills: NonNullable<HarnessExecutionInput['nativeSkills']>;
     nativePin?: NativeSessionPin;
+    requireRecovery?: boolean;
   }) {
     const acquireStarted = performance.now();
-    let nativeIdentity: ReturnType<typeof checkedDshNativeLaunch>;
+    let nativeIdentity: ReturnType<DshRuntimePool['launch']>;
     try {
-      nativeIdentity = checkedDshNativeLaunch({
-        command: this.runtimeCommand ?? '',
-        args: this.runtimeArgs,
-        profile: this.cordisConfig,
-      });
+      nativeIdentity = this.launch(input.input, input.nativePin);
     } catch (error) {
+      if (error instanceof HandlerError) throw error;
       const code =
         error instanceof Error &&
         /^DSH_NATIVE_ARTIFACT_[A-Z_]+$/.test(error.message)
@@ -277,17 +382,6 @@ export class DshRuntimePool {
       throw new HandlerError(
         code,
         '当前执行环境暂不可用，请联系平台维护。',
-        false,
-      );
-    }
-    const frozenGeneration = input.input.kernel.runtimeDistributionGeneration;
-    if (
-      frozenGeneration !== undefined &&
-      frozenGeneration !== DSH_DISTRIBUTION_CURRENT_GENERATION
-    ) {
-      throw new HandlerError(
-        'DSH_GENERATION_MISMATCH',
-        'The frozen employee package requires a different DSH generation; finish its Run on the original Worker before migrating',
         false,
       );
     }
@@ -308,8 +402,14 @@ export class DshRuntimePool {
 
     const { organizationId, workspaceId, ownerId, tenantRoot } = this.storage(
       input.input,
+      input.nativePin,
+      nativeIdentity?.artifactId,
     );
-    const descriptor = this.describeNativeSession(input.input, input.threadId);
+    const descriptor = this.describeNativeSession(
+      input.input,
+      input.threadId,
+      input.nativePin,
+    );
     if (descriptor) {
       if (!input.nativePin)
         throw new HandlerError(
@@ -352,6 +452,12 @@ export class DshRuntimePool {
         'DSH_NATIVE_SESSION_BINDING_CONFLICT',
         '原生会话不能替换其他运行身份。',
         false,
+      );
+    if (descriptor && input.requireRecovery)
+      await this.assertStoredSession(
+        input.input,
+        input.threadId,
+        input.nativePin,
       );
     const credentialStarted = performance.now();
     const dshPlatformHome =
@@ -506,12 +612,13 @@ export class DshRuntimePool {
       PATH: process.env.PATH ?? '/usr/bin:/bin',
       LANG: process.env.LANG ?? 'C.UTF-8',
       ...dshEgressEnvironment(),
-      DSH_CORDIS_CONFIG: this.cordisConfig,
+      DSH_CORDIS_CONFIG: nativeIdentity?.profile ?? this.cordisConfig,
       DSH_HOME: dshPlatformHome,
       DSH_RUNTIME_HOME: tenantRoot,
       DSH_CREDENTIALS_PATH: resolve(dshPlatformHome, '.credentials.yaml'),
       DSH_CWD: tenantRoot,
-      DSH_SESSION_ROOT: resolve(tenantRoot, 'sessions'),
+      DSH_SESSION_ROOT:
+        descriptor?.storageNamespace ?? resolve(tenantRoot, 'sessions'),
       DSH_MODEL: input.snapshot.model,
       DSH_CODEX_MODEL:
         input.snapshot.route === 'openai-codex'
@@ -533,7 +640,8 @@ export class DshRuntimePool {
         input.systemInstructions,
         dshHostCapabilityInstructions(input.input.tools),
       ].join('\n\n'),
-      DSH_DISTRIBUTION_VERSION: DSH_DISTRIBUTION_CURRENT_VERSION,
+      DSH_DISTRIBUTION_VERSION:
+        nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
       DSH_MAX_OUTPUT_TOKENS: String(maxTokens ?? 16_000),
       ...(input.input.assistants ? { ALLRICE_ASSISTANTS_ENABLED: '1' } : {}),
       ...(input.input.progress ? { ALLRICE_PROGRESS_GUARD_ENABLED: '1' } : {}),
@@ -571,8 +679,8 @@ export class DshRuntimePool {
           }
         : {}),
       client: new DshProtocolClient({
-        command: this.runtimeCommand,
-        args: this.runtimeArgs,
+        command: nativeIdentity?.command ?? this.runtimeCommand,
+        args: nativeIdentity?.args ?? this.runtimeArgs,
         cwd: tenantRoot,
         environment,
         requestTimeoutMs: this.requestTimeoutMs,
@@ -605,7 +713,8 @@ export class DshRuntimePool {
         nativeSkills: input.nativeSkills,
         contentScenes: input.input.contentGuard?.scenes,
         maxTokens,
-        expectedVersion: DSH_DISTRIBUTION_CURRENT_VERSION,
+        expectedVersion:
+          nativeIdentity?.version ?? DSH_DISTRIBUTION_CURRENT_VERSION,
         requireTaskProgress: !!input.input.progress,
         requireDurableQuestions: !!input.input.questionWait,
         requireContentGuard: !!input.input.contentGuard,

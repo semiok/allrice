@@ -21,7 +21,9 @@ import {
 } from './dsh-native-artifact.js';
 
 const roots: string[] = [];
+const testHarnessExecArgv = process.execArgv;
 afterEach(async () => {
+  process.execArgv = testHarnessExecArgv;
   vi.unstubAllEnvs();
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -42,6 +44,17 @@ async function fixture() {
   await put(root, 'apps/worker/package.json', {
     name: '@allrice/worker',
     dependencies: { '@deepseek-ai/test-root': '1.0.0' },
+  });
+  await put(root, 'apps/worker/dsh/distribution.json', {
+    schemaVersion: 2,
+    installedGeneration: 'dsh-0.1.5-rc.3-a4c74a9',
+    generations: [
+      {
+        generation: 'dsh-0.1.5-rc.3-a4c74a9',
+        version: '0.1.5-rc.3',
+        commit: 'a4c74a91e06b00fe0b0937bde982170c526cc842',
+      },
+    ],
   });
   await put(root, 'node_modules/@deepseek-ai/test-root/package.json', {
     name: '@deepseek-ai/test-root',
@@ -92,6 +105,89 @@ async function seal(root: string) {
   return measured;
 }
 describe('native artifact content and launch boundary', () => {
+  it('measures the target root generation independently of the consuming Worker', async () => {
+    const root = await fixture();
+    await put(root, 'apps/worker/dsh/distribution.json', {
+      schemaVersion: 2,
+      installedGeneration: 'dsh-0.1.1-rc.2-b150a55',
+      generations: [
+        {
+          generation: 'dsh-0.1.1-rc.2-b150a55',
+          version: '0.1.1-rc.2',
+          commit: 'b150a551b8d465e31e418e1b2eaf5e79bbb7d28e',
+        },
+      ],
+    });
+    const value = await seal(root);
+    expect(value.content.generation).toBe('dsh-0.1.1-rc.2-b150a55');
+    expect(
+      (await verifyDshNativeArtifact({ root, expectedId: value.artifactId }))
+        .version,
+    ).toBe('0.1.1-rc.2');
+    // Synthetic package graph only: this does not approve an actual 0.1.1
+    // reader or a frozen-profile compatibility relationship.
+  });
+  it('routes approved artifacts by exact content identity even within one generation', async () => {
+    // This registry unit seam is not an assertion about Worker loaders. The
+    // actual compiled startup/loader guard is exercised by deployment probes.
+    process.execArgv = [];
+    vi.stubEnv('NODE_OPTIONS', '');
+    const root = await fixture(),
+      retained = await fixture();
+    await writeFile(
+      join(retained, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
+      "import '@deepseek-ai/test-root';\n// independently reviewed retained content\n",
+    );
+    const first = await seal(root),
+      second = await seal(retained);
+    expect(first.content.generation).toBe(second.content.generation);
+    expect(first.artifactId).not.toBe(second.artifactId);
+    vi.resetModules();
+    const registry = await import('./dsh-native-artifact.js');
+    await expect(
+      registry.installRetainedDshNativeArtifact({
+        root: retained,
+        expectedId: second.artifactId,
+      }),
+    ).rejects.toThrow('NOT_INSTALLED');
+    await registry.installDshNativeArtifact({
+      root,
+      expectedId: first.artifactId,
+    });
+    await expect(
+      registry.installRetainedDshNativeArtifact({
+        root: retained,
+        expectedId: first.artifactId,
+      }),
+    ).rejects.toThrow('MANIFEST_DIGEST');
+    await registry.installRetainedDshNativeArtifact({
+      root: retained,
+      expectedId: second.artifactId,
+    });
+    const launch = registry.nativeArtifactLaunchForPin({
+      artifactId: second.artifactId,
+      profileId: 'restricted',
+    });
+    expect(launch.args).toEqual([
+      join(retained, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
+    ]);
+    expect(registry.checkedDshNativeLaunch(launch)).toEqual({
+      artifactId: second.artifactId,
+      profileId: 'restricted',
+    });
+    expect(
+      registry.nativeArtifactLaunchForPin({
+        artifactId: first.artifactId,
+        profileId: 'technical',
+      }).args,
+    ).toEqual([join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs')]);
+    expect(() =>
+      registry.nativeArtifactLaunchForPin({
+        artifactId: 'sha256:' + '0'.repeat(64),
+        profileId: 'restricted',
+      }),
+    ).toThrow('PIN_NOT_APPROVED');
+  });
   it('refuses production Worker launch before a verified artifact is installed', () => {
     vi.stubEnv('ALLRICE_SERVICE_ROLE', 'worker');
     expect(() =>

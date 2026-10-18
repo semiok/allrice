@@ -5,7 +5,10 @@ import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from './assistant-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
-import { bindJobNativeSession } from './execution/queue.ts';
+import {
+  bindJobNativeSession,
+  prepareJobNativeSession,
+} from './execution/queue.ts';
 import { acquireConversationRuntime } from './conversation/conversation-runtime.ts';
 import type { NativeSessionLeaseInput } from './conversation/native-session-binding.ts';
 import { nativeBindingDescriptor } from './native-session-binding.fixture.ts';
@@ -84,6 +87,78 @@ suite(
         },
       };
     }
+    it('prepares only an existing pin under the real lease and leaves provisional absence unbound', async () => {
+      const f = await chat();
+      const request = {
+        workerId: f.input.workerId,
+        jobId: f.input.jobId,
+        leaseToken: f.input.leaseToken,
+        attempt: f.input.attempt,
+        subject: f.input.subject,
+        nativeSessionId: f.input.descriptor.nativeSessionId,
+        storageContextKey: f.input.descriptor.storageContextKey,
+      };
+      expect(await prepareJobNativeSession(request)).toMatchObject({
+        binding: null,
+        requiresRecovery: false,
+      });
+      expect(
+        await fixture.db`select native_session_id from allrice_native_session_bindings where native_session_id=${request.nativeSessionId}`,
+      ).toHaveLength(0);
+      const bound = await bindJobNativeSession(f.input);
+      const prepared = await prepareJobNativeSession(request);
+      expect(prepared).toEqual({ ...bound, requiresRecovery: true });
+      await fixture.db`update allrice_jobs set cancel_requested_at=clock_timestamp(),cancel_reason='user_request' where id=${f.input.jobId}`;
+      await expect(prepareJobNativeSession(request)).rejects.toMatchObject({
+        code: 'NATIVE_SESSION_ADMISSION_DENIED',
+      });
+      expect(
+        (
+          await fixture.db`select first_job_id from allrice_native_session_bindings where native_session_id=${request.nativeSessionId}`
+        )[0]!.first_job_id,
+      ).toBe(f.input.jobId);
+    });
+    it('requires recovery for an unpinned durable thread and retry without manufacturing a new binding', async () => {
+      const f = await chat();
+      const request = {
+        workerId: f.input.workerId,
+        jobId: f.input.jobId,
+        leaseToken: f.input.leaseToken,
+        attempt: f.input.attempt,
+        subject: f.input.subject,
+        nativeSessionId: f.input.descriptor.nativeSessionId,
+        storageContextKey: f.input.descriptor.storageContextKey,
+      };
+      await fixture.db`update allrice_conversation_runtimes set thread_id=${request.nativeSessionId} where session_id=${f.session}`;
+      expect(await prepareJobNativeSession(request)).toMatchObject({
+        binding: null,
+        requiresRecovery: true,
+      });
+      await fixture.db`update allrice_conversation_runtimes set thread_id=null where session_id=${f.session}`;
+      await fixture.db`update allrice_jobs set attempt=2 where id=${f.worker.jobId}`;
+      expect(
+        await prepareJobNativeSession({ ...request, attempt: 2 }),
+      ).toMatchObject({ binding: null, requiresRecovery: true });
+      expect(
+        await fixture.db`select native_session_id from allrice_native_session_bindings where native_session_id=${request.nativeSessionId}`,
+      ).toHaveLength(0);
+    });
+    it('does not return another owner or subject pin to a valid but unrelated Job', async () => {
+      const first = await chat(),
+        other = await chat();
+      await bindJobNativeSession(first.input);
+      await expect(
+        prepareJobNativeSession({
+          workerId: other.input.workerId,
+          jobId: other.input.jobId,
+          leaseToken: other.input.leaseToken,
+          attempt: other.input.attempt,
+          subject: other.input.subject,
+          nativeSessionId: first.input.descriptor.nativeSessionId,
+          storageContextKey: first.input.descriptor.storageContextKey,
+        }),
+      ).rejects.toMatchObject({ code: 'NATIVE_SESSION_ADMISSION_DENIED' });
+    });
     async function blockedBy(pid: number) {
       const end = Date.now() + 4000;
       while (Date.now() < end) {

@@ -1,7 +1,7 @@
 import { posix } from 'node:path';
 import type postgres from 'postgres';
 import { z } from 'zod';
-import { UuidSchema, DSH_INSTALLED_DISTRIBUTION } from '@allrice/contracts';
+import { UuidSchema, DSH_FROZEN_PROFILE_GENERATIONS } from '@allrice/contracts';
 import type { JobRow } from '../queue/row-mappers.ts';
 import {
   isPlatformTechnicalJobAuthorized,
@@ -21,7 +21,7 @@ export const NativeSessionDescriptorSchema = z
       .regex(/^dsh-[a-zA-Z0-9._:-]+$/),
     artifactId: digest,
     artifactManifestDigest: digest,
-    distributionGeneration: z.literal(DSH_INSTALLED_DISTRIBUTION.generation),
+    distributionGeneration: z.enum(DSH_FROZEN_PROFILE_GENERATIONS),
     profileId: z.enum(['restricted', 'technical']),
     storageContextKey: z.string().min(1).max(100),
     storageNamespace: z.string().min(1).max(4096),
@@ -64,6 +64,16 @@ export const NativeSessionLeaseInputSchema = z
 export type NativeSessionLeaseInput = z.infer<
   typeof NativeSessionLeaseInputSchema
 >;
+export const NativeSessionPreparationInputSchema =
+  NativeSessionLeaseInputSchema.omit({ descriptor: true })
+    .extend({
+      nativeSessionId: NativeSessionDescriptorSchema.shape.nativeSessionId,
+      storageContextKey: NativeSessionDescriptorSchema.shape.storageContextKey,
+    })
+    .strict();
+export type NativeSessionPreparationInput = z.infer<
+  typeof NativeSessionPreparationInputSchema
+>;
 export interface NativeSessionPin extends NativeSessionDescriptor {
   organizationId: string;
   workspaceId: string;
@@ -88,6 +98,57 @@ const deny = (): never => {
   throw new NativeSessionBindingError('NATIVE_SESSION_ADMISSION_DENIED');
 };
 type Tx = postgres.TransactionSql;
+
+/** Existing pins are fully re-admitted through the same binder and CAS, not
+ * returned by an owner-blind lookup. Absence grants no startup/prompt
+ * permission. Durable prior adoption requires storage recovery before bind. */
+export async function prepareLeasedNativeSession(
+  tx: Tx,
+  job: JobRow,
+  input: NativeSessionPreparationInput,
+) {
+  const [pin] = await tx`select * from allrice_native_session_bindings
+    where native_session_id=${input.nativeSessionId}`;
+  if (!pin) {
+    // This read is a recovery requirement, not first-creation authority. The
+    // final descriptor binder still rechecks all subject ACLs and chat CAS.
+    const [conversation] =
+      input.subject.kind === 'chat'
+        ? await tx`select thread_id from allrice_conversation_runtimes
+          where session_id=${input.subject.id} and organization_id=${job.organization_id}
+            and workspace_id=${job.workspace_id} and owner_id=${job.owner_id}`
+        : [];
+    return {
+      binding: null,
+      conversation: undefined,
+      requiresRecovery:
+        job.attempt > 1 ||
+        conversation?.thread_id === input.nativeSessionId ||
+        (input.subject.kind === 'chat' &&
+          input.subject.expectedThreadId === input.nativeSessionId),
+    };
+  }
+  if (pin.storage_context_key !== input.storageContextKey)
+    throw new NativeSessionBindingError('NATIVE_SESSION_BINDING_CONFLICT');
+  const descriptor = NativeSessionDescriptorSchema.parse({
+    nativeSessionId: pin.native_session_id,
+    artifactId: pin.artifact_id,
+    artifactManifestDigest: pin.artifact_manifest_digest,
+    distributionGeneration: pin.distribution_generation,
+    profileId: pin.profile_id,
+    storageContextKey: pin.storage_context_key,
+    storageNamespace: pin.storage_namespace,
+  });
+  const admitted = await bindLeasedNativeSession(tx, job, {
+    workerId: input.workerId,
+    jobId: input.jobId,
+    leaseToken: input.leaseToken,
+    attempt: input.attempt,
+    subject: input.subject,
+    descriptor,
+  });
+  return { ...admitted, requiresRecovery: true };
+}
 
 /** The queue already owns 703 -> root/clock -> Job. No Run/test row locks:
  * the preview finalizer owns those rows while waiting for this same Job. */

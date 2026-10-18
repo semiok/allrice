@@ -109,6 +109,45 @@ test-only script does not approve or change a shared Dev/Prod deployment.
 Artifact verification alone does not migrate journals, select another
 generation, or implement automatic release ACK/publishing.
 
+## Retained approved readers and storage
+
+A Worker may verify up to four deployment-owned historical 0.1.5 readers before
+starting producers. Slot `ALLRICE_DSH_RETAINED_1_*` is the default reader for
+unpinned legacy contexts; later slots require slot 1. Each slot requires an
+absolute, existing non-symlink `ROOT`, an independently approved `ARTIFACT_ID`,
+and an existing non-symlink `STORAGE_ROOT`. An optional `FROZEN_PROFILES` JSON
+array lists exact `{generation, profileId}` pairs for the reviewed 0.1.1 frozen
+packages. It cannot map 0.2.1 or arbitrary generations back to an old reader.
+A missing tuple refuses execution without rewriting the frozen package.
+
+Every retained root is fully remeasured, including its own generation catalog,
+profiles, package graph and ABI. Routing uses the immutable pin's exact content
+ID and namespace. The same generation is insufficient; an unavailable content
+ID is an error, not permission to substitute the primary reader. Unpinned
+contexts remain on the explicit legacy reader; this configuration does not
+issue new-engine roots or open candidate execution.
+
+Keep every configured ROOT and STORAGE_ROOT as explicit absolute values in the
+actual service environment/launchd plist. Do not hide them only in a JSON file:
+the host cleanup audit follows these persistent references, not SQL pins.
+Retained code must remain immutable and readable while Session data remains
+writable at its original location. Container operators must mount both at those
+exact container-visible absolute paths; the default Compose file only forwards
+configuration and cannot mount arbitrary historical releases automatically.
+Before retiring a slot, reconcile all database pins and historical contexts.
+Never remove a release merely because no native host currently runs from it.
+
+Existing pins, durable legacy thread adoption and retries require the target
+stored Session, not merely a parent directory. Before first binding a known
+history, the selected reader's public persistence `stat` checks its identity
+without a writer, model, credentials or directory creation. Cold acquisition
+then uses the existing native resume-only `session/recover` path so disappearance
+after that check cannot silently create an empty same-ID history. Warm matching
+hosts are reused without re-opening them. A pin committed before an interrupted
+first materialization remains a visible recovery failure; absence is never used
+to infer permission to recreate it. Final binding and pre-prompt checks still
+re-admit the real Job lease, owner, subject and chat CAS.
+
 ## Native Session identity and current Job authority
 
 `allrice_native_session_bindings` preserves an immutable native root ID,

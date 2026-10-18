@@ -1,8 +1,12 @@
 import type { ResourcePrincipal } from '../resource-principal.ts';
 import {
   bindLeasedNativeSession,
+  prepareLeasedNativeSession,
   NativeSessionLeaseInputSchema,
+  NativeSessionPreparationInputSchema,
+  NativeSessionBindingError,
   type NativeSessionLeaseInput,
+  type NativeSessionPreparationInput,
 } from '../conversation/native-session-binding.ts';
 export { NativeSessionBindingError } from '../conversation/native-session-binding.ts';
 export type {
@@ -2272,6 +2276,34 @@ export async function bindJobNativeSession(input: NativeSessionLeaseInput) {
       value.leaseToken,
     );
     return bindLeasedNativeSession(tx, job, value);
+  });
+}
+
+/** Provisional routing lookup only. A returned pin has passed the complete
+ * existing admission transaction; absence never authorizes a default reader. */
+export async function prepareJobNativeSession(
+  input: NativeSessionPreparationInput,
+) {
+  const value = NativeSessionPreparationInputSchema.parse(input);
+  return getDatabase().begin(async (tx) => {
+    const job = await lockedLeasedJob(
+      tx,
+      value.workerId,
+      value.jobId,
+      value.leaseToken,
+    );
+    const [at] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
+    if (
+      job.attempt !== value.attempt ||
+      job.cancel_requested_at ||
+      job.drain_reason ||
+      job.drain_deadline_at ||
+      !job.lease_expires_at ||
+      job.lease_expires_at <= at!.now ||
+      job.timeout_at <= at!.now
+    )
+      throw new NativeSessionBindingError('NATIVE_SESSION_ADMISSION_DENIED');
+    return prepareLeasedNativeSession(tx, job, value);
   });
 }
 
