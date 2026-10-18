@@ -256,3 +256,7 @@ export {
   NativeRootOriginSchema,
   type NativeRootOrigin,
 } from './conversation/native-root-origin.ts';
+export {
+  verifyNativeArtifactReferenceCoverage,
+  type NativeArtifactReferenceApproval,
+} from './conversation/native-artifact-references.ts';

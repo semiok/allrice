@@ -41,7 +41,8 @@ import {
 } from '../dsh-native-artifact.js';
 import {
   legacyDshNativeLaunch,
-  newRootDshNativeLaunch,
+  originDshNativeLaunch,
+  employeePreviewStorageRoot,
   retainedDshStorageRoot,
   assertDshFrozenCompatibility,
 } from '../dsh-native-retention.js';
@@ -241,7 +242,21 @@ export class DshRuntimePool {
       );
     if (
       pin &&
-      (pin.storageNamespace !== expectedNamespace ||
+      ((pin.storageNamespace !== expectedNamespace &&
+        !(
+          pin.contextKind === 'platform_employee_test' &&
+          pin.contextId === storageContextKey &&
+          pin.storageNamespace ===
+            resolve(
+              employeePreviewStorageRoot(),
+              storageContextKey,
+              organizationId,
+              workspaceId,
+              ownerId,
+              storageContextKey,
+              'sessions',
+            )
+        )) ||
         pin.storageContextKey !== storageContextKey ||
         pin.organizationId !== organizationId ||
         pin.workspaceId !== workspaceId ||
@@ -301,7 +316,7 @@ export class DshRuntimePool {
     const selected = pin
       ? nativeArtifactLaunchForPin(pin)
       : origin
-        ? newRootDshNativeLaunch(origin, fallback, profileId)
+        ? originDshNativeLaunch(origin, profileId)
         : legacyDshNativeLaunch(fallback, profileId);
     if (origin && origin.rootSeed !== harnessContextKey(input.kernel))
       throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');

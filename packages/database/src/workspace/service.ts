@@ -625,7 +625,10 @@ export async function createAssignedChatSession(
       ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
       ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private', ${origin ? sql.json(origin) : null}
     )
-    on conflict(id) do nothing
+    -- The table also has a composite unique identity used by foreign keys.
+    -- Concurrent same-ID creation must handle either constraint; the exact
+    -- owner/workspace/instance readback below still rejects unrelated rows.
+    on conflict do nothing
     returning *
   `;
   const row =

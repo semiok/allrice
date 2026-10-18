@@ -13,7 +13,10 @@ import * as client from '../core/client.ts';
 import { createAssistantFixtureDatabase } from '../assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from '../assistant-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
-import { queuePlatformEmployeeTestRun } from '../employees/platform-employees.ts';
+import {
+  queuePlatformEmployeeTestRun,
+  claimNextPlatformEmployeeTestRun,
+} from '../employees/platform-employees.ts';
 import {
   assignEmployeeVersion,
   manageEmployeeAssignments,
@@ -25,7 +28,11 @@ import {
   sendChatMessage,
 } from '../workspace/service.ts';
 import { createSession, authenticateSession } from '../identity.ts';
-import { nativeRootDigest } from './native-root-origin.ts';
+import {
+  nativeRootDigest,
+  newInternalNativeRootOrigin,
+} from './native-root-origin.ts';
+import { verifyNativeArtifactReferenceCoverage } from './native-artifact-references.ts';
 import {
   PlatformEmployeeRuntimeProfileSchema,
   DSH_MISSING_FROZEN_GENERATION,
@@ -119,6 +126,19 @@ suite(
         'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
         'sha256:' + 'a'.repeat(64),
       );
+      // Repeated real PostgreSQL races exercise both redundant unique indexes;
+      // this is not an application-level retry or a repeated model task.
+      for (let n = 0; n < 8; n++) {
+        const sameId = randomUUID();
+        const pair = await Promise.all([
+          createAssignedChatSession(f.context, input, { sessionId: sameId }),
+          createAssignedChatSession(f.context, input, { sessionId: sameId }),
+        ]);
+        expect(pair.map((x) => x.id)).toEqual([sameId, sameId]);
+        expect(
+          await fixture.db`select id from allrice_chat_sessions where id=${sameId}`,
+        ).toHaveLength(1);
+      }
     });
     it('a new Session with an old frozen package stays legacy, and NULL cannot be backfilled by UPDATE', async () => {
       const { runtimePackage } = await packaged();
@@ -377,6 +397,288 @@ suite(
       expect(
         await fixture.db`select id from allrice_chat_sessions where id=${id}`,
       ).toHaveLength(0);
+    });
+    it('blocks dropping A for all four persisted origin tables, including never-bound/terminal histories, and preserves exact pin storage', async () => {
+      vi.stubEnv(
+        'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+        'sha256:' + 'a'.repeat(64),
+      );
+      const { runtimePackage } = await packaged(),
+        f = await authority(runtimePackage);
+      const setArtifact = (letter: string) =>
+        vi.stubEnv(
+          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+          'sha256:' + letter.repeat(64),
+        );
+      setArtifact('c');
+      const chat = await createAssignedChatSession(f.context, {
+        workspaceId: f.workspace,
+        employeeAssignmentId: f.assignment,
+        title: 'Never bound, protects artifact A',
+      });
+      await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${chat.id}`;
+      setArtifact('f');
+      const preview = await packaged();
+      await fixture.db`update allrice_platform_employee_test_runs set status='failed',completed_at=clock_timestamp() where id=${preview.test.id}`;
+      const technicalId = randomUUID(),
+        occurrenceId = randomUUID(),
+        automationId = randomUUID();
+      // Synthetic reference records in the actual isolated schema. These are
+      // not execution admission or a claim that a technical task ran.
+      setArtifact('d');
+      const technical = newInternalNativeRootOrigin(
+        'platform_technical',
+        technicalId,
+        {},
+      );
+      setArtifact('e');
+      const occurrence = newInternalNativeRootOrigin(
+        'experience_consolidation',
+        occurrenceId,
+        {},
+      );
+      await fixture.db`insert into allrice_platform_technical_tasks(id,request_id,owner_id,run_id,job_id,organization_id,workspace_id,environment,input_digest,frozen_configuration,native_root_origin)
+        values(${technicalId},${randomUUID()},${f.user},${f.rootRunId},${f.worker.jobId},${f.org},${f.workspace},'test',${nativeRootDigest({})},'{}',${fixture.db.json(technical!)})`;
+      await fixture.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,schedule,status)
+        values(${automationId},${f.org},${f.workspace},${f.user},'Synthetic retention reference','Never execute','{}','paused')`;
+      await fixture.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for,experience_occurrence,native_root_origin)
+        values(${occurrenceId},${f.org},${f.workspace},${automationId},'succeeded',clock_timestamp(),'{}',${fixture.db.json(occurrence!)})`;
+      const b = {
+        artifactId: 'sha256:' + 'b'.repeat(64),
+        generation: 'dsh-0.2.1-rc.2-687f282' as const,
+        storageRoot: '/current-b',
+      };
+      await expect(verifyNativeArtifactReferenceCoverage([b])).rejects.toThrow(
+        'REFERENCES_UNCOVERED',
+      );
+      const a = {
+        artifactId: 'sha256:' + 'a'.repeat(64),
+        generation: b.generation,
+        storageRoot: '/isolated-native',
+      };
+      const sources = [
+        ['c', 'origin:chat'],
+        ['d', 'origin:platform_technical'],
+        ['e', 'origin:experience_consolidation'],
+        ['f', 'origin:platform_employee_test'],
+      ];
+      const all = [
+        a,
+        ...sources.map(([letter]) => ({
+          ...a,
+          artifactId: 'sha256:' + letter!.repeat(64),
+        })),
+      ];
+      const covered = await verifyNativeArtifactReferenceCoverage(all);
+      expect(covered.references.map((r) => r.source)).toEqual(
+        expect.arrayContaining([
+          'binding',
+          'origin:chat',
+          'origin:platform_technical',
+          'origin:experience_consolidation',
+          'origin:platform_employee_test',
+        ]),
+      );
+      expect(covered.references.every((r) => r.covered)).toBe(true);
+      for (const [letter, source] of sources) {
+        const id = 'sha256:' + letter!.repeat(64);
+        let missing;
+        try {
+          await verifyNativeArtifactReferenceCoverage(
+            all.filter((x) => x.artifactId !== id),
+          );
+        } catch (error) {
+          missing = JSON.parse(
+            (error as Error).message.replace(
+              'DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED ',
+              '',
+            ),
+          );
+        }
+        expect(missing).toEqual([
+          {
+            source,
+            artifactId: id,
+            generation: b.generation,
+            profileId: letter === 'd' ? 'technical' : 'restricted',
+            records: 1,
+            covered: false,
+          },
+        ]);
+      }
+      await expect(
+        verifyNativeArtifactReferenceCoverage(
+          all.map((x) => ({ ...x, storageRoot: '/moved-a' })),
+        ),
+      ).rejects.toThrow('REFERENCES_UNCOVERED');
+      await expect(
+        verifyNativeArtifactReferenceCoverage([a, a]),
+      ).rejects.toThrow('DUPLICATE_APPROVAL');
+      expect(
+        (
+          await fixture.db`select native_root_origin from allrice_automation_runs where id=${occurrenceId}`
+        )[0]!.native_root_origin,
+      ).toEqual(occurrence);
+      setArtifact('a');
+    });
+    it('preserves the exact existing preview directory without granting it to chats or a moved execution root', async () => {
+      const isolated = await createAssistantFixtureDatabase();
+      vi.mocked(client.getDatabase).mockReturnValue(isolated.db);
+      try {
+        vi.stubEnv(
+          'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+          'sha256:' + 'a'.repeat(64),
+        );
+        const e = await createEmployeeAdministrationFixture(isolated.db);
+        const queued = await queuePlatformEmployeeTestRun(e.employeeId, {
+          environment: 'company',
+          workspaceId: e.workspaceId,
+          ownerId: e.ownerId,
+          prompt: 'Synthetic retained preview storage only',
+        });
+        const workerId = randomUUID();
+        const test = (await claimNextPlatformEmployeeTestRun(workerId))!;
+        expect(test.id).toBe(queued.testRun!.id);
+        const descriptor = nativeBindingDescriptor({
+          organizationId: test.previewContext.organizationId,
+          workspaceId: test.previewContext.workspaceId,
+          ownerId: test.previewContext.ownerId,
+          contextKey: test.id,
+          distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
+        });
+        descriptor.storageNamespace = descriptor.storageNamespace.replace(
+          '/isolated-native/',
+          `/existing-executions/platform-employee-tests/${test.id}/`,
+        );
+        await bindJobNativeSession({
+          workerId,
+          jobId: test.previewExecution.jobId,
+          leaseToken: test.previewExecution.leaseToken,
+          attempt: test.previewExecution.jobAttempt,
+          subject: { kind: 'platform_employee_test', id: test.id },
+          descriptor,
+        });
+        const a = {
+          artifactId: descriptor.artifactId,
+          generation: 'dsh-0.2.1-rc.2-687f282' as const,
+          storageRoot: '/isolated-native',
+          previewStorageRoot: '/existing-executions/platform-employee-tests',
+        };
+        expect(
+          (await verifyNativeArtifactReferenceCoverage([a])).verified,
+        ).toBe(true);
+        await expect(
+          verifyNativeArtifactReferenceCoverage([
+            {
+              ...a,
+              previewStorageRoot: '/moved-executions/platform-employee-tests',
+            },
+          ]),
+        ).rejects.toThrow('REFERENCES_UNCOVERED');
+        const runtimePackage = test.runtimeProfile.runtimePackage!;
+        const f = await createAssistantAuthorityFixture(isolated.db, {
+          configure: false,
+          runtimePackage,
+          businessCreationOrigin: true,
+        });
+        await isolated.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+        const [r] =
+          await isolated.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
+        const chat = nativeBindingDescriptor({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          contextKey: f.session,
+          distributionGeneration: a.generation,
+        });
+        chat.storageNamespace = chat.storageNamespace.replace(
+          '/isolated-native/',
+          `/existing-executions/platform-employee-tests/${f.session}/`,
+        );
+        await bindJobNativeSession({
+          workerId: f.worker.workerId,
+          jobId: f.worker.jobId,
+          leaseToken: f.worker.leaseToken,
+          attempt: 1,
+          subject: {
+            kind: 'chat',
+            id: f.session,
+            configChecksum: r!.config_checksum,
+            generation: r!.thread_generation,
+            expectedThreadId: r!.thread_id,
+          },
+          descriptor: chat,
+        });
+        await expect(
+          verifyNativeArtifactReferenceCoverage([a]),
+        ).rejects.toThrow('REFERENCES_UNCOVERED');
+        expect(
+          (
+            await isolated.db`select storage_namespace from allrice_native_session_bindings where native_session_id=${descriptor.nativeSessionId}`
+          )[0]!.storage_namespace,
+        ).toBe(descriptor.storageNamespace);
+      } finally {
+        vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
+        await isolated.close();
+      }
+    });
+    it('protects a pin independently after a legacy Run finishes and its NULL-origin Session is archived', async () => {
+      const isolated = await createAssistantFixtureDatabase();
+      vi.mocked(client.getDatabase).mockReturnValue(isolated.db);
+      try {
+        const f = await createAssistantAuthorityFixture(isolated.db, {
+          configure: false,
+        });
+        await isolated.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
+        const [r] =
+          await isolated.db`select * from allrice_conversation_runtimes where session_id=${f.session}`;
+        const descriptor = nativeBindingDescriptor({
+          organizationId: f.org,
+          workspaceId: f.workspace,
+          ownerId: f.user,
+          contextKey: f.session,
+        });
+        await bindJobNativeSession({
+          workerId: f.worker.workerId,
+          jobId: f.worker.jobId,
+          leaseToken: f.worker.leaseToken,
+          attempt: 1,
+          subject: {
+            kind: 'chat',
+            id: f.session,
+            configChecksum: r!.config_checksum,
+            generation: r!.thread_generation,
+            expectedThreadId: r!.thread_id,
+          },
+          descriptor,
+        });
+        await isolated.db`update allrice_runs set state='succeeded' where id=${f.rootRunId}`;
+        await isolated.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.session}`;
+        const a = {
+          artifactId: descriptor.artifactId,
+          generation: 'dsh-0.1.5-rc.3-a4c74a9' as const,
+          storageRoot: '/isolated-native',
+        };
+        const covered = await verifyNativeArtifactReferenceCoverage([a]);
+        expect(covered.references).toEqual([
+          {
+            source: 'binding',
+            artifactId: a.artifactId,
+            generation: a.generation,
+            profileId: 'restricted',
+            records: 1,
+            covered: true,
+          },
+        ]);
+        await expect(
+          verifyNativeArtifactReferenceCoverage([
+            { ...a, artifactId: 'sha256:' + 'b'.repeat(64) },
+          ]),
+        ).rejects.toThrow('REFERENCES_UNCOVERED');
+      } finally {
+        vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
+        await isolated.close();
+      }
     });
   },
 );
