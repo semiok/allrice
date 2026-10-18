@@ -155,3 +155,19 @@ ui-conversation HistoricalImageCache and nextPaint from the same 0.1.7-rc.1
 commit. Recorded patches adapt the Allrice session HTTP transport and optional
 image dimensions, and decode durable bytes before releasing the preview. The
 DeepSeek MIT notice above applies; source and patch hashes are in the WebUI ledger.
+
+### Fixed Web UI 0.2.1-rc.2 compatibility integration
+
+The twelve recorded component groups and the installed Web UI packages are
+updated to official commit `687f282e8625c6b8d11ff58211a90524be2e4317`
+(`0.2.1-rc.2`). This also includes the existing public UI components' required
+`dsh-util-code-language` utility, the small process group-tree classifier, and
+limited radius, focus, material, semantic-color and typography declarations
+from the official theme styles. The DeepSeek MIT notice above applies.
+
+The earlier top-level theme/style sources remain independently pinned, as does
+`collapsedSessionRows` at `46a7f68b0922371ce7144b668b90e377d8e799f4`
+(`0.1.7-rc.1`) to preserve the existing AllRice session-list behavior. Exact
+sources, patches, published assets and dependency resolution checks are recorded
+in `apps/web/app/dsh-upstream/upstream.json`; this upgrade does not replace
+AllRice authentication, stores, file permissions or Worker execution services.

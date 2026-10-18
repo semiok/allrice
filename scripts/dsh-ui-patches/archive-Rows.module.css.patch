@@ -1,6 +1,6 @@
 --- a/packages/client/ui-workspace/src/client/rows/Rows.module.css
 +++ b/packages/client/ui-workspace/src/client/rows/Rows.module.css
-@@ -437,3 +437,11 @@
+@@ -419,3 +419,11 @@
      transition: none;
    }
  }

@@ -1,0 +1,8 @@
+--- a/packages/client/ui-chat/src/client/contract/group-tree.ts
++++ b/packages/client/ui-chat/src/client/contract/group-tree.ts
+@@ -1,4 +1,4 @@
+-import type { ChatConversationViewNode } from './chat-nodes.ts'
++import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client'
+ 
+ /**
+  * Chat group-tree positions from the outermost inward; a Node at a position

@@ -2,6 +2,12 @@
  * Pinned from deepseek-ai/deepseek-harness @ b150a551b8d465e31e418e1b2eaf5e79bbb7d28e
  * Copyright (c) 2026 DeepSeek. Licensed under MIT; see THIRD_PARTY_NOTICES.md.
  */
+/* Exact rc.2 radius fragment; other base/theme behavior retains its recorded source. */
+@import './ui-radius-tokens.css';
+@import './ui-focus-tokens.css';
+@import './ui-surface-tokens.css';
+@import './ui-content-tokens.css';
+
 /* Base variables referenced by the token sheets and component CSS but defined
  * upstream (deepsuite theme/global.css) — supplied here so the composite
  * --dsw-font-* variables resolve and motion rides the upstream curve. Code

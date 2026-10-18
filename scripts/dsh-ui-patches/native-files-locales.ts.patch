@@ -15,4 +15,4 @@
 -
  /** Simplified Chinese dictionary and key-set source of truth. */
  export const zh = {
-   'type.label': '文件',
+   'shortcut.noSession': '请先选择会话',

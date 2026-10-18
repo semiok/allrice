@@ -150,11 +150,28 @@ suite('DSH native document previews', () => {
   async function mount(items: unknown[], width = 1200) {
     const page = await browser.newPage({ viewport: { width, height: 820 } });
     const errors: string[] = [];
-    page.on('pageerror', (error) => errors.push(error.message));
+    page.on('pageerror', (error) => {
+      errors.push(error.message);
+      console.error('Native document browser error:', error.message);
+    });
     await page.goto(origin);
     await page.waitForFunction(
       () => typeof Reflect.get(window, 'setPreviewItems') === 'function',
     );
+    await page.evaluate(() => {
+      const seen = new Set<string>();
+      Reflect.set(window, 'observedParsingFeedback', seen);
+      new MutationObserver(() => {
+        for (const node of document.querySelectorAll(
+          '[class*="zoomPreview"] [data-document-loading], [class*="nativeContent"] [data-document-loading]',
+        )) {
+          const name = node
+            .closest('section[aria-label]')
+            ?.getAttribute('aria-label');
+          if (name && node.getAttribute('aria-label')) seen.add(name);
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    });
     await page.evaluate(
       (values) => Reflect.get(window, 'setPreviewItems')(values),
       items,
@@ -253,6 +270,13 @@ suite('DSH native document previews', () => {
         .waitFor({ timeout: 30_000 });
       await page.getByText('汇总', { exact: true }).click();
       expect(await page.locator('[data-excel-preview]').count()).toBe(1);
+      // Observe the real native bodies after their chunks have loaded. The
+      // wrapper's earlier download placeholder cannot satisfy this assertion.
+      expect(
+        await page.evaluate(() => [
+          ...Reflect.get(window, 'observedParsingFeedback'),
+        ]),
+      ).toEqual(expect.arrayContaining(['report.pdf', 'report.xlsx']));
       expect(excelTransfers.at(-1)?.encoding).toBe('br');
       expect(excelTransfers.at(-1)?.bytes).toBeLessThan(2_000_000);
       expect(errors).toEqual([]);

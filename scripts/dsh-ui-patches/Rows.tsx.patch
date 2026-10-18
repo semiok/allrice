@@ -1,19 +1,22 @@
---- a/apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx
-+++ b/apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx
-@@ -11,9 +11,9 @@
+--- a/packages/client/ui-workspace/src/client/rows/Rows.tsx
++++ b/packages/client/ui-workspace/src/client/rows/Rows.tsx
+@@ -11,20 +11,20 @@
   * session and workspace hover cards are suppressed while a menu is open.
   */
  import { useEffect, useMemo, useRef, useState } from 'react'
 -import type { RefObject } from 'react'
-+import type { RefObject, ReactNode } from 'react'
++import type { RefObject, ReactNode, ComponentProps } from 'react'
  import clsx from 'clsx'
 -import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
 +import type { PropsRenderSlots } from './contracts'
  import {
-   HoverCard, IconAlarmClockOutlineRegular, IconArchiveOutlineRegular, IconEditOutlineRegular,
+   HoverCard, IconArchiveOutlineRegular, IconEditOutlineRegular,
    IconEllipsisOutlineRegular, IconFolderCloseRegular, IconFolderOpenRegular,
-@@ -22,8 +22,8 @@
+   IconNewChatOutlineRegular, IconPinFillRegular, IconTrashOutlineRegular,
+   IconTriangleRightFillRegular, IconUnarchiveOutlineRegular, Menu, relativeTime, StateDot, Tooltip,
  } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { ShortcutCatalogEntry } from '@deepseek-ai/dsh-client-shortcuts/client'
++type ShortcutCatalogEntry = { keys: NonNullable<ComponentProps<typeof Tooltip>['shortcutKeys']>; aria?: string }
  import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
  import { abbreviateHomePath } from '@deepseek-ai/dsh-util-workspace-path'
 -import type { MenuOpenState, WorkspaceBrowserProps } from '../contract/slots.ts'
@@ -23,13 +26,23 @@
  import css from './Rows.module.css'
  
  /** The standard locale seat, prop-passed from the browser root. */
-@@ -201,11 +201,15 @@
+@@ -40,8 +40,6 @@
+ type RowRenderSlots = PropsRenderSlots<
+   | 'sidebar.workspaces.session.menu.item'
+   | 'sidebar.workspaces.session.row.action'
+-  | 'sidebar.session.row.leading'
+-  | 'sidebar.session.row.hover'
+ >['renderSlot']
+ 
+ /** Row display title: blank rows show the localized New Session label. */
+@@ -216,12 +214,16 @@
   * @param props.t - the browser root's locale seat.
   * @returns the row element.
   */
--export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, t }: {
-+export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, leading, title, description, actions, drag, home, t }: {
+-export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, actions, drag, home, newShortcut, t }: {
++export function ProjectRowItem({ group, containsCurrentDescendant = false, onToggle, onCreate, leading, title, description, actions, drag, home, newShortcut, t }: {
    group: GroupNode
+   newShortcut?: ShortcutCatalogEntry | undefined
    containsCurrentDescendant?: boolean
    onToggle: () => void
 -  onCreate: () => void
@@ -41,7 +54,7 @@
    /** Real-Workspace actions; absent for the ungrouped bucket (no menu shown). */
    actions?: { rename: () => void; delete: () => void } | undefined
    /** Present only for real Workspace rows in the grouped view. */
-@@ -229,6 +233,12 @@
+@@ -245,6 +247,12 @@
        data-row-key={`workspace:${group.key}`}
        role="treeitem"
        aria-expanded={row.expanded}
@@ -54,7 +67,7 @@
        onClick={onToggle}
        draggable={drag !== undefined}
        onDragStart={drag === undefined
-@@ -241,13 +251,14 @@
+@@ -257,13 +265,14 @@
        onDragEnd={drag?.end}
      >
        <span className={clsx(css.slot, css.folder, active && css.folderActive)}>
@@ -71,16 +84,16 @@
        </span>
        <span className={css.rowActions}>
          {actions !== undefined && (
-@@ -278,7 +289,7 @@
+@@ -294,7 +303,7 @@
              )}
            />
          )}
--        <Tooltip label={t('actions.newSession')} side="bottom" align="end" delayMs={500}>
-+        {onCreate && <Tooltip label={t('actions.newSession')} side="bottom" align="end" delayMs={500}>
+-        <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500} portal>
++        {onCreate && <Tooltip label={t('actions.newSession')} shortcutKeys={newShortcut?.keys} side="bottom" align="end" delayMs={500} portal>
            <button
              type="button"
              className={css.iconButton}
-@@ -287,7 +298,7 @@
+@@ -304,7 +313,7 @@
            >
              <IconNewChatOutlineRegular />
            </button>
@@ -89,7 +102,27 @@
        </span>
      </div>
    )
-@@ -471,6 +482,10 @@
+@@ -424,10 +433,9 @@
+  * section, and every relevant live status. The task section sits above the
+  * status lines so they stay the card's trailing status line.
+  */
+-function SessionHoverContent({ node, now, renderSlot, t }: {
++function SessionHoverContent({ node, now, t }: {
+   node: SessionNode
+   now: number
+-  renderSlot: RowRenderSlots
+   t: RowTranslate
+ }) {
+   // On archived rows the archived line already says the session is inactive,
+@@ -440,7 +448,6 @@
+       {/* Same placeholder rule as the row's trailing cell: no timestamp
+           before the first prompt. */}
+       {!node.blank && <div className={css.hoverTime}>{hoverTimeLabel(node.updatedAt, now, t)}</div>}
+-      {renderSlot('sidebar.session.row.hover', { sessionId: node.id })}
+       {statuses.map(status => (
+         <div className={css.hoverStatus} key={status.label}>
+           <StateDot state={status.state} />
+@@ -484,6 +491,10 @@
        className={clsx(css.searchResultRow, selected && css.selected, result.archived && css.archived)}
        role="treeitem"
        aria-selected={selected}
@@ -100,7 +133,7 @@
        aria-description={result.archived ? t('toast.archivedNotOpenable') : undefined}
        onClick={() => { onOpen(result.id) }}
      >
-@@ -534,7 +549,7 @@
+@@ -550,18 +561,13 @@
    now: number
    onOpen: (id: SessionNode['id']) => void
    /** Open the rename dialog from a title double-click (id + current title). */
@@ -109,16 +142,19 @@
    /** Scroll this row into view after search navigation, then acknowledge it. */
    onReveal?: (() => void) | undefined
    /** Present on reorderable-list rows so every row can remain a drop target. */
-@@ -542,7 +557,7 @@
-   /** The row is rendered without a parent Workspace header. */
-   flat?: boolean | undefined
+   drag?: RowDragProps | undefined
    t: RowTranslate
--} & PropsRenderSlots<'sidebar.workspaces.session.menu.item' | 'sidebar.workspaces.session.row.action'>) {
-+} & Partial<PropsRenderSlots<'sidebar.workspaces.session.menu.item' | 'sidebar.workspaces.session.row.action'>>) {
+-} & PropsRenderSlots<
+-  | 'sidebar.workspaces.session.menu.item'
+-  | 'sidebar.workspaces.session.row.action'
+-  | 'sidebar.session.row.leading'
+-  | 'sidebar.session.row.hover'
+->) {
++} & { renderSlot?: RowRenderSlots }) {
    const row = node
    const title = displayTitle(node, t)
    const selected = node.id === currentId
-@@ -577,6 +592,10 @@
+@@ -595,6 +601,10 @@
        )}
        role="treeitem"
        aria-selected={selected}
@@ -129,7 +165,13 @@
        aria-description={row.archived ? t('toast.archivedNotOpenable') : undefined}
        onClick={() => { onOpen(node.id) }}
        onPointerEnter={marquee.enter}
-@@ -619,7 +638,7 @@
+@@ -632,12 +642,12 @@
+       <span className={css.slot}>
+         {!row.archived && !row.blank && (showStatus
+           ? <SessionStatusDots statuses={statuses} />
+-          : renderSlot('sidebar.session.row.leading', { sessionId: node.id }))}
++          : null)}
+       </span>
        <span
          ref={titleRef}
          className={css.title}
@@ -138,7 +180,7 @@
            ? undefined
            : (e) => { e.stopPropagation(); onRenameRequest(node.id, row.title) }}
        >
-@@ -644,7 +663,7 @@
+@@ -661,7 +671,7 @@
        {/* The strip's clicks stay in the strip: the trigger and every
            row.action entry act without also opening the row, so an entry's
            button needs no propagation handling of its own. */}
@@ -147,3 +189,12 @@
          <span className={css.rowActions} onClick={(e) => { e.stopPropagation() }}>
            <Menu
              open={menuOpen}
+@@ -693,7 +703,7 @@
+   return (
+     <HoverCard
+       anchor={ownRow}
+-      content={<SessionHoverContent node={node} now={now} renderSlot={renderSlot} t={t} />}
++      content={<SessionHoverContent node={node} now={now} t={t} />}
+       openDelayMs={800}
+       grouped
+       disabled={menuOpen || drag?.active === true}
