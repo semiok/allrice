@@ -258,7 +258,13 @@ try {
   assert.ok((await text(updatedPdf)).includes('310.75'));
   assert.notEqual(updated.cacheKey, original.key);
   assert.notEqual(hash(updatedPdf), hash(original.pdf));
-  const historical = await previewOfficePdf(original.input);
+  // This is a new request for the original immutable version. On WASM the
+  // preceding format/cancellation checks can outlive its first request's
+  // deadline; preserve the source identity, not that expired request signal.
+  const historical = await previewOfficePdf({
+    ...original.input,
+    signal: AbortSignal.timeout(60000),
+  });
   assert.deepEqual(Buffer.from(historical.pdf), original.pdf);
   check({
     name: 'corrected version and original version remain distinct',
@@ -316,6 +322,7 @@ try {
       ...original.input,
       objectId: 'too-large',
       sizeBytes: 50 * 1024 * 1024 + 1,
+      signal: AbortSignal.timeout(60000),
       read: forbiddenRead,
     }),
     { code: 'input-too-large' },
