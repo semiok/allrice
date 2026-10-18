@@ -182,7 +182,7 @@ export async function generateOfficePdfExport(
       : [],
     nativeConversion: {
       status: 'converted' as const,
-      provider: '@deepseek-ai/dsh-office-to-pdf@0.1.7-rc.1',
+      provider: '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2',
       backend: 'platform-dsh-provider',
       sourceFormat: format,
       executionLocation: 'cloud' as const,

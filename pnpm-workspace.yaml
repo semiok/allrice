@@ -250,6 +250,8 @@ packageExtensions:
 
 # Pin formerly auto-resolved peers to the audited rc.3 graph.
 overrides:
+  # Keep the new Office engine independent of the retained legacy provider.
+  '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2>@deepseek-ai/libreoffice-kit': 0.1.5
   'zustand@4.4.7>use-sync-external-store': 1.6.0
   '@deepseek-ai/dsh-anonymous-user-id@^0.1.5-rc.3': 0.1.5-rc.3
   '@deepseek-ai/dsh-bash-local@^0.1.5-rc.3': 0.1.5-rc.3

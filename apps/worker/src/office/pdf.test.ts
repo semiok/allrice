@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { officeMediaTypes } from '@allrice/contracts';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
@@ -24,6 +25,15 @@ vi.mock('@allrice/office-runtime/preview', () => ({
 import { generateOfficePdfExport } from './pdf.js';
 
 const sourceBytes = Buffer.from('authorized immutable original Office bytes');
+const providerVersion = JSON.parse(
+  readFileSync(
+    new URL(
+      '../../../../packages/office-runtime/package.json',
+      import.meta.url,
+    ),
+    'utf8',
+  ),
+).dependencies['@deepseek-ai/dsh-office-to-pdf'];
 const pdfBytes = Uint8Array.from(
   Buffer.from('%PDF-1.7\noriginal DSH PDF bytes\n%%EOF'),
 );
@@ -141,6 +151,7 @@ describe('original Office bytes through the existing DSH PDF provider', () => {
       expect(generated).not.toHaveProperty('quality');
       expect(generated.nativeConversion).toMatchObject({
         status: 'converted',
+        provider: `@deepseek-ai/dsh-office-to-pdf@${providerVersion}`,
         backend: 'platform-dsh-provider',
         executionLocation: 'cloud',
         executionReason: 'local_unsupported',
