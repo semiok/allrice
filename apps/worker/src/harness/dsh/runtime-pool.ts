@@ -41,7 +41,7 @@ import {
 } from '../dsh-native-artifact.js';
 import {
   legacyDshNativeLaunch,
-  newRootDshNativeLaunch,
+  originDshNativeLaunch,
   retainedDshStorageRoot,
   assertDshFrozenCompatibility,
 } from '../dsh-native-retention.js';
@@ -301,7 +301,7 @@ export class DshRuntimePool {
     const selected = pin
       ? nativeArtifactLaunchForPin(pin)
       : origin
-        ? newRootDshNativeLaunch(origin, fallback, profileId)
+        ? originDshNativeLaunch(origin, profileId)
         : legacyDshNativeLaunch(fallback, profileId);
     if (origin && origin.rootSeed !== harnessContextKey(input.kernel))
       throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_FROZEN_IDENTITY');

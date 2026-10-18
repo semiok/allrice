@@ -226,7 +226,7 @@ const allowedProfilePackages = new Set(
     'authorization',
     'attachment-local',
     'llm-pi-ai',
-    'llm-deepseek',
+    'llm-deepseek-api-key',
     'llm',
     'session',
     'session-title',

@@ -45,7 +45,10 @@ import {
   checkedDshNativeLaunch,
 } from './harness/dsh-native-artifact.js';
 import { configuredDshNativeLaunch } from './harness/dsh/runtime-pool.js';
-import { installConfiguredDshNativeRetention } from './harness/dsh-native-retention.js';
+import {
+  installConfiguredDshNativeRetention,
+  verifyConfiguredDshNativeReferences,
+} from './harness/dsh-native-retention.js';
 import { fileURLToPath } from 'node:url';
 import { closeHarnessAdapters, getHarnessRouter } from './harness/router.js';
 import { executeNextPlatformEmployeeTest } from './platform-employee-tests.js';
@@ -133,6 +136,8 @@ if (
 )
   throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
 const retainedNativeArtifacts = await installConfiguredDshNativeRetention();
+const nativeArtifactReferenceCoverage =
+  await verifyConfiguredDshNativeReferences(nativeArtifact);
 const producerLifecycle = await installDevProducerLifecycle('worker');
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
@@ -342,6 +347,7 @@ const server = createServer(async (request, response) => {
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
         nativeArtifact,
         retainedNativeArtifacts,
+        nativeArtifactReferenceCoverage,
         ...(maintenance ? { maintenance } : {}),
         ...(maintenance
           ? { producerLifecycle: readDevProducerLifecycle('worker') }

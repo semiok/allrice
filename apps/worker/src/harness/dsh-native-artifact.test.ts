@@ -8,6 +8,8 @@ import {
   cp,
   realpath,
   symlink,
+  rename,
+  access,
 } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -20,6 +22,7 @@ import {
   nativeLoaderPlatformPackage,
   checkedDshNativeLaunch,
 } from './dsh-native-artifact.js';
+import { copyDshNativeArtifact } from './dsh-native-artifact-copy.js';
 
 const roots: string[] = [];
 const testHarnessExecArgv = process.execArgv;
@@ -105,6 +108,85 @@ async function seal(root: string) {
   });
   return measured;
 }
+it('copies only the measured closure with original provenance and resolves it after the source disappears', async () => {
+  const root = await fixture();
+  // Unrelated Web/data/credential bytes must never enter a retained runtime.
+  await put(root, '.env', 'SYNTHETIC_NOT_A_REAL_SECRET');
+  await put(root, 'apps/web/.next/BUILD_ID', 'do-not-copy');
+  await put(root, '.local/sessions/private.json', 'do-not-copy');
+  const value = await seal(root);
+  const parent = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
+  );
+  roots.push(parent);
+  const target = join(parent, 'native');
+  const result = await copyDshNativeArtifact({
+    root,
+    target,
+    expectedId: value.artifactId,
+    sourceSha: 'a'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  });
+  expect(result.deploymentApprovalGranted).toBe(false);
+  expect(result.storageCopied).toBe(false);
+  for (const absent of ['.env', 'apps/web', '.local/sessions'])
+    await expect(access(join(target, absent))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  const held = root + '-held';
+  await rename(root, held);
+  try {
+    const retained = await verifyDshNativeArtifact({
+      root: target,
+      expectedId: value.artifactId,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    });
+    expect(retained.content).toEqual(value.content);
+    expect(retained.source).toEqual({
+      sha: 'a'.repeat(40),
+      tree: 'b'.repeat(40),
+    });
+  } finally {
+    await rename(held, root);
+  }
+  await expect(
+    copyDshNativeArtifact({
+      root,
+      target,
+      expectedId: value.artifactId,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    }),
+  ).rejects.toMatchObject({ code: 'EEXIST' });
+});
+it('rejects wrong original source before creating a retained copy and detects later copied-code tampering', async () => {
+  const root = await fixture(),
+    value = await seal(root);
+  const parent = await realpath(
+    await mkdtemp(join(tmpdir(), 'allrice-retained-copy-')),
+  );
+  roots.push(parent);
+  const target = join(parent, 'native');
+  const input = {
+    root,
+    target,
+    expectedId: value.artifactId,
+    sourceSha: 'c'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  };
+  await expect(copyDshNativeArtifact(input)).rejects.toThrow('SOURCE_MISMATCH');
+  await expect(access(target)).rejects.toMatchObject({ code: 'ENOENT' });
+  await copyDshNativeArtifact({ ...input, sourceSha: 'a'.repeat(40) });
+  await put(
+    target,
+    'node_modules/peer-only/index.js',
+    'export const tampered = true',
+  );
+  await expect(
+    verifyDshNativeArtifact({ root: target, expectedId: value.artifactId }),
+  ).rejects.toThrow('CONTENT_MISMATCH');
+});
 it('selects the exact mapped Linux libc and refuses ambiguous or absent facts', () => {
   const input = { platform: 'linux', arch: 'x64' };
   const gnu = nativeLoaderPlatformPackage({
