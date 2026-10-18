@@ -1,0 +1,77 @@
+{
+  "officialCommit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+  "officialArchiveSha256": "157903b22c2881d3678d846755afe957a48df834e747deda805a1195ce25a146",
+  "cases": [
+    {
+      "file": "fixed.docx",
+      "format": "docx",
+      "sha256": "5742cab8761fac88252ffd50d17303ff5d96b9ddd91bb1eaa79fce70ba442e17",
+      "bytes": 8835,
+      "source": "Existing unchanged AllRice createOffice with synthetic fixed input; no model or company data",
+      "expectedText": ["中文", "00123", "210.5"]
+    },
+    {
+      "file": "fixed.pptx",
+      "format": "pptx",
+      "sha256": "2be21aa1fbd93ca2b74df6c32dc21dad826f007a10d23faa1aba1e77de44bf7e",
+      "bytes": 53117,
+      "source": "Existing unchanged AllRice createOffice with synthetic fixed input; no model or company data",
+      "expectedText": ["中文", "00123", "210.5"]
+    },
+    {
+      "file": "fixed.xlsx",
+      "format": "xlsx",
+      "sha256": "54d9469b341ac57e6e834395dd670a6c6788d2da6314e002341e7b8bab88cdd7",
+      "bytes": 6729,
+      "source": "Existing unchanged AllRice createOffice with synthetic fixed input; no model or company data",
+      "expectedText": ["编号", "金额", "00123", "210.5"]
+    },
+    {
+      "file": "fixed.doc",
+      "format": "doc",
+      "sha256": "2483a8cafde92910a0ea857cce49c07e6fa6bf58ab4a4f0852dfd2f488dedba1",
+      "bytes": 9216,
+      "source": "Fixed official DSH commit 687f282e8625c6b8d11ff58211a90524be2e4317, MIT original binary Office fixture; no conversion/recreation.",
+      "expectedText": ["Officepreview", "中文文档"]
+    },
+    {
+      "file": "fixed.ppt",
+      "format": "ppt",
+      "sha256": "1f0eb633897433cbc7cf05e7ee99f43424205dddc180aff4c58c4b18964816ce",
+      "bytes": 606720,
+      "source": "Fixed official DSH commit 687f282e8625c6b8d11ff58211a90524be2e4317, MIT original binary Office fixture; no conversion/recreation.",
+      "expectedText": ["Officepreview", "中文文档"]
+    },
+    {
+      "file": "fixed.xls",
+      "format": "xls",
+      "sha256": "311df8fcb797cfeffb552f254a054976ab61611d4a2cf68cd11f3ae7e2a73d37",
+      "bytes": 5632,
+      "source": "Fixed official DSH commit 687f282e8625c6b8d11ff58211a90524be2e4317, MIT original binary Office fixture; no conversion/recreation.",
+      "expectedText": ["Officepreview", "中文文档"]
+    }
+  ],
+  "revision": {
+    "file": "fixed-v2.docx",
+    "format": "docx",
+    "sha256": "e7f9cfa73c3ab92f9f005cd6fcf020a6298853246cb97a957b6d3d4e33dae749",
+    "bytes": 8869,
+    "source": "Unchanged AllRice createOffice with fixed synthetic correction",
+    "input": {
+      "kind": "docx",
+      "title": "AllRiceOffice192 RevisionTwo 中文验收",
+      "blocks": [
+        {
+          "type": "heading",
+          "text": "更新后的版本和来源"
+        },
+        {
+          "type": "table",
+          "headers": ["编号", "金额"],
+          "rows": [["00123", 310.75]]
+        }
+      ]
+    },
+    "expectedText": ["RevisionTwo", "中文", "00123", "310.75"]
+  }
+}

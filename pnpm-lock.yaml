@@ -5,6 +5,7 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
+  '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2>@deepseek-ai/libreoffice-kit': 0.1.5
   zustand@4.4.7>use-sync-external-store: 1.6.0
   '@deepseek-ai/dsh-anonymous-user-id@^0.1.5-rc.3': 0.1.5-rc.3
   '@deepseek-ai/dsh-bash-local@^0.1.5-rc.3': 0.1.5-rc.3
@@ -1028,17 +1029,17 @@ importers:
         specifier: workspace:*
         version: link:../contracts
       '@deepseek-ai/cordis':
-        specifier: 4.0.4
-        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
+        specifier: 4.0.5
+        version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
       '@deepseek-ai/cordis-plugin-include':
-        specifier: 1.0.9
-        version: 1.0.9(@deepseek-ai/cordis-plugin-loader@1.0.5)(@deepseek-ai/cordis@4.0.4)
+        specifier: 1.0.10
+        version: 1.0.10(@deepseek-ai/cordis-plugin-loader@1.0.6)(@deepseek-ai/cordis@4.0.5)
       '@deepseek-ai/cordis-plugin-loader':
-        specifier: 1.0.5
-        version: 1.0.5(@deepseek-ai/cordis@4.0.4)(node-addon-require-builtin@0.1.9)
+        specifier: 1.0.6
+        version: 1.0.6(@deepseek-ai/cordis@4.0.5)(node-addon-require-builtin@0.1.9)
       '@deepseek-ai/dsh-office-to-pdf':
-        specifier: 0.1.7-rc.1
-        version: 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
       pdf-parse:
         specifier: 2.4.5
         version: 2.4.5
@@ -2697,10 +2698,10 @@ packages:
     peerDependencies:
       '@deepseek-ai/cordis': ~4.0.5
 
-  '@deepseek-ai/dsh-office-to-pdf@0.1.7-rc.1':
-    resolution: {integrity: sha512-Lg8/k5gHZjiOp8uAfr4sd933AdtZSSHh6VWxoUa50R27fQwsjv7C5lfAIKPZgrXDaIlc/231E2i0l4rLMw/kQw==}
+  '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2':
+    resolution: {integrity: sha512-ch2ktaysUbaqwXbteY9hj9Nhh2aTzVO3PNydPP8/wUXKBjEshWPCX3ym/aM1+DS7100HBTi4nzKZ8clSjmpERA==}
     peerDependencies:
-      '@deepseek-ai/cordis': ~4.0.4
+      '@deepseek-ai/cordis': ~4.0.5
 
   '@deepseek-ai/dsh-output-retention@0.1.5-rc.3':
     resolution: {integrity: sha512-hIE1PpojGtpmGEjiJ97RzdxEoZlfqPS/a8dTuQfvkslkXNBk2nQY6ZXVxUVDS8vLo/SUnnH5NMgUJPq4zfcVRQ==}
@@ -3971,11 +3972,6 @@ packages:
     peerDependencies:
       '@deepseek-ai/cordis': 4.0.2
 
-  '@deepseek-ai/dsh-typert-protocol@0.1.7-rc.1':
-    resolution: {integrity: sha512-DOJiFdvHl1RoJHO7C6XymZUqVZwZiF7JL1PS+AEtQWg6nsYXvlkF1VLbwzPxMW470RzzimGLCz7boOxx086dLA==}
-    peerDependencies:
-      '@deepseek-ai/cordis': ~4.0.4
-
   '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.2':
     resolution: {integrity: sha512-rtsHJHGE9SWX+zOgtDbPUqz3h7r+qFm3h1WASzRJxDnULqo7JaBdIiGshNTFPmetsX+r1T69CKFdTZAJmHwMug==}
     peerDependencies:
@@ -4204,37 +4200,37 @@ packages:
     resolution: {integrity: sha512-c0W6Xqc4ChjFcCJkbzPeIxZQdnbKqe+QAcJzWGtogg0ZzsnZRcw3vopMyZ5oZU6E2fmyqGcyDR1sBeiCH4yHcg==}
     hasBin: true
 
-  '@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.1':
-    resolution: {integrity: sha512-D6NBvtoNpm9pOgBXGQTdxpds1tYMeiFKhGJgnXF/SE0124ZM8j0AOXI7cZ8CErHctqIoVYP+gKWCrnQl4we41A==}
+  '@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.5':
+    resolution: {integrity: sha512-SjeXmyaTevEq2TxK7reb1rhCrQZ4QOXmXt/qEwfQD5Fx3odU0ILx2uiXN+nphSCQ95LFCzrElHGgv2c7a824yg==}
     engines: {node: '>=22.19.0'}
     cpu: [arm64]
     os: [darwin]
 
-  '@deepseek-ai/libreoffice-kit-darwin-x64@0.1.1':
-    resolution: {integrity: sha512-VcAqzmzDbRySLBnpRNYSEd+fDmAtdgL1hQMjRf4sFnQuz7m1vipQ00DtlqFG/T+9uCc20bMIyiDWh8zfYObW3w==}
+  '@deepseek-ai/libreoffice-kit-darwin-x64@0.1.5':
+    resolution: {integrity: sha512-vuz2tTpH1Edk75+DISwg/TXdQ3BNSNSHoVnWVqxqbGMgrrK9trLOw2+0X7mjT1naGO00Zc1qkyQ4if3kx5XjqQ==}
     engines: {node: '>=22.19.0'}
     cpu: [x64]
     os: [darwin]
 
-  '@deepseek-ai/libreoffice-kit-wasm@0.1.1':
-    resolution: {integrity: sha512-YuKZJdDhR/0GeTZUHJsJvachJR8ZiS4lcrL+lxUF2GLRwXcMikN0zAQOA+6kD/nRI+vlHsCkX0KvHaKvfae79Q==}
+  '@deepseek-ai/libreoffice-kit-wasm@0.1.5':
+    resolution: {integrity: sha512-V+pu5xJsKhVD4AU1xbFlMWY91svK9ZIC2JsNOph9kWp/arF/KQcuytt76bcbozJqPbE8o0n04lyh0m3QW5RYSA==}
     engines: {node: '>=22.19.0'}
     os: [linux]
 
-  '@deepseek-ai/libreoffice-kit-win32-arm64@0.1.2':
-    resolution: {integrity: sha512-+JMKIDfLfpQEIeWWJBkKeAGJ8Niiv6SLQ1SFMh8K28eUOSaLLGPt4j7ywEWtyKCtXenD+VRlKo5gZlqDmCtNCg==}
+  '@deepseek-ai/libreoffice-kit-win32-arm64@0.1.5':
+    resolution: {integrity: sha512-Av3aFfNLaVxfffu0JXP5mqfmsCU3gQtlUH9UD+zdXl8ON06ukVAmu7LqNyuKAz/68WoOMTQ+YBlVQukgDRKd/A==}
     engines: {node: '>=22.19.0'}
     cpu: [arm64]
     os: [win32]
 
-  '@deepseek-ai/libreoffice-kit-win32-x64@0.1.2':
-    resolution: {integrity: sha512-EUuTMnFF404uVVZz0j2oAoHY0Xhobdg0jChUUm74sudwaqxTM9rvgUYEWbeJd95oVjIParMdsb4hLdAhZ10BIw==}
+  '@deepseek-ai/libreoffice-kit-win32-x64@0.1.5':
+    resolution: {integrity: sha512-uKuDGZdofxuW4iRmUh8b3+XWU28JeOCYMTAONzo7tEHIq00DV2cARcgUYiTP7gUH49tH4A/RyPMOVEBzK7qjjw==}
     engines: {node: '>=22.19.0'}
     cpu: [x64]
     os: [win32]
 
-  '@deepseek-ai/libreoffice-kit@0.1.2':
-    resolution: {integrity: sha512-PM3GtAr8/nG7mY22yoYQgRTfkhzQ72v1sDME/46I/Kl7S4+yOFYC1h0hRT8JL9p9vjdEwXW9icdhUQK0QPz+YQ==}
+  '@deepseek-ai/libreoffice-kit@0.1.5':
+    resolution: {integrity: sha512-H12xtUsAyl70zFeQ5pk5GGRc3N1+6zn+DVAcqwlguI6EvqopBGP3xkUmePU7g5f6ydYlDZLWedHT9lTSL7zLxA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -10236,12 +10232,12 @@ snapshots:
     dependencies:
       '@deepseek-ai/cordis': 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
 
-  '@deepseek-ai/dsh-office-to-pdf@0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)':
+  '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)':
     dependencies:
-      '@deepseek-ai/cordis': 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
-      '@deepseek-ai/dsh-brand': 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/dsh-typert-protocol': 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-      '@deepseek-ai/libreoffice-kit': 0.1.2
+      '@deepseek-ai/cordis': 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-brand': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-typert-protocol': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/libreoffice-kit': 0.1.5
       '@deepseek-ai/schemastery': 3.18.5
       zod: 4.4.3
 
@@ -11624,11 +11620,6 @@ snapshots:
     dependencies:
       '@deepseek-ai/cordis': 4.0.2(@deepseek-ai/cordis-plugin-include@1.0.7)(@deepseek-ai/cordis-plugin-loader@1.0.3)
 
-  '@deepseek-ai/dsh-typert-protocol@0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)':
-    dependencies:
-      '@deepseek-ai/cordis': 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
-      '@deepseek-ai/dsh-brand': 0.1.7-rc.1(@deepseek-ai/cordis@4.0.4)
-
   '@deepseek-ai/dsh-typert-protocol@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
@@ -12228,32 +12219,33 @@ snapshots:
       - ws
       - zod
 
-  '@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.1':
+  '@deepseek-ai/libreoffice-kit-darwin-arm64@0.1.5':
     optional: true
 
-  '@deepseek-ai/libreoffice-kit-darwin-x64@0.1.1':
+  '@deepseek-ai/libreoffice-kit-darwin-x64@0.1.5':
     optional: true
 
-  '@deepseek-ai/libreoffice-kit-wasm@0.1.1':
+  '@deepseek-ai/libreoffice-kit-wasm@0.1.5':
     optional: true
 
-  '@deepseek-ai/libreoffice-kit-win32-arm64@0.1.2':
+  '@deepseek-ai/libreoffice-kit-win32-arm64@0.1.5':
     optional: true
 
-  '@deepseek-ai/libreoffice-kit-win32-x64@0.1.2':
+  '@deepseek-ai/libreoffice-kit-win32-x64@0.1.5':
     optional: true
 
-  '@deepseek-ai/libreoffice-kit@0.1.2':
+  '@deepseek-ai/libreoffice-kit@0.1.5':
     dependencies:
       fflate: 0.8.2
       fontkit: 2.0.4
+      koffi: 3.1.1
       saxes: 6.0.0
     optionalDependencies:
-      '@deepseek-ai/libreoffice-kit-darwin-arm64': 0.1.1
-      '@deepseek-ai/libreoffice-kit-darwin-x64': 0.1.1
-      '@deepseek-ai/libreoffice-kit-wasm': 0.1.1
-      '@deepseek-ai/libreoffice-kit-win32-arm64': 0.1.2
-      '@deepseek-ai/libreoffice-kit-win32-x64': 0.1.2
+      '@deepseek-ai/libreoffice-kit-darwin-arm64': 0.1.5
+      '@deepseek-ai/libreoffice-kit-darwin-x64': 0.1.5
+      '@deepseek-ai/libreoffice-kit-wasm': 0.1.5
+      '@deepseek-ai/libreoffice-kit-win32-arm64': 0.1.5
+      '@deepseek-ai/libreoffice-kit-win32-x64': 0.1.5
 
   '@deepseek-ai/node-addon-system-darwin-arm64@0.1.2':
     optional: true
