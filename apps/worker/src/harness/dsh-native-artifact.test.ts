@@ -104,6 +104,146 @@ async function seal(root: string) {
   });
   return measured;
 }
+async function dynamicNativeFixture(root: string) {
+  await put(root, 'apps/worker/dsh/distribution.json', {
+    schemaVersion: 2,
+    installedGeneration: 'dsh-0.2.1-rc.2-687f282',
+    generations: [
+      {
+        generation: 'dsh-0.2.1-rc.2-687f282',
+        version: '0.2.1-rc.2',
+        commit: '687f282e8625c6b8d11ff58211a90524be2e4317',
+      },
+    ],
+  });
+  const suffixes = [
+    'darwin-arm64',
+    'darwin-x64',
+    'linux-arm64-gnu',
+    'linux-arm64-musl',
+    'linux-x64-gnu',
+    'linux-x64-musl',
+    'win32-arm64-msvc',
+    'win32-ia32-msvc',
+    'win32-x64-msvc',
+  ];
+  const platforms = Object.fromEntries(
+    suffixes.map((s) => ['node-addon-require-builtin-' + s, '0.1.9']),
+  );
+  // Synthetic graph, not a real ABI test. Linux's fixture uses the GNU name.
+  const platform = `node-addon-require-builtin-${process.platform}-${process.arch}${process.platform === 'linux' ? '-gnu' : process.platform === 'win32' ? '-msvc' : ''}`;
+  const helper = 'node_modules/node-addon-native-custom-loader';
+  const entry = 'node_modules/node-addon-require-builtin';
+  const binary = '.fixture-platform/' + platform;
+  await put(root, 'pnpm-workspace.yaml', {
+    packageExtensions: {
+      'node-addon-native-custom-loader@0.1.9': {
+        optionalDependencies: platforms,
+      },
+    },
+  });
+  await put(root, 'apps/worker/package.json', {
+    name: '@allrice/worker',
+    dependencies: {
+      '@deepseek-ai/test-root': '1.0.0',
+      '@deepseek-ai/cordis-plugin-loader': '1.0.6',
+    },
+  });
+  for (const [path, name, version, dependencies, optionalDependencies] of [
+    [
+      'node_modules/@deepseek-ai/cordis-plugin-loader',
+      '@deepseek-ai/cordis-plugin-loader',
+      '1.0.6',
+      { 'node-addon-require-builtin': '0.1.9' },
+      {},
+    ],
+    [
+      entry,
+      'node-addon-require-builtin',
+      '0.1.9',
+      { 'node-addon-native-custom-loader': '0.1.9' },
+      platforms,
+    ],
+    [helper, 'node-addon-native-custom-loader', '0.1.9', {}, {}],
+    [
+      binary,
+      platform,
+      '0.1.9',
+      { 'node-addon-native-custom-loader': '0.1.9' },
+      {},
+    ],
+    ['node_modules/' + platform, platform, '0.1.5', {}, {}],
+  ] as const) {
+    await put(root, path + '/package.json', {
+      name,
+      version,
+      main: 'index.js',
+      dependencies,
+      optionalDependencies,
+    });
+    await put(root, path + '/index.js', 'module.exports = {};');
+  }
+  await mkdir(join(root, entry, 'node_modules'), { recursive: true });
+  await symlink(
+    relative(join(root, entry, 'node_modules'), join(root, binary)),
+    join(root, entry, 'node_modules', platform),
+  );
+  return { helper, binary, platform };
+}
+it('measures the dynamic native helper edge and rejects an unmeasured old hoist or missing binary', async () => {
+  const root = await fixture(),
+    f = await dynamicNativeFixture(root);
+  // The published helper still has no dependencies. Only the entry's own
+  // optional binary is correct; the helper would borrow the old public hoist.
+  await expect(measureDshNativeArtifact(root)).rejects.toThrow(
+    'NATIVE_LOADER_PLATFORM_MISMATCH',
+  );
+  await mkdir(join(root, f.helper, 'node_modules'), { recursive: true });
+  const link = join(root, f.helper, 'node_modules', f.platform);
+  await symlink(
+    relative(join(root, f.helper, 'node_modules'), join(root, f.binary)),
+    link,
+  );
+  const first = await seal(root);
+  expect(first.content.dependencyEdges).toContainEqual({
+    importer: f.helper,
+    name: f.platform,
+    kind: 'optional',
+    declared: '0.1.9',
+    optional: true,
+    target: f.binary,
+  });
+  expect(
+    first.content.packages
+      .filter((p) => p.name === f.platform)
+      .map((p) => p.version),
+  ).toEqual(['0.1.9']);
+  await put(
+    root,
+    f.binary + '/binary.node',
+    'synthetic measured platform bytes',
+  );
+  await expect(
+    verifyDshNativeArtifact({ root, expectedId: first.artifactId }),
+  ).rejects.toThrow('CONTENT_MISMATCH');
+  await rm(link);
+  await rm(join(root, 'node_modules', f.platform), { recursive: true });
+  await expect(measureDshNativeArtifact(root)).rejects.toThrow(
+    /DSH_NATIVE_ARTIFACT_(NATIVE_LOADER_PLATFORM_MISSING|PATH_OUTSIDE_RELEASE)/,
+  );
+});
+it('requires the finite native-helper extension to match the published platform declarations', async () => {
+  const root = await fixture();
+  await dynamicNativeFixture(root);
+  await put(root, 'pnpm-workspace.yaml', {
+    packageExtensions: {
+      'node-addon-native-custom-loader@0.1.9': { optionalDependencies: {} },
+    },
+  });
+  await expect(measureDshNativeArtifact(root)).rejects.toThrow(
+    'NATIVE_LOADER_EXTENSION',
+  );
+});
 describe('native artifact content and launch boundary', () => {
   it('measures the target root generation independently of the consuming Worker', async () => {
     const root = await fixture();

@@ -14,6 +14,28 @@ onlyBuiltDependencies:
 # UI conversation declarations import the same-generation nominal-brand helper
 # but omit it from runtime dependencies. Keep it independent of old admin peers.
 packageExtensions:
+  # This shared helper executes the platform require itself, outside the entry
+  # package's resolver context. Close both generations without a global override.
+  'node-addon-native-custom-loader@0.1.9':
+    optionalDependencies:
+      node-addon-require-builtin-darwin-arm64: '0.1.9'
+      node-addon-require-builtin-darwin-x64: '0.1.9'
+      node-addon-require-builtin-linux-arm64-gnu: '0.1.9'
+      node-addon-require-builtin-linux-arm64-musl: '0.1.9'
+      node-addon-require-builtin-linux-x64-gnu: '0.1.9'
+      node-addon-require-builtin-linux-x64-musl: '0.1.9'
+      node-addon-require-builtin-win32-arm64-msvc: '0.1.9'
+      node-addon-require-builtin-win32-ia32-msvc: '0.1.9'
+      node-addon-require-builtin-win32-x64-msvc: '0.1.9'
+  'node-addon-native-custom-loader@0.1.5':
+    optionalDependencies:
+      node-addon-require-builtin-darwin-arm64: '0.1.5'
+      node-addon-require-builtin-darwin-x64: '0.1.5'
+      node-addon-require-builtin-linux-arm64-gnu: '0.1.5'
+      node-addon-require-builtin-linux-x64-gnu: '0.1.5'
+      node-addon-require-builtin-win32-arm64-msvc: '0.1.5'
+      node-addon-require-builtin-win32-ia32-msvc: '0.1.5'
+      node-addon-require-builtin-win32-x64-msvc: '0.1.5'
   # The old CLI's native fallback walks symlink anchors without canonicalizing
   # each peer context. Close its entire already-published rc.3 graph here so
   # dynamic manifests and optional peers cannot borrow the Worker's generation.
