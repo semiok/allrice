@@ -17,6 +17,7 @@ import {
   assertDshNativeLaunch,
   nativeArtifactPath,
   nativeProfiles,
+  nativeLoaderPlatformPackage,
   checkedDshNativeLaunch,
 } from './dsh-native-artifact.js';
 
@@ -104,6 +105,31 @@ async function seal(root: string) {
   });
   return measured;
 }
+it('selects the exact mapped Linux libc and refuses ambiguous or absent facts', () => {
+  const input = { platform: 'linux', arch: 'x64' };
+  const gnu = nativeLoaderPlatformPackage({
+    ...input,
+    mappedLibraries: '/lib/x86_64-linux-gnu/libc.so.6',
+  });
+  const musl = nativeLoaderPlatformPackage({
+    ...input,
+    mappedLibraries: '/lib/ld-musl-x86_64.so.1',
+  });
+  expect(gnu).toBe('node-addon-require-builtin-linux-x64-gnu');
+  expect(musl).toBe('node-addon-require-builtin-linux-x64-musl');
+  // The other ABI's package cannot satisfy the exact host name.
+  expect([musl]).not.toContain(gnu);
+  expect([gnu]).not.toContain(musl);
+  expect(() => nativeLoaderPlatformPackage(input)).toThrow(
+    'NATIVE_LOADER_LIBC_UNKNOWN',
+  );
+  expect(() =>
+    nativeLoaderPlatformPackage({
+      ...input,
+      mappedLibraries: '/lib/libc.so.6\n/lib/ld-musl-x86_64.so.1',
+    }),
+  ).toThrow('NATIVE_LOADER_LIBC_UNKNOWN');
+});
 async function dynamicNativeFixture(root: string) {
   await put(root, 'apps/worker/dsh/distribution.json', {
     schemaVersion: 2,

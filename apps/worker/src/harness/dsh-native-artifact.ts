@@ -81,6 +81,23 @@ function fail(reason: string): never {
   throw Error('DSH_NATIVE_ARTIFACT_' + reason);
 }
 
+/** Match the loaded process's libc, without executing an unapproved package or
+ * the expensive process.report CPU inventory. Ambiguous Linux facts fail closed. */
+export function nativeLoaderPlatformPackage(input: {
+  platform: string;
+  arch: string;
+  mappedLibraries?: string;
+}) {
+  const base = `node-addon-require-builtin-${input.platform}-${input.arch}`;
+  if (input.platform === 'win32') return base + '-msvc';
+  if (input.platform !== 'linux') return base;
+  const maps = input.mappedLibraries ?? '';
+  const musl = /\/ld-musl-|\/libc\.musl-/.test(maps);
+  const gnu = /\/libc\.so\.6|\/libc-2\.\d+\.so/.test(maps);
+  if (musl === gnu) fail('NATIVE_LOADER_LIBC_UNKNOWN');
+  return base + (gnu ? '-gnu' : '-musl');
+}
+
 /** Read data from the measured root, never execute that root's Worker. An
  * independently approved content ID still authorizes the actual artifact. */
 function rootDistribution(bytes: Buffer) {
@@ -292,7 +309,14 @@ export async function measureDshNativeArtifact(
       )
         fail('NATIVE_LOADER_EXTENSION');
       let hostPresent = false;
-      const host = `node-addon-require-builtin-${process.platform}-${process.arch}`;
+      const host = nativeLoaderPlatformPackage({
+        platform: process.platform,
+        arch: process.arch,
+        mappedLibraries:
+          process.platform === 'linux'
+            ? await readFile('/proc/self/maps', 'utf8').catch(() => '')
+            : undefined,
+      });
       for (const name of expected) {
         const target = await locate(path, name);
         if (!target) continue;
@@ -301,7 +325,7 @@ export async function measureDshNativeArtifact(
         ) as PackageMetadata;
         if (binary.name !== name || binary.version !== '0.1.9')
           fail('NATIVE_LOADER_PLATFORM_MISMATCH');
-        if (name === host || name.startsWith(host + '-')) hostPresent = true;
+        if (name === host) hostPresent = true;
       }
       if (!hostPresent) fail('NATIVE_LOADER_PLATFORM_MISSING');
       effectiveOptional = { ...effectiveOptional, ...platforms };
