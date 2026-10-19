@@ -59,6 +59,20 @@ const scopeNames = {
   department: '部门',
   personal: '个人',
 };
+const procedureGroups = [
+  {
+    kind: 'procedure',
+    title: '文字流程',
+    description: '用文字说明工作方法，由 AI 结合当前任务灵活执行。',
+    empty: '暂无已生效的文字流程。',
+  },
+  {
+    kind: 'workflow',
+    title: '可执行 Workflow',
+    description: '将固定业务流程写成程序，由系统按预设规则执行。',
+    empty: '暂无已绑定的可执行 Workflow。',
+  },
+] as const;
 
 export function ContentSourceBadge({
   scope,
@@ -305,12 +319,14 @@ export function EmployeeProfileDetails({
         aria-labelledby={`${tabsId}-${section}`}
         tabIndex={0}
       >
-        <p className={css.hint}>
-          {scene ? '通用内容与当前场景共同采用。' : '当前已生效的长期内容。'}
-          {view === 'personal'
-            ? '维护标记表示你的权限，调整请在聊天中说明。'
-            : '本视图仅供查看共享内容。'}
-        </p>
+        {section !== 'procedures' && (
+          <p className={css.hint}>
+            {scene ? '通用内容与当前场景共同采用。' : '当前已生效的长期内容。'}
+            {view === 'personal'
+              ? '维护标记表示你的权限，调整请在聊天中说明。'
+              : '本视图仅供查看共享内容。'}
+          </p>
+        )}
         {section === 'experience' &&
           (experienceContent ?? (
             <p className={css.notice}>
@@ -343,14 +359,49 @@ export function EmployeeProfileDetails({
             </details>
           </article>
         )}
-        {rows.map((source) => (
-          <ContentItem
-            key={exactKey(source.reference)}
-            source={source}
-            onPreview={onPreview}
-          />
-        ))}
-        {!rows.length &&
+        {section === 'procedures' ? (
+          <div className={css.procedureGroups}>
+            {procedureGroups.map((group) => {
+              const entries = rows.filter(
+                (source) => source.reference.sourceKind === group.kind,
+              );
+              const headingId = `${tabsId}-${group.kind}-heading`;
+              return (
+                <section
+                  key={group.kind}
+                  className={css.procedureGroup}
+                  aria-labelledby={headingId}
+                >
+                  <div className={css.procedureIntroduction}>
+                    <h3 id={headingId}>{group.title}</h3>
+                    <p>{group.description}</p>
+                  </div>
+                  {entries.length ? (
+                    entries.map((source) => (
+                      <ContentItem
+                        key={exactKey(source.reference)}
+                        source={source}
+                        onPreview={onPreview}
+                      />
+                    ))
+                  ) : (
+                    <p className={css.empty}>{group.empty}</p>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+        ) : (
+          rows.map((source) => (
+            <ContentItem
+              key={exactKey(source.reference)}
+              source={source}
+              onPreview={onPreview}
+            />
+          ))
+        )}
+        {section !== 'procedures' &&
+          !rows.length &&
           !(section === 'requirements' && publishedRules.length) && (
             <p className={css.empty}>
               {
@@ -376,18 +427,22 @@ function ContentItem({
   onPreview: (reference: ReferenceSelection) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const procedure =
+    source.reference.sourceKind === 'procedure' ||
+    source.reference.sourceKind === 'workflow';
+  const itemClass = procedure ? `${css.item} ${css.procedureItem}` : css.item;
   if (!source.available)
     return (
-      <article className={css.item}>
+      <article className={itemClass}>
         <h4>内容暂不可用</h4>
         <p className={css.hint}>来源已变更或当前无权访问，请联系维护人核对。</p>
       </article>
     );
   return (
-    <article className={css.item}>
+    <article className={itemClass}>
       <header>
         <h4>
-          {source.referenceFile ? (
+          {source.referenceFile && !procedure ? (
             <button
               className={css.file}
               type="button"
@@ -399,45 +454,56 @@ function ContentItem({
             source.title
           )}
         </h4>
-        <ContentSourceBadge
-          scope={source.ownership?.scope ?? null}
-          canMaintain={source.canMaintain}
-        />
+        <div className={procedure ? css.procedureMetadata : undefined}>
+          {procedure && (
+            <span className={css.procedureStatus}>
+              {source.reference.sourceKind === 'workflow' ? '已绑定' : '已生效'}
+              {source.referenceFile
+                ? ` · v${source.referenceFile.revision}`
+                : ''}
+            </span>
+          )}
+          <ContentSourceBadge
+            scope={source.ownership?.scope ?? null}
+            canMaintain={source.canMaintain}
+          />
+        </div>
       </header>
-      <p className={css.excerpt}>
+      <p className={procedure ? css.procedureBody : css.excerpt}>
         {source.body
-          ? source.body.slice(0, 240) + (source.body.length > 240 ? '…' : '')
+          ? procedure
+            ? source.body
+            : source.body.slice(0, 240) + (source.body.length > 240 ? '…' : '')
           : '暂无内容说明。'}
       </p>
-      <details
-        className={css.origin}
-        onToggle={(event) => setExpanded(event.currentTarget.open)}
-      >
-        <summary>查看内容与来源</summary>
-        {expanded && (
-          <>
-            {source.reference.sourceKind === 'workflow' && (
-              <p className={css.hint}>已绑定流程的说明</p>
-            )}
-            <p className={css.fullText}>{source.body}</p>
-            <dl>
-              <dt>来源</dt>
-              <dd>
-                {source.ownership
-                  ? scopeNames[source.ownership.scope]
-                  : '已有授权引用'}
-              </dd>
-              <dt>固定版本</dt>
-              <dd>
-                {source.referenceFile
-                  ? `v${source.referenceFile.revision} · `
-                  : ''}
-                {source.reference.revisionId}
-              </dd>
-            </dl>
-          </>
-        )}
-      </details>
+      {!procedure && (
+        <details
+          className={css.origin}
+          onToggle={(event) => setExpanded(event.currentTarget.open)}
+        >
+          <summary>查看内容与来源</summary>
+          {expanded && (
+            <>
+              <p className={css.fullText}>{source.body}</p>
+              <dl>
+                <dt>来源</dt>
+                <dd>
+                  {source.ownership
+                    ? scopeNames[source.ownership.scope]
+                    : '已有授权引用'}
+                </dd>
+                <dt>固定版本</dt>
+                <dd>
+                  {source.referenceFile
+                    ? `v${source.referenceFile.revision} · `
+                    : ''}
+                  {source.reference.revisionId}
+                </dd>
+              </dl>
+            </>
+          )}
+        </details>
+      )}
     </article>
   );
 }

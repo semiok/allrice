@@ -4214,6 +4214,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .click();
         f.state.employeeDetails.profile.kind = 'custom';
         f.state.employeeDetails.profile.personalFields.push('name');
+        const workflow = structuredClone(
+          f.state.employeeDetails.content.sources.find(
+            (source) => source.reference.sourceKind === 'procedure',
+          )!,
+        );
+        workflow.reference = {
+          ...workflow.reference,
+          sourceKind: 'workflow',
+          contentId: id(9036),
+          revisionId: id(9136),
+        };
+        workflow.title = '月度审计自动处理';
+        workflow.body = '根据月度明细与约定口径交付审计报告。';
+        f.state.employeeDetails.content.sources.push(workflow);
+        f.state.employeeDetails.content.scenes
+          .find((scene) => scene.id === id(51))!
+          .references.push(workflow.reference);
         await f.page
           .getByRole('button', { name: '查看Rice详情', exact: true })
           .click();
@@ -4279,6 +4296,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog
           .getByText('对账流程正文', { exact: true })
           .first()
+          .waitFor();
+        const textProcedures = dialog.getByRole('region', {
+          name: '文字流程',
+          exact: true,
+        });
+        const executableWorkflows = dialog.getByRole('region', {
+          name: '可执行 Workflow',
+          exact: true,
+        });
+        expect(await textProcedures.innerText()).toContain('对账流程正文');
+        expect(await textProcedures.innerText()).not.toContain(workflow.title);
+        expect(await executableWorkflows.innerText()).toContain(workflow.body);
+        expect(await executableWorkflows.innerText()).not.toContain(
+          '对账流程正文',
+        );
+        expect(
+          await dialog.getByRole('tabpanel').getByRole('button').count(),
+        ).toBe(0);
+        expect(
+          await dialog.getByRole('tabpanel').locator('details').count(),
+        ).toBe(0);
+        await scenes.selectOption(id(50));
+        await executableWorkflows
+          .getByText('暂无已绑定的可执行 Workflow。', { exact: true })
+          .waitFor();
+        expect(await textProcedures.innerText()).toContain('对账流程正文');
+        await scenes.selectOption(id(51));
+        await executableWorkflows
+          .getByText(workflow.body, { exact: true })
           .waitFor();
         expect(f.state.experienceReads).toBe(0);
         await dialog
