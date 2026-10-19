@@ -2892,7 +2892,10 @@ export class CloudRunnerBackend {
       if (options.projectService)
         serviceGuard = await openCloudProjectServiceGuard(
           attemptId,
-          options.projectService.hardDeadlineAt,
+          // The root/network deadline may be earlier than the service's own
+          // ceiling. The physical lease must bind the exact admitted container
+          // deadline; a different hard deadline is correctly rejected by the VM.
+          new Date(deadline).toISOString(),
         );
       else if (budget)
         serviceGuard = await openCloudSandboxExecutionGuard(
