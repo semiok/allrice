@@ -20,6 +20,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { captureReferenceSelections } from '../reference-runtime.ts';
 import { captureCompanyRunAssets } from '../company-run-assets.ts';
 import { completedBudgetAnswers } from './budget-answer.ts';
+import { messageRequestWithAttachments } from './message-attachments.ts';
 import {
   ArtifactReviewError,
   assertWorkbenchSession,
@@ -1724,11 +1725,15 @@ export async function sendChatMessage(
         ]
       : [],
   );
-  const userRequest = attachmentRows.length
-    ? `${message.text}\n\nAttached files: ${attachmentRows
-        .map((attachment) => attachment.file_name)
-        .join(', ')}`
-    : message.text;
+  const userRequest = messageRequestWithAttachments(
+    message.text,
+    result.userMessage.id,
+    attachedFiles.map((file) => {
+      const fileName = attachmentNames.get(file.object.id);
+      if (!fileName) throw new DataAccessError('authorization_denied');
+      return { object: file.object, fileName };
+    }),
+  );
   try {
     const memories = await recallForReply(
       context,
