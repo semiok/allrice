@@ -1045,7 +1045,10 @@ describe('Codex hosted search Tool Broker integration', () => {
           });
           expect(publishWorkbenchArtifact).toHaveBeenCalledOnce();
         }
-        expect(quality).not.toHaveBeenCalled();
+        expect(quality).toHaveBeenCalledOnce();
+        expect(quality).toHaveBeenCalledWith(generated.bytes, 'xlsx', {
+          cloudQualityAllowed: false,
+        });
       } finally {
         generate.mockRestore();
         quality.mockRestore();

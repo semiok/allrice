@@ -14,7 +14,6 @@ import {
   runtimeContractEqual,
   WorkbenchCursorSchema,
   ArtifactSourceFileSchema,
-  OfficeDeliveryReceiptSchema,
   type ArtifactSourceFile,
   type OfficeDeliveryReceipt,
   type WorkbenchArtifact,
@@ -40,6 +39,10 @@ import {
   assertToolBrokerSourceFile,
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import {
+  parseOfficeDeliveryReceiptForObject,
+  readBoundOfficeDeliveryReceipt,
+} from './office-delivery-receipt.ts';
 import {
   requireTenantInspectionScope,
   type TenantManagementTarget,
@@ -410,9 +413,29 @@ export async function inspectCompanyDeliverable(
         r.metadata?.objectId === artifact.object.id &&
         r.metadata?.checksum === artifact.object.checksum,
     );
-    const office = OfficeDeliveryReceiptSchema.safeParse(
-      receiptRow?.metadata?.receipt,
-    );
+    const output = {
+      objectId: artifact.object.id,
+      checksum: artifact.object.checksum,
+      mediaType: artifact.object.mediaType,
+      format: artifact.version.format,
+      runId: artifact.provenance.runId,
+    };
+    const office =
+      artifact.provenance.kind === 'legacy_deliverable' && !output.runId
+        ? (() => {
+            // Read-only historical display already binds the owner, version,
+            // object and checksum above. Preserve its original receipt without
+            // inventing a Run. This is never final-delivery authority evidence.
+            try {
+              return parseOfficeDeliveryReceiptForObject(
+                receiptRow?.metadata?.receipt,
+                output,
+              );
+            } catch {
+              return null;
+            }
+          })()
+        : readBoundOfficeDeliveryReceipt(receiptRow?.metadata, output);
     // This is the exporter source fact for this exact output, not a claim
     // inferred from task text or a later version of the company directory.
     const [companyTemplate] = await tx`
@@ -435,7 +458,7 @@ export async function inspectCompanyDeliverable(
         checksum: artifact.object.checksum,
         sourceFile: source.success ? source.data : null,
         ...(companyTemplate ? { companyTemplate } : {}),
-        office: office.success ? office.data : null,
+        office,
       },
     };
   });
@@ -801,6 +824,13 @@ export async function publishWorkbenchArtifact(
     workspaceId: context.workspaceId,
   };
   const checksum = hash(input.bytes),
+    officeReceipt = input.officeReceipt
+      ? parseOfficeDeliveryReceiptForObject(input.officeReceipt, {
+          format: input.format,
+          checksum,
+          mediaType: input.mediaType,
+        })
+      : undefined,
     requestDigest = runtimePolicyDigest({
       sessionId: input.sessionId,
       kind: input.kind,
@@ -926,7 +956,26 @@ export async function publishWorkbenchArtifact(
           existing.version_id,
         );
         if (projectParent) await development!.admit(tx);
-        return cached;
+        if (!input.officeReceipt) return cached;
+        const [recorded] = await tx`select metadata from allrice_audit_events
+          where organization_id=${context.organizationId} and workspace_id=${context.workspaceId!}
+            and actor_id=${owner} and action='artifact.office-quality'
+            and resource_type='deliverable_version' and resource_id=${cached.id}
+            and metadata->>'objectId'=${cached.object.id}
+            and metadata->>'checksum'=${cached.object.checksum}
+            and metadata->>'runId'=${publishingRunId}
+          order by occurred_at desc,id desc limit 1`;
+        return {
+          ...cached,
+          officeReceiptReplayed: true,
+          officeReceipt: readBoundOfficeDeliveryReceipt(recorded?.metadata, {
+            objectId: cached.object.id,
+            checksum: cached.object.checksum,
+            mediaType: cached.object.mediaType,
+            format: cached.version.format,
+            runId: publishingRunId,
+          }),
+        };
       }
       if (projectParent && input.parentObjectId)
         await assertProjectOutputParent(
@@ -1039,9 +1088,7 @@ export async function publishWorkbenchArtifact(
           fileName: input.fileName,
           format: input.format,
           object: created,
-          ...(input.officeReceipt
-            ? { officeReceipt: input.officeReceipt }
-            : {}),
+          ...(officeReceipt ? { officeReceipt } : {}),
           ...(source ? { sourceFile: source.source } : {}),
           ...(parentObjectId ? { parentObjectId } : {}),
           ...(input.changeSummary
@@ -1106,7 +1153,9 @@ export async function publishWorkbenchArtifact(
         );
       await development?.registered?.(tx, artifact.id);
       if (development?.registered) await development.admit(tx);
-      return artifact;
+      return officeReceipt
+        ? { ...artifact, officeReceipt, officeReceiptReplayed: false }
+        : artifact;
     });
   } catch (error) {
     let cleanupConfirmed = !created;
