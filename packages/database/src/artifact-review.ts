@@ -146,6 +146,7 @@ interface ArtifactRow {
   format: DeliveryFormat;
   change_summary: string | null;
   created_at: Date;
+  cursor_created_at: string;
   object_key: string;
   checksum: string;
   media_type: string;
@@ -216,7 +217,8 @@ async function artifactRows(
 ) {
   return db<
     ArtifactRow[]
-  >`select v.*,parent.object_id as parent_object_id,o.object_key,o.checksum,o.media_type,o.size_bytes,o.retention_until,o.deleted_at,o.immutable,
+  >`select v.*,to_char(v.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_created_at,
+    parent.object_id as parent_object_id,o.object_key,o.checksum,o.media_type,o.size_bytes,o.retention_until,o.deleted_at,o.immutable,
     a.kind,a.provenance,a.execution,latest.id as latest_version_id
     from allrice_deliverable_versions v
     join allrice_storage_objects o on o.id=v.object_id and o.organization_id=v.organization_id and o.workspace_id=v.workspace_id and o.owner_id=v.owner_id
@@ -237,7 +239,9 @@ async function artifactRows(
         and coalesce(v.change_summary, '') like 'Tool result %; Run %; call %'
         and v.file_name = 'tool-result-' || replace(replace(split_part(v.change_summary, ';', 1), 'Tool result ', ''), '.', '-') || '-' || v.object_id::text || '.txt'
       ))
-      and (${before?.createdAt ?? null}::timestamptz is null or (v.created_at,v.id)<(${before?.createdAt ?? null}::timestamptz,${before?.id ?? null}::uuid))
+      -- Bind text before casting: the driver's timestamptz serializer uses
+      -- JavaScript Date and would truncate the cursor's microseconds again.
+      and (${before?.createdAt ?? null}::text::timestamptz is null or (v.created_at,v.id)<(${before?.createdAt ?? null}::text::timestamptz,${before?.id ?? null}::uuid))
     order by v.created_at desc,v.id desc limit ${limit}`;
 }
 export async function listWorkbenchArtifacts(
@@ -263,13 +267,13 @@ export async function listWorkbenchArtifacts(
       null,
       false,
     );
-    const page = rows.slice(0, 50).map(mapArtifact),
-      last = page.at(-1);
+    const pageRows = rows.slice(0, 50),
+      last = pageRows.at(-1);
     return {
-      artifacts: page,
+      artifacts: pageRows.map(mapArtifact),
       nextCursor:
         rows.length > 50 && last
-          ? { createdAt: last.version.createdAt, id: last.id }
+          ? { createdAt: last.cursor_created_at, id: last.id }
           : null,
     };
   });
