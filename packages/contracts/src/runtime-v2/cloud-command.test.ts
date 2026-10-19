@@ -31,6 +31,42 @@ const node = {
 const png = { path: 'chart.png', fileName: '中文图表.png', format: 'png' };
 
 describe('approved cloud language and binary declarations', () => {
+  it('accepts optional parent identity without changing historical output bytes or accepting caller-chosen versions', () => {
+    const parentObjectId = '706bf4d8-785f-41dc-829e-b38197b61642';
+    for (const output of [
+      { path: 'result.csv', fileName: 'result.csv', format: 'csv' },
+      { path: 'result.json', fileName: 'result.json', format: 'json' },
+      { path: 'result.txt', fileName: 'result.txt', format: 'txt' },
+    ]) {
+      const raw = {
+        ...node,
+        arguments: { ...node.arguments, outputs: [output] },
+      };
+      expect(JSON.stringify(CloudCommandSchema.parse(raw))).toBe(
+        JSON.stringify(raw),
+      );
+      expect(
+        CloudCommandInputSchema.parse({
+          script: '0',
+          outputs: [{ ...output, parentObjectId }],
+        }).outputs[0],
+      ).toEqual({ ...output, parentObjectId });
+      for (const extra of [
+        { parentObjectId: 'latest' },
+        { seriesId: parentObjectId },
+        { parentVersionId: parentObjectId },
+        { version: 2 },
+      ]) {
+        expect(
+          CloudCommandInputSchema.safeParse({
+            script: '0',
+            outputs: [{ ...output, ...extra }],
+          }).success,
+        ).toBe(false);
+      }
+    }
+  });
+
   it('preserves exact legacy frozen Node payloads without adding a language default', () => {
     expect(JSON.stringify(CloudCommandSchema.parse(node))).toBe(
       JSON.stringify(node),

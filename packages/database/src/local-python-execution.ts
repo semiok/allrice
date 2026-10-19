@@ -57,7 +57,10 @@ import {
   createGovernedBridgePolicyOptions,
 } from './runtime-governed-bridge.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
-import { registerToolBrokerExport } from './execution/tool-broker.ts';
+import {
+  assertToolBrokerExportParent,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import { validatePngArtifact } from '@allrice/storage';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
@@ -408,6 +411,35 @@ export function localPythonCommandBinding(payload: RuntimeLocalPythonPayload) {
   };
 }
 
+/** Read only the immutable original call for this exact delegated operation. */
+async function readLocalPythonDelegation(
+  tx: TransactionSql,
+  device: BridgeDevice,
+  binding: RuntimeActionBinding,
+  payload: RuntimeLocalPythonPayload,
+) {
+  const a = payload.arguments;
+  const [origin] = await tx<
+    { original_arguments: Record<string, unknown>; request_digest: string }[]
+  >`select original_arguments,request_digest
+    from allrice_local_python_delegations where operation_id=${binding.attempt.operationId} and run_id=${binding.task.runId}
+      and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and device_id=${device.id}
+      and call_id=${a.origin.callId} and tool_name=${a.origin.toolName} and purpose=${a.purpose}`;
+  if (
+    !origin ||
+    digest(origin.original_arguments) !== a.origin.argumentsDigest ||
+    origin.request_digest !==
+      digest({
+        toolName: a.origin.toolName,
+        arguments: origin.original_arguments,
+        purpose: a.purpose,
+      }) ||
+    !runtimeContractEqual(binding.command, localPythonCommandBinding(payload))
+  )
+    throw new RuntimePolicyError('bridge_authority_changed');
+  return origin;
+}
+
 /** Used again by governed dispatch/heartbeat, not only Worker selection. */
 export async function assertLocalPythonDelegation(
   tx: TransactionSql,
@@ -423,25 +455,8 @@ export async function assertLocalPythonDelegation(
       a.origin.toolName,
       a.inputs.length > 0,
     );
-  const [origin] = await tx<
-    { original_arguments: Record<string, unknown>; request_digest: string }[]
-  >`select original_arguments,request_digest
-    from allrice_local_python_delegations where operation_id=${binding.attempt.operationId} and run_id=${binding.task.runId}
-      and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and owner_id=${device.ownerId} and device_id=${device.id}
-      and call_id=${a.origin.callId} and tool_name=${a.origin.toolName} and purpose=${a.purpose}`;
-  if (
-    !f ||
-    !origin ||
-    digest(origin.original_arguments) !== a.origin.argumentsDigest ||
-    origin.request_digest !==
-      digest({
-        toolName: a.origin.toolName,
-        arguments: origin.original_arguments,
-        purpose: a.purpose,
-      }) ||
-    !runtimeContractEqual(binding.command, localPythonCommandBinding(payload))
-  )
-    throw new RuntimePolicyError('bridge_authority_changed');
+  if (!f) throw new RuntimePolicyError('bridge_authority_changed');
+  const origin = await readLocalPythonDelegation(tx, device, binding, payload);
   const [version] = await tx<{ id: string; manifest: unknown }[]>`
     select id,manifest from allrice_employee_versions where id=${f.employee.versionId} and employee_id=${f.employee.id}
     and organization_id=${device.organizationId} and workspace_id=${device.workspaceId} and config_checksum=${f.employee.definitionChecksum} for share`;
@@ -538,7 +553,11 @@ export async function assertLocalPythonDelegation(
         })),
       ) ||
       !runtimeContractEqual(
-        normalized.outputs,
+        normalized.outputs.map(({ path, fileName, format }) => ({
+          path,
+          fileName,
+          format,
+        })),
         a.outputs.map(({ path, fileName, format }) => ({
           path,
           fileName,
@@ -646,6 +665,29 @@ export async function createLocalPythonOperation(
   const grant = await readManagedPythonRuntimeGrant(device, db);
   if (!row || !grant || grant.revokedAt)
     throw new RuntimePolicyError('bridge_authority_changed');
+  if (payload.arguments.purpose === 'python_charts') {
+    const original = PythonExecuteArgsSchema.parse(input.arguments);
+    for (const output of original.outputs) {
+      if (!output.parentObjectId) continue;
+      await assertToolBrokerExportParent(
+        {
+          context: ctx,
+          sessionId: row.session_id,
+          parentObjectId: output.parentObjectId,
+          format:
+            output.format === 'png'
+              ? 'png'
+              : output.format === 'json'
+                ? 'json'
+                : output.format === 'txt' &&
+                    localFileMediaType(output.fileName) === 'text/markdown'
+                  ? 'markdown'
+                  : 'text',
+        },
+        db,
+      );
+    }
+  }
   const key = `managed-python:${ctx.runId}:${payload.arguments.origin.callId}`,
     operationId = selection.operationId;
   const [origin] = await db<
@@ -1288,12 +1330,23 @@ export async function publishLocalPythonArtifacts(
       phase: 'heartbeat',
       now: new Date(),
     });
+    const origin = await readLocalPythonDelegation(
+      tx,
+      BridgeDeviceSchema.parse(d.device),
+      binding,
+      current.payload,
+    );
+    const original = PythonExecuteArgsSchema.parse(origin.original_arguments);
+    const originalOutputs = new Map(original.outputs.map((o) => [o.path, o]));
     const published: {
       object: StorageObject;
       fileName: string;
       versionId: string;
     }[] = [];
     for (const [index, output] of current.payload.arguments.outputs.entries()) {
+      const originalOutput = originalOutputs.get(output.path);
+      if (!originalOutput)
+        throw new RuntimePolicyError('bridge_authority_changed');
       const object = verified[index]!,
         requestId = `managed-python:${input.operationId}:${output.path}`,
         requestDigest = digest({
@@ -1324,6 +1377,9 @@ export async function publishLocalPythonArtifacts(
         {
           context: ctx,
           sessionId: binding.task.chatSessionId!,
+          ...(originalOutput.parentObjectId
+            ? { parentObjectId: originalOutput.parentObjectId }
+            : {}),
           fileName: output.fileName,
           format:
             output.format === 'png'

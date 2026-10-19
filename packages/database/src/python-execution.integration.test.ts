@@ -46,7 +46,12 @@ import {
 } from './local-python-execution.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import { normalizeCloudPythonArguments } from './cloud-authority.ts';
-import { getToolBrokerFile } from './execution/tool-broker.ts';
+import { completeStorageDelete, prepareStorageDelete } from './data.ts';
+import {
+  createToolBrokerExportObject,
+  getToolBrokerFile,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import * as client from './core/client.ts';
 import { prepareTenantCloudGrants } from './employees/development-cloud-grants.ts';
 // Authority/lifecycle tests use a deterministic reputation port; the checker
@@ -64,6 +69,10 @@ const sha = (bytes: Uint8Array) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+  'base64',
+);
+const revisedPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
   'base64',
 );
 const pngProof = {
@@ -114,8 +123,13 @@ suite(
     afterAll(async () => {
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
-      await isolated?.close();
+      if (isolated)
+        console.info(
+          'Canonical Python fixture cleanup',
+          await isolated.close(),
+        );
       if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
+      console.info('Canonical Python output storage cleanup', { storageRoot });
     });
     const fixture = (
       options: Parameters<typeof createCloudExecutionFixture>[2] = {
@@ -220,6 +234,7 @@ suite(
         path: string;
         fileName: string;
         format: 'png' | 'json' | 'txt' | 'csv';
+        parentObjectId?: string;
       }[] = [],
     ) => ({
       script: 'synthetic captured outcome; never executed',
@@ -230,8 +245,9 @@ suite(
       f: F,
       a: Record<string, unknown>,
       outputMediaTypes: string[] = [],
+      existingDevice?: Awaited<ReturnType<typeof device>>,
     ) => {
-      const d = await device(f);
+      const d = existingDevice ?? (await device(f));
       if (a.execution)
         await reportLocalPythonProfile(
           d.device,
@@ -273,13 +289,17 @@ suite(
             sizeBytes: f.object.sizeBytes,
             mediaType: f.object.mediaType,
           })),
-          outputs: normalized.outputs.map((o, index) => ({
-            ...o,
-            mediaType: outputMediaTypes[index] ?? media[o.format],
-            objectId: cloudStableId(
-              `managed-python-output:${f.run}:${r.callId}:${index}`,
-            ),
-          })),
+          outputs: normalized.outputs.map(
+            ({ path, fileName, format }, index) => ({
+              path,
+              fileName,
+              format,
+              mediaType: outputMediaTypes[index] ?? media[format],
+              objectId: cloudStableId(
+                `managed-python-output:${f.run}:${r.callId}:${index}`,
+              ),
+            }),
+          ),
           profileVersion: 1,
           imageId: release.imageId,
           architecture: release.architecture,
@@ -339,7 +359,9 @@ suite(
             sizeBytes: bytes.length,
             mediaType: out.mediaType,
             validation: out.format === 'png' ? 'trusted_png' : 'utf8',
-            ...(out.format === 'png' ? { png: pngProof } : {}),
+            ...(out.format === 'png'
+              ? { png: { ...pngProof, checksum: sha(bytes) } }
+              : {}),
             ...extra,
           },
           stream: new Blob([Uint8Array.from(bytes)]).stream(),
@@ -385,7 +407,57 @@ suite(
         });
         return result;
       };
-      return { ...d, r, p, created, ledger, identity, upload, succeed };
+      return {
+        ...d,
+        r,
+        p,
+        selection,
+        created,
+        ledger,
+        identity,
+        upload,
+        succeed,
+      };
+    };
+    const seedOutputParent = async (
+      f: F,
+      options: {
+        sessionId?: string;
+        ownerId?: string;
+        format?: 'png' | 'text';
+        immutable?: boolean;
+      } = {},
+    ) => {
+      const format = options.format ?? 'text',
+        bytes = format === 'png' ? png : Buffer.from('amountCents\n100\n'),
+        context = {
+          ...f.execution,
+          policySnapshot: {
+            ...f.execution.policySnapshot,
+            subjectId: options.ownerId ?? f.user,
+          },
+        },
+        object = {
+          ...createToolBrokerExportObject({
+            context,
+            mediaType: format === 'png' ? 'image/png' : 'text/csv',
+            sizeBytes: bytes.length,
+            checksum: sha(bytes),
+          }),
+          immutable: options.immutable ?? true,
+        };
+      await f.storage.put(object, new Blob([bytes]).stream());
+      const version = await registerToolBrokerExport(
+        {
+          context,
+          sessionId: options.sessionId ?? f.session,
+          fileName: format === 'png' ? 'chart.png' : 'metrics.csv',
+          format,
+          object,
+        },
+        isolated.db,
+      );
+      return { object, version };
     };
 
     it('streams both original input sizes and proves exact-call operation absence without changing file authority', async () => {
@@ -1266,6 +1338,264 @@ suite(
         getToolBrokerFile(other.execution, artifact.objectId),
       ).rejects.toThrow();
     });
+
+    it.each(['png', 'csv'] as const)(
+      'continues a local %s output from its frozen parent without copying ready bytes or changing the old version',
+      async (format) => {
+        const f = await fixture(),
+          oldBytes = format === 'png' ? png : Buffer.from('amountCents\n100\n'),
+          newBytes =
+            format === 'png' ? revisedPng : Buffer.from('amountCents\n250\n'),
+          output = {
+            path: `metrics.${format}`,
+            fileName: `指标 v1.${format}`,
+            format,
+          },
+          first = await running(f, args([output]));
+        await first.succeed([await first.upload(0, oldBytes)]);
+        const [v1] = await publishLocalPythonArtifacts(
+          { context: f.execution, operationId: first.identity.operationId },
+          f.storage,
+          isolated.db,
+        );
+        const revisedArgs = args([
+          {
+            ...output,
+            fileName: `指标 v2.${format}`,
+            parentObjectId: v1!.object.id,
+          },
+        ]);
+        const second = await running(f, revisedArgs, [], first);
+        expect(second.p.arguments.outputs[0]).not.toHaveProperty(
+          'parentObjectId',
+        );
+        expect(second.p.arguments.inputs).toEqual([]);
+        expect(second.created.snapshot.binding.dataScope).not.toContainEqual(
+          expect.objectContaining({
+            content: expect.objectContaining({ id: v1!.object.id }),
+          }),
+        );
+        const [frozen] =
+          await isolated.db`select original_arguments from allrice_local_python_delegations where operation_id=${second.identity.operationId}`;
+        expect(frozen!.original_arguments.outputs).toEqual(revisedArgs.outputs);
+        const uploaded = await second.upload(0, newBytes);
+        await second.succeed([uploaded]);
+        const [usage] =
+          await isolated.db`select sum(size_bytes)::bigint as bytes,count(*)::int as n from allrice_storage_objects where organization_id=${f.org} and workspace_id=${f.workspace} and state<>'deleted'`;
+        await isolated.db`insert into allrice_storage_quotas(organization_id,workspace_id,limit_bytes) values(${f.org},${f.workspace},${Number(usage!.bytes)})`;
+        const tracked: StoragePort = {
+          get: (o) => f.storage.get(o),
+          exists: (o) => f.storage.exists(o),
+          delete: (o) => f.storage.delete(o),
+          put: vi.fn(async () => {
+            throw Error('revision must reuse ready bytes');
+          }),
+        };
+        const publish = () =>
+          publishLocalPythonArtifacts(
+            { context: f.execution, operationId: second.identity.operationId },
+            tracked,
+            isolated.db,
+          );
+        const current = await publish(),
+          v2 = current[0]!;
+        expect(v2).toMatchObject({
+          fileName: `指标 v2.${format}`,
+          object: {
+            id: uploaded.objectId,
+            mediaType: format === 'png' ? 'image/png' : 'text/csv',
+            checksum: sha(newBytes),
+          },
+        });
+        expect(v2.object.id).not.toBe(v1!.object.id);
+        const [original] =
+          await isolated.db`select series_id,version,parent_version_id from allrice_deliverable_versions where id=${v1!.versionId}`;
+        expect(original).toMatchObject({ version: 1, parent_version_id: null });
+        const [revised] =
+          await isolated.db`select series_id,version,parent_version_id,file_name,format,object_id from allrice_deliverable_versions where id=${v2.versionId}`;
+        expect(revised).toMatchObject({
+          series_id: original!.series_id,
+          version: 2,
+          parent_version_id: v1!.versionId,
+          file_name: `指标 v2.${format}`,
+          format: format === 'png' ? 'png' : 'text',
+          object_id: uploaded.objectId,
+        });
+        for (const [published, bytes] of [
+          [v1!, oldBytes],
+          [v2, newBytes],
+        ] as const) {
+          const stored = Buffer.from(
+            await new Response(
+              await f.storage.get(published.object),
+            ).arrayBuffer(),
+          );
+          expect(stored).toEqual(bytes);
+          expect(sha(stored)).toBe(published.object.checksum);
+        }
+        expect(await Promise.all([publish(), publish()])).toEqual([
+          current,
+          current,
+        ]);
+        expect(tracked.put).not.toHaveBeenCalled();
+        expect(
+          await isolated.db`select id from allrice_deliverable_versions where series_id=${original!.series_id}`,
+        ).toHaveLength(2);
+        const [after] =
+          await isolated.db`select count(*)::int as n from allrice_storage_objects where organization_id=${f.org} and workspace_id=${f.workspace}`;
+        expect(after!.n).toBe(usage!.n);
+        await expect(
+          createLocalPythonOperation(
+            {
+              selection: second.selection,
+              context: f.execution,
+              payload: second.p,
+              arguments: {
+                ...revisedArgs,
+                outputs: [
+                  { ...revisedArgs.outputs[0]!, parentObjectId: v2.object.id },
+                ],
+              },
+            },
+            isolated.db,
+          ),
+        ).rejects.toThrow('idempotency_conflict');
+      },
+    );
+
+    it.each([
+      'wrong-session',
+      'other-owner',
+      'deleted',
+      'not-deliverable',
+      'wrong-format',
+    ] as const)(
+      'rejects a local %s parent before creating an operation or an unlinked replacement',
+      async (kind) => {
+        const f = await fixture();
+        let ownerId = f.user,
+          sessionId = f.session;
+        if (kind === 'other-owner') ownerId = (await fixture()).user;
+        if (kind === 'wrong-session' || kind === 'other-owner') {
+          sessionId = randomUUID();
+          await isolated.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+            select ${sessionId},organization_id,workspace_id,${ownerId},'Parent isolation',employee_assignment_id,employee_version_id from allrice_chat_sessions where id=${f.session}`;
+        }
+        const parent =
+          kind === 'not-deliverable'
+            ? await f.upload(Buffer.from('amountCents\n100\n'), 'text/csv')
+            : (
+                await seedOutputParent(f, {
+                  ownerId,
+                  sessionId,
+                  format: kind === 'wrong-format' ? 'png' : 'text',
+                  immutable: kind !== 'deleted',
+                })
+              ).object;
+        if (kind === 'deleted') {
+          const file = await prepareStorageDelete(f.context, parent.id);
+          await f.storage.delete(file.object);
+          await completeStorageDelete(f.context, parent.id);
+        }
+        const before =
+          await isolated.db`select id from allrice_deliverable_versions where organization_id=${f.org} order by id`;
+        await expect(
+          running(
+            f,
+            args([
+              {
+                path: 'metrics.csv',
+                fileName: 'metrics-v2.csv',
+                format: 'csv',
+                parentObjectId: parent.id,
+              },
+            ]),
+          ),
+        ).rejects.toThrow();
+        expect(
+          await isolated.db`select id from allrice_deliverable_versions where organization_id=${f.org} order by id`,
+        ).toEqual(before);
+        expect(
+          await isolated.db`select id from allrice_runtime_operations where run_id=${f.run}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it('rechecks a local parent deleted after admission and retains the unpublished ready output', async () => {
+      const f = await fixture(),
+        // Existing mutable exports are deletable; do not bypass the ready
+        // immutable-object guard used by the Python v1/v2 positive cases.
+        parent = await seedOutputParent(f, { immutable: false }),
+        run = await running(
+          f,
+          args([
+            {
+              path: 'metrics.csv',
+              fileName: 'metrics-v2.csv',
+              format: 'csv',
+              parentObjectId: parent.object.id,
+            },
+          ]),
+        ),
+        bytes = Buffer.from('amountCents\n250\n'),
+        uploaded = await run.upload(0, bytes);
+      await run.succeed([uploaded]);
+      const file = await prepareStorageDelete(f.context, parent.object.id);
+      await f.storage.delete(file.object);
+      await completeStorageDelete(f.context, parent.object.id);
+      await expect(
+        publishLocalPythonArtifacts(
+          { context: f.execution, operationId: run.identity.operationId },
+          f.storage,
+          isolated.db,
+        ),
+      ).rejects.toThrow();
+      expect(
+        await isolated.db`select id from allrice_deliverable_versions where organization_id=${f.org}`,
+      ).toHaveLength(1);
+      const [object] =
+        await isolated.db`select state,checksum from allrice_storage_objects where id=${uploaded.objectId}`;
+      expect(object).toMatchObject({ state: 'ready', checksum: sha(bytes) });
+    });
+
+    it.each(['canceled', 'device-revoked'] as const)(
+      'does not publish a local revision after its stopped result is %s',
+      async (reason) => {
+        const f = await fixture(),
+          parent = await seedOutputParent(f),
+          run = await running(
+            f,
+            args([
+              {
+                path: 'metrics.csv',
+                fileName: 'metrics-v2.csv',
+                format: 'csv',
+                parentObjectId: parent.object.id,
+              },
+            ]),
+          );
+        await run.succeed([
+          await run.upload(0, Buffer.from('amountCents\n250\n')),
+        ]);
+        if (reason === 'canceled')
+          await run.ledger.cancelRoot(run.identity.scope, f.run, randomUUID());
+        else
+          await isolated.db`update allrice_bridge_devices set revoked_at=clock_timestamp() where id=${run.device.id}`;
+        await expect(
+          publishLocalPythonArtifacts(
+            { context: f.execution, operationId: run.identity.operationId },
+            f.storage,
+            isolated.db,
+          ),
+        ).rejects.toThrow();
+        expect(
+          await isolated.db`select id from allrice_deliverable_versions where series_id=${parent.version.seriesId}`,
+        ).toHaveLength(1);
+        expect(
+          await isolated.db`select version_id from allrice_workbench_artifacts where run_id=${f.run}`,
+        ).toHaveLength(0);
+      },
+    );
 
     it('publishes eight already-ready objects without copying or charging quota twice, with stable versions on replay', async () => {
       const f = await fixture({ memberRole: 'member', canonicalPython: {} }),

@@ -9,11 +9,16 @@ import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { publishCloudOperationArtifacts } from './cloud-execution.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
+import { completeStorageDelete, prepareStorageDelete } from './data.ts';
 import {
   getWorkbenchArtifact,
   listWorkbenchArtifacts,
 } from './artifact-review.ts';
-import { getToolBrokerFile } from './execution/tool-broker.ts';
+import {
+  createToolBrokerExportObject,
+  getToolBrokerFile,
+  registerToolBrokerExport,
+} from './execution/tool-broker.ts';
 import {
   CloudRunnerBackend,
   type CloudRunResult,
@@ -36,7 +41,13 @@ const png = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
   'base64',
 );
-const checksum = `sha256:${createHash('sha256').update(png).digest('hex')}`;
+const revisedPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==',
+  'base64',
+);
+const sha = (bytes: Uint8Array) =>
+  `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+const checksum = sha(png);
 const artifact: CloudRunResult['artifacts'][number] = {
   path: 'chart.png',
   contentBase64: png.toString('base64'),
@@ -85,14 +96,57 @@ suite(
     }, 60000);
     afterAll(async () => {
       try {
-        await isolated?.close();
+        if (isolated)
+          console.info('Cloud Python fixture cleanup', await isolated.close());
       } finally {
         if (storageRoot)
           await rm(storageRoot, { recursive: true, force: true });
+        console.info('Cloud Python output storage cleanup', { storageRoot });
         vi.unstubAllEnvs();
       }
     });
     const fixture = () => createCloudExecutionFixture(db, storageRoot);
+    type F = Awaited<ReturnType<typeof fixture>>;
+    const seedOutputParent = async (
+      f: F,
+      options: {
+        sessionId?: string;
+        ownerId?: string;
+        format?: 'png' | 'text';
+        immutable?: boolean;
+      } = {},
+    ) => {
+      const format = options.format ?? 'text',
+        bytes = format === 'png' ? png : Buffer.from('amountCents\n100\n'),
+        context = {
+          ...f.execution,
+          policySnapshot: {
+            ...f.execution.policySnapshot,
+            subjectId: options.ownerId ?? f.user,
+          },
+        },
+        object = {
+          ...createToolBrokerExportObject({
+            context,
+            mediaType: format === 'png' ? 'image/png' : 'text/csv',
+            sizeBytes: bytes.length,
+            checksum: sha(bytes),
+          }),
+          immutable: options.immutable ?? true,
+        };
+      await f.storage.put(object, new Blob([bytes]).stream());
+      const version = await registerToolBrokerExport(
+        {
+          context,
+          sessionId: options.sessionId ?? f.session,
+          fileName: format === 'png' ? 'chart.png' : 'metrics.csv',
+          format,
+          object,
+        },
+        db,
+      );
+      return { object, version };
+    };
 
     it.each(['deadline', 'output_limit'] as const)(
       'settles a stopped finite %s as failed with its cause, without replay',
@@ -258,6 +312,306 @@ suite(
           db,
         ),
       ).rejects.toThrow('cloud_result_unconfirmed');
+    });
+
+    it.each(['png', 'csv'] as const)(
+      'continues a cloud %s output in its original series with exact names, old bytes and idempotent publication',
+      async (format) => {
+        const f = await fixture(),
+          oldBytes = format === 'png' ? png : Buffer.from('amountCents\n100\n'),
+          newBytes =
+            format === 'png' ? revisedPng : Buffer.from('amountCents\n250\n'),
+          output = {
+            path: `metrics.${format}`,
+            fileName: `指标 v1.${format}`,
+            format,
+          };
+        const capture = (
+          bytes: Buffer,
+        ): CloudRunResult['artifacts'][number] => ({
+          path: output.path,
+          contentBase64: bytes.toString('base64'),
+          ...(format === 'png'
+            ? { png: { ...artifact.png!, checksum: sha(bytes) } }
+            : {}),
+        });
+        const first = await f.create(`revision-v1-${format}`, {
+          ...args,
+          outputs: [output],
+        });
+        await f.approve(first);
+        const firstBackend = new CapturedBackend([capture(oldBytes)]),
+          firstResult = await runCloudCommandOperation(first, {
+            storage: f.storage,
+            backend: firstBackend,
+            database: db,
+          }),
+          v1 = firstResult.artifacts[0]!;
+        expect(firstResult.status).toBe('succeeded');
+        const revisedArgs = {
+          ...args,
+          outputs: [
+            {
+              ...output,
+              fileName: `指标 v2.${format}`,
+              parentObjectId: v1.objectId,
+            },
+          ],
+        };
+        const second = await f.create(`revision-v2-${format}`, revisedArgs);
+        expect(second.payload.arguments.inputs).toEqual([]);
+        expect(second.snapshot.binding.dataScope).not.toContainEqual(
+          expect.objectContaining({
+            content: expect.objectContaining({ id: v1.objectId }),
+          }),
+        );
+        await f.approve(second);
+        const backend = new CapturedBackend([capture(newBytes)]),
+          options = { storage: f.storage, backend, database: db },
+          current = await runCloudCommandOperation(second, options),
+          v2 = current.artifacts[0]!;
+        expect(current.status).toBe('succeeded');
+        expect(current.artifacts).toHaveLength(1);
+        expect(v2).toMatchObject({
+          fileName: `指标 v2.${format}`,
+          checksum: sha(newBytes),
+        });
+        expect(v2.objectId).not.toBe(v1.objectId);
+        const [original] =
+          await db`select series_id,version,parent_version_id from allrice_deliverable_versions where id=${v1.versionId}`;
+        expect(original).toMatchObject({ version: 1, parent_version_id: null });
+        const [revised] =
+          await db`select series_id,version,parent_version_id,file_name,format,object_id from allrice_deliverable_versions where id=${v2.versionId}`;
+        expect(revised).toMatchObject({
+          series_id: original!.series_id,
+          version: 2,
+          parent_version_id: v1.versionId,
+          file_name: `指标 v2.${format}`,
+          format: format === 'png' ? 'png' : 'text',
+          object_id: v2.objectId,
+        });
+        for (const [published, bytes] of [
+          [v1, oldBytes],
+          [v2, newBytes],
+        ] as const) {
+          const { object } = await getToolBrokerFile(
+            f.execution,
+            published.objectId,
+          );
+          expect(object).toMatchObject({
+            immutable: true,
+            mediaType: format === 'png' ? 'image/png' : 'text/csv',
+            checksum: sha(bytes),
+          });
+          const stored = Buffer.from(
+            await new Response(await f.storage.get(object)).arrayBuffer(),
+          );
+          expect(stored).toEqual(bytes);
+          expect(sha(stored)).toBe(published.checksum);
+        }
+        expect(
+          (await runCloudCommandOperation(second, options)).artifacts,
+        ).toEqual(current.artifacts);
+        expect(backend.executions).toBe(1);
+        expect(firstBackend.executions).toBe(1);
+        expect(
+          await db`select id from allrice_deliverable_versions where series_id=${original!.series_id}`,
+        ).toHaveLength(2);
+        await expect(
+          f.create(`revision-v2-${format}`, {
+            ...revisedArgs,
+            outputs: [
+              { ...revisedArgs.outputs[0]!, parentObjectId: v2.objectId },
+            ],
+          }),
+        ).rejects.toThrow('idempotency_conflict');
+      },
+    );
+
+    it.each([
+      'wrong-session',
+      'other-owner',
+      'deleted',
+      'not-deliverable',
+      'wrong-format',
+    ] as const)(
+      'rejects a cloud %s parent before creating an operation or an unlinked replacement',
+      async (kind) => {
+        const f = await fixture();
+        let ownerId = f.user,
+          sessionId = f.session;
+        if (kind === 'other-owner') ownerId = (await fixture()).user;
+        if (kind === 'wrong-session' || kind === 'other-owner') {
+          sessionId = randomUUID();
+          await db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_version_id)
+            select ${sessionId},organization_id,workspace_id,${ownerId},'Parent isolation',employee_assignment_id,employee_version_id from allrice_chat_sessions where id=${f.session}`;
+        }
+        const parent =
+          kind === 'not-deliverable'
+            ? await f.upload(Buffer.from('amountCents\n100\n'), 'text/csv')
+            : (
+                await seedOutputParent(f, {
+                  ownerId,
+                  sessionId,
+                  format: kind === 'wrong-format' ? 'png' : 'text',
+                  immutable: kind !== 'deleted',
+                })
+              ).object;
+        if (kind === 'deleted') {
+          const file = await prepareStorageDelete(f.context, parent.id);
+          await f.storage.delete(file.object);
+          await completeStorageDelete(f.context, parent.id);
+        }
+        const before =
+          await db`select id from allrice_deliverable_versions where organization_id=${f.org} order by id`;
+        await expect(
+          f.create(`invalid-parent-${kind}`, {
+            ...args,
+            outputs: [
+              {
+                path: 'metrics.csv',
+                fileName: 'metrics-v2.csv',
+                format: 'csv',
+                parentObjectId: parent.id,
+              },
+            ],
+          }),
+        ).rejects.toThrow();
+        expect(
+          await db`select id from allrice_deliverable_versions where organization_id=${f.org} order by id`,
+        ).toEqual(before);
+        expect(
+          await db`select id from allrice_runtime_operations where run_id=${f.run}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it.each(['parent-deleted', 'grant-revoked'] as const)(
+      'does not publish a cloud revision when %s after the captured compute stopped',
+      async (reason) => {
+        const f = await fixture(),
+          // Deletion races use a legacy mutable export, preserving the normal
+          // immutable-object guard for captured Python outputs.
+          parent = await seedOutputParent(f, {
+            immutable: reason !== 'parent-deleted',
+          }),
+          created = await f.create(`late-${reason}`, {
+            ...args,
+            outputs: [
+              {
+                path: 'metrics.csv',
+                fileName: 'metrics-v2.csv',
+                format: 'csv',
+                parentObjectId: parent.object.id,
+              },
+            ],
+          });
+        await f.approve(created);
+        const backend = new CapturedBackend([
+            {
+              path: 'metrics.csv',
+              contentBase64:
+                Buffer.from('amountCents\n250\n').toString('base64'),
+            },
+          ]),
+          execute = backend.execute.bind(backend);
+        vi.spyOn(backend, 'execute').mockImplementationOnce(async () => {
+          const stopped = await execute();
+          if (reason === 'parent-deleted') {
+            const file = await prepareStorageDelete(
+              f.context,
+              parent.object.id,
+            );
+            await f.storage.delete(file.object);
+            await completeStorageDelete(f.context, parent.object.id);
+          } else
+            await db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
+          return stopped;
+        });
+        await expect(
+          runCloudCommandOperation(created, {
+            storage: f.storage,
+            backend,
+            database: db,
+          }),
+        ).rejects.toThrow();
+        expect(backend.executions).toBe(1);
+        expect(
+          await db`select id from allrice_deliverable_versions where organization_id=${f.org}`,
+        ).toHaveLength(1);
+        expect(
+          await db`select version_id from allrice_workbench_artifacts where run_id=${f.run}`,
+        ).toHaveLength(0);
+      },
+    );
+
+    it('rejects a changed parent against the recorded payload before returning a cached publication, and fences root cancellation', async () => {
+      const f = await fixture(),
+        parent = await seedOutputParent(f),
+        otherParent = await seedOutputParent(f),
+        created = await f.create('cached-lineage', {
+          ...args,
+          outputs: [
+            {
+              path: 'metrics.csv',
+              fileName: 'metrics-v2.csv',
+              format: 'csv',
+              parentObjectId: parent.object.id,
+            },
+          ],
+        });
+      await f.approve(created);
+      const backend = new CapturedBackend([
+        {
+          path: 'metrics.csv',
+          contentBase64: Buffer.from('amountCents\n250\n').toString('base64'),
+        },
+      ]);
+      const result = await runCloudCommandOperation(created, {
+        storage: f.storage,
+        backend,
+        database: db,
+      });
+      expect(result.status).toBe('succeeded');
+      if ('kind' in created.payload) throw Error('command payload required');
+      const payload = {
+        ...created.payload,
+        arguments: {
+          ...created.payload.arguments,
+          outputs: created.payload.arguments.outputs.map((output) => ({
+            ...output,
+            parentObjectId: otherParent.object.id,
+          })),
+        },
+      };
+      const publish = (candidate = created.payload) =>
+        publishCloudOperationArtifacts(
+          {
+            context: f.execution,
+            binding: created.snapshot.binding,
+            payload: candidate,
+            artifacts: backend.artifacts,
+          },
+          f.storage,
+          db,
+        );
+      await expect(publish(payload)).rejects.toThrow('cloud_binding_changed');
+      const cached = await publish();
+      expect(cached.map((a) => a.versionId)).toEqual(
+        result.artifacts.map((a) => a.versionId),
+      );
+      expect(
+        await db`select id from allrice_deliverable_versions where organization_id=${f.org}`,
+      ).toHaveLength(3);
+      await created.ledger.cancelRoot(
+        created.snapshot.binding.task.scope,
+        f.run,
+        randomUUID(),
+      );
+      await expect(publish()).rejects.toThrow('cloud_publication_revoked');
+      expect(
+        await db`select id from allrice_deliverable_versions where organization_id=${f.org}`,
+      ).toHaveLength(3);
     });
 
     it('delivers a Python Markdown report directly, preserving bytes, other formats and immutable replay', async () => {

@@ -195,7 +195,7 @@ export const riceToolDefinitions = [
   {
     name: 'python.execute',
     description:
-      '执行 Python 数据计算与中文图表，默认优先已就绪的电脑 Bridge，缺能力或离线时由云端补位。location 可选 auto/local/cloud；本地准备中或忙碌时等待，explicit local、本地限定输入及 unknown 结果不得改云端重跑。省略 language 表示 Python，固定无网络环境内读取精确 input 文件并生成已声明 output 文件，可无文件只返回计算结果。PNG 用可信 Pillow 检查后进入原成果预览、下载与版本；该原图可作为统一 Office Skill 的输入。不安装依赖、不传镜像或宿主路径。Excel 声明行列数不等于实际数据范围；先核实非空范围，再分批读取，禁止遍历整片空白区域。只打印简短摘要和样本，完整表头和数据写入声明的成果文件。',
+      '执行 Python 数据计算与中文图表，默认优先已就绪的电脑 Bridge，缺能力或离线时由云端补位。location 可选 auto/local/cloud；本地准备中或忙碌时等待，explicit local、本地限定输入及 unknown 结果不得改云端重跑。省略 language 表示 Python，固定无网络环境内读取精确 input 文件并生成已声明 output 文件，可无文件只返回计算结果。PNG 用可信 Pillow 检查后进入原成果预览、下载与版本；该原图可作为统一 Office Skill 的输入。更新已有 PNG/CSV 成果时，在对应 outputs 条目中将原成果的 objectId 填为 parentObjectId，续接同一成果版本，fileName 和 format 按实际文件原样保留。不安装依赖、不传镜像或宿主路径。Excel 声明行列数不等于实际数据范围；先核实非空范围，再分批读取，禁止遍历整片空白区域。只打印简短摘要和样本，完整表头和数据写入声明的成果文件。',
     inputSchema: z.toJSONSchema(PythonExecuteArgsSchema, {
       unrepresentable: 'any',
     }),
@@ -203,7 +203,7 @@ export const riceToolDefinitions = [
   {
     name: 'cloud.process.execute',
     description:
-      '提交后按成员工作方式自动执行或请求确认，在隔离云端运行脚本。不传 language 时保持 Node 22；language:"python" 使用固定 Python 3.11、Matplotlib、pandas、openpyxl、Pillow、Noto CJK 字体和 Agg，可读取 input/ 下的已授权 CSV/XLSX 数据并将中文图表保存到 output/ 下。script 与 frozenScript 二选一；frozenScript:{skill,path} 保持当前 Run 冻结的 Node 脚本原始字节。只读取显式选定的已上传文件，不操作客户端文件；默认不联网。需要联网时可传 network:{mode:"controlled_https",origins:["https://精确域名"]} 请求指定公网 HTTPS 目的地，由后台自动检查并放行；不要让用户填写网址或配置联网设置，原有任务与输入权限仍生效。拒绝时不得改目的地或改用其他工具绕过。使用标准 HTTPS 代理环境；unknown 不自动重跑。平台启用新执行协议时，可用 execution:{version:1,kind:"compute"|"install"|"build"} 申请有限续期；初始预算和累计上限由服务端冻结，续期不重置起点。不支持时保留旧限制并明确报告，禁止反复重发来绕过上限。可交付 JSON/CSV/TXT，Python 还可声明 format:"png"、.png path/fileName，平台完整检查后返回真实 PNG 的 objectId/checksum/versionId，供原生成果预览下载或同一个 Office Skill 嵌入 Word/PPT。缺失数据应显式处理，不伪造数值。执行前显示精确脚本、输入、输出和联网范围。',
+      '提交后按成员工作方式自动执行或请求确认，在隔离云端运行脚本。不传 language 时保持 Node 22；language:"python" 使用固定 Python 3.11、Matplotlib、pandas、openpyxl、Pillow、Noto CJK 字体和 Agg，可读取 input/ 下的已授权 CSV/XLSX 数据并将中文图表保存到 output/ 下。script 与 frozenScript 二选一；frozenScript:{skill,path} 保持当前 Run 冻结的 Node 脚本原始字节。只读取显式选定的已上传文件，不操作客户端文件；默认不联网。需要联网时可传 network:{mode:"controlled_https",origins:["https://精确域名"]} 请求指定公网 HTTPS 目的地，由后台自动检查并放行；不要让用户填写网址或配置联网设置，原有任务与输入权限仍生效。拒绝时不得改目的地或改用其他工具绕过。使用标准 HTTPS 代理环境；unknown 不自动重跑。平台启用新执行协议时，可用 execution:{version:1,kind:"compute"|"install"|"build"} 申请有限续期；初始预算和累计上限由服务端冻结，续期不重置起点。不支持时保留旧限制并明确报告，禁止反复重发来绕过上限。可交付 JSON/CSV/TXT，Python 还可声明 format:"png"、.png path/fileName，平台完整检查后返回真实 PNG 的 objectId/checksum/versionId，供原生成果预览下载或同一个 Office Skill 嵌入 Word/PPT。更新已有 PNG/CSV 成果时，在对应 outputs 条目中将原成果的 objectId 填为 parentObjectId，续接同一成果版本，fileName 和 format 按实际文件原样保留。缺失数据应显式处理，不伪造数值。执行前显示精确脚本、输入、输出和联网范围。',
     inputSchema: z.toJSONSchema(CloudToolInputSchema, {
       unrepresentable: 'any',
     }),

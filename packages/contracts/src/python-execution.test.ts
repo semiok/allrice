@@ -14,6 +14,44 @@ import {
 
 const png = { path: '图表.png', fileName: '中文图表.png', format: 'png' };
 describe('canonical Python and frozen command compatibility', () => {
+  it('keeps optional PNG and CSV lineage on the original call while preserving execution limits and path validation', () => {
+    const parentObjectId = randomUUID();
+    const raw = {
+      script: 'print(35)',
+      outputs: [
+        { ...png, parentObjectId },
+        {
+          path: 'data.csv',
+          fileName: '数据.csv',
+          format: 'csv',
+          parentObjectId,
+        },
+      ],
+    };
+    const before = JSON.stringify(raw);
+    expect(PythonExecuteArgsSchema.parse(raw).outputs).toEqual(raw.outputs);
+    expect(JSON.stringify(raw)).toBe(before);
+    expect(
+      PythonExecuteArgsSchema.parse({ script: '0', outputs: [png] }).outputs[0],
+    ).not.toHaveProperty('parentObjectId');
+    for (const outputs of [
+      [{ ...png, parentObjectId: 'latest' }],
+      [
+        { ...png, parentObjectId },
+        { ...png, parentObjectId },
+      ],
+      [{ ...png, parentObjectId, path: '../chart.png' }],
+      Array.from({ length: 9 }, (_, index) => ({
+        ...png,
+        parentObjectId,
+        path: `${index}.png`,
+      })),
+    ])
+      expect(
+        PythonExecuteArgsSchema.safeParse({ script: '0', outputs }).success,
+      ).toBe(false);
+  });
+
   it('accepts a PNG without injecting language/location into the original call', () => {
     const raw = { script: 'print("原始调用")', outputs: [png] };
     const before = JSON.stringify(raw);

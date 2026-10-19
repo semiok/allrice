@@ -80,6 +80,7 @@ import {
 import {
   getToolBrokerFile,
   createToolBrokerExportObject,
+  assertToolBrokerExportParent,
   registerToolBrokerExport,
 } from './execution/tool-broker.ts';
 
@@ -656,6 +657,26 @@ async function createCloudOperation(
   >`select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload,e.session_id,e.employee_version_id,c.thread_generation,j.timeout_at,j.lease_token::text from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id and c.active_run_id=r.id and c.state='running' where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${owner} and r.state='running' and j.status='running' and j.worker_id=${ctx.worker.id} and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!run || run.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+  for (const output of args.outputs) {
+    if (!output.parentObjectId) continue;
+    await assertToolBrokerExportParent(
+      {
+        context: ctx,
+        sessionId: run.session_id,
+        parentObjectId: output.parentObjectId,
+        format:
+          output.format === 'png'
+            ? 'png'
+            : output.format === 'json'
+              ? 'json'
+              : output.format === 'txt' &&
+                  localFileMediaType(output.fileName) === 'text/markdown'
+                ? 'markdown'
+                : 'text',
+      },
+      database,
+    );
+  }
   if (args.execution) {
     if (process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1')
       throw new RuntimePolicyError('sandbox_execution_not_enabled');
@@ -1039,6 +1060,10 @@ export async function publishCloudOperationArtifacts(
   database: Database = getDatabase(),
 ) {
   const { context: ctx, binding, payload } = input;
+  // Authority checks validate the stored command. Bind the actual publication
+  // input too, including lineage, even when returning an existing receipt.
+  if (digest(payload) !== binding.inputDigest)
+    throw new RuntimePolicyError('cloud_binding_changed');
   return database.begin(async (tx) => {
     await lockWorkspaceStorageQuota(tx, ctx.organizationId, ctx.workspaceId);
     const [root] =
@@ -1182,6 +1207,11 @@ export async function publishCloudOperationArtifacts(
               }
             : { sessionId: binding.task.chatSessionId! }),
           fileName: output.fileName,
+          ...(!('kind' in payload) &&
+          'parentObjectId' in output &&
+          output.parentObjectId
+            ? { parentObjectId: output.parentObjectId }
+            : {}),
           format:
             output.format === 'png'
               ? 'png'

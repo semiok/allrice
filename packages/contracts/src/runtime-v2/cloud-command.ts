@@ -80,6 +80,8 @@ export const CloudCommandInputSchema = z
                 'Invalid file name',
               ),
             format: z.enum(['json', 'csv', 'txt', 'png']),
+            // Server-side lineage only; omission preserves historical call digests.
+            parentObjectId: UuidSchema.optional(),
           })
           .strict(),
       )
