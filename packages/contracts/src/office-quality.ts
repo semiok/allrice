@@ -74,3 +74,166 @@ export type OfficeFormat = z.infer<typeof OfficeFormatSchema>;
 export type OfficeFormulaResult = z.infer<typeof OfficeFormulaResultSchema>;
 export type OfficeRenderResponse = z.infer<typeof OfficeRenderResponseSchema>;
 export type OfficePreview = z.infer<typeof OfficePreviewSchema>;
+
+const savedValueCounts = z
+  .object({
+    formulaCount: z.number().int().min(0).max(10_000),
+    numericCacheCount: z.number().int().min(0).max(10_000),
+    booleanCacheCount: z.number().int().min(0).max(10_000),
+    stringCacheCount: z.number().int().min(0).max(10_000),
+    errorCacheCount: z.number().int().min(0).max(10_000),
+    missingCacheCount: z.number().int().min(0).max(10_000),
+    invalidCacheCount: z.number().int().min(0).max(10_000),
+    unsupportedCacheCount: z.number().int().min(0).max(10_000),
+    unsupportedFormulaCount: z.number().int().min(0).max(10_000),
+  })
+  .strict();
+export const XlsxSavedValueInspectionCodeSchema = z.enum([
+  'invalid_package',
+  'invalid_structure',
+  'ambiguous_cells',
+  'invalid_formula',
+  'unsupported_formula',
+  'unsupported_cache_type',
+  'limit_exceeded',
+  'inspection_failed',
+]);
+/** Final saved byte facts; cache presence does not prove freshness or correctness. */
+export const XlsxSavedValuesSchema = z
+  .discriminatedUnion('inspection', [
+    z
+      .object({
+        checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        inspection: z.literal('complete'),
+        counts: savedValueCounts,
+      })
+      .strict(),
+    z
+      .object({
+        checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        inspection: z.literal('incomplete'),
+        code: XlsxSavedValueInspectionCodeSchema,
+        observed: savedValueCounts,
+      })
+      .strict(),
+  ])
+  .superRefine((facts, ctx) => {
+    const counts =
+      facts.inspection === 'complete' ? facts.counts : facts.observed;
+    const classified =
+      counts.numericCacheCount +
+      counts.booleanCacheCount +
+      counts.stringCacheCount +
+      counts.errorCacheCount +
+      counts.missingCacheCount +
+      counts.invalidCacheCount +
+      counts.unsupportedCacheCount;
+    if (
+      classified > counts.formulaCount ||
+      counts.unsupportedFormulaCount > counts.formulaCount ||
+      (facts.inspection === 'complete' &&
+        (classified !== counts.formulaCount ||
+          counts.unsupportedCacheCount !== 0 ||
+          counts.unsupportedFormulaCount !== 0))
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Inconsistent saved value counts',
+      });
+  });
+export type XlsxSavedValues = z.infer<typeof XlsxSavedValuesSchema>;
+
+/** A finite execution stage/code, never a raw renderer exception or stderr. */
+export const OfficeQualityDiagnosticSchema = z.discriminatedUnion('stage', [
+  z
+    .object({
+      stage: z.literal('local_policy'),
+      code: z.enum(['cloud_quality_disallowed', 'invalid_renderer_url']),
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('transport'),
+      code: z.enum(['timeout', 'transport_failed']),
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('renderer'),
+      code: z.enum([
+        'file_too_large',
+        'empty_response',
+        'response_too_large',
+        'content_changed',
+        'invalid_preview_image',
+        'unsupported_formula_range',
+        'too_many_formulas',
+        'external_content',
+        'active_content',
+        'renderer_busy',
+        'request_too_large',
+        'conversion_timeout',
+        'conversion_failed',
+        'invalid_office_file',
+        'not_found',
+        'protocol_invalid',
+        'render_failed',
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('cache_patch'),
+      code: z.enum([
+        'duplicate_result',
+        'result_missing',
+        'unsupported_formula_range',
+        'formula_mismatch',
+        'unknown_result',
+        'invalid_package',
+        'cache_patch_failed',
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      stage: z.literal('cache_inspection'),
+      code: XlsxSavedValueInspectionCodeSchema,
+    })
+    .strict(),
+]);
+export type OfficeQualityDiagnostic = z.infer<
+  typeof OfficeQualityDiagnosticSchema
+>;
+
+/** A typed projection of the actual exporter receipt, never model prose. */
+export const OfficeDeliveryReceiptSchema = z
+  .object({
+    quality: z.discriminatedUnion('status', [
+      z.object({
+        status: z.literal('checked'),
+        format: z.enum(['docx', 'xlsx', 'pptx']),
+        pageCount: z.number().int().positive(),
+        formulaCount: z.number().int().nonnegative(),
+        formulaErrorCount: z.number().int().nonnegative(),
+        layout: z.literal('rendered_not_visually_reviewed'),
+      }),
+      z.object({
+        status: z.literal('unavailable'),
+        reason: z.string().max(4000),
+      }),
+    ]),
+    warnings: z.array(z.string().max(4000)).max(50),
+    // Optional with no defaults: old receipts remain uninspected/unknown.
+    savedValues: XlsxSavedValuesSchema.optional(),
+    diagnostic: OfficeQualityDiagnosticSchema.optional(),
+  })
+  .superRefine((receipt, ctx) => {
+    if (
+      receipt.savedValues &&
+      receipt.quality.status === 'checked' &&
+      receipt.quality.format !== 'xlsx'
+    )
+      ctx.addIssue({ code: 'custom', message: 'Saved values require XLSX' });
+  });
+export type OfficeDeliveryReceipt = z.infer<typeof OfficeDeliveryReceiptSchema>;

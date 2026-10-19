@@ -51,12 +51,14 @@ blocks those histories. Missing original journals continue to fail closed.
   Its existing, explicit `FROZEN_PROFILES` tuples may permit only the historical
   `dsh-0.1.1-rc.2-b150a55`/profile relationship. Source fields are optional only
   for this pre-existing slot; if supplied, both must be complete and match.
-- Slots 2–4 may retain independently approved exact artifacts from that legacy
+- Slots 2–5 may retain independently approved exact artifacts from that legacy
   generation or `dsh-0.2.1-rc.2-687f282`. The legacy frozen-profile exception is
   never granted to a current-generation artifact.
-- A fifth slot, unknown generation, duplicate ID or incomplete tuple fails.
+- A sixth slot, unknown generation, duplicate ID or incomplete tuple fails.
   If all slots are referenced, stop the next switch and report the references.
-  Do not silently remove an artifact to make room.
+  Do not silently remove an artifact to make room. The finite limit is five
+  historical readers beside one primary; another distinct promotion blocks
+  until its exact reference and capacity policy is independently reviewed.
 
 The primary `ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID` switch governs only the first
 business INSERT. Existing origins are fulfilled from their own approved ID;

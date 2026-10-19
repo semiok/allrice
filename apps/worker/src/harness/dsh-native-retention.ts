@@ -39,12 +39,12 @@ export async function installConfiguredDshNativeRetention() {
   if (
     Object.keys(process.env).some((key) => {
       const match = /^ALLRICE_DSH_RETAINED_(\d+)_/.exec(key);
-      return match && (Number(match[1]) < 1 || Number(match[1]) > 4);
+      return match && (Number(match[1]) < 1 || Number(match[1]) > 5);
     })
   )
     fail('SLOT_LIMIT');
   const entries = [];
-  for (let slot = 1; slot <= 4; slot++) {
+  for (let slot = 1; slot <= 5; slot++) {
     const prefix = `ALLRICE_DSH_RETAINED_${slot}_`;
     const root = process.env[prefix + 'ROOT']?.trim() ?? '';
     const expectedId = process.env[prefix + 'ARTIFACT_ID']?.trim() ?? '';

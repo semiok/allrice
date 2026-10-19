@@ -209,6 +209,7 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
             status: 'unavailable',
             reason: 'Fixed unavailable renderer',
           },
+          diagnostic: { stage: 'renderer', code: 'render_failed' },
           warnings: ['Fixed unavailable renderer'],
         });
       }

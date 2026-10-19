@@ -4,26 +4,11 @@ import { DeliveryFormatSchema, type DeliveryFormat } from './operations.ts';
 import { OrganizationDashboardFilterSchema } from './organization-dashboard.ts';
 import type { RunStatus } from './runs.ts';
 import { ArtifactSourceFileSchema } from './runtime-v2/artifact-review.ts';
-
-/** A typed projection of the actual exporter receipt, never model prose. */
-export const OfficeDeliveryReceiptSchema = z.object({
-  quality: z.discriminatedUnion('status', [
-    z.object({
-      status: z.literal('checked'),
-      format: z.enum(['docx', 'xlsx', 'pptx']),
-      pageCount: z.number().int().positive(),
-      formulaCount: z.number().int().nonnegative(),
-      formulaErrorCount: z.number().int().nonnegative(),
-      layout: z.literal('rendered_not_visually_reviewed'),
-    }),
-    z.object({
-      status: z.literal('unavailable'),
-      reason: z.string().max(4000),
-    }),
-  ]),
-  warnings: z.array(z.string().max(4000)).max(50),
-});
-export type OfficeDeliveryReceipt = z.infer<typeof OfficeDeliveryReceiptSchema>;
+import { OfficeDeliveryReceiptSchema } from './office-quality.ts';
+export {
+  OfficeDeliveryReceiptSchema,
+  type OfficeDeliveryReceipt,
+} from './office-quality.ts';
 export const CompanyDeliverableEvidenceSchema = z.object({
   objectId: UuidSchema,
   checksum: z.string().regex(/^sha256:[a-f0-9]{64}$/),

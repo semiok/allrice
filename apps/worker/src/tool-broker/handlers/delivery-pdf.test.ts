@@ -156,9 +156,16 @@ function setup() {
     version: 3,
     parentObjectId: null,
   });
-  mocks.quality.mockImplementation(async (bytes) => ({
+  mocks.quality.mockImplementation(async (bytes, format) => ({
     bytes,
-    quality: { status: 'checked' },
+    quality: {
+      status: 'checked',
+      format,
+      pageCount: 1,
+      formulaCount: 0,
+      formulaErrorCount: 0,
+      layout: 'rendered_not_visually_reviewed',
+    },
     warnings: [],
   }));
   return { input, args, officePdf, output };
@@ -345,7 +352,9 @@ describe('Office-to-PDF in the existing export publisher', () => {
       'docx',
       office.office,
     );
-    expect(mocks.quality).toHaveBeenCalledWith(original, 'docx');
+    expect(mocks.quality).toHaveBeenCalledWith(original, 'docx', {
+      cloudQualityAllowed: true,
+    });
     expect(mocks.preview).not.toHaveBeenCalled();
   });
 

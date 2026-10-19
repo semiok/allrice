@@ -12,7 +12,6 @@ import {
   DeliverableVersionSchema,
   DeliveryFormatSchema,
   ObjectKeySchema,
-  OfficeDeliveryReceiptSchema,
   UuidSchema,
   authorizeExecution,
   makeObjectKey,
@@ -26,6 +25,7 @@ import {
 } from '@allrice/contracts';
 
 import { DataAccessError } from '../data.ts';
+import { parseOfficeDeliveryReceiptForObject } from '../office-delivery-receipt.ts';
 import { getDatabase } from '../core/client.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import {
@@ -437,6 +437,13 @@ export async function registerToolBrokerExport(
   ) {
     throw new DataAccessError('authorization_denied');
   }
+  const officeReceipt = input.officeReceipt
+    ? parseOfficeDeliveryReceiptForObject(input.officeReceipt, {
+        format: input.format,
+        checksum: input.object.checksum,
+        mediaType: input.object.mediaType,
+      })
+    : undefined;
   const register = async (transaction: TransactionSql) => {
     // Transaction-owning publishers must already hold this before admission.
     await lockWorkspaceStorageQuota(
@@ -627,10 +634,9 @@ export async function registerToolBrokerExport(
         source.source.objectId,
         versions[0]!.id,
       );
-    if (input.officeReceipt) {
-      const receipt = OfficeDeliveryReceiptSchema.parse(input.officeReceipt);
+    if (officeReceipt) {
       await transaction`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-        values(${input.context.organizationId},${workspaceId},${ownerId},'artifact.office-quality','deliverable_version',${versions[0]!.id},'recorded','actual_exporter_receipt',${transaction.json({ objectId: input.object.id, checksum: input.object.checksum, runId: input.context.runId, receipt })})`;
+        values(${input.context.organizationId},${workspaceId},${ownerId},'artifact.office-quality','deliverable_version',${versions[0]!.id},'recorded','actual_exporter_receipt',${transaction.json({ objectId: input.object.id, checksum: input.object.checksum, runId: input.context.runId, receipt: officeReceipt })})`;
     }
     return {
       id: versions[0]!.id,

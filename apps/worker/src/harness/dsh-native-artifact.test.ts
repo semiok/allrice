@@ -545,6 +545,53 @@ describe('native artifact content and launch boundary', () => {
       }),
     ).toThrow('PIN_NOT_APPROVED');
   });
+  it('keeps five independently measured readers and rejects a sixth without replacing any pin', async () => {
+    process.execArgv = [];
+    vi.stubEnv('NODE_OPTIONS', '');
+    const candidates = [];
+    for (let index = 0; index < 7; index++) {
+      const root = await fixture();
+      await writeFile(
+        join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
+        `import '@deepseek-ai/test-root';\n// exact candidate ${index}\n`,
+      );
+      candidates.push({ root, manifest: await seal(root) });
+    }
+    vi.resetModules();
+    const registry = await import('./dsh-native-artifact.js');
+    const first = candidates[0]!;
+    await registry.installDshNativeArtifact({
+      root: first.root,
+      expectedId: first.manifest.artifactId,
+    });
+    for (const candidate of candidates.slice(1, 6))
+      await registry.installRetainedDshNativeArtifact({
+        root: candidate.root,
+        expectedId: candidate.manifest.artifactId,
+      });
+    const excess = candidates[6]!;
+    await expect(
+      registry.installRetainedDshNativeArtifact({
+        root: excess.root,
+        expectedId: excess.manifest.artifactId,
+      }),
+    ).rejects.toThrow('RETAINED_DUPLICATE_OR_LIMIT');
+    for (const candidate of candidates.slice(0, 6))
+      expect(
+        registry.nativeArtifactLaunchForPin({
+          artifactId: candidate.manifest.artifactId,
+          profileId: 'restricted',
+        }).args,
+      ).toEqual([
+        join(candidate.root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
+      ]);
+    expect(() =>
+      registry.nativeArtifactLaunchForPin({
+        artifactId: excess.manifest.artifactId,
+        profileId: 'restricted',
+      }),
+    ).toThrow('PIN_NOT_APPROVED');
+  });
   it('refuses production Worker launch before a verified artifact is installed', () => {
     vi.stubEnv('ALLRICE_SERVICE_ROLE', 'worker');
     expect(() =>

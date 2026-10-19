@@ -21,6 +21,10 @@ import { generateOfficeExport } from '../../office/export.js';
 import { generateNativeOfficeExport } from '../../office/native.js';
 import { generateOfficePdfExport } from '../../office/pdf.js';
 import { checkOfficeExport } from '../../office/quality.js';
+import {
+  officeDeliveryReceipt as projectOfficeDeliveryReceipt,
+  officeDeliveryResultFields,
+} from '../../office/delivery-receipt.js';
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import { stringValue, textValue } from '../input-values.js';
@@ -181,19 +185,33 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     'cloudQualityAllowed' in generated &&
     generated.cloudQualityAllowed === false;
   const checked = officeType
-    ? localQualityOnly
-      ? {
-          bytes: generated.bytes,
-          quality: {
-            status: 'unavailable' as const,
-            reason:
-              '本地生成已验证；本地公式重算与页面预览尚未就绪，按任务的数据限制未外发到云端。',
-          },
-          warnings: [
-            '公式未重算、页面未渲染；生成通过不代表公式计算或排版已经检查。',
-          ],
+    ? await checkOfficeExport(generated.bytes, officeType, {
+        cloudQualityAllowed: !localQualityOnly,
+      })
+    : undefined;
+  const bytes = checked?.bytes ?? generated.bytes;
+  const officeReceipt = checked
+    ? (() => {
+        try {
+          return projectOfficeDeliveryReceipt(bytes, {
+            ...checked,
+            warnings: [
+              ...(checked.quality.status === 'checked'
+                ? []
+                : (generated.warnings ?? [])),
+              ...checked.warnings,
+            ],
+          });
+        } catch (error) {
+          if (error instanceof HandlerError)
+            confirmToolFailure(error, {
+              runId: input.context.runId,
+              callId: input.call.id,
+              toolName: input.call.name,
+            });
+          throw error;
         }
-      : await checkOfficeExport(generated.bytes, officeType)
+      })()
     : undefined;
   if (
     hasPython &&
@@ -202,7 +220,10 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   ) {
     const error = new HandlerError(
       'OFFICE_QUALITY_UNAVAILABLE',
-      '生成已经停止并通过文件校验，但任务明确要求的公式重算或页面渲染尚不可用；未发布正式成果。',
+      '生成已经停止并通过文件校验，但任务明确要求的公式重算或页面渲染尚不可用；未发布正式成果。' +
+        (officeReceipt?.diagnostic
+          ? `（${officeReceipt.diagnostic.stage}/${officeReceipt.diagnostic.code}）`
+          : ''),
       false,
     );
     confirmToolFailure(error, {
@@ -222,16 +243,14 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     ? {
         sourceFile: generated.sourceFile,
         changes: generated.changes,
+        ...officeDeliveryResultFields(officeReceipt ?? null),
+        // Keep the existing bounded formula excerpts on a new publication.
+        // They are not part of the persisted receipt and cannot be re-created
+        // as if they had been recorded on a historical publication.
         quality: checked?.quality,
         ...('nativeExecution' in generated
           ? { nativeExecution: generated.nativeExecution }
           : {}),
-        warnings: [
-          ...(checked?.quality.status === 'checked'
-            ? []
-            : (generated.warnings ?? [])),
-          ...(checked?.warnings ?? []),
-        ],
       }
     : 'nativeConversion' in generated
       ? {
@@ -251,7 +270,6 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   if (!fileName.toLowerCase().endsWith(generated.extension)) {
     fileName = `${fileName}${generated.extension}`;
   }
-  const bytes = checked?.bytes ?? generated.bytes;
   const storage = new LocalStorageAdapter(input.storageRoot);
   const kind = args.artifactKind ?? 'document';
   if (
@@ -276,14 +294,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       callId: input.call.id,
       fileName,
       ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
-      ...(checked
-        ? {
-            officeReceipt: {
-              quality: checked.quality,
-              warnings: checked.warnings,
-            },
-          }
-        : {}),
+      ...(officeReceipt ? { officeReceipt } : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
@@ -361,6 +372,14 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     return {
       modelContent: JSON.stringify({
         ...officeResult,
+        // The publisher returns the originally persisted receipt on replay.
+        // Never upgrade an old version using this retry's fresh inspection.
+        ...(officeType &&
+        'officeReceiptReplayed' in artifact &&
+        artifact.officeReceiptReplayed === true &&
+        'officeReceipt' in artifact
+          ? officeDeliveryResultFields(artifact.officeReceipt ?? null)
+          : {}),
         artifactId: artifact.id,
         // This is the checksum of the persisted, server-normalized object,
         // not a model-computed hash of its input proposal.
@@ -414,14 +433,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       fileName,
       format,
       ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
-      ...(checked
-        ? {
-            officeReceipt: {
-              quality: checked.quality,
-              warnings: checked.warnings,
-            },
-          }
-        : {}),
+      ...(officeReceipt ? { officeReceipt } : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),

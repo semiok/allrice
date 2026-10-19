@@ -219,8 +219,8 @@ it('refuses an unknown generation in additional slots', async () => {
     'GENERATION',
   );
 });
-it('rejects a fifth slot rather than silently dropping history', async () => {
-  vi.stubEnv('ALLRICE_DSH_RETAINED_5_ROOT', '/reviewed/excess');
+it('rejects a sixth slot rather than silently dropping history', async () => {
+  vi.stubEnv('ALLRICE_DSH_RETAINED_6_ROOT', '/reviewed/excess');
   const policy = await import('./dsh-native-retention.js');
   await expect(policy.installConfiguredDshNativeRetention()).rejects.toThrow(
     'SLOT_LIMIT',
@@ -322,4 +322,46 @@ it('does not protect a mutable symlink in place of the actual data root', async 
     'STORAGE_ROOT',
   );
   expect(seam.install).not.toHaveBeenCalled();
+});
+
+it('keeps five exact historical readers beside a distinct primary without evicting slot one', async () => {
+  configure();
+  const ids = [
+    id,
+    ...['b', 'c', 'd', 'e'].map((v) => 'sha256:' + v.repeat(64)),
+  ];
+  for (const [offset, artifactId] of ids.slice(1).entries()) {
+    const prefix = 'ALLRICE_DSH_RETAINED_' + (offset + 2) + '_';
+    vi.stubEnv(prefix + 'ROOT', '/reviewed/exact-' + offset);
+    vi.stubEnv(prefix + 'ARTIFACT_ID', artifactId);
+    vi.stubEnv(prefix + 'STORAGE_ROOT', root);
+    vi.stubEnv(prefix + 'SOURCE_SHA', 'd'.repeat(40));
+    vi.stubEnv(prefix + 'SOURCE_TREE', 'e'.repeat(40));
+  }
+  seam.install.mockImplementation(async (input) => ({
+    artifactId: input.expectedId,
+    generation: input.expectedId === id ? old : current,
+    root: input.root,
+  }));
+  vi.stubEnv('ALLRICE_DSH_RUNTIME_ROOT', root + '/new-primary');
+  const policy = await import('./dsh-native-retention.js');
+  const installed = await policy.installConfiguredDshNativeRetention();
+  expect(installed.map((item) => item.artifactId)).toEqual(ids);
+  expect(policy.retainedDshStorageRoot(id)).toBe(root);
+  expect(policy.retainedDshStorageRoot(ids[4]!)).toBe(root);
+  await policy.verifyConfiguredDshNativeReferences({
+    artifactId: 'sha256:' + 'f'.repeat(64),
+    generation: current,
+  });
+  const approvals = seam.coverage.mock.calls[0]![0];
+  expect(
+    approvals.map((item: { artifactId: string }) => item.artifactId),
+  ).toEqual(['sha256:' + 'f'.repeat(64), ...ids]);
+  expect(approvals[0].storageRoot).toBe(root + '/new-primary');
+  expect(
+    approvals
+      .slice(1)
+      .every((item: { storageRoot: string }) => item.storageRoot === root),
+  ).toBe(true);
+  // Policy seam only: real registry limits, DB coverage and cold launch remain separate checks.
 });
