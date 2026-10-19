@@ -537,7 +537,7 @@ suite(
     });
 
     it('atomically rolls back a business composition after artifact registration and rechecks cached replay before returning it', async () => {
-      const f = await setup(['workspace.project']);
+      const f = await setup(['browser.workspace']);
       const previous = await publishWorkbenchArtifact(
         f.input,
         f.storage,
@@ -562,7 +562,7 @@ suite(
       };
       const base = {
         runId: f.rootRunId,
-        requiredTool: 'workspace.project' as const,
+        requiredTool: 'browser.workspace' as const,
         admit,
       };
       await expect(

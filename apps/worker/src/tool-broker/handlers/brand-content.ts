@@ -298,7 +298,7 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
         },
         arguments: {
           format: 'markdown',
-          fileName: `${draft.title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 100)}.md`,
+          fileName: `${draft.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 100)}.md`,
           content: `${draft.markdown}\n\n---\n\n资料依据：${draft.factIds.join('、') || '本次品牌资料中的文字要求'}。${draft.verificationNotes.length ? `\n\n待核实：\n${draft.verificationNotes.map((note) => `- ${note}`).join('\n')}` : ''}\n`,
           artifactKind: 'document',
           ...(value.article
