@@ -3,7 +3,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ExecutionContextSchema } from '../../../../packages/contracts/src/index.ts';
+import {
+  ExecutionContextSchema,
+  type HarnessEvent,
+} from '../../../../packages/contracts/src/index.ts';
 import { createAssistantFixtureDatabase } from '../../../../packages/database/src/assistant-runtime.fixture.ts';
 import { createAssistantAuthorityFixture } from '../../../../packages/database/src/assistant-authority.fixture.ts';
 import { assertAssistantAuthority } from '../../../../packages/database/src/assistant-authority.ts';
@@ -122,7 +125,7 @@ integration(
       let delegated = false;
       const childRequests: string[] = [];
       const calls: HarnessToolCall[] = [];
-      const events: { type: string }[] = [];
+      const events: HarnessEvent[] = [];
       const reply = {
         modelContent:
           'SYNTHETIC_QUERY_RESULT: finite scoped read; no external call',
@@ -315,7 +318,7 @@ integration(
     it.each(reads)(
       'dispatches actual child $name and preserves exact native query attribution',
       async (read) => {
-        const { f, calls, reply, outcome, childRequests, tree } =
+        const { f, calls, reply, outcome, childRequests, events, tree } =
           await exercise(read.name, read);
         const children = tree.instances.filter(
           (row) => row.parentRunId !== null,
@@ -374,7 +377,23 @@ integration(
           cacheUsageKnown: false,
           costEstimateAvailable: false,
         });
-        expect(outcome.answer).toMatch(/^部分结果/);
+        expect(outcome.answer).toBe(
+          'Root observed the bounded result or explicit denial.',
+        );
+        expect(
+          events.filter(
+            (event) =>
+              event.type === 'native.event' &&
+              event.sourceEventType === 'allrice/assistant-partial',
+          ),
+        ).toEqual([
+          expect.objectContaining({
+            presentation: 'lifecycle',
+            status: 'failed',
+            label: '任务尚未完成',
+            sourcePayload: { status: 'partial' },
+          }),
+        ]);
         expect(outcome.usage).toEqual({
           inputTokens: tree.budgets.find(
             (row) => row.metric === 'input_tokens',
