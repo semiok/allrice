@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readResolvedProject } from '@allrice/project-runtime';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
@@ -7,6 +7,8 @@ import {
   createCloudOperationLedger,
   loadCloudCommandInputs,
   publishCloudOperationArtifacts,
+  ProjectWorkspaceError,
+  RuntimeLedgerError,
   cloudStableId,
   executionResourceObserver,
   getDatabase,
@@ -19,6 +21,9 @@ import {
 import {
   CloudExecutionPayloadSchema,
   SandboxNetworkLeaseSchema,
+  StorageObjectSchema,
+  makeObjectKey,
+  localFileMediaType,
   projectResolutionReceiptSummary,
   type CloudProjectRunResult,
   RuntimeOperationSnapshotSchema,
@@ -45,6 +50,254 @@ type Created = Awaited<
   | ReturnType<typeof createCloudProjectOperation>
 >;
 type Db = ReturnType<typeof getDatabase>;
+// Internal fact in the existing result receipt, not a second journal or protocol.
+type PublicationRejection = {
+  version: 1;
+  code: 'project_output_parent_stale';
+  physicalOutcomeDigest: string;
+  payloadDigest: string;
+  storageWrites: 0;
+  publishedArtifacts: 0;
+  absentStorageObjectsDigest: string;
+};
+type CloudBinding = Created['snapshot']['binding'];
+type CloudReceipt = Pick<
+  Parameters<Created['ledger']['recordReceipt']>[0],
+  'scope' | 'operationId' | 'leaseToken' | 'attempt'
+>;
+function publicationRejectionFact(
+  binding: CloudBinding,
+  payload: Created['payload'],
+  outcome: CloudRunResult,
+): PublicationRejection {
+  return {
+    version: 1,
+    code: 'project_output_parent_stale',
+    physicalOutcomeDigest: runtimePolicyDigest(outcome),
+    payloadDigest: runtimePolicyDigest(payload),
+    storageWrites: 0,
+    publishedArtifacts: 0,
+    absentStorageObjectsDigest: runtimePolicyDigest(
+      publicationStorageObjects(binding, payload, outcome),
+    ),
+  };
+}
+function canConfirmPublicationRejection(
+  payload: Created['payload'],
+  outcome: CloudRunResult,
+) {
+  return (
+    !('kind' in payload && !!payload.arguments.background?.projectService) &&
+    payload.network === 'none' &&
+    outcome.stopped &&
+    outcome.exitCode === 0 &&
+    outcome.reason === 'completed' &&
+    payload.arguments.outputs?.some(
+      (output) => 'parentObjectId' in output && !!output.parentObjectId,
+    )
+  );
+}
+function savedPublicationRejection(
+  rows: Awaited<ReturnType<Created['ledger']['readReceipts']>>,
+  binding: CloudBinding,
+  payload: Created['payload'],
+  outcome: CloudRunResult,
+) {
+  const resultReceiptId = cloudStableId(
+    `${binding.attempt.operationId}:result`,
+  );
+  const canRejectPublication = canConfirmPublicationRejection(payload, outcome);
+
+  const row = rows.find((r) => r.receipt_id === resultReceiptId);
+  const content = row?.payload as
+    | {
+        attempt?: unknown;
+        signal?: {
+          type?: unknown;
+          result?: {
+            status?: unknown;
+            effects?: unknown;
+            evidence?: { digest?: unknown };
+          };
+        };
+        evidence?: {
+          publicationRejection?: unknown;
+          errorCode?: unknown;
+          reason?: unknown;
+          exitCode?: unknown;
+          stopped?: unknown;
+          artifacts?: unknown;
+        };
+      }
+    | undefined;
+  if (!content?.evidence?.publicationRejection) return false;
+  const publicationRejection = publicationRejectionFact(
+    binding,
+    payload,
+    outcome,
+  );
+  if (
+    !canRejectPublication ||
+    row?.disposition !== 'applied' ||
+    runtimePolicyDigest(content.attempt) !==
+      runtimePolicyDigest(binding.attempt) ||
+    runtimePolicyDigest(content.evidence.publicationRejection) !==
+      runtimePolicyDigest(publicationRejection) ||
+    content.signal?.type !== 'operation.outcome' ||
+    content.signal.result?.status !== 'failed' ||
+    content.signal.result.effects !== 'none' ||
+    content.signal.result.evidence?.digest !==
+      runtimePolicyDigest({ outcome, artifacts: [], publicationRejection }) ||
+    content.evidence.errorCode !== publicationRejection.code ||
+    content.evidence.reason !== outcome.reason ||
+    content.evidence.exitCode !== outcome.exitCode ||
+    content.evidence.stopped !== true ||
+    !Array.isArray(content.evidence.artifacts) ||
+    content.evidence.artifacts.length !== 0
+  )
+    throw Error('cloud_publication_rejection_unconfirmed');
+  return true;
+}
+// Match the existing publisher's deterministic export identity. StoragePort.exists
+// also detects committed orphan bytes from an earlier rolled-back publication.
+// This reads only named outputs; it does not delete or republish any bytes.
+function publicationStorageObjects(
+  binding: CloudBinding,
+  payload: Created['payload'],
+  outcome: CloudRunResult,
+) {
+  const scope = binding.task.scope;
+  return (payload.arguments.outputs ?? []).map((output) => {
+    const artifact = outcome.artifacts.find(
+      (item) => item.path === output.path,
+    );
+    if (!artifact) throw Error('cloud_publication_rejection_unconfirmed');
+    const bytes = Buffer.from(artifact.contentBase64, 'base64');
+    const id = cloudStableId(
+      `${binding.attempt.operationId}:artifact:${output.path}`,
+    );
+    return StorageObjectSchema.parse({
+      id,
+      organizationId: scope.organizationId,
+      workspaceId: scope.workspaceId,
+      ownerId: binding.requestedBy.id,
+      key: makeObjectKey({
+        organizationId: scope.organizationId,
+        workspaceId: scope.workspaceId!,
+        ownerId: binding.requestedBy.id,
+        category: 'exports',
+        objectId: id,
+      }),
+      checksum: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      sizeBytes: bytes.length,
+      mediaType:
+        output.format === 'png'
+          ? 'image/png'
+          : output.format === 'json'
+            ? 'application/json'
+            : output.format === 'csv'
+              ? 'text/csv'
+              : output.format === 'html'
+                ? 'text/html'
+                : output.format === 'zip'
+                  ? 'application/zip'
+                  : output.format === 'txt' &&
+                      localFileMediaType(output.fileName) === 'text/markdown'
+                    ? 'text/markdown'
+                    : 'text/plain',
+      retentionUntil: null,
+      deletedAt: null,
+      immutable: true,
+    });
+  });
+}
+async function assertAbsentPublicationStorage(
+  storage: StoragePort,
+  binding: CloudBinding,
+  payload: Created['payload'],
+  outcome: CloudRunResult,
+) {
+  for (const object of publicationStorageObjects(binding, payload, outcome))
+    if (await storage.exists(object))
+      throw Error('cloud_publication_rejection_unconfirmed');
+}
+async function assertNoPublishedCloudArtifacts(
+  db: Db,
+  receipt: CloudReceipt,
+  binding: CloudBinding,
+  outcome: CloudRunResult,
+) {
+  const { scope, operationId, leaseToken } = receipt;
+
+  const [journal] = await db<
+    {
+      outcome: unknown;
+      artifacts: unknown;
+      published: number;
+    }[]
+  >`select a.outcome,a.artifacts,
+      (select count(*)::int from allrice_workbench_artifacts w
+        where w.organization_id=${scope.organizationId} and w.workspace_id=${scope.workspaceId}
+          and w.owner_id=${binding.requestedBy.id}
+          and w.provenance->>'operationId'=${operationId}) as published
+      from allrice_cloud_execution_attempts a
+      where a.operation_id=${operationId} and a.lease_token=${leaseToken}`;
+  if (
+    !journal ||
+    runtimePolicyDigest(journal.outcome) !== runtimePolicyDigest(outcome) ||
+    !Array.isArray(journal.artifacts) ||
+    journal.artifacts.length !== 0 ||
+    journal.published !== 0
+  )
+    throw Error('cloud_publication_rejection_unconfirmed');
+}
+// Same authoritative tool_calls observation for normal execution and sealed
+// rejection recovery. A terminal receipt alone must not strand a reservation.
+async function settleCloudToolCall(
+  db: Db,
+  ledger: Created['ledger'],
+  receipt: CloudReceipt,
+  binding: CloudBinding,
+) {
+  const { operationId } = receipt;
+  const [meter] = await db<
+    {
+      accounting_id: string;
+      source: RuntimeUsageObservation['source'];
+      observation: unknown | null;
+      created_at: Date;
+    }[]
+  >`select r.accounting_id,b.source,r.observation,a.created_at from allrice_runtime_reservations r join allrice_runtime_budgets b on b.root_run_id=r.root_run_id and b.metric=r.metric join allrice_cloud_execution_attempts a on a.operation_id=r.operation_id where r.operation_id=${operationId} and r.metric='tool_calls'`;
+  if (meter && !meter.observation) {
+    const at = new Date().toISOString();
+    await ledger.settleUsage({
+      ...receipt,
+      observation: {
+        contractVersion: 1,
+        observationId: cloudStableId(`${operationId}:usage`),
+        accountingId: meter.accounting_id,
+        task: binding.task,
+        source: meter.source,
+        accountingBoundary: { kind: 'operation', attempt: binding.attempt },
+        aggregation: 'self_only',
+        metric: 'tool_calls',
+        unit: 'calls',
+        currency: null,
+        mode: 'cumulative',
+        quality: 'measured',
+        amount: 1,
+        state: 'settled',
+        window: {
+          id: cloudStableId(`${operationId}:usage-window`),
+          startedAt: meter.created_at.toISOString(),
+          endedAt: at,
+        },
+        observedAt: at,
+      },
+    });
+  }
+}
+
 async function currentWorker(created: Created, db: Db) {
   const c = created.context;
   const [row] =
@@ -450,26 +703,78 @@ export async function runCloudCommandOperation(
       outcome = { ...outcome, serviceStopReason: firstServiceStopReason };
     await db`update allrice_cloud_execution_attempts set outcome=${db.json(outcome)} where operation_id=${operationId} and outcome is null`;
   }
-  // No deletion until durable bytes/versions AND result receipt. Failed writes
-  // leave the stopped container, daemon logs and journal available for recovery.
-  const artifacts =
+  const resultReceiptId = cloudStableId(`${operationId}:result`);
+  let existing = await ledger.readReceipts(scope, operationId);
+  const rejectionFact = () =>
+    publicationRejectionFact(binding, payload, outcome);
+  const canRejectPublication = canConfirmPublicationRejection(payload, outcome);
+  const savedRejection = (rows: typeof existing) =>
+    savedPublicationRejection(rows, binding, payload, outcome);
+  const assertNoPublishedArtifacts = () =>
+    assertNoPublishedCloudArtifacts(db, receipt, binding, outcome);
+  let publicationRejected = savedRejection(existing);
+  let storageWrites = 0;
+  const publishingStorage: StoragePort = {
+    get: options.storage.get.bind(options.storage),
+    exists: options.storage.exists.bind(options.storage),
+    put: async (...args) => {
+      storageWrites++;
+      return options.storage.put(...args);
+    },
+    delete: async (...args) => {
+      storageWrites++;
+      return options.storage.delete(...args);
+    },
+  };
+  let artifacts: Awaited<ReturnType<typeof publishCloudOperationArtifacts>> =
+    [];
+  if (publicationRejected) await assertNoPublishedArtifacts();
+  else if (
     outcome.reason === 'completed' &&
     !(!('kind' in payload) && payload.origin?.toolName === 'workspace.project')
-      ? await publishCloudOperationArtifacts(
-          {
-            context: created.context,
-            binding,
-            payload,
-            artifacts: outcome.artifacts,
-          },
-          options.storage,
-          db,
-        )
-      : [];
+  ) {
+    try {
+      artifacts = await publishCloudOperationArtifacts(
+        {
+          context: created.context,
+          binding,
+          payload,
+          artifacts: outcome.artifacts,
+        },
+        publishingStorage,
+        db,
+      );
+    } catch (error) {
+      // Only a branded permanent latest-parent rejection before every storage
+      // write can prove no publication effects. SQL/ACK/storage uncertainty,
+      // partial bytes, pre-existing export keys, and cached artifacts retain recovery data.
+      if (
+        !canRejectPublication ||
+        storageWrites !== 0 ||
+        !(error instanceof ProjectWorkspaceError) ||
+        error.code !== 'output_parent_stale'
+      )
+        throw error;
+      await assertNoPublishedArtifacts();
+      await assertAbsentPublicationStorage(
+        options.storage,
+        binding,
+        payload,
+        outcome,
+      );
+      publicationRejected = true;
+    }
+  }
+  // Physical outcome (including base64 bytes) remains untouched in the journal.
+  // Unknown publication errors still escape before receipts/settlement/cleanup.
   const evidence = {
     id: cloudStableId(`${operationId}:evidence`),
     recordedAt: new Date().toISOString(),
-    digest: runtimePolicyDigest({ outcome, artifacts }),
+    digest: runtimePolicyDigest({
+      outcome,
+      artifacts,
+      ...(publicationRejected ? { publicationRejection: rejectionFact() } : {}),
+    }),
   };
   const summary = {
     backend: 'cloud-gvisor-v1',
@@ -481,7 +786,14 @@ export async function runCloudCommandOperation(
       : {}),
     stopped: outcome.stopped,
     output: outcome.output,
-    ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+    ...(publicationRejected
+      ? {
+          errorCode: rejectionFact().code,
+          publicationRejection: rejectionFact(),
+        }
+      : outcome.errorCode
+        ? { errorCode: outcome.errorCode }
+        : {}),
     ...(outcome.network ? { network: outcome.network } : {}),
     ...(outcome.executionBudget
       ? { executionBudget: outcome.executionBudget }
@@ -535,7 +847,7 @@ export async function runCloudCommandOperation(
             type: 'operation.outcome' as const,
             result: {
               status:
-                outcome.reason === 'completed'
+                outcome.reason === 'completed' && !publicationRejected
                   ? ('succeeded' as const)
                   : ('failed' as const),
               effects: artifacts.length
@@ -545,57 +857,48 @@ export async function runCloudCommandOperation(
             },
           };
   // Stable replay uses the original receipt body/time, not a fresh timestamp.
-  const existing = await ledger.readReceipts(scope, operationId);
-  const receiptId = cloudStableId(`${operationId}:result`);
-  if (!existing.some((r) => r.receipt_id === receiptId))
-    await ledger.recordReceipt({
-      ...receipt,
-      receiptId,
-      signal,
-      evidence: summary,
-    });
-  // Only settle an actually measured meter. Unknown work keeps reservations;
-  // bytes/time/cost lacking an authoritative measurement are not invented zeros.
-  if (outcome.reason !== 'unknown' && !externalOutcomeUnknown) {
-    const [meter] = await db<
-      {
-        accounting_id: string;
-        source: RuntimeUsageObservation['source'];
-        observation: unknown | null;
-        created_at: Date;
-      }[]
-    >`select r.accounting_id,b.source,r.observation,a.created_at from allrice_runtime_reservations r join allrice_runtime_budgets b on b.root_run_id=r.root_run_id and b.metric=r.metric join allrice_cloud_execution_attempts a on a.operation_id=r.operation_id where r.operation_id=${operationId} and r.metric='tool_calls'`;
-    if (meter && !meter.observation) {
-      const at = new Date().toISOString();
-      await ledger.settleUsage({
+  existing = await ledger.readReceipts(scope, operationId);
+  if (
+    publicationRejected &&
+    existing.some((r) => r.receipt_id === resultReceiptId)
+  ) {
+    if (!savedRejection(existing))
+      throw Error('cloud_publication_rejection_unconfirmed');
+  } else if (!existing.some((r) => r.receipt_id === resultReceiptId)) {
+    try {
+      const recorded = await ledger.recordReceipt({
         ...receipt,
-        observation: {
-          contractVersion: 1,
-          observationId: cloudStableId(`${operationId}:usage`),
-          accountingId: meter.accounting_id,
-          task: binding.task,
-          source: meter.source,
-          accountingBoundary: { kind: 'operation', attempt: binding.attempt },
-          aggregation: 'self_only',
-          metric: 'tool_calls',
-          unit: 'calls',
-          currency: null,
-          mode: 'cumulative',
-          quality: 'measured',
-          amount: 1,
-          state: 'settled',
-          window: {
-            id: cloudStableId(`${operationId}:usage-window`),
-            startedAt: meter.created_at.toISOString(),
-            endedAt: at,
-          },
-          observedAt: at,
-        },
+        receiptId: resultReceiptId,
+        signal,
+        evidence: summary,
       });
+      if (
+        publicationRejected &&
+        (!['applied', 'duplicate'].includes(recorded.disposition) ||
+          recorded.snapshot.status !== 'failed')
+      )
+        throw Error('cloud_publication_rejection_unconfirmed');
+    } catch (error) {
+      // Only a confirmed matching concurrent receipt is a duplicate. A lost DB
+      // acknowledgement is rethrown; re-entry will read the original receipt.
+      if (
+        !publicationRejected ||
+        !(error instanceof RuntimeLedgerError) ||
+        error.code !== 'receipt_conflict'
+      )
+        throw error;
+      if (!savedRejection(await ledger.readReceipts(scope, operationId)))
+        throw error;
     }
   }
-  await backend.cleanup(attemptId, payload);
-  await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${operationId} and cleanup_confirmed_at is null`;
+  // Only settle an actually measured meter. Unknown work keeps reservations;
+  // bytes/time/cost lacking an authoritative measurement are not invented zeros.
+  if (outcome.reason !== 'unknown' && !externalOutcomeUnknown)
+    await settleCloudToolCall(db, ledger, receipt, binding);
+  if (!publicationRejected || !prior?.cleanup_confirmed_at) {
+    await backend.cleanup(attemptId, payload);
+    await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${operationId} and cleanup_confirmed_at is null`;
+  }
   const snapshot = await ledger.readOperation(scope, operationId);
   return {
     operationId,
@@ -603,11 +906,15 @@ export async function runCloudCommandOperation(
     artifacts: summary.artifacts,
     output: outcome.output,
     exitCode: outcome.exitCode,
-    reason: outcome.reason,
+    reason: publicationRejected ? 'failed' : outcome.reason,
     stopped: outcome.stopped,
     cleanupConfirmed: true,
     ...(outcome.resolution ? { resolution: outcome.resolution } : {}),
-    ...(outcome.errorCode ? { errorCode: outcome.errorCode } : {}),
+    ...(publicationRejected
+      ? { errorCode: rejectionFact().code }
+      : outcome.errorCode
+        ? { errorCode: outcome.errorCode }
+        : {}),
     ...(externalOutcomeUnknown ? { externalOutcomeUnknown: true } : {}),
     ...(outcome.network ? { network: outcome.network } : {}),
     ...(outcome.executionBudget
@@ -619,7 +926,9 @@ export async function runCloudCommandOperation(
           projectPreparation: outcome.projectPreparation,
           executionLocation: 'cloud' as const,
           imageDigest: outcome.imageDigest,
-          errorCode: outcome.errorCode,
+          errorCode: publicationRejected
+            ? rejectionFact().code
+            : outcome.errorCode,
           workCopy: 'cloud_copy' as const,
         }
       : {}),
@@ -831,6 +1140,25 @@ export async function recoverCloudCommandOperations(
       // have an in-flight create request. Keep its journal and work volume for
       // the next recovery; neither absence nor deadline authorizes replay.
       if (!container && !row.outcome) continue;
+      if (
+        snapshot.status === 'failed' &&
+        outcome &&
+        savedPublicationRejection(
+          await ledger.readReceipts(binding.task.scope, row.operation_id),
+          binding,
+          payload,
+          outcome,
+        )
+      ) {
+        const receipt: CloudReceipt = {
+          scope: binding.task.scope,
+          operationId: row.operation_id,
+          leaseToken: row.lease_token,
+          attempt: binding.attempt,
+        };
+        await assertNoPublishedCloudArtifacts(db, receipt, binding, outcome);
+        await settleCloudToolCall(db, ledger, receipt, binding);
+      }
       await backend.cleanup(attemptId, payload);
       await db`update allrice_cloud_execution_attempts set cleanup_confirmed_at=clock_timestamp() where operation_id=${row.operation_id}`;
       recovered++;

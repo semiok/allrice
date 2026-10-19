@@ -22,7 +22,8 @@ export function requireSuccessfulCloudCommand(
     !['failed', 'canceled'].includes(result.status) ||
     result.reason === 'unknown' ||
     !result.stopped ||
-    !result.cleanupConfirmed
+    !result.cleanupConfirmed ||
+    result.externalOutcomeUnknown === true
   )
     throw new HandlerError(
       'CLOUD_RESULT_UNKNOWN',
@@ -32,27 +33,37 @@ export function requireSuccessfulCloudCommand(
       false,
     );
   const networkMessage = sandboxNetworkErrorMessage(result.errorCode);
-  const [code, message] = networkMessage
-    ? [result.errorCode!, `云端执行已停止：${networkMessage}`]
-    : result.reason === 'output_limit'
-      ? [
-          'CLOUD_OUTPUT_LIMIT',
-          '云端计算已停止：标准输出超出本次 outputBytes 上限。只打印有限字段和样本，将完整数据写入声明的成果文件；不要再次输出整张表或全部表头。',
-        ]
-      : result.reason === 'deadline'
+  const staleParent =
+    result.status === 'failed' &&
+    result.errorCode === 'project_output_parent_stale' &&
+    result.exitCode === 0 &&
+    ['completed', 'failed'].includes(result.reason ?? '');
+  const [code, message] = staleParent
+    ? [
+        'project_output_parent_stale',
+        '[project_output_parent_stale] 云端计算已完成，但指定父版本已不是当前最新版本，未发布新版。请先读取当前最新版本，再续办；不要自动重执行本次脚本。',
+      ]
+    : networkMessage
+      ? [result.errorCode!, `云端执行已停止：${networkMessage}`]
+      : result.reason === 'output_limit'
         ? [
-            'CLOUD_EXECUTION_TIMEOUT',
-            '云端计算已停止：达到本次执行时限。读取 Excel 时先核实实际非空范围，限定行列并分批处理；不要遍历工作表声明的整片空白区域。',
+            'CLOUD_OUTPUT_LIMIT',
+            '云端计算已停止：标准输出超出本次 outputBytes 上限。只打印有限字段和样本，将完整数据写入声明的成果文件；不要再次输出整张表或全部表头。',
           ]
-        : result.status === 'canceled'
+        : result.reason === 'deadline'
           ? [
-              'CLOUD_EXECUTION_CANCELED',
-              '云端计算已取消并确认停止，未交付成果。',
+              'CLOUD_EXECUTION_TIMEOUT',
+              '云端计算已停止：达到本次执行时限。读取 Excel 时先核实实际非空范围，限定行列并分批处理；不要遍历工作表声明的整片空白区域。',
             ]
-          : [
-              'CLOUD_EXECUTION_FAILED',
-              `云端计算已停止但未完成（退出码 ${result.exitCode ?? '未知'}），未交付成果。${result.output ? `\n${result.output.slice(-2000)}` : ''}`,
-            ];
+          : result.status === 'canceled'
+            ? [
+                'CLOUD_EXECUTION_CANCELED',
+                '云端计算已取消并确认停止，未交付成果。',
+              ]
+            : [
+                'CLOUD_EXECUTION_FAILED',
+                `云端计算已停止但未完成（退出码 ${result.exitCode ?? '未知'}），未交付成果。${result.output ? `\n${result.output.slice(-2000)}` : ''}`,
+              ];
   const error = new HandlerError(code!, message!, false);
   confirmToolFailure(error, {
     runId: input.context.runId,

@@ -147,6 +147,8 @@ export const ProjectWorkspaceCommandSchema = z.discriminatedUnion('action', [
       action: z.literal('deliver'),
       project: ProjectVersionRefSchema,
       baseline: ProjectVersionRefSchema.optional(),
+      // Revises the source ZIP only; baseline still selects the source diff.
+      parentObjectId: UuidSchema.optional(),
     })
     .strict(),
   z

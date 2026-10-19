@@ -6,6 +6,37 @@ import { generateDeliverable } from './deliverable-generator.js';
 import { parseDocument } from './document-reader.js';
 
 describe('formal deliverable generation', () => {
+  it.each([
+    ['text', 'foo.csv', '.csv', 'text/csv'],
+    ['text', '中文.CSV', '.csv', 'text/csv'],
+    ['text', undefined, '.txt', 'text/plain'],
+    ['text', 'foo', '.txt', 'text/plain'],
+    ['text', 'foo.csv.txt', '.txt', 'text/plain'],
+    ['text', 'foo.csv.exe', '.txt', 'text/plain'],
+    ['text', 'foo.html', '.txt', 'text/plain'],
+    ['text', 'foo.svg', '.txt', 'text/plain'],
+    ['text', 'csv', '.txt', 'text/plain'],
+    ['html', 'foo.csv', '.html', 'text/html'],
+    ['markdown', 'foo.csv', '.md', 'text/markdown'],
+    ['json', 'foo.csv', '.json', 'application/json'],
+  ] as const)(
+    'CSV filename metadata only selects CSV for explicit text .csv (%s, %s)',
+    async (format, fileName, extension, mediaType) => {
+      const content =
+        '\uFEFF编号,金额,备注\r\n00123,-200.00,"保留,逗号"\r\n00789,,"双引号""原样"\r\n';
+      const generated = await generateDeliverable({
+        format,
+        content,
+        fileName,
+      });
+      expect(generated).toEqual({
+        bytes: Buffer.from(content, 'utf8'),
+        extension,
+        mediaType,
+      });
+    },
+  );
+
   it('requires actual ZIP bytes from the project publisher instead of renaming text', async () => {
     await expect(
       generateDeliverable({ format: 'zip', content: 'not an archive' }),

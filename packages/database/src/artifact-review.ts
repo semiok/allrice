@@ -1,4 +1,5 @@
 import { runtimeFeatureEnabled } from '@allrice/contracts';
+import { assertProjectOutputParent } from './project-output-parent.ts';
 import { createHash } from 'node:crypto';
 import {
   ChangesetDocumentSchema,
@@ -846,6 +847,23 @@ export async function publishWorkbenchArtifact(
         if (!capture) fail('invalid_publication');
       }
       await assertWorkbenchSession(tx, principal, input.sessionId, true);
+      // Parent liveness/kind also apply to cached receipts. Staleness caused
+      // by this call's own child is handled by the new-publication check below.
+      const projectParent =
+        development?.requiredTool === 'workspace.project' &&
+        development.projectDelivery &&
+        input.parentObjectId
+          ? await assertProjectOutputParent(
+              {
+                context,
+                sessionId: input.sessionId,
+                parentObjectId: input.parentObjectId,
+                format: input.format,
+              },
+              tx,
+              true,
+            )
+          : null;
       const source = input.sourceFile
         ? await assertToolBrokerSourceFile(
             tx,
@@ -901,13 +919,27 @@ export async function publishWorkbenchArtifact(
       if (existing) {
         if (existing.request_digest !== requestDigest)
           fail('idempotency_conflict');
-        return readArtifact(
+        const cached = await readArtifact(
           tx,
           principal,
           input.sessionId,
           existing.version_id,
         );
+        if (projectParent) await development!.admit(tx);
+        return cached;
       }
+      if (projectParent && input.parentObjectId)
+        await assertProjectOutputParent(
+          {
+            context,
+            sessionId: input.sessionId,
+            parentObjectId: input.parentObjectId,
+            format: input.format,
+          },
+          tx,
+          true,
+          true,
+        );
       const requiredTool = development
         ? (development.requiredTool ?? 'assistant.development')
         : derivedSource
@@ -940,7 +972,8 @@ export async function publishWorkbenchArtifact(
           derivedSource.provenance.operationId!,
         );
       let parent: WorkbenchArtifact | null = null;
-      let publicationKind: WorkbenchArtifact['kind'] = input.kind;
+      let publicationKind: WorkbenchArtifact['kind'] =
+        projectParent?.kind ?? input.kind;
       if (parentObjectId) {
         const [p] = await tx<
           { id: string }[]
@@ -1060,6 +1093,17 @@ export async function publishWorkbenchArtifact(
         );
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
       await development?.admit(tx);
+      if (projectParent && input.parentObjectId)
+        await assertProjectOutputParent(
+          {
+            context,
+            sessionId: input.sessionId,
+            parentObjectId: input.parentObjectId,
+            format: input.format,
+          },
+          tx,
+          true,
+        );
       await development?.registered?.(tx, artifact.id);
       if (development?.registered) await development.admit(tx);
       return artifact;

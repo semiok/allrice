@@ -1,3 +1,4 @@
+import { assertExplicitOutputParent } from './project-output-parent.ts';
 import { assertLocalSandboxExecutionBudget } from './local-sandbox-execution-budget.ts';
 import {
   resolveBridgeSandboxNetworkGrant,
@@ -57,10 +58,7 @@ import {
   createGovernedBridgePolicyOptions,
 } from './runtime-governed-bridge.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
-import {
-  assertToolBrokerExportParent,
-  registerToolBrokerExport,
-} from './execution/tool-broker.ts';
+import { registerToolBrokerExport } from './execution/tool-broker.ts';
 import { validatePngArtifact } from '@allrice/storage';
 import { ensureRuntimeOperationRoot } from './runtime-ledger/root-service.ts';
 import {
@@ -667,9 +665,14 @@ export async function createLocalPythonOperation(
     throw new RuntimePolicyError('bridge_authority_changed');
   if (payload.arguments.purpose === 'python_charts') {
     const original = PythonExecuteArgsSchema.parse(input.arguments);
+    const prior = original.outputs.some((output) => !!output.parentObjectId)
+      ? (
+          await db`select operation_id from allrice_local_python_delegations where operation_id=${selection.operationId} and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${ctx.policySnapshot.subjectId}`
+        )[0]
+      : null;
     for (const output of original.outputs) {
       if (!output.parentObjectId) continue;
-      await assertToolBrokerExportParent(
+      await assertExplicitOutputParent(
         {
           context: ctx,
           sessionId: row.session_id,
@@ -685,6 +688,8 @@ export async function createLocalPythonOperation(
                   : 'text',
         },
         db,
+        false,
+        !prior,
       );
     }
   }
@@ -1360,7 +1365,46 @@ export async function publishLocalPythonArtifacts(
         join allrice_deliverable_versions v on v.id=a.version_id
         where a.organization_id=${ctx.organizationId} and a.workspace_id=${ctx.workspaceId} and a.owner_id=${owner}
           and a.run_id=${ctx.runId} and a.request_id=${requestId}`;
+      const format =
+        output.format === 'png'
+          ? 'png'
+          : output.format === 'json'
+            ? 'json'
+            : object.mediaType === 'text/markdown'
+              ? 'markdown'
+              : 'text';
+      if (originalOutput.parentObjectId)
+        await assertExplicitOutputParent(
+          {
+            context: ctx,
+            sessionId: binding.task.chatSessionId!,
+            parentObjectId: originalOutput.parentObjectId,
+            format,
+          },
+          tx,
+          true,
+          !existing,
+        );
       if (existing) {
+        if (originalOutput.parentObjectId) {
+          const live = await assertExplicitOutputParent(
+            {
+              context: ctx,
+              sessionId: binding.task.chatSessionId!,
+              parentObjectId: object.id,
+              format,
+            },
+            tx,
+            true,
+          );
+          if (
+            live.id !== existing.version_id ||
+            live.checksum !== object.checksum ||
+            live.run_id !== ctx.runId ||
+            live.operation_id !== input.operationId
+          )
+            throw new RuntimePolicyError('local_python_result_unconfirmed');
+        }
         if (
           existing.object_id !== object.id ||
           existing.request_digest !== requestDigest
@@ -1409,6 +1453,28 @@ export async function publishLocalPythonArtifacts(
       phase: 'heartbeat',
       now: new Date(),
     });
+    for (const output of original.outputs) {
+      if (!output.parentObjectId) continue;
+      const format =
+        output.format === 'png'
+          ? 'png'
+          : output.format === 'json'
+            ? 'json'
+            : output.format === 'txt' &&
+                localFileMediaType(output.fileName) === 'text/markdown'
+              ? 'markdown'
+              : 'text';
+      await assertExplicitOutputParent(
+        {
+          context: ctx,
+          sessionId: binding.task.chatSessionId!,
+          parentObjectId: output.parentObjectId,
+          format,
+        },
+        tx,
+        true,
+      );
+    }
     const [stillCurrent] =
       await tx`select root_run_id from allrice_runtime_roots where root_run_id=${binding.task.rootRunId}
       and cancel_request_id is null and deadline_at>clock_timestamp()`;

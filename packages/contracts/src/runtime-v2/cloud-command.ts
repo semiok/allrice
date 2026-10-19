@@ -124,6 +124,15 @@ export const CloudCommandInputSchema = z
     }
     if (new Set(v.inputs.map((f) => f.objectId)).size !== v.inputs.length)
       ctx.addIssue({ code: 'custom', message: 'duplicate cloud input object' });
+    const parents = v.outputs.flatMap((output) =>
+      output.parentObjectId ? [output.parentObjectId.toLowerCase()] : [],
+    );
+    if (new Set(parents).size !== parents.length)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['outputs'],
+        message: 'duplicate cloud output parent',
+      });
   });
 export type CloudCommandInput = z.infer<typeof CloudCommandInputSchema>;
 /** Server-created proof of the canonical call, not a model-selectable tool. */

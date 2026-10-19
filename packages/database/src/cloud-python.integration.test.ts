@@ -597,6 +597,13 @@ suite(
         );
       await expect(publish(payload)).rejects.toThrow('cloud_binding_changed');
       const cached = await publish();
+      const cachedObject = cached[0]!.object.id;
+      await db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${cachedObject}`;
+      await expect(publish()).rejects.toThrow();
+      await db`update allrice_storage_objects set retention_until=null where id=${cachedObject}`;
+      await db`update allrice_cloud_execution_grants set enabled=false where id=${f.grant.id}`;
+      await expect(publish()).rejects.toThrow();
+      await db`update allrice_cloud_execution_grants set enabled=true where id=${f.grant.id}`;
       expect(cached.map((a) => a.versionId)).toEqual(
         result.artifacts.map((a) => a.versionId),
       );

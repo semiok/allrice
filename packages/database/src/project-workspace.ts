@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { assertProjectOutputParent } from './project-output-parent.ts';
 import { z } from 'zod';
 import {
   ExecutionContextSchema,
@@ -271,6 +272,16 @@ export async function executeProjectWorkspace(
     const prepared = await db.begin(async (tx) => {
       await admit(tx);
       const source = await loadedProject(tx, args.project);
+      if (args.parentObjectId)
+        await assertProjectOutputParent(
+          {
+            context: ctx,
+            sessionId: input.sessionId,
+            parentObjectId: args.parentObjectId,
+            format: 'zip',
+          },
+          tx,
+        );
       const baseline = args.baseline
         ? await loadedProject(tx, args.baseline)
         : null;
@@ -317,6 +328,9 @@ export async function executeProjectWorkspace(
           kind: 'document',
           fileName: file.name,
           format: file.format,
+          ...(file.name === 'project-source.zip' && args.parentObjectId
+            ? { parentObjectId: args.parentObjectId }
+            : {}),
           mediaType: file.mediaType,
           bytes: file.bytes,
           changeSummary: `项目版本 ${args.project.snapshot.id}；源码 ${prepared.source.document.sourceDigest}`,

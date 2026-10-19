@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { officeMediaTypes } from '@allrice/contracts';
 import type * as Database from '@allrice/database';
+import { ArtifactPublicationParentError } from '@allrice/database';
 import type * as OfficeExport from '../../office/export.js';
 import type * as Deliverable from '../../deliverable-generator.js';
 import type { RiceToolExecutionInput } from '../types.js';
@@ -423,6 +424,187 @@ describe('Office-to-PDF in the existing export publisher', () => {
 describe('Plain content through the existing export publisher', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+  });
+
+  it.each([
+    ['text', 'foo.csv', 'foo.csv', 'text/csv'],
+    ['text', '中文.CSV', '中文.CSV', 'text/csv'],
+    ['text', 'foo', 'foo.txt', 'text/plain'],
+    ['text', 'foo.csv.txt', 'foo.csv.txt', 'text/plain'],
+    ['text', 'foo.csv.exe', 'foo.csv.exe.txt', 'text/plain'],
+    ['text', 'report.html', 'report.html.txt', 'text/plain'],
+    ['text', 'report.svg', 'report.svg.txt', 'text/plain'],
+    ['text', 'csv', 'csv.txt', 'text/plain'],
+    ['text', 'folder/foo.csv', 'folder-foo.csv', 'text/csv'],
+    ['text', '  foo.csv  ', 'foo.csv', 'text/csv'],
+    ['text', 'a'.repeat(121) + '.csv', 'a'.repeat(120) + '.csv', 'text/csv'],
+    ['html', 'foo.csv', 'foo.csv.html', 'text/html'],
+    ['markdown', 'foo.csv', 'foo.csv.md', 'text/markdown'],
+  ])(
+    'publishes %s filename %s with its permitted suffix and forwards the exact parent',
+    async (format, requestedName, fileName, mediaType) => {
+      const { input, output } = setup(),
+        parentObjectId = randomUUID(),
+        seriesId = randomUUID();
+      const content = '\uFEFF编号,备注\r\n00123,"保留,逗号"\r\n';
+      const generator = await vi.importActual<typeof Deliverable>(
+        '../../deliverable-generator.js',
+      );
+      mocks.content.mockImplementation(generator.generateDeliverable);
+      mocks.publish.mockImplementation(async (publication) => ({
+        id: randomUUID(),
+        object: {
+          ...output,
+          mediaType: publication.mediaType,
+          sizeBytes: publication.bytes.length,
+          checksum: hash(publication.bytes),
+        },
+        version: {
+          seriesId,
+          version: 4,
+          parentObjectId,
+          changeSummary: '修订内容',
+        },
+      }));
+      const result = await createWorkspaceExport({
+        input,
+        arguments: {
+          format,
+          content,
+          fileName: requestedName,
+          parentObjectId,
+          changeSummary: '修订内容',
+        },
+      });
+      expect(mocks.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          format,
+          fileName,
+          mediaType,
+          bytes: Buffer.from(content),
+          parentObjectId,
+          changeSummary: '修订内容',
+        }),
+        expect.anything(),
+      );
+      expect(mocks.content).toHaveBeenCalledWith({
+        format,
+        content,
+        ...(format === 'text' ? { fileName: requestedName.trim() } : {}),
+      });
+      expect(JSON.parse(result.modelContent)).toMatchObject({
+        fileName,
+        mediaType,
+        seriesId,
+        version: 4,
+        parentObjectId,
+        downloadUrl: `/api/v1/files/${output.id}/download?name=${encodeURIComponent(fileName)}`,
+      });
+      expect(mocks.put).not.toHaveBeenCalled();
+      expect(mocks.register).not.toHaveBeenCalled();
+      expect(mocks.quality).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps CSV bytes and format=text on the legacy version path', async () => {
+    const { input, output } = setup(),
+      parentObjectId = randomUUID();
+    const content = '\uFEFF编号,金额\r\n00123,-200.00\r\n';
+    const generator = await vi.importActual<typeof Deliverable>(
+      '../../deliverable-generator.js',
+    );
+    mocks.content.mockImplementation(generator.generateDeliverable);
+    mocks.workbench.mockReturnValue(false);
+    mocks.object.mockImplementation(({ mediaType, sizeBytes, checksum }) => ({
+      ...output,
+      mediaType,
+      sizeBytes,
+      checksum,
+    }));
+    mocks.register.mockResolvedValue({
+      seriesId: randomUUID(),
+      version: 2,
+      parentObjectId,
+    });
+    const result = await createWorkspaceExport({
+      input,
+      arguments: {
+        format: 'text',
+        fileName: 'ledger.csv',
+        content,
+        parentObjectId,
+      },
+    });
+    expect(mocks.object).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mediaType: 'text/csv',
+        sizeBytes: Buffer.byteLength(content),
+        checksum: hash(Buffer.from(content)),
+      }),
+    );
+    const stored = mocks.put.mock.calls[0]![0];
+    const actualBytes = Buffer.from(
+      await new Response(mocks.put.mock.calls[0]![1]).arrayBuffer(),
+    );
+    expect(actualBytes).toEqual(Buffer.from(content));
+    expect(stored.mediaType).toBe('text/csv');
+    expect(stored.checksum).toBe(hash(actualBytes));
+    expect(mocks.register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'text',
+        fileName: 'ledger.csv',
+        parentObjectId,
+        object: stored,
+      }),
+    );
+    expect(JSON.parse(result.modelContent)).toMatchObject({
+      fileName: 'ledger.csv',
+      mediaType: 'text/csv',
+      version: 2,
+      parentObjectId,
+    });
+    expect(mocks.publish).not.toHaveBeenCalled();
+  });
+
+  it('does not bypass parent compatibility or fall back when a CSV parent is rejected', async () => {
+    const { input } = setup(),
+      parentObjectId = randomUUID();
+    const generator = await vi.importActual<typeof Deliverable>(
+      '../../deliverable-generator.js',
+    );
+    mocks.content.mockImplementation(generator.generateDeliverable);
+    mocks.publish.mockRejectedValue(
+      new ArtifactPublicationParentError(
+        input.context.runId,
+        input.call.id,
+        'version_changed',
+      ),
+    );
+    await expect(
+      createWorkspaceExport({
+        input,
+        arguments: {
+          format: 'text',
+          fileName: 'same.csv',
+          content: 'a,b\n1,2\n',
+          parentObjectId,
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'TOOL_PUBLICATION_PARENT_INVALID',
+      retryable: false,
+    });
+    expect(mocks.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        format: 'text',
+        fileName: 'same.csv',
+        parentObjectId,
+      }),
+      expect.anything(),
+    );
+    expect(mocks.object).not.toHaveBeenCalled();
+    expect(mocks.register).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
   });
 
   it.each(['text', 'markdown', 'html'])(

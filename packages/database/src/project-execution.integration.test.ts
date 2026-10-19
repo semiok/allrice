@@ -1,6 +1,7 @@
 /** Real isolated PostgreSQL; physical runsc/Bridge evidence is collected separately. */
 import { writeFile } from 'node:fs/promises';
-import { unzipSync } from 'fflate';
+import { unzipSync, zipSync } from 'fflate';
+import { raceProjectPublications } from './project-output-parent.fixture.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -12,6 +13,8 @@ import {
   resolveSandboxExecutionPolicy,
   type SandboxExecutionPolicy,
   type ProjectExecuteInput,
+  type StorageObject,
+  type StoragePort,
   type BridgeReadinessState,
 } from '@allrice/contracts';
 import {
@@ -27,7 +30,12 @@ import {
   readProjectWorkflowBudget,
 } from './project-execution.ts';
 import { createLocalCommandOperation } from './local-command-service.ts';
-import { createCloudProjectOperation } from './cloud-execution.ts';
+import {
+  createCloudProjectOperation,
+  createCloudOperationLedger,
+  cloudStableId,
+  publishCloudOperationArtifacts,
+} from './cloud-execution.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   listWorkbenchArtifacts,
@@ -53,6 +61,55 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
+
+async function readCloudPublicationState(
+  db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
+  rootRunId: string,
+  sessionId: string,
+  operationIds: string[],
+  objectIds: string[],
+) {
+  const [
+    attempts,
+    receipts,
+    reservations,
+    budgets,
+    versions,
+    artifacts,
+    objects,
+    operations,
+    events,
+  ] = await Promise.all([
+    db`select operation_id,outcome,artifacts,cleanup_confirmed_at from allrice_cloud_execution_attempts
+        where operation_id=any(${operationIds}::uuid[]) order by operation_id`,
+    db`select receipt_id,operation_id,payload,disposition from allrice_runtime_operation_receipts
+        where operation_id=any(${operationIds}::uuid[]) order by operation_id,receipt_id`,
+    db`select operation_id,metric,accounting_id,amount,settled_amount,observation_id,observation
+        from allrice_runtime_reservations where operation_id=any(${operationIds}::uuid[]) order by operation_id,metric`,
+    db`select metric,source,reserved,spent from allrice_runtime_budgets where root_run_id=${rootRunId} order by metric`,
+    db`select id,object_id,series_id,version,parent_version_id,format,file_name from allrice_deliverable_versions
+        where session_id=${sessionId} order by series_id,version`,
+    db`select version_id,provenance from allrice_workbench_artifacts
+        where provenance->>'operationId'=any(${operationIds}::text[]) order by version_id`,
+    db`select id,object_key,media_type,size_bytes,checksum,state,immutable from allrice_storage_objects
+        where id=any(${objectIds}::uuid[]) order by id`,
+    db`select id,snapshot->>'status' as status,snapshot from allrice_runtime_operations where id=any(${operationIds}::uuid[]) order by id`,
+    db`select operation_id,sequence,payload from allrice_runtime_operation_events
+        where operation_id=any(${operationIds}::uuid[]) order by operation_id,sequence`,
+  ]);
+  return {
+    attempts: [...attempts],
+    receipts: [...receipts],
+    reservations: [...reservations],
+    budgets: [...budgets],
+    versions: [...versions],
+    artifacts: [...artifacts],
+    objects: [...objects],
+    operations: [...operations],
+    events: [...events],
+  };
+}
+
 suite(
   'MET166 PR3c canonical saved-project location and original Worker — real PostgreSQL',
   () => {
@@ -70,7 +127,8 @@ suite(
       database = await createAssistantFixtureDatabase();
     }, 120000);
     afterAll(async () => {
-      await database?.close();
+      if (database)
+        console.info('Saved-project fixture cleanup', await database.close());
       vi.unstubAllEnvs();
     });
     async function setup(
@@ -301,6 +359,749 @@ suite(
         opened,
       };
     }
+
+    class CapturedProjectZip extends CloudRunnerBackend {
+      executions = 0;
+      constructor(readonly bytes: Buffer) {
+        super();
+      }
+      override async inspect() {
+        return null;
+      }
+      override async cleanup() {}
+      override async execute(
+        payload: Parameters<CloudRunnerBackend['execute']>[0],
+      ) {
+        this.executions++;
+        if (!('kind' in payload)) throw Error('Project payload required');
+        const a = payload.arguments,
+          p = a.projectPreparation,
+          source = a.projectSource;
+        return {
+          containerId: 'a'.repeat(64),
+          exitCode: 0,
+          stopped: true as const,
+          reason: 'completed' as const,
+          output: 'synthetic stopped ZIP receipt',
+          elapsedMs: 1,
+          imageDigest: payload.imageDigest,
+          artifacts: [
+            {
+              path: 'project.zip',
+              contentBase64: this.bytes.toString('base64'),
+              sizeBytes: this.bytes.length,
+              checksum:
+                'sha256:' +
+                createHash('sha256').update(this.bytes).digest('hex'),
+            },
+          ],
+          projectPreparation: {
+            version: 1 as const,
+            projectId: p.projectId,
+            sourceDigest: p.sourceDigest,
+            lockChecksum: p.lockChecksum,
+            cacheKey: source.cacheKey,
+            manager: p.manager,
+            managerVersion: p.managerVersion,
+            platform: 'linux-amd64' as const,
+            runtimeImage: payload.imageDigest,
+            packageCount: p.packages.length,
+            archiveHits: 0,
+            downloadedArchives: 0,
+            downloadedBytes: 0,
+            installation: 'succeeded' as const,
+            cacheVolume: 'allrice-project-cache-' + source.cacheKey.slice(7),
+            sourceDirectoryModified: false as const,
+            hostEnvironmentModified: false as const,
+            savedSource: {
+              project: source.project,
+              restoredDigest: p.sourceDigest,
+            },
+          },
+        };
+      }
+    }
+
+    it.each(['file', 'document'] as const)(
+      'keeps a %s ZIP parent across cloud output and source deliver; cached publication cannot bypass authority',
+      async (kind) => {
+        const f = await setup();
+        await f.setState('offline');
+        const zip1 = Buffer.from(
+          zipSync({ 'main.cjs': Buffer.from('first\n') }),
+        );
+        const zip2 = Buffer.from(
+          zipSync({ 'main.cjs': Buffer.from('second\n') }),
+        );
+        // A deterministic physical-result port only: no container, installer or model.
+        const execute = async (bytes: Buffer, parentObjectId?: string) => {
+          const callId = randomUUID(),
+            args = {
+              ...f.args,
+              outputs: [
+                {
+                  path: 'project.zip',
+                  fileName: parentObjectId ? 'project-v2.zip' : 'project.zip',
+                  format: 'zip' as const,
+                  ...(parentObjectId ? { parentObjectId } : {}),
+                },
+              ],
+            };
+          const selection = await selectProjectExecution(
+            {
+              context: f.context,
+              callId,
+              arguments: args,
+              worker: f.worker,
+              cloudReady: true,
+            },
+            f.db,
+          );
+          const created = await createCloudProjectOperation(
+            {
+              context: f.context,
+              callId,
+              projectSelection: selection,
+              worker: f.worker,
+              storage: f.storage,
+            },
+            f.db,
+          );
+          await f.approveCloud(created);
+          const backend = new CapturedProjectZip(bytes);
+          const result = await runCloudCommandOperation(created, {
+            storage: f.storage,
+            database: f.db,
+            backend,
+          });
+          expect(result.status).toBe('succeeded');
+          return { created, result, backend };
+        };
+        let old: { objectId: string; versionId: string };
+        if (kind === 'file') old = (await execute(zip1)).result.artifacts[0]!;
+        else {
+          const delivered = (await executeProjectWorkspace(
+            {
+              context: f.context,
+              sessionId: f.task.chatSessionId!,
+              worker: f.worker,
+              callId: randomUUID(),
+              arguments: { action: 'deliver', project: f.args.project },
+            },
+            f.storage,
+            f.db,
+          )) as {
+            artifacts: {
+              objectId: string;
+              versionId: string;
+              fileName: string;
+            }[];
+          };
+          old = delivered.artifacts.find(
+            (a) => a.fileName === 'project-source.zip',
+          )!;
+        }
+        const original = await getToolBrokerFile(f.context, old.objectId, f.db);
+        const oldBytes = await readArtifactBytes(f.storage, original.object);
+        const second = await execute(zip2, old.objectId);
+        const next = second.result.artifacts[0]!;
+        const rows =
+          await f.db`select v.id,v.series_id,v.version,v.parent_version_id,v.format,v.file_name,a.kind
+          from allrice_deliverable_versions v join allrice_workbench_artifacts a on a.version_id=v.id
+          where v.object_id=any(${[old.objectId, next.objectId]}::uuid[]) order by v.version`;
+        expect(rows).toHaveLength(2);
+        expect(rows[1]).toMatchObject({
+          series_id: rows[0]!.series_id,
+          version: 2,
+          parent_version_id: rows[0]!.id,
+          format: 'zip',
+          file_name: 'project-v2.zip',
+          kind,
+        });
+        const published = await getToolBrokerFile(
+          f.context,
+          next.objectId,
+          f.db,
+        );
+        expect(published.object).toMatchObject({
+          mediaType: 'application/zip',
+          immutable: true,
+        });
+        expect(await readArtifactBytes(f.storage, published.object)).toEqual(
+          zip2,
+        );
+        expect(await readArtifactBytes(f.storage, original.object)).toEqual(
+          oldBytes,
+        );
+        const [attempt] =
+          await f.db`select outcome from allrice_cloud_execution_attempts
+          where operation_id=${second.created.snapshot.binding.attempt.operationId}`;
+        const publication = {
+          context: f.context,
+          binding: second.created.snapshot.binding,
+          payload: second.created.payload,
+          artifacts: attempt!.outcome.artifacts,
+        };
+        const replay = await publishCloudOperationArtifacts(
+          publication,
+          f.storage,
+          f.db,
+        );
+        expect(replay.map((a) => a.versionId)).toEqual([next.versionId]);
+        expect(second.backend.executions).toBe(1);
+        const changed = structuredClone(second.created.payload);
+        changed.arguments.outputs![0]!.parentObjectId = randomUUID();
+        await expect(
+          publishCloudOperationArtifacts(
+            { ...publication, payload: changed },
+            f.storage,
+            f.db,
+          ),
+        ).rejects.toThrow('cloud_binding_changed');
+
+        // The source ZIP can continue a file-kind generated ZIP without changing kind.
+        const delivered = (await executeProjectWorkspace(
+          {
+            context: f.context,
+            sessionId: f.task.chatSessionId!,
+            worker: f.worker,
+            callId: randomUUID(),
+            arguments: {
+              action: 'deliver',
+              project: f.args.project,
+              parentObjectId: next.objectId,
+            },
+          },
+          f.storage,
+          f.db,
+        )) as {
+          artifacts: {
+            fileName: string;
+            objectId: string;
+            versionId: string;
+          }[];
+        };
+        const third = delivered.artifacts.find(
+          (a) => a.fileName === 'project-source.zip',
+        )!;
+        const [version] =
+          await f.db`select v.series_id,v.version,v.parent_version_id,a.kind
+          from allrice_deliverable_versions v join allrice_workbench_artifacts a on a.version_id=v.id
+          where v.id=${third.versionId}`;
+        expect(version).toMatchObject({
+          series_id: rows[0]!.series_id,
+          version: 3,
+          parent_version_id: next.versionId,
+          kind,
+        });
+        expect(
+          (
+            await publishCloudOperationArtifacts(publication, f.storage, f.db)
+          ).map((a) => a.versionId),
+        ).toEqual([next.versionId]);
+        await f.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${old.objectId}`;
+        await expect(
+          publishCloudOperationArtifacts(publication, f.storage, f.db),
+        ).rejects.toThrow();
+        await f.db`update allrice_storage_objects set retention_until=null where id=${old.objectId}`;
+        await f.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp()
+          where id=${f.cloudGrant}`;
+        await expect(
+          publishCloudOperationArtifacts(publication, f.storage, f.db),
+        ).rejects.toThrow();
+      },
+    );
+
+    it.each(['completed', 'recover-before-usage'] as const)(
+      'settles the losing saved-project publication against one latest ZIP — %s',
+      async (stage) => {
+        const f = await setup();
+        await f.setState('offline');
+        const db = f.db,
+          context = f.context,
+          rootRunId = f.rootRunId,
+          sessionId = f.task.chatSessionId!;
+        const delivered = (await executeProjectWorkspace(
+          {
+            context,
+            sessionId,
+            worker: f.worker,
+            callId: randomUUID(),
+            arguments: { action: 'deliver', project: f.args.project },
+          },
+          f.storage,
+          db,
+        )) as {
+          artifacts: {
+            fileName: string;
+            objectId: string;
+            versionId: string;
+          }[];
+        };
+        const parent = delivered.artifacts.find(
+            (artifact) => artifact.fileName === 'project-source.zip',
+          )!,
+          zip = Buffer.from(
+            zipSync({ 'main.cjs': Buffer.from('same physical output\n') }),
+          ),
+          outputCases = [
+            {
+              path: 'project.zip',
+              fileName: 'project-v2.zip',
+              format: 'zip' as const,
+              mediaType: 'application/zip',
+              bytes: zip,
+            },
+            {
+              path: 'index.html',
+              fileName: 'index.html',
+              format: 'html' as const,
+              mediaType: 'text/html',
+              bytes: Buffer.from('<!doctype html><p>saved output</p>'),
+            },
+            {
+              path: 'summary.json',
+              fileName: 'summary.json',
+              format: 'json' as const,
+              mediaType: 'application/json',
+              bytes: Buffer.from('{"amountCents":250}\n'),
+            },
+            {
+              path: 'notes.txt',
+              fileName: 'notes.txt',
+              format: 'text' as const,
+              mediaType: 'text/plain',
+              bytes: Buffer.from('saved output\n'),
+            },
+          ],
+          outputs = outputCases.map(({ path, fileName, format }, index) => ({
+            path,
+            fileName,
+            format,
+            ...(index === 0 ? { parentObjectId: parent.objectId } : {}),
+          })),
+          captured = outputCases.map(({ path, bytes }) => ({
+            path,
+            contentBase64: bytes.toString('base64'),
+            sizeBytes: bytes.length,
+            checksum:
+              'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+          })),
+          operations: Awaited<
+            ReturnType<typeof createCloudProjectOperation>
+          >[] = [];
+        for (let index = 0; index < 2; index++) {
+          const callId = randomUUID(),
+            selection = await selectProjectExecution(
+              {
+                context,
+                callId,
+                arguments: { ...f.args, outputs },
+                worker: f.worker,
+                cloudReady: true,
+              },
+              db,
+            ),
+            created = await createCloudProjectOperation(
+              {
+                context,
+                callId,
+                projectSelection: selection,
+                worker: f.worker,
+                storage: f.storage,
+              },
+              db,
+            );
+          await f.approveCloud(created);
+          expect(created.payload.network).toBe('none');
+          operations.push(created);
+        }
+        class CapturedOutputs extends CapturedProjectZip {
+          cleanups = 0;
+          outcome:
+            Awaited<ReturnType<CapturedProjectZip['execute']>> | undefined;
+          constructor() {
+            super(zip);
+          }
+          override async execute(
+            payload: Parameters<CloudRunnerBackend['execute']>[0],
+          ) {
+            const outcome = {
+              ...(await super.execute(payload)),
+              output: 'synthetic physical output preserved',
+              artifacts: captured,
+            };
+            this.outcome = structuredClone(outcome);
+            return outcome;
+          }
+          override async cleanup() {
+            this.cleanups++;
+          }
+        }
+
+        const operationIds = operations.map(
+            (op) => op.snapshot.binding.attempt.operationId,
+          ),
+          idsFor = (index: number) =>
+            outputCases.map((output) =>
+              cloudStableId(`${operationIds[index]}:artifact:${output.path}`),
+            ),
+          readState = () =>
+            readCloudPublicationState(db, rootRunId, sessionId, operationIds, [
+              ...idsFor(0),
+              ...idsFor(1),
+            ]),
+          toolBudget = (state: Awaited<ReturnType<typeof readState>>) =>
+            state.budgets.find((row) => row.metric === 'tool_calls')!,
+          admitted = await readState(),
+          written: StorageObject[] = [],
+          probes: { object: StorageObject; present: boolean }[] = [],
+          deletes: StorageObject[] = [];
+        const tracked: StoragePort = {
+          put: async (object, stream) => {
+            written.push(structuredClone(object));
+            await f.storage.put(object, stream);
+          },
+          get: f.storage.get.bind(f.storage),
+          exists: async (object) => {
+            const present = await f.storage.exists(object);
+            probes.push({ object: structuredClone(object), present });
+            return present;
+          },
+          delete: async (object) => {
+            deletes.push(structuredClone(object));
+            await f.storage.delete(object);
+          },
+        };
+        const backends = [new CapturedOutputs(), new CapturedOutputs()],
+          execute = (index: number) =>
+            runCloudCommandOperation(operations[index]!, {
+              storage: tracked,
+              database: db,
+              backend: backends[index]!,
+            }),
+          interruption = Error(
+            'injected crash after failed receipt before tool_calls settlement',
+          ),
+          settle =
+            stage === 'recover-before-usage'
+              ? vi
+                  .spyOn(operations[1]!.ledger, 'settleUsage')
+                  .mockRejectedValueOnce(interruption)
+              : undefined;
+        let raced;
+        try {
+          raced = await raceProjectPublications({
+            db,
+            storage: tracked,
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            first: () => execute(0),
+            second: () => execute(1),
+          });
+        } finally {
+          settle?.mockRestore();
+        }
+        expect(raced.blocked.holder).not.toBe(raced.blocked.waiter);
+        expect(raced.results[0]!.status).toBe('fulfilled');
+        const winner = raced.results[0]!;
+        if (winner.status !== 'fulfilled')
+          throw Error('First publication must win the observed lock race');
+        expect(winner.value.status).toBe('succeeded');
+        const failureResult = {
+          operationId: operationIds[1],
+          status: 'failed',
+          reason: 'failed',
+          exitCode: 0,
+          stopped: true,
+          cleanupConfirmed: true,
+          errorCode: 'project_output_parent_stale',
+          artifacts: [],
+          output: 'synthetic physical output preserved',
+        };
+        const loser = raced.results[1]!;
+        if (stage === 'completed') {
+          expect(loser.status).toBe('fulfilled');
+          if (loser.status !== 'fulfilled')
+            throw Error(
+              'Confirmed publication rejection must return a failed result',
+            );
+          expect(loser.value).toMatchObject(failureResult);
+        } else {
+          expect(loser.status).toBe('rejected');
+          if (loser.status !== 'rejected')
+            throw Error('Injected settlement interruption was not observed');
+          expect(loser.reason).toBe(interruption);
+        }
+
+        // Compare complete descriptors from the actual publisher and absence proof;
+        // only each operation's deterministic object identity may differ.
+        expect(written.map((object) => object.id)).toEqual(idsFor(0));
+        expect(written.map((object) => object.mediaType)).toEqual(
+          outputCases.map((output) => output.mediaType),
+        );
+        expect(probes).toHaveLength(outputCases.length);
+        expect(deletes).toEqual([]);
+        for (const [index, probe] of probes.entries()) {
+          expect(probe.present).toBe(false);
+          expect(probe.object).toEqual({
+            ...written[index]!,
+            id: idsFor(1)[index],
+            key: written[index]!.key.replace(/[^/]+$/, idsFor(1)[index]!),
+          });
+          const stored = Buffer.from(
+            await new Response(
+              await f.storage.get(written[index]!),
+            ).arrayBuffer(),
+          );
+          expect(stored).toEqual(outputCases[index]!.bytes);
+        }
+        const physical = backends[1]!.outcome!;
+        expect(physical).toMatchObject({
+          exitCode: 0,
+          stopped: true,
+          reason: 'completed',
+          output: 'synthetic physical output preserved',
+        });
+        expect(
+          physical.artifacts.map((artifact) =>
+            Buffer.from(artifact.contentBase64, 'base64'),
+          ),
+        ).toEqual(outputCases.map((output) => output.bytes));
+        const afterRace = await readState(),
+          failedJournal = afterRace.attempts.find(
+            (row) => row.operation_id === operationIds[1],
+          )!,
+          failedReceipt = afterRace.receipts.find(
+            (row) =>
+              row.receipt_id === cloudStableId(`${operationIds[1]}:result`),
+          )!,
+          rejection = {
+            version: 1,
+            code: 'project_output_parent_stale',
+            physicalOutcomeDigest: runtimePolicyDigest(physical),
+            payloadDigest: runtimePolicyDigest(operations[1]!.payload),
+            storageWrites: 0,
+            publishedArtifacts: 0,
+            absentStorageObjectsDigest: runtimePolicyDigest(
+              probes.map((probe) => probe.object),
+            ),
+          };
+        expect(failedJournal.outcome).toEqual(physical);
+        expect(failedJournal.artifacts).toEqual([]);
+        expect(
+          afterRace.operations.find((row) => row.id === operationIds[1])!
+            .status,
+        ).toBe('failed');
+        expect(failedReceipt).toMatchObject({
+          operation_id: operationIds[1],
+          disposition: 'applied',
+          payload: {
+            attempt: operations[1]!.snapshot.binding.attempt,
+            signal: {
+              type: 'operation.outcome',
+              result: { status: 'failed', effects: 'none' },
+            },
+            evidence: {
+              exitCode: 0,
+              stopped: true,
+              reason: 'completed',
+              output: physical.output,
+              artifacts: [],
+              errorCode: 'project_output_parent_stale',
+            },
+          },
+        });
+        expect(failedReceipt.payload.evidence.publicationRejection).toEqual(
+          rejection,
+        );
+        expect(failedReceipt.payload.signal.result.evidence.digest).toBe(
+          runtimePolicyDigest({
+            outcome: physical,
+            artifacts: [],
+            publicationRejection: rejection,
+          }),
+        );
+        expect(
+          afterRace.receipts.filter(
+            (row) => row.receipt_id === failedReceipt.receipt_id,
+          ),
+        ).toHaveLength(1);
+
+        if (stage === 'recover-before-usage') {
+          const pending = afterRace.reservations.find(
+            (row) =>
+              row.operation_id === operationIds[1] &&
+              row.metric === 'tool_calls',
+          )!;
+          expect(pending.settled_amount).toBeNull();
+          expect(pending.observation_id).toBeNull();
+          expect(pending.observation).toBeNull();
+          expect(failedJournal.cleanup_confirmed_at).toBeNull();
+          expect(backends[1]!.cleanups).toBe(0);
+          expect(Number(toolBudget(afterRace).reserved)).toBe(
+            Number(toolBudget(admitted).reserved) - 1,
+          );
+          expect(Number(toolBudget(afterRace).spent)).toBe(
+            Number(toolBudget(admitted).spent) + 1,
+          );
+          // A fresh recovery call constructs its own ledger from persisted binding,
+          // payload, physical outcome and receipt. This is not a process restart.
+          await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${context.jobId}`;
+          const recovery = new CapturedOutputs(),
+            coldExecute = vi
+              .spyOn(recovery, 'execute')
+              .mockRejectedValue(Error('Cold recovery must not execute')),
+            coldCollect = vi
+              .spyOn(recovery, 'collect')
+              .mockRejectedValue(
+                Error('Durable physical outcome must not be recollected'),
+              );
+          expect(
+            await recoverCloudCommandOperations({
+              database: db,
+              backend: recovery,
+            }),
+          ).toEqual({ recovered: 1, failed: 0 });
+          expect(
+            await recoverCloudCommandOperations({
+              database: db,
+              backend: recovery,
+            }),
+          ).toEqual({ recovered: 0, failed: 0 });
+          expect(coldExecute).not.toHaveBeenCalled();
+          expect(coldCollect).not.toHaveBeenCalled();
+          expect(recovery.cleanups).toBe(1);
+        }
+        const closed = await readState(),
+          settled = closed.reservations.filter(
+            (row) => row.metric === 'tool_calls',
+          );
+        expect(settled).toHaveLength(2);
+        for (const meter of settled) {
+          const index = operationIds.indexOf(meter.operation_id),
+            binding = operations[index]!.snapshot.binding;
+          expect(Number(meter.amount)).toBe(1);
+          expect(Number(meter.settled_amount)).toBe(1);
+          expect(meter.observation_id).toBe(
+            cloudStableId(`${meter.operation_id}:usage`),
+          );
+          expect(meter.observation).toMatchObject({
+            observationId: meter.observation_id,
+            accountingId: meter.accounting_id,
+            task: binding.task,
+            source: toolBudget(closed).source,
+            accountingBoundary: { kind: 'operation', attempt: binding.attempt },
+            metric: 'tool_calls',
+            unit: 'calls',
+            amount: 1,
+            state: 'settled',
+            quality: 'measured',
+          });
+        }
+        expect(Number(toolBudget(closed).reserved)).toBe(
+          Number(toolBudget(admitted).reserved) - 2,
+        );
+        expect(Number(toolBudget(closed).spent)).toBe(
+          Number(toolBudget(admitted).spent) + 2,
+        );
+        expect(
+          closed.reservations.filter((row) => row.metric !== 'tool_calls'),
+        ).toEqual(
+          admitted.reservations.filter((row) => row.metric !== 'tool_calls'),
+        );
+        expect(
+          closed.attempts.every(
+            (row) => row.cleanup_confirmed_at instanceof Date,
+          ),
+        ).toBe(true);
+        expect(
+          closed.attempts.find((row) => row.operation_id === operationIds[1])!
+            .outcome,
+        ).toEqual(physical);
+        expect(closed.receipts).toEqual(afterRace.receipts);
+        expect(closed.artifacts).toHaveLength(outputCases.length);
+        expect(
+          closed.artifacts.every(
+            (row) => row.provenance.operationId === operationIds[0],
+          ),
+        ).toBe(true);
+        expect(closed.objects.map((row) => row.id).sort()).toEqual(
+          idsFor(0).sort(),
+        );
+        expect(
+          closed.versions.filter((row) => idsFor(1).includes(row.object_id)),
+        ).toEqual([]);
+        const parentVersion = closed.versions.find(
+            (row) => row.id === parent.versionId,
+          )!,
+          chain = closed.versions.filter(
+            (row) => row.series_id === parentVersion.series_id,
+          );
+        expect(chain.map((row) => row.version)).toEqual([1, 2]);
+        expect(chain[1]).toMatchObject({
+          parent_version_id: parent.versionId,
+          object_id: idsFor(0)[0],
+        });
+
+        // Re-entry uses a new ledger and backend; durable failure never republishes,
+        // re-executes, settles twice or changes the original result receipt.
+        const replay = new CapturedOutputs(),
+          replayExecute = vi
+            .spyOn(replay, 'execute')
+            .mockRejectedValue(Error('Exact result read must not execute')),
+          replayCollect = vi
+            .spyOn(replay, 'collect')
+            .mockRejectedValue(Error('Exact result read must not collect')),
+          replayCreated = {
+            ...operations[1]!,
+            ledger: createCloudOperationLedger(operations[1]!.principal, db),
+          },
+          reread = () =>
+            runCloudCommandOperation(replayCreated, {
+              storage: tracked,
+              database: db,
+              backend: replay,
+            }),
+          firstRead = await reread();
+        expect(firstRead).toMatchObject(failureResult);
+        expect(await reread()).toEqual(firstRead);
+        expect(replay.cleanups).toBe(0);
+        if (stage === 'completed')
+          expect(
+            await runCloudCommandOperation(
+              {
+                ...operations[0]!,
+                ledger: createCloudOperationLedger(
+                  operations[0]!.principal,
+                  db,
+                ),
+              },
+              { storage: tracked, database: db, backend: replay },
+            ),
+          ).toEqual(winner.value);
+        expect(replayExecute).not.toHaveBeenCalled();
+        expect(replayCollect).not.toHaveBeenCalled();
+        expect(backends.map((backend) => backend.executions)).toEqual([1, 1]);
+        expect(written).toHaveLength(outputCases.length);
+        expect(probes).toHaveLength(outputCases.length);
+        expect(await readState()).toEqual(closed);
+        console.info('Saved-project PostgreSQL publication proof', {
+          stage,
+          blocked: raced.blocked,
+          statuses: closed.operations.map((row) => row.status).sort(),
+          mediaTypes: written.map((object) => object.mediaType),
+          receiptId: failedReceipt.receipt_id,
+          physicalOutcomeDigest: rejection.physicalOutcomeDigest,
+          toolCalls: settled.map((row) => ({
+            amount: Number(row.settled_amount),
+            state: row.observation.state,
+          })),
+          cleanupConfirmed: true,
+          repeatStateUnchanged: true,
+        });
+      },
+    );
     it.each([600000, 1800000, 3600000] as const)(
       'freezes the saved-project %s ms cap and one clock across dispatch/retry',
       async (cap) => {

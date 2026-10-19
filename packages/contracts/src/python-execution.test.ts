@@ -24,7 +24,7 @@ describe('canonical Python and frozen command compatibility', () => {
           path: 'data.csv',
           fileName: '数据.csv',
           format: 'csv',
-          parentObjectId,
+          parentObjectId: randomUUID(),
         },
       ],
     };

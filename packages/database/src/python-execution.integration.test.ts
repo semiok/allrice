@@ -1,4 +1,13 @@
 import {
+  raceProjectPublications,
+  raceQueuedOutputPublications,
+} from './project-output-parent.fixture.ts';
+import { CloudRunnerBackend } from '../../../apps/worker/src/cloud-runner/backend.js';
+import {
+  runCloudCommandOperation,
+  recoverCloudCommandOperations,
+} from '../../../apps/worker/src/cloud-runner/executor.js';
+import {
   updateBridgeSandboxNetwork,
   getBridgeSandboxNetwork,
   resolveBridgeSandboxNetworkGrant,
@@ -20,11 +29,14 @@ import {
   managedPythonPayloadForPlatform,
   resolveSandboxExecutionPolicy,
   type StoragePort,
+  type StorageObject,
 } from '@allrice/contracts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import {
   createCloudPythonOperation,
+  createCloudOperationLedger,
+  publishCloudOperationArtifacts,
   cloudStableId,
   loadCloudCommandInputs,
 } from './cloud-execution.ts';
@@ -100,6 +112,55 @@ const modernProfile = RuntimeLocalPythonProfileSchema.parse({
   stopConfirmed: true,
   pythonChartsContractVersion: 1,
 });
+
+async function readCloudPublicationState(
+  db: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>['db'],
+  rootRunId: string,
+  sessionId: string,
+  operationIds: string[],
+  objectIds: string[],
+) {
+  const [
+    attempts,
+    receipts,
+    reservations,
+    budgets,
+    versions,
+    artifacts,
+    objects,
+    operations,
+    events,
+  ] = await Promise.all([
+    db`select operation_id,outcome,artifacts,cleanup_confirmed_at from allrice_cloud_execution_attempts
+        where operation_id=any(${operationIds}::uuid[]) order by operation_id`,
+    db`select receipt_id,operation_id,payload,disposition from allrice_runtime_operation_receipts
+        where operation_id=any(${operationIds}::uuid[]) order by operation_id,receipt_id`,
+    db`select operation_id,metric,accounting_id,amount,settled_amount,observation_id,observation
+        from allrice_runtime_reservations where operation_id=any(${operationIds}::uuid[]) order by operation_id,metric`,
+    db`select metric,source,reserved,spent from allrice_runtime_budgets where root_run_id=${rootRunId} order by metric`,
+    db`select id,object_id,series_id,version,parent_version_id,format,file_name from allrice_deliverable_versions
+        where session_id=${sessionId} order by series_id,version`,
+    db`select version_id,provenance from allrice_workbench_artifacts
+        where provenance->>'operationId'=any(${operationIds}::text[]) order by version_id`,
+    db`select id,object_key,media_type,size_bytes,checksum,state,immutable from allrice_storage_objects
+        where id=any(${objectIds}::uuid[]) order by id`,
+    db`select id,snapshot->>'status' as status,snapshot from allrice_runtime_operations where id=any(${operationIds}::uuid[]) order by id`,
+    db`select operation_id,sequence,payload from allrice_runtime_operation_events
+        where operation_id=any(${operationIds}::uuid[]) order by operation_id,sequence`,
+  ]);
+  return {
+    attempts: [...attempts],
+    receipts: [...receipts],
+    reservations: [...reservations],
+    budgets: [...budgets],
+    versions: [...versions],
+    artifacts: [...artifacts],
+    objects: [...objects],
+    operations: [...operations],
+    events: [...events],
+  };
+}
+
 suite(
   'canonical Python exact cloud origin and local ready-object lifecycle',
   () => {
@@ -1339,6 +1400,716 @@ suite(
       ).rejects.toThrow();
     });
 
+    it.each(['completed', 'recover-before-usage'] as const)(
+      'settles the losing canonical cloud Python publication against one latest parent — %s',
+      async (stage) => {
+        const f = await fixture(),
+          seeded = await seedOutputParent(f),
+          parent = { objectId: seeded.object.id, versionId: seeded.version.id },
+          db = isolated.db,
+          context = f.execution,
+          rootRunId = f.run,
+          sessionId = f.session,
+          outputCases = [
+            {
+              path: 'metrics.csv',
+              fileName: 'metrics.csv',
+              format: 'csv' as const,
+              mediaType: 'text/csv',
+              bytes: Buffer.from('amountCents\n250\n'),
+            },
+            {
+              path: 'chart.png',
+              fileName: 'chart.png',
+              format: 'png' as const,
+              mediaType: 'image/png',
+              bytes: png,
+            },
+            {
+              path: 'summary.json',
+              fileName: 'summary.json',
+              format: 'json' as const,
+              mediaType: 'application/json',
+              bytes: Buffer.from('{"amountCents":250}\n'),
+            },
+            {
+              path: 'notes.txt',
+              fileName: 'notes.txt',
+              format: 'txt' as const,
+              mediaType: 'text/plain',
+              bytes: Buffer.from('saved output\n'),
+            },
+            {
+              path: 'README.md',
+              fileName: 'README.md',
+              format: 'txt' as const,
+              mediaType: 'text/markdown',
+              bytes: Buffer.from('# Saved output\n'),
+            },
+          ],
+          outputs = outputCases.map(({ path, fileName, format }, index) => ({
+            path,
+            fileName,
+            format,
+            ...(index === 0 ? { parentObjectId: parent.objectId } : {}),
+          })),
+          captured = outputCases.map(({ path, bytes, format }) => ({
+            path,
+            contentBase64: bytes.toString('base64'),
+            ...(format === 'png' ? { png: pngProof } : {}),
+          })),
+          operations: Awaited<ReturnType<typeof createCloudPythonOperation>>[] =
+            [];
+        for (let index = 0; index < 2; index++) {
+          const arguments_ = { ...args(outputs), location: 'cloud' },
+            r = await request(f, arguments_);
+          await selectManagedPythonExecution(r, db);
+          const created = await createCloudPythonOperation(
+            {
+              context,
+              callId: r.callId,
+              arguments: arguments_,
+            },
+            db,
+          );
+          await f.approve(created);
+          expect(created.payload.network).toBe('none');
+          operations.push(created);
+        }
+        class CapturedOutputs extends CloudRunnerBackend {
+          executions = 0;
+          cleanups = 0;
+          outcome:
+            Awaited<ReturnType<CloudRunnerBackend['execute']>> | undefined;
+          override async inspect() {
+            return null;
+          }
+          override async cleanup() {
+            this.cleanups++;
+          }
+          override async execute() {
+            this.executions++;
+            const outcome = {
+              containerId: '1'.repeat(64),
+              exitCode: 0,
+              stopped: true as const,
+              reason: 'completed' as const,
+              output: 'synthetic physical output preserved',
+              elapsedMs: 1,
+              artifacts: captured,
+            };
+            this.outcome = structuredClone(outcome);
+            return outcome;
+          }
+        }
+
+        const operationIds = operations.map(
+            (op) => op.snapshot.binding.attempt.operationId,
+          ),
+          idsFor = (index: number) =>
+            outputCases.map((output) =>
+              cloudStableId(`${operationIds[index]}:artifact:${output.path}`),
+            ),
+          readState = () =>
+            readCloudPublicationState(db, rootRunId, sessionId, operationIds, [
+              ...idsFor(0),
+              ...idsFor(1),
+            ]),
+          toolBudget = (state: Awaited<ReturnType<typeof readState>>) =>
+            state.budgets.find((row) => row.metric === 'tool_calls')!,
+          admitted = await readState(),
+          written: StorageObject[] = [],
+          probes: { object: StorageObject; present: boolean }[] = [],
+          deletes: StorageObject[] = [];
+        const tracked: StoragePort = {
+          put: async (object, stream) => {
+            written.push(structuredClone(object));
+            await f.storage.put(object, stream);
+          },
+          get: f.storage.get.bind(f.storage),
+          exists: async (object) => {
+            const present = await f.storage.exists(object);
+            probes.push({ object: structuredClone(object), present });
+            return present;
+          },
+          delete: async (object) => {
+            deletes.push(structuredClone(object));
+            await f.storage.delete(object);
+          },
+        };
+        const backends = [new CapturedOutputs(), new CapturedOutputs()],
+          execute = (index: number) =>
+            runCloudCommandOperation(operations[index]!, {
+              storage: tracked,
+              database: db,
+              backend: backends[index]!,
+            }),
+          interruption = Error(
+            'injected crash after failed receipt before tool_calls settlement',
+          ),
+          settle =
+            stage === 'recover-before-usage'
+              ? vi
+                  .spyOn(operations[1]!.ledger, 'settleUsage')
+                  .mockRejectedValueOnce(interruption)
+              : undefined;
+        let raced;
+        try {
+          raced = await raceProjectPublications({
+            db,
+            storage: tracked,
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            first: () => execute(0),
+            second: () => execute(1),
+          });
+        } finally {
+          settle?.mockRestore();
+        }
+        expect(raced.blocked.holder).not.toBe(raced.blocked.waiter);
+        expect(raced.results[0]!.status).toBe('fulfilled');
+        const winner = raced.results[0]!;
+        if (winner.status !== 'fulfilled')
+          throw Error('First publication must win the observed lock race');
+        expect(winner.value.status).toBe('succeeded');
+        const failureResult = {
+          operationId: operationIds[1],
+          status: 'failed',
+          reason: 'failed',
+          exitCode: 0,
+          stopped: true,
+          cleanupConfirmed: true,
+          errorCode: 'project_output_parent_stale',
+          artifacts: [],
+          output: 'synthetic physical output preserved',
+        };
+        const loser = raced.results[1]!;
+        if (stage === 'completed') {
+          expect(loser.status).toBe('fulfilled');
+          if (loser.status !== 'fulfilled')
+            throw Error(
+              'Confirmed publication rejection must return a failed result',
+            );
+          expect(loser.value).toMatchObject(failureResult);
+        } else {
+          expect(loser.status).toBe('rejected');
+          if (loser.status !== 'rejected')
+            throw Error('Injected settlement interruption was not observed');
+          expect(loser.reason).toBe(interruption);
+        }
+
+        // Compare complete descriptors from the actual publisher and absence proof;
+        // only each operation's deterministic object identity may differ.
+        expect(written.map((object) => object.id)).toEqual(idsFor(0));
+        expect(written.map((object) => object.mediaType)).toEqual(
+          outputCases.map((output) => output.mediaType),
+        );
+        expect(probes).toHaveLength(outputCases.length);
+        expect(deletes).toEqual([]);
+        for (const [index, probe] of probes.entries()) {
+          expect(probe.present).toBe(false);
+          expect(probe.object).toEqual({
+            ...written[index]!,
+            id: idsFor(1)[index],
+            key: written[index]!.key.replace(/[^/]+$/, idsFor(1)[index]!),
+          });
+          const stored = Buffer.from(
+            await new Response(
+              await f.storage.get(written[index]!),
+            ).arrayBuffer(),
+          );
+          expect(stored).toEqual(outputCases[index]!.bytes);
+        }
+        const physical = backends[1]!.outcome!;
+        expect(physical).toMatchObject({
+          exitCode: 0,
+          stopped: true,
+          reason: 'completed',
+          output: 'synthetic physical output preserved',
+        });
+        expect(
+          physical.artifacts.map((artifact) =>
+            Buffer.from(artifact.contentBase64, 'base64'),
+          ),
+        ).toEqual(outputCases.map((output) => output.bytes));
+        const afterRace = await readState(),
+          failedJournal = afterRace.attempts.find(
+            (row) => row.operation_id === operationIds[1],
+          )!,
+          failedReceipt = afterRace.receipts.find(
+            (row) =>
+              row.receipt_id === cloudStableId(`${operationIds[1]}:result`),
+          )!,
+          rejection = {
+            version: 1,
+            code: 'project_output_parent_stale',
+            physicalOutcomeDigest: digest(physical),
+            payloadDigest: digest(operations[1]!.payload),
+            storageWrites: 0,
+            publishedArtifacts: 0,
+            absentStorageObjectsDigest: digest(
+              probes.map((probe) => probe.object),
+            ),
+          };
+        expect(failedJournal.outcome).toEqual(physical);
+        expect(failedJournal.artifacts).toEqual([]);
+        expect(
+          afterRace.operations.find((row) => row.id === operationIds[1])!
+            .status,
+        ).toBe('failed');
+        expect(failedReceipt).toMatchObject({
+          operation_id: operationIds[1],
+          disposition: 'applied',
+          payload: {
+            attempt: operations[1]!.snapshot.binding.attempt,
+            signal: {
+              type: 'operation.outcome',
+              result: { status: 'failed', effects: 'none' },
+            },
+            evidence: {
+              exitCode: 0,
+              stopped: true,
+              reason: 'completed',
+              output: physical.output,
+              artifacts: [],
+              errorCode: 'project_output_parent_stale',
+            },
+          },
+        });
+        expect(failedReceipt.payload.evidence.publicationRejection).toEqual(
+          rejection,
+        );
+        expect(failedReceipt.payload.signal.result.evidence.digest).toBe(
+          digest({
+            outcome: physical,
+            artifacts: [],
+            publicationRejection: rejection,
+          }),
+        );
+        expect(
+          afterRace.receipts.filter(
+            (row) => row.receipt_id === failedReceipt.receipt_id,
+          ),
+        ).toHaveLength(1);
+
+        if (stage === 'recover-before-usage') {
+          const pending = afterRace.reservations.find(
+            (row) =>
+              row.operation_id === operationIds[1] &&
+              row.metric === 'tool_calls',
+          )!;
+          expect(pending.settled_amount).toBeNull();
+          expect(pending.observation_id).toBeNull();
+          expect(pending.observation).toBeNull();
+          expect(failedJournal.cleanup_confirmed_at).toBeNull();
+          expect(backends[1]!.cleanups).toBe(0);
+          expect(Number(toolBudget(afterRace).reserved)).toBe(
+            Number(toolBudget(admitted).reserved) - 1,
+          );
+          expect(Number(toolBudget(afterRace).spent)).toBe(
+            Number(toolBudget(admitted).spent) + 1,
+          );
+          // A fresh recovery call constructs its own ledger from persisted binding,
+          // payload, physical outcome and receipt. This is not a process restart.
+          await db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${context.jobId}`;
+          const recovery = new CapturedOutputs(),
+            coldExecute = vi
+              .spyOn(recovery, 'execute')
+              .mockRejectedValue(Error('Cold recovery must not execute')),
+            coldCollect = vi
+              .spyOn(recovery, 'collect')
+              .mockRejectedValue(
+                Error('Durable physical outcome must not be recollected'),
+              );
+          expect(
+            await recoverCloudCommandOperations({
+              database: db,
+              backend: recovery,
+            }),
+          ).toEqual({ recovered: 1, failed: 0 });
+          expect(
+            await recoverCloudCommandOperations({
+              database: db,
+              backend: recovery,
+            }),
+          ).toEqual({ recovered: 0, failed: 0 });
+          expect(coldExecute).not.toHaveBeenCalled();
+          expect(coldCollect).not.toHaveBeenCalled();
+          expect(recovery.cleanups).toBe(1);
+        }
+        const closed = await readState(),
+          settled = closed.reservations.filter(
+            (row) => row.metric === 'tool_calls',
+          );
+        expect(settled).toHaveLength(2);
+        for (const meter of settled) {
+          const index = operationIds.indexOf(meter.operation_id),
+            binding = operations[index]!.snapshot.binding;
+          expect(Number(meter.amount)).toBe(1);
+          expect(Number(meter.settled_amount)).toBe(1);
+          expect(meter.observation_id).toBe(
+            cloudStableId(`${meter.operation_id}:usage`),
+          );
+          expect(meter.observation).toMatchObject({
+            observationId: meter.observation_id,
+            accountingId: meter.accounting_id,
+            task: binding.task,
+            source: toolBudget(closed).source,
+            accountingBoundary: { kind: 'operation', attempt: binding.attempt },
+            metric: 'tool_calls',
+            unit: 'calls',
+            amount: 1,
+            state: 'settled',
+            quality: 'measured',
+          });
+        }
+        expect(Number(toolBudget(closed).reserved)).toBe(
+          Number(toolBudget(admitted).reserved) - 2,
+        );
+        expect(Number(toolBudget(closed).spent)).toBe(
+          Number(toolBudget(admitted).spent) + 2,
+        );
+        expect(
+          closed.reservations.filter((row) => row.metric !== 'tool_calls'),
+        ).toEqual(
+          admitted.reservations.filter((row) => row.metric !== 'tool_calls'),
+        );
+        expect(
+          closed.attempts.every(
+            (row) => row.cleanup_confirmed_at instanceof Date,
+          ),
+        ).toBe(true);
+        expect(
+          closed.attempts.find((row) => row.operation_id === operationIds[1])!
+            .outcome,
+        ).toEqual(physical);
+        expect(closed.receipts).toEqual(afterRace.receipts);
+        expect(closed.artifacts).toHaveLength(outputCases.length);
+        expect(
+          closed.artifacts.every(
+            (row) => row.provenance.operationId === operationIds[0],
+          ),
+        ).toBe(true);
+        expect(closed.objects.map((row) => row.id).sort()).toEqual(
+          idsFor(0).sort(),
+        );
+        expect(
+          closed.versions.filter((row) => idsFor(1).includes(row.object_id)),
+        ).toEqual([]);
+        const parentVersion = closed.versions.find(
+            (row) => row.id === parent.versionId,
+          )!,
+          chain = closed.versions.filter(
+            (row) => row.series_id === parentVersion.series_id,
+          );
+        expect(chain.map((row) => row.version)).toEqual([1, 2]);
+        expect(chain[1]).toMatchObject({
+          parent_version_id: parent.versionId,
+          object_id: idsFor(0)[0],
+        });
+
+        // Re-entry uses a new ledger and backend; durable failure never republishes,
+        // re-executes, settles twice or changes the original result receipt.
+        const replay = new CapturedOutputs(),
+          replayExecute = vi
+            .spyOn(replay, 'execute')
+            .mockRejectedValue(Error('Exact result read must not execute')),
+          replayCollect = vi
+            .spyOn(replay, 'collect')
+            .mockRejectedValue(Error('Exact result read must not collect')),
+          replayCreated = {
+            ...operations[1]!,
+            ledger: createCloudOperationLedger(operations[1]!.principal, db),
+          },
+          reread = () =>
+            runCloudCommandOperation(replayCreated, {
+              storage: tracked,
+              database: db,
+              backend: replay,
+            }),
+          firstRead = await reread();
+        expect(firstRead).toMatchObject(failureResult);
+        expect(await reread()).toEqual(firstRead);
+        expect(replay.cleanups).toBe(0);
+        if (stage === 'completed')
+          expect(
+            await runCloudCommandOperation(
+              {
+                ...operations[0]!,
+                ledger: createCloudOperationLedger(
+                  operations[0]!.principal,
+                  db,
+                ),
+              },
+              { storage: tracked, database: db, backend: replay },
+            ),
+          ).toEqual(winner.value);
+        expect(replayExecute).not.toHaveBeenCalled();
+        expect(replayCollect).not.toHaveBeenCalled();
+        expect(backends.map((backend) => backend.executions)).toEqual([1, 1]);
+        expect(written).toHaveLength(outputCases.length);
+        expect(probes).toHaveLength(outputCases.length);
+        expect(await readState()).toEqual(closed);
+        console.info('Canonical Python PostgreSQL publication proof', {
+          stage,
+          blocked: raced.blocked,
+          statuses: closed.operations.map((row) => row.status).sort(),
+          mediaTypes: written.map((object) => object.mediaType),
+          receiptId: failedReceipt.receipt_id,
+          physicalOutcomeDigest: rejection.physicalOutcomeDigest,
+          toolCalls: settled.map((row) => ({
+            amount: Number(row.settled_amount),
+            state: row.observation.state,
+          })),
+          cleanupConfirmed: true,
+          repeatStateUnchanged: true,
+        });
+      },
+    );
+    it('queues two independent local Python publication transactions, then permits the exact winner replay', async () => {
+      const f = await fixture(),
+        parent = await seedOutputParent(f),
+        runs: Awaited<ReturnType<typeof running>>[] = [];
+      for (let i = 0; i < 2; i++) {
+        const a = args([
+          {
+            path: 'metrics.csv',
+            fileName: 'metrics.csv',
+            format: 'csv',
+            parentObjectId: parent.object.id,
+          },
+        ]);
+        const r = await running(f, a, [], runs.at(-1));
+        await r.succeed([
+          await r.upload(0, Buffer.from('amountCents\n' + i + '\n')),
+        ]);
+        runs.push(r);
+      }
+      const publish = (index: number) =>
+        publishLocalPythonArtifacts(
+          {
+            context: f.execution,
+            operationId: runs[index]!.identity.operationId,
+          },
+          f.storage,
+          isolated.db,
+        );
+      const raced = await raceQueuedOutputPublications({
+        db: isolated.db,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        first: () => publish(0),
+        second: () => publish(1),
+      });
+      expect(raced.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const failed = raced.find((r) => r.status === 'rejected');
+      expect(failed?.status === 'rejected' && String(failed.reason)).toContain(
+        'project_output_parent_stale',
+      );
+      const winner = raced.findIndex((r) => r.status === 'fulfilled'),
+        value = raced[winner]!;
+      if (value.status !== 'fulfilled') throw Error('No winner');
+      expect(await publish(winner)).toEqual(value.value);
+      expect(
+        await isolated.db`select id from allrice_deliverable_versions where series_id=${parent.version.seriesId}`,
+      ).toHaveLength(2);
+    });
+    it.each([
+      'grant-revoked',
+      'parent-deleted',
+      'parent-expired',
+      'result-expired',
+    ] as const)(
+      'rechecks canonical cloud Python %s before an exact cached revision',
+      async (reason) => {
+        const f = await fixture(),
+          parent = await seedOutputParent(f, { immutable: false });
+        const a = {
+          ...args([
+            {
+              path: 'metrics.csv',
+              fileName: 'metrics.csv',
+              format: 'csv',
+              parentObjectId: parent.object.id,
+            },
+          ]),
+          location: 'cloud',
+        };
+        const req = await request(f, a);
+        await selectManagedPythonExecution(req, isolated.db);
+        const created = await createCloudPythonOperation(
+          { context: f.execution, callId: req.callId, arguments: a },
+          isolated.db,
+        );
+        await f.approve(created);
+        const bytes = Buffer.from('amountCents\n250\n'),
+          artifacts = [
+            { path: 'metrics.csv', contentBase64: bytes.toString('base64') },
+          ];
+        class StoppedCsv extends CloudRunnerBackend {
+          executions = 0;
+          override async inspect() {
+            return null;
+          }
+          override async cleanup() {}
+          override async execute() {
+            this.executions++;
+            return {
+              containerId: '1'.repeat(64),
+              exitCode: 0,
+              stopped: true as const,
+              reason: 'completed' as const,
+              output: 'synthetic stopped receipt',
+              elapsedMs: 1,
+              artifacts,
+            };
+          }
+        }
+        const backend = new StoppedCsv(),
+          result = await runCloudCommandOperation(created, {
+            storage: f.storage,
+            database: isolated.db,
+            backend,
+          });
+        expect(result.status).toBe('succeeded');
+        const v2 = result.artifacts[0]!;
+        const publish = () =>
+          publishCloudOperationArtifacts(
+            {
+              context: f.execution,
+              binding: created.snapshot.binding,
+              payload: created.payload,
+              artifacts,
+            },
+            f.storage,
+            isolated.db,
+          );
+        expect((await publish()).map((v) => v.versionId)).toEqual([
+          v2.versionId,
+        ]);
+        const thirdArgs = {
+            ...a,
+            outputs: [{ ...a.outputs[0]!, parentObjectId: v2.objectId }],
+          },
+          thirdRequest = await request(f, thirdArgs);
+        await selectManagedPythonExecution(thirdRequest, isolated.db);
+        const third = await createCloudPythonOperation(
+          {
+            context: f.execution,
+            callId: thirdRequest.callId,
+            arguments: thirdArgs,
+          },
+          isolated.db,
+        );
+        await f.approve(third);
+        expect(
+          (
+            await runCloudCommandOperation(third, {
+              storage: f.storage,
+              database: isolated.db,
+              backend: new StoppedCsv(),
+            })
+          ).status,
+        ).toBe('succeeded');
+        expect((await publish()).map((v) => v.versionId)).toEqual([
+          v2.versionId,
+        ]);
+
+        // Same original call is replayable after its own child makes the parent historical.
+        expect(
+          (
+            await createCloudPythonOperation(
+              { context: f.execution, callId: req.callId, arguments: a },
+              isolated.db,
+            )
+          ).snapshot.binding,
+        ).toEqual(created.snapshot.binding);
+        const stale = await request(f, a);
+        await selectManagedPythonExecution(stale, isolated.db);
+        await expect(
+          createCloudPythonOperation(
+            { context: f.execution, callId: stale.callId, arguments: a },
+            isolated.db,
+          ),
+        ).rejects.toThrow('project_output_parent_stale');
+        if (reason === 'grant-revoked')
+          await isolated.db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
+        if (reason === 'parent-deleted')
+          await isolated.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${parent.object.id}`;
+        if (reason === 'parent-expired')
+          await isolated.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${parent.object.id}`;
+        if (reason === 'result-expired')
+          await isolated.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${v2.objectId}`;
+        await expect(publish()).rejects.toThrow();
+        expect(backend.executions).toBe(1);
+        expect(
+          await isolated.db`select id from allrice_deliverable_versions where series_id=${parent.version.seriesId}`,
+        ).toHaveLength(3);
+      },
+    );
+
+    it.each([
+      'parent-expired',
+      'result-expired',
+      'membership-revoked',
+    ] as const)(
+      'rechecks local Python %s on the exact operation receipt',
+      async (reason) => {
+        const f = await fixture(),
+          parent = await seedOutputParent(f),
+          a = args([
+            {
+              path: 'metrics.csv',
+              fileName: 'metrics.csv',
+              format: 'csv',
+              parentObjectId: parent.object.id,
+            },
+          ]);
+        const r = await running(f, a);
+        await r.succeed([await r.upload(0, Buffer.from('amountCents\n250\n'))]);
+        const publish = () =>
+          publishLocalPythonArtifacts(
+            { context: f.execution, operationId: r.identity.operationId },
+            f.storage,
+            isolated.db,
+          );
+        const first = await publish();
+        expect(await publish()).toEqual(first);
+        const third = await running(
+          f,
+          args([
+            {
+              path: 'metrics.csv',
+              fileName: 'metrics.csv',
+              format: 'csv',
+              parentObjectId: first[0]!.object.id,
+            },
+          ]),
+          [],
+          r,
+        );
+        await third.succeed([
+          await third.upload(0, Buffer.from('amountCents\n500\n')),
+        ]);
+        await publishLocalPythonArtifacts(
+          { context: f.execution, operationId: third.identity.operationId },
+          f.storage,
+          isolated.db,
+        );
+        expect(await publish()).toEqual(first);
+
+        if (reason === 'parent-expired')
+          await isolated.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${parent.object.id}`;
+        if (reason === 'result-expired')
+          await isolated.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond' where id=${first[0]!.object.id}`;
+        if (reason === 'membership-revoked')
+          await isolated.db`update allrice_memberships set active=false where organization_id=${f.org} and user_id=${f.user}`;
+        await expect(publish()).rejects.toThrow();
+        expect(
+          await isolated.db`select id from allrice_deliverable_versions where series_id=${parent.version.seriesId}`,
+        ).toHaveLength(3);
+      },
+    );
     it.each(['png', 'csv'] as const)(
       'continues a local %s output from its frozen parent without copying ready bytes or changing the old version',
       async (format) => {
