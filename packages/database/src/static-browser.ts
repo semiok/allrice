@@ -80,13 +80,88 @@ export type StaticBrowserVerificationRow = {
   parent_grant_version: number;
   attempt_id: string;
   container_id: string | null;
-  state: 'admitted' | 'running' | 'completed' | 'unknown';
+  state: 'admitted' | 'running' | 'completed' | 'unknown' | 'failed';
   deadline_at: Date;
   browser_version: string | null;
   outcome: unknown;
+  execution_failure: StaticBrowserExecutionFailure | null;
   report_version_id: string | null;
   screenshot_version_id: string | null;
 };
+
+export type StaticBrowserExecutionFailure = {
+  version: 1;
+  verificationId: string;
+  attemptId: string;
+  containerId: string;
+  imageDigest: string;
+  reason: 'failed' | 'oom' | 'deadline' | 'canceled' | 'output_limit';
+  exitCode: number | null;
+  physicalStopConfirmed: true;
+  cleanupConfirmed: true;
+  outputDigest: string;
+  diagnostic: string;
+};
+
+/** Receipt-only drain for the exact original Worker incarnation. This does not
+ * grant execution/publication rights after expiry, revocation or cancellation.
+ * The caller must have physically stopped and removed the isolated verifier. */
+export async function recordStaticBrowserExecutionFailure(
+  row: StaticBrowserVerificationRow,
+  failure: StaticBrowserExecutionFailure,
+  db: DB = getDatabase(),
+) {
+  if (
+    row.location !== 'cloud' ||
+    failure.version !== 1 ||
+    failure.verificationId !== row.id ||
+    failure.attemptId !== row.attempt_id ||
+    !/^[a-f0-9]{64}$/.test(failure.containerId) ||
+    failure.imageDigest !== staticBrowserImageV1 ||
+    !['failed', 'oom', 'deadline', 'canceled', 'output_limit'].includes(
+      failure.reason,
+    ) ||
+    (failure.exitCode !== null && !Number.isSafeInteger(failure.exitCode)) ||
+    failure.physicalStopConfirmed !== true ||
+    failure.cleanupConfirmed !== true ||
+    !/^sha256:[a-f0-9]{64}$/.test(failure.outputDigest) ||
+    typeof failure.diagnostic !== 'string' ||
+    failure.diagnostic.length > 2000
+  )
+    throw new RuntimePolicyError('static_browser_failure_invalid');
+  return db.begin(async (tx) => {
+    // Match the immutable intent and current original job identity, not a
+    // model-supplied error string or a replacement Worker's lease.
+    const [current] = await tx<StaticBrowserVerificationRow[]>`
+      select v.* from allrice_static_browser_verifications v
+      join allrice_jobs j on j.id=v.job_id and j.run_id=v.run_id
+        and j.organization_id=v.organization_id and j.workspace_id=v.workspace_id and j.owner_id=v.owner_id
+      where v.id=${row.id} and v.organization_id=${row.organization_id}
+        and v.workspace_id=${row.workspace_id} and v.owner_id=${row.owner_id}
+        and v.run_id=${row.run_id} and v.session_id=${row.session_id} and v.call_id=${row.call_id}
+        and v.attempt_id=${row.attempt_id} and v.container_id=${failure.containerId} and v.location='cloud'
+        and v.job_id=${row.job_id} and v.worker_id=${row.worker_id}
+        and v.job_attempt=${row.job_attempt} and v.job_lease_token=${row.job_lease_token}
+        and j.worker_id=v.worker_id and j.attempt=v.job_attempt and j.lease_token=v.job_lease_token
+        and v.state in ('running','failed') for share of j for update of v`;
+    if (!current || current.outcome)
+      throw new RuntimePolicyError('static_browser_failure_unconfirmed');
+    if (current.execution_failure) {
+      if (!runtimeContractEqual(current.execution_failure, failure))
+        throw new RuntimePolicyError('idempotency_conflict');
+      return current.execution_failure;
+    }
+    const [saved] = await tx<
+      { execution_failure: StaticBrowserExecutionFailure }[]
+    >`
+      update allrice_static_browser_verifications
+      set state='failed',execution_failure=${tx.json(failure)},completed_at=clock_timestamp()
+      where id=${row.id} and state='running' returning execution_failure`;
+    if (!saved)
+      throw new RuntimePolicyError('static_browser_failure_unconfirmed');
+    return saved.execution_failure;
+  });
+}
 
 /** Both the source session and version are authorized before returning bytes.
  * Old exact versions remain usable; a stale version is never silently replaced. */
