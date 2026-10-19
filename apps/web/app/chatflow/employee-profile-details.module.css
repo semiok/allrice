@@ -148,6 +148,28 @@
   gap: 16px;
   outline-offset: 4px;
 }
+.procedureGroups {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+.procedureGroup {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+.procedureIntroduction {
+  display: grid;
+  gap: 4px;
+}
+.procedureIntroduction h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+.procedureIntroduction p {
+  color: #647084;
+  font-size: 12px;
+}
 .item {
   min-width: 0;
   padding: 16px 0;
@@ -163,6 +185,36 @@
 }
 .item h4 {
   min-width: 0;
+}
+.procedureItem {
+  padding: 14px 16px;
+  border: 1px solid #e2e6ec;
+  border-radius: 10px;
+  background: #f8f9fb;
+}
+.procedureItem header {
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 12px;
+}
+.procedureItem h4 {
+  font-size: 13px;
+}
+.procedureMetadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.procedureStatus {
+  color: #287654;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.procedureBody {
+  color: #647084;
+  font-size: 13px;
+  white-space: pre-wrap;
 }
 .item ul {
   padding-left: 20px;
@@ -252,6 +304,13 @@
   .item header {
     flex-direction: column;
     gap: 6px;
+  }
+  .procedureItem {
+    padding: 14px 12px;
+  }
+  .procedureItem header {
+    flex-direction: row;
+    gap: 6px 12px;
   }
   .badge {
     margin-left: 0;
