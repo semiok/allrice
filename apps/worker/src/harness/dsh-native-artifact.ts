@@ -12,6 +12,22 @@ const hash = (bytes: string | Buffer) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const run = promisify(execFile);
+export type DshNativeVerificationObserver = (
+  metric:
+    | { kind: 'read'; bytes: number }
+    | { kind: 'package' }
+    | { kind: 'cache'; hit: boolean },
+) => void;
+function observeNative(
+  observer: DshNativeVerificationObserver | undefined,
+  metric: Parameters<DshNativeVerificationObserver>[0],
+) {
+  try {
+    observer?.(metric);
+  } catch {
+    /* diagnostics never grant or deny approval */
+  }
+}
 const nativeDirectory = 'apps/worker/dsh';
 export const nativeArtifactPath = '.local/dsh-native-artifact.json';
 export const nativeProfiles = Object.freeze({
@@ -135,6 +151,7 @@ function rootDistribution(bytes: Buffer) {
  * credentials, prompts, personal Skills or the evaluated !!js profile values. */
 export async function measureDshNativeArtifact(
   rootInput: string,
+  observer?: DshNativeVerificationObserver,
 ): Promise<DshNativeArtifactManifest> {
   const root = await realpath(rootInput);
   const files: FileFact[] = [],
@@ -151,7 +168,9 @@ export async function measureDshNativeArtifact(
       fail('FILE_TYPE_OR_SIZE');
     if ((await realpath(path)) !== path) fail('FILE_RESOLUTION_CHANGED');
     inside(path);
-    return readFile(path);
+    const bytes = await readFile(path);
+    observeNative(observer, { kind: 'read', bytes: bytes.length });
+    return bytes;
   };
   const fileFact = async (path: string): Promise<FileFact> => {
     const bytes = await bytesAt(path);
@@ -201,7 +220,9 @@ export async function measureDshNativeArtifact(
     return null;
   };
   const visit = async (path: string): Promise<void> => {
-    if (packages.has(path)) return;
+    const cached = packages.has(path);
+    observeNative(observer, { kind: 'cache', hit: cached });
+    if (cached) return;
     if (packages.size >= 1000) fail('PACKAGE_LIMIT');
     const metadata = JSON.parse(
       (await bytesAt(join(path, 'package.json'))).toString(),
@@ -225,6 +246,7 @@ export async function measureDshNativeArtifact(
       checksum: '',
     };
     packages.set(path, item);
+    observeNative(observer, { kind: 'package' });
     const packageFiles: FileFact[] = [];
     const walk = async (folder: string): Promise<void> => {
       for (const entry of (await readdir(folder, { withFileTypes: true })).sort(
@@ -581,6 +603,7 @@ export async function verifyDshNativeArtifact(input: {
   expectedId: string;
   sourceSha?: string;
   sourceTree?: string;
+  observe?: DshNativeVerificationObserver;
 }) {
   if (!/^sha256:[a-f0-9]{64}$/.test(input.expectedId))
     fail('APPROVAL_REQUIRED');
@@ -594,8 +617,10 @@ export async function verifyDshNativeArtifact(input: {
     (await realpath(path)) !== path
   )
     fail('MANIFEST_FILE');
+  const manifestBytes = await readFile(path);
+  observeNative(input.observe, { kind: 'read', bytes: manifestBytes.length });
   const stored = JSON.parse(
-    await readFile(path, 'utf8'),
+    manifestBytes.toString('utf8'),
   ) as DshNativeArtifactManifest;
   if (
     stored.artifactId !== input.expectedId ||
@@ -606,7 +631,7 @@ export async function verifyDshNativeArtifact(input: {
     fail('SOURCE_MISMATCH');
   if (input.sourceTree && stored.source?.tree !== input.sourceTree)
     fail('SOURCE_MISMATCH');
-  const measured = await measureDshNativeArtifact(root);
+  const measured = await measureDshNativeArtifact(root, input.observe);
   if (measured.artifactId !== input.expectedId) fail('CONTENT_MISMATCH');
   return {
     ...measured,
@@ -681,7 +706,7 @@ export async function installRetainedDshNativeArtifact(
   input: Parameters<typeof verifyDshNativeArtifact>[0],
 ) {
   if (!approvedArtifact || installing) fail('NOT_INSTALLED');
-  if (retainedArtifacts.size >= 5 || retainedArtifacts.has(input.expectedId))
+  if (retainedArtifacts.size >= 6 || retainedArtifacts.has(input.expectedId))
     fail('RETAINED_DUPLICATE_OR_LIMIT');
   assertNativeLoader();
   installing = true;

@@ -314,6 +314,7 @@ export class DshProtocolClient {
       | 'drain'
       | 'flush'
       | 'join'
+      | 'joinForFinalDelivery'
       | 'inspect'
       | 'finish'
       | 'diagnostics',
@@ -325,7 +326,11 @@ export class DshProtocolClient {
       // Join waits for owned background agents, including human approval. Its
       // lifetime is governed by Worker lease/cancel and the durable task clock,
       // not the short protocol acknowledgement timeout.
-      action === 'diagnostics' ? 2_000 : action === 'join' ? 0 : undefined,
+      action === 'diagnostics'
+        ? 2_000
+        : ['join', 'joinForFinalDelivery'].includes(action)
+          ? 0
+          : undefined,
     );
   }
 
@@ -471,9 +476,17 @@ export class DshProtocolClient {
       this.pending.delete(frame.id);
       const error = record(frame.error);
       if (error) {
+        const businessCode =
+          typeof error.code === 'string'
+            ? error.code
+            : record(error.data)?.code;
+        const completing =
+          businessCode === 'ASSISTANT_COMPLETING' ||
+          (businessCode === undefined &&
+            error.message === 'ASSISTANT_COMPLETING');
         pending.reject(
           new HandlerError(
-            'DSH_REQUEST_FAILED',
+            completing ? 'ASSISTANT_COMPLETING' : 'DSH_REQUEST_FAILED',
             typeof error.message === 'string'
               ? error.message
               : 'DSH runtime rejected the request',

@@ -235,6 +235,7 @@ integration(
             return reply;
           },
           assistants: productionAssistantController({
+            deliveryMode: 'legacy',
             configuration: f.config,
             database: database.db,
             authorize: assertAssistantAuthority,

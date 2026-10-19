@@ -545,11 +545,11 @@ describe('native artifact content and launch boundary', () => {
       }),
     ).toThrow('PIN_NOT_APPROVED');
   });
-  it('keeps five independently measured readers and rejects a sixth without replacing any pin', async () => {
+  it('keeps six independently measured readers and rejects a seventh without replacing any pin', async () => {
     process.execArgv = [];
     vi.stubEnv('NODE_OPTIONS', '');
     const candidates = [];
-    for (let index = 0; index < 7; index++) {
+    for (let index = 0; index < 8; index++) {
       const root = await fixture();
       await writeFile(
         join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
@@ -564,19 +564,19 @@ describe('native artifact content and launch boundary', () => {
       root: first.root,
       expectedId: first.manifest.artifactId,
     });
-    for (const candidate of candidates.slice(1, 6))
+    for (const candidate of candidates.slice(1, 7))
       await registry.installRetainedDshNativeArtifact({
         root: candidate.root,
         expectedId: candidate.manifest.artifactId,
       });
-    const excess = candidates[6]!;
+    const excess = candidates[7]!;
     await expect(
       registry.installRetainedDshNativeArtifact({
         root: excess.root,
         expectedId: excess.manifest.artifactId,
       }),
     ).rejects.toThrow('RETAINED_DUPLICATE_OR_LIMIT');
-    for (const candidate of candidates.slice(0, 6))
+    for (const candidate of candidates.slice(0, 7))
       expect(
         registry.nativeArtifactLaunchForPin({
           artifactId: candidate.manifest.artifactId,
@@ -796,5 +796,61 @@ describe('native artifact content and launch boundary', () => {
         profile: join(root, 'unapproved.yml'),
       }),
     ).toThrow('PROFILE_OVERRIDE');
+  });
+});
+
+describe('MET195 observational native metrics', () => {
+  it('counts actual verifier release reads and package cache visits without changing any v1 identity field', async () => {
+    const root = await fixture();
+    const original = await measureDshNativeArtifact(root);
+    const metrics: Array<
+      Parameters<
+        NonNullable<Parameters<typeof verifyDshNativeArtifact>[0]['observe']>
+      >[0]
+    > = [];
+    const observed = await measureDshNativeArtifact(root, (metric) =>
+      metrics.push(metric),
+    );
+    expect(observed).toEqual(original);
+    expect(metrics.filter((m) => m.kind === 'package')).toHaveLength(
+      original.content.packages.length,
+    );
+    expect(metrics.filter((m) => m.kind === 'read').length).toBeGreaterThan(
+      original.content.files.length,
+    );
+    expect(metrics.some((m) => m.kind === 'read' && m.bytes > 0)).toBe(true);
+    expect(metrics.some((m) => m.kind === 'cache' && !m.hit)).toBe(true);
+    const sealed = await seal(root);
+    const verified = await verifyDshNativeArtifact({
+      root,
+      expectedId: sealed.artifactId,
+      observe: (metric) => metrics.push(metric),
+    });
+    expect(verified.artifactId).toBe(sealed.artifactId);
+    expect(verified.content).toEqual(sealed.content);
+  });
+  it('does not let a failing diagnostic sink bypass unchanged content verification or replace a valid result', async () => {
+    const root = await fixture();
+    const sealed = await seal(root);
+    const observe = () => {
+      throw Error('diagnostic sink unavailable');
+    };
+    expect(
+      (
+        await verifyDshNativeArtifact({
+          root,
+          expectedId: sealed.artifactId,
+          observe,
+        })
+      ).artifactId,
+    ).toBe(sealed.artifactId);
+    await put(
+      root,
+      'node_modules/peer-only/index.js',
+      'export const tampered = true;',
+    );
+    await expect(
+      verifyDshNativeArtifact({ root, expectedId: sealed.artifactId, observe }),
+    ).rejects.toThrow('CONTENT_MISMATCH');
   });
 });

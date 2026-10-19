@@ -245,8 +245,10 @@ function fixture(options: {
     assistants: options.ordinary
       ? undefined
       : {
+          deliveryMode: 'legacy',
           rootRunId: randomUUID(),
           bind: async () => ({
+            hasPriorRoot: false,
             handle: async () => {
               if (options.admissionFailure)
                 throw new AssistantRuntimeError('budget_exhausted');

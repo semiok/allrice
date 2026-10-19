@@ -1,4 +1,9 @@
+import {
+  assertJobCompletionGuard,
+  type JobCompletionGuard,
+} from '../final-delivery-commit.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
+import { selectCheckedFinalDeliveryArtifact } from '../final-delivery-rollout.ts';
 import {
   bindLeasedNativeSession,
   prepareLeasedNativeSession,
@@ -80,6 +85,8 @@ import {
   ChatMessageContentSchema,
   CreateRunInputSchema,
   EmployeeExecutionSnapshotSchema,
+  AssistantRunConfigurationSchema,
+  runtimeFeatureEnabled,
   ExecutionContextSchema,
   JobPayloadSchema,
   PolicySnapshotSchema,
@@ -406,6 +413,27 @@ type RunAdmission =
   | { kind: 'experience'; context: ResourcePrincipal; occurrenceId: string }
   | { kind: 'maintenance_repair'; context: ResourcePrincipal }
   | { kind: 'maintenance_repository'; context: ResourcePrincipal };
+
+/** @internal New-Run server projection. An employee/browser snapshot cannot
+ * opt in, opt out or copy this policy from another Run. */
+export function freezeOfficeFirstDeliverySnapshot(
+  snapshot: NonNullable<EnqueueOptions['employeeBinding']>['executionSnapshot'],
+  eligible: boolean,
+  artifactId?: string,
+) {
+  const frozen = { ...snapshot };
+  delete frozen.officeFirstDeliveryPolicy;
+  delete frozen.finalDeliveryPolicy;
+  if (eligible && artifactId) {
+    frozen.officeFirstDeliveryPolicy = 'xlsx_formula_cache_v1';
+    frozen.finalDeliveryPolicy = {
+      version: 1,
+      mode: 'checked_native_v1',
+      artifactId,
+    };
+  }
+  return frozen;
+}
 export async function enqueueRun(
   context: RequestContext,
   input: unknown,
@@ -1284,8 +1312,51 @@ async function enqueueRunCore(
       `;
     }
     if (options.employeeBinding) {
+      const submittedInput =
+        submission.input &&
+        typeof submission.input === 'object' &&
+        !Array.isArray(submission.input)
+          ? (submission.input as Record<string, unknown>)
+          : {};
+      const assistantConfiguration = AssistantRunConfigurationSchema.safeParse(
+        submittedInput.assistantConfiguration,
+      );
+      const officePolicyEligible =
+        admission.kind === 'browser' &&
+        submission.type === 'allrice.employee.run' &&
+        !!options.conversationDelivery &&
+        !options.qualityBinding &&
+        !options.repairBinding &&
+        !options.repositoryReviewBinding &&
+        !options.repositoryBinding &&
+        !options.repositoryMergeBinding &&
+        !options.technicalBinding &&
+        !options.workflowBinding &&
+        !options.skillBinding &&
+        runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') &&
+        runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
+        assistantConfiguration.success &&
+        assistantConfiguration.data.allowAssistants &&
+        options.employeeBinding.providerSnapshot.provider === 'dsh' &&
+        options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
+          'assistant.delegate',
+        ) &&
+        options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
+          'workspace.export.create',
+        );
       const executionSnapshot = EmployeeExecutionSnapshotSchema.parse({
-        ...options.employeeBinding.executionSnapshot,
+        ...freezeOfficeFirstDeliverySnapshot(
+          options.employeeBinding.executionSnapshot,
+          officePolicyEligible,
+          officePolicyEligible
+            ? await selectCheckedFinalDeliveryArtifact(transaction, {
+                organizationId: context.organizationId,
+                workspaceId,
+                ownerId,
+                sessionId: options.employeeBinding.sessionId,
+              })
+            : undefined,
+        ),
         tenantContext: {
           organizationId: context.organizationId,
           workspaceId,
@@ -2458,12 +2529,18 @@ export async function completeJob(input: {
   jobId: string;
   leaseToken: string;
   result: unknown;
+  /** Worker-only independent capability; never serialized in result/events. */
+  checkedDelivery?: JobCompletionGuard;
 }) {
+  const checked = Object.hasOwn(input, 'checkedDelivery');
+  if (checked) assertJobCompletionGuard(input.checkedDelivery);
+  const guard = checked ? input.checkedDelivery! : undefined;
   const workerId = UuidSchema.parse(input.workerId);
   const jobId = UuidSchema.parse(input.jobId);
   const leaseToken = UuidSchema.parse(input.leaseToken);
   const sql = getDatabase();
-  await sql.begin(async (transaction) => {
+  const isolation = guard ? 'isolation level read committed' : '';
+  await sql.begin(isolation, async (transaction) => {
     const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
     const stopped = queueStopCause(job, new Date());
     if (stopped) {
@@ -2554,6 +2631,9 @@ export async function completeJob(input: {
       (job.payload as { type?: string }).type === experienceConsolidationJobType
         ? await completeExperienceConsolidation(transaction, job, input.result)
         : input.result;
+    const deliveryCheck = guard
+      ? await guard.assertCurrent(transaction, job, result)
+      : undefined;
     await transitionTerminal(transaction, job, {
       jobStatus: 'succeeded',
       runStatus: 'succeeded',
@@ -2576,6 +2656,7 @@ export async function completeJob(input: {
       )
         throw new QueueError('lease_lost');
     }
+    await deliveryCheck?.assertCommitted();
   });
 }
 

@@ -23,6 +23,8 @@ import {
 import type {
   HarnessExecutionInput,
   HarnessRuntimeProcessSnapshot,
+  HarnessInputDeliveryHold,
+  HarnessInputDeliveryPort,
 } from '../adapter.js';
 import {
   DeploymentDshCredentialResolver,
@@ -156,6 +158,19 @@ export function configuredDshNativeLaunch(options: DshRuntimePoolOptions = {}) {
 
 export class DshRuntimePool {
   private readonly runtimes = new Map<string, DshRuntime>();
+  private readonly inputSteers = new Map<DshRuntime, Set<Promise<boolean>>>();
+  private readonly inputHolds = new Map<
+    DshRuntime,
+    {
+      gateId: string;
+      turnId: string;
+      runId: string;
+      phase: 'paused' | 'releasing' | 'released';
+      hold: HarnessInputDeliveryHold;
+      paused: Promise<Record<string, unknown>>;
+      released?: Promise<Record<string, unknown>>;
+    }
+  >();
   private readonly credentialResolver: DshCredentialResolver;
   private readonly runtimeCommand: string | undefined;
   private readonly runtimeArgs: readonly string[];
@@ -792,6 +807,7 @@ export class DshRuntimePool {
       turnId: string;
       kind: 'steer_current' | 'ask_user';
     },
+    originalTurnId?: string,
   ) {
     const runtime = this.runtimes.get(threadId);
     if (!runtime) {
@@ -801,7 +817,150 @@ export class DshRuntimePool {
         true,
       );
     }
-    return runtime.client.steer(runtime.sessionId, message, typed);
+    const held = this.inputHolds.get(runtime);
+    if (
+      held?.phase === 'paused' &&
+      held.turnId === (originalTurnId ?? typed?.turnId)
+    )
+      throw new HandlerError(
+        'ASSISTANT_COMPLETING',
+        'ASSISTANT_COMPLETING',
+        false,
+      );
+    const work = runtime.client.steer(runtime.sessionId, message, typed);
+    const outcome = work.then(
+      () => false,
+      (error: unknown) =>
+        error instanceof HandlerError && error.code === 'ASSISTANT_COMPLETING',
+    );
+    const active = this.inputSteers.get(runtime) ?? new Set<Promise<boolean>>();
+    this.inputSteers.set(runtime, active);
+    active.add(outcome);
+    void outcome.then(() => {
+      active.delete(outcome);
+      if (!active.size && this.inputSteers.get(runtime) === active)
+        this.inputSteers.delete(runtime);
+    });
+    return work;
+  }
+
+  /** Native/Worker private handshake. ACK means drained control state, never adopted input. */
+  async inputDeliveryControl(
+    runtime: DshRuntime,
+    operation: 'pause' | 'release',
+    params: Record<string, unknown>,
+    context: {
+      runId: string;
+      turnId(): string | null;
+      signal: AbortSignal;
+      delivery: HarnessInputDeliveryPort;
+      assertAuthority(): Promise<void>;
+    },
+  ) {
+    const gateId = UuidSchema.parse(params.gateId);
+    if (
+      this.runtimes.get(runtime.sessionId) !== runtime ||
+      params.nativeSessionId !== runtime.sessionId ||
+      params.runId !== context.runId ||
+      typeof params.turnId !== 'string'
+    )
+      throw new HandlerError(
+        'INPUT_GATE_SCOPE_CHANGED',
+        'INPUT_GATE_SCOPE_CHANGED',
+        false,
+      );
+    const prior = this.inputHolds.get(runtime);
+    if (operation === 'release') {
+      if (
+        !prior ||
+        prior.gateId !== gateId ||
+        prior.turnId !== params.turnId ||
+        prior.runId !== context.runId
+      )
+        throw new HandlerError(
+          'INPUT_GATE_SCOPE_CHANGED',
+          'INPUT_GATE_SCOPE_CHANGED',
+          false,
+        );
+      return (prior.released ??= (async () => {
+        prior.phase = 'releasing'; // allow the existing poller's real handoff RPCs
+        try {
+          await prior.hold.resumeBeforeTurnClose();
+          await context.assertAuthority();
+          context.signal.throwIfAborted();
+          if (context.turnId() !== prior.turnId)
+            throw new HandlerError(
+              'INPUT_GATE_SCOPE_CHANGED',
+              'INPUT_GATE_SCOPE_CHANGED',
+              false,
+            );
+          return { released: true, gateId, turnId: prior.turnId };
+        } finally {
+          prior.phase = 'released';
+          prior.hold.dispose();
+        }
+      })());
+    }
+    context.signal.throwIfAborted();
+    if (context.turnId() !== params.turnId)
+      throw new HandlerError(
+        'INPUT_GATE_SCOPE_CHANGED',
+        'INPUT_GATE_SCOPE_CHANGED',
+        false,
+      );
+    if (prior?.gateId === gateId) {
+      if (prior.phase !== 'paused')
+        throw new HandlerError(
+          'INPUT_GATE_RELEASED',
+          'INPUT_GATE_RELEASED',
+          false,
+        );
+      return prior.paused;
+    }
+    if (prior && prior.phase !== 'released')
+      throw new HandlerError('INPUT_GATE_BUSY', 'INPUT_GATE_BUSY', false);
+    const hold = context.delivery.pause({
+      threadId: runtime.sessionId,
+      turnId: params.turnId,
+    });
+    const inFlight = [...(this.inputSteers.get(runtime) ?? [])];
+    const state = {
+      gateId,
+      turnId: params.turnId,
+      runId: context.runId,
+      phase: 'paused' as 'paused' | 'releasing' | 'released',
+      hold,
+      paused: Promise.resolve({}) as Promise<Record<string, unknown>>,
+    };
+    this.inputHolds.set(runtime, state);
+    state.paused = (async () => {
+      const outcomes = (
+        await Promise.all([hold.settled, Promise.all(inFlight)])
+      )[1];
+      if (outcomes.some((knownRefusal) => !knownRefusal) || !hold.current())
+        throw new HandlerError(
+          'INPUT_GATE_NOT_QUIESCENT',
+          'INPUT_GATE_NOT_QUIESCENT',
+          false,
+        );
+      await context.assertAuthority();
+      context.signal.throwIfAborted();
+      if (!hold.current() || context.turnId() !== state.turnId)
+        throw new HandlerError(
+          'INPUT_GATE_SCOPE_CHANGED',
+          'INPUT_GATE_SCOPE_CHANGED',
+          false,
+        );
+      return { paused: true, gateId, turnId: state.turnId };
+    })();
+    return state.paused;
+  }
+
+  clearInputDelivery(runtime: DshRuntime) {
+    this.inputHolds.get(runtime)?.hold.dispose();
+    this.inputHolds.delete(runtime);
+    // A prior caller may have returned while its RPC is still unresolved.
+    if (!this.inputSteers.get(runtime)?.size) this.inputSteers.delete(runtime);
   }
 
   inventory(): readonly HarnessRuntimeProcessSnapshot[] {
@@ -826,12 +985,14 @@ export class DshRuntimePool {
   async drop(threadId: string) {
     const runtime = this.runtimes.get(threadId);
     this.runtimes.delete(threadId);
+    if (runtime) this.clearInputDelivery(runtime);
     await runtime?.client.close();
   }
 
   async close() {
     const runtimes = [...this.runtimes.values()];
     this.runtimes.clear();
+    for (const runtime of runtimes) this.clearInputDelivery(runtime);
     await Promise.allSettled(runtimes.map((runtime) => runtime.client.close()));
   }
 }

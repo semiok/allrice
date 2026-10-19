@@ -38,6 +38,10 @@ export function nativeExecutionFailureText(
   switch (code) {
     case 'DOCUMENT_DELIVERY_INCOMPLETE':
       return '本轮文档尚未交付完成，回复和历史文件已保留。可继续让员工修正导出；历史版本不会冒充新文件。';
+    case 'FINAL_DELIVERY_RESPONSE_INVALID':
+      return '本轮交付说明或必需成果尚未通过核对，已有文件与原回复已保留；任务没有自动重跑。';
+    case 'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE':
+      return '本轮交付事实尚不能完整核验，已有文件与原回复已保留；任务没有自动重跑。';
     case 'DSH_TRANSPORT':
       return '模型连接中断，本轮未完成。已产生的内容和工具结果已保留，可展开“工作过程”查看；任务没有整轮重跑。';
     case 'DSH_TIMEOUT':

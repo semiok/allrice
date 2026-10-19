@@ -11,6 +11,10 @@ import {
 } from '@allrice/database';
 
 import { HandlerError } from './errors.js';
+import {
+  beginCheckedFinalDeliveryExecution,
+  readCheckedFinalDeliveryForExecution,
+} from './final-delivery/checked-delivery.js';
 import { HarnessEventBatcher } from './harness/delta-batcher.js';
 import { normalizeHarnessRunEvent } from './harness/runtime-contract.js';
 import { prepareExecutionIsolation } from './isolation.js';
@@ -170,20 +174,28 @@ export async function runClaimedJob(
         isolation: 'tenant-run-attempt',
       },
     });
+    const workflowLease = {
+      workerId: input.workerId,
+      jobId: input.jobId,
+      leaseToken: input.leaseToken,
+      leaseMs: input.leaseMs,
+    };
+    beginCheckedFinalDeliveryExecution(workflowLease);
     const result = await executeHandler({
       execution,
       isolation,
       signal: controller.signal,
       onHarnessEvent: (event) => eventBatcher.accept(event),
-      workflowLease: {
-        workerId: input.workerId,
-        jobId: input.jobId,
-        leaseToken: input.leaseToken,
-        leaseMs: input.leaseMs,
-      },
+      workflowLease,
     });
     await eventBatcher.flush();
     if (controller.signal.aborted || input.stopping()) return;
+    // Both private proof and its real runtime commit guard are required here.
+    // The guard is passed separately; result/event JSON never contains either.
+    const delivery = readCheckedFinalDeliveryForExecution(
+      workflowLease,
+      result,
+    );
     await appendJobEvent({
       workerId: input.workerId,
       jobId: input.jobId,
@@ -196,6 +208,9 @@ export async function runClaimedJob(
       jobId: input.jobId,
       leaseToken: input.leaseToken,
       result,
+      ...(delivery.coverage === 'checked_native_v1'
+        ? { checkedDelivery: delivery.checkedDelivery }
+        : {}),
     });
   } catch (error) {
     if (error instanceof WorkflowPaused) return;

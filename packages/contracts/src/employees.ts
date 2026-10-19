@@ -22,6 +22,7 @@ import { LocalMcpSnapshotSchema } from './local-mcp.ts';
 import { ChecksumSchema } from './runs.ts';
 import { ManagedPythonPurposeSchema } from './runtime-v2/local-python.ts';
 import { SandboxExecutionPolicySchema } from './runtime-v2/sandbox-execution.ts';
+import { OfficeFirstDeliveryPolicySchema } from './office-quality.ts';
 import {
   MemoryClassSchema,
   MemoryLifecycleStateSchema,
@@ -702,6 +703,16 @@ export const EmployeeExecutionSnapshotV2Schema =
     // Frozen once per new Run. Missing on old Runs means the old executor
     // limit, not implicit permission to start a longer command.
     sandboxExecutionPolicy: SandboxExecutionPolicySchema.optional(),
+    // Server-selected for new supported Runs only. No backfill/default on old JSON.
+    officeFirstDeliveryPolicy: OfficeFirstDeliveryPolicySchema.optional(),
+    finalDeliveryPolicy: z
+      .object({
+        version: z.literal(1),
+        mode: z.literal('checked_native_v1'),
+        artifactId: ChecksumSchema,
+      })
+      .strict()
+      .optional(),
     personalSkills: PersonalSkillSnapshotSchema.optional(),
     taskRuntimePolicy: z
       .object({

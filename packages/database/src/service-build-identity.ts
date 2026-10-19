@@ -104,14 +104,33 @@ type WorkspacePackage = {
     exports?: unknown;
   };
 };
-async function workspacePackages(root: string) {
+export type ServiceBuildVerificationObserver = (
+  metric:
+    | { kind: 'read'; bytes: number }
+    | { kind: 'package' }
+    | { kind: 'cache'; hit: boolean },
+) => void;
+function observeBuild(
+  observer: ServiceBuildVerificationObserver | undefined,
+  metric: Parameters<ServiceBuildVerificationObserver>[0],
+) {
+  try {
+    observer?.(metric);
+  } catch {
+    /* observation does not affect the seal */
+  }
+}
+async function workspacePackages(
+  root: string,
+  observer?: ServiceBuildVerificationObserver,
+) {
   const packages = new Map<string, WorkspacePackage>();
   for (const folder of ['apps', 'packages']) {
     for (const entry of await readdir(join(root, folder))) {
       const path = folder + '/' + entry;
       try {
         const data = JSON.parse(
-          (await bytesAt(root, path + '/package.json')).toString(),
+          (await bytesAt(root, path + '/package.json', observer)).toString(),
         );
         if (typeof data.name === 'string') {
           if (packages.has(data.name))
@@ -160,6 +179,7 @@ function runtimeExports(pkg: WorkspacePackage): [string, string][] {
 async function resolveWorkspaceGraph(
   root: string,
   packages: Map<string, WorkspacePackage>,
+  observer?: ServiceBuildVerificationObserver,
 ) {
   const pending = ['@allrice/web', '@allrice/worker'],
     seen = new Set<string>();
@@ -200,7 +220,9 @@ async function resolveWorkspaceGraph(
           packagePath: pkg.path,
           specifier,
           entrypoint: relative(root, entrypoint),
-          checksum: digest(await bytesAt(root, relative(root, entrypoint))),
+          checksum: digest(
+            await bytesAt(root, relative(root, entrypoint), observer),
+          ),
         });
       }
       pending.push(dependency);
@@ -214,7 +236,11 @@ async function resolveWorkspaceGraph(
   return { edges, names: seen };
 }
 
-async function bytesAt(root: string, path: string) {
+async function bytesAt(
+  root: string,
+  path: string,
+  observer?: ServiceBuildVerificationObserver,
+) {
   const target = join(root, path);
   const stat = await lstat(target);
   if (
@@ -224,10 +250,13 @@ async function bytesAt(root: string, path: string) {
     !(await realpath(target)).startsWith(root + sep)
   )
     throw Error('DEV_BUILD_IDENTITY_INVALID');
-  return readFile(target);
+  const bytes = await readFile(target);
+  observeBuild(observer, { kind: 'read', bytes: bytes.length });
+  return bytes;
 }
 async function nextExternalAliases(
   root: string,
+  observer?: ServiceBuildVerificationObserver,
 ): Promise<ServiceBuildManifest['nextExternalAliases']> {
   const aliases: ServiceBuildManifest['nextExternalAliases'] = [];
   const visit = async (path: string) => {
@@ -242,6 +271,7 @@ async function nextExternalAliases(
       const packageBytes = await bytesAt(
         root,
         relative(root, target) + '/package.json',
+        observer,
       );
       const packageName = JSON.parse(packageBytes.toString()).name;
       if (
@@ -277,6 +307,7 @@ async function walk(
   path: string,
   scope: 'web' | 'worker' | 'graph',
   files: ServiceBuildManifest['files'],
+  observer?: ServiceBuildVerificationObserver,
 ) {
   // Node resolves dependencies from the nearest importer directory. A nested
   // node_modules layer could bypass the package-root links measured below.
@@ -287,9 +318,9 @@ async function walk(
   if (stat.isSymbolicLink()) throw Error('DEV_BUILD_IDENTITY_INVALID');
   if (stat.isDirectory()) {
     for (const entry of (await readdir(target)).sort())
-      await walk(root, path + '/' + entry, scope, files);
+      await walk(root, path + '/' + entry, scope, files, observer);
   } else {
-    const bytes = await bytesAt(root, path);
+    const bytes = await bytesAt(root, path, observer);
     files.push({ path, scope, checksum: digest(bytes), bytes: bytes.length });
     if (files.length > 10000) throw Error('DEV_BUILD_IDENTITY_INVALID');
   }
@@ -301,27 +332,29 @@ export async function prepareServiceBuildManifest(input: {
   root: string;
   sourceSha: string;
   sourceTree: string;
+  observe?: ServiceBuildVerificationObserver;
 }): Promise<ServiceBuildManifest> {
   sha.parse(input.sourceSha);
   sha.parse(input.sourceTree);
   const root = await realpath(input.root),
     files: ServiceBuildManifest['files'] = [];
-  const aliases = await nextExternalAliases(root);
-  await walk(root, 'apps/web/.next/server', 'web', files);
-  await walk(root, 'apps/web/.next/static', 'web', files);
-  await walk(root, 'apps/web/server.mjs', 'web', files);
-  await walk(root, 'apps/web/server', 'web', files);
+  const aliases = await nextExternalAliases(root, input.observe);
+  await walk(root, 'apps/web/.next/server', 'web', files, input.observe);
+  await walk(root, 'apps/web/.next/static', 'web', files, input.observe);
+  await walk(root, 'apps/web/server.mjs', 'web', files, input.observe);
+  await walk(root, 'apps/web/server', 'web', files, input.observe);
   for (const entry of await readdir(join(root, 'apps/web/.next'))) {
     if ((await lstat(join(root, 'apps/web/.next', entry))).isFile())
-      await walk(root, 'apps/web/.next/' + entry, 'web', files);
+      await walk(root, 'apps/web/.next/' + entry, 'web', files, input.observe);
   }
-  await walk(root, 'apps/worker/dist', 'worker', files);
-  const packages = await workspacePackages(root);
-  const graph = await resolveWorkspaceGraph(root, packages);
+  await walk(root, 'apps/worker/dist', 'worker', files, input.observe);
+  const packages = await workspacePackages(root, input.observe);
+  const graph = await resolveWorkspaceGraph(root, packages, input.observe);
   for (const name of graph.names) {
+    observeBuild(input.observe, { kind: 'package' });
     const pkg = packages.get(name);
     if (!pkg) throw Error('DEV_BUILD_RUNTIME_GRAPH_MISSING');
-    await walk(root, pkg.path + '/package.json', 'graph', files);
+    await walk(root, pkg.path + '/package.json', 'graph', files, input.observe);
     const entries = (value: unknown): string[] =>
       typeof value === 'string'
         ? [value]
@@ -333,11 +366,11 @@ export async function prepareServiceBuildManifest(input: {
         (p) => typeof p === 'string' && p.includes('dist/'),
       )
     ) {
-      await walk(root, pkg.path + '/dist', 'graph', files);
+      await walk(root, pkg.path + '/dist', 'graph', files, input.observe);
     }
   }
   for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
-    await walk(root, path, 'graph', files);
+    await walk(root, path, 'graph', files, input.observe);
   files.sort(
     (a, b) => a.path.localeCompare(b.path) || a.scope.localeCompare(b.scope),
   );
@@ -347,7 +380,7 @@ export async function prepareServiceBuildManifest(input: {
     repository: 'semiok/allrice',
     sourceSha: input.sourceSha,
     sourceTree: input.sourceTree,
-    webBuildId: (await bytesAt(root, 'apps/web/.next/BUILD_ID'))
+    webBuildId: (await bytesAt(root, 'apps/web/.next/BUILD_ID', input.observe))
       .toString()
       .trim(),
     protocols: {
@@ -372,8 +405,11 @@ export async function verifyServiceBuildIdentity(input: {
   service: ServiceBuildRole;
   claimedSha?: string;
   mode: 'production' | 'development';
+  bootId?: string;
+  observe?: ServiceBuildVerificationObserver;
 }): Promise<ServiceBuildIdentity | null> {
   role.parse(input.service);
+  if (input.bootId !== undefined) z.uuid().parse(input.bootId);
   // Next development serves .next/dev and source reloads; a retained production
   // build in the same worktree cannot attest that running development process.
   if (input.mode !== 'production') return null;
@@ -386,7 +422,11 @@ export async function verifyServiceBuildIdentity(input: {
   const root = entrypoint.slice(0, -ending.length);
   let bytes: Buffer;
   try {
-    bytes = await bytesAt(root, '.local/dev-build-identity.json');
+    bytes = await bytesAt(
+      root,
+      '.local/dev-build-identity.json',
+      input.observe,
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw Error('DEV_BUILD_IDENTITY_INVALID');
@@ -419,6 +459,7 @@ export async function verifyServiceBuildIdentity(input: {
       root,
       sourceSha: manifest.sourceSha,
       sourceTree: manifest.sourceTree,
+      observe: input.observe,
     });
     if (measured.manifestDigest !== manifestDigest) throw Error('invalid');
     return {
@@ -441,7 +482,7 @@ export async function verifyServiceBuildIdentity(input: {
       ),
       webBuildId: manifest.webBuildId,
       protocols: manifest.protocols,
-      bootId: randomUUID(),
+      bootId: input.bootId ?? randomUUID(),
       pid: process.pid,
       startedAt: new Date().toISOString(),
       nodeVersion: process.version,
@@ -454,8 +495,12 @@ const cacheKey = Symbol.for('allrice.dev.service-build-identity.v1');
 type Global = typeof globalThis & {
   [cacheKey]?: Map<ServiceBuildRole, Promise<ServiceBuildIdentity | null>>;
 };
-export function readServiceBuildIdentity(service: ServiceBuildRole) {
+export function readServiceBuildIdentity(
+  service: ServiceBuildRole,
+  options: { bootId?: string; observe?: ServiceBuildVerificationObserver } = {},
+) {
   const cache = ((globalThis as Global)[cacheKey] ??= new Map());
+  observeBuild(options.observe, { kind: 'cache', hit: cache.has(service) });
   if (!cache.has(service)) {
     cache.set(
       service,
@@ -463,6 +508,8 @@ export function readServiceBuildIdentity(service: ServiceBuildRole) {
         ? verifyServiceBuildIdentity({
             entrypoint: resolve(process.argv[1]),
             service,
+            bootId: options.bootId,
+            observe: options.observe,
             claimedSha: process.env.ALLRICE_RELEASE_SHA,
             mode:
               service === 'web' && process.argv.includes('--dev')

@@ -8,6 +8,7 @@ import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
 import {
   installRetainedDshNativeArtifact,
   nativeArtifactLaunchForPin,
+  type DshNativeVerificationObserver,
 } from './dsh-native-artifact.js';
 
 // Finite historical compatibility policy, independent of later promotion.
@@ -34,17 +35,36 @@ const fail = (reason: string): never => {
  * the existing cleanup tool. Never rely on an ID or an opaque JSON path alone.
  * Slot one is the legacy-only default; other slots serve exact pins/origins.
  * A new primary never implicitly replaces an independently approved artifact. */
-export async function installConfiguredDshNativeRetention() {
+export type RetainedVerificationObservation =
+  | { slot: number; kind: 'started' | 'completed' }
+  | { slot: number; kind: 'failed'; error: unknown }
+  | {
+      slot: number;
+      kind: 'metric';
+      metric: Parameters<DshNativeVerificationObserver>[0];
+    };
+export async function installConfiguredDshNativeRetention(
+  options: {
+    observe?: (event: RetainedVerificationObservation) => void;
+  } = {},
+) {
+  const observe = (event: RetainedVerificationObservation) => {
+    try {
+      options.observe?.(event);
+    } catch {
+      /* a diagnostic cannot bypass policy */
+    }
+  };
   if (installed) fail('ALREADY_CONFIGURED');
   if (
     Object.keys(process.env).some((key) => {
       const match = /^ALLRICE_DSH_RETAINED_(\d+)_/.exec(key);
-      return match && (Number(match[1]) < 1 || Number(match[1]) > 5);
+      return match && (Number(match[1]) < 1 || Number(match[1]) > 6);
     })
   )
     fail('SLOT_LIMIT');
   const entries = [];
-  for (let slot = 1; slot <= 5; slot++) {
+  for (let slot = 1; slot <= 6; slot++) {
     const prefix = `ALLRICE_DSH_RETAINED_${slot}_`;
     const root = process.env[prefix + 'ROOT']?.trim() ?? '';
     const expectedId = process.env[prefix + 'ARTIFACT_ID']?.trim() ?? '';
@@ -61,61 +81,75 @@ export async function installConfiguredDshNativeRetention() {
       !sourceTree
     )
       continue;
-    if (!root || !expectedId || !dataRoot) fail('CONFIG_PAIR_REQUIRED');
-    // Existing slot one predates provenance configuration; preserve its exact
-    // approved tuple. Additional historical artifacts must also pin provenance.
-    if (
-      (slot > 1 || sourceSha || sourceTree) &&
-      (!/^[a-f0-9]{40}$/.test(sourceSha) || !/^[a-f0-9]{40}$/.test(sourceTree))
-    )
-      fail('SOURCE_PAIR_REQUIRED');
-    if (slot !== 1 && !defaultLegacyId) fail('FIRST_SLOT_REQUIRED');
-    if (!isAbsolute(dataRoot) || resolve(dataRoot) !== dataRoot)
-      fail('STORAGE_ROOT');
-    const stat = await lstat(dataRoot);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) fail('STORAGE_ROOT');
-    const profiles: { generation: string; profileId: Profile }[] = tuples
-      ? JSON.parse(tuples)
-      : [];
-    if (
-      !Array.isArray(profiles) ||
-      profiles.length > 2 ||
-      profiles.some(
-        (item) =>
-          !item ||
-          Object.keys(item).sort().join(',') !== 'generation,profileId' ||
-          item.generation !== historicalFrozenGeneration ||
-          !['restricted', 'technical'].includes(item.profileId),
+    observe({ slot, kind: 'started' });
+    try {
+      if (!root || !expectedId || !dataRoot) fail('CONFIG_PAIR_REQUIRED');
+      // Existing slot one predates provenance configuration; preserve its exact
+      // approved tuple. Additional historical artifacts must also pin provenance.
+      if (
+        (slot > 1 || sourceSha || sourceTree) &&
+        (!/^[a-f0-9]{40}$/.test(sourceSha) ||
+          !/^[a-f0-9]{40}$/.test(sourceTree))
       )
-    )
-      fail('FROZEN_TUPLE');
-    const value = await installRetainedDshNativeArtifact({
-      root,
-      expectedId,
-      ...(sourceSha ? { sourceSha, sourceTree } : {}),
-    });
-    if (
-      (slot === 1 && value.generation !== compatibilityGeneration) ||
-      ![compatibilityGeneration, currentGeneration].includes(value.generation)
-    )
-      fail('GENERATION');
-    if (profiles.length && value.generation !== compatibilityGeneration)
-      fail('FROZEN_TUPLE');
-    retained.set(value.artifactId, {
-      launch: value,
-      storageRoot: dataRoot,
-      frozenProfiles: profiles,
-    });
-    if (slot === 1) defaultLegacyId = value.artifactId;
-    entries.push({
-      slot,
-      artifactId: value.artifactId,
-      generation: value.generation,
-      root: value.root,
-      storageRoot: dataRoot,
-      ...(sourceSha ? { sourceSha, sourceTree } : {}),
-      frozenProfiles: profiles,
-    });
+        fail('SOURCE_PAIR_REQUIRED');
+      if (slot !== 1 && !defaultLegacyId) fail('FIRST_SLOT_REQUIRED');
+      if (!isAbsolute(dataRoot) || resolve(dataRoot) !== dataRoot)
+        fail('STORAGE_ROOT');
+      const stat = await lstat(dataRoot);
+      if (!stat.isDirectory() || stat.isSymbolicLink()) fail('STORAGE_ROOT');
+      const profiles: { generation: string; profileId: Profile }[] = tuples
+        ? JSON.parse(tuples)
+        : [];
+      if (
+        !Array.isArray(profiles) ||
+        profiles.length > 2 ||
+        profiles.some(
+          (item) =>
+            !item ||
+            Object.keys(item).sort().join(',') !== 'generation,profileId' ||
+            item.generation !== historicalFrozenGeneration ||
+            !['restricted', 'technical'].includes(item.profileId),
+        )
+      )
+        fail('FROZEN_TUPLE');
+      const value = await installRetainedDshNativeArtifact({
+        root,
+        expectedId,
+        ...(sourceSha ? { sourceSha, sourceTree } : {}),
+        ...(options.observe
+          ? {
+              observe: (metric: Parameters<DshNativeVerificationObserver>[0]) =>
+                observe({ slot, kind: 'metric', metric }),
+            }
+          : {}),
+      });
+      if (
+        (slot === 1 && value.generation !== compatibilityGeneration) ||
+        ![compatibilityGeneration, currentGeneration].includes(value.generation)
+      )
+        fail('GENERATION');
+      if (profiles.length && value.generation !== compatibilityGeneration)
+        fail('FROZEN_TUPLE');
+      retained.set(value.artifactId, {
+        launch: value,
+        storageRoot: dataRoot,
+        frozenProfiles: profiles,
+      });
+      if (slot === 1) defaultLegacyId = value.artifactId;
+      entries.push({
+        slot,
+        artifactId: value.artifactId,
+        generation: value.generation,
+        root: value.root,
+        storageRoot: dataRoot,
+        ...(sourceSha ? { sourceSha, sourceTree } : {}),
+        frozenProfiles: profiles,
+      });
+      observe({ slot, kind: 'completed' });
+    } catch (error) {
+      observe({ slot, kind: 'failed', error });
+      throw error;
+    }
   }
   installed = true;
   return entries;

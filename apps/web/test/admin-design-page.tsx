@@ -6,6 +6,9 @@ import {
   AdminDialog,
   AdminMenu,
 } from '../components/admin/admin-ui';
+import { CompanyDeliverableLibrary } from '../app/runtime-console/company-deliverables';
+import '../app/dsh-upstream/design-platform.css';
+import '../app/dsh-upstream/base.css';
 import { RuntimeSkillGroup } from '../app/runtime-console/runtime-skill-group';
 import {
   aggregateRuntimeTimelineEvents,
@@ -131,7 +134,16 @@ function DesignFixture() {
   );
 }
 createRoot(document.getElementById('root')!).render(
-  new URLSearchParams(window.location.search).has('skills') ? (
+  new URLSearchParams(window.location.search).has('company-files') ? (
+    <AdminShell items={[]}>
+      <section style={{ padding: 24 }}>
+        <CompanyDeliverableLibrary
+          organizationId="00000000-0000-4000-8000-000000000001"
+          scopeQuery="fixture=1"
+        />
+      </section>
+    </AdminShell>
+  ) : new URLSearchParams(window.location.search).has('skills') ? (
     <SkillTimelineFixture />
   ) : (
     <DesignFixture />

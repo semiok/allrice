@@ -60,6 +60,7 @@ integration(
             await database.db`select root_run_id from allrice_runtime_roots`,
           ).toHaveLength(0);
           const controller = productionAssistantController({
+            deliveryMode: 'legacy',
             configuration: f.config,
             context: f.executionContext,
             worker: f.worker,

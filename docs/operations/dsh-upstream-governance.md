@@ -111,11 +111,16 @@ generation, or implement automatic release ACK/publishing.
 
 ## Retained approved readers and storage
 
-A Worker may verify up to four deployment-owned historical 0.1.5 readers before
-starting producers. Slot `ALLRICE_DSH_RETAINED_1_*` is the default reader for
+A Worker may verify at most six independently approved historical readers before
+starting producers. This bounded MET184 transition is tracked by MET195; it is
+not its single-package completion criterion or permission for automatic growth.
+See [exact retention and exit conditions](../architecture/dsh-native-retention.md).
+Slot `ALLRICE_DSH_RETAINED_1_*` is the default reader for
 unpinned legacy contexts; later slots require slot 1. Each slot requires an
 absolute, existing non-symlink `ROOT`, an independently approved `ARTIFACT_ID`,
-and an existing non-symlink `STORAGE_ROOT`. An optional `FROZEN_PROFILES` JSON
+and an existing non-symlink `STORAGE_ROOT`. Slots 2–6 also require the original
+`SOURCE_SHA`/`SOURCE_TREE` and may serve independently approved 0.2.1 readers.
+Only slot 1 accepts the optional legacy `FROZEN_PROFILES` JSON
 array lists exact `{generation, profileId}` pairs for the reviewed 0.1.1 frozen
 packages. It cannot map 0.2.1 or arbitrary generations back to an old reader.
 A missing tuple refuses execution without rewriting the frozen package.

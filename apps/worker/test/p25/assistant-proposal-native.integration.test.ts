@@ -138,6 +138,7 @@ integration(
             tools,
             onEvent: async () => {},
             assistants: productionAssistantController({
+              deliveryMode: 'legacy',
               configuration: f.config,
               context: f.context,
               worker: f.worker,

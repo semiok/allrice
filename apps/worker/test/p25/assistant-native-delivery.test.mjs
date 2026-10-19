@@ -45,6 +45,7 @@ function fixture(result = storedResult) {
       },
     },
     ctx: { tools: { restrict: vi.fn() } },
+    send: vi.fn((message) => message.id),
     followup: vi.fn((message) => message.id),
     steer: vi.fn((message) => message.id),
     inject: vi.fn((message) => message.id),

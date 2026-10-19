@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { HandlerError } from '../../errors.js';
 import {
   AssistantRunConfigurationSchema,
@@ -18,6 +18,7 @@ import {
 import {
   assistantRuntimeEnabled,
   createAssistantRuntime,
+  readFinalDeliveryReferences,
   createAssistantPricing,
   createRuntimeOperationLedger,
   createLocalCommandOperation,
@@ -31,14 +32,34 @@ import {
   type AssistantWorkerLease,
   type RuntimeBudgetLimit,
 } from '@allrice/database';
-import type { HarnessExecutionInput } from '../adapter.js';
+import type { FinalDeliveryMode, HarnessExecutionInput } from '../adapter.js';
 import { createAssistantWorkerBridge } from './assistant-bridge.js';
 import { assistantNativeCheckpointEvidence } from './assistant-recovery.js';
 import { assertAssistantProviderOutputBound } from './assistant-provider.js';
 
 import { runMcpRuntimeOperation } from '../../mcp/executor.js';
 import { assistantModelCallCapacity } from './assistant-call-limits.js';
+import { checkFinalDelivery } from '../../final-delivery/policy.js';
+import { createDeliveryMarkup } from '../../final-delivery/markup.js';
+import { createBoundedDeliveryRepair } from '../../final-delivery/repair.js';
+import type { FinalDeliveryProof } from '../../final-delivery/guard.js';
+import { bindCheckedFinalDeliveryCommitGuard } from '../../final-delivery/checked-delivery.js';
+import { normalizeAllRiceManagedFileLinks } from './tool-bridge.js';
 
+type AssistantController = NonNullable<HarnessExecutionInput['assistants']>;
+type WorkerAssistantBinding = Awaited<
+  ReturnType<AssistantController['bind']>
+> & {
+  /** Private Worker facts port. No model/browser arguments or native RPC method. */
+  readFinalDeliveryEvidence(): ReturnType<
+    ReturnType<typeof createAssistantRuntime>['readFinalDeliveryEvidence']
+  >;
+};
+type WorkerAssistantController = Omit<AssistantController, 'bind'> & {
+  bind(
+    ...input: Parameters<AssistantController['bind']>
+  ): Promise<WorkerAssistantBinding>;
+};
 function assertPriceProvider(
   price: AssistantPriceSnapshot,
   provider: DshExecutionSnapshot,
@@ -68,6 +89,8 @@ export function productionAssistantController(input: {
   /** Selected only after the Worker validates a persisted repository review. */
   repositoryReview?: boolean;
   configuration: unknown;
+  deliveryMode: FinalDeliveryMode;
+  deliveryArtifactId?: string;
   context: ExecutionContext;
   worker: Omit<AssistantWorkerLease, 'generation'>;
   runLimits: unknown;
@@ -83,12 +106,24 @@ export function productionAssistantController(input: {
   /** INTERNAL ONLY: Worker replay already matched to its persisted route
    * decision, including any frozen fallback. Never a browser/model field. */
   serverPricingProviderSnapshot?: DshExecutionSnapshot;
-}): HarnessExecutionInput['assistants'] {
+}): WorkerAssistantController | undefined {
   if (input.configuration === undefined) return undefined;
   const configuration = AssistantRunConfigurationSchema.parse(
     input.configuration,
   );
   if (!configuration.allowAssistants) return undefined;
+  if (!['checked_native_v1', 'legacy'].includes(input.deliveryMode))
+    throw new HandlerError(
+      'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+      '本轮交付检查模式尚不能确认；已有内容已保留。',
+      false,
+    );
+  const checkedDelivery = input.deliveryMode === 'checked_native_v1';
+  if (
+    checkedDelivery &&
+    !/^sha256:[a-f0-9]{64}$/.test(input.deliveryArtifactId ?? '')
+  )
+    throw Error('FINAL_DELIVERY_ARTIFACT_REQUIRED');
   if (!assistantRuntimeEnabled()) throw Error('assistant_runtime_disabled');
   const limits = ModelRunLimitsSchema.parse(input.runLimits ?? {});
   const priceSnapshot =
@@ -122,6 +157,8 @@ export function productionAssistantController(input: {
   const runtime = createAssistantRuntime({
     database: db,
     authorize: input.authorize,
+    checkedDelivery,
+    readFinalDeliveryReferences,
   });
   const context = {
     requestId: randomUUID(),
@@ -134,6 +171,10 @@ export function productionAssistantController(input: {
   };
   return {
     rootRunId: input.context.runId,
+    deliveryMode: input.deliveryMode,
+    ...(checkedDelivery
+      ? { deliveryArtifactId: input.deliveryArtifactId }
+      : {}),
     ...(subscriptionSnapshot ? { subscriptionSnapshot } : {}),
     // A per-response protocol setting, never a shared lifetime budget.
     maxOutputTokens: limits.maxOutputTokens,
@@ -203,12 +244,13 @@ export function productionAssistantController(input: {
           employee_version_id: string;
           session_id: string;
           timeout_at: Date;
+          attempt: number;
           configuration: unknown;
           project_id: string | null;
           provider_snapshot: unknown;
         }[]
       >`
-        select r.execution_spec,r.project_id,e.employee_version_id,e.session_id,e.provider_snapshot,j.timeout_at,r.input->'assistantConfiguration' as configuration
+        select r.execution_spec,r.project_id,e.employee_version_id,e.session_id,e.provider_snapshot,j.timeout_at,j.attempt,r.input->'assistantConfiguration' as configuration
         from allrice_runs r join allrice_employee_runs e on e.run_id=r.id
         join allrice_jobs j on j.run_id=r.id and j.id=${input.worker.jobId}
         where r.id=${input.context.runId} and r.organization_id=${input.context.organizationId}
@@ -457,15 +499,182 @@ export function productionAssistantController(input: {
               )
           : undefined,
       });
+      let validationStarted = false;
+      let finalizationStarted = false;
+      let validatedDelivery: FinalDeliveryProof | undefined;
+      const deliveryUnavailable = (): never => {
+        throw new HandlerError(
+          'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          '交付事实或本轮原生回复身份尚不能确认；已有内容已保留，未自动重跑任务。',
+          false,
+        );
+      };
+      const repairProvider = checkedDelivery
+        ? (pricingProvider ??
+          DshExecutionSnapshotSchema.parse(row.provider_snapshot))
+        : undefined;
+      const deliveryRepair = repairProvider
+        ? createBoundedDeliveryRepair({
+            nativeSessionId,
+            scope: {
+              organizationId: context.organizationId,
+              workspaceId: context.workspaceId!,
+              ownerId: context.actor.id,
+              sessionId: row.session_id,
+              runId: task.rootRunId,
+            },
+            generation: worker.generation,
+            attempt: Number(row.attempt),
+            leaseToken: worker.leaseToken,
+            deadlineAt: row.timeout_at.getTime(),
+            provider: repairProvider.route,
+            model:
+              repairProvider.route === 'gemini' &&
+              repairProvider.model === '3.8flash'
+                ? 'gemini-3.8-flash'
+                : repairProvider.model,
+            async assertAuthority() {
+              input.signal?.throwIfAborted();
+              const authority =
+                await runtime.assertCurrentAuthority(priceIdentity);
+              if (authority.cancelRequested) deliveryUnavailable();
+              input.signal?.throwIfAborted();
+            },
+            read: () => runtime.readFinalDeliveryEvidence(priceIdentity),
+            budgets: async () =>
+              (await runtime.getTree(context, { runId: task.rootRunId }))
+                .budgets,
+            close: (callId) =>
+              runtime.closeUndispatchedModelPreparation({
+                ...priceIdentity,
+                runId: task.rootRunId,
+                callId,
+              }),
+          })
+        : undefined;
       return {
         ...bridge,
+        ...(deliveryRepair ? { deliveryRepair } : {}),
+        hasPriorRoot: !!prior,
+        readFinalDeliveryReplyOrigin: () => {
+          if (!checkedDelivery) return deliveryUnavailable();
+          return runtime.readFinalDeliveryReplyOrigin({
+            scope: task.scope,
+            rootRunId: task.rootRunId,
+            worker,
+            nativeSessionId,
+            attempt: Number(row.attempt),
+          });
+        },
+        ...(checkedDelivery
+          ? {
+              finalDelivery: {
+                async check(candidate) {
+                  input.signal?.throwIfAborted();
+                  if (validationStarted) deliveryUnavailable();
+                  validationStarted = true;
+                  if (
+                    candidate.nativeSessionId !== nativeSessionId ||
+                    candidate.rootRunId !== task.rootRunId ||
+                    candidate.generation !== worker.generation ||
+                    candidate.attempt !== Number(row.attempt) ||
+                    !candidate.publicMessageId ||
+                    !Number.isSafeInteger(candidate.durableSeq) ||
+                    candidate.durableSeq! < 0 ||
+                    !candidate.nativeBindingId ||
+                    candidate.projectedText !==
+                      normalizeAllRiceManagedFileLinks(candidate.nativeText)
+                  )
+                    deliveryUnavailable();
+                  const snapshot = await runtime.readFinalDeliveryEvidence({
+                    scope: task.scope,
+                    rootRunId: task.rootRunId,
+                    worker,
+                  });
+                  input.signal?.throwIfAborted();
+                  const policy = {
+                    expectedScope: {
+                      organizationId: context.organizationId,
+                      workspaceId: context.workspaceId!,
+                      ownerId: context.actor.id,
+                      sessionId: row.session_id,
+                      runId: task.rootRunId,
+                    },
+                    snapshot,
+                    markup: createDeliveryMarkup(),
+                    // AllRice exports use app-relative authenticated file URLs.
+                    // No origin is inferred from prose or a supplied candidate URL.
+                    managedOrigins: [],
+                  };
+                  const nativeDecision = checkFinalDelivery({
+                    ...policy,
+                    candidate: candidate.nativeText,
+                  });
+                  const decision = checkFinalDelivery({
+                    ...policy,
+                    candidate: candidate.projectedText,
+                  });
+                  const meaning = (value: typeof decision) =>
+                    JSON.stringify({
+                      status: value.status,
+                      linked: value.linked,
+                      issues: value.issues.map(
+                        ({ code, reason, requirementId }) => ({
+                          code,
+                          reason,
+                          requirementId,
+                        }),
+                      ),
+                    });
+                  if (meaning(nativeDecision) !== meaning(decision))
+                    deliveryUnavailable();
+                  if (decision.status === 'valid')
+                    validatedDelivery = Object.freeze({
+                      nativeSessionId,
+                      publicMessageId: candidate.publicMessageId!,
+                      durableSeq: candidate.durableSeq!,
+                      nativeBindingId: candidate.nativeBindingId!,
+                      nativeCandidateDigest: `sha256:${createHash('sha256').update(candidate.nativeText, 'utf8').digest('hex')}`,
+                      candidateDigest: decision.candidateDigest,
+                      factSetDigest: decision.factSetDigest,
+                      attempt: candidate.attempt,
+                      generation: worker.generation,
+                    });
+                  return decision;
+                },
+              },
+            }
+          : {}),
+        // Exposed only on the bound Worker controller. Never add this to
+        // bridge.handle(), a tool manifest, a native RPC or an HTTP route.
+        readFinalDeliveryEvidence: () =>
+          runtime.readFinalDeliveryEvidence({
+            scope: task.scope,
+            rootRunId: task.rootRunId,
+            worker,
+          }),
         failureUsage: () =>
           runtime.readFailureUsage({
             scope: task.scope,
             rootRunId: task.rootRunId,
             worker,
           }),
-        finish: async () => {
+        finish: async (delivery) => {
+          input.signal?.throwIfAborted();
+          if (
+            finalizationStarted ||
+            (checkedDelivery &&
+              (!validatedDelivery ||
+                !delivery ||
+                Object.keys(validatedDelivery).some(
+                  (key) =>
+                    delivery[key as keyof FinalDeliveryProof] !==
+                    validatedDelivery![key as keyof FinalDeliveryProof],
+                ))) ||
+            (!checkedDelivery && delivery !== undefined)
+          )
+            deliveryUnavailable();
+          finalizationStarted = true;
           // The adapter joins/stops native loops first. Read receipts while the
           // worker is still live, then let finalization verify the durable tree.
           const costs = await pricing?.summarize(priceIdentity).catch(() => {
@@ -474,11 +683,28 @@ export function productionAssistantController(input: {
             });
             return undefined;
           });
-          const outcome = await runtime.finalizeRoot({
+          // Root owns the matching finalizeRoot transaction seam. This exact
+          // private proof is not a substitute for its lock/lease/facts recheck.
+          const finalization = {
             scope: task.scope,
             rootRunId: task.rootRunId,
             worker,
-          });
+            ...(checkedDelivery ? { finalDelivery: validatedDelivery! } : {}),
+          };
+          const outcome = await runtime.finalizeRoot(finalization);
+          if (checkedDelivery && outcome.status === 'completed') {
+            try {
+              bindCheckedFinalDeliveryCommitGuard(
+                delivery!,
+                runtime.createFinalDeliveryCommitGuard({
+                  ...finalization,
+                  finalDelivery: validatedDelivery!,
+                }),
+              );
+            } catch {
+              deliveryUnavailable();
+            }
+          }
           if (subscriptionSnapshotDigest)
             return {
               ...outcome,

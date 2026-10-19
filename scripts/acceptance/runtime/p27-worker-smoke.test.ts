@@ -66,6 +66,7 @@ integration(
           )
             throw Error('P27_TEST_CONFIGURATION_MISSING');
           const controller = productionAssistantController({
+            deliveryMode: 'legacy',
             configuration: input.assistantConfiguration,
             context: task.execution.context,
             worker: task.workflowLease,

@@ -1,0 +1,8 @@
+{
+  "syntheticOnly": true,
+  "rootRunId": "636c4666-8ee4-42f9-84ac-4b7ba6e28c79",
+  "nativeSessionId": "offline-repair-3231a53b-46c7-4ac3-8647-d7b513b306a2",
+  "journalSha256": "63c97ae8a5737019cc2c1843f58eef52a8d515515279a8d86cc3d451f31cec66",
+  "relativePersistencePath": "--synthetic-allrice-cold-origin--/offline-repair-3231a53b-46c7-4ac3-8647-d7b513b306a2/session.v4.jsonl",
+  "fixture": "Retained real-SDK synthetic completed reply; no model/network needed to resume. Header cwd and runtime-context cwd were made portable."
+}

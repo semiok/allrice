@@ -1,5 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import type { CompanyDeliverable } from '@allrice/contracts';
+import { nativeExcelAssetResponse } from '../../lib/chatflow/native-document-asset';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 
@@ -16,10 +21,12 @@ integration('shared administration shell and dialogs', () => {
       entryPoints: ['apps/web/test/admin-design-page.tsx'],
       bundle: true,
       format: 'esm',
+      splitting: true,
       platform: 'browser',
       write: false,
       outdir: '/admin-fixture',
       jsx: 'automatic',
+      loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
       define: { 'process.env.NODE_ENV': '"development"' },
     });
     const assets = new Map<string, Uint8Array>(
@@ -31,7 +38,26 @@ integration('shared administration shell and dialogs', () => {
     server = createServer((req, res) => {
       const path = new URL(req.url!, origin).pathname;
       const asset = assets.get(path);
-      if (asset) {
+      if (path === '/api/dsh-ui/excel') {
+        void nativeExcelAssetResponse(
+          new Request(`http://fixture${req.url}`, {
+            headers: {
+              'accept-encoding': String(req.headers['accept-encoding'] ?? ''),
+            },
+          }),
+        )
+          .then(async (response) => {
+            res.writeHead(
+              response.status,
+              Object.fromEntries(response.headers),
+            );
+            res.end(Buffer.from(await response.arrayBuffer()));
+          })
+          .catch(() => {
+            res.statusCode = 500;
+            res.end();
+          });
+      } else if (asset) {
         res.setHeader(
           'Content-Type',
           path.endsWith('.css') ? 'text/css' : 'text/javascript',
@@ -176,5 +202,294 @@ integration('shared administration shell and dialogs', () => {
         await page.close();
       }
     },
+  );
+  it.each([1440, 390])(
+    'keeps the actual fixed-version Excel grid usable with expanded evidence at %ipx',
+    async (width) => {
+      const ExcelJS = createRequire(
+        new URL('../../../worker/package.json', import.meta.url),
+      )('exceljs');
+      const versions = await Promise.all(
+        [2, 1].map(async (version) => {
+          const book = new ExcelJS.Workbook();
+          const sheet = book.addWorksheet('Totals');
+          sheet.addRow(['Left', 'Right', 'Total']);
+          sheet.addRow([
+            20 * version,
+            22 * version,
+            { formula: 'A2+B2', result: 42 * version },
+          ]);
+          book
+            .addWorksheet(`Version ${version}`)
+            .addRow([`Immutable version ${version}`]);
+          const bytes = Buffer.from(await book.xlsx.writeBuffer());
+          const checksum = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+          const row: CompanyDeliverable = {
+            id: `00000000-0000-4000-8000-00000000000${version + 1}`,
+            seriesId: '00000000-0000-4000-8000-000000000010',
+            workspaceId: '00000000-0000-4000-8000-000000000011',
+            ownerId: '00000000-0000-4000-8000-000000000012',
+            ownerName: 'Preview fixture owner',
+            sessionId: '00000000-0000-4000-8000-000000000013',
+            sessionTitle: 'Static browser fixture, no model run',
+            runId: null,
+            runStatus: null,
+            employeeId: null,
+            employeeName: null,
+            fileName: 'fixed-version.xlsx',
+            format: 'xlsx',
+            version,
+            latestPublishedVersion: 2,
+            createdAt: '2026-10-20T00:00:00.000Z',
+            sizeBytes: bytes.length,
+            state: 'ready',
+          };
+          return { row, bytes, checksum };
+        }),
+      );
+      const page = await browser.newPage({ viewport: { width, height: 900 } });
+      const errors: string[] = [],
+        methods: string[] = [],
+        requests: string[] = [];
+      page.on('pageerror', (error) =>
+        errors.push(error.stack ?? error.message),
+      );
+      await page.route(
+        '**/api/v1/admin/organizations/*/deliverables?**',
+        async (route) => {
+          methods.push(route.request().method());
+          const query = new URL(route.request().url()).searchParams;
+          const version = versions.find(
+            (item) => item.row.id === query.get('artifactId'),
+          );
+          if (version) {
+            requests.push(version.row.id);
+            if (query.has('download'))
+              return route.fulfill({
+                contentType:
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                headers: {
+                  'content-disposition':
+                    'attachment; filename="fixed-version.xlsx"',
+                },
+                body: version.bytes,
+              });
+            if (query.has('metadata'))
+              return route.fulfill({
+                json: {
+                  objectId: version.row.id,
+                  checksum: version.checksum,
+                  sourceFile: null,
+                  office: {
+                    quality: {
+                      status: 'checked',
+                      format: 'xlsx',
+                      pageCount: 1,
+                      formulaCount: 1,
+                      formulaErrorCount: 0,
+                      layout: 'rendered_not_visually_reviewed',
+                    },
+                    warnings: [
+                      '已生成页面预览；转换成功不代表排版已人工检查，数值结果不代替业务核对。',
+                      'Preview fixture warning: retained bytes and the chosen version must not change when evidence expands.',
+                    ],
+                  },
+                },
+              });
+            return route.fulfill({
+              json: {
+                kind: 'spreadsheet',
+                format: 'xlsx',
+                base64: version.bytes.toString('base64'),
+              },
+            });
+          }
+          return route.fulfill({
+            json: {
+              organizationId: '00000000-0000-4000-8000-000000000001',
+              deliverables: query.has('seriesId')
+                ? versions.map((item) => item.row)
+                : [versions[0]!.row],
+              nextCursor: null,
+              seriesId: query.get('seriesId'),
+            },
+          });
+        },
+      );
+      try {
+        await page.goto(`${origin}?company-files=1`);
+        await page
+          .getByRole('button', { name: '查看成果', exact: true })
+          .click();
+        const dialog = page.getByRole('dialog', {
+          name: '公司成果预览',
+          exact: true,
+        });
+        const selected = dialog.getByLabel('成果版本', { exact: true });
+        const native = dialog.locator('[data-excel-preview]');
+        await dialog
+          .getByText('Totals', { exact: true })
+          .waitFor({ timeout: 30_000 });
+        await dialog.getByText('文件来源与质量', { exact: true }).click();
+        await dialog
+          .getByText(versions[0]!.checksum, { exact: true })
+          .waitFor();
+        const metrics = async () =>
+          native.evaluate((element) => {
+            const box = element.getBoundingClientRect();
+            const canvases = [...element.querySelectorAll('canvas')].map(
+              (canvas) => ({
+                width: canvas.getBoundingClientRect().width,
+                height: canvas.getBoundingClientRect().height,
+              }),
+            );
+            const modal = element.closest('dialog')!;
+            const dialogBox = modal.getBoundingClientRect();
+            return {
+              height: box.height,
+              width: box.width,
+              canvases,
+              dialog: {
+                x: dialogBox.x,
+                y: dialogBox.y,
+                width: dialogBox.width,
+                height: dialogBox.height,
+              },
+              dialogScrollable: modal.scrollHeight > modal.clientHeight,
+              documentOverflow:
+                document.documentElement.scrollWidth >
+                document.documentElement.clientWidth,
+            };
+          });
+        await expect
+          .poll(async () => (await metrics()).canvases.length, {
+            timeout: 5000,
+          })
+          .toBeGreaterThan(0);
+        const expanded = await metrics();
+        const screenshotDir = process.env.ALLRICE_BROWSER_SCREENSHOT_DIR;
+        if (screenshotDir) {
+          await mkdir(screenshotDir, { recursive: true });
+          await native.scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: resolve(screenshotDir, `admin-preview-${width}.png`),
+            fullPage: true,
+          });
+          await writeFile(
+            resolve(screenshotDir, `admin-preview-${width}.json`),
+            JSON.stringify(expanded, null, 2),
+          );
+        }
+        expect(expanded.height).toBeGreaterThanOrEqual(280);
+        expect(expanded.height).toBeLessThanOrEqual(640);
+        expect(
+          Math.max(...expanded.canvases.map((canvas) => canvas.height)),
+        ).toBeGreaterThan(200);
+        expect(expanded.dialog.x).toBeGreaterThanOrEqual(0);
+        expect(expanded.dialog.x + expanded.dialog.width).toBeLessThanOrEqual(
+          width,
+        );
+        expect(expanded.dialog.y).toBeGreaterThanOrEqual(0);
+        expect(expanded.dialog.y + expanded.dialog.height).toBeLessThanOrEqual(
+          900,
+        );
+        expect(expanded.documentOverflow).toBe(false);
+        await selected.selectOption(versions[1]!.row.id);
+        await dialog
+          .getByText('Version 1', { exact: true })
+          .waitFor({ timeout: 30_000 });
+        await dialog
+          .getByText(versions[1]!.checksum, { exact: true })
+          .waitFor();
+        expect(
+          await dialog.getByText('Version 2', { exact: true }).count(),
+        ).toBe(0);
+        const prior = await metrics();
+        expect(prior.height).toBe(expanded.height);
+        expect(
+          Math.max(...prior.canvases.map((canvas) => canvas.height)),
+        ).toBeGreaterThan(200);
+        await dialog.getByText('Version 1', { exact: true }).click();
+        await dialog.getByText('Totals', { exact: true }).click();
+        const downloaded = page.waitForEvent('download');
+        await dialog
+          .getByRole('link', { name: '下载原文件', exact: true })
+          .click();
+        const download = await downloaded;
+        expect(await download.failure()).toBeNull();
+        expect(
+          `sha256:${createHash('sha256')
+            .update(await readFile((await download.path())!))
+            .digest('hex')}`,
+        ).toBe(versions[1]!.checksum);
+        expect(await selected.inputValue()).toBe(versions[1]!.row.id);
+        expect(
+          await dialog
+            .getByText(versions[1]!.checksum, { exact: true })
+            .count(),
+        ).toBe(1);
+        expect(requests).toContain(versions[1]!.row.id);
+        expect(methods.every((method) => method === 'GET')).toBe(true);
+        // The native spreadsheet announces the selected cell with role=alert.
+        // Application load errors live outside that loaded spreadsheet surface.
+        const alertTexts = await dialog
+          .getByRole('alert')
+          .evaluateAll((elements) =>
+            elements
+              .filter((element) => !element.closest('[data-excel-preview]'))
+              .map((element) => element.textContent?.trim())
+              .filter(Boolean),
+          );
+        expect(alertTexts).toEqual([]);
+        if (screenshotDir) {
+          await native.scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: resolve(screenshotDir, `admin-preview-v1-${width}.png`),
+            fullPage: true,
+          });
+        }
+        await page.setViewportSize({ width, height: 400 });
+        await expect.poll(async () => (await metrics()).height).toBe(280);
+        await expect
+          .poll(async () =>
+            Math.max(
+              ...(await metrics()).canvases.map((canvas) => canvas.height),
+            ),
+          )
+          .toBeGreaterThan(200);
+        const short = await metrics();
+        expect(short.dialog.height).toBeLessThanOrEqual(368);
+        expect(short.dialogScrollable).toBe(true);
+        expect(short.documentOverflow).toBe(false);
+        if (screenshotDir) {
+          await native.scrollIntoViewIfNeeded();
+          await page.screenshot({
+            path: resolve(screenshotDir, `admin-preview-short-${width}.png`),
+            fullPage: true,
+          });
+          await writeFile(
+            resolve(screenshotDir, `admin-preview-final-${width}.json`),
+            JSON.stringify(
+              {
+                expanded,
+                prior,
+                short,
+                selectedId: await selected.inputValue(),
+                downloadChecksum: versions[1]!.checksum,
+                alertTexts,
+                requestMethods: methods,
+                browserErrors: errors,
+              },
+              null,
+              2,
+            ),
+          );
+        }
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+    60_000,
   );
 });

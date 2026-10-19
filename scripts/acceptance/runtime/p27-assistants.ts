@@ -397,6 +397,7 @@ async function main() {
     });
     const abort = new AbortController();
     const controller = productionAssistantController({
+      deliveryMode: 'legacy',
       configuration: fixture.config,
       context: fixture.executionContext,
       worker: fixture.worker,

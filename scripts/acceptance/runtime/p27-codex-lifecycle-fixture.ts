@@ -253,6 +253,7 @@ export async function createCodexLifecycleScenario(
     },
   };
   const controllerInput = {
+    deliveryMode: 'legacy' as const,
     configuration: f.config,
     context,
     worker: f.worker,

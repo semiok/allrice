@@ -152,3 +152,9 @@ export * from './memory-context.ts';
 export * from './dsh-distribution.generated.ts';
 
 export { readDshToolResult } from './dsh-tool-results.ts';
+
+export {
+  FINAL_DELIVERY_FACTS_VERSION,
+  serializeFinalDeliveryFacts,
+  type FinalDeliveryFacts,
+} from './final-delivery-facts.ts';

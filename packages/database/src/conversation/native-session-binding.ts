@@ -111,6 +111,50 @@ const deny = (): never => {
 };
 type Tx = postgres.TransactionSql;
 
+/** Same immutable chat birth check for admission and leased native binding.
+ * Does not lock a Job or grant execution. Only the binder may start a Session. */
+export async function readChatNativeRootOrigin(
+  tx: Tx,
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    sessionId: string;
+    runId?: string;
+  },
+): Promise<NativeRootOrigin | null> {
+  const [row] = await tx`select c.native_root_origin,v.manifest,v.id source_id
+    from allrice_chat_sessions c
+    left join allrice_employee_versions v on v.id::text=c.native_root_origin#>>'{frozenIdentity,sourceId}'
+      and v.organization_id=c.organization_id and v.workspace_id=c.workspace_id
+      and v.employee_id=(select employee_id from allrice_employee_assignments where id=c.employee_assignment_id)
+    where c.id=${input.sessionId} and c.organization_id=${input.organizationId}
+      and c.workspace_id=${input.workspaceId} and c.owner_id=${input.ownerId} and c.archived_at is null
+      and (${input.runId ?? null}::uuid is null or exists(select 1 from allrice_employee_runs e
+        where e.run_id=${input.runId ?? null}::uuid and e.session_id=c.id
+          and e.organization_id=c.organization_id and e.workspace_id=c.workspace_id and e.owner_id=c.owner_id))`;
+  if (!row) return deny();
+  if (row.native_root_origin == null) return null;
+  const manifest = EmployeeManifestSchema.parse(row.manifest);
+  if (
+    manifest.schemaVersion !== 2 ||
+    !manifest.runtimePackage ||
+    manifest.runtimePackage.runtimeManifest.distributionGeneration !==
+      newNativeGeneration
+  )
+    return deny();
+  return assertNativeRootOrigin(
+    row.native_root_origin,
+    'chat',
+    input.sessionId,
+    {
+      kind: 'employee_package',
+      checksum: manifest.runtimePackage.checksum,
+      sourceId: row.source_id,
+    },
+  );
+}
+
 /** Read only the leased subject's immutable business birth fact. This is
  * selection evidence, never prompt permission; the normal binder still checks
  * every live Run/Job/subject/owner/cancellation and deadline below. */
@@ -120,31 +164,15 @@ async function readNativeRootOrigin(
   s: NativeSessionLeaseInput['subject'],
 ): Promise<NativeRootOrigin | null> {
   let row, identity: NativeRootOrigin['frozenIdentity'];
-  if (s.kind === 'chat') {
-    [row] =
-      await tx`select c.native_root_origin,v.manifest,v.id source_id from allrice_employee_runs e
-      join allrice_chat_sessions c on c.id=e.session_id and c.archived_at is null
-      left join allrice_employee_versions v on v.id::text=c.native_root_origin#>>'{frozenIdentity,sourceId}'
-        and v.organization_id=c.organization_id and v.workspace_id=c.workspace_id
-        and v.employee_id=(select employee_id from allrice_employee_assignments where id=c.employee_assignment_id)
-      where e.run_id=${job.run_id} and c.id=${s.id} and c.organization_id=${job.organization_id}
-        and c.workspace_id=${job.workspace_id} and c.owner_id=${job.owner_id}`;
-    if (!row) return deny();
-    if (row.native_root_origin == null) return null;
-    const manifest = EmployeeManifestSchema.parse(row.manifest);
-    if (
-      manifest.schemaVersion !== 2 ||
-      !manifest.runtimePackage ||
-      manifest.runtimePackage.runtimeManifest.distributionGeneration !==
-        newNativeGeneration
-    )
-      return deny();
-    identity = {
-      kind: 'employee_package',
-      checksum: manifest.runtimePackage.checksum,
-      sourceId: row.source_id,
-    };
-  } else if (s.kind === 'platform_technical') {
+  if (s.kind === 'chat')
+    return readChatNativeRootOrigin(tx, {
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+      ownerId: job.owner_id,
+      sessionId: s.id,
+      runId: job.run_id,
+    });
+  if (s.kind === 'platform_technical') {
     [row] =
       await tx`select native_root_origin,frozen_configuration from allrice_platform_technical_tasks
       where id=${s.id} and job_id=${job.id} and run_id=${job.run_id} and organization_id=${job.organization_id}

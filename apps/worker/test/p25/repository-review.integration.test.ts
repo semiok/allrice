@@ -293,6 +293,7 @@ suite(
       });
       const nativeSessionId = randomUUID();
       const controller = productionAssistantController({
+        deliveryMode: 'legacy',
         repositoryReview: true,
         nativeSkills: [],
         configuration: repositoryReviewConfiguration,

@@ -69,7 +69,11 @@ import {
   projectVersionParameter,
   projectPreparationParameter,
 } from './allrice-project-native-tools.mjs';
-import { createGovernedAssistantNativeRuntime } from './allrice-assistant-runtime.mjs';
+import {
+  createGovernedAssistantNativeRuntime,
+  assertAssistantBusinessInputOpen,
+  runAssistantBusinessInput,
+} from './allrice-assistant-runtime.mjs';
 import { installTaskProgress } from './allrice-task-progress.mjs';
 import { installModelErrorNormalization } from './allrice-model-errors.mjs';
 import { installContentGuard } from './allrice-content-guard.mjs';
@@ -1094,6 +1098,11 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
           nativeSkillsAvailable:
             scenes.length > 0 ||
             requestedSkills.some((skill) => skill.invocation.modelInvocable),
+          // Private native-to-owning-Worker bridge, never a model tool or bind
+          // parameter. Worker reads current same-Run controls under authority.
+          restoreFinalDeliveryOrigin: async (params) =>
+            (await this.assistantBridge('final-delivery-origin', params))
+              .origin,
           onModelWait: (state) => this.modelWaitNotify(state),
           onModelStream: (state) => this.modelStreamNotify(state),
           onModelTiming: (state) => this.modelTimingNotify(state),
@@ -1780,6 +1789,7 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
           'drain',
           'flush',
           'join',
+          'joinForFinalDelivery',
           'inspect',
           'finish',
           'diagnostics',
@@ -1788,6 +1798,10 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
         throw Error('assistant_runtime_disabled');
       return this.governedAssistants[action](params);
     }
+    // Reject before any native journal/inbox mutation. The Worker retains
+    // the durable input command and applies its existing defer/readmission
+    // semantics; this is an error, never a fabricated pending/adopted ACK.
+    assertAssistantBusinessInputOpen(this.governedAssistants, method, params);
     switch (method) {
       case 'session/park-question':
         return {
@@ -1799,20 +1813,52 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
         };
       case 'session/answer-wait':
         requiredSessionId(params);
-        return answerNativeWait(this, params);
+        return runAssistantBusinessInput(
+          this.governedAssistants,
+          method,
+          params,
+          () => answerNativeWait(this, params),
+        );
       case 'session/continue-wait':
         requiredSessionId(params);
-        return continueNativeWait(this, params);
+        return runAssistantBusinessInput(
+          this.governedAssistants,
+          method,
+          params,
+          () => continueNativeWait(this, params),
+        );
       case 'session/interrupt':
         return this.interrupt(params);
       case 'session/steer':
-        return this.steer(params);
+        return runAssistantBusinessInput(
+          this.governedAssistants,
+          method,
+          params,
+          () => this.steer(params),
+        );
       case 'session/compact':
-        return this.compact(params);
+        return runAssistantBusinessInput(
+          this.governedAssistants,
+          method,
+          params,
+          () => this.compact(params),
+        );
+      case 'session/prompt':
+        return runAssistantBusinessInput(
+          this.governedAssistants,
+          method,
+          params,
+          () => this.prompt(params),
+        );
       case 'session/projection':
         return this.sessionProjection(params);
       case 'session/recover':
-        return this.recover(params);
+        return runAssistantBusinessInput(
+          this.governedAssistants,
+          method,
+          params,
+          () => this.recover(params),
+        );
       case 'session/close':
         return this.closeSession(params);
       case 'provider/status':
@@ -1830,8 +1876,6 @@ class AllRiceHarnessSdkJsonRpcServer extends AllRiceSdkRoot {
         return this.searchCodex(params);
       case 'initialize':
         return this.initialize(params);
-      case 'session/prompt':
-        return this.prompt(params);
       case 'session/resume':
         await this.ensureRoot(requiredSessionId(params), { resumeOnly: true });
         return {};

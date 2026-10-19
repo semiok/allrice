@@ -83,6 +83,22 @@ For a native local installation, install PostgreSQL 17 and the matching pgvector
 
 ## Environment variables
 
+`ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS` is an operator-reviewed JSON array of
+exact native artifact IDs supporting final-delivery validation. Supply the same
+list to Web (Run admission) and Worker (execution). New eligible Runs freeze the
+mode and artifact ID; old Runs, null origins, and nonmatching historical readers
+keep their original protocol. This list neither approves execution packages nor
+rebinds history. Empty or missing means legacy behavior; malformed or duplicate
+IDs are rejected. Use the measured and independently reviewed candidate ID,
+never a DSH version or filename. No database migration or history backfill is
+required. See [native retention](../architecture/dsh-native-retention.md) and
+[DSH reuse decisions](../architecture/dsh-reuse-and-replacement.md).
+
+Worker startup emits bounded `[MET-195] worker startup` JSON records with the
+same service boot ID, PID, ordered stages, elapsed/CPU time and instrumented read
+counters. Missing counters remain null. They do not include paths, file content,
+credentials or raw errors, and do not skip validation or change readiness.
+
 MET-157 Office content is synchronized by the normal `db:setup` / `content:sync`
 workflow. Deploy its application changes and catalog together: the catalog
 records replacements for the two legacy document Skills, and the employee

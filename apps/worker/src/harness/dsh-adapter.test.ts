@@ -614,6 +614,7 @@ describe('DshHarnessAdapter', () => {
         .spyOn(DshRuntimePool.prototype, 'drop')
         .mockResolvedValue();
       input.assistants = {
+        deliveryMode: 'legacy',
         rootRunId: matchingRoot
           ? input.executionEnvironment.ALLRICE_RUN_ID!
           : randomUUID(),
@@ -728,7 +729,11 @@ describe('DshHarnessAdapter', () => {
         prompt: 'no provider call',
         provider: snapshot(route as DshExecutionSnapshot['route']),
       });
-      input.assistants = { rootRunId: randomUUID(), bind };
+      input.assistants = {
+        deliveryMode: 'legacy',
+        rootRunId: randomUUID(),
+        bind,
+      };
       // At the Worker boundary this preflight runs before unknown accounting.
       await expect(adapter.execute(input)).rejects.toMatchObject({
         code: 'ASSISTANT_PROVIDER_OUTPUT_BOUND_UNSUPPORTED',

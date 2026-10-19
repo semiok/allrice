@@ -246,3 +246,55 @@ it('accepts sealed native Next vendor aliases within this release and rejects th
   await symlink(join(other.root, vendor), alias);
   await expect(f.verify('web')).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
 });
+
+it('MET195 counts sealed release reads while preserving the complete v1 manifest and using one supplied startup boot identity', async () => {
+  const f = await fixture();
+  const metrics: Array<
+    Parameters<
+      NonNullable<Parameters<typeof verifyServiceBuildIdentity>[0]['observe']>
+    >[0]
+  > = [];
+  const observed = await prepareServiceBuildManifest({
+    root: f.root,
+    sourceSha: f.manifest.sourceSha,
+    sourceTree: f.manifest.sourceTree,
+    observe: (metric) => metrics.push(metric),
+  });
+  expect(observed).toEqual(f.manifest);
+  expect(metrics.filter((m) => m.kind === 'package')).toHaveLength(4);
+  expect(metrics.filter((m) => m.kind === 'read').length).toBeGreaterThan(
+    f.manifest.files.length,
+  );
+  const bootId = '19500000-0000-4000-8000-000000000001';
+  const identity = await verifyServiceBuildIdentity({
+    entrypoint: join(f.root, 'apps/worker/dist/index.js'),
+    service: 'worker',
+    mode: 'production',
+    bootId,
+    observe: (metric) => metrics.push(metric),
+  });
+  expect(identity?.bootId).toBe(bootId);
+  expect(identity?.manifestDigest).toBe(f.manifest.manifestDigest);
+  expect(identity?.pid).toBe(process.pid);
+});
+it('MET195 diagnostic failure cannot affect successful verification or conceal changed bytes', async () => {
+  const f = await fixture();
+  const input = {
+    entrypoint: join(f.root, 'apps/worker/dist/index.js'),
+    service: 'worker' as const,
+    mode: 'production' as const,
+    observe: () => {
+      throw Error('sink failed');
+    },
+  };
+  expect((await verifyServiceBuildIdentity(input))?.manifestDigest).toBe(
+    f.manifest.manifestDigest,
+  );
+  await writeFile(
+    join(f.root, 'packages/storage/dist/index.js'),
+    'modified transitive dependency',
+  );
+  await expect(verifyServiceBuildIdentity(input)).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
