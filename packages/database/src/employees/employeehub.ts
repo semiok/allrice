@@ -1239,7 +1239,9 @@ export async function prepareEmployeeRunBinding(
       workspaceId: input.workspaceId,
       employeeId: assignment.employee_id,
       actorId,
-      instanceId: instance.id,
+      // Current admission requires a real instance; historical seed readers
+      // can omit the optional instance snapshot and retain an empty directory.
+      instanceId: instance?.id,
       sceneId: input.workflowInvocation?.sceneId ?? null,
     },
     transaction,
@@ -1250,7 +1252,11 @@ export async function prepareEmployeeRunBinding(
     const invocation = BrandContentWorkflowInvocationSchema.parse(
       input.workflowInvocation,
     );
-    if (instance.kind !== 'custom' || invocation.instanceId !== instance.id)
+    if (
+      !instance ||
+      instance.kind !== 'custom' ||
+      invocation.instanceId !== instance.id
+    )
       throw new DataAccessError('authorization_denied');
     const { assertBrandContentWorkflowStart } =
       await import('../brand-content/workflow-start.ts');
