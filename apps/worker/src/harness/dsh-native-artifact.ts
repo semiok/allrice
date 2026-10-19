@@ -248,24 +248,81 @@ export async function measureDshNativeArtifact(
     packages.set(path, item);
     observeNative(observer, { kind: 'package' });
     const packageFiles: FileFact[] = [];
+    // At most four leaves of <=8 MiB (32 MiB declared payload) may overlap.
+    // Larger leaves run alone under the existing 256 MiB limit. Unknown or
+    // <4 GiB available memory keeps the original serial traversal. This bounds
+    // tasks, not RSS or a file growing between lstat and readFile.
+    const memory = (() => {
+      try {
+        return process.availableMemory?.() ?? 0;
+      } catch {
+        return 0;
+      }
+    })();
+    const leafConcurrency =
+      Number.isFinite(memory) && memory >= 4 * 1024 ** 3 ? 4 : 1;
+    type LeafResult =
+      { ok: true; fact: FileFact } | { ok: false; error: unknown };
     const walk = async (folder: string): Promise<void> => {
-      for (const entry of (await readdir(folder, { withFileTypes: true })).sort(
-        (a, b) => order(a.name, b.name),
-      )) {
-        if (entry.name === 'node_modules') {
-          if (folder !== path) fail('NESTED_MODULE_OVERRIDE');
-          continue; // Declared edges below measure this resolution boundary.
-        }
-        const file = join(folder, entry.name);
-        const stat = await lstat(file);
-        if (stat.isSymbolicLink()) fail('PACKAGE_FILE_LINK');
-        if (stat.isDirectory()) await walk(file);
-        else {
-          const fact = await fileFact(file);
-          packageFiles.push({ ...fact, path: relative(path, file) });
+      const pending: Promise<LeafResult>[] = [];
+      let failed = false;
+      const flush = async () => {
+        // Tasks always resolve to outcomes. Await all of them before returning
+        // the first error in traversal order, even if a later read fails first.
+        const completed = await Promise.all(pending.splice(0));
+        for (const result of completed) {
+          if (!result.ok) throw result.error;
+          packageFiles.push(result.fact);
           if (packageFiles.length > 100000) fail('FILE_LIMIT');
         }
+      };
+      try {
+        for (const entry of (
+          await readdir(folder, { withFileTypes: true })
+        ).sort((a, b) => order(a.name, b.name))) {
+          if (failed) await flush();
+          if (entry.name === 'node_modules') {
+            await flush();
+            if (folder !== path) fail('NESTED_MODULE_OVERRIDE');
+            continue; // Declared edges below measure this resolution boundary.
+          }
+          const file = join(folder, entry.name);
+          const stat = await lstat(file);
+          if (stat.isSymbolicLink()) {
+            await flush();
+            fail('PACKAGE_FILE_LINK');
+          }
+          if (stat.isDirectory()) {
+            await flush();
+            await walk(file);
+          } else {
+            if (failed) await flush();
+            const large = stat.size > 8 * 1024 ** 2;
+            if (large) await flush();
+            pending.push(
+              (async (): Promise<LeafResult> => {
+                try {
+                  const fact = await fileFact(file);
+                  return {
+                    ok: true,
+                    fact: { ...fact, path: relative(path, file) },
+                  };
+                } catch (error) {
+                  failed = true;
+                  return { ok: false, error };
+                }
+              })(),
+            );
+            if (large || pending.length >= leafConcurrency) await flush();
+          }
+        }
+      } catch (error) {
+        // Discovery follows earlier queued leaves in the serial traversal.
+        // Drain them first; an earlier leaf error keeps priority over discovery.
+        await flush();
+        throw error;
       }
+      await flush();
     };
     if (metadata.name === '@allrice/contracts') {
       packageFiles.push({
