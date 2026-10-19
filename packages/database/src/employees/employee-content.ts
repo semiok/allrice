@@ -80,6 +80,14 @@ const emptyManifest: EmployeeContentManifest = {
 function refs(manifest: EmployeeContentManifest) {
   return [...manifest.common, ...manifest.scenes.flatMap((s) => s.references)];
 }
+function scopedRefs(manifest: EmployeeContentManifest) {
+  return [
+    ...manifest.common.map((ref) => ({ ref, sceneId: null as string | null })),
+    ...manifest.scenes.flatMap((scene) =>
+      scene.references.map((ref) => ({ ref, sceneId: scene.id })),
+    ),
+  ];
+}
 function exactKey(ref: EmployeeContentReference) {
   return `${ref.sourceKind}:${ref.contentId}:${ref.revisionId}:${ref.digest}`;
 }
@@ -319,10 +327,12 @@ async function assemble(
         code: 'declared_conflict',
         message: '存在尚未解决的内容冲突。',
       });
-    const sourceRefs = [
-      ...new Map(refs(rev.manifest).map((r) => [exactKey(r), r])).values(),
-    ].sort((a, b) => exactKey(a).localeCompare(exactKey(b)));
-    for (const ref of sourceRefs) {
+    const sourceRefs = scopedRefs(rev.manifest).sort((a, b) =>
+      `${a.sceneId ?? ''}/${exactKey(a.ref)}`.localeCompare(
+        `${b.sceneId ?? ''}/${exactKey(b.ref)}`,
+      ),
+    );
+    for (const { ref, sceneId } of sourceRefs) {
       const identity = `${ref.sourceKind}:${ref.contentId}`,
         previous = identities.get(identity);
       // Independent scenes may pin different revisions of a reference. Check
@@ -344,6 +354,8 @@ async function assemble(
       const resolved = await resolveEmployeeContentSource({
         context,
         employeeId: target.employeeId,
+        instanceId: target.instanceId ?? undefined,
+        sceneId,
         ownership: contentOwnership(row),
         ref,
         sql,
@@ -1012,13 +1024,13 @@ export async function getEmployeeContentSet(
       manifest =
         set.candidate?.manifest ?? set.active?.manifest ?? emptyManifest;
     const sources: ResolvedContentSource[] = [];
-    for (const ref of [
-      ...new Map(refs(manifest).map((r) => [exactKey(r), r])).values(),
-    ])
+    for (const { ref, sceneId } of scopedRefs(manifest))
       sources.push(
         await resolveEmployeeContentSource({
           context,
           employeeId: row.employee_id,
+          instanceId: row.instance_id ?? undefined,
+          sceneId,
           ownership: contentOwnership(row),
           ref,
           sql: tx,
@@ -1357,14 +1369,16 @@ export async function inspectEmployeeMethodContent(
   );
   const active = await readRevision(tx, row.active_revision_id);
   const sources = [];
-  for (const ref of new Map(
-    refs(candidate?.manifest ?? emptyManifest).map((r) => [exactKey(r), r]),
-  ).values())
+  for (const { ref, sceneId } of scopedRefs(
+    candidate?.manifest ?? emptyManifest,
+  ))
     sources.push(
       (
         await resolveEmployeeContentSource({
           context,
           employeeId: row.employee_id,
+          instanceId: row.instance_id ?? undefined,
+          sceneId,
           ownership: contentOwnership(row),
           ref,
           sql: tx,

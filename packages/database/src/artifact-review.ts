@@ -1424,7 +1424,10 @@ export async function publishWorkbenchArtifact(
    * assignment/version each time. Storage still uses the real root job. */
   development?: {
     requiredTool?:
-      'assistant.development' | 'workspace.project' | 'browser.workspace';
+      | 'assistant.development'
+      | 'workspace.project'
+      | 'browser.workspace'
+      | 'workspace.brand_content.step';
     /** Server-only finite saved-document verification result. */
     browserVerification?: { execution: RuntimeExecutionScope };
     /** Server-only private QA browser capture. Its managed task must already
@@ -1438,6 +1441,8 @@ export async function publishWorkbenchArtifact(
     runId: string;
     admit: (tx: TransactionSql) => Promise<void>;
     registered?: (tx: TransactionSql, artifactId: string) => Promise<void>;
+    /** Reconcile a business receipt in the cached artifact's transaction. */
+    replayed?: (tx: TransactionSql, artifactId: string) => Promise<void>;
   },
 ) {
   if (!workbenchEnabled()) fail('feature_disabled');
@@ -1633,7 +1638,8 @@ export async function publishWorkbenchArtifact(
           input.sessionId,
           existing.version_id,
         );
-        if (projectParent) await development!.admit(tx);
+        await development?.replayed?.(tx, cached.id);
+        await development?.admit(tx);
         if (!input.officeReceipt) return cached;
         const [recorded] = await tx`select metadata from allrice_audit_events
           where organization_id=${context.organizationId} and workspace_id=${context.workspaceId!}

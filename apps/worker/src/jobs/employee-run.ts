@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createJobNativeBinding } from '../harness/native-session-binding.js';
 import { documentDeliveryGuard } from './document-delivery.js';
 import { LocalStorageAdapter } from '@allrice/storage';
+import { workflowModelUsage } from '../workflow-model-usage.js';
 
 import {
   withPlatformImageTools,
@@ -1457,13 +1458,52 @@ export async function executeEmployeeRun({
                 false,
               );
             }
+            const invocation =
+              executionSnapshot.schemaVersion === 2
+                ? executionSnapshot.workflowInvocation
+                : undefined;
+            const checkWorkflowContent = async () => {
+              await contentGuard?.check();
+              if (invocation) {
+                const { assertWorkflowPackageExecution } =
+                  await import('@allrice/database');
+                await assertWorkflowPackageExecution(
+                  {
+                    actor: execution.context.delegatedBy,
+                    organizationId: execution.context.organizationId,
+                    workspaceId: execution.context.workspaceId,
+                  },
+                  {
+                    workspaceId: execution.context.workspaceId!,
+                    instanceId: invocation.instanceId,
+                    sceneId: invocation.sceneId,
+                    workflowRevisionId: invocation.workflowRevisionId,
+                    frozenPackageDigest: invocation.packageDigest,
+                  },
+                );
+              }
+            };
+            await checkWorkflowContent();
             await ensureWorkflowRunForExecution({
               context: execution.context,
               ownerId: execution.job.ownerId,
               employeeId: executionSnapshot.employee.id,
               workflowRevisionId: selectedWorkflow.revision.id,
               sessionId: kernel.sessionId,
-              value: { request: kernel.userRequest },
+              value: {
+                request: kernel.userRequest,
+                ...(invocation ? { business: invocation.input } : {}),
+              },
+              ...(invocation
+                ? {
+                    frozenDefinition: selectedWorkflow.revision.definition,
+                    workflowPackage: {
+                      instanceId: invocation.instanceId,
+                      sceneId: invocation.sceneId,
+                      packageDigest: invocation.packageDigest,
+                    },
+                  }
+                : {}),
             });
             const usage = {
               inputTokens: 0,
@@ -1471,7 +1511,8 @@ export async function executeEmployeeRun({
               outputTokens: 0,
             };
             const durable = await executeDurableWorkflow({
-              checkContent: contentGuard?.check,
+              ...(invocation ? { recordEvaluation: false } : {}),
+              checkContent: checkWorkflowContent,
               execution,
               ...workflowLease,
               storageRoot: process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
@@ -1484,7 +1525,7 @@ export async function executeEmployeeRun({
                   ),
               },
               executeStep: async ({ step, value, idempotencyKey }) => {
-                await contentGuard?.check();
+                await checkWorkflowContent();
                 if (step.kind === 'knowledge') {
                   const allowed = new Set(
                     capabilitySnapshot.knowledge
@@ -1609,6 +1650,9 @@ export async function executeEmployeeRun({
                   systemInstructions: [
                     routedKernel.systemInstructions,
                     `Execute only workflow step ${step.key} (${step.name}). Return this step's business result; the Workflow Engine controls progression, approval and retry.`,
+                    ...(invocation && typeof step.input.instruction === 'string'
+                      ? [step.input.instruction]
+                      : []),
                   ].join('\n\n'),
                   userRequest: JSON.stringify(value),
                   authorizedMemoryContext: [
@@ -1637,8 +1681,20 @@ export async function executeEmployeeRun({
                   attempt: execution.job.attempt,
                   generation: runtime.generation,
                   maxOutputTokens: runLimits?.maxOutputTokens,
-                  onEvent: guardedHarnessEvent,
-                  authorizedToolNames: authorizedTools.map((tool) => tool.name),
+                  onEvent: invocation
+                    ? async (event) => {
+                        // Structured node output is private Workflow data. The
+                        // user receives the validated saved-stage receipt.
+                        if (
+                          event.type !== 'assistant.delta' &&
+                          event.type !== 'assistant.completed'
+                        )
+                          await guardedHarnessEvent(event);
+                      }
+                    : guardedHarnessEvent,
+                  authorizedToolNames: invocation
+                    ? []
+                    : authorizedTools.map((tool) => tool.name),
                   tools: [],
                   threadId: runtime.threadId,
                   nativeBinding,
@@ -1676,7 +1732,14 @@ export async function executeEmployeeRun({
                 usage.inputTokens += stepResult.usage.inputTokens;
                 usage.cachedInputTokens += stepResult.usage.cachedInputTokens;
                 usage.outputTokens += stepResult.usage.outputTokens;
-                return { output: { answer: stepResult.answer } };
+                return {
+                  output: {
+                    answer: stepResult.answer,
+                    usage: stepResult.usage,
+                    usageComplete: stepResult.usageComplete ?? false,
+                    cacheUsageKnown: stepResult.cacheUsageKnown ?? false,
+                  },
+                };
               },
             });
             const answers = Object.values(durable.output).flatMap((value) =>
@@ -1686,11 +1749,20 @@ export async function executeEmployeeRun({
                 ? [(value as { answer: string }).answer]
                 : [],
             );
+            const savedSummary = objectInput(durable.output.save).summary;
             return {
               answer:
-                answers.at(-1) ??
+                (invocation && typeof savedSummary === 'string'
+                  ? savedSummary
+                  : answers.at(-1)) ??
                 `工作流已完成，共执行 ${selectedWorkflow.revision.definition.steps.length} 个步骤。`,
               usage,
+              ...(invocation
+                ? workflowModelUsage(
+                    selectedWorkflow.revision.definition,
+                    durable.output,
+                  )
+                : {}),
               provider: providerName(providerSnapshot),
               model: providerSnapshot.model,
               threadId: runtime.threadId,

@@ -4,6 +4,7 @@ import {
   assertJobTransition,
   AssistantTextEventPayloadSchema,
   authorize,
+  authorizeResource,
   authorizeExecution,
   CancelRunInputSchema,
   CreateRunInputSchema,
@@ -79,6 +80,35 @@ function resource(overrides: Partial<ResourceRef> = {}): ResourceRef {
 }
 
 describe('authorization contracts', () => {
+  it('uses the same resource decisions for admitted server work without fabricating a browser session', () => {
+    const { requestId, actor, organizationId, workspaceId, memberships } =
+      context();
+    const principal = {
+      requestId,
+      actor,
+      organizationId,
+      workspaceId,
+      memberships,
+    };
+    for (const target of [
+      resource(),
+      resource({ visibility: 'private' }),
+      resource({ ownerId: ids.userA, visibility: 'private' }),
+      resource({ organizationId: ids.organizationB }),
+    ])
+      expect(authorizeResource(target, 'resource:read', principal)).toEqual(
+        authorize(target, 'resource:read', context()),
+      );
+    expect(
+      authorizeResource(resource(), 'resource:read', {
+        ...principal,
+        memberships: [],
+      }).allowed,
+    ).toBe(false);
+    expect(() =>
+      authorize(resource(), 'resource:read', principal as RequestContext),
+    ).toThrow();
+  });
   it('denies cross-tenant and private admin reads', () => {
     expect(
       authorize(

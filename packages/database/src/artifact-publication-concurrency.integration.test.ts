@@ -4,6 +4,7 @@ import type { TransactionSql } from 'postgres';
 import {
   ExecutionContextSchema,
   ReferenceReadSchema,
+  type StorageObject,
   type StoragePort,
   type WorkbenchArtifact,
 } from '@allrice/contracts';
@@ -92,9 +93,13 @@ suite(
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
-    async function setup() {
+    async function setup(extraTools: string[] = []) {
       const f = await createAssistantAuthorityFixture(fixture.db, {
-        allowedTools: ['assistant.delegate', 'workspace.export.create'],
+        allowedTools: [
+          'assistant.delegate',
+          'workspace.export.create',
+          ...extraTools,
+        ],
         memberRole: 'member',
       });
       const [basis] =
@@ -529,6 +534,97 @@ suite(
       expect(await readArtifactBytes(foreign.storage, old.object)).toEqual(
         foreign.input.bytes,
       );
+    });
+
+    it('atomically rolls back a business composition after artifact registration and rechecks cached replay before returning it', async () => {
+      const f = await setup(['workspace.project']);
+      const previous = await publishWorkbenchArtifact(
+        f.input,
+        f.storage,
+        fixture.db,
+      );
+      const revision = {
+        ...f.input,
+        callId: randomUUID(),
+        parentObjectId: previous.object.id,
+        bytes: Buffer.from('Composed revision'),
+        changeSummary: 'Atomic business composition',
+      };
+      const written: StorageObject[] = [];
+      const storage = storageWithPut(f.storage, async (object, stream) => {
+        written.push(object);
+        return f.storage.put(object, stream);
+      });
+      const admit = async (tx: TransactionSql) => {
+        const [live] =
+          await tx`select id from allrice_jobs where id=${f.worker.jobId} and lease_token=${f.worker.leaseToken} and status='running' for share`;
+        if (!live) throw Error('composition_lease_lost');
+      };
+      const base = {
+        runId: f.rootRunId,
+        requiredTool: 'workspace.project' as const,
+        admit,
+      };
+      await expect(
+        publishWorkbenchArtifact(revision, storage, fixture.db, {
+          ...base,
+          registered: async (tx, artifactId) => {
+            // The real publisher's new version is visible here, but cannot become
+            // latest if a business CAS rejects the same transaction.
+            const [row] =
+              await tx`select id from allrice_deliverable_versions where id=${artifactId}`;
+            expect(row?.id).toBe(artifactId);
+            throw Error('business_revision_conflict');
+          },
+        }),
+      ).rejects.toThrow('business_revision_conflict');
+      expect(written).toHaveLength(1);
+      expect(await f.storage.exists(written[0]!)).toBe(false);
+      expect(
+        await fixture.db`select id from allrice_storage_objects where id=${written[0]!.id}`,
+      ).toHaveLength(0);
+      const [latest] =
+        await fixture.db`select id from allrice_deliverable_versions where series_id=${previous.version.seriesId} order by version desc limit 1`;
+      expect(latest?.id).toBe(previous.id);
+      const registered = vi.fn(
+        async (tx: TransactionSql, artifactId: string) => {
+          await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason)
+          values(${f.org},${f.workspace},${f.user},'brand.composition.fixture','brand_content',${artifactId},'recorded','same_transaction')`;
+        },
+      );
+      const replayed = vi.fn(async (tx: TransactionSql, artifactId: string) => {
+        const [receipt] =
+          await tx`select resource_id from allrice_audit_events where action='brand.composition.fixture' and resource_id=${artifactId}`;
+        expect(receipt?.resource_id).toBe(artifactId);
+      });
+      const committed = await publishWorkbenchArtifact(
+        revision,
+        storage,
+        fixture.db,
+        { ...base, registered, replayed },
+      );
+      const cached = await publishWorkbenchArtifact(
+        revision,
+        storage,
+        fixture.db,
+        { ...base, registered, replayed },
+      );
+      expect(cached.id).toBe(committed.id);
+      expect(registered).toHaveBeenCalledOnce();
+      expect(replayed).toHaveBeenCalledOnce();
+      expect(
+        await fixture.db`select id from allrice_deliverable_versions where series_id=${previous.version.seriesId}`,
+      ).toHaveLength(2);
+      await fixture.db`update allrice_jobs set lease_token=${randomUUID()} where id=${f.worker.jobId}`;
+      await expect(
+        publishWorkbenchArtifact(revision, storage, fixture.db, {
+          ...base,
+          registered,
+          replayed,
+        }),
+      ).rejects.toThrow('composition_lease_lost');
+      expect(replayed).toHaveBeenCalledOnce();
+      expect(await f.storage.exists(committed.object)).toBe(true);
     });
 
     it('publication waits before taking the session lock while an actual clock/authority check owns the job', async () => {

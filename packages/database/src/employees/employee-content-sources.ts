@@ -52,6 +52,8 @@ function unavailable(
 type ResolveInput = {
   context: ContentIdentity;
   employeeId: string;
+  instanceId?: string;
+  sceneId?: string | null;
   ownership: ContentScope;
   ref: EmployeeContentReference;
   sql: ContentSql;
@@ -228,17 +230,69 @@ export async function resolveEmployeeContentSource(
         definition: unknown;
         checksum: string;
         binding_id: string;
+        binding_instance_id: string | null;
+        revision: number;
       }[]
-    >`select r.name,r.description,r.definition,r.checksum,b.id as binding_id
+    >`select r.name,r.description,r.definition,r.checksum,r.revision,b.id as binding_id,
+      ${knowledge ? sql`null::uuid` : sql`b.instance_id`} as binding_instance_id
       from ${sql(sourceTable)} s join ${sql(revisionTable)} r on r.${sql(sourceColumn)}=s.id
-      join ${sql(bindingTable)} b on b.${sql(bindingColumn)}=r.id and b.employee_id=${input.employeeId}
+      join ${sql(bindingTable)} b on b.employee_id=${input.employeeId} and (
+        b.${sql(bindingColumn)}=r.id
+        ${
+          !knowledge && input.frozenPublication
+            ? sql`or (b.instance_id=${input.instanceId ?? null}::uuid and b.workflow_id=r.workflow_id
+          and exists(select 1 from allrice_workflow_packages frozen_package where frozen_package.workflow_revision_id=r.id
+            and frozen_package.instance_id=b.instance_id and frozen_package.owner_id=${context.actor.id}
+            and frozen_package.organization_id=${context.organizationId} and frozen_package.workspace_id=${context.workspaceId}))`
+            : sql``
+        }
+      )
       where s.id=${ref.contentId} and r.id=${ref.revisionId} and s.organization_id=${context.organizationId}
         and s.workspace_id=${context.workspaceId} and s.status='active' and r.status='published' and b.enabled
         ${knowledge ? sql`and s.ownership is null` : sql``}
+        ${
+          knowledge
+            ? sql``
+            : sql`and (b.instance_id is null or (
+          ${ownership.scope === 'personal'} and b.instance_id=${input.instanceId ?? null}::uuid
+          and b.owner_id=${context.actor.id}
+          and (b.scene_id is null or b.scene_id=${input.sceneId ?? null}::uuid)
+          and exists(select 1 from allrice_employee_instances i
+            join allrice_employee_assignments a on a.id=i.assignment_id
+            where i.id=b.instance_id and i.organization_id=b.organization_id and i.workspace_id=b.workspace_id
+              and i.owner_id=b.owner_id and i.assignment_id=b.assignment_id and i.kind='custom'
+              and i.archived_at is null and a.active and a.employee_id=b.employee_id
+              and not exists(select 1 from allrice_platform_employee_tenant_assignments d
+                where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
+                  and d.tenant_employee_id=a.employee_id and not d.active))
+        ))`
+        }
       ${lock ? sql`for share of s,r,b` : sql``}`;
     if (!row) return unavailable(ref);
     if (row.checksum !== ref.digest) return unavailable(ref, 'source_changed');
     let aclDependency: unknown = null;
+    let body = row.description;
+    if (!knowledge && row.binding_instance_id && input.instanceId) {
+      const { resolveWorkflowPackageForInstance } =
+        await import('../capabilities/workflow-packages.ts');
+      const state = await resolveWorkflowPackageForInstance(
+        context,
+        {
+          workspaceId: context.workspaceId!,
+          instanceId: input.instanceId,
+          sceneId: input.sceneId ?? null,
+          workflowRevisionId: ref.revisionId,
+        },
+        sql,
+        lock,
+      );
+      if (state.syncStatus === 'source_unavailable') return unavailable(ref);
+      body = `${row.description}\n执行版本：v${row.revision}。${state.syncStatus === 'method_changed' ? '文字流程已更新，当前 Workflow 仍采用原方法，待同步。' : '与关联的文字流程版本一致。'}`;
+      aclDependency = {
+        packageChecksum: state.package.checksum,
+        method: state.package.manifest.method,
+      };
+    }
     if (knowledge) {
       const entries = await sql<
         { principal_type: string; principal_id: string; permission: string }[]
@@ -287,7 +341,7 @@ export async function resolveEmployeeContentSource(
         reference: ref,
         available: true,
         title: row.name,
-        body: row.description,
+        body,
         ownership: null,
         canMaintain: false,
       },

@@ -49,7 +49,9 @@ export function readyWorkflowSteps(
   const states = new Map(steps.map((step) => [step.stepKey, step.status]));
   return definition.steps.filter(
     (step) =>
-      states.get(step.key) === 'pending' &&
+      // A running row may belong to a crashed job incarnation. startWorkflowStep
+      // proves the current job lease and decides safe recovery versus attention.
+      ['pending', 'running'].includes(states.get(step.key) ?? '') &&
       step.dependsOn.every((dependency) =>
         dependencyComplete.has(states.get(dependency) ?? 'pending'),
       ),
@@ -81,6 +83,8 @@ export async function executeDurableWorkflow(input: {
   leaseMs: number;
   storageRoot: string;
   checkContent?: () => Promise<void>;
+  /** Business-stage callers defer evaluation; absent keeps legacy behavior. */
+  recordEvaluation?: boolean;
   evaluation?: {
     routingAccurate?: boolean;
     citationsAccurate?: boolean;
@@ -166,27 +170,33 @@ export async function executeDurableWorkflow(input: {
         object,
         name: 'workflow-result.json',
       });
-      const metrics = await recordWorkflowEvaluation({
-        context: input.execution.context,
-        metrics: {
-          routingAccuracy: input.evaluation?.routingAccurate === false ? 0 : 1,
-          citationAccuracy:
-            input.evaluation?.citationsAccurate === false ? 0 : 1,
-          approvalHitRate:
-            input.evaluation?.approvalExpected === false ||
-            run.definition.steps.some((step) => step.approval === 'required')
-              ? 1
-              : 0,
-          recoverySuccessRate: run.steps.some((step) => step.attempt > 1)
-            ? 1
-            : 1,
-          sideEffectDuplicateCount: 0,
-          latencyMs: Date.now() - startedAt,
-          inputTokens: 0,
-          outputTokens: 0,
-          costCents: 0,
-        },
-      });
+      const metrics =
+        input.recordEvaluation === false
+          ? null
+          : await recordWorkflowEvaluation({
+              context: input.execution.context,
+              metrics: {
+                routingAccuracy:
+                  input.evaluation?.routingAccurate === false ? 0 : 1,
+                citationAccuracy:
+                  input.evaluation?.citationsAccurate === false ? 0 : 1,
+                approvalHitRate:
+                  input.evaluation?.approvalExpected === false ||
+                  run.definition.steps.some(
+                    (step) => step.approval === 'required',
+                  )
+                    ? 1
+                    : 0,
+                recoverySuccessRate: run.steps.some((step) => step.attempt > 1)
+                  ? 1
+                  : 1,
+                sideEffectDuplicateCount: 0,
+                latencyMs: Date.now() - startedAt,
+                inputTokens: 0,
+                outputTokens: 0,
+                costCents: 0,
+              },
+            });
       await completeWorkflowRun({ context: input.execution.context, output });
       return { workflowRunId: run.id, output, artifact, metrics };
     }

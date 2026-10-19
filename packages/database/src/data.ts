@@ -9,7 +9,7 @@ import {
   UuidSchema,
   VectorRecallInputSchema,
   VisibilitySchema,
-  authorize,
+  authorizeResource,
   makeObjectKey,
   type RequestContext,
   type SignedAccessGrant,
@@ -120,11 +120,11 @@ function mapStoredFile(row: StorageObjectRow): StoredFile {
 }
 
 function authorizeFile(
-  context: RequestContext,
+  context: ResourcePrincipal,
   row: StorageObjectRow,
   action: 'resource:read' | 'resource:delete',
 ) {
-  const decision = authorize(
+  const decision = authorizeResource(
     {
       type: 'storage_object',
       id: row.id,
@@ -284,7 +284,7 @@ export async function abandonStorageMetadata(
 }
 
 export async function getStoredFile(
-  context: RequestContext,
+  context: ResourcePrincipal,
   objectId: string,
   sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ) {

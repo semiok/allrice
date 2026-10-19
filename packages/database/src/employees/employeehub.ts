@@ -1164,6 +1164,7 @@ export async function prepareEmployeeRunBinding(
     sessionId: string;
     userMessageId: string;
     assistantMessageId: string;
+    workflowInvocation?: import('@allrice/contracts').BrandContentWorkflowInvocation;
     promptSnapshot: EmployeeRunBinding['promptSnapshot'];
   },
   transaction?: TransactionSql,
@@ -1237,9 +1238,63 @@ export async function prepareEmployeeRunBinding(
       workspaceId: input.workspaceId,
       employeeId: assignment.employee_id,
       actorId,
+      instanceId: instance.id,
+      sceneId: input.workflowInvocation?.sceneId ?? null,
     },
     transaction,
   );
+  if (input.workflowInvocation) {
+    const { BrandContentWorkflowInvocationSchema } =
+      await import('@allrice/contracts');
+    const invocation = BrandContentWorkflowInvocationSchema.parse(
+      input.workflowInvocation,
+    );
+    if (instance.kind !== 'custom' || invocation.instanceId !== instance.id)
+      throw new DataAccessError('authorization_denied');
+    const { assertBrandContentWorkflowStart } =
+      await import('../brand-content/workflow-start.ts');
+    await assertBrandContentWorkflowStart(
+      input.context,
+      input.sessionId,
+      input.userMessageId,
+      invocation,
+      transaction,
+    );
+    const { assertWorkflowPackageExecution } =
+      await import('../capabilities/workflow-packages.ts');
+    const resolvedPackage = await assertWorkflowPackageExecution(
+      { ...input.context, workspaceId: input.workspaceId },
+      {
+        workspaceId: input.workspaceId,
+        instanceId: instance.id,
+        sceneId: invocation.sceneId,
+        workflowRevisionId: invocation.workflowRevisionId,
+        frozenPackageDigest: invocation.packageDigest,
+      },
+      transaction,
+    );
+    if (
+      !resolvedPackage.binding ||
+      resolvedPackage.package.checksum !== invocation.packageDigest ||
+      resolvedPackage.package.manifest.templateKey !== invocation.templateKey
+    )
+      throw new DataAccessError('authorization_denied');
+    // A persisted start may predate a pointer upgrade. Its verified immutable
+    // revision must enter the Run snapshot, rather than today's directory
+    // revision. Only the server-owned start receipt permits this old pin.
+    const frozen = resolvedPackage.package.workflow;
+    capabilityDirectory.workflows = capabilityDirectory.workflows.filter(
+      (binding) => binding.revision.workflowId !== frozen.workflowId,
+    );
+    capabilityDirectory.workflows.push({
+      bindingId: resolvedPackage.binding.id,
+      revision: frozen,
+      effective: true,
+      disabledReason: null,
+      boundBy: resolvedPackage.package.ownerId,
+      boundAt: resolvedPackage.binding.boundAt,
+    });
+  }
   const mutableSkillRows = await sql<
     {
       id: string;
@@ -1542,6 +1597,9 @@ export async function prepareEmployeeRunBinding(
     executionSnapshot: {
       schemaVersion: 2,
       instance,
+      ...(input.workflowInvocation
+        ? { workflowInvocation: input.workflowInvocation }
+        : {}),
       content,
       ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
       ...(personalSkills ? { personalSkills } : {}),

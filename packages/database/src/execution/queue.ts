@@ -2395,12 +2395,21 @@ export async function heartbeatJob(
     if (await stopUnauthorizedTechnicalJob(transaction, job))
       return { active: false, canceled: false };
     const now = new Date();
+    const expiresAt = leaseDeadline(leaseMs, now);
     await transaction`
       update allrice_jobs
-      set heartbeat_at = ${now}, lease_expires_at = ${leaseDeadline(leaseMs, now)},
+      set heartbeat_at = ${now}, lease_expires_at = ${expiresAt},
           updated_at = ${now}
       where id = ${job.id}
     `;
+    // Renew only steps owned by this same live job incarnation. The job/root
+    // locks above serialize takeover, cancellation and an absolute deadline.
+    await transaction`update allrice_workflow_step_runs s
+      set lease_expires_at=least(${expiresAt}::timestamptz,${job.timeout_at}::timestamptz),updated_at=${now}
+      from allrice_workflow_runs w
+      where w.id=s.workflow_run_id and w.run_id=${job.run_id}
+        and w.organization_id=${job.organization_id} and w.workspace_id=${job.workspace_id}
+        and w.owner_id=${job.owner_id} and s.status='running' and s.lease_token=${leaseToken}`;
     return { active: true, canceled: false };
   });
 }

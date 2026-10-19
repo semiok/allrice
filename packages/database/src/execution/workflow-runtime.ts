@@ -20,6 +20,7 @@ import { DataAccessError } from '../data.ts';
 import { markExperienceCapturePending } from '../experience-capture.ts';
 import { getDatabase } from '../core/client.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
+import { refreshTaskClockForJob } from '../task-clock.ts';
 import { enqueueRun } from './queue.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
 
@@ -220,6 +221,18 @@ async function insertWorkflowRuntime(
   `;
   const workflowRun = rows[0];
   if (!workflowRun) throw new Error('workflow run creation failed');
+  if (
+    workflowRun.organization_id !== input.organizationId ||
+    workflowRun.workspace_id !== input.workspaceId ||
+    workflowRun.owner_id !== input.ownerId ||
+    workflowRun.employee_id !== input.employeeId ||
+    workflowRun.workflow_revision_id !== input.workflowRevisionId ||
+    workflowRun.session_id !== input.sessionId ||
+    workflowDigest(workflowRun.input) !== workflowDigest(input.value) ||
+    workflowDigest(workflowRun.definition_snapshot) !==
+      workflowDigest(input.definition)
+  )
+    throw new WorkflowRuntimeError('conflict');
   for (const step of input.definition.steps) {
     await transaction`
       insert into allrice_workflow_step_runs (
@@ -331,13 +344,53 @@ export async function ensureWorkflowRunForExecution(input: {
   workflowRevisionId: string;
   sessionId: string | null;
   value: unknown;
+  frozenDefinition?: WorkflowDefinition;
+  workflowPackage?: {
+    instanceId: string;
+    sceneId: string | null;
+    packageDigest: string;
+  };
 }) {
   const sql = getDatabase();
   await sql.begin(async (transaction) => {
-    const existing = await transaction<{ id: string }[]>`
-      select id from allrice_workflow_runs where run_id = ${input.context.runId}
-    `;
-    if (existing[0]) return;
+    if (input.workflowPackage) {
+      const { assertWorkflowPackageExecution } =
+        await import('../capabilities/workflow-packages.ts');
+      const resolved = await assertWorkflowPackageExecution(
+        {
+          actor: input.context.delegatedBy,
+          organizationId: input.context.organizationId,
+          workspaceId: input.context.workspaceId,
+        },
+        {
+          workspaceId: input.context.workspaceId!,
+          instanceId: input.workflowPackage.instanceId,
+          sceneId: input.workflowPackage.sceneId,
+          workflowRevisionId: input.workflowRevisionId,
+          frozenPackageDigest: input.workflowPackage.packageDigest,
+        },
+        transaction,
+        true,
+      );
+      if (
+        !input.frozenDefinition ||
+        workflowDigest(resolved.package.workflow.definition) !==
+          workflowDigest(input.frozenDefinition)
+      )
+        throw new WorkflowRuntimeError('conflict');
+      await insertWorkflowRuntime(transaction, {
+        organizationId: input.context.organizationId,
+        workspaceId: input.context.workspaceId!,
+        ownerId: input.ownerId,
+        runId: input.context.runId,
+        employeeId: input.employeeId,
+        workflowRevisionId: input.workflowRevisionId,
+        sessionId: input.sessionId,
+        definition: input.frozenDefinition,
+        value: input.value,
+      });
+      return;
+    }
     const revisions = await transaction<{ definition: unknown }[]>`
       select r.definition from allrice_workflow_revisions r
       join allrice_employee_workflow_bindings b
@@ -345,7 +398,7 @@ export async function ensureWorkflowRunForExecution(input: {
       where r.id = ${input.workflowRevisionId}
         and r.organization_id = ${input.context.organizationId}
         and r.workspace_id = ${input.context.workspaceId}
-        and r.status = 'published' and b.enabled
+        and r.status = 'published' and b.enabled and b.instance_id is null
     `;
     const revision = revisions[0];
     if (!revision) throw new WorkflowRuntimeError('not_found');
@@ -453,6 +506,70 @@ export async function getWorkflowExecution(input: {
   return (await readRunByBaseRun(input)).snapshot;
 }
 
+/** Follow queue heartbeat/cancellation ordering. A step token alone is not
+ * proof that its Worker still owns the current job incarnation. */
+async function lockWorkflowJob(
+  tx: TransactionSql,
+  context: ExecutionContext,
+  leaseToken: string,
+) {
+  if (
+    !context.workspaceId ||
+    context.delegatedBy.type !== 'user' ||
+    context.delegatedBy.id !== context.policySnapshot.subjectId ||
+    context.policySnapshot.organizationId !== context.organizationId
+  )
+    throw new WorkflowRuntimeError('lease_lost');
+  // Same creation mutex as queue.lockedLeasedJob, before root/job row locks.
+  await tx`select pg_advisory_xact_lock(hashtextextended(${context.runId},703))`;
+  await refreshTaskClockForJob(tx, context.jobId);
+  const [job] = await tx<
+    { attempt: number; lease_expires_at: Date }[]
+  >`select j.attempt,j.lease_expires_at from allrice_jobs j
+    join allrice_runs r on r.id=j.run_id and r.organization_id=j.organization_id
+      and r.workspace_id=j.workspace_id and r.owner_id=j.owner_id
+    join allrice_policy_snapshots p on p.id=r.policy_snapshot_id
+      and p.organization_id=r.organization_id and p.subject_id=r.owner_id
+    where j.id=${context.jobId} and j.run_id=${context.runId}
+      and j.organization_id=${context.organizationId} and j.workspace_id=${context.workspaceId}
+      and j.owner_id=${context.policySnapshot.subjectId} and p.id=${context.policySnapshot.id}
+      and p.expires_at>clock_timestamp() and r.state='running' and j.status='running'
+      and j.worker_id=${context.worker.id} and j.lease_token=${leaseToken}
+      and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()
+      and j.lease_expires_at>clock_timestamp() for update of j,r`;
+  const [stopped] = await tx`select root_run_id from allrice_runtime_roots
+    where root_run_id=${context.runId} and
+      (cancel_requested_at is not null or cancel_request_id is not null or deadline_at<=clock_timestamp())`;
+  if (!job || stopped) throw new WorkflowRuntimeError('lease_lost');
+  return job;
+}
+
+async function lockWorkflowRun(tx: TransactionSql, context: ExecutionContext) {
+  const [run] = await tx<WorkflowRunRow[]>`select * from allrice_workflow_runs
+    where run_id=${context.runId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId!} and owner_id=${context.policySnapshot.subjectId} for update`;
+  if (!run) throw new WorkflowRuntimeError('not_found');
+  return run;
+}
+
+async function markStepRecoveryAttention(
+  tx: TransactionSql,
+  run: WorkflowRunRow,
+  step: WorkflowStepRow,
+  code: string,
+) {
+  await tx`update allrice_workflow_step_runs set status='needs_attention',
+    error_code=${code},lease_token=null,lease_expires_at=null,updated_at=now() where id=${step.id}`;
+  await tx`update allrice_workflow_runs set status='needs_attention',
+    current_step_key=${step.step_key} where id=${run.id}`;
+  await appendWorkflowEvent(tx, run, 'run.needs_attention', {
+    workflowRunId: run.id,
+    stepKey: step.step_key,
+    code,
+  });
+  return { needsAttention: true as const };
+}
+
 export async function startWorkflowStep(input: {
   context: ExecutionContext;
   workerId: string;
@@ -463,30 +580,20 @@ export async function startWorkflowStep(input: {
   leaseMs: number;
 }) {
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const jobs = await transaction<
-      {
-        id: string;
-        run_id: string;
-        status: string;
-        worker_id: string | null;
-        lease_token: string | null;
-      }[]
-    >`select id, run_id, status, worker_id, lease_token from allrice_jobs where id = ${input.jobId} for update`;
-    const job = jobs[0];
+  const result = await sql.begin(async (transaction) => {
     if (
-      !job ||
-      job.status !== 'running' ||
-      job.worker_id !== input.workerId ||
-      job.lease_token !== input.leaseToken
-    ) {
+      input.jobId !== input.context.jobId ||
+      input.workerId !== input.context.worker.id
+    )
       throw new WorkflowRuntimeError('lease_lost');
-    }
-    const runs = await transaction<WorkflowRunRow[]>`
-      select * from allrice_workflow_runs where run_id = ${job.run_id} for update
-    `;
-    const run = runs[0];
-    if (!run) throw new WorkflowRuntimeError('not_found');
+    const job = await lockWorkflowJob(
+      transaction,
+      input.context,
+      input.leaseToken,
+    );
+    const run = await lockWorkflowRun(transaction, input.context);
+    if (['needs_attention', 'failed', 'canceled'].includes(run.status))
+      return { needsAttention: true as const };
     const steps = await transaction<WorkflowStepRow[]>`
       select * from allrice_workflow_step_runs
       where workflow_run_id = ${run.id} and step_key = ${input.stepKey} for update
@@ -495,11 +602,54 @@ export async function startWorkflowStep(input: {
     if (!step) throw new WorkflowRuntimeError('not_found');
     if (step.status === 'succeeded')
       return { step: mapStep(step), replay: true };
+    if (!['pending', 'running'].includes(step.status))
+      throw new WorkflowRuntimeError('conflict');
+    const definition = WorkflowDefinitionSchema.parse(run.definition_snapshot);
+    const configured = definition.steps.find(
+      (item) => item.key === step.step_key,
+    );
+    if (!configured || configured.kind !== step.step_kind)
+      throw new WorkflowRuntimeError('conflict');
+    const dependencies = await transaction<
+      { step_key: string; status: string }[]
+    >`
+      select step_key,status from allrice_workflow_step_runs where workflow_run_id=${run.id} for share`;
     if (
-      step.status === 'running' &&
-      step.side_effect_committed &&
-      step.output_digest
-    ) {
+      configured.dependsOn.some(
+        (key) =>
+          !dependencies.some(
+            (dependency) =>
+              dependency.step_key === key &&
+              ['succeeded', 'skipped', 'compensated'].includes(
+                dependency.status,
+              ),
+          ),
+      )
+    )
+      throw new WorkflowRuntimeError('conflict');
+    const digest = workflowDigest(input.value);
+    if (step.input_digest && step.input_digest !== digest)
+      throw new WorkflowRuntimeError('conflict');
+    const recovering = step.status === 'running';
+    // The verified current job token supersedes the old incarnation even if
+    // its previous wall-clock lease has not elapsed. Never overlap the same token.
+    if (recovering && step.lease_token === input.leaseToken)
+      throw new WorkflowRuntimeError('lease_lost');
+    if (
+      recovering &&
+      (!step.input_digest ||
+        definition.recoveryPolicy !== 'checkpoint' ||
+        configured.sideEffect === 'non_idempotent')
+    )
+      return markStepRecoveryAttention(
+        transaction,
+        run,
+        step,
+        'STEP_RECOVERY_REQUIRES_ATTENTION',
+      );
+    if (recovering && step.side_effect_committed && step.output_digest) {
+      if (workflowDigest(step.output) !== step.output_digest)
+        throw new WorkflowRuntimeError('conflict');
       const recovered = await transaction<WorkflowStepRow[]>`
         update allrice_workflow_step_runs set status = 'succeeded',
           lease_token = null, lease_expires_at = null, completed_at = coalesce(completed_at, now()),
@@ -507,22 +657,22 @@ export async function startWorkflowStep(input: {
       `;
       return { step: mapStep(recovered[0]!), replay: true };
     }
-    if (step.attempt >= step.max_attempts) {
-      await transaction`
-        update allrice_workflow_step_runs set status = 'needs_attention',
-          error_code = 'STEP_ATTEMPTS_EXHAUSTED', updated_at = now() where id = ${step.id}
-      `;
-      await transaction`
-        update allrice_workflow_runs set status = 'needs_attention',
-          current_step_key = ${step.step_key} where id = ${run.id}
-      `;
-      throw new WorkflowRuntimeError('needs_attention');
-    }
-    const digest = workflowDigest(input.value);
-    const leaseExpires = new Date(Date.now() + input.leaseMs);
+    if (!recovering && step.attempt >= step.max_attempts)
+      return markStepRecoveryAttention(
+        transaction,
+        run,
+        step,
+        'STEP_ATTEMPTS_EXHAUSTED',
+      );
+    // Reclaim resumes an interrupted logical attempt. Confirmed failures still
+    // consume maxAttempts; the queue independently bounds job incarnations.
+    const attempt = recovering ? step.attempt : step.attempt + 1;
+    const leaseExpires = new Date(
+      Math.min(Date.now() + input.leaseMs, job.lease_expires_at.getTime()),
+    );
     const updated = await transaction<WorkflowStepRow[]>`
       update allrice_workflow_step_runs set status = 'running',
-        attempt = attempt + 1, input = ${transaction.json(toJson(input.value))},
+        attempt = ${attempt}, input = ${transaction.json(toJson(input.value))},
         input_digest = ${digest}, lease_token = ${input.leaseToken},
         lease_expires_at = ${leaseExpires}, started_at = coalesce(started_at, now()),
         error_code = null, error_message = null, updated_at = now()
@@ -538,10 +688,16 @@ export async function startWorkflowStep(input: {
       stepKey: step.step_key,
       name: step.name,
       kind: step.step_kind,
-      attempt: step.attempt + 1,
+      attempt,
+      ...(recovering ? { recovered: true, jobAttempt: job.attempt } : {}),
     });
+    await lockWorkflowJob(transaction, input.context, input.leaseToken);
     return { step: mapStep(updated[0]!), replay: false };
   });
+  // Commit the needs_attention marker before exposing the control-flow error.
+  if ('needsAttention' in result)
+    throw new WorkflowRuntimeError('needs_attention');
+  return result;
 }
 
 export async function completeWorkflowStep(input: {
@@ -554,8 +710,11 @@ export async function completeWorkflowStep(input: {
 }) {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    await lockWorkflowJob(transaction, input.context, input.leaseToken);
+    const run = await lockWorkflowRun(transaction, input.context);
     const steps = await transaction<WorkflowStepRow[]>`
-      select * from allrice_workflow_step_runs where id = ${input.stepId} for update
+      select * from allrice_workflow_step_runs where id = ${input.stepId}
+        and workflow_run_id=${run.id} for update
     `;
     const step = steps[0];
     if (
@@ -564,17 +723,6 @@ export async function completeWorkflowStep(input: {
       step.lease_token !== input.leaseToken
     ) {
       throw new WorkflowRuntimeError('lease_lost');
-    }
-    const runs = await transaction<WorkflowRunRow[]>`
-      select * from allrice_workflow_runs where id = ${step.workflow_run_id} for update
-    `;
-    const run = runs[0];
-    if (
-      !run ||
-      run.organization_id !== input.context.organizationId ||
-      run.workspace_id !== input.context.workspaceId
-    ) {
-      throw new WorkflowRuntimeError('not_found');
     }
     const digest = workflowDigest(input.output);
     const updated = await transaction<WorkflowStepRow[]>`
@@ -593,6 +741,7 @@ export async function completeWorkflowStep(input: {
       attempt: step.attempt,
       outputDigest: digest,
     });
+    await lockWorkflowJob(transaction, input.context, input.leaseToken);
     return mapStep(updated[0]!);
   });
 }
@@ -1003,8 +1152,11 @@ export async function failWorkflowStep(input: {
 }) {
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    await lockWorkflowJob(transaction, input.context, input.leaseToken);
+    const run = await lockWorkflowRun(transaction, input.context);
     const steps = await transaction<WorkflowStepRow[]>`
-      select * from allrice_workflow_step_runs where id = ${input.stepId} for update
+      select * from allrice_workflow_step_runs where id = ${input.stepId}
+        and workflow_run_id=${run.id} for update
     `;
     const step = steps[0];
     if (
@@ -1013,17 +1165,6 @@ export async function failWorkflowStep(input: {
       step.lease_token !== input.leaseToken
     ) {
       throw new WorkflowRuntimeError('lease_lost');
-    }
-    const runs = await transaction<WorkflowRunRow[]>`
-      select * from allrice_workflow_runs where id = ${step.workflow_run_id} for update
-    `;
-    const run = runs[0];
-    if (
-      !run ||
-      run.organization_id !== input.context.organizationId ||
-      run.workspace_id !== input.context.workspaceId
-    ) {
-      throw new WorkflowRuntimeError('not_found');
     }
     const retrying = step.attempt < step.max_attempts;
     await transaction`
@@ -1050,6 +1191,7 @@ export async function failWorkflowStep(input: {
         code: input.code,
       },
     );
+    await lockWorkflowJob(transaction, input.context, input.leaseToken);
     return { retrying, attempt: step.attempt, maxAttempts: step.max_attempts };
   });
 }

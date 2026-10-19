@@ -1300,10 +1300,22 @@ export async function sendChatMessage(
   workspaceId: string,
   sessionId: string,
   input: unknown,
-  options: { folderEventId?: string } = {},
+  options: {
+    folderEventId?: string;
+    /** Only the authenticated business-stage endpoint supplies this value. */
+    workflowInvocation?: import('@allrice/contracts').BrandContentWorkflowInvocation;
+  } = {},
 ) {
   const message = SendChatMessageInputSchema.parse(input);
-  const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
+  const requestDigest = `sha256:${createHash('sha256')
+    .update(
+      JSON.stringify(
+        options.workflowInvocation
+          ? { message, workflowInvocation: options.workflowInvocation }
+          : message,
+      ),
+    )
+    .digest('hex')}`;
   const assistantPreference =
     message.deliveryMode === 'follow_up' &&
     !message.userQuestionAnswer &&
@@ -1751,6 +1763,9 @@ export async function sendChatMessage(
       sessionId: session.id,
       userMessageId: result.userMessage.id,
       assistantMessageId: result.assistantMessage.id,
+      ...(options.workflowInvocation
+        ? { workflowInvocation: options.workflowInvocation }
+        : {}),
       promptSnapshot: {
         systemPrompt: '',
         referenceSelections: ChatMessageContentSchema.parse(
