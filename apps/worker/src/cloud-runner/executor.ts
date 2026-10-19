@@ -634,6 +634,23 @@ const activeCloudProjectServices = new Map<
     abort: AbortController;
   }
 >();
+
+/** Preserve the exact executor receipt when startup ends before readiness.
+ * An admission timeout or a rejected/unfinished task never gets this receipt. */
+export class CloudProjectServiceStartError extends Error {
+  readonly runId: string;
+  readonly callId: string;
+  readonly operationId: string;
+  constructor(
+    created: Created,
+    readonly result: Awaited<ReturnType<typeof runCloudCommandOperation>>,
+  ) {
+    super('CLOUD_SERVICE_NOT_READY');
+    this.runId = created.context.runId;
+    this.callId = created.callId;
+    this.operationId = created.snapshot.binding.attempt.operationId;
+  }
+}
 export async function startCloudProjectService(
   created: Created,
   options: {
@@ -707,8 +724,9 @@ export async function startCloudProjectService(
   activeCloudProjectServices.set(id, { ready: result, task, abort });
   void task
     .then(
-      () => {
-        if (!ready) rejectReady(Error('CLOUD_SERVICE_NOT_READY'));
+      (outcome) => {
+        if (!ready)
+          rejectReady(new CloudProjectServiceStartError(created, outcome));
       },
       (error) => {
         if (!ready)

@@ -27,7 +27,9 @@ import { CloudRunnerBackend } from '../../cloud-runner/backend.js';
 import {
   runCloudCommandOperation,
   startCloudProjectService,
+  CloudProjectServiceStartError,
 } from '../../cloud-runner/executor.js';
+import { requireSuccessfulCloudCommand } from '../../cloud-runner/tool-result.js';
 
 export const runProjectWorkspace: RiceToolHandler = async ({
   input,
@@ -273,6 +275,21 @@ export const runProjectWorkspace: RiceToolHandler = async ({
           storage,
           backend,
           ...(input.signal ? { signal: input.signal } : {}),
+        }).catch((error: unknown) => {
+          if (
+            error instanceof CloudProjectServiceStartError &&
+            error.runId === input.context.runId &&
+            error.callId === input.call.id &&
+            error.operationId ===
+              created.snapshot.binding.attempt.operationId &&
+            error.result.operationId === error.operationId &&
+            !(
+              'externalOutcomeUnknown' in error.result &&
+              error.result.externalOutcomeUnknown
+            )
+          )
+            requireSuccessfulCloudCommand(input, error.result);
+          throw error;
         });
         return {
           modelContent: JSON.stringify({

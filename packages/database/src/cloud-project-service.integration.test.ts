@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
@@ -10,6 +11,15 @@ import {
 } from './project-services.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
 import { completeJob, failJob } from './execution/queue.ts';
+import {
+  CloudRunnerBackend,
+  CloudProjectPreparationError,
+} from '../../../apps/worker/src/cloud-runner/backend.js';
+import {
+  startCloudProjectService,
+  CloudProjectServiceStartError,
+  stopCloudProjectServices,
+} from '../../../apps/worker/src/cloud-runner/executor.js';
 import type * as CoreClient from './core/client.ts';
 let fixtureDatabase: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
 vi.mock('./core/client.ts', async (original) => ({
@@ -89,6 +99,162 @@ suite(
         ]);
       return { ...f, ledger, identity, exchange, first };
     };
+    it.each([true, false])(
+      'preserves the executor startup receipt; trusted not-started=%s',
+      async (knownNotStarted) => {
+        const f = await cloudProjectServiceFixture(database.db);
+        class Backend extends CloudRunnerBackend {
+          cleanups = 0;
+          executions = 0;
+          override async execute(): Promise<never> {
+            this.executions++;
+            if (knownNotStarted)
+              throw new CloudProjectPreparationError('PROJECT_CACHE_UNSAFE');
+            throw Error('UNCERTAIN_CREATE_RESPONSE');
+          }
+          override async inspect() {
+            return null;
+          }
+          override async cleanup() {
+            this.cleanups++;
+          }
+        }
+        const backend = new Backend();
+        const error = await startCloudProjectService(f.created, {
+          storage: f.storage,
+          database: f.db,
+          backend,
+        }).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(CloudProjectServiceStartError);
+        if (!(error instanceof CloudProjectServiceStartError)) throw error;
+        expect(error.runId).toBe(f.context.runId);
+        expect(error.callId).toBe(f.callId);
+        expect(error.operationId).toBe(f.id);
+        expect(backend.executions).toBe(1);
+        if (knownNotStarted) {
+          expect(error.result).toMatchObject({
+            operationId: f.id,
+            status: 'failed',
+            stopped: true,
+            cleanupConfirmed: true,
+            errorCode: 'PROJECT_CACHE_UNSAFE',
+          });
+          expect(backend.cleanups).toBe(1);
+          const [receipt] =
+            await f.db`select cleanup_confirmed_at,outcome from allrice_cloud_execution_attempts where operation_id=${f.id}`;
+          expect(receipt!.cleanup_confirmed_at).not.toBeNull();
+          expect(receipt!.outcome.errorCode).toBe('PROJECT_CACHE_UNSAFE');
+        } else {
+          expect(error.result).toMatchObject({
+            operationId: f.id,
+            status: 'unknown',
+          });
+          expect(error.result).not.toHaveProperty('cleanupConfirmed');
+          expect(backend.cleanups).toBe(0);
+        }
+      },
+    );
+    it.runIf(process.env.ALLRICE_RUN_CLOUD_PROJECT_SERVICE_NATIVE === '1')(
+      'keeps the real unequal-deadline preview alive after Run completion and physically stops it on user request',
+      async () => {
+        const source = process.env.ALLRICE_PROJECT_SERVICE_SOURCE_FIXTURE
+          ? (JSON.parse(
+              await readFile(
+                process.env.ALLRICE_PROJECT_SERVICE_SOURCE_FIXTURE,
+                'utf8',
+              ),
+            ) as { files: { path: string; text: string }[]; args: string[] })
+          : {};
+        const f = await cloudProjectServiceFixture(database.db, source),
+          backend = new CloudRunnerBackend(),
+          attemptId = f.created.snapshot.binding.attempt.attemptId;
+        const proof: Record<string, unknown> = {
+          passed: false,
+          modelCalls: 0,
+          runId: f.context.runId,
+          operationId: f.id,
+          attemptId,
+        };
+        try {
+          const view = await startCloudProjectService(f.created, {
+            storage: f.storage,
+            database: f.db,
+            backend,
+          });
+          expect(view.state).toBe('ready');
+          const [row] =
+            await f.db`select hard_deadline_at from allrice_project_services where id=${f.id}`;
+          const current = await backend.inspect(attemptId);
+          expect(current?.State.Running).toBe(true);
+          const deadline = Number(
+            current!.Config.Labels['xyz.bplabs.allrice.cloud.deadline'],
+          );
+          expect(deadline).toBeLessThan(row!.hard_deadline_at.getTime());
+          expect(deadline).toBe(Date.parse(f.created.deadlineAt));
+          proof.containerId = current!.Id;
+          proof.containerDeadline = new Date(deadline).toISOString();
+          proof.serviceHardDeadline = row!.hard_deadline_at.toISOString();
+          expect(
+            (
+              await f.runtime.finalizeRoot({
+                scope: f.task.scope,
+                rootRunId: f.context.runId,
+                worker: f.assistantWorker,
+              })
+            ).status,
+          ).toBe('completed');
+          await completeJob({
+            workerId: f.context.worker.id,
+            jobId: f.context.jobId,
+            leaseToken: f.worker.leaseToken,
+            result: { answer: 'Owned preview component ready; no model' },
+          });
+          await delay(6500);
+          expect((await backend.inspect(attemptId))?.State.Running).toBe(true);
+          expect(
+            (await readProjectService(f.requestContext, f.id, f.db)).state,
+          ).toBe('ready');
+          proof.survivedSuccessfulRunAndPhysicalLease = true;
+          await projectServiceUserAction(
+            f.requestContext,
+            f.id,
+            { action: 'stop' },
+            f.db,
+          );
+          await vi.waitFor(
+            async () => {
+              const [attempt] =
+                await f.db`select cleanup_confirmed_at from allrice_cloud_execution_attempts where operation_id=${f.id}`;
+              expect(attempt?.cleanup_confirmed_at).not.toBeNull();
+            },
+            { timeout: 30000, interval: 250 },
+          );
+          await stopCloudProjectServices();
+          expect(await backend.inspect(attemptId)).toBeNull();
+          proof.userStopAndCleanupConfirmed = true;
+          proof.passed = true;
+        } finally {
+          await projectServiceUserAction(
+            f.requestContext,
+            f.id,
+            { action: 'stop' },
+            f.db,
+          ).catch(() => undefined);
+          await stopCloudProjectServices();
+          proof.finalContainerAbsent = await backend
+            .inspect(attemptId)
+            .then((c) => c === null)
+            .catch(() => false);
+          if (process.env.ALLRICE_PROJECT_SERVICE_NATIVE_EVIDENCE)
+            await writeFile(
+              process.env.ALLRICE_PROJECT_SERVICE_NATIVE_EVIDENCE,
+              JSON.stringify(proof, null, 2) + '\n',
+              { mode: 0o600 },
+            );
+        }
+      },
+      180000,
+    );
     it('the same ready service survives successful Run completion and has no device or new agent budget', async () => {
       const f = await readyFixture();
       expect(
