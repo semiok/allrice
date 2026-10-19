@@ -104,6 +104,16 @@ describe('authenticated workbench HTTP boundary', () => {
     ).toBe(403);
     expect(ports.save).not.toHaveBeenCalled();
   });
+  it('passes the microsecond page cursor through the authenticated HTTP boundary', async () => {
+    const cursor = { id, createdAt: '2026-10-19T01:16:33.192229Z' };
+    const url = new URL('http://localhost/artifacts');
+    url.searchParams.set('before', JSON.stringify(cursor));
+    ports.list.mockResolvedValue({ artifacts: [], nextCursor: cursor });
+    const response = await artifactHttp(new Request(url), 'list', sessionId);
+    expect(response.status).toBe(200);
+    expect(ports.list).toHaveBeenCalledWith(context, sessionId, cursor);
+    expect((await response.json()).nextCursor).toEqual(cursor);
+  });
   it.each([
     ['authentication_failed', 401, 'AUTHENTICATION_REQUIRED'],
     ['tenant_context_invalid', 403, 'AUTHORIZATION_DENIED'],

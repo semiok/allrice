@@ -246,6 +246,65 @@ suite(
       return getWorkbenchArtifact(f.requestContext, f.session, version.id);
     }
 
+    it.each(['192229', '192000'])(
+      'paginates an entire immutable batch with fractional timestamp %s without skipping files',
+      async (fraction) => {
+        const f = await setup();
+        const ids: string[] = [];
+        for (let index = 0; index < 53; index++) {
+          const artifact = await seedArtifact(
+            f,
+            {
+              ...f.input,
+              callId: randomUUID(),
+              fileName: `batch-${index}.txt`,
+              bytes: Buffer.from(`Immutable batch file ${index}`),
+            },
+            'file',
+          );
+          ids.push(artifact.version.id);
+        }
+        // Project output registration shares one PostgreSQL transaction time.
+        // Use an explicit microsecond value so this regression is deterministic.
+        await fixture.db`update allrice_deliverable_versions set created_at=${`2026-10-19T01:16:33.${fraction}Z`}::text::timestamptz where id in ${fixture.db(ids.slice(0, 52))}`;
+        await fixture.db`update allrice_deliverable_versions set created_at='2026-10-19T01:16:32.999999Z'::timestamptz where id=${ids[52]!}`;
+        const [stored] =
+          await fixture.db`select to_char(created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as exact_time from allrice_deliverable_versions where id=${ids[0]!}`;
+        expect(stored!.exact_time).toBe(`2026-10-19T01:16:33.${fraction}Z`);
+        const first = await listWorkbenchArtifacts(
+          f.requestContext,
+          f.session,
+          undefined,
+          fixture.db,
+        );
+        expect(first.artifacts).toHaveLength(50);
+        expect(first.nextCursor).not.toBeNull();
+        const next = await listWorkbenchArtifacts(
+          f.requestContext,
+          f.session,
+          first.nextCursor!,
+          fixture.db,
+        );
+        expect(next.artifacts).toHaveLength(3);
+        expect(next.nextCursor).toBeNull();
+        const received = [...first.artifacts, ...next.artifacts].map(
+          (artifact) => artifact.version.id,
+        );
+        expect(received).toHaveLength(new Set(received).size);
+        expect(received.toSorted()).toEqual(ids.toSorted());
+        // A cursor must not grant access to the owner's otherwise private files.
+        await expect(
+          listWorkbenchArtifacts(
+            { ...f.requestContext, actor: { type: 'user', id: randomUUID() } },
+            f.session,
+            first.nextCursor!,
+            fixture.db,
+          ),
+        ).rejects.toThrow();
+      },
+      30_000,
+    );
+
     it.each(['json', 'text', 'markdown', 'html'] as const)(
       'revises a persisted Python/Bridge/project %s file in its original immutable series',
       async (format) => {

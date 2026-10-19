@@ -127,6 +127,14 @@ describe('workbench UI boundary', () => {
       parseArtifactDetail({ artifact, feedback: Array(101).fill({}) }),
     ).toThrow();
   });
+  it('preserves the full database timestamp when loading another artifact page', () => {
+    const cursor = { id, createdAt: '2026-10-19T01:16:33.192229Z' };
+    const page = parseArtifactList({
+      artifacts: [artifact],
+      nextCursor: cursor,
+    });
+    expect(JSON.parse(JSON.stringify(page.nextCursor))).toEqual(cursor);
+  });
   it('accepts typed preview bytes and rejects remote URLs or invalid encodings', () => {
     const text =
       '<script>alert(1)</script><img src="https://untrusted.invalid/">';
