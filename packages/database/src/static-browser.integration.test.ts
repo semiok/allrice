@@ -42,7 +42,12 @@ import {
   requestStaticBrowserStop,
   publishStaticBrowserVerification,
   readArtifactBrowserVerification,
+  recordStaticBrowserContainer,
+  recordStaticBrowserExecutionFailure,
+  type StaticBrowserExecutionFailure,
 } from './static-browser.ts';
+import { isConfirmedToolFailure } from '../../../apps/worker/src/errors.ts';
+import { staticBrowserImageV1 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { runBrowserWorkspace } from '../../../apps/worker/src/tool-broker/handlers/browser-workspace.ts';
 import { nativeBrokerRoundtrip } from '../../../apps/worker/src/harness/dsh-native-broker.fixture.ts';
@@ -101,7 +106,11 @@ suite(
       await database?.close();
       if (storageRoot) await rm(storageRoot, { recursive: true, force: true });
     });
-    async function fixture(local = false, policyLifetimeMs = 3_600_000) {
+    async function fixture(
+      local = false,
+      policyLifetimeMs = 3_600_000,
+      sourceHtml = html,
+    ) {
       const f = await createLocalBrowserFixture(database.db, storageRoot, {
         open: false,
         workbench: true,
@@ -139,7 +148,7 @@ suite(
           fileName: 'index.html',
           format: 'html',
           mediaType: 'text/html',
-          bytes: Buffer.from(html),
+          bytes: Buffer.from(sourceHtml),
         },
         f.storage,
         database.db,
@@ -148,7 +157,8 @@ suite(
         f.execution,
         {
           versionId: artifact.id,
-          checksum: 'sha256:' + createHash('sha256').update(html).digest('hex'),
+          checksum:
+            'sha256:' + createHash('sha256').update(sourceHtml).digest('hex'),
         },
         f.storage,
         database.db,
@@ -212,6 +222,232 @@ suite(
         database.db,
       );
     }
+    it('keeps exact failed execution receipts immutable and drain-only after cancellation', async () => {
+      const f = await fixture(),
+        row = await admit(f),
+        containerId = 'd'.repeat(64);
+      await startStaticBrowserVerification(row, database.db);
+      await recordStaticBrowserContainer(row, containerId, database.db);
+      const failure: StaticBrowserExecutionFailure = {
+        version: 1,
+        verificationId: row.id,
+        attemptId: row.attempt_id,
+        containerId,
+        imageDigest: staticBrowserImageV1,
+        reason: 'deadline',
+        exitCode: 137,
+        physicalStopConfirmed: true,
+        cleanupConfirmed: true,
+        outputDigest: 'sha256:' + '0'.repeat(64),
+        diagnostic: 'browser deadline',
+      };
+      await database.db`update allrice_jobs set cancel_requested_at=clock_timestamp() where id=${row.job_id}`;
+      await expect(staticBrowserLease(row, database.db)).rejects.toThrow();
+      expect(
+        await recordStaticBrowserExecutionFailure(row, failure, database.db),
+      ).toEqual(failure);
+      expect(
+        await recordStaticBrowserExecutionFailure(row, failure, database.db),
+      ).toEqual(failure);
+      const [saved] =
+        await database.db`select state,execution_failure,outcome,report_version_id,screenshot_version_id,completed_at from allrice_static_browser_verifications where id=${row.id}`;
+      expect(saved).toMatchObject({
+        state: 'failed',
+        execution_failure: failure,
+        outcome: null,
+        report_version_id: null,
+        screenshot_version_id: null,
+      });
+      expect(saved!.completed_at).toBeTruthy();
+      await expect(
+        publishStaticBrowserVerification(
+          row,
+          Buffer.from('absent'),
+          f.storage,
+          database.db,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        recordStaticBrowserExecutionFailure(
+          row,
+          { ...failure, exitCode: 1 },
+          database.db,
+        ),
+      ).rejects.toThrow();
+      await expect(
+        database.db`update allrice_static_browser_verifications set execution_failure=null,state='running' where id=${row.id}`,
+      ).rejects.toThrow('immutable');
+    });
+    it.each(['lease', 'identity', 'container', 'image', 'unknown'] as const)(
+      'does not settle a %s-mismatched or historical unknown execution',
+      async (kind) => {
+        const f = await fixture(),
+          row = await admit(f),
+          containerId = 'a'.repeat(64);
+        await startStaticBrowserVerification(row, database.db);
+        await recordStaticBrowserContainer(row, containerId, database.db);
+        const failure: StaticBrowserExecutionFailure = {
+          version: 1,
+          verificationId: row.id,
+          attemptId: row.attempt_id,
+          containerId,
+          imageDigest: staticBrowserImageV1,
+          reason: 'failed',
+          exitCode: 1,
+          physicalStopConfirmed: true,
+          cleanupConfirmed: true,
+          outputDigest: 'sha256:' + '0'.repeat(64),
+          diagnostic: 'browser failed',
+        };
+        if (kind === 'lease')
+          await database.db`update allrice_jobs set lease_token=${randomUUID()} where id=${row.job_id}`;
+        if (kind === 'unknown')
+          await database.db`update allrice_static_browser_verifications set state='unknown' where id=${row.id}`;
+        if (kind === 'identity') row.owner_id = randomUUID();
+        if (kind === 'container') failure.containerId = 'b'.repeat(64);
+        if (kind === 'image') failure.imageDigest = 'sha256:' + '1'.repeat(64);
+        await expect(
+          recordStaticBrowserExecutionFailure(row, failure, database.db),
+        ).rejects.toThrow();
+        const [saved] =
+          await database.db`select state,execution_failure from allrice_static_browser_verifications where id=${row.id}`;
+        expect(saved!.state).toBe(kind === 'unknown' ? 'unknown' : 'running');
+        expect(saved!.execution_failure).toBeNull();
+      },
+    );
+    it.each([
+      'failed',
+      'deadline',
+      'oom',
+      'canceled',
+      'output_limit',
+      'cleanup-unknown',
+      'unicode-boundary',
+      'invalid-jsonb-text',
+    ] as const)(
+      'ordinary tool failure %s settles only with physical cleanup and a durable receipt',
+      async (kind) => {
+        const output =
+          kind === 'unicode-boundary'
+            ? '😀' + 'x'.repeat(1999)
+            : kind === 'invalid-jsonb-text'
+              ? 'NUL\0high\uD800low\uDC00'
+              : 'controlled verifier failure';
+        const reason =
+          kind === 'cleanup-unknown' ||
+          kind === 'unicode-boundary' ||
+          kind === 'invalid-jsonb-text'
+            ? 'failed'
+            : kind;
+        const f = await fixture(),
+          containerId = 'c'.repeat(64),
+          call = {
+            id: randomUUID(),
+            name: 'browser.workspace' as const,
+            arguments: {
+              command: 'verify',
+              artifact: {
+                versionId: f.artifact.id,
+                checksum: f.document.target.checksum,
+              },
+              plan,
+              location: 'cloud',
+            },
+          };
+        const execute = vi
+          .spyOn(CloudRunnerBackend.prototype, 'executeStaticBrowser')
+          .mockImplementation(async (_document, _plan, options) => {
+            await options.onCreated!(containerId);
+            return {
+              containerId,
+              exitCode: 1,
+              stopped: true,
+              reason,
+              output,
+              artifacts: [],
+              elapsedMs: 20,
+              imageDigest: staticBrowserImageV1,
+            };
+          });
+        const stop = vi
+          .spyOn(CloudRunnerBackend.prototype, 'stop')
+          .mockResolvedValue(true);
+        const cleanup = vi
+          .spyOn(CloudRunnerBackend.prototype, 'cleanup')
+          .mockImplementation(async () => {
+            if (kind === 'cleanup-unknown') throw Error('cleanup unavailable');
+          });
+        const inspect = vi
+          .spyOn(CloudRunnerBackend.prototype, 'inspect')
+          .mockResolvedValue(null);
+        try {
+          let failure: unknown;
+          try {
+            await runBrowserWorkspace({
+              input: {
+                context: f.execution,
+                capabilities: [
+                  'storage:read',
+                  'storage:write',
+                  'network:outbound',
+                ],
+                storageRoot,
+                sessionId: f.session,
+                call,
+                managedBrowserJobAttempt: f.job.attempt,
+                managedBrowserJobLeaseToken: f.job.lease_token,
+              },
+              arguments: call.arguments,
+            });
+          } catch (error) {
+            failure = error;
+          }
+          expect(failure).toBeDefined();
+          expect(
+            isConfirmedToolFailure(failure, {
+              runId: f.run,
+              callId: call.id,
+              toolName: call.name,
+            }),
+          ).toBe(kind !== 'cleanup-unknown');
+          expect(
+            isConfirmedToolFailure(failure, {
+              runId: f.run,
+              callId: randomUUID(),
+              toolName: call.name,
+            }),
+          ).toBe(false);
+          const [saved] =
+            await database.db`select state,execution_failure,outcome,report_version_id,screenshot_version_id from allrice_static_browser_verifications where call_id=${call.id} and run_id=${f.run}`;
+          expect(saved).toMatchObject({
+            state: kind === 'cleanup-unknown' ? 'unknown' : 'failed',
+            outcome: null,
+            report_version_id: null,
+            screenshot_version_id: null,
+          });
+          if (kind !== 'cleanup-unknown')
+            expect(saved!.execution_failure).toMatchObject({
+              containerId,
+              reason,
+              physicalStopConfirmed: true,
+              cleanupConfirmed: true,
+              diagnostic:
+                kind === 'unicode-boundary'
+                  ? 'x'.repeat(1999)
+                  : kind === 'invalid-jsonb-text'
+                    ? 'NUL\uFFFDhigh\uFFFDlow\uFFFD'
+                    : output,
+              outputDigest:
+                'sha256:' + createHash('sha256').update(output).digest('hex'),
+            });
+        } finally {
+          execute.mockRestore();
+          stop.mockRestore();
+          cleanup.mockRestore();
+          inspect.mockRestore();
+        }
+      },
+    );
     it('selects and freezes only the concrete qualifying grant; revocation cannot substitute an older grant', async () => {
       const f = await fixture(),
         row = await admit(f);
@@ -647,6 +883,82 @@ suite(
         ).workspace?.id,
       ).toBe(next.browser_workspace_id);
     });
+    physical(
+      'a real stopped verifier timeout produces a failed receipt without a forged page verdict',
+      async () => {
+        const f = await fixture(
+          false,
+          3_600_000,
+          '<!doctype html><title>Bounded browser timeout</title><script>while(true){}</script>',
+        );
+        const call = {
+          id: randomUUID(),
+          name: 'browser.workspace' as const,
+          arguments: {
+            command: 'verify',
+            artifact: {
+              versionId: f.artifact.id,
+              checksum: f.document.target.checksum,
+            },
+            plan: {
+              version: 1,
+              timeoutMs: 1000,
+              steps: [
+                { type: 'title_equals', expected: 'Bounded browser timeout' },
+              ],
+            },
+            location: 'cloud',
+          },
+        };
+        let failure: unknown;
+        try {
+          await runBrowserWorkspace({
+            input: {
+              context: f.execution,
+              capabilities: [
+                'storage:read',
+                'storage:write',
+                'network:outbound',
+              ],
+              storageRoot,
+              sessionId: f.session,
+              call,
+              managedBrowserJobAttempt: f.job.attempt,
+              managedBrowserJobLeaseToken: f.job.lease_token,
+            },
+            arguments: call.arguments,
+          });
+        } catch (error) {
+          failure = error;
+        }
+        expect(
+          isConfirmedToolFailure(failure, {
+            runId: f.run,
+            callId: call.id,
+            toolName: call.name,
+          }),
+        ).toBe(true);
+        const [saved] =
+          await database.db`select state,attempt_id,execution_failure,outcome,report_version_id,screenshot_version_id from allrice_static_browser_verifications where call_id=${call.id} and run_id=${f.run}`;
+        expect(saved).toMatchObject({
+          state: 'failed',
+          outcome: null,
+          report_version_id: null,
+          screenshot_version_id: null,
+          execution_failure: {
+            physicalStopConfirmed: true,
+            cleanupConfirmed: true,
+          },
+        });
+        expect(['failed', 'deadline']).toContain(
+          saved!.execution_failure.reason,
+        );
+        expect(
+          await new CloudRunnerBackend().inspect(saved!.attempt_id),
+        ).toBeNull();
+      },
+      120000,
+    );
     physical(
       'native DSH -> production Broker -> real runsc -> DB -> private details contract/download bytes, with no project execution',
       async () => {

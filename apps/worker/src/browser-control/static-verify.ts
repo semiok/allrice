@@ -31,6 +31,7 @@ import {
 import { CloudRunnerBackend } from '../cloud-runner/backend.js';
 import { waitBrowserOperationResult } from './controller.js';
 import { HandlerError } from '../errors.js';
+import { failedStaticBrowserResult } from './static-failure.js';
 import type { RiceToolExecutionInput } from '../tool-broker/types.js';
 import type { BrowserWorkspaceToolInputSchema } from './tool-input.js';
 import type { z } from 'zod';
@@ -157,13 +158,7 @@ export async function runStaticBrowserVerification(
         result.reason !== 'completed' ||
         !result.staticVerification
       )
-        throw new HandlerError(
-          result.reason === 'deadline'
-            ? 'STATIC_BROWSER_DEADLINE'
-            : 'STATIC_BROWSER_VERIFICATION_UNCONFIRMED',
-          `页面验证未能确认（${result.reason}）。验证 ${row.id}，执行 ${row.attempt_id}；请查看已有记录，不要重放此执行。`,
-          false,
-        );
+        throw await failedStaticBrowserResult(input, row, result, backend);
       screenshot = Buffer.from(
         result.staticVerification.screenshotBase64,
         'base64',
