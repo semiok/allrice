@@ -329,27 +329,29 @@ export async function createControlledWorkspaceExport(
     const artifact = await (async () => {
       input.signal?.throwIfAborted();
       try {
-        return kind === 'changeset'
-          ? await publishWorkbenchChangesetProposal(
-              {
-                ...publication,
-                proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
-              },
+        if (kind === 'changeset')
+          return await publishWorkbenchChangesetProposal(
+            {
+              ...publication,
+              proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
+            },
+            storage,
+          );
+        const artifactInput = {
+          ...publication,
+          kind,
+          format,
+          bytes,
+          mediaType: generated.mediaType,
+        };
+        return composition
+          ? await publishWorkbenchArtifact(
+              artifactInput,
               storage,
+              undefined,
+              composition,
             )
-          : await publishWorkbenchArtifact(
-              {
-                ...publication,
-                kind,
-                format,
-                bytes,
-                mediaType: generated.mediaType,
-              },
-              storage,
-              ...(composition
-                ? ([undefined, composition] as const)
-                : ([] as const)),
-            );
+          : await publishWorkbenchArtifact(artifactInput, storage);
       } catch (error) {
         if (
           error instanceof ArtifactPublicationParentError &&
