@@ -77,9 +77,6 @@ const emptyManifest: EmployeeContentManifest = {
   scenes: [],
   declaredConflicts: [],
 };
-function refs(manifest: EmployeeContentManifest) {
-  return [...manifest.common, ...manifest.scenes.flatMap((s) => s.references)];
-}
 function scopedRefs(manifest: EmployeeContentManifest) {
   return [
     ...manifest.common.map((ref) => ({ ref, sceneId: null as string | null })),

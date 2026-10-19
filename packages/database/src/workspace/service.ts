@@ -45,6 +45,7 @@ import {
   type ChatSessionSchema,
   type EmployeeAssignmentSchema,
   type ImageMediaType,
+  type BrandContentWorkflowInvocation,
   type RequestContext,
   type Visibility,
   type MemoryClass,
@@ -1303,7 +1304,7 @@ export async function sendChatMessage(
   options: {
     folderEventId?: string;
     /** Only the authenticated business-stage endpoint supplies this value. */
-    workflowInvocation?: import('@allrice/contracts').BrandContentWorkflowInvocation;
+    workflowInvocation?: BrandContentWorkflowInvocation;
   } = {},
 ) {
   const message = SendChatMessageInputSchema.parse(input);

@@ -47,6 +47,7 @@ import {
   UuidSchema,
   type EmployeeManifest,
   type EmployeeExecutionSnapshot,
+  type BrandContentWorkflowInvocation,
   type RequestContext,
   type SkillCapability,
   type StorageObjectSchema,
@@ -1164,7 +1165,7 @@ export async function prepareEmployeeRunBinding(
     sessionId: string;
     userMessageId: string;
     assistantMessageId: string;
-    workflowInvocation?: import('@allrice/contracts').BrandContentWorkflowInvocation;
+    workflowInvocation?: BrandContentWorkflowInvocation;
     promptSnapshot: EmployeeRunBinding['promptSnapshot'];
   },
   transaction?: TransactionSql,
