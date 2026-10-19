@@ -949,13 +949,13 @@ export async function publishWorkbenchArtifact(
             'artifact_not_found',
           );
         parent = await readArtifact(tx, principal, input.sessionId, p.id);
-        // Python/Bridge results are `file` artifacts. A content export may
-        // revise their JSON/text/Markdown without changing the series' kind or claiming
+        // Python/Bridge/project results are `file` artifacts. A content export may
+        // revise their JSON/text/Markdown/HTML without changing the series' kind or claiming
         // a new execution receipt. Binary files and action proposals stay strict.
         if (
           input.kind === 'document' &&
           parent.kind === 'file' &&
-          ['json', 'text', 'markdown'].includes(input.format)
+          ['json', 'text', 'markdown', 'html'].includes(input.format)
         )
           publicationKind = 'file';
         if (

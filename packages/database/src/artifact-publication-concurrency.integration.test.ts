@@ -246,8 +246,8 @@ suite(
       return getWorkbenchArtifact(f.requestContext, f.session, version.id);
     }
 
-    it.each(['json', 'text', 'markdown'] as const)(
-      'revises a persisted Python/Bridge %s file in its original immutable series',
+    it.each(['json', 'text', 'markdown', 'html'] as const)(
+      'revises a persisted Python/Bridge/project %s file in its original immutable series',
       async (format) => {
         const f = await setup();
         const originalInput = {
@@ -260,7 +260,9 @@ suite(
               ? 'application/json'
               : format === 'markdown'
                 ? 'text/markdown'
-                : 'text/plain',
+                : format === 'html'
+                  ? 'text/html'
+                  : 'text/plain',
         };
         const old = await seedArtifact(f, originalInput, 'file');
         const input = {
@@ -317,7 +319,8 @@ suite(
       ['file', 'text', 'json'],
       ['file', 'text', 'markdown'],
       ['file', 'markdown', 'text'],
-      ['file', 'html', 'html'],
+      ['file', 'html', 'text'],
+      ['file', 'text', 'html'],
       ['file', 'png', 'png'],
       ['plan', 'json', 'json'],
       ['changeset', 'json', 'json'],
