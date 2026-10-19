@@ -50,7 +50,12 @@ const record = (name: string, detail: unknown) => {
 let database: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
 const db = () => database.db;
 const storage = () => assistantFixtureStorage(db());
-const originalUrl = process.env.DATABASE_URL;
+const originalEnvironment = Object.fromEntries(
+  ['DATABASE_URL', 'ALLRICE_ASSISTANTS_ENABLED'].map((key) => [
+    key,
+    process.env[key],
+  ]),
+);
 const sha = (s: string) =>
   'sha256:' + createHash('sha256').update(s).digest('hex');
 type Tx = RuntimeLedgerTransaction;
@@ -442,6 +447,7 @@ describe
     'frozen reference production producer, actual isolated PG',
     () => {
       beforeAll(async () => {
+        process.env.ALLRICE_ASSISTANTS_ENABLED = '1';
         database = await createAssistantFixtureDatabase();
         const [location] =
           await db()`select current_database() database,current_schema() schema`;
@@ -482,8 +488,10 @@ describe
             try {
               if (database) save('cleanup', await database.close());
             } finally {
-              if (originalUrl === undefined) delete process.env.DATABASE_URL;
-              else process.env.DATABASE_URL = originalUrl;
+              for (const [key, value] of Object.entries(originalEnvironment)) {
+                if (value === undefined) delete process.env[key];
+                else process.env[key] = value;
+              }
             }
           }
         }
