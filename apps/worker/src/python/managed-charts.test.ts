@@ -2,6 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   PythonExecuteArgsSchema,
+  RuntimeLocalPythonOutputSchema,
+  RuntimeLocalPythonPayloadSchema,
   RuntimeLocalPythonProfileSchema,
   managedPythonPayloadForPlatform,
   resolveSandboxExecutionPolicy,
@@ -332,6 +334,139 @@ describe('canonical Python original-call execution adapter', () => {
     expect(ports.frozen).not.toHaveBeenCalled();
     expect(JSON.stringify(args)).toBe(before);
   });
+  it('keeps PNG and CSV revision parents in the original call while Bridge v1 receives execution fields only', async () => {
+    const pngParent = randomUUID(),
+      csvParent = randomUUID(),
+      args = {
+        ...argumentsForPng(),
+        outputs: [
+          {
+            path: '图表/中文图.png',
+            fileName: '中文图.png',
+            format: 'png',
+            parentObjectId: pngParent,
+          },
+          {
+            path: '表格/金额.csv',
+            fileName: '金额.csv',
+            format: 'csv',
+            parentObjectId: csvParent,
+          },
+        ],
+      },
+      request = input(args),
+      before = JSON.stringify(args),
+      response = JSON.parse((await run(request)).modelContent);
+    expect(ports.select.mock.calls[0]![0].arguments).toBe(args);
+    expect(ports.create.mock.calls[0]![0].arguments).toBe(args);
+    expect(lastPayload.arguments.origin).toEqual({
+      toolName: 'python.execute',
+      callId: request.call.id,
+      argumentsDigest: runtimePolicyDigest(args),
+    });
+    expect(lastPayload.arguments.outputs).toEqual([
+      {
+        path: '图表/中文图.png',
+        fileName: '中文图.png',
+        format: 'png',
+        mediaType: 'image/png',
+        objectId: cloudStableId(
+          `managed-python-output:${request.context.runId}:${request.call.id}:0`,
+        ),
+      },
+      {
+        path: '表格/金额.csv',
+        fileName: '金额.csv',
+        format: 'csv',
+        mediaType: 'text/csv',
+        objectId: cloudStableId(
+          `managed-python-output:${request.context.runId}:${request.call.id}:1`,
+        ),
+      },
+    ]);
+    expect(RuntimeLocalPythonPayloadSchema.parse(lastPayload)).toEqual(
+      lastPayload,
+    );
+    for (const [index, output] of lastPayload.arguments.outputs.entries()) {
+      expect(Object.keys(output).sort()).toEqual(
+        ['path', 'fileName', 'format', 'mediaType', 'objectId'].sort(),
+      );
+      expect(
+        RuntimeLocalPythonOutputSchema.safeParse({
+          ...output,
+          parentObjectId: args.outputs[index]!.parentObjectId,
+        }).success,
+      ).toBe(false);
+    }
+    expect(
+      response.artifacts.map((file: { fileName: string }) => file.fileName),
+    ).toEqual(['中文图.png', '金额.csv']);
+    expect(ports.file).toHaveBeenCalledOnce();
+    expect(ports.file).toHaveBeenCalledWith(request.context, objectId);
+    expect(ports.cloud).not.toHaveBeenCalled();
+    expect(JSON.stringify(args)).toBe(before);
+    expect(args).not.toHaveProperty('language');
+    expect(args).not.toHaveProperty('location');
+  });
+  it.each(['png', 'csv'] as const)(
+    'binds a changed %s parent in the original digest without changing Bridge execution fields or stable output ID',
+    async (format) => {
+      const output = {
+          path: `修订.${format}`,
+          fileName: `修订.${format}`,
+          format,
+        },
+        original = { ...argumentsForPng(), outputs: [output] },
+        revised = [
+          original,
+          {
+            ...original,
+            outputs: [{ ...output, parentObjectId: randomUUID() }],
+          },
+          {
+            ...original,
+            outputs: [{ ...output, parentObjectId: randomUUID() }],
+          },
+        ],
+        request = input(original),
+        payloads: RuntimeLocalPythonPayload[] = [];
+      // Compare adapter projections only. The real DB separately rejects a
+      // changed parent under an already frozen call/operation identity.
+      for (const [index, raw] of revised.entries()) {
+        request.call.arguments = raw;
+        const before = JSON.stringify(raw);
+        await run(request);
+        payloads.push(lastPayload);
+        expect(ports.select.mock.calls[index]![0].arguments).toBe(raw);
+        expect(ports.create.mock.calls[index]![0].arguments).toBe(raw);
+        expect(lastPayload.arguments.origin.argumentsDigest).toBe(
+          runtimePolicyDigest(raw),
+        );
+        expect(JSON.stringify(raw)).toBe(before);
+      }
+      const baseline = payloads[0]!;
+      expect(
+        new Set(payloads.map((p) => p.arguments.origin.argumentsDigest)).size,
+      ).toBe(3);
+      for (const [index, payload] of payloads.entries()) {
+        expect(payload).toEqual({
+          ...baseline,
+          arguments: {
+            ...baseline.arguments,
+            origin: {
+              ...baseline.arguments.origin,
+              argumentsDigest: runtimePolicyDigest(revised[index]!),
+            },
+          },
+        });
+        expect(payload.arguments.outputs[0]!.objectId).toBe(
+          cloudStableId(
+            `managed-python-output:${request.context.runId}:${request.call.id}:0`,
+          ),
+        );
+      }
+    },
+  );
   it.each([
     ['finance-note.md', 'text/markdown'],
     ['finance-note.MD', 'text/markdown'],
@@ -580,6 +715,49 @@ describe('canonical Python original-call execution adapter', () => {
     });
     expect(ports.create).not.toHaveBeenCalled();
     expect(ports.frozen).not.toHaveBeenCalled();
+    expect(JSON.stringify(args)).toBe(before);
+  });
+  it('forwards original PNG and CSV parents unchanged to cloud execution without creating a Bridge payload', async () => {
+    const args = {
+        ...argumentsForPng(),
+        location: 'cloud',
+        outputs: [
+          {
+            path: '中文图.png',
+            fileName: '中文图.png',
+            format: 'png',
+            parentObjectId: randomUUID(),
+          },
+          {
+            path: '金额.csv',
+            fileName: '金额.csv',
+            format: 'csv',
+            parentObjectId: randomUUID(),
+          },
+        ],
+      },
+      request = input(args),
+      before = JSON.stringify(args);
+    ports.select.mockResolvedValue({
+      ...selection(),
+      choice: {
+        location: 'cloud',
+        status: 'execute',
+        reason: 'cloud_requested',
+      },
+      selectionReason: 'cloud_requested',
+    });
+    await run(request);
+    expect(ports.select.mock.calls[0]![0].arguments).toBe(args);
+    expect(ports.cloud).toHaveBeenCalledWith({
+      context: request.context,
+      callId: request.call.id,
+      arguments: args,
+    });
+    expect(ports.cloud.mock.calls[0]![0].arguments).toBe(args);
+    expect(ports.create).not.toHaveBeenCalled();
+    expect(ports.publish).not.toHaveBeenCalled();
+    expect(ports.runCloud).toHaveBeenCalledOnce();
     expect(JSON.stringify(args)).toBe(before);
   });
   it.each(['jobAttempt', 'leaseToken'])(

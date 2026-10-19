@@ -144,7 +144,16 @@ export const runProjectWorkspace: RiceToolHandler = async ({
             path: command.path,
             projectPreparation: command.projectPreparation,
             ...('outputs' in command && command.outputs
-              ? { outputs: command.outputs }
+              ? {
+                  // Lineage is frozen in the server selection, never Bridge input.
+                  outputs: command.outputs.map(
+                    ({ path, fileName, format }) => ({
+                      path,
+                      fileName,
+                      format,
+                    }),
+                  ),
+                }
               : {}),
             ...(command.action === 'service_start'
               ? {
@@ -307,6 +316,7 @@ export const runProjectWorkspace: RiceToolHandler = async ({
         backend,
         ...(input.signal ? { signal: input.signal } : {}),
       });
+      requireSuccessfulCloudCommand(input, result);
       return {
         modelContent: JSON.stringify({
           workflowBudget: await budget(),

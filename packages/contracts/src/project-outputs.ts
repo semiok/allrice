@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { isRuntimeRelativePath } from './runtime-v2/policy.ts';
 
@@ -32,6 +33,7 @@ export const ProjectOutputSpecSchema = z
           [...s].every((c) => c.codePointAt(0)! >= 32),
       ),
     format: z.enum(['html', 'json', 'text', 'zip']),
+    parentObjectId: UuidSchema.optional(),
   })
   .strict();
 export const ProjectOutputSpecsSchema = z
@@ -43,6 +45,14 @@ export const ProjectOutputSpecsSchema = z
       new Set(files.map((f) => f.fileName)).size !== files.length
     )
       ctx.addIssue({ code: 'custom', message: 'duplicate_project_output' });
+    const parents = files.flatMap((f) =>
+      f.parentObjectId ? [f.parentObjectId.toLowerCase()] : [],
+    );
+    if (new Set(parents).size !== parents.length)
+      ctx.addIssue({
+        code: 'custom',
+        message: 'duplicate_project_output_parent',
+      });
   });
 export const ProjectCollectedArtifactSchema = z
   .object({

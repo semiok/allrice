@@ -20,7 +20,16 @@ import {
 } from './local-command-service.ts';
 import { publishLocalProjectArtifacts } from './project-delivery.ts';
 import { selectProjectExecution } from './project-execution.ts';
-import { listWorkbenchArtifacts } from './artifact-review.ts';
+import {
+  listWorkbenchArtifacts,
+  readArtifactBytes,
+} from './artifact-review.ts';
+import { getToolBrokerFile } from './execution/tool-broker.ts';
+import { zipSync } from 'fflate';
+import {
+  seedProjectOutputParent,
+  raceProjectPublications,
+} from './project-output-parent.fixture.ts';
 import { reportLocalCommandProfile } from './local-command-profile.ts';
 import { reportLocalPythonProfile } from './local-python-execution.ts';
 import { readManagedRuntimeGrant } from './managed-runtime-grant.ts';
@@ -46,7 +55,7 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
     await database?.close();
     vi.unstubAllEnvs();
   });
-  async function setup(withOutput = false) {
+  async function setup(withOutput = false, revisionKind?: 'document' | 'file') {
     const f = await createAssistantLocalCommandFixture(
       database.db,
       'allow',
@@ -81,6 +90,44 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
       f.db,
     )) as { project: unknown; sourceDigest: string };
     const project = ProjectVersionRefSchema.parse(opened.project);
+
+    let parentZip: { objectId: string; versionId: string } | undefined;
+    if (revisionKind) {
+      const delivery = (await executeProjectWorkspace(
+        {
+          context: f.context,
+          sessionId: f.task.chatSessionId!,
+          worker,
+          callId: randomUUID(),
+          arguments: { action: 'deliver', project },
+        },
+        storage,
+        f.db,
+      )) as {
+        artifacts: { fileName: string; objectId: string; versionId: string }[];
+      };
+      parentZip = delivery.artifacts.find(
+        (a) => a.fileName === 'project-source.zip',
+      )!;
+      // Model an already-delivered cloud file parent in this isolated fixture;
+      // the cloud test separately exercises actual file-kind registration.
+      if (revisionKind === 'file') {
+        const file = await getToolBrokerFile(
+          f.context,
+          parentZip.objectId,
+          f.db,
+        );
+        parentZip = await seedProjectOutputParent({
+          db: f.db,
+          storage,
+          context: f.context,
+          sessionId: f.task.chatSessionId!,
+          bytes: await readArtifactBytes(storage, file.object),
+          kind: 'file',
+        });
+      }
+    }
+
     await reportLocalCommandProfile(
       f.device,
       {
@@ -109,13 +156,22 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
       project,
       ...(withOutput
         ? {
-            outputs: [
-              {
-                path: 'dist/index.html',
-                fileName: 'index.html',
-                format: 'html',
-              },
-            ],
+            outputs: parentZip
+              ? [
+                  {
+                    path: 'project.zip',
+                    fileName: 'project-v2.zip',
+                    format: 'zip',
+                    parentObjectId: parentZip.objectId,
+                  },
+                ]
+              : [
+                  {
+                    path: 'dist/index.html',
+                    fileName: 'index.html',
+                    format: 'html',
+                  },
+                ],
           }
         : {}),
       limits: {
@@ -176,7 +232,18 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
       const op = await createLocalCommandOperation(
         {
           context: f.context,
-          arguments: args,
+          arguments: {
+            ...args,
+            ...(args.outputs
+              ? {
+                  outputs: args.outputs.map(({ path, fileName, format }) => ({
+                    path,
+                    fileName,
+                    format,
+                  })),
+                }
+              : {}),
+          },
           worker,
           storage,
           callId,
@@ -196,8 +263,265 @@ suite('MET166 PR3b exact saved-source local command — real PostgreSQL', () => 
         );
       return op;
     };
-    return { ...f, storage, worker, project, args, create };
+    return {
+      ...f,
+      storage,
+      worker,
+      project,
+      args,
+      create,
+      parentZip,
+      projectSelection,
+    };
   }
+
+  async function stoppedZip(
+    f: Awaited<ReturnType<typeof setup>>,
+    op: Awaited<ReturnType<Awaited<ReturnType<typeof setup>>['create']>>,
+    bytes: Buffer,
+  ) {
+    const ledger = f.freshLedger();
+    const operationId = op.snapshot.binding.attempt.operationId;
+    const lease = await ledger.dispatch({
+      scope: f.task.scope,
+      operationId,
+      leaseOwner: randomUUID(),
+      leaseMs: 30000,
+    });
+    const identity = {
+      scope: f.task.scope,
+      operationId,
+      attempt: lease.snapshot.binding.attempt,
+      leaseToken: lease.leaseToken,
+    };
+    await ledger.startOperation({ ...identity, receiptId: randomUUID() });
+    const [stored] =
+      await f.db`select bridge_payload from allrice_runtime_operations where id=${operationId}`;
+    const payload = RuntimeLocalCommandSchema.parse(stored!.bridge_payload);
+    const p = payload.arguments.projectPreparation!,
+      source = payload.arguments.projectSource!;
+    await ledger.recordReceipt({
+      ...identity,
+      receiptId: randomUUID(),
+      signal: {
+        type: 'operation.outcome',
+        result: {
+          status: 'succeeded',
+          effects: 'none',
+          evidence: {
+            id: randomUUID(),
+            recordedAt: new Date().toISOString(),
+            digest: 'sha256:' + 'b'.repeat(64),
+          },
+        },
+      },
+      evidence: {
+        output: {
+          backend: 'local-vm-container-v1',
+          containerId: 'a'.repeat(64),
+          imageDigest: payload.arguments.imageDigest,
+          stopped: true,
+          exitCode: 0,
+          reason: 'exited',
+          stdout: 'synthetic stopped receipt only',
+          stderr: '',
+          truncated: false,
+          workCopy: 'local_isolated_copy',
+          sourceDirectoryModified: false,
+          projectPreparation: {
+            version: 1,
+            projectId: p.projectId,
+            sourceDigest: p.sourceDigest,
+            lockChecksum: p.lockChecksum,
+            cacheKey: source.cacheKey,
+            manager: p.manager,
+            managerVersion: p.managerVersion,
+            platform: 'linux-amd64',
+            runtimeImage: payload.arguments.imageDigest,
+            packageCount: 0,
+            archiveHits: 0,
+            downloadedArchives: 0,
+            downloadedBytes: 0,
+            installation: 'succeeded',
+            cacheVolume: 'allrice-project-cache-' + source.cacheKey.slice(7),
+            sourceDirectoryModified: false,
+            hostEnvironmentModified: false,
+            savedSource: {
+              project: source.project,
+              restoredDigest: p.sourceDigest,
+            },
+          },
+          artifacts: [
+            {
+              path: 'project.zip',
+              contentBase64: bytes.toString('base64'),
+              sizeBytes: bytes.length,
+              checksum:
+                'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+            },
+          ],
+        },
+      },
+    });
+    return { operationId, payload };
+  }
+  it.each(['document', 'file'] as const)(
+    'continues a stopped local ZIP output from a %s parent and checks authority before cached replay',
+    async (kind) => {
+      const f = await setup(true, kind),
+        old = f.parentZip!;
+      const oldFile = await getToolBrokerFile(f.context, old.objectId, f.db);
+      const oldBytes = await readArtifactBytes(f.storage, oldFile.object);
+      const bytes = Buffer.from(
+        zipSync({ 'main.cjs': Buffer.from('revised\n') }),
+      );
+      const { operationId, payload } = await stoppedZip(
+        f,
+        await f.create(),
+        bytes,
+      );
+      expect(payload.arguments.outputs?.[0]).not.toHaveProperty(
+        'parentObjectId',
+      );
+      expect(f.projectSelection?.originalArguments).toMatchObject({
+        outputs: [{ parentObjectId: old.objectId }],
+      });
+      const publish = () =>
+        publishLocalProjectArtifacts(
+          { context: f.context, operationId },
+          f.storage,
+          f.db,
+        );
+      const raced = await raceProjectPublications({
+        db: f.db,
+        storage: f.storage,
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        first: publish,
+        second: publish,
+      });
+      expect(raced.blocked.holder).not.toBe(raced.blocked.waiter);
+      if (
+        raced.results[0]!.status !== 'fulfilled' ||
+        raced.results[1]!.status !== 'fulfilled'
+      )
+        throw Error('Exact operation replay rejected');
+      const result = raced.results[0]!.value,
+        next = result[0]!;
+      expect(raced.results[1]!.value).toEqual(result);
+      expect(await publish()).toEqual(result);
+      const rows =
+        await f.db`select v.id,v.series_id,v.version,v.parent_version_id,v.format,v.file_name,a.kind
+        from allrice_deliverable_versions v join allrice_workbench_artifacts a on a.version_id=v.id
+        where v.object_id=any(${[old.objectId, next.objectId]}::uuid[]) order by v.version`;
+      expect(rows).toHaveLength(2);
+      expect(rows[1]).toMatchObject({
+        series_id: rows[0]!.series_id,
+        version: 2,
+        parent_version_id: rows[0]!.id,
+        format: 'zip',
+        file_name: 'project-v2.zip',
+        kind,
+      });
+      const nextFile = await getToolBrokerFile(f.context, next.objectId, f.db);
+      expect(nextFile.object).toMatchObject({
+        mediaType: 'application/zip',
+        immutable: true,
+      });
+      expect(await readArtifactBytes(f.storage, nextFile.object)).toEqual(
+        bytes,
+      );
+      expect(await readArtifactBytes(f.storage, oldFile.object)).toEqual(
+        oldBytes,
+      );
+
+      const alternative = (await executeProjectWorkspace(
+        {
+          context: f.context,
+          sessionId: f.task.chatSessionId!,
+          worker: f.worker,
+          callId: randomUUID(),
+          arguments: { action: 'deliver', project: f.project },
+        },
+        f.storage,
+        f.db,
+      )) as { artifacts: { fileName: string; objectId: string }[] };
+      const changed = structuredClone(payload);
+      changed.arguments.outputs![0]!.parentObjectId =
+        alternative.artifacts.find(
+          (a) => a.fileName === 'project-source.zip',
+        )!.objectId;
+      await expect(
+        f.db`update allrice_runtime_operations set bridge_payload=${f.db.json(changed)}
+          where id=${operationId}`,
+      ).rejects.toThrow(
+        'runtime operation identity and dispatch inputs are immutable',
+      );
+      const [unchanged] =
+        await f.db`select bridge_payload from allrice_runtime_operations where id=${operationId}`;
+      expect(unchanged!.bridge_payload).toEqual(payload);
+      expect(await publish()).toEqual(result);
+      await f.db`update allrice_storage_objects set retention_until=created_at+interval '1 microsecond'
+        where id=${old.objectId}`;
+      await expect(publish()).rejects.toThrow();
+      await f.db`update allrice_storage_objects set retention_until=null where id=${old.objectId}`;
+      await f.db`update allrice_jobs set cancel_requested_at=clock_timestamp()
+        where id=${f.context.jobId}`;
+      await expect(publish()).rejects.toThrow();
+    },
+  );
+
+  it('rejects a second distinct local operation that races the same latest parent', async () => {
+    const f = await setup(true, 'file');
+    const parent = f.parentZip!;
+    const operations: Awaited<ReturnType<typeof stoppedZip>>[] = [];
+    for (let i = 0; i < 2; i++) {
+      const callId = randomUUID();
+      const projectSelection = await selectProjectExecution(
+        {
+          context: f.context,
+          callId,
+          arguments: { action: 'execute', ...f.args },
+          worker: f.worker,
+          cloudReady: false,
+        },
+        f.db,
+      );
+      const op = await f.create({ callId, projectSelection });
+      operations.push(
+        await stoppedZip(
+          f,
+          op,
+          Buffer.from(zipSync({ 'main.cjs': Buffer.from('race ' + i) })),
+        ),
+      );
+    }
+    const publish = (index: number) =>
+      publishLocalProjectArtifacts(
+        { context: f.context, operationId: operations[index]!.operationId },
+        f.storage,
+        f.db,
+      );
+    const raced = await raceProjectPublications({
+      db: f.db,
+      storage: f.storage,
+      organizationId: f.org,
+      workspaceId: f.workspace,
+      first: () => publish(0),
+      second: () => publish(1),
+    });
+    expect(raced.blocked.holder).not.toBe(raced.blocked.waiter);
+    expect(raced.results.filter((r) => r.status === 'fulfilled')).toHaveLength(
+      1,
+    );
+    const failed = raced.results.find((r) => r.status === 'rejected');
+    expect(failed?.status === 'rejected' && String(failed.reason)).toContain(
+      'project_output_parent_stale',
+    );
+    const versions =
+      await f.db`select version from allrice_deliverable_versions where series_id=(select series_id from allrice_deliverable_versions where id=${parent.versionId}) order by version`;
+    expect(versions.map((v) => v.version)).toEqual([1, 2]);
+  });
   it('admits an exact private version without any live folder grant; idempotent read strips bytes and provenance', async () => {
     const f = await setup(),
       grant = await readManagedRuntimeGrant(f.device, f.db),

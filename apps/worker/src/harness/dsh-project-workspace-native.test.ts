@@ -26,6 +26,12 @@ it.each([
   { action: 'read', project, path: 'main.ts' },
   { action: 'deliver', project, baseline: project },
   {
+    action: 'deliver',
+    project,
+    baseline: project,
+    parentObjectId: '963018c7-ddc0-4358-a19e-060f67eb07f3',
+  },
+  {
     action: 'apply',
     expectedHead: project,
     proposal: {
@@ -45,6 +51,8 @@ it.each([
       invalidArgs: { action: 'execute', project },
       inspectSchema(schema) {
         expect(schema.properties).toHaveProperty('files');
+        if ('parentObjectId' in args)
+          expect(schema.properties).toHaveProperty('parentObjectId');
         expect(schema.properties).not.toHaveProperty('ownerId');
       },
       onToolCall: async (call) => {
@@ -70,6 +78,12 @@ it('canonical project execution reaches real DSH with original bounded arguments
     path: '.',
     outputs: [
       { path: 'dist/index.html', fileName: 'index.html', format: 'html' },
+      {
+        path: 'project.zip',
+        fileName: 'project-v2.zip',
+        format: 'zip',
+        parentObjectId: '963018c7-ddc0-4358-a19e-060f67eb07f3',
+      },
     ],
     limits: {
       timeoutMs: 10000,
@@ -100,6 +114,10 @@ it('canonical project execution reaches real DSH with original bounded arguments
       const props = schema.properties as Record<string, unknown>;
       expect(props).toHaveProperty('projectPreparation');
       expect(props).toHaveProperty('outputs');
+      const output = props.outputs as {
+        items: { properties: Record<string, unknown> };
+      };
+      expect(output.items.properties).toHaveProperty('parentObjectId');
       expect(props).not.toHaveProperty('projectSource');
       expect(props).not.toHaveProperty('deviceId');
     },

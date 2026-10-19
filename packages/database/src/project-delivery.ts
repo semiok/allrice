@@ -119,13 +119,23 @@ export async function publishLocalProjectArtifacts(
       !result.stopped
     )
       projectFail('result_unconfirmed');
-    return { snapshot, payload, result, source };
+    const original = await assertProjectExecutionOrigin(
+      tx,
+      snapshot.binding,
+      payload.arguments,
+      'local',
+    );
+    // Use the checked canonical selection for lineage; receipt paths/bytes remain
+    // bound to its physical projection by assertProjectExecutionOrigin above.
+    const outputs =
+      original?.action === 'execute'
+        ? (original.outputs ?? [])
+        : (payload.arguments.outputs ?? []);
+    return { snapshot, payload, result, source, outputs };
   };
   const initial = await db.begin((tx) => read(tx));
   const artifacts = [];
-  for (const [index, output] of (
-    initial.payload.arguments.outputs ?? []
-  ).entries()) {
+  for (const [index, output] of initial.outputs.entries()) {
     const physical = initial.result.artifacts?.find(
       (a) => a.path === output.path,
     );
@@ -145,6 +155,9 @@ export async function publishLocalProjectArtifacts(
         kind: 'document',
         fileName: output.fileName,
         format: output.format,
+        ...(output.parentObjectId
+          ? { parentObjectId: output.parentObjectId }
+          : {}),
         bytes,
         mediaType:
           output.format === 'html'
@@ -196,12 +209,6 @@ export async function publishLocalProjectArtifacts(
             initial.snapshot.binding.task.chatSessionId!,
             initial.source.origin,
             initial.source.project,
-          );
-          await assertProjectExecutionOrigin(
-            tx,
-            initial.snapshot.binding,
-            initial.payload.arguments,
-            'local',
           );
         },
       },

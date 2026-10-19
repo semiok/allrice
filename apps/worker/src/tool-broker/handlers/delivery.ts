@@ -128,6 +128,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     );
   }
   input.signal?.throwIfAborted();
+  const requestedFileName = stringValue(args.fileName, 'fileName');
   const generated = hasOfficePdf
     ? await generateOfficePdfExport(
         input,
@@ -160,7 +161,11 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       : hasOffice
         ? await generateOfficeExport(input, format, args.office)
         : {
-            ...(await generateDeliverable({ format, content })),
+            ...(await generateDeliverable({
+              format,
+              content,
+              ...(format === 'text' ? { fileName: requestedFileName } : {}),
+            })),
             sourceFile: undefined,
             warnings: undefined,
             changes: undefined,
@@ -235,7 +240,7 @@ export const createWorkspaceExport: RiceToolHandler = async ({
           nativeConversion: generated.nativeConversion,
         }
       : {};
-  let fileName = [...stringValue(args.fileName, 'fileName')]
+  let fileName = [...requestedFileName]
     .map((character) =>
       '\\/:*?"<>|'.includes(character) || character.charCodeAt(0) < 32
         ? '-'

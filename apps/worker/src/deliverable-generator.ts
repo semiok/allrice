@@ -5,7 +5,7 @@ import { Document, HeadingLevel, Packer, Paragraph, TextRun } from 'docx';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 
-import type { DeliveryFormat } from '@allrice/contracts';
+import { localFileMediaType, type DeliveryFormat } from '@allrice/contracts';
 
 export interface GeneratedDeliverable {
   bytes: Buffer;
@@ -220,12 +220,18 @@ async function generatePdf(content: string) {
 export async function generateDeliverable(input: {
   format: DeliveryFormat;
   content: string;
+  fileName?: string;
 }): Promise<GeneratedDeliverable> {
   if (['png', 'jpeg', 'webp'].includes(input.format))
     throw new Error('图片必须通过图片生成工具交付，不能将文本伪装成图片。');
   if (input.format === 'zip')
     throw new Error('源码包必须通过项目工具交付，不能将文本伪装成 ZIP。');
-  const metadata = formatMetadata[input.format];
+  // CSV uses the existing text version format. Keep the suffix exception narrow:
+  // other caller-provided extensions never promote plain text to active formats.
+  const metadata =
+    input.format === 'text' && input.fileName?.toLowerCase().endsWith('.csv')
+      ? { extension: '.csv', mediaType: localFileMediaType(input.fileName) }
+      : formatMetadata[input.format];
   let bytes: Buffer;
   if (input.format === 'docx') bytes = await generateDocx(input.content);
   else if (input.format === 'xlsx') bytes = await generateXlsx(input.content);

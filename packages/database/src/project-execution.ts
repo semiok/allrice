@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { assertProjectOutputParent } from './project-output-parent.ts';
 import type { TransactionSql } from 'postgres';
 import {
   BridgeDeviceSchema,
@@ -184,6 +185,21 @@ export async function selectProjectExecution(
         !runtimeContractEqual(prior.metadata.workerOrigin, workerOrigin))
     )
       throw new RuntimePolicyError('idempotency_conflict');
+    if (args.action === 'execute')
+      for (const output of args.outputs ?? []) {
+        if (!output.parentObjectId) continue;
+        await assertProjectOutputParent(
+          {
+            context: ctx,
+            sessionId: run.session_id,
+            parentObjectId: output.parentObjectId,
+            format: output.format,
+          },
+          tx,
+          false,
+          !prior,
+        );
+      }
     const constraints = executionRequestConstraints(run.text);
     if (!prior) {
       const [budget] = await tx<
@@ -475,7 +491,18 @@ export async function assertProjectExecutionOrigin(
         args: args.args,
         path: args.path,
         limits: args.limits,
-        ...('outputs' in args && args.outputs ? { outputs: args.outputs } : {}),
+        ...('outputs' in args && args.outputs
+          ? {
+              outputs:
+                location === 'local'
+                  ? args.outputs.map(({ path, fileName, format }) => ({
+                      path,
+                      fileName,
+                      format,
+                    }))
+                  : args.outputs,
+            }
+          : {}),
       },
       {
         project: source.project,
@@ -489,4 +516,6 @@ export async function assertProjectExecutionOrigin(
     )
   )
     fail();
+  // The full canonical digest above still binds server-only lineage metadata.
+  return args;
 }

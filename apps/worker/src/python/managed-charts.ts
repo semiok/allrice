@@ -184,7 +184,11 @@ async function executeManagedChartsAttempt(
         script: args.script,
         inputs,
         outputs: args.outputs.map((file, index) => ({
-          ...file,
+          // Lineage stays in the frozen original call, bound by origin above.
+          // Bridge v1 receives execution fields only.
+          path: file.path,
+          fileName: file.fileName,
+          format: file.format,
           mediaType:
             file.format === 'txt' &&
             localFileMediaType(file.fileName) === 'text/markdown'

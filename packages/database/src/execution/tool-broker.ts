@@ -371,6 +371,41 @@ export function createToolBrokerExportObject(input: {
   } satisfies StorageObject;
 }
 
+/** A revision relationship is narrower than read access to a file. Callers may
+ * check before execution, but publication must repeat it under its transaction. */
+export async function assertToolBrokerExportParent(
+  input: {
+    context: ExecutionContext;
+    sessionId?: string;
+    platformTestRunId?: string;
+    parentObjectId: string;
+    format: DeliveryFormat;
+  },
+  database: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+  lock = false,
+) {
+  if (!input.context.workspaceId)
+    throw new DataAccessError('authorization_denied');
+  const [parent] = await database<
+    { id: string; object_id: string; series_id: string }[]
+  >`
+    select version.id, version.object_id, version.series_id
+    from allrice_deliverable_versions version
+    join allrice_storage_objects object on object.id = version.object_id
+    where version.object_id = ${UuidSchema.parse(input.parentObjectId)}
+      and version.organization_id = ${input.context.organizationId}
+      and version.workspace_id = ${input.context.workspaceId}
+      and version.owner_id = ${input.context.policySnapshot.subjectId}
+      and version.session_id is not distinct from ${input.sessionId ?? null}::uuid
+      and version.platform_test_run_id is not distinct from ${input.platformTestRunId ?? null}::uuid
+      and version.format = ${input.format}
+      and object.state = 'ready'
+    ${lock ? database`for update of version` : database``}
+  `;
+  if (!parent) throw new DataAccessError('not_found');
+  return parent;
+}
+
 export async function registerToolBrokerExport(
   input: {
     context: ExecutionContext;
@@ -521,24 +556,17 @@ export async function registerToolBrokerExport(
     let parentVersionId: string | null = null;
     let parentObjectId: string | null = null;
     if (requestedParent) {
-      const parents = await transaction<
-        { id: string; object_id: string; series_id: string }[]
-      >`
-        select version.id, version.object_id, version.series_id
-        from allrice_deliverable_versions version
-        join allrice_storage_objects object on object.id = version.object_id
-        where version.object_id = ${UuidSchema.parse(requestedParent)}
-          and version.organization_id = ${input.context.organizationId}
-          and version.workspace_id = ${workspaceId}
-          and version.owner_id = ${ownerId}
-          and version.session_id is not distinct from ${input.sessionId ?? null}::uuid
-          and version.platform_test_run_id is not distinct from ${input.platformTestRunId ?? null}::uuid
-          and version.format = ${input.format}
-          and object.state = 'ready'
-        for update of version
-      `;
-      const parent = parents[0];
-      if (!parent) throw new DataAccessError('not_found');
+      const parent = await assertToolBrokerExportParent(
+        {
+          context: input.context,
+          sessionId: input.sessionId,
+          platformTestRunId: input.platformTestRunId,
+          parentObjectId: requestedParent,
+          format: input.format,
+        },
+        transaction,
+        true,
+      );
       seriesId = parent.series_id;
       parentVersionId = parent.id;
       parentObjectId = parent.object_id;

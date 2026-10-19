@@ -86,6 +86,7 @@ export const CloudNativeArgumentsSchema = z
                   ),
               ),
             format: z.enum(['json', 'csv', 'txt', 'png']),
+            parentObjectId: z.uuid().optional(),
           })
           .strict(),
       )
@@ -208,6 +209,11 @@ export const cloudNativeTools = [
               type: 'string',
               required: true,
               enum: ['json', 'csv', 'txt', 'png'],
+            },
+            parentObjectId: {
+              type: 'string',
+              description:
+                'Optional UUID of the existing deliverable objectId to revise. For PNG/CSV updates, continue the same deliverable series and preserve the declared fileName and format.',
             },
           },
         },

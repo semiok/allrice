@@ -8,6 +8,10 @@ import { isCompiledRepositoryExecution } from './platform-repair-contracts.ts';
 import { cloudInputTransferScopes } from './cloud-network-authority.ts';
 import { initializeProjectServiceLease } from './project-services.ts';
 import { isPlatformAdmin } from './platform-authority.ts';
+import {
+  assertProjectOutputParent,
+  assertExplicitOutputParent,
+} from './project-output-parent.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { linkTaskOperationCall } from './task-clock.ts';
 import {
@@ -656,6 +660,33 @@ async function createCloudOperation(
   >`select r.execution_spec,e.execution_snapshot,r.policy_snapshot_id,p.payload,e.session_id,e.employee_version_id,c.thread_generation,j.timeout_at,j.lease_token::text from allrice_runs r join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id join allrice_jobs j on j.run_id=r.id and j.id=${ctx.jobId} and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=r.organization_id and c.workspace_id=r.workspace_id and c.owner_id=r.owner_id and c.active_run_id=r.id and c.state='running' where r.id=${ctx.runId} and r.organization_id=${ctx.organizationId} and r.workspace_id=${ctx.workspaceId} and r.owner_id=${owner} and r.state='running' and j.status='running' and j.worker_id=${ctx.worker.id} and j.lease_expires_at>clock_timestamp() and j.cancel_requested_at is null and j.timeout_at>clock_timestamp()`;
   if (!run || run.policy_snapshot_id !== ctx.policySnapshot.id)
     throw new RuntimePolicyError('run_or_frozen_configuration_changed');
+  const priorRevision = args.outputs.some((output) => !!output.parentObjectId)
+    ? (
+        await database`select operation_id from allrice_cloud_execution_inputs where operation_id=${cloudStableId(`${canonical ? 'cloud-python' : 'cloud-command'}:${ctx.runId}:${input.callId}`)} and run_id=${ctx.runId} and organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId} and owner_id=${owner}`
+      )[0]
+    : null;
+  for (const output of args.outputs) {
+    if (!output.parentObjectId) continue;
+    await assertExplicitOutputParent(
+      {
+        context: ctx,
+        sessionId: run.session_id,
+        parentObjectId: output.parentObjectId,
+        format:
+          output.format === 'png'
+            ? 'png'
+            : output.format === 'json'
+              ? 'json'
+              : output.format === 'txt' &&
+                  localFileMediaType(output.fileName) === 'text/markdown'
+                ? 'markdown'
+                : 'text',
+      },
+      database,
+      false,
+      !priorRevision,
+    );
+  }
   if (args.execution) {
     if (process.env.ALLRICE_SANDBOX_EXECUTION_V1_ENABLED !== '1')
       throw new RuntimePolicyError('sandbox_execution_not_enabled');
@@ -1039,6 +1070,10 @@ export async function publishCloudOperationArtifacts(
   database: Database = getDatabase(),
 ) {
   const { context: ctx, binding, payload } = input;
+  // Authority checks validate the stored command. Bind the actual publication
+  // input too, including lineage, even when returning an existing receipt.
+  if (digest(payload) !== binding.inputDigest)
+    throw new RuntimePolicyError('cloud_binding_changed');
   return database.begin(async (tx) => {
     await lockWorkspaceStorageQuota(tx, ctx.organizationId, ctx.workspaceId);
     const [root] =
@@ -1068,7 +1103,10 @@ export async function publishCloudOperationArtifacts(
 
     const [methodRun] =
       await tx`select id from allrice_runs where id=${ctx.runId} and execution_spec ? 'employeeMethodSnapshotDigest'`;
-    if (existing.length && !methodRun) return existing;
+    const explicitRevision = payload.arguments.outputs?.some(
+      (output) => !!output.parentObjectId,
+    );
+    if (existing.length && !methodRun && !explicitRevision) return existing;
     const principal = {
       actor: { type: 'user' as const, id: ctx.policySnapshot.subjectId },
       organizationId: ctx.organizationId,
@@ -1087,6 +1125,40 @@ export async function publishCloudOperationArtifacts(
       phase: 'heartbeat',
       now: new Date(),
     });
+    const projectParents = new Map<string, 'document' | 'file'>();
+    const assertProjectParents = async (requireLatest = false) => {
+      for (const output of payload.arguments.outputs ?? []) {
+        if (!output.parentObjectId) continue;
+        const parent = await (
+          'kind' in payload
+            ? assertProjectOutputParent
+            : assertExplicitOutputParent
+        )(
+          {
+            context: ctx,
+            sessionId: binding.task.chatSessionId!,
+            parentObjectId: output.parentObjectId,
+            format:
+              'kind' in payload
+                ? (output.format as 'html' | 'json' | 'text' | 'zip')
+                : output.format === 'png'
+                  ? 'png'
+                  : output.format === 'json'
+                    ? 'json'
+                    : output.format === 'txt' &&
+                        localFileMediaType(output.fileName) === 'text/markdown'
+                      ? 'markdown'
+                      : 'text',
+          },
+          tx,
+          true,
+          requireLatest,
+        );
+        if ('kind' in payload)
+          projectParents.set(output.path, parent.kind as 'document' | 'file');
+      }
+    };
+    await assertProjectParents();
     const method = !('kind' in payload)
       ? await methodFileProof(
           tx,
@@ -1096,8 +1168,56 @@ export async function publishCloudOperationArtifacts(
           binding,
         )
       : undefined;
-    // Replayed publication must still pass current ownership and lease checks.
-    if (existing.length) return existing;
+    // Exact cached revisions may be historical, but not revoked/deleted/expired.
+    if (existing.length) {
+      if (explicitRevision) {
+        const outputs = payload.arguments.outputs ?? [];
+        if (existing.length !== outputs.length)
+          throw new RuntimePolicyError('cloud_result_unconfirmed');
+        for (const [index, output] of outputs.entries()) {
+          const cached = existing[index]!;
+          const live = await assertExplicitOutputParent(
+            {
+              context: ctx,
+              sessionId: binding.task.chatSessionId!,
+              parentObjectId: cached.object.id,
+              format:
+                'kind' in payload
+                  ? (output.format as 'html' | 'json' | 'text' | 'zip')
+                  : output.format === 'png'
+                    ? 'png'
+                    : output.format === 'json'
+                      ? 'json'
+                      : output.format === 'txt' &&
+                          localFileMediaType(output.fileName) ===
+                            'text/markdown'
+                        ? 'markdown'
+                        : 'text',
+            },
+            tx,
+            true,
+          );
+          if (
+            live.id !== cached.versionId ||
+            live.checksum !== cached.object.checksum ||
+            live.run_id !== ctx.runId ||
+            live.operation_id !== binding.attempt.operationId ||
+            cached.fileName !== output.fileName
+          )
+            throw new RuntimePolicyError('cloud_result_unconfirmed');
+        }
+        await assertAdmission({
+          transaction: tx,
+          binding,
+          phase: 'heartbeat',
+          now: new Date(),
+        });
+      }
+      return existing;
+    }
+    // Every writer shares the quota gate already held above, including generic
+    // registerToolBrokerExport. A new project child must name the current tip.
+    await assertProjectParents(true);
     const published: {
       object: StorageObject;
       fileName: string;
@@ -1109,6 +1229,33 @@ export async function publishCloudOperationArtifacts(
         ? ProjectCollectedArtifactsSchema.parse(input.artifacts)
         : null;
     for (const output of payload.arguments.outputs ?? []) {
+      // Also fence two outputs in one operation from forking the same old tip.
+      if (output.parentObjectId)
+        await (
+          'kind' in payload
+            ? assertProjectOutputParent
+            : assertExplicitOutputParent
+        )(
+          {
+            context: ctx,
+            sessionId: binding.task.chatSessionId!,
+            parentObjectId: output.parentObjectId,
+            format:
+              'kind' in payload
+                ? (output.format as 'html' | 'json' | 'text' | 'zip')
+                : output.format === 'png'
+                  ? 'png'
+                  : output.format === 'json'
+                    ? 'json'
+                    : output.format === 'txt' &&
+                        localFileMediaType(output.fileName) === 'text/markdown'
+                      ? 'markdown'
+                      : 'text',
+          },
+          tx,
+          true,
+          true,
+        );
       const artifact = input.artifacts.find((a) => a.path === output.path);
       if (!artifact) throw new RuntimePolicyError('cloud_artifact_missing');
       const bytes = Buffer.from(artifact.contentBase64, 'base64');
@@ -1182,6 +1329,9 @@ export async function publishCloudOperationArtifacts(
               }
             : { sessionId: binding.task.chatSessionId! }),
           fileName: output.fileName,
+          ...('parentObjectId' in output && output.parentObjectId
+            ? { parentObjectId: output.parentObjectId }
+            : {}),
           format:
             output.format === 'png'
               ? 'png'
@@ -1203,7 +1353,7 @@ export async function publishCloudOperationArtifacts(
         },
         tx,
       );
-      await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest) values(${version.id},${ctx.organizationId},${ctx.workspaceId},${ctx.policySnapshot.subjectId},${ctx.runId},'file',${tx.json({ kind: 'tool_result', runId: ctx.runId, operationId: binding.attempt.operationId, stepId: null })},${tx.json(binding.execution)},${`cloud:${binding.attempt.operationId}:${output.path}`},${digest({ objectId: object.id, checksum: object.checksum })})`;
+      await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest) values(${version.id},${ctx.organizationId},${ctx.workspaceId},${ctx.policySnapshot.subjectId},${ctx.runId},${projectParents.get(output.path) ?? 'file'},${tx.json({ kind: 'tool_result', runId: ctx.runId, operationId: binding.attempt.operationId, stepId: null })},${tx.json(binding.execution)},${`cloud:${binding.attempt.operationId}:${output.path}`},${digest({ objectId: object.id, checksum: object.checksum })})`;
       if (method)
         await recordMethodFilePublication(
           tx,
@@ -1225,6 +1375,7 @@ export async function publishCloudOperationArtifacts(
       phase: 'heartbeat',
       now: new Date(),
     });
+    await assertProjectParents();
     const [stillCurrent] =
       await tx`select root_run_id from allrice_runtime_roots where root_run_id=${binding.task.rootRunId} and cancel_request_id is null and deadline_at>clock_timestamp()`;
     if (!stillCurrent)
