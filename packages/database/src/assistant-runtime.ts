@@ -5,6 +5,21 @@ import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { bridgeSettingsView } from './bridge-settings.ts';
 import { randomUUID } from 'node:crypto';
 import {
+  captureFinalDeliveryProof,
+  checkedResultAnswer,
+  finalDeliveryFactsDigest,
+  finalDeliveryTextDigest,
+  finalDeliveryUnavailable,
+  markFinalDeliveryRootLocked,
+  registerJobCompletionGuard,
+  type AssistantFinalDeliveryProof,
+  type JobCompletionGuard,
+} from './final-delivery-commit.ts';
+export type {
+  AssistantFinalDeliveryProof,
+  JobCompletionGuard,
+} from './final-delivery-commit.ts';
+import {
   AssistantMessageRequestSchema,
   AssistantResultSchema,
   AssistantRunConfigurationSchema,
@@ -20,6 +35,8 @@ import {
 } from '@allrice/contracts';
 import { z } from 'zod';
 import { getDatabase } from './core/client.ts';
+import { readWorkerFinalDeliveryEvidenceTransaction } from './artifact-review.ts';
+import { readFinalDeliveryReplyOriginTransaction } from './final-delivery-reply-origin.ts';
 import {
   runtimeLedgerInputDigest,
   cancelRuntimeAgentOperationsTransaction,
@@ -201,6 +218,16 @@ export function createAssistantRuntime(
   options: {
     database?: ReturnType<typeof getDatabase>;
     authorize?: (input: AssistantAuthorityInput) => Promise<void>;
+    /** Trusted Worker factory opt-in, never model/browser preferences. */
+    checkedDelivery?: boolean;
+    /** Current same-transaction frozen source reader. It must authorize every
+     * exact historical identity; an input file without a version yields none. */
+    readFinalDeliveryReferences?: (input: {
+      transaction: Tx;
+      task: RuntimeTaskRef;
+    }) => Promise<
+      readonly { objectId: string; versionId: string; checksum: string }[]
+    >;
   } = {},
 ) {
   const db = options.database ?? getDatabase();
@@ -350,6 +377,129 @@ export function createAssistantRuntime(
     >`insert into allrice_assistant_messages(input_id,root_run_id,sender_run_id,recipient_run_id,content,content_digest,status)
       values(${inputId},${root.root_run_id},${sender.run_id},${child.run_id},${text},${digest},'pending') returning *`;
     return messageView(message!);
+  }
+
+  type DeliveryInput = {
+    scope: RuntimeScope;
+    rootRunId: string;
+    worker: AssistantWorkerLease;
+  };
+  const committedDeliveries = new Map<string, string>();
+  const deliveryKey = (
+    input: DeliveryInput,
+    proof: AssistantFinalDeliveryProof,
+  ) =>
+    JSON.stringify({
+      scope: input.scope,
+      rootRunId: input.rootRunId,
+      worker: input.worker,
+      proof,
+    });
+
+  async function deliveryFacts(
+    tx: Tx,
+    input: DeliveryInput,
+    proof?: AssistantFinalDeliveryProof,
+  ) {
+    return readWorkerFinalDeliveryEvidenceTransaction(
+      tx,
+      async (transaction) => {
+        if (transaction !== tx) fail('forbidden');
+        const root = await lock(tx, input.scope, input.rootRunId);
+        if (
+          root.task.rootRunId !== input.rootRunId ||
+          root.task.runId !== input.rootRunId ||
+          root.task.parentRunId !== null ||
+          root.task.scope.organizationId !== input.scope.organizationId ||
+          root.task.scope.workspaceId !== input.scope.workspaceId
+        )
+          fail('forbidden');
+        // READ COMMITTED statements after this common writer lock see commits
+        // made by any earlier publisher that held the root. No RR stale snapshot.
+        markFinalDeliveryRootLocked(tx, input.rootRunId);
+        await assertLease(tx, root, input.worker);
+        await authorize({
+          transaction: tx,
+          task: root.task,
+          tools: [],
+          phase: 'evidence',
+        });
+        await assertLease(tx, root, input.worker);
+        if (proof) {
+          const [identity] = await tx<
+            {
+              attempt: number;
+              native_session_id: string;
+              thread_id: string | null;
+              thread_generation: string;
+              assistant_message_id: string;
+            }[]
+          >`select j.attempt,i.native_session_id,c.thread_id,c.thread_generation,e.assistant_message_id
+          from allrice_jobs j join allrice_employee_runs e on e.run_id=j.run_id
+          join allrice_assistant_instances i on i.run_id=j.run_id and i.root_run_id=j.run_id and i.parent_run_id is null
+          join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id
+            and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id and c.active_run_id=j.run_id and c.state='running'
+            and c.worker_id=j.worker_id
+          join allrice_native_session_bindings n on n.native_session_id=i.native_session_id
+            and n.organization_id=e.organization_id and n.workspace_id=e.workspace_id and n.owner_id=e.owner_id
+            and n.context_kind='chat' and n.context_id=e.session_id and n.storage_context_key=e.session_id::text
+            and n.profile_id='restricted'
+          where j.id=${input.worker.jobId} and j.run_id=${input.rootRunId}
+          for share of j,e,i,c,n`;
+          if (
+            !identity ||
+            identity.attempt !== proof.attempt ||
+            identity.native_session_id !== proof.nativeSessionId ||
+            identity.thread_id !== proof.nativeSessionId ||
+            Number(identity.thread_generation) !== proof.generation ||
+            proof.generation !== input.worker.generation
+          )
+            finalDeliveryUnavailable();
+          // first_run_id/job_id/attempt identify the pin's historical first bind,
+          // NOT the current Run. The current incarnation is verified above.
+        }
+        const explicitReferences =
+          (await options.readFinalDeliveryReferences?.({
+            transaction: tx,
+            task: root.task,
+          })) ?? [];
+        await assertLease(tx, root, input.worker);
+        return { task: root.task, explicitReferences };
+      },
+    );
+  }
+  async function currentDevelopmentCompletion(tx: Tx, root: Root) {
+    const [developmentIncomplete] =
+      await tx`select 1 from allrice_development_heads h
+    where h.root_run_id=${root.root_run_id} and not exists(
+      select 1 from allrice_development_deliveries d
+      join allrice_development_reviews r on r.id=d.review_id and r.verdict='accept'
+      join allrice_deliverable_versions v on v.id=d.candidate_id
+      join allrice_storage_objects o on o.id=v.object_id and o.state='ready' and o.deleted_at is null
+      where d.root_run_id=h.root_run_id and d.candidate_id=h.head_artifact_id and d.digest=h.head_digest
+        and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
+        and not exists(select 1 from allrice_development_reviews reject where reject.root_run_id=h.root_run_id and reject.artifact_id=h.head_artifact_id and reject.verdict='revise'))`;
+    const { repositoryDevelopmentIncomplete } =
+      await import('./platform-repository-development.ts');
+    const repositoryIncomplete = await repositoryDevelopmentIncomplete(
+      tx,
+      root.root_run_id,
+    );
+    return { developmentIncomplete, repositoryIncomplete };
+  }
+  async function checkedFacts(
+    tx: Tx,
+    input: DeliveryInput,
+    proof: AssistantFinalDeliveryProof,
+  ) {
+    const facts = await deliveryFacts(tx, input, proof);
+    if (
+      facts.complete !== true ||
+      facts.authorization !== 'current' ||
+      finalDeliveryFactsDigest(facts) !== proof.factSetDigest
+    )
+      finalDeliveryUnavailable();
+    return facts;
   }
 
   const api = {
@@ -598,6 +748,172 @@ export function createAssistantRuntime(
         return { instance: view(row!), created: true };
       });
     },
+    /** @internal Worker-only read for an already configured assistant root.
+     * The reader invokes this closure before and after its bounded queries.
+     * Root/job locks, current authority and evidence all share this transaction;
+     * assertCurrentAuthority() opens another transaction and is not a substitute.
+     * No historical IDs are accepted until a trusted frozen-reference port exists.
+     */
+    async readFinalDeliveryEvidence(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      worker: AssistantWorkerLease;
+    }) {
+      const captured = structuredClone(input);
+      return db.begin('isolation level read committed', (tx) =>
+        deliveryFacts(tx, captured),
+      );
+    },
+    /** @internal Current-lease control anchors only. Native must independently
+     * match these references to its durable journal; this is never a proof. */
+    async readFinalDeliveryReplyOrigin(
+      input: DeliveryInput & { nativeSessionId: string; attempt: number },
+    ) {
+      if (options.checkedDelivery !== true) finalDeliveryUnavailable();
+      const captured = structuredClone(input);
+      return db.begin('isolation level read committed', async (tx) => {
+        const root = await lock(tx, captured.scope, captured.rootRunId);
+        if (
+          root.task.rootRunId !== captured.rootRunId ||
+          root.task.runId !== captured.rootRunId ||
+          root.task.parentRunId !== null ||
+          !root.task.chatSessionId
+        )
+          finalDeliveryUnavailable();
+        markFinalDeliveryRootLocked(tx, captured.rootRunId);
+        await assertLease(tx, root, captured.worker);
+        await authorize({
+          transaction: tx,
+          task: root.task,
+          tools: [],
+          phase: 'evidence',
+        });
+        await assertLease(tx, root, captured.worker);
+        const origin = await readFinalDeliveryReplyOriginTransaction(tx, {
+          task: root.task,
+          worker: captured.worker,
+          nativeSessionId: captured.nativeSessionId,
+          attempt: captured.attempt,
+        });
+        await assertLease(tx, root, captured.worker);
+        return origin;
+      });
+    },
+    /** Trusted in-process factory; only a committed checked finalize can issue it. */
+    createFinalDeliveryCommitGuard(
+      input: DeliveryInput & { finalDelivery: AssistantFinalDeliveryProof },
+    ): JobCompletionGuard {
+      if (options.checkedDelivery !== true) return finalDeliveryUnavailable();
+      const captured = structuredClone({
+        scope: input.scope,
+        rootRunId: input.rootRunId,
+        worker: input.worker,
+      });
+      const proof = captureFinalDeliveryProof(input.finalDelivery);
+      if (
+        committedDeliveries.get(captured.rootRunId) !==
+        deliveryKey(captured, proof)
+      )
+        return finalDeliveryUnavailable();
+      return registerJobCompletionGuard(async (tx, job, result) => {
+        if (
+          job.id !== captured.worker.jobId ||
+          job.run_id !== captured.rootRunId ||
+          job.worker_id !== captured.worker.workerId ||
+          job.lease_token !== captured.worker.leaseToken ||
+          job.attempt !== proof.attempt ||
+          job.status !== 'running' ||
+          job.cancel_requested_at ||
+          job.drain_reason
+        )
+          finalDeliveryUnavailable();
+        const answer = checkedResultAnswer(result);
+        if (finalDeliveryTextDigest(answer) !== proof.candidateDigest)
+          finalDeliveryUnavailable();
+        const facts = await checkedFacts(tx, captured, proof);
+        const root = await lock(tx, captured.scope, captured.rootRunId);
+        const services = await continuingProjectServiceIds(
+          tx,
+          captured.rootRunId,
+        );
+        const unresolved = await unsettledUsage(tx, root, undefined, services);
+        const [pending] =
+          await tx`select 1 from allrice_runtime_operations where root_run_id=${captured.rootRunId}
+          and not (id=any(${services}::uuid[])) and snapshot->>'status' not in ('succeeded','failed','partial','canceled')
+          union all select 1 from allrice_assistant_instances i left join allrice_assistant_results r on r.run_id=i.run_id
+            where i.root_run_id=${captured.rootRunId} and i.depth>0 and
+              (i.status<>'completed' or r.delivery_id is null or r.parent_adopted_seq is null)
+          union all select 1 from allrice_assistant_messages where root_run_id=${captured.rootRunId} and status not in ('adopted','canceled') limit 1`;
+        const { developmentIncomplete, repositoryIncomplete } =
+          await currentDevelopmentCompletion(tx, root);
+        if (
+          unresolved.blocking ||
+          pending ||
+          developmentIncomplete ||
+          repositoryIncomplete
+        )
+          finalDeliveryUnavailable();
+        const [identity] = await tx<
+          {
+            assistant_message_id: string;
+            policy_expires_at: Date;
+            deadline_at: Date;
+          }[]
+        >`
+          select e.assistant_message_id,p.expires_at policy_expires_at,r.deadline_at
+          from allrice_employee_runs e join allrice_runs u on u.id=e.run_id
+          join allrice_policy_snapshots p on p.id=u.policy_snapshot_id
+          join allrice_runtime_roots r on r.root_run_id=e.run_id
+          join allrice_assistant_instances i on i.run_id=e.run_id and i.status='completed'
+          where e.run_id=${captured.rootRunId} for share of e,u,p,r,i`;
+        if (!identity) finalDeliveryUnavailable();
+        const deadlines = [
+          job.lease_expires_at,
+          job.drain_deadline_at,
+          job.timeout_at,
+          identity.policy_expires_at,
+          identity.deadline_at,
+          ...facts.artifacts.map((artifact) =>
+            artifact.retentionUntil ? new Date(artifact.retentionUntil) : null,
+          ),
+        ].filter((x): x is Date => x !== null);
+        return {
+          assertCommitted: async () => {
+            // Terminal SQL clears the lease and releases the conversation. Verify
+            // the captured, locked incarnation's deadlines plus ACTUAL stored text.
+            // Do not call the admitting reader after we ourselves made it terminal.
+            const [stored] = await tx<
+              {
+                answer: string | null;
+                text: string | null;
+                job_status: string;
+                run_state: string;
+                now: Date;
+              }[]
+            >`
+            select r.result->>'answer' answer,m.content->>'text' text,j.status job_status,r.state run_state,clock_timestamp() now
+            from allrice_jobs j join allrice_runs r on r.id=j.run_id
+            join allrice_employee_runs e on e.run_id=r.id and e.assistant_message_id=${identity.assistant_message_id}
+            join allrice_messages m on m.id=e.assistant_message_id and m.session_id=e.session_id and m.owner_id=e.owner_id
+            where j.id=${job.id} and r.id=${captured.rootRunId}`;
+            if (
+              !stored ||
+              stored.job_status !== 'succeeded' ||
+              stored.run_state !== 'succeeded' ||
+              stored.answer !== answer ||
+              stored.text !== answer ||
+              checkedResultAnswer(result) !== answer ||
+              deadlines.some(
+                (deadline) =>
+                  !Number.isFinite(deadline.getTime()) ||
+                  deadline <= stored.now,
+              )
+            )
+              finalDeliveryUnavailable();
+          },
+        };
+      });
+    },
     /** Liveness check for an already owned native host. Re-resolve
      * current authority even while a model stream makes no further tool calls.
      * A committed cancellation needs no new grant to drain that host. First
@@ -673,7 +989,15 @@ export function createAssistantRuntime(
         await active(tx, root, input.runId);
         await tx`update allrice_assistant_instances set status='waiting',updated_at=clock_timestamp()
           where run_id=${input.runId} and status='running'
-            and not exists(select 1 from allrice_assistant_model_admissions where run_id=${input.runId} and finished_at is null)`;
+            and not exists(
+              select 1 from allrice_assistant_model_admissions a
+              where a.run_id=${input.runId} and a.finished_at is null
+                and not (a.dispatched_at is null and (
+                  select count(*) from allrice_assistant_usage u
+                  where u.call_id=a.call_id and u.run_id=a.run_id and u.root_run_id=a.root_run_id
+                    and u.settled_amount=0
+                )=4)
+            )`;
         await refreshTaskClock(tx, root.root_run_id);
       });
     },
@@ -744,11 +1068,30 @@ export function createAssistantRuntime(
       scope: RuntimeScope;
       rootRunId: string;
       worker: AssistantWorkerLease;
+      finalDelivery?: AssistantFinalDeliveryProof;
     }) {
-      return db.begin(async (tx) => {
+      const captured = structuredClone({
+        scope: input.scope,
+        rootRunId: input.rootRunId,
+        worker: input.worker,
+      });
+      const proof =
+        options.checkedDelivery === true
+          ? captureFinalDeliveryProof(input.finalDelivery)
+          : undefined;
+      const isolation =
+        options.checkedDelivery === true
+          ? 'isolation level read committed'
+          : '';
+      const outcome = await db.begin(isolation, async (tx) => {
+        if (proof) {
+          await tx`set local lock_timeout='5s'`;
+          await tx`set local statement_timeout='10s'`;
+        }
         const root = await lock(tx, input.scope, input.rootRunId);
         await assertLease(tx, root, input.worker);
         const main = await instance(tx, root, root.root_run_id);
+        if (proof) await checkedFacts(tx, captured, proof);
         const summary = async (
           status: AssistantStatus,
           usageComplete: boolean,
@@ -776,7 +1119,7 @@ export function createAssistantRuntime(
           transaction: tx,
           task: root.task,
           tools: [],
-          phase: 'recover',
+          phase: proof ? 'evidence' : 'recover',
         });
         const children = await tx<
           Instance[]
@@ -791,8 +1134,11 @@ export function createAssistantRuntime(
           undefined,
           continuingServices,
         );
-        if (terminal.has(main.status))
-          return summary(main.status, !unsettled.unknown);
+        if (terminal.has(main.status)) {
+          const result = await summary(main.status, !unsettled.unknown);
+          if (proof) await checkedFacts(tx, captured, proof);
+          return result;
+        }
         const [pending] =
           await tx`select 1 from allrice_runtime_operations where root_run_id=${root.root_run_id}
             and not (id=any(${continuingServices}::uuid[]))
@@ -804,22 +1150,8 @@ export function createAssistantRuntime(
         // Generic assistant.report is not the development completion gate.
         // Only a current, tested/reviewed delivery may complete an initialized
         // development task; a later head/version or rejection invalidates it.
-        const [developmentIncomplete] =
-          await tx`select 1 from allrice_development_heads h
-          where h.root_run_id=${root.root_run_id} and not exists(
-            select 1 from allrice_development_deliveries d
-            join allrice_development_reviews r on r.id=d.review_id and r.verdict='accept'
-            join allrice_deliverable_versions v on v.id=d.candidate_id
-            join allrice_storage_objects o on o.id=v.object_id and o.state='ready' and o.deleted_at is null
-            where d.root_run_id=h.root_run_id and d.candidate_id=h.head_artifact_id and d.digest=h.head_digest
-              and not exists(select 1 from allrice_deliverable_versions n where n.series_id=v.series_id and n.version>v.version)
-              and not exists(select 1 from allrice_development_reviews reject where reject.root_run_id=h.root_run_id and reject.artifact_id=h.head_artifact_id and reject.verdict='revise'))`;
-        const { repositoryDevelopmentIncomplete } =
-          await import('./platform-repository-development.ts');
-        const repositoryIncomplete = await repositoryDevelopmentIncomplete(
-          tx,
-          root.root_run_id,
-        );
+        const { developmentIncomplete, repositoryIncomplete } =
+          await currentDevelopmentCompletion(tx, root);
         const status =
           unsettled.blocking ||
           pending ||
@@ -835,8 +1167,21 @@ export function createAssistantRuntime(
         await assertLease(tx, root, input.worker);
         await tx`update allrice_assistant_instances set status=${status},stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where run_id=${root.root_run_id}`;
         await tx`update allrice_assistant_instances set stopped_at=coalesce(stopped_at,clock_timestamp()),updated_at=clock_timestamp() where root_run_id=${root.root_run_id} and depth>0 and status in ('completed','partial','failed','canceled','unknown')`;
-        return summary(status, !unsettled.unknown);
+        const result = await summary(status, !unsettled.unknown);
+        if (proof) {
+          // Unknown/partial must keep their original outcome, never issue a
+          // success guard. Completed can re-read phase:evidence after its update.
+          if (status === 'completed') await checkedFacts(tx, captured, proof);
+          else await assertLease(tx, root, input.worker);
+        }
+        return result;
       });
+      if (proof && outcome.status === 'completed')
+        committedDeliveries.set(
+          captured.rootRunId,
+          deliveryKey(captured, proof),
+        );
+      return outcome;
     },
     /** Accounting-only read after failure/drain. This cannot finalize a task,
      * grant dispatch, or release uncertain usage. Even a canceled/revoked user
@@ -985,8 +1330,8 @@ export function createAssistantRuntime(
       });
     },
     /** Before native prepareCall freezes maxTokens: reserve a bounded output
-     * grant and call identity, not dispatch authority. Only confirmed stop may
-     * release an unused preparation; a host error alone is not that proof. */
+     * grant and call identity, not dispatch authority. An unused preparation
+     * needs confirmed stop or the atomic close below; host errors are not proof. */
     async prepareModelUsage(input: {
       scope: RuntimeScope;
       rootRunId: string;
@@ -1083,6 +1428,74 @@ export function createAssistantRuntime(
         await tx`update allrice_assistant_instances set status='running',updated_at=clock_timestamp() where run_id=${row.run_id} and status='waiting'`;
         await assertLease(tx, root, input.worker);
         return { prepared: true, outputTokens };
+      });
+    },
+    /** Trusted host abandonment before a repair notice/request is admitted.
+     * Dispatch uses the same root lock and requires an unsettled input hold.
+     * Closing first makes later dispatch impossible; dispatching first makes
+     * this close fail. Keep the admission tombstone without inventing a model
+     * result, dispatched/finished timestamp, or canceling the live Run. */
+    async closeUndispatchedModelPreparation(input: {
+      scope: RuntimeScope;
+      rootRunId: string;
+      runId: string;
+      worker: AssistantWorkerLease;
+      callId: string;
+    }) {
+      uuid.parse(input.callId);
+      return db.begin(async (tx) => {
+        const root = await lock(tx, input.scope, input.rootRunId);
+        await assertLease(tx, root, input.worker);
+        const row = await active(tx, root, input.runId);
+        const [admission] =
+          await tx`select * from allrice_assistant_model_admissions where call_id=${input.callId} for update`;
+        if (
+          !admission ||
+          admission.root_run_id !== root.root_run_id ||
+          admission.run_id !== row.run_id ||
+          admission.dispatched_at !== null ||
+          admission.finished_at !== null
+        )
+          fail('conflict');
+        const holds = await tx<
+          { metric: string; amount: string; settled_amount: string | null }[]
+        >`select metric,amount,settled_amount from allrice_assistant_usage
+          where call_id=${input.callId} and root_run_id=${root.root_run_id} and run_id=${row.run_id} for update`;
+        const expected: Record<string, number> = {
+          model_calls: 1,
+          tool_calls: 0,
+          input_tokens: 0,
+          output_tokens: Number(admission.granted_output_tokens),
+        };
+        if (
+          holds.length !== 4 ||
+          holds.some(
+            (hold) =>
+              !(hold.metric in expected) ||
+              Number(hold.amount) !== expected[hold.metric],
+          )
+        )
+          fail('conflict');
+        const alreadyClosed = holds.every(
+          (hold) =>
+            hold.settled_amount !== null && Number(hold.settled_amount) === 0,
+        );
+        if (!alreadyClosed) {
+          if (holds.some((hold) => hold.settled_amount !== null))
+            fail('conflict');
+          const released = await tx<{ metric: string; amount: string }[]>`
+            update allrice_assistant_usage set settled_amount=0
+            where root_run_id=${root.root_run_id} and run_id=${row.run_id} and call_id=${input.callId} and settled_amount is null
+            returning metric,amount`;
+          for (const hold of released) {
+            const [budget] =
+              await tx`update allrice_runtime_budgets set reserved=reserved-${Number(hold.amount)}
+                where root_run_id=${root.root_run_id} and metric=${hold.metric} and reserved>=${Number(hold.amount)} returning metric`;
+            if (!budget) fail('conflict');
+          }
+        }
+        await assertLease(tx, root, input.worker);
+        return { closed: true as const, callId: input.callId, alreadyClosed };
       });
     },
     /** The frozen native request consumes its exact preparation once. Input

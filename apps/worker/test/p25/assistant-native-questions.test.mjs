@@ -29,6 +29,7 @@ function fixture(nativeSkillsAvailable = true) {
       ctx: { tools: { restrict: vi.fn(), register: vi.fn(() => vi.fn()) } },
       followup: vi.fn(),
       steer: vi.fn(),
+      send: vi.fn(),
       inject: vi.fn(),
     };
     agents.set(id, value);

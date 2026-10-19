@@ -1,4 +1,9 @@
 import type { NativeRootOrigin } from '@allrice/database';
+import type { BoundDeliveryRepair } from '../final-delivery/repair.js';
+import type {
+  FinalDeliveryPort,
+  FinalDeliveryProof,
+} from '../final-delivery/guard.js';
 import type {
   EmployeeKernelRequest,
   InternalKernelRequest,
@@ -39,7 +44,39 @@ export interface HarnessImageInput {
   name: string;
 }
 
+/** Private server-selected rollout mode. Never infer legacy from absent evidence. */
+export type FinalDeliveryMode = 'checked_native_v1' | 'legacy';
+/** Durable control references, not a persisted native capability or proof. */
+export interface FinalDeliveryReplyOrigin {
+  readonly schemaVersion: 1;
+  readonly rootRunId: string;
+  readonly nativeSessionId: string;
+  readonly starts: readonly {
+    readonly runEventId: string;
+    readonly runEventSequence: number;
+    readonly turnId: string;
+  }[];
+}
+
+/** Private Worker control plane; never an input adoption acknowledgement. */
+export interface HarnessInputDeliveryHold {
+  settled: Promise<void>;
+  current(): boolean;
+  resumeBeforeTurnClose(): Promise<void>;
+  dispose(): void;
+}
+export interface HarnessInputDeliveryPort {
+  pause(scope: { threadId: string; turnId: string }): HarnessInputDeliveryHold;
+}
+
 export interface HarnessExecutionInput {
+  inputDelivery?: HarnessInputDeliveryPort;
+  /**
+   * Worker-only, same-Run deterministic delivery check before native finish.
+   * Employee jobs must bind this closure; optionality preserves other adapters/callers.
+   * Never populated from kernel preferences, browser input or a model tool result.
+   */
+  finalDelivery?: FinalDeliveryPort;
   /** Frozen governance evidence; never grants a native or Broker tool. */
   baseSkillCatalog?: EmployeeBaseSkillCatalog;
   questionWait?: {
@@ -68,6 +105,8 @@ export interface HarnessExecutionInput {
   /** Trusted Worker port; never deserialized from model or browser input. */
   assistants?: {
     rootRunId: string;
+    deliveryMode: FinalDeliveryMode;
+    deliveryArtifactId?: string;
     /** Trusted controller proof; never populated from browser/model preferences. */
     subscriptionSnapshot?: AssistantSubscriptionSnapshot;
     maxOutputTokens?: number;
@@ -77,6 +116,14 @@ export interface HarnessExecutionInput {
       onToolCall?: (call: HarnessToolCall) => Promise<HarnessToolResult>,
       inspect?: (nativeSessionId: string) => Promise<Record<string, unknown>>,
     ): Promise<{
+      /** True only for the same persisted root and still-current lease. */
+      hasPriorRoot: boolean;
+      /** Private native-host lookup; never added to the model tool bridge. */
+      readFinalDeliveryReplyOrigin?(): Promise<FinalDeliveryReplyOrigin | null>;
+      /** Private same-root facts/policy closure, bound to this native incarnation. */
+      finalDelivery?: FinalDeliveryPort;
+      /** Private same-incarnation final-text repair; never a model tool. */
+      deliveryRepair?: BoundDeliveryRepair;
       handle(
         method: string,
         params: Record<string, unknown>,
@@ -94,7 +141,7 @@ export interface HarnessExecutionInput {
         usageComplete: boolean;
         cacheUsageKnown: boolean;
       }>;
-      finish?(): Promise<{
+      finish?(delivery?: FinalDeliveryProof): Promise<{
         status: string;
         usage: {
           inputTokens: number;

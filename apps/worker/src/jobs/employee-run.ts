@@ -15,6 +15,7 @@ import {
 
 import {
   ConversationRuntimeError,
+  workbenchEnabled,
   getDatabase,
   readWorkAutomation,
   acquireConversationRuntime,
@@ -73,6 +74,7 @@ import { finalizeEmployeeConversationContext } from '../conversation/checkpoint-
 import {
   beginEmployeeConversationTurn,
   bindEmployeeConversationThread,
+  createConversationInputDelivery,
   pollEmployeeConversationSteers,
 } from '../conversation/turn-lifecycle.js';
 import { assembleEmployeeKernel } from '../employee-kernel.js';
@@ -85,6 +87,10 @@ import {
   executePlatformRepairReverification,
 } from './platform-repair.js';
 import { HandlerError } from '../errors.js';
+import {
+  requireCheckedFinalDelivery,
+  transferCheckedFinalDeliveryForExecution,
+} from '../final-delivery/checked-delivery.js';
 import { verifyRepositoryReviewRemote } from './platform-repository-review.js';
 import type { ClaimedJobHandlerInput } from '../job-runner.js';
 import {
@@ -703,6 +709,15 @@ export async function executeEmployeeRun({
         false,
       );
     }
+    const officeFirstDeliveryPolicy =
+      executionSnapshot.schemaVersion === 2
+        ? executionSnapshot.officeFirstDeliveryPolicy
+        : undefined;
+    const finalDeliveryMode =
+      executionSnapshot.schemaVersion === 2 &&
+      executionSnapshot.finalDeliveryPolicy?.mode === 'checked_native_v1'
+        ? ('checked_native_v1' as const)
+        : ('legacy' as const);
     if (
       await getChangesetRun(
         {
@@ -1222,6 +1237,11 @@ export async function executeEmployeeRun({
         ? executionSnapshot.modelSnapshot?.runLimits
         : undefined;
     const assistants = productionAssistantController({
+      deliveryMode: finalDeliveryMode,
+      deliveryArtifactId:
+        executionSnapshot.schemaVersion === 2
+          ? executionSnapshot.finalDeliveryPolicy?.artifactId
+          : undefined,
       nativeSkills: repositoryReviewTask ? [] : resolved.nativeSkills,
       repositoryReview: !!repositoryReviewTask,
       configuration: assistantConfiguration,
@@ -1231,10 +1251,7 @@ export async function executeEmployeeRun({
       priceSnapshot: assistantPriceSnapshot,
       subscriptionSnapshot,
       serverPricingProviderSnapshot:
-        (assistantPriceSnapshot || subscriptionSnapshot) &&
-        providerSnapshot.provider === 'dsh'
-          ? providerSnapshot
-          : undefined,
+        providerSnapshot.provider === 'dsh' ? providerSnapshot : undefined,
       tools,
       authorize: assertAssistantAuthority,
       storage: new LocalStorageAdapter(
@@ -1249,6 +1266,20 @@ export async function executeEmployeeRun({
         false,
       );
     }
+    if (finalDeliveryMode === 'checked_native_v1')
+      requireCheckedFinalDelivery(workflowLease);
+    if (
+      (officeFirstDeliveryPolicy ||
+        finalDeliveryMode === 'checked_native_v1') &&
+      (finalDeliveryMode !== 'checked_native_v1' ||
+        !assistants ||
+        !workbenchEnabled())
+    )
+      throw new HandlerError(
+        'OFFICE_FIRST_DELIVERY_UNAVAILABLE',
+        '本轮公式文件交付策略需要正式工作台和受信的原生完成守卫，执行尚未开始。',
+        false,
+      );
     if (runLimits) {
       const estimatedInputTokens = estimateConversationTokens(
         [
@@ -1266,6 +1297,8 @@ export async function executeEmployeeRun({
     }
     let steerPolling = true;
     let steerLoop: Promise<void> | undefined;
+    let steerDelivery:
+      ReturnType<typeof createConversationInputDelivery> | undefined;
     let questionWait: HarnessExecutionInput['questionWait'];
     if (
       taskProgress &&
@@ -1373,7 +1406,10 @@ export async function executeEmployeeRun({
         })
       : null;
     routeExecutionStarted = true;
-    const delivery = documentDeliveryGuard();
+    const delivery = documentDeliveryGuard(
+      officeFirstDeliveryPolicy,
+      execution.context.runId,
+    );
     if (
       questionWait &&
       !(await beginNativeTask({
@@ -1667,6 +1703,21 @@ export async function executeEmployeeRun({
               progress: taskProgress,
               questionWait,
               assistants,
+              ...(assistants
+                ? {
+                    inputDelivery: {
+                      pause: (scope: { threadId: string; turnId: string }) => {
+                        if (!steerDelivery)
+                          throw new HandlerError(
+                            'INPUT_GATE_UNBOUND',
+                            'INPUT_GATE_UNBOUND',
+                            false,
+                          );
+                        return steerDelivery.pause(scope);
+                      },
+                    },
+                  }
+                : {}),
               kernel: routedKernel,
               nativeSkills:
                 repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
@@ -1783,6 +1834,10 @@ export async function executeEmployeeRun({
                 return { generation: runtime.generation };
               },
               onTurnStarted: async ({ threadId, turnId }) => {
+                if (steerDelivery) {
+                  steerDelivery.dispose();
+                  await steerLoop;
+                }
                 runtime = await beginEmployeeConversationTurn({
                   ownership,
                   adapterKind: adapter.kind,
@@ -1790,6 +1845,38 @@ export async function executeEmployeeRun({
                   turnId,
                   appendEvent: appendChatFlowEvent,
                 });
+                if (assistants) {
+                  const generation = runtime.generation;
+                  const delivery: ReturnType<
+                    typeof createConversationInputDelivery
+                  > = createConversationInputDelivery({
+                    threadId,
+                    turnId,
+                    signal,
+                    deadlineAt: execution.job.timeoutAt
+                      ? Date.parse(execution.job.timeoutAt)
+                      : Number.NaN,
+                    isCurrent: () =>
+                      steerPolling &&
+                      runtime.threadId === threadId &&
+                      runtime.activeTurnId === turnId &&
+                      runtime.generation === generation,
+                    handoff: () =>
+                      pollEmployeeConversationSteers({
+                        ownership,
+                        generation,
+                        threadId,
+                        turnId,
+                        signal,
+                        adapter,
+                        polling: () => false,
+                        drain: true,
+                        handoff: true,
+                        delivery,
+                      }),
+                  });
+                  steerDelivery = delivery;
+                }
                 steerLoop = pollEmployeeConversationSteers({
                   ownership,
                   generation: runtime.generation,
@@ -1798,11 +1885,13 @@ export async function executeEmployeeRun({
                   signal,
                   adapter,
                   polling: () => steerPolling,
+                  ...(steerDelivery ? { delivery: steerDelivery } : {}),
                 });
               },
             })
             .finally(async () => {
               steerPolling = false;
+              steerDelivery?.dispose();
               await steerLoop?.catch((error) => {
                 console.error('[M5] Active turn steer polling failed', {
                   sessionId: input.sessionId,
@@ -1904,6 +1993,7 @@ export async function executeEmployeeRun({
           ? [{ id: message.id, role: message.role, text: message.text }]
           : [],
     );
+    if (officeFirstDeliveryPolicy) delivery.assertComplete();
     runtime = await finalizeEmployeeConversationContext({
       contentGenerationId: contentRuntime?.generationId,
       allowedMessageIds: contentRuntime?.allowedMessageIds ?? undefined,
@@ -1921,7 +2011,7 @@ export async function executeEmployeeRun({
       workflowLease,
     });
     assertAssistantTaskComplete(result, modelBudgetScope.verifiedSubscription);
-    delivery.assertComplete();
+    if (!officeFirstDeliveryPolicy) delivery.assertComplete();
     if (repairController) {
       const proof = await repairController.finish();
       result.answer = `已生成待审查的仓库修订候选。修前 ${proof.before.report.assertions.filter((a) => !a.passed).length} 项断言失败，修后同一组 ${proof.after.report.assertions.length} 项断言全部通过。候选源码与验证报告可在技术助手中下载。完整仓库构建与发布尚未执行。`;
@@ -1951,8 +2041,7 @@ export async function executeEmployeeRun({
     const priorWaitUsage = questionWait?.resume
       ? await readParkedNativeUsage(execution.context)
       : null;
-    completedHandler = true;
-    return {
+    const output = {
       ...result,
       ...(priorWaitUsage
         ? {
@@ -1985,6 +2074,9 @@ export async function executeEmployeeRun({
           ) === index,
       ),
     };
+    transferCheckedFinalDeliveryForExecution(workflowLease, result, output);
+    completedHandler = true;
+    return output;
   } catch (caught) {
     if (caught instanceof NativeQuestionParked && caught.persisted)
       throw caught;

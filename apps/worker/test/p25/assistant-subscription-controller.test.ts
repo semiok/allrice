@@ -36,6 +36,7 @@ const provider = (): DshExecutionSnapshot => ({
 type Input = Parameters<typeof productionAssistantController>[0];
 function fixture(): Input {
   return {
+    deliveryMode: 'legacy',
     configuration: {
       version: 1,
       mode: 'daily',

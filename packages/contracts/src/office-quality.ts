@@ -237,3 +237,83 @@ export const OfficeDeliveryReceiptSchema = z
       ctx.addIssue({ code: 'custom', message: 'Saved values require XLSX' });
   });
 export type OfficeDeliveryReceipt = z.infer<typeof OfficeDeliveryReceiptSchema>;
+
+/** A server-frozen technical standard, never an expected-output DSL or tool flag. */
+export const OfficeFirstDeliveryPolicySchema = z.literal(
+  'xlsx_formula_cache_v1',
+);
+export type OfficeFirstDeliveryPolicy = z.infer<
+  typeof OfficeFirstDeliveryPolicySchema
+>;
+
+/** Internal publisher stamp, separate from success/failure of quality inspection. */
+export const OfficeExportProducerSchema = z
+  .object({
+    version: z.literal(1),
+    tool: z.literal('workspace.export.create'),
+    callId: z.string().min(1).max(255),
+    objectId: z.uuid(),
+  })
+  .strict();
+export type OfficeExportProducer = z.infer<typeof OfficeExportProducerSchema>;
+
+export interface OfficeFormulaCacheAssessment {
+  status: 'satisfied' | 'incomplete' | 'not_applicable';
+  hasFormulas: boolean;
+  reason:
+    | 'cache_present'
+    | 'no_formulas'
+    | 'receipt_unavailable'
+    | 'inspection_incomplete'
+    | 'formula_output_missing'
+    | 'formula_count_mismatch'
+    | 'missing_cache'
+    | 'invalid_cache'
+    | 'formula_error';
+}
+
+/** Only consume an exact-object-bound receipt. This proves no business values,
+ * freshness, recalculation requirement, formula preservation or visual quality. */
+export function assessOfficeFormulaCaches(
+  value: unknown,
+  requireFormulas = false,
+): OfficeFormulaCacheAssessment {
+  const parsed = OfficeDeliveryReceiptSchema.safeParse(value);
+  if (!parsed.success)
+    return {
+      status: 'incomplete',
+      hasFormulas: false,
+      reason: 'receipt_unavailable',
+    };
+  const receipt = parsed.data;
+  const checked =
+    receipt.quality.status === 'checked' && receipt.quality.format === 'xlsx'
+      ? receipt.quality
+      : undefined;
+  const saved = receipt.savedValues;
+  const counts =
+    saved?.inspection === 'complete' ? saved.counts : saved?.observed;
+  const hasFormulas =
+    (counts?.formulaCount ?? 0) > 0 || (checked?.formulaCount ?? 0) > 0;
+  const incomplete = (
+    reason: OfficeFormulaCacheAssessment['reason'],
+  ): OfficeFormulaCacheAssessment => ({
+    status: 'incomplete',
+    hasFormulas,
+    reason,
+  });
+  if (!saved) return incomplete('receipt_unavailable');
+  if (saved.inspection !== 'complete')
+    return incomplete('inspection_incomplete');
+  if (checked && checked.formulaCount !== saved.counts.formulaCount)
+    return incomplete('formula_count_mismatch');
+  if (saved.counts.errorCacheCount || checked?.formulaErrorCount)
+    return incomplete('formula_error');
+  if (saved.counts.invalidCacheCount) return incomplete('invalid_cache');
+  if (saved.counts.missingCacheCount) return incomplete('missing_cache');
+  if (!saved.counts.formulaCount)
+    return requireFormulas
+      ? incomplete('formula_output_missing')
+      : { status: 'not_applicable', hasFormulas: false, reason: 'no_formulas' };
+  return { status: 'satisfied', hasFormulas: true, reason: 'cache_present' };
+}

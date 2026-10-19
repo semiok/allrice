@@ -176,6 +176,11 @@ describe('Office receipts through existing publication ports', () => {
         cloudQualityAllowed: true,
       });
       if (workbench) {
+        expect(call.trustedOfficeExport).toBe(true);
+        expect(result.officeCache).toMatchObject({
+          status: 'incomplete',
+          reason: 'missing_cache',
+        });
         expect(call.bytes).toEqual(final);
         expect(ports.put).not.toHaveBeenCalled();
         expect(ports.register).not.toHaveBeenCalled();

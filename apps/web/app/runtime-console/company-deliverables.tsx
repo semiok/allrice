@@ -377,12 +377,14 @@ function CompanyFilePreview({
         <p role="status">正在读取成果…</p>
       )}
       {preview && (
-        <NativeDocumentPreview
-          key={selected.id}
-          preview={preview}
-          fileName={selected.fileName}
-          pageUrl={url}
-        />
+        <div className={styles.deliverablePreview}>
+          <NativeDocumentPreview
+            key={selected.id}
+            preview={preview}
+            fileName={selected.fileName}
+            pageUrl={url}
+          />
+        </div>
       )}
     </section>
   );

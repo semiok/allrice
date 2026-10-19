@@ -67,6 +67,9 @@ import {
   runMaintenanceDiagnosisTick,
 } from './maintenance-diagnosis.js';
 
+import { createWorkerStartupObservation } from './startup-observation.js';
+
+const startup = createWorkerStartupObservation();
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
 function integerSetting(
   name: string,
@@ -113,35 +116,69 @@ const codexAuthorizationBroker = new CodexAuthorizationBroker(
   workerId,
   executionRoot,
 );
-const serviceBuildIdentity = await readServiceBuildIdentity('worker');
+const serviceBuildIdentity = await startup.run('service_identity', (observe) =>
+  readServiceBuildIdentity('worker', { bootId: startup.bootId, observe }),
+);
 // The expected content ID comes from the reviewed deployment/image release,
 // not the manifest's own claim. Verify before any producer can consume work.
-const nativeArtifact = await installDshNativeArtifact({
-  root: fileURLToPath(new URL('../../..', import.meta.url)),
-  expectedId: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID ?? '',
-  ...(serviceBuildIdentity
-    ? {
-        sourceSha: serviceBuildIdentity.sourceSha,
-        sourceTree: serviceBuildIdentity.sourceTree,
-      }
-    : {}),
-});
+const nativeArtifact = await startup.run('native_primary', (observe) =>
+  installDshNativeArtifact({
+    root: fileURLToPath(new URL('../../..', import.meta.url)),
+    expectedId: process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID ?? '',
+    observe,
+    ...(serviceBuildIdentity
+      ? {
+          sourceSha: serviceBuildIdentity.sourceSha,
+          sourceTree: serviceBuildIdentity.sourceTree,
+        }
+      : {}),
+  }),
+);
 // Provider probes/authentication also use the configured profile before a Run
 // reaches the pool. Reject unapproved deployment overrides before producers.
-checkedDshNativeLaunch(configuredDshNativeLaunch());
-if (
-  process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID &&
-  (nativeArtifact.artifactId !== process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID ||
-    nativeArtifact.generation !== 'dsh-0.2.1-rc.2-687f282')
-)
-  throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
-const retainedNativeArtifacts = await installConfiguredDshNativeRetention();
-const nativeArtifactReferenceCoverage =
-  await verifyConfiguredDshNativeReferences(nativeArtifact);
-const producerLifecycle = await installDevProducerLifecycle('worker');
+await startup.run('native_launch_policy', () => {
+  checkedDshNativeLaunch(configuredDshNativeLaunch());
+  if (
+    process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID &&
+    (nativeArtifact.artifactId !==
+      process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID ||
+      nativeArtifact.generation !== 'dsh-0.2.1-rc.2-687f282')
+  )
+    throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
+});
+const retainedSpans = new Map<number, ReturnType<typeof startup.start>>();
+const retainedNativeArtifacts = await startup.run('native_retention', () =>
+  installConfiguredDshNativeRetention({
+    observe(event) {
+      if (event.kind === 'started')
+        retainedSpans.set(
+          event.slot,
+          startup.start('native_retained_slot', { slot: event.slot }),
+        );
+      else if (event.kind === 'metric')
+        retainedSpans.get(event.slot)?.observe(event.metric);
+      else {
+        const span = retainedSpans.get(event.slot);
+        if (event.kind === 'failed') span?.fail(event.error);
+        else span?.complete();
+        retainedSpans.delete(event.slot);
+      }
+    },
+  }),
+);
+const nativeArtifactReferenceCoverage = await startup.run(
+  'native_reference_coverage',
+  () => verifyConfiguredDshNativeReferences(nativeArtifact),
+);
+startup.mark('verification_checks_completed');
+const producerLifecycle = await startup.run('producer_lifecycle', () =>
+  installDevProducerLifecycle('worker'),
+);
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
-    ? await captureMaintenanceDiagnosticRuntime(serviceBuildIdentity)
+    ? await startup.run('maintenance_diagnostics', () =>
+        captureMaintenanceDiagnosticRuntime(serviceBuildIdentity),
+      )
     : null;
 
 const stopPressureLog = startExecutionPressureLog(
@@ -244,16 +281,28 @@ async function refreshReadiness() {
 }
 
 let codexProbeTask: Promise<void> | null = null;
+let firstProviderProbe = true;
 function refreshCodexProviderStatus() {
   if (codexProbeTask || stopping) return codexProbeTask;
+  const observation = firstProviderProbe
+    ? startup.start('provider_probes')
+    : undefined;
+  firstProviderProbe = false;
+  let admitted = false;
   codexProbeTask = runProducer('provider_probe', async () => {
+    admitted = true;
     await mkdir(executionRoot, { recursive: true, mode: 0o700 });
     for (const slot of [1, 2] as const) {
       const codex = await probeDshCodexProvider(executionRoot, slot);
       await recordCodexProviderStatus(codex, slot);
     }
   })
+    .then(() => {
+      if (admitted) observation?.complete();
+      else observation?.skip();
+    })
     .catch((error) => {
+      observation?.fail(error);
       console.error('[M5] Codex provider probe failed', {
         message: error instanceof Error ? error.message : 'codex_probe_failed',
       });
@@ -337,6 +386,8 @@ const server = createServer(async (request, response) => {
       return;
     }
     response.statusCode = databaseReady ? 200 : 503;
+    if (databaseReady)
+      response.once('finish', () => startup.mark('health_ready'));
     response.end(
       JSON.stringify({
         ...makeHealthResponse(
@@ -391,6 +442,7 @@ async function tick() {
     await runProducer(
       'ordinary_consumer',
       async (scope: DevProducerContext) => {
+        startup.mark('ordinary_consumer_entered');
         await maintainQueue();
         while (!stopping && activeExecutions.size < concurrency) {
           if ((process.availableMemory?.() ?? Infinity) < 256 * 1024 ** 2)
@@ -511,10 +563,26 @@ async function platformEmployeeTestTick() {
   }
 }
 
+const databaseReadinessObservation = startup.start('database_readiness');
 await refreshReadiness();
-await runProducer('provider_authorization', () =>
-  recoverCodexAuthorizationFlows(),
+if (databaseReady) databaseReadinessObservation.complete();
+else databaseReadinessObservation.fail();
+const authorizationRecoveryObservation = startup.start(
+  'provider_authorization_recovery',
 );
+let authorizationRecoveryAdmitted = false;
+try {
+  await runProducer('provider_authorization', async () => {
+    authorizationRecoveryAdmitted = true;
+    await recoverCodexAuthorizationFlows();
+  });
+  if (authorizationRecoveryAdmitted)
+    authorizationRecoveryObservation.complete();
+  else authorizationRecoveryObservation.skip();
+} catch (error) {
+  authorizationRecoveryObservation.fail(error);
+  throw error;
+}
 await refreshCodexProviderStatus();
 const readinessTimer = setInterval(
   () => void refreshReadiness(),
@@ -558,7 +626,10 @@ const cloudPreviewTransport = process.env.ALLRICE_CLOUD_PREVIEW_SOCKET
       process.env.ALLRICE_CLOUD_PREVIEW_SOCKET,
     )
   : null;
+const httpListenObservation = startup.start('http_listen');
 server.listen(port, '0.0.0.0', () => {
+  httpListenObservation.complete();
+  startup.mark('http_listening');
   console.info(`[M5] AllRice worker 0.1.0 listening on ${port}`, {
     workerId,
     concurrency,
@@ -570,6 +641,7 @@ server.listen(port, '0.0.0.0', () => {
 let shutdownTask: Promise<void> | undefined;
 function shutdown(signal: string) {
   if (shutdownTask) return shutdownTask;
+  startup.mark('shutdown_requested');
   stopping = true;
   // Fence preview admission before waiting for commands or service shutdown.
   const previewClosing = cloudPreviewTransport?.close();

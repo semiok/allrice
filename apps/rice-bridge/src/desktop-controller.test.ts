@@ -609,8 +609,26 @@ it('keeps read-only diagnostics and duplicate stop observations responsive durin
   await app.waitUntil(() => f.polls() > 0);
   f.holdHeartbeat();
   const stopped = app.request('stop');
-  await app.waitUntil(() => f.heartbeatHeld());
+  // The periodic heartbeat can already be held while shutdown is still in
+  // its browser phase. Observe the actual shutdown boundary before asserting
+  // diagnostics, within the existing shutdown deadline.
+  void stopped.catch(() => {});
+  const observation = observations.get(app.child)!;
+  await wait(
+    () => {
+      const shutdown = lastState(observation)?.shutdown;
+      return (
+        f.heartbeatHeld() &&
+        !!shutdown &&
+        typeof shutdown === 'object' &&
+        'phase' in shutdown &&
+        shutdown.phase === 'heartbeat'
+      );
+    },
+    { observation, phase: 'shutdown-heartbeat', timeoutMs: shutdownWaitMs },
+  );
   const retry = app.request('stop');
+  void retry.catch(() => {});
   const diagnostics = await app.request('diagnostics');
   expect(diagnostics.data).toMatchObject({
     mode: 'stopping',

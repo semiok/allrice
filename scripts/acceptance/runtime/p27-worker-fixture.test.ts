@@ -547,6 +547,7 @@ integration(
         expect(task.workflowLease.leaseMs).toBe(30000);
         const withWorkflowLease = productionAssistantController({
           ...common,
+          deliveryMode: 'legacy',
           worker: task.workflowLease,
         })!;
         // Before the fix, this exact real-PG bind rejected leaseMs at the

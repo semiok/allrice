@@ -6,6 +6,7 @@ type Input = Parameters<typeof productionAssistantController>[0];
 /** Synchronous preflight only. No query/native host/provider is reachable. */
 function fixture(): Input {
   return {
+    deliveryMode: 'legacy',
     configuration: {
       version: 1,
       mode: 'daily',

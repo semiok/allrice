@@ -75,6 +75,11 @@
 .selectors select {
   min-width: 140px;
 }
+.deliverablePreview {
+  height: clamp(280px, 60dvh, 640px);
+  min-width: 0;
+  overflow: auto;
+}
 .tabs {
   display: flex;
   gap: 16px;

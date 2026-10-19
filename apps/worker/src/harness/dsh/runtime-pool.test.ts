@@ -131,6 +131,7 @@ function request(): Parameters<DshRuntimePool['acquire']>[0] {
       ALLRICE_RUN_ID: runId,
     },
     assistants: {
+      deliveryMode: 'legacy',
       rootRunId: runId,
       maxOutputTokens: 1000,
       bind: async () => {

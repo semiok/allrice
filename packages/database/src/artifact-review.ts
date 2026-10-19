@@ -1,7 +1,11 @@
+import { finalDeliveryRootIsLocked } from './final-delivery-commit.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { assertProjectOutputParent } from './project-output-parent.ts';
 import { createHash } from 'node:crypto';
 import {
+  RuntimeTaskRefSchema,
+  ChecksumSchema,
+  type RuntimeTaskRef,
   ChangesetDocumentSchema,
   ChangesetProposalSchema,
   WorkbenchArtifactSchema,
@@ -16,6 +20,10 @@ import {
   ArtifactSourceFileSchema,
   type ArtifactSourceFile,
   type OfficeDeliveryReceipt,
+  OfficeExportProducerSchema,
+  assessOfficeFormulaCaches,
+  officeMediaTypes,
+  type OfficeExportProducer,
   type WorkbenchArtifact,
   type ReviewDraftInput,
   type ExecutionContext,
@@ -162,6 +170,9 @@ interface ArtifactRow {
   provenance: unknown;
   execution: unknown;
   latest_version_id: string;
+  origin_run_id: string | null;
+  object_state: string;
+  publication_call_id: string | null;
 }
 function mapArtifact(row: ArtifactRow): WorkbenchArtifact {
   return WorkbenchArtifactSchema.parse({
@@ -218,20 +229,29 @@ async function artifactRows(
   before?: { createdAt: string; id: string },
   runId: string | null = null,
   includeToolResults = true,
+  delivery?: {
+    ownedRunIds?: readonly string[];
+    includeUnavailable?: boolean;
+    businessOnly?: boolean;
+    lockObjects?: boolean;
+  },
 ) {
   return db<
     ArtifactRow[]
   >`select v.*,to_char(v.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_created_at,
     parent.object_id as parent_object_id,o.object_key,o.checksum,o.media_type,o.size_bytes,o.retention_until,o.deleted_at,o.immutable,
-    a.kind,a.provenance,a.execution,latest.id as latest_version_id
+    a.kind,a.provenance,a.execution,a.run_id as origin_run_id,a.request_id as publication_call_id,o.state as object_state,latest.id as latest_version_id
     from allrice_deliverable_versions v
     join allrice_storage_objects o on o.id=v.object_id and o.organization_id=v.organization_id and o.workspace_id=v.workspace_id and o.owner_id=v.owner_id
     left join allrice_deliverable_versions parent on parent.id=v.parent_version_id
     left join allrice_workbench_artifacts a on a.version_id=v.id and a.organization_id=v.organization_id and a.workspace_id=v.workspace_id and a.owner_id=v.owner_id
     join lateral (select id from allrice_deliverable_versions x where x.series_id=v.series_id and x.organization_id=v.organization_id and x.workspace_id=v.workspace_id and x.owner_id=v.owner_id order by version desc limit 1) latest on true
     where v.organization_id=${scope.organizationId} and v.workspace_id=${scope.workspaceId} and v.owner_id=${scope.ownerId}
-      and v.session_id=${sessionId} and o.state='ready' and o.deleted_at is null
-      and (o.retention_until is null or o.retention_until>clock_timestamp())
+      and v.session_id=${sessionId}
+      and (${delivery?.includeUnavailable ?? false} or (o.state='ready' and o.deleted_at is null
+        and (o.retention_until is null or o.retention_until>clock_timestamp())))
+      and (${!delivery?.ownedRunIds} or a.run_id=any(${[...(delivery?.ownedRunIds ?? [])]}::uuid[]))
+      and (${!delivery?.businessOnly} or a.version_id is null or a.kind in ('document','plan','file'))
       and (${artifactId}::uuid is null or v.id=${artifactId}::uuid)
       and (${runId}::uuid is null or a.run_id=${runId}::uuid)
       and (${includeToolResults} or coalesce(a.provenance->>'kind','') <> 'project_snapshot')
@@ -246,8 +266,654 @@ async function artifactRows(
       -- Bind text before casting: the driver's timestamptz serializer uses
       -- JavaScript Date and would truncate the cursor's microseconds again.
       and (${before?.createdAt ?? null}::text::timestamptz is null or (v.created_at,v.id)<(${before?.createdAt ?? null}::text::timestamptz,${before?.id ?? null}::uuid))
-    order by v.created_at desc,v.id desc limit ${limit}`;
+    order by v.created_at desc,v.id desc limit ${limit}
+    ${delivery?.lockObjects ? db`for share of v,o` : db``}`;
 }
+/** Internal fact type, exported only for the database declaration boundary. */
+export interface WorkerDeliveryIdentity {
+  objectId: string;
+  versionId: string;
+  checksum: string;
+}
+interface WorkerDeliveryAuthority {
+  task: RuntimeTaskRef;
+  /** Bound by the trusted frozen request/method reader, never candidate text. */
+  explicitReferences: readonly WorkerDeliveryIdentity[];
+}
+export interface WorkerDeliveryCheck extends WorkerDeliveryIdentity {
+  scope: {
+    organizationId: string;
+    workspaceId: string;
+    ownerId: string;
+    sessionId: string;
+  };
+  originRunId: string | null;
+  checkId:
+    | 'office.rendered'
+    | 'office.formula_errors'
+    | 'office.saved_values'
+    | 'office.visual';
+  status: 'passed' | 'failed' | 'unavailable' | 'not_checked';
+}
+
+export interface OfficeFirstDeliveryVersion extends WorkerDeliveryIdentity {
+  seriesId: string;
+  version: number;
+  latestVersionId: string;
+  originRunId: string | null;
+  kind: string | null;
+  provenanceKind: string;
+  format: string;
+  mediaType: string;
+  publicationCallId: string | null;
+  producerAuditId: string | null;
+  receipts: readonly (OfficeDeliveryReceipt | null)[];
+}
+
+/** @internal Pure binding check after the same-Tx reader has authorized rows.
+ * A quality receipt is not a producer identity; failed/missing quality is retained. */
+export function readCanonicalOfficeExportProducer(
+  metadata: unknown,
+  output: Pick<
+    OfficeFirstDeliveryVersion,
+    | 'objectId'
+    | 'checksum'
+    | 'originRunId'
+    | 'publicationCallId'
+    | 'kind'
+    | 'provenanceKind'
+    | 'format'
+    | 'mediaType'
+  > & { sessionId: string },
+): OfficeExportProducer | null {
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+    return null;
+  const value = metadata as Record<string, unknown>;
+  if (!Object.hasOwn(value, 'officeExport')) return null;
+  const parsed = OfficeExportProducerSchema.safeParse(value.officeExport);
+  if (
+    !parsed.success ||
+    !output.originRunId ||
+    output.kind !== 'document' ||
+    output.provenanceKind !== 'model_proposal' ||
+    !Object.hasOwn(officeMediaTypes, output.format) ||
+    officeMediaTypes[output.format as keyof typeof officeMediaTypes] !==
+      output.mediaType ||
+    parsed.data.objectId !== output.objectId ||
+    parsed.data.callId !== output.publicationCallId ||
+    value.runId !== output.originRunId ||
+    value.sessionId !== output.sessionId ||
+    value.checksum !== output.checksum ||
+    value.kind !== 'document'
+  )
+    return fail('final_delivery_evidence_unavailable');
+  return parsed.data;
+}
+
+/** @internal Technical obligations for exact, authorized current-Run Office
+ * versions. This neither discovers a user's expected outputs nor grants access. */
+export function buildOfficeFirstDeliveryRequirements(
+  versions: readonly OfficeFirstDeliveryVersion[],
+  ownedRunIds: readonly string[],
+) {
+  const owned = versions.filter(
+    (version) =>
+      version.originRunId !== null && ownedRunIds.includes(version.originRunId),
+  );
+  const shape = (version: OfficeFirstDeliveryVersion) =>
+    version.kind === 'document' &&
+    version.provenanceKind === 'model_proposal' &&
+    version.format === 'xlsx' &&
+    version.mediaType === officeMediaTypes.xlsx;
+  const groups = new Map<string, OfficeFirstDeliveryVersion[]>();
+  for (const version of owned) {
+    if (!shape(version)) continue;
+    if (
+      !version.producerAuditId ||
+      !UuidSchema.safeParse(version.producerAuditId).success ||
+      !version.publicationCallId
+    )
+      return fail('final_delivery_evidence_unavailable');
+    if (
+      !UuidSchema.safeParse(version.seriesId).success ||
+      !UuidSchema.safeParse(version.versionId).success ||
+      !UuidSchema.safeParse(version.objectId).success ||
+      !ChecksumSchema.safeParse(version.checksum).success ||
+      !Number.isSafeInteger(version.version) ||
+      version.version < 1
+    )
+      return fail('final_delivery_evidence_unavailable');
+    if (
+      new Set(
+        version.receipts.map((receipt) =>
+          receipt?.savedValues
+            ? runtimePolicyDigest(receipt.savedValues)
+            : 'missing',
+        ),
+      ).size > 1
+    )
+      return fail('final_delivery_evidence_unavailable');
+    const group = groups.get(version.seriesId) ?? [];
+    group.push(version);
+    groups.set(version.seriesId, group);
+  }
+  const requirements: {
+    id: string;
+    expected: WorkerDeliveryIdentity | null;
+    source: 'current_run';
+    requireLink: boolean;
+    requiredChecks: string[];
+    whenLinked?: true;
+  }[] = [];
+  const identity = (
+    version: OfficeFirstDeliveryVersion,
+  ): WorkerDeliveryIdentity => ({
+    objectId: version.objectId,
+    versionId: version.versionId,
+    checksum: version.checksum,
+  });
+  for (const [seriesId, group] of groups) {
+    const latest = group[0]!.latestVersionId;
+    if (
+      !UuidSchema.safeParse(latest).success ||
+      group.some((version) => version.latestVersionId !== latest)
+    )
+      return fail('final_delivery_evidence_unavailable');
+    const head = owned.find(
+      (version) =>
+        version.seriesId === seriesId && version.versionId === latest,
+    );
+    const hasFormulas = group.some((version) =>
+      version.receipts.some(
+        (receipt) => assessOfficeFormulaCaches(receipt).hasFormulas,
+      ),
+    );
+    const assessments = (version: OfficeFirstDeliveryVersion) =>
+      (version.receipts.length ? version.receipts : [null]).map((receipt) =>
+        assessOfficeFormulaCaches(receipt, hasFormulas),
+      );
+    const headIncomplete =
+      !head ||
+      !shape(head) ||
+      !head.producerAuditId ||
+      assessments(head).some(
+        (assessment) => assessment.status === 'incomplete',
+      );
+    if (hasFormulas || headIncomplete)
+      requirements.push({
+        id: `office-cache:v1:${seriesId}:${latest}`,
+        expected:
+          head && shape(head) && head.producerAuditId ? identity(head) : null,
+        source: 'current_run',
+        requireLink: true,
+        requiredChecks: ['office.saved_values', 'office.formula_errors'],
+      });
+    for (const version of group) {
+      if (version.versionId === head?.versionId) continue;
+      if (
+        !assessments(version).some(
+          (assessment) =>
+            assessment.hasFormulas || assessment.status === 'incomplete',
+        )
+      )
+        continue;
+      requirements.push({
+        id: `office-cache:v1:${seriesId}:${version.versionId}`,
+        expected: identity(version),
+        source: 'current_run',
+        requireLink: false,
+        requiredChecks: ['office.saved_values', 'office.formula_errors'],
+        whenLinked: true,
+      });
+    }
+    if (requirements.length > 1000)
+      return fail('final_delivery_evidence_unavailable');
+  }
+  return requirements;
+}
+
+/** @internal Worker-only transaction reader; no HTTP/model input or admin principal.
+ * The host must supply the SAME transaction's root/job/lease/current-authority
+ * closure. It locks root -> job, authorizes phase:evidence/tools:[], rechecks the
+ * live incarnation, and returns the DB-bound task and frozen exact references.
+ * Bound by createAssistantRuntime.readFinalDeliveryEvidence for an existing
+ * assistant root, current Worker Job and generation/fence. The closure reacquires
+ * that root before each head/tail check; authorize resolves its owner/session.
+ * Ordinary non-assistant Worker routes require their own existing Job authority.
+ * An independently committed assertCurrentAuthority() call is insufficient.
+ * This reader does not acquire/consume a native completion fence or finish a Run.
+ */
+export async function readWorkerFinalDeliveryEvidenceTransaction(
+  tx: TransactionSql,
+  assertCurrent: (
+    transaction: TransactionSql,
+  ) => Promise<WorkerDeliveryAuthority>,
+) {
+  function unavailable(): never {
+    return fail('final_delivery_evidence_unavailable');
+  }
+  const first = structuredClone(await assertCurrent(tx));
+  const [isolation] = await tx<
+    { transaction_isolation: string }[]
+  >`show transaction_isolation`;
+  if (!(
+    ['repeatable read', 'serializable'].includes(
+      isolation?.transaction_isolation ?? '',
+    ) ||
+    (isolation?.transaction_isolation === 'read committed' &&
+      finalDeliveryRootIsLocked(tx, first.task.rootRunId))
+  ))
+    unavailable();
+  const task = RuntimeTaskRefSchema.parse(first.task);
+  if (task.runId !== task.rootRunId || !task.chatSessionId) unavailable();
+  const references = first.explicitReferences.map((identity) => ({
+    objectId: UuidSchema.parse(identity.objectId),
+    versionId: UuidSchema.parse(identity.versionId),
+    checksum: ChecksumSchema.parse(identity.checksum),
+  }));
+  if (
+    references.length > 1000 ||
+    new Set(references.map((r) => r.versionId)).size !== references.length
+  )
+    unavailable();
+  const [root] = await tx<
+    { owner_id: string; session_id: string; execution_snapshot: unknown }[]
+  >`
+    select r.owner_id,e.session_id,e.execution_snapshot from allrice_runs r
+    join allrice_employee_runs e on e.run_id=r.id and e.organization_id=r.organization_id
+      and e.workspace_id=r.workspace_id and e.owner_id=r.owner_id
+    where r.id=${task.rootRunId} and r.organization_id=${task.scope.organizationId}
+      and r.workspace_id=${task.scope.workspaceId} and r.state='running'
+      and e.session_id=${task.chatSessionId} for share of r,e`;
+  if (!root) unavailable();
+  const frozen = EmployeeExecutionSnapshotSchema.safeParse(
+    root.execution_snapshot,
+  );
+  if (!frozen.success) unavailable();
+  const officePolicy =
+    frozen.data.schemaVersion === 2
+      ? frozen.data.officeFirstDeliveryPolicy
+      : undefined;
+  const principal = {
+    actor: { type: 'user' as const, id: root.owner_id },
+    organizationId: task.scope.organizationId,
+    workspaceId: task.scope.workspaceId,
+  };
+  await assertWorkbenchSession(tx, principal, root.session_id, true, 'share');
+  const scope = {
+    organizationId: principal.organizationId,
+    workspaceId: principal.workspaceId,
+    ownerId: root.owner_id,
+    sessionId: root.session_id,
+  };
+  // Discover the tree from durable links, never an input list or all Session runs.
+  const children = await tx<
+    {
+      run_id: string;
+      parent_run_id: string | null;
+      task: unknown;
+      organization_id: string;
+      workspace_id: string;
+      owner_id: string;
+    }[]
+  >`select l.run_id,l.parent_run_id,l.task,r.organization_id,r.workspace_id,r.owner_id
+    from allrice_runtime_run_links l join allrice_runs r on r.id=l.run_id
+    where l.root_run_id=${task.rootRunId} and l.run_id<>${task.rootRunId}
+    order by l.run_id limit 200 for share of l,r`;
+  if (children.length >= 200) unavailable();
+  const ownedRunIds = [task.rootRunId, ...children.map((row) => row.run_id)];
+  if (new Set(ownedRunIds).size !== ownedRunIds.length) unavailable();
+  const reachable = new Set([task.rootRunId]);
+  for (const row of children) {
+    const child = RuntimeTaskRefSchema.parse(row.task);
+    if (
+      child.runId !== row.run_id ||
+      child.rootRunId !== task.rootRunId ||
+      child.parentRunId !== row.parent_run_id ||
+      child.chatSessionId !== root.session_id ||
+      !runtimeContractEqual(child.scope, task.scope) ||
+      row.organization_id !== scope.organizationId ||
+      row.workspace_id !== scope.workspaceId ||
+      row.owner_id !== scope.ownerId
+    )
+      unavailable();
+  }
+  for (let pass = 0; pass < children.length; pass++)
+    for (const row of children)
+      if (row.parent_run_id && reachable.has(row.parent_run_id))
+        reachable.add(row.run_id);
+  if (reachable.size !== ownedRunIds.length) unavailable();
+
+  const rows: ArtifactRow[] = [];
+  let before: { createdAt: string; id: string } | undefined;
+  const seenVersions = new Set<string>();
+  const seenObjects = new Set<string>();
+  const push = (row: ArtifactRow) => {
+    if (
+      seenVersions.has(row.id) ||
+      seenObjects.has(row.object_id) ||
+      rows.length >= 1000
+    )
+      unavailable();
+    seenVersions.add(row.id);
+    seenObjects.add(row.object_id);
+    rows.push(row);
+  };
+  // includeUnavailable prevents a deleted/expired current output disappearing
+  // from a supposedly complete list; validation below fails the whole read.
+  for (;;) {
+    const page = await artifactRows(
+      tx,
+      scope,
+      root.session_id,
+      null,
+      51,
+      before,
+      null,
+      false,
+      {
+        ownedRunIds,
+        includeUnavailable: true,
+        businessOnly: true,
+        lockObjects: true,
+      },
+    );
+    if (page.length > 51) unavailable();
+    const items = page.slice(0, 50);
+    for (const row of items) {
+      if (!row.origin_run_id || !ownedRunIds.includes(row.origin_run_id))
+        unavailable();
+      const cursor = WorkbenchCursorSchema.parse({
+        createdAt: row.cursor_created_at,
+        id: row.id,
+      });
+      if (
+        before &&
+        !(
+          cursor.createdAt < before.createdAt ||
+          (cursor.createdAt === before.createdAt && cursor.id < before.id)
+        )
+      )
+        unavailable();
+      push(row);
+      before = cursor;
+    }
+    if (page.length <= 50) break;
+    if (!items.length || rows.length >= 1000) unavailable();
+  }
+  for (const reference of references) {
+    const existing = rows.find((row) => row.id === reference.versionId);
+    const [row] = existing
+      ? [existing]
+      : await artifactRows(
+          tx,
+          scope,
+          root.session_id,
+          reference.versionId,
+          1,
+          undefined,
+          null,
+          false,
+          { includeUnavailable: true, businessOnly: true, lockObjects: true },
+        );
+    if (
+      !row ||
+      row.object_id !== reference.objectId ||
+      row.checksum !== reference.checksum
+    )
+      unavailable();
+    if (!existing) push(row);
+  }
+  const artifacts = rows.map((row) => {
+    const artifact = mapArtifact(row);
+    if (
+      artifact.provenance.runId !== row.origin_run_id ||
+      artifact.object.organizationId !== scope.organizationId ||
+      artifact.object.workspaceId !== scope.workspaceId ||
+      artifact.object.ownerId !== scope.ownerId ||
+      artifact.version.sessionId !== scope.sessionId
+    )
+      unavailable();
+    return {
+      objectId: artifact.object.id,
+      versionId: artifact.version.id,
+      checksum: artifact.object.checksum,
+      scope,
+      originRunId: row.origin_run_id,
+      fileName: artifact.version.fileName,
+      state: row.object_state as 'ready',
+      immutable: artifact.object.immutable,
+      deletedAt: row.deleted_at?.toISOString() ?? null,
+      retentionUntil: artifact.object.retentionUntil,
+    };
+  });
+  const checks: WorkerDeliveryCheck[] = [];
+  const qualityReceipts: {
+    objectId: string;
+    versionId: string;
+    checksum: string;
+    originRunId: string | null;
+    auditId: string;
+    receipt: OfficeDeliveryReceipt | null;
+    producer?: OfficeExportProducer;
+  }[] = [];
+  const producers = new Map<
+    string,
+    { auditId: string; producer: OfficeExportProducer }
+  >();
+  const receiptsByVersion = new Map<string, (OfficeDeliveryReceipt | null)[]>();
+  const audited = new Set<string>();
+  const auditIds = new Set<string>();
+  let auditBytes = 0;
+  let auditBefore: { at: string; id: string } | undefined;
+  const addChecks = (
+    artifact: (typeof artifacts)[number],
+    receipt: OfficeDeliveryReceipt | null,
+  ) => {
+    const quality = receipt?.quality;
+    const checked = quality?.status === 'checked' ? quality : null;
+    const saved = receipt?.savedValues;
+    const counts =
+      saved?.inspection === 'complete' ? saved.counts : saved?.observed;
+    const observedFormulaError =
+      (checked?.formulaErrorCount ?? 0) > 0 ||
+      (counts?.errorCacheCount ?? 0) > 0;
+    const savedValuesComplete =
+      saved?.inspection === 'complete' &&
+      saved.counts.missingCacheCount === 0 &&
+      saved.counts.invalidCacheCount === 0 &&
+      (!checked || checked.formulaCount === saved.counts.formulaCount);
+    const statuses = {
+      'office.rendered': checked ? 'passed' : 'unavailable',
+      // A renderer's zero error count does not certify missing saved values.
+      // Presence of cached values still proves neither freshness nor business correctness.
+      'office.formula_errors': observedFormulaError
+        ? 'failed'
+        : !savedValuesComplete
+          ? 'unavailable'
+          : (counts?.formulaCount ?? 0) > 0
+            ? 'passed'
+            : 'not_checked',
+      'office.saved_values':
+        saved?.inspection !== 'complete'
+          ? 'unavailable'
+          : saved.counts.missingCacheCount > 0 ||
+              saved.counts.invalidCacheCount > 0 ||
+              saved.counts.errorCacheCount > 0
+            ? 'failed'
+            : saved.counts.formulaCount > 0
+              ? 'passed'
+              : 'not_checked',
+      'office.visual': checked ? 'not_checked' : 'unavailable',
+    } as const;
+    for (const checkId of Object.keys(statuses) as (keyof typeof statuses)[])
+      checks.push({
+        objectId: artifact.objectId,
+        versionId: artifact.versionId,
+        checksum: artifact.checksum,
+        scope,
+        originRunId: artifact.originRunId,
+        checkId,
+        status: statuses[checkId],
+      });
+    if (checks.length > 10000) unavailable();
+  };
+  if (artifacts.length)
+    for (;;) {
+      const page = await tx<
+        {
+          id: string;
+          resource_id: string;
+          metadata: unknown;
+          cursor_at: string;
+          action: string;
+        }[]
+      >`
+      select id,resource_id,metadata,action,to_char(occurred_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at
+      from allrice_audit_events where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+        and actor_id=${scope.ownerId} and resource_type='deliverable_version'
+        and resource_id=any(${artifacts.map((artifact) => artifact.versionId)}::uuid[])
+        and decision='recorded' and ((action='artifact.office-quality' and reason='actual_exporter_receipt')
+          or (${!!officePolicy} and action='artifact.published' and reason='immutable_version'))
+        and (${auditBefore?.at ?? null}::text::timestamptz is null
+          or (occurred_at,id)<(${auditBefore?.at ?? null}::text::timestamptz,${auditBefore?.id ?? null}::uuid))
+      order by occurred_at desc,id desc limit 101`;
+      if (page.length > 101) unavailable();
+      const items = page.slice(0, 100);
+      for (const row of items) {
+        auditBytes += Buffer.byteLength(JSON.stringify(row.metadata), 'utf8');
+        if (auditBytes > 4_000_000) unavailable();
+        if (auditIds.has(row.id) || auditIds.size >= 10000) unavailable();
+        if (
+          auditBefore &&
+          !(
+            row.cursor_at < auditBefore.at ||
+            (row.cursor_at === auditBefore.at && row.id < auditBefore.id)
+          )
+        )
+          unavailable();
+        UuidSchema.parse(row.id);
+        auditIds.add(row.id);
+        auditBefore = { at: row.cursor_at, id: row.id };
+        const artifact = artifacts.find(
+          (value) => value.versionId === row.resource_id,
+        );
+        if (!artifact) unavailable();
+        const metadata = row.metadata as {
+          objectId?: unknown;
+          checksum?: unknown;
+          runId?: unknown;
+          receipt?: unknown;
+        } | null;
+        const outputRow = rows.find(
+          (value) => value.id === artifact.versionId,
+        )!;
+        if (row.action === 'artifact.published') {
+          const producer = readCanonicalOfficeExportProducer(row.metadata, {
+            ...artifact,
+            sessionId: scope.sessionId,
+            kind: outputRow.kind,
+            provenanceKind: mapArtifact(outputRow).provenance.kind,
+            format: outputRow.format,
+            mediaType: outputRow.media_type,
+            publicationCallId: outputRow.publication_call_id,
+          });
+          if (producer) {
+            if (producers.has(artifact.versionId)) unavailable();
+            producers.set(artifact.versionId, { auditId: row.id, producer });
+            qualityReceipts.push({
+              objectId: artifact.objectId,
+              versionId: artifact.versionId,
+              checksum: artifact.checksum,
+              originRunId: artifact.originRunId,
+              auditId: row.id,
+              receipt: null,
+              producer,
+            });
+          }
+          continue;
+        }
+        audited.add(artifact.versionId);
+        const bound = readBoundOfficeDeliveryReceipt(metadata, {
+          objectId: artifact.objectId,
+          checksum: artifact.checksum,
+          runId: artifact.originRunId,
+          format: outputRow.format,
+          mediaType: outputRow.media_type,
+        });
+        const receipt =
+          bound &&
+          (bound.quality.status !== 'checked' ||
+            bound.quality.format === outputRow.format)
+            ? bound
+            : null;
+        qualityReceipts.push({
+          objectId: artifact.objectId,
+          versionId: artifact.versionId,
+          checksum: artifact.checksum,
+          originRunId: artifact.originRunId,
+          auditId: row.id,
+          receipt,
+        });
+        addChecks(artifact, receipt);
+        const receipts = receiptsByVersion.get(artifact.versionId) ?? [];
+        receipts.push(receipt);
+        receiptsByVersion.set(artifact.versionId, receipts);
+      }
+      if (page.length <= 100) break;
+      if (!items.length) unavailable();
+    }
+  for (const artifact of artifacts)
+    if (!audited.has(artifact.versionId)) addChecks(artifact, null);
+  const last = await assertCurrent(tx);
+  if (!runtimeContractEqual(first, last)) unavailable();
+  const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() as now`;
+  if (!(clock?.now instanceof Date) || !Number.isFinite(clock.now.getTime()))
+    unavailable();
+  for (const row of rows)
+    if (
+      row.object_state !== 'ready' ||
+      !row.immutable ||
+      row.deleted_at ||
+      (row.retention_until && row.retention_until <= clock.now)
+    )
+      unavailable();
+  return {
+    scope: { ...scope, runId: task.rootRunId },
+    complete: true as const,
+    authorization: 'current' as const,
+    now: clock.now.toISOString(),
+    ownedRunIds,
+    explicitReferenceVersionIds: references.map(
+      (reference) => reference.versionId,
+    ),
+    artifacts,
+    checks,
+    qualityReceipts,
+    requirements: officePolicy
+      ? buildOfficeFirstDeliveryRequirements(
+          rows.map((row) => ({
+            objectId: row.object_id,
+            versionId: row.id,
+            checksum: row.checksum,
+            seriesId: row.series_id,
+            version: row.version,
+            latestVersionId: row.latest_version_id,
+            originRunId: row.origin_run_id,
+            kind: row.kind,
+            provenanceKind: mapArtifact(row).provenance.kind,
+            format: row.format,
+            mediaType: row.media_type,
+            publicationCallId: row.publication_call_id,
+            producerAuditId: producers.get(row.id)?.auditId ?? null,
+            receipts: receiptsByVersion.get(row.id) ?? [],
+          })),
+          ownedRunIds,
+        )
+      : [],
+  };
+}
+
 export async function listWorkbenchArtifacts(
   context: WorkbenchPrincipal,
   sessionId: string,
@@ -738,6 +1404,8 @@ export async function publishWorkbenchArtifact(
     parentObjectId?: string;
     sourceFile?: ArtifactSourceFile;
     officeReceipt?: OfficeDeliveryReceipt;
+    /** Server publisher identity, never an export/model argument or quality verdict. */
+    trustedOfficeExport?: true;
     changeSummary?: string;
     /** Server-only provider receipt and exact worker lease, never model arguments. */
     trustedImageOperation?: { id: string; leaseToken: string };
@@ -773,6 +1441,16 @@ export async function publishWorkbenchArtifact(
   },
 ) {
   if (!workbenchEnabled()) fail('feature_disabled');
+  if (
+    Object.hasOwn(input, 'trustedOfficeExport') &&
+    (input.trustedOfficeExport !== true ||
+      development ||
+      input.kind !== 'document' ||
+      !Object.hasOwn(officeMediaTypes, input.format) ||
+      officeMediaTypes[input.format as keyof typeof officeMediaTypes] !==
+        input.mediaType)
+  )
+    fail('invalid_publication');
   const context = ExecutionContextSchema.parse(input.context),
     owner = context.policySnapshot.subjectId;
   if (
@@ -1121,7 +1799,7 @@ export async function publishWorkbenchArtifact(
       values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${publishingRunId},${publicationKind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
       await assertPublishingRun(tx, context, input.sessionId, requiredTool);
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
-      values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: publicationKind, ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
+      values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: publicationKind, ...(input.trustedOfficeExport ? { officeExport: OfficeExportProducerSchema.parse({ version: 1, tool: 'workspace.export.create', callId: input.callId, objectId: created.id }) } : {}), ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
       const artifact = await readArtifact(
         tx,
         principal,

@@ -172,15 +172,23 @@ it.each(['sha256:' + 'b'.repeat(64), undefined])(
     );
   },
 );
-it('requires independent original provenance for additional retained slots', async () => {
-  configureCurrent();
-  vi.stubEnv('ALLRICE_DSH_RETAINED_2_SOURCE_SHA', '');
-  const policy = await import('./dsh-native-retention.js');
-  await expect(policy.installConfiguredDshNativeRetention()).rejects.toThrow(
-    'SOURCE_PAIR_REQUIRED',
-  );
-  expect(seam.install).toHaveBeenCalledTimes(1);
-});
+it.each([2, 6])(
+  'requires independent original provenance for retained slot %i',
+  async (slot) => {
+    configureCurrent();
+    const prefix = `ALLRICE_DSH_RETAINED_${slot}_`;
+    vi.stubEnv(prefix + 'ROOT', '/reviewed/current-a');
+    vi.stubEnv(prefix + 'ARTIFACT_ID', retainedCurrentId);
+    vi.stubEnv(prefix + 'STORAGE_ROOT', root);
+    vi.stubEnv(prefix + 'SOURCE_SHA', '');
+    vi.stubEnv(prefix + 'SOURCE_TREE', 'e'.repeat(40));
+    const policy = await import('./dsh-native-retention.js');
+    await expect(policy.installConfiguredDshNativeRetention()).rejects.toThrow(
+      'SOURCE_PAIR_REQUIRED',
+    );
+    expect(seam.install).toHaveBeenCalledTimes(slot === 2 ? 1 : 2);
+  },
+);
 it('does not grant the legacy frozen exception to a current-generation artifact', async () => {
   configureCurrent();
   vi.stubEnv(
@@ -219,14 +227,17 @@ it('refuses an unknown generation in additional slots', async () => {
     'GENERATION',
   );
 });
-it('rejects a sixth slot rather than silently dropping history', async () => {
-  vi.stubEnv('ALLRICE_DSH_RETAINED_6_ROOT', '/reviewed/excess');
-  const policy = await import('./dsh-native-retention.js');
-  await expect(policy.installConfiguredDshNativeRetention()).rejects.toThrow(
-    'SLOT_LIMIT',
-  );
-  expect(seam.install).not.toHaveBeenCalled();
-});
+it.each([0, 7])(
+  'rejects retained slot %i rather than silently dropping history',
+  async (slot) => {
+    vi.stubEnv(`ALLRICE_DSH_RETAINED_${slot}_ROOT`, '/reviewed/excess');
+    const policy = await import('./dsh-native-retention.js');
+    await expect(policy.installConfiguredDshNativeRetention()).rejects.toThrow(
+      'SLOT_LIMIT',
+    );
+    expect(seam.install).not.toHaveBeenCalled();
+  },
+);
 // Config/policy unit seam only. Real content/entry approval and compiled native
 // process routing are separate acceptance probes, never inferred from this mock.
 it('does not treat an unbound context as a new candidate root', async () => {
@@ -324,11 +335,11 @@ it('does not protect a mutable symlink in place of the actual data root', async 
   expect(seam.install).not.toHaveBeenCalled();
 });
 
-it('keeps five exact historical readers beside a distinct primary without evicting slot one', async () => {
+it('keeps six exact historical readers beside a distinct primary without evicting slot one', async () => {
   configure();
   const ids = [
     id,
-    ...['b', 'c', 'd', 'e'].map((v) => 'sha256:' + v.repeat(64)),
+    ...['b', 'c', 'd', 'e', 'f'].map((v) => 'sha256:' + v.repeat(64)),
   ];
   for (const [offset, artifactId] of ids.slice(1).entries()) {
     const prefix = 'ALLRICE_DSH_RETAINED_' + (offset + 2) + '_';
@@ -348,15 +359,16 @@ it('keeps five exact historical readers beside a distinct primary without evicti
   const installed = await policy.installConfiguredDshNativeRetention();
   expect(installed.map((item) => item.artifactId)).toEqual(ids);
   expect(policy.retainedDshStorageRoot(id)).toBe(root);
-  expect(policy.retainedDshStorageRoot(ids[4]!)).toBe(root);
+  expect(policy.retainedDshStorageRoot(ids[5]!)).toBe(root);
   await policy.verifyConfiguredDshNativeReferences({
-    artifactId: 'sha256:' + 'f'.repeat(64),
+    artifactId: 'sha256:' + '7'.repeat(64),
     generation: current,
   });
   const approvals = seam.coverage.mock.calls[0]![0];
   expect(
     approvals.map((item: { artifactId: string }) => item.artifactId),
-  ).toEqual(['sha256:' + 'f'.repeat(64), ...ids]);
+  ).toEqual(['sha256:' + '7'.repeat(64), ...ids]);
+  expect(approvals).toHaveLength(7);
   expect(approvals[0].storageRoot).toBe(root + '/new-primary');
   expect(
     approvals
@@ -364,4 +376,42 @@ it('keeps five exact historical readers beside a distinct primary without evicti
       .every((item: { storageRoot: string }) => item.storageRoot === root),
   ).toBe(true);
   // Policy seam only: real registry limits, DB coverage and cold launch remain separate checks.
+});
+
+it('MET195 emits bounded per-slot phases and metrics without altering approval inputs or reference coverage', async () => {
+  configure();
+  seam.install.mockImplementation(async (input) => {
+    input.observe?.({ kind: 'read', bytes: 3 });
+    return {
+      artifactId: input.expectedId,
+      generation: old,
+      version: '0.1.5-rc.3',
+      root: input.root,
+    };
+  });
+  const events: Array<{ slot: number; kind: string; metric?: unknown }> = [];
+  const policy = await import('./dsh-native-retention.js');
+  const entries = await policy.installConfiguredDshNativeRetention({
+    observe: (event) => events.push(event),
+  });
+  expect(events.map((event) => [event.slot, event.kind])).toEqual([
+    [1, 'started'],
+    [1, 'metric'],
+    [1, 'completed'],
+  ]);
+  expect(entries[0]?.artifactId).toBe(id);
+  expect(policy.retainedDshStorageRoot(id)).toBe(root);
+});
+it('MET195 retains the original rejection even if the phase observer throws', async () => {
+  configure();
+  const failure = Error('exact retained verification failure');
+  seam.install.mockRejectedValue(failure);
+  const policy = await import('./dsh-native-retention.js');
+  await expect(
+    policy.installConfiguredDshNativeRetention({
+      observe: () => {
+        throw Error('diagnostic sink failure');
+      },
+    }),
+  ).rejects.toBe(failure);
 });

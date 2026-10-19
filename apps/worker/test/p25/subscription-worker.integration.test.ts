@@ -316,6 +316,7 @@ integration(
               AssistantController,
               'productionAssistantController',
             ).mockImplementation((input) => ({
+              deliveryMode: input.deliveryMode,
               rootRunId: input.context.runId,
               subscriptionSnapshot: input.subscriptionSnapshot,
               bind: async () => {

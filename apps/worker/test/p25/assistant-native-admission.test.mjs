@@ -20,6 +20,7 @@ function fixture(
       },
     },
     ctx: { tools: { restrict: vi.fn() } },
+    send: vi.fn(),
     followup: vi.fn(),
     steer: vi.fn(),
     inject: vi.fn(),

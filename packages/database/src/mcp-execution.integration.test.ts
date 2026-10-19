@@ -1275,6 +1275,7 @@ suite('P16 real approval → frozen MCP → HTTP operation ledger', () => {
       };
       const controller = productionAssistantController({
         configuration,
+        deliveryMode: 'legacy',
         context: f.execution,
         worker,
         runLimits: {},

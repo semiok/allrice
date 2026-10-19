@@ -115,6 +115,8 @@ export { localPreviewEnabled } from './local-preview-authority.ts';
 export * from './assistant-runtime.ts';
 export * from './execution-usage-policy.ts';
 export * from './assistant-authority.ts';
+export { readFinalDeliveryReferences } from './final-delivery-references.ts';
+export { checkedFinalDeliveryArtifacts } from './final-delivery-rollout.ts';
 export * from './assistant-output.ts';
 export * from './assistant-pricing.ts';
 export * from './execution/route-subscription.ts';

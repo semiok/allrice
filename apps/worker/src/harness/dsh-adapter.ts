@@ -15,11 +15,19 @@ import {
   ModelCallTimingNotificationSchema,
   type HarnessEvent,
 } from '@allrice/contracts';
-import { AssistantRuntimeError } from '@allrice/database';
+import {
+  AssistantRuntimeError,
+  checkedFinalDeliveryArtifacts,
+} from '@allrice/database';
 import type { NativeSessionPin } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
 import { HandlerError } from '../errors.js';
+import {
+  assertFinalDelivery,
+  type FinalDeliveryProof,
+} from '../final-delivery/guard.js';
+import { attachCheckedFinalDelivery } from '../final-delivery/checked-delivery.js';
 import { NativeQuestionParked } from './dsh/native-question-wait.js';
 import { ReceiptDrainWindow } from './dsh/receipt-drain.js';
 import {
@@ -74,6 +82,53 @@ export {
   dshNativeWireNames,
   normalizeAllRiceManagedFileLinks,
 } from './dsh/tool-bridge.js';
+
+/** Private inbound control seam; arguments are captured from execute(), not RPC grants. */
+export function controlDshInputDelivery(input: {
+  pool: DshRuntimePool;
+  runtime: DshRuntime;
+  operation: 'pause' | 'release';
+  params: Record<string, unknown>;
+  runId: string | undefined;
+  delivery: HarnessExecutionInput['inputDelivery'];
+  signal: AbortSignal;
+  turnId(): string | null;
+  checkContent(): Promise<void>;
+  assistant:
+    | {
+        cancellation(): Promise<{
+          stopReason?: unknown;
+          instances: readonly unknown[];
+        }>;
+      }
+    | undefined;
+}) {
+  if (!input.assistant || !input.delivery || !input.runId)
+    throw new HandlerError('INPUT_GATE_UNBOUND', 'INPUT_GATE_UNBOUND', false);
+  const assistant = input.assistant;
+  return input.pool.inputDeliveryControl(
+    input.runtime,
+    input.operation,
+    input.params,
+    {
+      runId: input.runId,
+      turnId: input.turnId,
+      signal: input.signal,
+      delivery: input.delivery,
+      assertAuthority: async () => {
+        input.signal.throwIfAborted();
+        await input.checkContent();
+        const authority = await assistant.cancellation();
+        if (authority.stopReason || authority.instances.length)
+          throw new HandlerError(
+            'INPUT_GATE_SCOPE_CHANGED',
+            'INPUT_GATE_SCOPE_CHANGED',
+            false,
+          );
+      },
+    },
+  );
+}
 
 type HarnessEventPayload = HarnessEvent extends infer Event
   ? Event extends HarnessEvent
@@ -170,6 +225,23 @@ export class DshHarnessAdapter implements HarnessAdapter {
       prepared?.binding ?? undefined,
       prepared?.origin,
     );
+    // The existing pool selected an independently measured/approved artifact.
+    // A newly frozen checked Run must use that exact protocol-tested identity;
+    // an older pin is never promoted by a current same-version primary.
+    if (
+      input.assistants?.deliveryMode === 'checked_native_v1' &&
+      (!nativeDescriptor ||
+        nativeDescriptor.profileId !== 'restricted' ||
+        nativeDescriptor.artifactId !== input.assistants.deliveryArtifactId ||
+        nativeDescriptor.artifactManifestDigest !==
+          nativeDescriptor.artifactId ||
+        !checkedFinalDeliveryArtifacts().includes(nativeDescriptor.artifactId))
+    )
+      throw new HandlerError(
+        'FINAL_DELIVERY_ARTIFACT_MISMATCH',
+        '本轮交付检查与原生执行包不一致；历史内容已保留，未启动模型。',
+        false,
+      );
     let nativePin: NativeSessionPin | undefined;
     if (nativeDescriptor) {
       if (!input.nativeBinding)
@@ -243,7 +315,27 @@ export class DshHarnessAdapter implements HarnessAdapter {
           throw new DshStartupRejection(error, runId, input.attempt);
         throw error;
       });
+    const checkedAssistant =
+      input.assistants?.deliveryMode === 'checked_native_v1';
+    const finalDeliveryUnavailable = (): never => {
+      input.signal.throwIfAborted();
+      throw new HandlerError(
+        'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+        '本轮公开回复尚不能按原生记录与交付事实确认；已有内容已保留，未自动重跑任务。',
+        false,
+      );
+    };
+    if (
+      assistant &&
+      !['checked_native_v1', 'legacy'].includes(input.assistants!.deliveryMode)
+    )
+      finalDeliveryUnavailable();
+    // Installed synchronously by runOnce before prompting. Keep it through
+    // child join/retry; a later runOnce replaces it with its own turn barrier.
+    let awaitTurnOrigin: (() => Promise<void>) | undefined;
+    let restoredOriginTurnId: string | undefined;
     const ordinaryHandler = dshInboundToolHandler(input);
+    let turnId: string | null = null;
     let assistantAdmissionFailure: HandlerError | undefined;
     let contentAuthorizationFailure: HandlerError | undefined;
     const checkContent = async () => {
@@ -263,6 +355,26 @@ export class DshHarnessAdapter implements HarnessAdapter {
       }
     };
     runtime.client.setRequestHandler(async (method, params) => {
+      if (
+        method === 'allrice/assistant/input-gate-pause' ||
+        method === 'allrice/assistant/input-gate-release'
+      ) {
+        return controlDshInputDelivery({
+          pool: this.runtimePool,
+          runtime,
+          operation:
+            method === 'allrice/assistant/input-gate-pause'
+              ? 'pause'
+              : 'release',
+          params,
+          runId: input.assistants?.rootRunId,
+          delivery: input.inputDelivery,
+          signal: input.signal,
+          turnId: () => turnId,
+          checkContent,
+          assistant,
+        });
+      }
       if (method === 'allrice/personal-skill-check') {
         if (!input.contentGuard) throw Error('personal_skill_guard_unbound');
         const pin = PersonalSkillPinSchema.parse(params);
@@ -353,6 +465,51 @@ export class DshHarnessAdapter implements HarnessAdapter {
         }
         return input.progress(params);
       }
+      if (method === 'allrice/assistant/final-delivery-origin') {
+        if (
+          !checkedAssistant ||
+          !assistant?.readFinalDeliveryReplyOrigin ||
+          params.nativeSessionId !== threadId ||
+          params.rootRunId !== input.assistants!.rootRunId
+        )
+          finalDeliveryUnavailable();
+        const origin = await assistant!.readFinalDeliveryReplyOrigin!();
+        restoredOriginTurnId = origin?.starts.at(-1)?.turnId;
+        return { origin };
+      }
+      if (
+        method === 'allrice/assistant/delivery-repair-inspect' ||
+        method === 'allrice/assistant/delivery-repair-authorize' ||
+        method === 'allrice/assistant/delivery-repair-close-preparation'
+      ) {
+        if (
+          !checkedAssistant ||
+          !assistant?.deliveryRepair ||
+          params.nativeSessionId !== threadId
+        )
+          finalDeliveryUnavailable();
+        const repair = assistant!.deliveryRepair!;
+        if (method === 'allrice/assistant/delivery-repair-close-preparation')
+          return repair.closePreparation({
+            nativeSessionId: threadId,
+            callId: params.callId,
+          });
+        await checkContent();
+        if (method === 'allrice/assistant/delivery-repair-inspect')
+          return { ...(await repair.inspect(params.candidate)) };
+        return repair.authorize({
+          phase: params.phase,
+          candidate: params.candidate,
+        });
+      }
+      if (
+        checkedAssistant &&
+        (method === 'allrice/assistant/model-prepare' ||
+          method === 'allrice/assistant/model-dispatch')
+      ) {
+        if (!awaitTurnOrigin) finalDeliveryUnavailable();
+        await awaitTurnOrigin!();
+      }
       if (method.startsWith('allrice/assistant/')) {
         if (!assistant) throw Error('assistant_runtime_disabled');
         try {
@@ -381,6 +538,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       await runtime.client.assistant('bind', {
         nativeSessionId: threadId,
         runId: input.assistants!.rootRunId,
+        ...(checkedAssistant ? { deliveryMode: 'checked_native_v1' } : {}),
         wireTools: Object.entries(dshNativeWireNames)
           .filter(([, canonical]) =>
             input.tools.some((tool) => tool.name === canonical),
@@ -469,7 +627,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
     input.signal.addEventListener('abort', stopAssistants, { once: true });
     if (input.signal.aborted) void stopAssistants();
     let order = 0;
-    let turnId: string | null = null;
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
     let usageComplete = true;
     let cacheUsageKnown = true;
@@ -612,6 +769,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           ReturnType<NonNullable<NonNullable<typeof assistant>['finish']>>
         >
       | undefined;
+    let checkedDeliveryProof: FinalDeliveryProof | undefined;
+    let restoredFinal: Record<string, unknown> | null = null;
+    let restoredUsage: AssistantFailureUsage | undefined;
     const timingReceipts = new Set<string>();
     // Keep the operator subscription for the entire Run, including child join,
     // failure drain and final flush. Chat events retain their own turn listener.
@@ -670,6 +830,29 @@ export class DshHarnessAdapter implements HarnessAdapter {
           );
         }
       }
+      // Same-authority cold final reconciliation is a read, never a new
+      // prompt. The reader/journal must prove the completed current-Run turn.
+      // Ordinary question waits and explicit legacy paths keep their lifecycle.
+      if (
+        checkedAssistant &&
+        fresh &&
+        prepared?.requiresRecovery &&
+        assistant?.hasPriorRoot
+      ) {
+        try {
+          restoredFinal = await runtime.client.assistant(
+            'joinForFinalDelivery',
+            {
+              nativeSessionId: threadId,
+            },
+          );
+          if (!assistant.failureUsage) finalDeliveryUnavailable();
+          restoredUsage = await assistant.failureUsage!();
+          turnId = restoredOriginTurnId ?? turnId;
+        } catch {
+          finalDeliveryUnavailable();
+        }
+      }
       const preparationMs = performance.now() - preparationStarted;
       // This receipt measures preparation before prompting. Its own write is
       // excluded; native Skill body loads are measured on their tool receipts.
@@ -711,93 +894,118 @@ export class DshHarnessAdapter implements HarnessAdapter {
             'DSH execution was interrupted',
             false,
           );
-        const result = await this.runOnce({
-          runtime,
-          prompt,
-          images: callIndex === 0 ? (input.images ?? []) : [],
-          sessionReferences:
-            callIndex === 0 ? input.kernel.sessionReferences : undefined,
-          signal: executionSignal,
-          subscription: snapshot.route === 'openai-codex',
-          questionWait: !assistant ? input.questionWait : undefined,
-          resume: callIndex === 0 ? input.questionWait?.resume : undefined,
-          onFailureUsage: (receipt) => {
-            interruptedUsage = {
-              ...receipt,
-              usage: {
-                inputTokens: usage.inputTokens + receipt.usage.inputTokens,
-                cachedInputTokens:
-                  usage.cachedInputTokens + receipt.usage.cachedInputTokens,
-                outputTokens: usage.outputTokens + receipt.usage.outputTokens,
-              },
-            };
-          },
-          onTurn: async (nextTurnId) => {
-            turnId = nextTurnId;
-            await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
-          },
-          onDelta: async (text, source, replyId, textMode) =>
-            emit({
-              type: 'assistant.delta',
-              text,
-              ...source,
-              replyId,
-              textMode,
-            }),
-          onNative: async (event) => {
-            // Directory registration is not adoption. Attach exact frozen
-            // identity only to an actual native Skill call/result.
-            if (
-              (event.type === 'tool.started' ||
-                event.type === 'tool.completed' ||
-                event.type === 'tool.failed') &&
-              event.name === 'skill'
-            ) {
-              const name = event.sourcePayload?.skillName;
-              const skill = nativeSkills.find((s) => s.name === name);
-              const governance = input.baseSkillCatalog?.skills.find(
-                (s) => s.id === skill?.id,
-              );
-              const scene = input.contentGuard?.scenes?.find(
-                (s) => s.nativeName === name,
-              );
-              if (scene)
-                event = {
-                  ...event,
-                  label: `工作场景 · ${scene.name}`,
-                  sourcePayload: {
-                    ...event.sourcePayload,
-                    sceneId: scene.id,
-                    sceneDigest: scene.digest,
-                    sceneName: scene.name,
-                  },
-                };
-              if (skill)
-                event = {
-                  ...event,
-                  sourcePayload: {
-                    ...event.sourcePayload,
-                    skillId: skill.id,
-                    skillChecksum: skill.checksum,
-                    ...(skill.personal
-                      ? { personalSkill: skill.personal }
-                      : {}),
-                    ...(governance
-                      ? {
-                          skillVersion: governance.version,
-                          skillCatalogChecksum:
-                            input.baseSkillCatalog!.catalogChecksum,
-                        }
-                      : {}),
-                    ...(skill.bundle
-                      ? { skillBundleChecksum: skill.bundle.checksum }
-                      : {}),
-                  },
-                };
+        const result = restoredFinal
+          ? {
+              answer: String(restoredFinal.answer ?? ''),
+              replyId:
+                typeof restoredFinal.publicMessageId === 'string'
+                  ? restoredFinal.publicMessageId
+                  : undefined,
+              usage: restoredUsage!.usage,
+              usageComplete: restoredUsage!.usageComplete,
+              cacheUsageKnown: restoredUsage!.cacheUsageKnown,
+              completionSource: undefined,
+              usageSource: undefined,
             }
-            await emit(event);
-          },
-        });
+          : await this.runOnce({
+              runtime,
+              prompt,
+              images: callIndex === 0 ? (input.images ?? []) : [],
+              sessionReferences:
+                callIndex === 0 ? input.kernel.sessionReferences : undefined,
+              signal: executionSignal,
+              subscription: snapshot.route === 'openai-codex',
+              questionWait: !assistant ? input.questionWait : undefined,
+              resume: callIndex === 0 ? input.questionWait?.resume : undefined,
+              onFailureUsage: (receipt) => {
+                interruptedUsage = {
+                  ...receipt,
+                  usage: {
+                    inputTokens: usage.inputTokens + receipt.usage.inputTokens,
+                    cachedInputTokens:
+                      usage.cachedInputTokens + receipt.usage.cachedInputTokens,
+                    outputTokens:
+                      usage.outputTokens + receipt.usage.outputTokens,
+                  },
+                };
+              },
+              ...(checkedAssistant
+                ? {
+                    installTurnOriginBarrier: (
+                      barrier: () => Promise<void>,
+                    ) => {
+                      awaitTurnOrigin = barrier;
+                    },
+                  }
+                : {}),
+              onTurn: async (nextTurnId) => {
+                turnId = nextTurnId;
+                if (checkedAssistant && !input.onTurnStarted)
+                  finalDeliveryUnavailable();
+                await input.onTurnStarted?.({ threadId, turnId: nextTurnId });
+              },
+              onDelta: async (text, source, replyId, textMode) =>
+                emit({
+                  type: 'assistant.delta',
+                  text,
+                  ...source,
+                  replyId,
+                  textMode,
+                }),
+              onNative: async (event) => {
+                // Directory registration is not adoption. Attach exact frozen
+                // identity only to an actual native Skill call/result.
+                if (
+                  (event.type === 'tool.started' ||
+                    event.type === 'tool.completed' ||
+                    event.type === 'tool.failed') &&
+                  event.name === 'skill'
+                ) {
+                  const name = event.sourcePayload?.skillName;
+                  const skill = nativeSkills.find((s) => s.name === name);
+                  const governance = input.baseSkillCatalog?.skills.find(
+                    (s) => s.id === skill?.id,
+                  );
+                  const scene = input.contentGuard?.scenes?.find(
+                    (s) => s.nativeName === name,
+                  );
+                  if (scene)
+                    event = {
+                      ...event,
+                      label: `工作场景 · ${scene.name}`,
+                      sourcePayload: {
+                        ...event.sourcePayload,
+                        sceneId: scene.id,
+                        sceneDigest: scene.digest,
+                        sceneName: scene.name,
+                      },
+                    };
+                  if (skill)
+                    event = {
+                      ...event,
+                      sourcePayload: {
+                        ...event.sourcePayload,
+                        skillId: skill.id,
+                        skillChecksum: skill.checksum,
+                        ...(skill.personal
+                          ? { personalSkill: skill.personal }
+                          : {}),
+                        ...(governance
+                          ? {
+                              skillVersion: governance.version,
+                              skillCatalogChecksum:
+                                input.baseSkillCatalog!.catalogChecksum,
+                            }
+                          : {}),
+                        ...(skill.bundle
+                          ? { skillBundleChecksum: skill.bundle.checksum }
+                          : {}),
+                      },
+                    };
+                }
+                await emit(event);
+              },
+            });
         usage.inputTokens += result.usage.inputTokens;
         usage.cachedInputTokens += result.usage.cachedInputTokens;
         usage.outputTokens += result.usage.outputTokens;
@@ -807,14 +1015,107 @@ export class DshHarnessAdapter implements HarnessAdapter {
         await checkContent();
         if (!toolCall) {
           if (assistantAdmissionFailure) throw assistantAdmissionFailure;
-          const joined = assistant
-            ? await runtime.client.assistant('join', {
-                nativeSessionId: threadId,
-              })
-            : null;
+          // These capabilities remain in this call frame. Never attach them to
+          // Harness events, model prompts, execution results or failure diagnostics.
+          const finalDelivery = assistant
+            ? checkedAssistant
+              ? assistant.finalDelivery
+              : undefined
+            : input.finalDelivery;
+          if (checkedAssistant && (!finalDelivery || !assistant?.finish))
+            finalDeliveryUnavailable();
+          let joined: Record<string, unknown> | null = restoredFinal;
+          if (assistant && !joined) {
+            try {
+              joined = await runtime.client.assistant(
+                checkedAssistant ? 'joinForFinalDelivery' : 'join',
+                {
+                  nativeSessionId: threadId,
+                },
+              );
+            } catch {
+              // A missing same-Run durable boundary cannot authorize a replay
+              // or a fallback to runOnce's observed/last assistant message.
+              finalDeliveryUnavailable();
+            }
+          }
+          const rootBinding = record(joined?.rootBinding);
+          const privateId =
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+          if (
+            checkedAssistant &&
+            (!joined ||
+              typeof joined.answer !== 'string' ||
+              !joined.answer.trim() ||
+              typeof joined.publicMessageId !== 'string' ||
+              !joined.publicMessageId ||
+              !Number.isSafeInteger(joined.durableSeq) ||
+              (joined.durableSeq as number) < 0 ||
+              joined.textDigest !==
+                `sha256:${createHash('sha256')
+                  .update(joined.answer as string, 'utf8')
+                  .digest('hex')}` ||
+              typeof joined.completionToken !== 'string' ||
+              !privateId.test(joined.completionToken) ||
+              rootBinding?.nativeSessionId !== threadId ||
+              rootBinding?.runId !== input.assistants!.rootRunId ||
+              typeof rootBinding?.bindingId !== 'string' ||
+              !privateId.test(rootBinding.bindingId))
+          )
+            finalDeliveryUnavailable();
           if (assistantAdmissionFailure) throw assistantAdmissionFailure;
+          const nativeCandidate =
+            typeof joined?.answer === 'string' ? joined.answer : result.answer;
+          const projectedCandidate =
+            normalizeAllRiceManagedFileLinks(nativeCandidate);
+          executionSignal.throwIfAborted();
+          await checkContent();
+          const deliveryReceipt = finalDelivery
+            ? await assertFinalDelivery({
+                port: finalDelivery,
+                candidate: {
+                  nativeText: nativeCandidate,
+                  projectedText: projectedCandidate,
+                  nativeSessionId: threadId,
+                  ...(result.replyId
+                    ? { observedReplyId: result.replyId }
+                    : {}),
+                  ...(joined
+                    ? {
+                        publicMessageId: joined.publicMessageId as string,
+                        durableSeq: joined.durableSeq as number,
+                        nativeBindingId: rootBinding!.bindingId as string,
+                        rootRunId: input.assistants!.rootRunId,
+                      }
+                    : {}),
+                  attempt: input.attempt,
+                  generation,
+                },
+                signal: executionSignal,
+                report: async (receipt) => {
+                  await emit({
+                    type: 'native.event',
+                    presentation: 'lifecycle',
+                    status: receipt.status === 'valid' ? 'completed' : 'failed',
+                    label:
+                      receipt.status === 'valid'
+                        ? '交付说明已核对'
+                        : '交付说明尚未通过核对',
+                    summary:
+                      receipt.status === 'valid'
+                        ? '文件引用已按当前权限与精确成果版本核对；不代表业务内容或视觉检查全部通过。'
+                        : '已有成果与原回复已保留，本轮尚未完成；未自动重跑任务。',
+                    sourceEventType: 'allrice/final-delivery-validation',
+                    sourcePayload: { ...receipt },
+                  });
+                },
+              })
+            : undefined;
+          executionSignal.throwIfAborted();
+          await checkContent();
           if (assistant) {
-            // Native join proves all loops idle. Stop and await the active-run
+            // The owned native tree stays held through facts/policy and finish.
+            // Stop and await the active-run
             // poll before persisting a terminal root, whose authority is no
             // longer admissible. Finalization performs its own current check.
             if (cancellationTimer) clearInterval(cancellationTimer);
@@ -822,30 +1123,82 @@ export class DshHarnessAdapter implements HarnessAdapter {
             executionSignal.throwIfAborted();
             // finish deliberately clears the native Run-bound maps.
             await captureAssistantDiagnostics();
-            await runtime.client.assistant('finish', {
-              nativeSessionId: threadId,
-            });
-            assistantOutcome = await assistant.finish?.();
+            let proof: FinalDeliveryProof | undefined;
+            if (checkedAssistant) {
+              if (!joined || !deliveryReceipt) finalDeliveryUnavailable();
+              proof = Object.freeze({
+                nativeSessionId: threadId,
+                publicMessageId: joined!.publicMessageId as string,
+                durableSeq: joined!.durableSeq as number,
+                nativeBindingId: rootBinding!.bindingId as string,
+                nativeCandidateDigest: deliveryReceipt!.nativeCandidateDigest,
+                candidateDigest: deliveryReceipt!.candidateDigest,
+                factSetDigest: deliveryReceipt!.factSetDigest,
+                attempt: input.attempt,
+                generation,
+              });
+              try {
+                const released = await runtime.client.assistant('finish', {
+                  nativeSessionId: threadId,
+                  completionToken: joined!.completionToken,
+                  candidateDigest: proof.nativeCandidateDigest,
+                  factSetDigest: proof.factSetDigest,
+                });
+                if (
+                  released.released !== true ||
+                  released.publicMessageId !== proof.publicMessageId ||
+                  released.durableSeq !== proof.durableSeq ||
+                  released.textDigest !== proof.nativeCandidateDigest ||
+                  released.factSetDigest !== proof.factSetDigest
+                )
+                  finalDeliveryUnavailable();
+              } catch {
+                finalDeliveryUnavailable();
+              }
+            } else {
+              // Explicit frozen legacy mode preserves the original native and
+              // runtime finalization. Missing checked evidence never selects it.
+              await runtime.client.assistant('finish', {
+                nativeSessionId: threadId,
+              });
+            }
+            try {
+              assistantOutcome = checkedAssistant
+                ? await assistant.finish?.(proof!)
+                : await assistant.finish?.();
+            } catch (error) {
+              executionSignal.throwIfAborted();
+              if (error instanceof HandlerError && !error.retryable)
+                throw error;
+              finalDeliveryUnavailable();
+            }
+            const outcome = assistantOutcome ?? finalDeliveryUnavailable();
             assistantFinished = true;
-            if (!assistantOutcome)
-              throw Error('assistant_completion_proof_required');
-            Object.assign(usage, assistantOutcome.usage);
-            if (!['completed', 'partial'].includes(assistantOutcome.status))
+            Object.assign(usage, outcome.usage);
+            if (!['completed', 'partial'].includes(outcome.status))
               throw new AssistantExecutionUnresolvedError(
                 usage,
-                assistantOutcome.usageComplete,
+                outcome.usageComplete,
                 assistantDiagnostics,
               );
+            if (outcome.status === 'completed') checkedDeliveryProof = proof;
           }
-          answer = normalizeAllRiceManagedFileLinks(
-            typeof joined?.answer === 'string' ? joined.answer : result.answer,
-          );
+          answer = projectedCandidate;
           if (assistantOutcome?.status === 'partial')
-            answer = `部分结果：助手已返回可用内容，但仍有未完成事项；这不是整项任务完成确认。\n\n${answer}`;
+            await emit({
+              type: 'native.event',
+              presentation: 'lifecycle',
+              status: 'failed',
+              label: '任务尚未完成',
+              summary: '助手已返回可用内容，但仍有未完成事项；已有结果已保留。',
+              sourceEventType: 'allrice/assistant-partial',
+              sourcePayload: { status: 'partial' },
+            });
           await emit({
             type: 'assistant.completed',
             text: answer,
-            replyId: result.replyId,
+            replyId:
+              (joined?.publicMessageId as string | undefined) ?? result.replyId,
             ...(result.completionSource ?? {}),
           });
           await emit({
@@ -1108,6 +1461,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         this.runtimePool.touch(runtime);
         runtime.client.setRequestHandler(null);
       } finally {
+        this.runtimePool.clearInputDelivery(runtime);
         stopWindow.dispose();
         unsubscribeModelTiming();
       }
@@ -1165,6 +1519,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     // Partial outcomes return to the Worker before its completion gate throws.
     // Preserve the same closed sidecar without adding a serializable result field.
     attachAssistantFailureDiagnostics(result, assistantDiagnostics);
+    if (checkedDeliveryProof)
+      attachCheckedFinalDelivery(result, checkedDeliveryProof);
     return result;
   }
 
@@ -1197,6 +1553,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             kind: input.inputKind,
           }
         : undefined,
+      input.turnId,
     );
     if (input.inputKind) {
       const { RuntimeNativeInputProofSchema } =
@@ -1230,6 +1587,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
     resume?: NonNullable<HarnessExecutionInput['questionWait']>['resume'];
     onFailureUsage(receipt: AssistantFailureUsage): void;
     onTurn(turnId: string): Promise<void>;
+    /** Private persistence ACK, never a model-supplied barrier. */
+    installTurnOriginBarrier?(barrier: () => Promise<void>): void;
     onDelta(
       text: string,
       source: DshSourceMetadata,
@@ -1256,6 +1615,17 @@ export class DshHarnessAdapter implements HarnessAdapter {
     let processingError: unknown;
     let idle = false;
     let started = false;
+    let turnOriginCommitted = false;
+    input.installTurnOriginBarrier?.(async () => {
+      await eventChain;
+      if (processingError) throw processingError;
+      if (!started || !turnOriginCommitted)
+        throw new HandlerError(
+          'FINAL_DELIVERY_EVIDENCE_UNAVAILABLE',
+          '本轮原生 turn 起点尚未持久确认；未发送模型请求。',
+          false,
+        );
+    });
     let waitTimer: NodeJS.Timeout | undefined;
     let parking: Promise<unknown> | undefined;
     let parkingQuestion = false;
@@ -1591,11 +1961,13 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (nativeView) await input.onNative(nativeView);
       if (event.type === 'turn/start') {
         started = true;
+        turnOriginCommitted = false;
         const turn =
           typeof data.turn === 'number' || typeof data.turn === 'string'
             ? String(data.turn)
             : randomUUID();
         await input.onTurn(`${input.runtime.sessionId}:turn:${turn}`);
+        turnOriginCommitted = true;
         return;
       }
       if (event.type === 'assistant/live-start') {

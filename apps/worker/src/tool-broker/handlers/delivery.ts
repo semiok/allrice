@@ -13,6 +13,7 @@ import {
   ChangesetProposalSchema,
   DeliveryFormatSchema,
   NativeOfficeExportSchema,
+  assessOfficeFormulaCaches,
 } from '@allrice/contracts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { officeFormat } from '@allrice/office-runtime';
@@ -295,6 +296,9 @@ export const createWorkspaceExport: RiceToolHandler = async ({
       fileName,
       ...(generated.sourceFile ? { sourceFile: generated.sourceFile } : {}),
       ...(officeReceipt ? { officeReceipt } : {}),
+      ...(officeType && kind === 'document'
+        ? { trustedOfficeExport: true as const }
+        : {}),
       ...(typeof args.parentObjectId === 'string'
         ? { parentObjectId: args.parentObjectId }
         : {}),
@@ -369,17 +373,24 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         throw error;
       }
     })();
+    // Replay quality is the original exact-object receipt, never fresh checks.
+    const resultFields = {
+      ...officeResult,
+      ...(officeType &&
+      'officeReceiptReplayed' in artifact &&
+      artifact.officeReceiptReplayed === true &&
+      'officeReceipt' in artifact
+        ? officeDeliveryResultFields(artifact.officeReceipt ?? null)
+        : {}),
+    };
+    const officeCache =
+      officeType === 'xlsx'
+        ? assessOfficeFormulaCaches(resultFields)
+        : undefined;
     return {
       modelContent: JSON.stringify({
-        ...officeResult,
-        // The publisher returns the originally persisted receipt on replay.
-        // Never upgrade an old version using this retry's fresh inspection.
-        ...(officeType &&
-        'officeReceiptReplayed' in artifact &&
-        artifact.officeReceiptReplayed === true &&
-        'officeReceipt' in artifact
-          ? officeDeliveryResultFields(artifact.officeReceipt ?? null)
-          : {}),
+        ...resultFields,
+        ...(officeCache ? { officeCache } : {}),
         artifactId: artifact.id,
         // This is the checksum of the persisted, server-normalized object,
         // not a model-computed hash of its input proposal.
@@ -404,7 +415,10 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         downloadUrl: `/api/v1/files/${artifact.object.id}/download?name=${encodeURIComponent(fileName)}`,
         versionsUrl: `/api/v1/files/${artifact.object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),
-      summary: `已生成${kind === 'plan' ? '待审查计划' : kind === 'changeset' ? '待审查文件修改提案' : '交付文件'} ${fileName} · v${artifact.version.version}`,
+      summary:
+        officeCache?.status === 'incomplete'
+          ? `已保留文件 ${fileName} · v${artifact.version.version}；公式缓存检查未完成`
+          : `已生成${kind === 'plan' ? '待审查计划' : kind === 'changeset' ? '待审查文件修改提案' : '交付文件'} ${fileName} · v${artifact.version.version}`,
       itemCount: 1,
     };
   }
@@ -443,6 +457,9 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     return {
       modelContent: JSON.stringify({
         ...officeResult,
+        ...(officeType === 'xlsx'
+          ? { officeCache: assessOfficeFormulaCaches(officeResult) }
+          : {}),
         objectId: object.id,
         fileName,
         mediaType: object.mediaType,
@@ -454,7 +471,11 @@ export const createWorkspaceExport: RiceToolHandler = async ({
         downloadUrl: `/api/v1/files/${object.id}/download?name=${encodeURIComponent(fileName)}`,
         versionsUrl: `/api/v1/files/${object.id}/versions?workspaceId=${encodeURIComponent(input.context.workspaceId!)}`,
       }),
-      summary: `已生成交付文件 ${fileName} · v${registered.version}`,
+      summary:
+        officeType === 'xlsx' &&
+        assessOfficeFormulaCaches(officeResult).status === 'incomplete'
+          ? `已保留文件 ${fileName} · v${registered.version}；公式缓存检查未完成`
+          : `已生成交付文件 ${fileName} · v${registered.version}`,
       itemCount: 1,
     };
   } catch (error) {

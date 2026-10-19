@@ -11,12 +11,14 @@ import {
 } from './allrice-model-transport.mjs';
 /* global AbortController, Buffer */
 import { createHash, randomUUID } from 'node:crypto';
+import { createBoundedFinalDeliveryRepair } from './allrice-final-delivery-repair.mjs';
 import { performance } from 'node:perf_hooks';
 import { createModelTiming } from './allrice-model-timing.mjs';
 import { types } from 'node:util';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 import { queueHostSubagentPrompt } from '@deepseek-ai/dsh-subagent/internal';
 import { readStoredDshSession } from './allrice-session-compatibility.mjs';
+import { verifyRestoredFinalReplyOrigin } from './allrice-final-reply-origin.mjs';
 
 // Provider failures may arrive as finish chunks, not thrown exceptions. Keep
 // only source-defined codes; never persist provider text, URLs or raw thoughts.
@@ -178,6 +180,32 @@ export function settledTokenUsage(usage, observedOutput = false) {
   };
 }
 
+/** Shared by the actual JSON-RPC ingress and offline private transport fixture. */
+export function assertAssistantBusinessInputOpen(runtime, method, params) {
+  if (
+    [
+      'session/prompt',
+      'session/steer',
+      'session/compact',
+      'session/recover',
+      'session/answer-wait',
+      'session/continue-wait',
+    ].includes(method)
+  )
+    runtime?.assertBusinessInputOpen({
+      nativeSessionId: params?.sessionId,
+      inputDelivery: true,
+    });
+}
+
+export function runAssistantBusinessInput(runtime, method, params, work) {
+  assertAssistantBusinessInputOpen(runtime, method, params);
+  return (
+    runtime?.trackBusinessInput({ nativeSessionId: params?.sessionId }, work) ??
+    work()
+  );
+}
+
 /** Adapter for the PINNED native continuable service, never a second Agent loop.
  * Every call goes back to the owning Worker for durable identity/authority. */
 export function createGovernedAssistantNativeRuntime(
@@ -190,6 +218,280 @@ export function createGovernedAssistantNativeRuntime(
   const bindings = new Map();
   const deliveries = new Map();
   const nativeCompletions = new Map();
+  // Private Host capabilities, never journaled or included in model context.
+  const finalDeliveries = new Map();
+  const completingAgents = new WeakMap();
+  const finalJoins = new Set();
+  const inputPauses = new Map();
+  const pendingInputs = new Map();
+  const inputTurn = (agent) =>
+    `${agent.id}:turn:${agent.session.snapshotEvents().findLast((event) => event.type === 'turn/start')?.data.turn}`;
+  const inputHead = (agent) =>
+    agent.session
+      .snapshotEvents()
+      .findLast((event) =>
+        [
+          'user/message',
+          'agent/inbox/spliced',
+          'allrice/input/request',
+          'allrice/input/answered',
+        ].includes(event.type),
+      )?.seq;
+  const inputEmpty = (agent) =>
+    !agent.inbox.nextStep.length && !agent.inbox.nextTurn.length;
+  function currentInputPause(state) {
+    return (
+      state.phase === 'paused' &&
+      !state.signal?.aborted &&
+      bindings.get(state.scope.nativeSessionId) === state.entry &&
+      ctx.agents.get(state.scope.nativeSessionId) === state.agent &&
+      state.agent.status === 'running' &&
+      inputTurn(state.agent) === state.scope.turnId
+    );
+  }
+  async function releaseInputDelivery(p) {
+    const state = inputPauses.get(p.nativeSessionId);
+    if (
+      !state ||
+      Object.keys(state.scope).some((key) => p[key] !== state.scope[key])
+    )
+      throw Error('INPUT_GATE_SCOPE_CHANGED');
+    return (state.released ??= (async () => {
+      state.phase = 'releasing'; // open native admission BEFORE Worker handoff
+      try {
+        const ack = await bridge(
+          'input-gate-release',
+          state.scope,
+          new AbortController().signal,
+        );
+        if (
+          ack.released !== true ||
+          ack.gateId !== state.scope.gateId ||
+          ack.turnId !== state.scope.turnId
+        )
+          throw Error('INPUT_GATE_RELEASE_UNKNOWN');
+        state.phase = 'released';
+        return ack;
+      } finally {
+        if (state.phase !== 'released') state.phase = 'release_failed';
+        state.signal?.removeEventListener('abort', state.aborted);
+      }
+    })());
+  }
+  async function pauseInputDelivery(p, originalSignal) {
+    const agent = live(p.nativeSessionId),
+      entry = binding(agent.id);
+    if (
+      p.turn !== undefined &&
+      inputTurn(agent) !== `${agent.id}:turn:${p.turn}`
+    )
+      throw Error('INPUT_GATE_SCOPE_CHANGED');
+    if (
+      entry.parentNativeSessionId ||
+      typeof entry.runId !== 'string' ||
+      agent.status !== 'running' ||
+      !inputEmpty(agent) ||
+      pendingInputs.get(agent.id)?.size ||
+      finalState(agent.id)
+    )
+      throw Error('INPUT_GATE_NOT_QUIESCENT');
+    const previous = inputPauses.get(agent.id);
+    if (previous && previous.phase !== 'released')
+      throw Error('INPUT_GATE_BUSY');
+    originalSignal?.throwIfAborted();
+    const scope = Object.freeze({
+      nativeSessionId: agent.id,
+      runId: entry.runId,
+      turnId: inputTurn(agent),
+      gateId: randomUUID(),
+    });
+    const state = {
+      scope,
+      entry,
+      agent,
+      signal: originalSignal,
+      phase: 'paused',
+      head: inputHead(agent),
+    };
+    inputPauses.set(agent.id, state); // synchronous: no later input RPC may insert
+    state.aborted = () => {
+      void releaseInputDelivery(scope).catch(() => {});
+    };
+    originalSignal?.addEventListener('abort', state.aborted, { once: true });
+    try {
+      const ack = await bridge(
+        'input-gate-pause',
+        scope,
+        originalSignal ?? new AbortController().signal,
+      );
+      if (
+        ack.paused !== true ||
+        ack.gateId !== scope.gateId ||
+        ack.turnId !== scope.turnId
+      )
+        throw Error('INPUT_GATE_PAUSE_UNKNOWN');
+      if (
+        !currentInputPause(state) ||
+        !inputEmpty(agent) ||
+        inputHead(agent) !== state.head
+      )
+        throw Error('INPUT_GATE_NOT_QUIESCENT');
+      return scope;
+    } catch (error) {
+      try {
+        await releaseInputDelivery(scope);
+      } catch {
+        throw Error('INPUT_GATE_RELEASE_UNKNOWN', { cause: error });
+      }
+      throw error;
+    }
+  }
+  const textDigest = (text) =>
+    `sha256:${createHash('sha256').update(text, 'utf8').digest('hex')}`;
+  function finalState(id) {
+    // A naturally retired child has no live Agent, but remains bound to this
+    // Run. Follow the existing binding ancestry so it shares the root gate.
+    const seen = new Set();
+    for (let depth = 0; id && depth < 64 && !seen.has(id); depth++) {
+      const state =
+        finalDeliveries.get(id) ?? completingAgents.get(ctx.agents.get(id));
+      if (state) return state;
+      seen.add(id);
+      id = bindings.get(id)?.parentNativeSessionId;
+    }
+  }
+  function assertBusinessInputOpen(p) {
+    if (finalState(p.nativeSessionId)) throw Error('ASSISTANT_COMPLETING');
+    // This short window covers external input, not repair's native model path.
+    if (
+      p.inputDelivery &&
+      currentInputPause(inputPauses.get(p.nativeSessionId) ?? {})
+    )
+      throw Object.assign(Error('ASSISTANT_COMPLETING'), {
+        code: 'ASSISTANT_COMPLETING',
+      });
+  }
+  function invalidateFinal(state, reason, release = false) {
+    state.invalidReason ??= reason;
+    if (release) state.release();
+  }
+  function ownedAgents(rootId) {
+    const root = binding(rootId);
+    if (root.parentNativeSessionId) throw Error('assistant_root_required');
+    const owned = [];
+    for (const [id, entry] of bindings) {
+      let ancestor = id;
+      const visited = new Set();
+      while (ancestor !== rootId && bindings.has(ancestor)) {
+        if (visited.has(ancestor) || visited.size >= 64)
+          throw Error('assistant_completion_tree_invalid');
+        visited.add(ancestor);
+        ancestor = bindings.get(ancestor).parentNativeSessionId;
+      }
+      if (ancestor !== rootId) continue;
+      const agent = ctx.agents.get(id);
+      if (!agent) {
+        if (
+          id !== rootId &&
+          (entry.stopped || nativeCompletions.get(id)?.settled)
+        )
+          continue;
+        throw Error('assistant_native_not_live');
+      }
+      if (
+        id !== rootId &&
+        !ctx.agents.isOwnedBy(id, live(entry.parentNativeSessionId))
+      )
+        throw Error('assistant_completion_tree_invalid');
+      owned.push(agent);
+    }
+    if (!owned.length || owned.length > 200)
+      throw Error('assistant_completion_tree_bound');
+    for (const agent of ctx.agents.list()) {
+      if (
+        !owned.includes(agent) &&
+        owned.some((parent) => ctx.agents.isOwnedBy(agent.id, parent))
+      )
+        throw Error('assistant_completion_unbound_descendant');
+    }
+    return owned;
+  }
+  function publicCandidate(agent, entry) {
+    const event = agent.session
+      .snapshotEvents()
+      .findLast((event) => event.type === 'assistant/message');
+    const message = event?.data.message;
+    const answer = (message?.content ?? [])
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+    if (
+      !event ||
+      event.data.interrupted ||
+      !Number.isSafeInteger(event.seq) ||
+      event.seq <= entry.eventBoundary ||
+      (entry.restoredReplyOrigin &&
+        !entry.restoredReplyOrigin.turns.includes(event.data.turn)) ||
+      typeof message?.id !== 'string' ||
+      !message.id ||
+      !answer.trim() ||
+      message.content.some((b) => b.type === 'tool-call')
+    )
+      throw Error('assistant_completion_public_message_required');
+    return {
+      answer,
+      publicMessageId: message.id,
+      durableSeq: event.seq,
+      textDigest: textDigest(answer),
+    };
+  }
+  function assertFinalQuiescent(state) {
+    if (state.invalidReason) throw Error(state.invalidReason);
+    if (
+      binding(state.root.id) !== state.entry ||
+      live(state.root.id) !== state.root
+    )
+      throw Error('assistant_completion_binding_changed');
+    const agents = ownedAgents(state.root.id);
+    if (
+      agents.length !== state.agents.length ||
+      agents.some((agent, index) => agent !== state.agents[index])
+    )
+      throw Error('assistant_completion_tree_changed');
+    if (
+      pendingWrites.size ||
+      agents.some(
+        (agent) =>
+          agent.status !== 'idle' ||
+          agent.inbox.nextStep.length ||
+          agent.inbox.nextTurn.length ||
+          modelAdmissions.has(agent.id),
+      )
+    )
+      throw Error('assistant_completion_pending_work');
+    for (const agent of agents) {
+      const open = new Set();
+      for (const event of agent.session.snapshotEvents()) {
+        if (event.type === 'tool/call') open.add(event.data.callId);
+        if (event.type === 'tool/result') {
+          const message = event.data.message;
+          const block = readDshToolResult(message);
+          open.delete(
+            block?.toolCallId ?? message?.toolCallId ?? message?.callId,
+          );
+        }
+      }
+      if (open.size) throw Error('assistant_completion_pending_tool');
+    }
+    if (
+      state.heads &&
+      agents.some(
+        (agent, index) =>
+          agent.session.snapshotEvents().at(-1)?.seq !== state.heads[index],
+      )
+    )
+      throw Error('assistant_completion_changed');
+  }
   const failures = new Map();
   let failuresTruncated = false;
   function failure(id, callId, phase, code, stopKind) {
@@ -239,11 +541,23 @@ export function createGovernedAssistantNativeRuntime(
       reject = failed;
     });
     promise.catch(() => {}); // Observed by join; never an unhandled activation failure.
-    const state = { promise, resolve, reject };
+    const state = {
+      promise,
+      settled: false,
+      resolve: () => {
+        state.settled = true;
+        resolve();
+      },
+      reject,
+    };
     nativeCompletions.set(id, state);
     return state;
   }
   ctx.on('session/event', (session, event) => {
+    const state = finalState(session.id);
+    // Late receipts remain recordable; they invalidate the fact/text snapshot.
+    if (state?.published && !state.released)
+      invalidateFinal(state, 'assistant_completion_changed');
     if (
       event.type === 'user/message' &&
       event.data.source?.kind === 'subagent-settled'
@@ -262,6 +576,9 @@ export function createGovernedAssistantNativeRuntime(
     return agent;
   };
   const track = (promise) => {
+    for (const state of finalDeliveries.values())
+      if (state.published && !state.released)
+        invalidateFinal(state, 'assistant_completion_changed');
     pendingWrites.add(promise);
     promise.finally(() => pendingWrites.delete(promise)).catch(() => {});
     return promise;
@@ -309,6 +626,12 @@ export function createGovernedAssistantNativeRuntime(
   function guardSettlement(agent) {
     if (guarded.has(agent)) return;
     guarded.add(agent);
+    const send = agent.send.bind(agent);
+    agent.send = (message, ...args) => {
+      if (message.source?.kind !== 'subagent-settled')
+        assertBusinessInputOpen({ nativeSessionId: agent.id });
+      return send(message, ...args);
+    };
     for (const method of ['followup', 'steer', 'inject']) {
       const original = agent[method].bind(agent);
       agent[method] = (message, ...args) => {
@@ -374,9 +697,20 @@ export function createGovernedAssistantNativeRuntime(
     }
   }
   ctx.on('agent/created', ({ agent }) => {
+    for (const state of finalDeliveries.values()) {
+      if (
+        !state.released &&
+        state.agents.some((parent) => ctx.agents.isOwnedBy(agent.id, parent))
+      ) {
+        completingAgents.set(agent, state);
+        invalidateFinal(state, 'assistant_completion_tree_changed');
+        throw Error('ASSISTANT_COMPLETING');
+      }
+    }
     if (bindings.has(agent.id)) {
       guardSettlement(agent);
       const entry = bindings.get(agent.id);
+      entry.eventBoundary ??= agent.session.snapshotEvents().at(-1)?.seq ?? -1;
       if (entry.parentNativeSessionId)
         agent.ctx.systemPrompt.section({
           name: 'deployment:persona-prefix',
@@ -392,6 +726,8 @@ export function createGovernedAssistantNativeRuntime(
   });
   ctx.tools.guard((exec) => {
     const entry = bindings.get(exec.agent?.id);
+    if (finalState(exec.agent?.id) && exec.name !== 'assistant_stop')
+      return 'assistant_completing';
     if (entry?.wireTools && !entry.wireTools.includes(exec.name))
       return 'assistant_tool_not_allowed';
   });
@@ -402,7 +738,7 @@ export function createGovernedAssistantNativeRuntime(
       checkpointNow(id, inputId, messageId),
     );
     checkpointChains.set(inputId, work);
-    return work;
+    return track(work);
   }
   async function checkpointNow(id, inputId, messageId) {
     const agent = ctx.agents.get(id),
@@ -478,7 +814,9 @@ export function createGovernedAssistantNativeRuntime(
     }
   }
   const modelAdmissions = new Map();
+  const modelOutputBounds = new Map();
   async function prepareModel(id, requested, signal) {
+    assertBusinessInputOpen({ nativeSessionId: id });
     const startedMono = performance.now(),
       startedAt = new Date().toISOString();
     if (modelAdmissions.has(id))
@@ -487,6 +825,7 @@ export function createGovernedAssistantNativeRuntime(
       throw Error('assistant_model_output_bound_required');
     await Promise.all([...pendingWrites]);
     await checkpoints(id);
+    assertBusinessInputOpen({ nativeSessionId: id });
     const callId = randomUUID();
     const ledgerStarted = performance.now();
     const prepared = await bridge(
@@ -516,20 +855,110 @@ export function createGovernedAssistantNativeRuntime(
       timing,
       outputTokens: prepared.outputTokens,
     });
+    modelOutputBounds.set(id, prepared.outputTokens);
     return prepared.outputTokens;
   }
+  let repair;
+  const createRepair = () =>
+    createBoundedFinalDeliveryRepair(ctx, {
+      binding: (id) => bindings.get(id),
+      inspect: (candidate, requestSignal) =>
+        bridge(
+          'delivery-repair-inspect',
+          {
+            nativeSessionId: candidate.nativeSessionId,
+            candidate,
+          },
+          requestSignal,
+        ),
+      authorize: (request) =>
+        bridge(
+          'delivery-repair-authorize',
+          {
+            nativeSessionId: request.candidate.nativeSessionId,
+            candidate: request.candidate,
+            phase: request.phase,
+          },
+          request.signal,
+        ),
+      acquireInputDelivery: (request) => acquireInputDelivery(request),
+      quiescent(id) {
+        try {
+          return (
+            !pendingWrites.size &&
+            ownedAgents(id).every(
+              (agent) =>
+                (agent.id === id || agent.status === 'idle') &&
+                !modelAdmissions.has(agent.id) &&
+                nativeToolsQuiescent(ctx, agent.id) &&
+                !agent.inbox.nextStep.length &&
+                !agent.inbox.nextTurn.length,
+            )
+          );
+        } catch {
+          return false;
+        }
+      },
+      async prepare(id, requestSignal) {
+        const outputTokens = await prepareModel(
+          id,
+          modelOutputBounds.get(id),
+          requestSignal,
+        );
+        const admission = modelAdmissions.get(id);
+        if (!admission || admission.outputTokens !== outputTokens)
+          throw Error('FINAL_DELIVERY_REPAIR_PREPARATION_MISSING');
+        return Object.freeze({ admission, entry: binding(id), outputTokens });
+      },
+      consumePreparation(id, ticket) {
+        if (
+          ticket.entry !== binding(id) ||
+          modelAdmissions.get(id) !== ticket.admission ||
+          ticket.admission.repairConsumed
+        )
+          throw Error('FINAL_DELIVERY_REPAIR_PREPARATION_CHANGED');
+        ticket.admission.repairConsumed = true;
+        return ticket.outputTokens;
+      },
+      async closePreparation(id, ticket) {
+        if (ticket.entry !== binding(id))
+          throw Error('FINAL_DELIVERY_REPAIR_PREPARATION_CHANGED');
+        // A request-consumed ticket can still be unused. A confirmed DB dispatch
+        // stays on the existing settlement path; uncertain RPCs must ask SQL.
+        if (ticket.admission.dispatchCommitted === true) return;
+        if (modelAdmissions.get(id) !== ticket.admission)
+          throw Error('FINAL_DELIVERY_REPAIR_PREPARATION_CHANGED');
+        const closed = await bridge(
+          'delivery-repair-close-preparation',
+          {
+            nativeSessionId: id,
+            callId: ticket.admission.callId,
+          },
+          new AbortController().signal,
+        );
+        if (closed.closed !== true || closed.callId !== ticket.admission.callId)
+          throw Error('FINAL_DELIVERY_REPAIR_PREPARATION_CLOSE_UNCONFIRMED');
+        if (modelAdmissions.get(id) !== ticket.admission)
+          throw Error('FINAL_DELIVERY_REPAIR_PREPARATION_CHANGED');
+        modelAdmissions.delete(id);
+      },
+    });
   // Supported native proposal seam: return a new config BEFORE prepareCall
   // freezes maxTokens. Never mutate the prepared llm/stream request.
   ctx.on('agent/request', async ({ agent, signal }, next) => {
     const config = await next();
     if (!bindings.has(agent.id)) return config;
+    const preparedRepair = await repair?.takePreparation(agent.id, signal);
     return {
       ...config,
-      maxTokens: await prepareModel(agent.id, config.maxTokens, signal),
+      maxTokens:
+        preparedRepair ??
+        (await prepareModel(agent.id, config.maxTokens, signal)),
     };
   });
   ctx.on('llm/stream', async function* (options, next) {
     const id = options.sessionId;
+    assertBusinessInputOpen({ nativeSessionId: id });
     if (!bindings.has(id)) {
       const parent = ctx.agents.get(id)?.session.header.parentSession;
       if (parent && bindings.has(parent))
@@ -539,6 +968,7 @@ export function createGovernedAssistantNativeRuntime(
     }
     await Promise.all([...pendingWrites]);
     await checkpoints(id);
+    repair?.assertStreamEligible(options);
     // Pinned dsh-compaction-basic deliberately calls llm.stream directly with
     // purpose=compaction, without agent/request. Admit this native auxiliary
     // call through the same ledger; never bypass accounting or rewrite DSH's
@@ -548,6 +978,7 @@ export function createGovernedAssistantNativeRuntime(
       if (granted !== options.maxTokens)
         throw Error('assistant_compaction_output_budget_exhausted');
     }
+    assertBusinessInputOpen({ nativeSessionId: id });
     const admission = modelAdmissions.get(id);
     if (!admission || options.maxTokens !== admission.outputTokens)
       throw Error('assistant_model_preparation_required');
@@ -582,6 +1013,7 @@ export function createGovernedAssistantNativeRuntime(
       performance.now() - serializationStarted,
     );
     const admissionStarted = performance.now();
+    await repair?.beforeDispatch(options);
     const reservation = await bridge(
       'model-dispatch',
       {
@@ -594,6 +1026,9 @@ export function createGovernedAssistantNativeRuntime(
       options.signal,
     );
     if (!reservation.reserved) throw Error('assistant_model_unknown_no_replay');
+    // This flag is set only by the real dispatch ACK, never by request consume
+    // or by a timeout. Unknown dispatches are decided by exact SQL close.
+    admission.dispatchCommitted = true;
     if (reservation.outputTokens !== outputTokens)
       throw Error('assistant_model_output_grant_invalid');
     const transport = createModelTransport({
@@ -786,6 +1221,7 @@ export function createGovernedAssistantNativeRuntime(
     }
   });
   async function start(p) {
+    assertBusinessInputOpen({ nativeSessionId: p.parentNativeSessionId });
     const parent = live(p.parentNativeSessionId);
     binding(parent.id);
     if (bindings.has(p.instance.nativeSessionId))
@@ -821,6 +1257,8 @@ export function createGovernedAssistantNativeRuntime(
     return { childId: accepted.childId, messageId: accepted.messageId };
   }
   async function followup(p) {
+    assertBusinessInputOpen({ nativeSessionId: p.parentNativeSessionId });
+    assertBusinessInputOpen({ nativeSessionId: p.nativeSessionId });
     const entry = binding(p.nativeSessionId),
       parent = live(p.parentNativeSessionId);
     const messageId = await queueHostSubagentPrompt(
@@ -989,6 +1427,10 @@ export function createGovernedAssistantNativeRuntime(
       ctx.tools.register(definition);
     }
   async function drain(p) {
+    for (const instance of p.instances ?? []) {
+      const state = finalState(instance.nativeSessionId);
+      if (state) invalidateFinal(state, 'assistant_completion_stopped', true);
+    }
     const canceledIds = new Set(
       (p.instances ?? []).map((instance) => instance.runId),
     );
@@ -1021,8 +1463,35 @@ export function createGovernedAssistantNativeRuntime(
     }
     return { drained: true };
   }
+  async function acquireInputDelivery({ nativeSessionId, turn, signal }) {
+    if (!Number.isSafeInteger(turn) || turn < 1 || !signal)
+      throw Error('INPUT_GATE_SCOPE_CHANGED');
+    const token = await pauseInputDelivery({ nativeSessionId, turn }, signal);
+    return Object.freeze({
+      stillCurrent: () => {
+        const state = inputPauses.get(nativeSessionId);
+        return (
+          !!state &&
+          state.scope.gateId === token.gateId &&
+          currentInputPause(state)
+        );
+      },
+      releaseBeforeTurnClose: () => releaseInputDelivery(token),
+    });
+  }
+
   return {
     bind(p) {
+      if (p.parentNativeSessionId)
+        assertBusinessInputOpen({ nativeSessionId: p.parentNativeSessionId });
+      const previous = finalState(p.nativeSessionId);
+      if (previous) {
+        if (!previous.consumed || !previous.released)
+          throw Error('ASSISTANT_COMPLETING');
+        finalDeliveries.delete(p.nativeSessionId);
+        const agent = ctx.agents.get(p.nativeSessionId);
+        if (agent) completingAgents.delete(agent);
+      }
       if (bindings.has(p.nativeSessionId))
         throw Error('assistant_native_already_bound');
       // Root control flow also reads the frozen, eligible Skill provider.
@@ -1042,15 +1511,49 @@ export function createGovernedAssistantNativeRuntime(
       bindings.set(p.nativeSessionId, {
         ...p,
         wireTools,
+        bindingId: randomUUID(),
+        eventBoundary: ctx.agents.get(p.nativeSessionId)
+          ? (ctx.agents.get(p.nativeSessionId).session.snapshotEvents().at(-1)
+              ?.seq ?? -1)
+          : null,
         messages: new Map(),
       });
       const agent = ctx.agents.get(p.nativeSessionId);
+      if (p.deliveryMode === 'checked_native_v1') repair ??= createRepair();
+      repair?.bind(p.nativeSessionId);
       if (agent) guardSettlement(agent);
       if (agent && wireTools) agent.ctx.tools.restrict({ allow: wireTools });
       if (agent) refreshCoordinationTools(agent);
       if (p.parentNativeSessionId && ctx.agents.get(p.parentNativeSessionId))
         refreshCoordinationTools(ctx.agents.get(p.parentNativeSessionId));
       return { bound: true };
+    },
+    assertBusinessInputOpen,
+    trackBusinessInput(p, work) {
+      const token = {},
+        active = pendingInputs.get(p.nativeSessionId) ?? new Set();
+      pendingInputs.set(p.nativeSessionId, active);
+      active.add(token); // actual native handler lifetime, including a lost RPC ACK
+      const done = () => {
+        active.delete(token);
+        if (!active.size && pendingInputs.get(p.nativeSessionId) === active)
+          pendingInputs.delete(p.nativeSessionId);
+      };
+      try {
+        return Promise.resolve(work()).finally(done);
+      } catch (error) {
+        done();
+        throw error;
+      }
+    },
+    acquireInputDelivery,
+    pauseInputDelivery,
+    releaseInputDelivery,
+    inputDeliveryCurrent(p) {
+      const state = inputPauses.get(p.nativeSessionId);
+      return (
+        !!state && p.gateId === state.scope.gateId && currentInputPause(state)
+      );
     },
     start,
     followup,
@@ -1096,6 +1599,120 @@ export function createGovernedAssistantNativeRuntime(
       }
       throw Error('assistant_native_join_bound_exceeded');
     },
+    async joinForFinalDelivery(p) {
+      const id = p.nativeSessionId;
+      if (inputPauses.has(id) && inputPauses.get(id).phase !== 'released')
+        throw Error('INPUT_GATE_NOT_RELEASED');
+      const entry = binding(id);
+      if (entry.parentNativeSessionId) throw Error('assistant_root_required');
+      if (typeof entry.runId !== 'string' || !entry.runId)
+        throw Error('assistant_completion_run_binding_required');
+      if (finalJoins.has(id) || finalState(id))
+        throw Error('assistant_completion_already_started');
+      finalJoins.add(id);
+      let state;
+      try {
+        // Reuse the existing bounded native join. No replacement driver/poller.
+        await this.join(p);
+        const root = live(id),
+          agents = ownedAgents(id);
+        if (binding(id) !== entry)
+          throw Error('assistant_completion_binding_changed');
+        let release;
+        const gate = new Promise((resolve) => {
+          release = resolve;
+        });
+        state = {
+          root,
+          entry,
+          agents,
+          release,
+          holds: [],
+          published: false,
+          consumed: false,
+          released: false,
+        };
+        finalDeliveries.set(id, state);
+        // No await: every owned Agent claims the public true-idle phase in
+        // one JS boundary. A competing maintenance task fails closed.
+        for (const agent of agents) {
+          completingAgents.set(agent, state);
+          state.holds.push(
+            agent.runMaintenance(async (signal) => {
+              const aborted = () =>
+                invalidateFinal(state, 'assistant_completion_canceled', true);
+              signal.addEventListener('abort', aborted, { once: true });
+              try {
+                await gate;
+              } finally {
+                signal.removeEventListener('abort', aborted);
+              }
+            }),
+          );
+        }
+        await Promise.all([...pendingWrites]);
+        await Promise.all([...checkpointChains.values()]);
+        for (const agent of agents) await checkpoints(agent.id);
+        await Promise.all([...pendingWrites]);
+        await Promise.all(
+          agents.map((agent) => ctx.sessions.flush(agent.session)),
+        );
+        assertFinalQuiescent(state);
+        let candidate;
+        try {
+          candidate = publicCandidate(root, entry);
+        } catch (error) {
+          // A cold host bound at the durable tail has lost only its in-memory
+          // lower boundary. Recover it from current-lease control references,
+          // then verify the actual held journal. Never accept origin in p.
+          if (
+            error.message !== 'assistant_completion_public_message_required' ||
+            entry.originRestoreAttempted ||
+            typeof optionsForRuntime.restoreFinalDeliveryOrigin !== 'function'
+          )
+            throw error;
+          entry.originRestoreAttempted = true;
+          const origin = await optionsForRuntime.restoreFinalDeliveryOrigin({
+            nativeSessionId: id,
+            rootRunId: entry.runId,
+          });
+          assertFinalQuiescent(state);
+          const verified = verifyRestoredFinalReplyOrigin(
+            root.session,
+            entry,
+            origin,
+          );
+          entry.restoredReplyOrigin = verified;
+          entry.eventBoundary = verified.lowerBoundary;
+          candidate = publicCandidate(root, entry);
+        }
+        state.heads = agents.map(
+          (agent) => agent.session.snapshotEvents().at(-1)?.seq,
+        );
+        state.candidate = Object.freeze(candidate);
+        state.completionToken = randomUUID();
+        state.published = true;
+        return {
+          ...candidate,
+          completionToken: state.completionToken,
+          rootBinding: {
+            nativeSessionId: id,
+            runId: entry.runId,
+            bindingId: entry.bindingId,
+          },
+        };
+      } catch (error) {
+        if (state) {
+          invalidateFinal(state, 'assistant_completion_failed', true);
+          await Promise.allSettled(state.holds);
+          // Keep this failed old Run closed. Existing cancel/drain/drop owns
+          // recovery; never silently reopen it after an uncertain acquisition.
+        }
+        throw error;
+      } finally {
+        finalJoins.delete(id);
+      }
+    },
     async inspect(p) {
       const live = ctx.sessions.get(p.nativeSessionId);
       const session = live
@@ -1115,24 +1732,74 @@ export function createGovernedAssistantNativeRuntime(
     async finish(p) {
       const root = binding(p.nativeSessionId);
       if (root.parentNativeSessionId) throw Error('assistant_root_required');
+      const state = finalDeliveries.get(p.nativeSessionId);
+      if (state) {
+        if (
+          p.completionToken !== state.completionToken ||
+          state.consumed ||
+          !state.published
+        )
+          throw Error('assistant_completion_token_invalid');
+        // The valid private capability is single-use, including failed finish.
+        state.consumed = true;
+        if (
+          p.candidateDigest !== state.candidate.textDigest ||
+          typeof p.factSetDigest !== 'string' ||
+          !/^sha256:[a-f0-9]{64}$/.test(p.factSetDigest)
+        )
+          throw Error('assistant_completion_digest_mismatch');
+        await Promise.all([...pendingWrites]);
+        await Promise.all(
+          state.agents.map((agent) => ctx.sessions.flush(agent.session)),
+        );
+        assertFinalQuiescent(state);
+        const current = publicCandidate(state.root, state.entry);
+        if (
+          Object.keys(current).some(
+            (key) => current[key] !== state.candidate[key],
+          )
+        )
+          throw Error('assistant_completion_changed');
+      } else if (p.completionToken !== undefined) {
+        throw Error('assistant_completion_token_invalid');
+      }
       await Promise.all([...pendingWrites]);
+      // Recheck after the last await and before erasing Run-bound state.
+      if (state) assertFinalQuiescent(state);
       // Completed business Runs may share the persistent native root Session.
       // Retain JSONL/context, not prior Run authority or result wakeup bindings.
+      for (const id of bindings.keys()) await repair?.close(id);
       for (const disposers of coordinationScopes.values())
         disposers.forEach((dispose) => dispose());
       coordinationScopes.clear();
       bindings.clear();
+      inputPauses.clear();
       deliveries.clear();
       nativeCompletions.clear();
       checkpointChains.clear();
       checkpointProofs.clear();
       modelAdmissions.clear();
+      modelOutputBounds.clear();
       failures.clear();
       failuresTruncated = false;
+      if (state) {
+        state.release();
+        await Promise.all(state.holds);
+        if (state.invalidReason) throw Error(state.invalidReason);
+        state.released = true;
+        return {
+          released: true,
+          publicMessageId: state.candidate.publicMessageId,
+          durableSeq: state.candidate.durableSeq,
+          textDigest: state.candidate.textDigest,
+          factSetDigest: p.factSetDigest,
+        };
+      }
       return { released: true };
     },
     async flush() {
       await Promise.all([...pendingWrites]);
+      await repair?.flush();
       return { flushed: true };
     },
   };

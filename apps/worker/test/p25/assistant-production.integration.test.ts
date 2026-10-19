@@ -300,6 +300,7 @@ integration(
             })),
             onEvent: async () => {},
             assistants: controller({
+              deliveryMode: 'legacy',
               configuration: f.config,
               database: database.db,
               authorize: assertAssistantAuthority,

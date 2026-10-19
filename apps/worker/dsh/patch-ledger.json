@@ -167,6 +167,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-session-compatibility.mjs",
       "reason": "AllRice validates its own exact four private payloads and chronology before public V4 resume. Old private V0/V3 histories stay on the independently approved exact retained reader. No unknown required event is ignored and no original journal is rewritten to bypass refusal."
+    },
+    {
+      "id": "allrice-final-delivery-v1",
+      "issue": "MET-184; MET-192",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-final-delivery-repair.mjs",
+      "reason": "Frozen new-Run opt-in: certify exact native final reply and immutable artifact/Office evidence before atomic completion. A single same-turn host notice may correct links from existing authorized files, using original identity, input gate, deadline and model admission. No tools or business task replay; preserve original failed replies, legacy frozen behavior and cold journal provenance. No DSH core changes."
     }
   ],
   "physicalPatches": [
