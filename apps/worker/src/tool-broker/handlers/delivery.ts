@@ -337,7 +337,7 @@ export async function createControlledWorkspaceExport(
             },
             storage,
           );
-        const artifactInput = {
+        const artifactInput: Parameters<typeof publishWorkbenchArtifact>[0] = {
           ...publication,
           kind,
           format,
