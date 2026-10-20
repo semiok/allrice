@@ -20,6 +20,31 @@ function executionInput(input: {
 }
 
 describe('DSH Tool Bridge', () => {
+  it('keeps newly authorized business tools callable through the Broker for a pinned older native runtime', () => {
+    const input = executionInput({
+      tools: [
+        { name: 'web.search', description: 'search', inputSchema: {} },
+        {
+          name: 'workspace.brand_content.read',
+          description: 'Read the authorized content workbench',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    });
+    const instructions = dshToolBridgeInstructions(
+      input,
+      new Set(['web.search']),
+    );
+    expect(instructions).toContain(
+      'DSH native tools available for this turn: web.search.',
+    );
+    expect(instructions).toContain('"name":"workspace.brand_content.read"');
+    expect(instructions).toContain('<allrice_tool_call>');
+    expect(instructions).not.toContain('workspace.brand_content.step');
+    expect(dshToolBridgeInstructions(input)).not.toContain(
+      '<allrice_tool_call>',
+    );
+  });
   it('routes native search through the same authorized broker and denies absent search authority', async () => {
     const onToolCall = vi.fn(async () => ({
       modelContent: '{"truncated":true}',
