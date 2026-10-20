@@ -182,6 +182,7 @@ export async function fixture({
     client,
     sessionId: id,
     productSessionId: sessionId,
+    nativeTools: [],
   };
   vi.spyOn(DshRuntimePool.prototype, 'hasApprovedNativeLaunch').mockReturnValue(
     cold,
