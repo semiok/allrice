@@ -104,6 +104,18 @@ function composeOutput(dependencies: Record<string, unknown>) {
   }
 }
 
+export function renderBrandContentArticleMarkdown(
+  draft: z.infer<typeof BrandContentDraftOutputSchema>,
+) {
+  const sourceNotes = `---\n\n资料依据：${draft.factIds.join('、') || '本次品牌资料中的文字要求'}。${draft.verificationNotes.length ? `\n\n待核实：\n${draft.verificationNotes.map((note) => `- ${note}`).join('\n')}` : ''}`;
+  const markdown = draft.markdown.trimEnd();
+  if (markdown === sourceNotes || markdown.endsWith(`\n\n${sourceNotes}`))
+    return draft.markdown.endsWith('\n')
+      ? draft.markdown
+      : `${draft.markdown}\n`;
+  return `${draft.markdown}\n\n${sourceNotes}\n`;
+}
+
 /** The Broker also matches this exact envelope and stable call ID to a running
  * durable DAG step. A model cannot submit a different action or fake dependencies. */
 export const executeBrandContentStep: RiceToolHandler = async (context) => {
@@ -299,7 +311,7 @@ export const executeBrandContentStep: RiceToolHandler = async (context) => {
         arguments: {
           format: 'markdown',
           fileName: `${draft.title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 100)}.md`,
-          content: `${draft.markdown}\n\n---\n\n资料依据：${draft.factIds.join('、') || '本次品牌资料中的文字要求'}。${draft.verificationNotes.length ? `\n\n待核实：\n${draft.verificationNotes.map((note) => `- ${note}`).join('\n')}` : ''}\n`,
+          content: renderBrandContentArticleMarkdown(draft),
           artifactKind: 'document',
           ...(value.article
             ? { parentObjectId: value.article.content.objectId }
