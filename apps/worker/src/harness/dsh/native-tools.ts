@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { explicitRecurringTaskIntent } from '@allrice/database';
 import { HandlerError } from '../../errors.js';
 import { isDshNativeTool, privateDshNativeToolNames } from './tool-bridge.js';
 
@@ -26,8 +27,19 @@ export function nativeSessionRecoveryFailure(error: unknown) {
 export async function selectDshNativeTools(
   names: readonly string[],
   verifiedEntrypoint?: string,
+  currentUserRequest?: string,
 ) {
-  const requested = names.filter(isDshNativeTool);
+  // Only the server-loaded current human message selects this transport.
+  // Kernel text can include untrusted templates; a missing raw message keeps
+  // the prior native vocabulary. SQL still authorizes the eventual operation.
+  const recurring =
+    names.includes('automation.create') &&
+    currentUserRequest !== undefined &&
+    explicitRecurringTaskIntent(currentUserRequest) !== null;
+  const requested = names.filter(
+    (name) =>
+      isDshNativeTool(name) && !(recurring && name === 'automation.create'),
+  );
   if (!verifiedEntrypoint) return requested; // offline protocol fixtures
   const require = createRequire(verifiedEntrypoint);
   const module = await import(

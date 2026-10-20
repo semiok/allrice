@@ -632,6 +632,7 @@ describe('Codex hosted search Tool Broker integration', () => {
 
   it('keeps authorized read-only tools available without pre-routing side effects', () => {
     vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '0');
     expect(riceToolRisk('web.search')).toBe('read_only');
     expect(riceToolRisk('browser.run')).toBe('read_only');
     expect(riceToolRisk('automation.create')).toBe('side_effect');

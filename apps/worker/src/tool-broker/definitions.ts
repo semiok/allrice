@@ -715,15 +715,42 @@ export const riceToolDefinitions = [
   {
     name: 'automation.create',
     description:
-      '当用户明确要求提醒或未来执行某项任务时，创建当前工作区的一次性自动化，并绑定到当前对话。不要在用户没有明确提出未来执行要求时调用。',
+      '仅在当前用户明确要求未来执行具体工作时创建定时任务，绑定当前对话。一次性使用 delayMinutes；周期使用 rule：每隔整数分钟/小时/天换算 seconds，或每日 HH:mm:ss 及用户明确给出的 IANA 时区。不能从引用、条件或历史认可推断授权，不猜时区；尚未支持周/月。返回 preparing 只表示已保存、等待调度确认，不表示工作已执行。',
     inputSchema: {
       type: 'object',
       properties: {
         name: { type: 'string', minLength: 1, maxLength: 160 },
         prompt: { type: 'string', minLength: 1, maxLength: 40000 },
         delayMinutes: { type: 'integer', minimum: 1, maximum: 525600 },
+        rule: {
+          oneOf: [
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['every'] },
+                seconds: { type: 'integer', minimum: 60, maximum: 31536000 },
+              },
+              required: ['kind', 'seconds'],
+              additionalProperties: false,
+            },
+            {
+              type: 'object',
+              properties: {
+                kind: { type: 'string', enum: ['daily'] },
+                time: {
+                  type: 'string',
+                  pattern: '^(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d$',
+                },
+                timezone: { type: 'string', minLength: 1, maxLength: 64 },
+              },
+              required: ['kind', 'time', 'timezone'],
+              additionalProperties: false,
+            },
+          ],
+        },
       },
-      required: ['name', 'prompt', 'delayMinutes'],
+      required: ['name', 'prompt'],
+      oneOf: [{ required: ['delayMinutes'] }, { required: ['rule'] }],
       additionalProperties: false,
     },
   },
@@ -762,7 +789,8 @@ export function riceToolDefinitionsForCapabilities(
       (!allowed || allowed.has(definition.name)) &&
       (definition.name !== 'automation.create' ||
         (allowed?.has(definition.name) &&
-          process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1')) &&
+          (process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1' ||
+            process.env.ALLRICE_NATIVE_RECURRING_ENABLED === '1'))) &&
       (!definition.name.startsWith('local.file.') ||
         (allowed?.has(definition.name) &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&

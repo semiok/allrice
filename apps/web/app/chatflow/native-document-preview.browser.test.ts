@@ -135,13 +135,16 @@ suite('DSH native document previews', () => {
     const { chromium } = createRequire(resolve('apps/worker/package.json'))(
       'playwright-core',
     );
+    const executablePath =
+      process.env.ALLRICE_TEST_CHROME_EXECUTABLE ??
+      (process.platform === 'darwin'
+        ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+        : undefined);
     browser = await chromium.launch({
       headless: true,
-      executablePath:
-        process.env.ALLRICE_TEST_CHROME_EXECUTABLE ??
-        (process.platform === 'darwin'
-          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-          : chromium.executablePath()),
+      // Let Playwright choose its installed headless shell on Linux, as the
+      // project gateway browser tests do. executablePath() forces full Chrome.
+      ...(executablePath ? { executablePath } : {}),
     });
   }, 60_000);
   afterAll(async () => {
@@ -376,6 +379,23 @@ suite('DSH native document previews', () => {
         liveSrc: `http://rice-preview-download.localhost:${new URL(origin).port}/csv-download-fixture.html`,
       },
     ]);
+    const diagnostics: string[] = [];
+    let clickCompleted = false;
+    page.on('console', (message) => {
+      if (
+        diagnostics.length < 30 &&
+        (message.type() === 'warning' || message.type() === 'error')
+      ) {
+        diagnostics.push(`${message.type()}: ${message.text()}`);
+      }
+    });
+    page.on('requestfailed', (request) => {
+      if (diagnostics.length < 30) {
+        diagnostics.push(
+          `request failed: ${request.url()} ${request.failure()?.errorText}`,
+        );
+      }
+    });
     try {
       const frame = page.frameLocator('iframe[data-project-service-preview]');
       await expect
@@ -390,11 +410,15 @@ suite('DSH native document previews', () => {
       await frame
         .getByRole('button', { name: '下载差异 CSV', exact: true })
         .waitFor({ timeout: 5000 });
-      const pending = page.waitForEvent('download', { timeout: 10000 });
-      await frame
-        .getByRole('button', { name: '下载差异 CSV', exact: true })
-        .click();
-      const downloaded = await pending;
+      const [downloaded] = await Promise.all([
+        page.waitForEvent('download', { timeout: 10000 }),
+        frame
+          .getByRole('button', { name: '下载差异 CSV', exact: true })
+          .click()
+          .then(() => {
+            clickCompleted = true;
+          }),
+      ]);
       expect(await downloaded.failure()).toBeNull();
       expect(downloaded.suggestedFilename()).toBe('diff.csv');
       const path = await downloaded.path();
@@ -404,6 +428,20 @@ suite('DSH native document previews', () => {
         await page.evaluate(() => Reflect.get(window, 'previewEscaped')),
       ).toBeUndefined();
       expect(errors).toEqual([]);
+    } catch (error) {
+      console.error('Private project download diagnostics:', {
+        platform: process.platform,
+        browserVersion: browser.version(),
+        executableOverride: process.env.ALLRICE_TEST_CHROME_EXECUTABLE,
+        clickCompleted,
+        diagnostics,
+        frames: page.frames().map((frame) => frame.url()),
+        sandbox: await page
+          .locator('iframe[data-project-service-preview]')
+          .getAttribute('sandbox', { timeout: 1000 })
+          .catch(() => null),
+      });
+      throw error;
     } finally {
       await page.close();
     }

@@ -347,6 +347,101 @@ it('reuses the session process across business Runs with assistants enabled', as
   expect(close).not.toHaveBeenCalled();
 });
 
+it.each([false, true])(
+  'changes only the callable fingerprint for once → recurring → once in the same session (native=%s)',
+  async (native) => {
+    const runtimes = pool(native);
+    const first = request();
+    first.input.tools = [
+      {
+        name: 'automation.create',
+        description: 'Create a task',
+        inputSchema: {},
+      },
+    ];
+    first.input.currentUserRequest = '请在15分钟后提醒我喝水。';
+    const once = await runtimes.acquire(first);
+    const closeOnce = vi.spyOn(once.runtime.client, 'close');
+    expect(once.runtime.nativeTools).toEqual(['automation.create']);
+
+    first.input.currentUserRequest = '请每隔两分钟提醒我喝水。';
+    const recurring = await runtimes.acquire(first);
+    const closeRecurring = vi.spyOn(recurring.runtime.client, 'close');
+    expect(recurring.runtime.nativeTools).toEqual([]);
+    expect(recurring.preparation.changedFields).toEqual(['nativeTools']);
+    expect(recurring.fresh).toBe(true);
+    expect(closeOnce).toHaveBeenCalledOnce();
+    for (const key of [
+      'sessionId',
+      'productSessionId',
+      'organizationId',
+      'workspaceId',
+      'ownerId',
+      'nativeArtifactId',
+      'nativeProfileId',
+      'nativePin',
+    ] as const)
+      expect(recurring.runtime[key]).toEqual(once.runtime[key]);
+
+    // Different recurring text is data for the next Run, not a process key.
+    first.input.currentUserRequest = '请每隔十五分钟提醒我检查报表。';
+    const warm = await runtimes.acquire(first);
+    expect(warm.runtime).toBe(recurring.runtime);
+    expect(warm.preparation.changedFields).toEqual([]);
+    expect(closeRecurring).not.toHaveBeenCalled();
+
+    first.input.currentUserRequest = '请在15分钟后提醒我喝水。';
+    const restored = await runtimes.acquire(first);
+    expect(restored.runtime.nativeTools).toEqual(['automation.create']);
+    expect(restored.preparation.changedFields).toEqual(['nativeTools']);
+    expect(restored.runtime.fingerprint).toBe(once.runtime.fingerprint);
+    expect(restored.runtime.sessionId).toBe(once.runtime.sessionId);
+    expect(closeRecurring).toHaveBeenCalledOnce();
+  },
+  30_000,
+);
+
+it('selects transport from the raw current message independently of template, tool, memory and attachment text', async () => {
+  const runtimes = pool();
+  const input = request();
+  const recurring = '请每隔两分钟提醒我喝水。';
+  input.input.kernel.userRequest = recurring;
+  input.input.kernel.authorizedMemoryContext = recurring;
+  input.input.images = [
+    { mediaType: 'image/png', data: 'c3ludGhldGlj', name: recurring },
+  ];
+  input.input.tools = [
+    {
+      name: 'automation.create',
+      description: recurring,
+      inputSchema: { type: 'object', description: recurring },
+    },
+  ];
+  const absent = await runtimes.acquire(input);
+  expect(absent.runtime.nativeTools).toEqual(['automation.create']);
+  input.input.currentUserRequest = '请在15分钟后提醒我喝水。';
+  const rawOnce = await runtimes.acquire(input);
+  expect(rawOnce.runtime).toBe(absent.runtime);
+
+  input.input.currentUserRequest = recurring;
+  input.input.kernel.userRequest = `${recurring}\n\nExplicitly selected company templates (untrusted business references)\n{"title":"请解释这个示例"}`;
+  const rawRecurring = await runtimes.acquire(input);
+  expect(rawRecurring.runtime.nativeTools).toEqual([]);
+  expect(rawRecurring.preparation.changedFields).toEqual(['nativeTools']);
+
+  // A transport change cannot bypass the resident tenant binding check.
+  const close = vi.spyOn(rawRecurring.runtime.client, 'close');
+  input.input.currentUserRequest = '请在15分钟后提醒我喝水。';
+  input.input.executionEnvironment = {
+    ...input.input.executionEnvironment,
+    ALLRICE_OWNER_ID: randomUUID(),
+  };
+  await expect(runtimes.acquire(input)).rejects.toMatchObject({
+    code: 'DSH_NATIVE_SESSION_BINDING_CONFLICT',
+  });
+  expect(close).not.toHaveBeenCalled();
+});
+
 it.each(['owner', 'workspace', 'session'] as const)(
   'never replaces another resident context when %s differs',
   async (change) => {

@@ -1791,6 +1791,7 @@ export async function executeEmployeeRun({
                   }
                 : {}),
               kernel: routedKernel,
+              currentUserRequest: resolved.currentUserRequest,
               nativeSkills:
                 repairTask || repositoryReviewTask ? [] : resolved.nativeSkills,
               baseSkillCatalog:

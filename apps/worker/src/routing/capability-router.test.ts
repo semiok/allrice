@@ -354,6 +354,7 @@ describe('capability route decision', () => {
   );
 
   it('requires the feature, frozen binding and capability, even when selected', () => {
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '0');
     vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
     for (const allowed of [undefined, []])
       expect(
@@ -372,6 +373,40 @@ describe('capability route decision', () => {
     expect(
       riceToolDefinitionsForTurn(
         ['automation:write'],
+        ['automation.create'],
+        ['automation.create'],
+      ),
+    ).toEqual([]);
+  });
+  it('exposes the same human-governed tool when only recurring is enabled', () => {
+    vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+    const input = base({ approvalPolicy: 'confirm_external' });
+    const plan = decideCapabilityRoute({
+      request: { ...input.request, prompt: '请每隔两分钟回复校验词。' },
+      executionSnapshot: input.snapshot,
+      tools,
+    });
+    expect(
+      plan.candidates.find((c) => c.id === 'tool:automation.create'),
+    ).toMatchObject({ authorized: true, exclusionReason: null });
+    expect(
+      riceToolDefinitionsForTurn(
+        ['automation:write'],
+        ['automation.create'],
+        [],
+      ).map((t) => t.name),
+    ).toEqual(['automation.create']);
+    expect(
+      riceToolDefinitionsForTurn(
+        ['automation:write'],
+        [],
+        ['automation.create'],
+      ),
+    ).toEqual([]);
+    expect(
+      riceToolDefinitionsForTurn(
+        [],
         ['automation.create'],
         ['automation.create'],
       ),

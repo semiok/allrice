@@ -135,3 +135,25 @@ export async function assertEmployeeChatRun(
 ) {
   return (await assertEmployeeChatExecution(...args)).text;
 }
+
+/** Internal producers also persist role=user. Their durable source exists
+ * before a legacy dispatcher has necessarily linked run_id. A scheduled work
+ * item must never use its own text to authorize another background task. */
+export async function assertEmployeeChatHumanSource(
+  tx: postgres.TransactionSql,
+  input: EmployeeChatCall,
+  current: Awaited<ReturnType<typeof assertEmployeeChatExecution>>,
+) {
+  const [source] = await tx<{ internal: boolean }[]>`
+    select exists(select 1 from allrice_automation_runs a
+        where a.run_id=${input.context.runId} or a.id=m.client_message_id)
+      or exists(select 1 from allrice_automation_folder_events e
+        where e.run_id=${input.context.runId} or e.id=m.client_message_id)
+      or exists(select 1 from allrice_workflow_runs w where w.run_id=${input.context.runId})
+      or exists(select 1 from allrice_platform_quality_checks q where q.run_id=${input.context.runId})
+      or exists(select 1 from allrice_platform_repair_tasks r where r.run_id=${input.context.runId})
+      or exists(select 1 from allrice_platform_repository_review_subjects s where s.run_id=${input.context.runId})
+      as internal from allrice_messages m where m.id=${input.userMessageId}`;
+  if (!source || source.internal || current.snapshot.workflowInvocation)
+    throw new DataAccessError('authorization_denied');
+}
