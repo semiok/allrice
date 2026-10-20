@@ -2,7 +2,33 @@ import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Delivery from './delivery.js';
 import type { RiceToolHandlerContext } from '../types.js';
-import { executeBrandContentStep } from './brand-content.js';
+import {
+  executeBrandContentStep,
+  renderBrandContentArticleMarkdown,
+} from './brand-content.js';
+
+// Actual isolated acceptance v1 body; the only requested v2 edit was its opening.
+const qaOpening =
+  '一天开始时，不必急着写满整页。想用纸笔安排日常，可以先在桌前记下三件具体的小事。';
+const qaBody = `# MET194隔离验收：桌面的三件小事
+
+${qaOpening}
+
+**① 今天要做的一件事**
+例如：核对一份待提交的文件，写下计划处理的时间。
+
+**② 今天要确认的一件事**
+例如：把会议前想问的问题记下来，留一行填写后续答复。
+
+**③ 下班前要回看的一件事**
+回看上午记下的事项，完成的打勾，未完成的注明下一步；安排有变化，也可以重新写。
+
+记录不需要统一模板，按自己的工作节奏选择即可。三件事只是一个起点，不是必须完成的打卡任务。
+
+本次演示笔记本的已知规格为 **A5、48张、96页**。这里仅介绍给定规格，不延伸描述使用效果。
+
+*本文为「演示纸品 · MET194隔离验收」隔离测试内容，不是真实商品广告。*`;
+const qaSourceNotes = '\n\n---\n\n资料依据：fact_1。\n';
 
 const ports = vi.hoisted(() => ({
   authorize: vi.fn(),
@@ -109,6 +135,123 @@ function fixture(stage: 'article' | 'revision' = 'article') {
 
 describe('brand Workflow output publication', () => {
   beforeEach(() => vi.resetAllMocks());
+  it('keeps the actual QA source footer once through initial publication and two opening-only revisions', async () => {
+    ports.export.mockImplementation(
+      async (
+        _context: unknown,
+        composition: NonNullable<
+          Parameters<typeof Delivery.createControlledWorkspaceExport>[1]
+        >,
+      ) => {
+        await composition.registered!(
+          Symbol('existing publisher transaction') as never,
+          randomUUID(),
+        );
+        return { modelContent: '{}', summary: '实际文件回执' };
+      },
+    );
+    const publish = async (stage: 'article' | 'revision', markdown: string) => {
+      const { input, args, authority } = fixture(stage);
+      authority.invocation.input.context.facts = [
+        { id: 'fact_1', text: 'A5，48张、96页。' },
+      ];
+      args.dependencies.compose.answer = JSON.stringify({
+        title: 'MET194隔离验收：桌面的三件小事',
+        markdown,
+        factIds: ['fact_1'],
+        verificationNotes: [],
+      });
+      await executeBrandContentStep({ input, arguments: args });
+      const calls = ports.export.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      return calls[calls.length - 1]![0].arguments.content as string;
+    };
+    const initial = await publish('article', qaBody);
+    expect(initial).toBe(qaBody + qaSourceNotes);
+    const revised = await publish(
+      'revision',
+      initial.replace(qaOpening, '今天先写下三件小事。'),
+    );
+    expect(revised).toBe(initial.replace(qaOpening, '今天先写下三件小事。'));
+    const revisedAgain = await publish(
+      'revision',
+      revised.replace('今天先写下三件小事。', '今天从一件小事开始。'),
+    );
+    expect(revisedAgain).toBe(
+      initial.replace(qaOpening, '今天从一件小事开始。'),
+    );
+    for (const markdown of [initial, revised, revisedAgain])
+      expect(markdown.split('资料依据：fact_1。')).toHaveLength(2);
+    expect(ports.export).toHaveBeenCalledTimes(3);
+    expect(ports.atomicMutate).toHaveBeenCalledTimes(3);
+    expect(ports.mutate).not.toHaveBeenCalled();
+  });
+
+  it('preserves the recorded v2 duplicate footer without appending a third block or deleting prior text', () => {
+    const markdown =
+      qaBody.replace(qaOpening, '今天先写下三件小事。') +
+      qaSourceNotes.trimEnd() +
+      qaSourceNotes;
+    const draft = {
+      title: 'MET194隔离验收：桌面的三件小事',
+      markdown,
+      factIds: ['fact_1'],
+      verificationNotes: [],
+    };
+    const rendered = renderBrandContentArticleMarkdown(draft);
+    expect(rendered).toBe(markdown);
+    expect(
+      renderBrandContentArticleMarkdown({ ...draft, markdown: rendered }),
+    ).toBe(markdown);
+  });
+
+  it.each([
+    {
+      name: 'different fact identifiers',
+      previous: '\n\n---\n\n资料依据：fact_2。\n',
+      verificationNotes: [],
+      current: qaSourceNotes,
+    },
+    {
+      name: 'different verification notes',
+      previous:
+        '\n\n---\n\n资料依据：fact_1。\n\n待核实：\n- 旧说明仍需保留。\n',
+      verificationNotes: ['当前说明需要补充。'],
+      current:
+        '\n\n---\n\n资料依据：fact_1。\n\n待核实：\n- 当前说明需要补充。\n',
+    },
+  ])(
+    'preserves $name and appends the complete current footer only once',
+    ({ previous, verificationNotes, current }) => {
+      const draft = {
+        title: '一页记录',
+        markdown: qaBody + previous,
+        factIds: ['fact_1'],
+        verificationNotes,
+      };
+      const rendered = renderBrandContentArticleMarkdown(draft);
+      expect(rendered).toBe(draft.markdown + current);
+      expect(
+        renderBrandContentArticleMarkdown({ ...draft, markdown: rendered }),
+      ).toBe(rendered);
+    },
+  );
+
+  it.each([
+    '正文中的资料依据：fact_1。',
+    '正文保留以下相似片段。\n\n---\n\n资料依据：fact_1。\n\n后面仍有正文。',
+    '正文中的最后一句\n资料依据：fact_1。',
+  ])('keeps similar or nonterminal source text untouched: %s', (markdown) => {
+    expect(
+      renderBrandContentArticleMarkdown({
+        title: '一页记录',
+        markdown,
+        factIds: ['fact_1'],
+        verificationNotes: [],
+      }),
+    ).toBe(markdown + qaSourceNotes);
+  });
+
   it.each(['article', 'revision'] as const)(
     'commits %s artifact and exact business version through the same publisher transaction',
     async (stage) => {
