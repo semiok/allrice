@@ -996,7 +996,9 @@ async function enqueueClaim(claim: AutomationClaim) {
     automation.workspaceId,
     sessionId,
     {
-      clientMessageId: randomUUID(),
+      // The occurrence is durable before the message. Preserve this identity
+      // through the later run_id update and an uncertain send acknowledgement.
+      clientMessageId: claim.automationRun.id,
       text: `${automation.prompt}\n\n这是由自动化任务「${automation.name}」触发的执行。请直接完成任务并给出可交付结果。`,
       attachmentIds: [],
     },

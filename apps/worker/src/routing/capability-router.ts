@@ -312,11 +312,17 @@ export function decideCapabilityRoute(input: {
     }
   }
   for (const tool of input.tools) {
-    const requiresApproval = [
-      'storage:write',
-      'secret:use',
-      'automation:write',
-    ].includes(tool.requiredCapability);
+    // This adapter authorizes only an explicit current human request inside
+    // the leased chat transaction. It is not an autonomous-policy exception
+    // for other automation tools or an approval granted by route selection.
+    const humanGovernedOnce =
+      tool.name === 'automation.create' &&
+      process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1';
+    const requiresApproval =
+      !humanGovernedOnce &&
+      ['storage:write', 'secret:use', 'automation:write'].includes(
+        tool.requiredCapability,
+      );
     facts.push({
       candidate: RouteCandidateSchema.parse({
         id: `tool:${tool.name}`,

@@ -36,6 +36,7 @@ import {
   claimNextJob,
   startClaimedJob,
   heartbeatJob,
+  failJob,
   prepareJobNativeSession,
   bindJobNativeSession,
 } from './execution/queue.ts';
@@ -118,12 +119,58 @@ suite(
         title: 'Isolated once',
       });
     }
-    async function task(sessionId?: string) {
+    async function leasedChat(text: string, clientMessageId = randomUUID()) {
+      await f.db`update allrice_jobs set status='canceled' where status='queued'`;
+      const c = await chat();
+      const submitted = await sendChatMessage(f.context, f.workspaceId, c.id, {
+        clientMessageId,
+        text,
+        deliveryMode: 'follow_up',
+      });
+      const worker = randomUUID();
+      const job = await claimNextJob(worker, 30_000);
+      expect(job?.id).toBe(submitted.run.job.id);
+      const execution = await startClaimedJob(
+        worker,
+        job!.id,
+        job!.lease!.token,
+      );
+      return {
+        input: {
+          context: execution!.context,
+          sessionId: c.id,
+          userMessageId: submitted.userMessage.id,
+          callId: randomUUID(),
+          arguments: {
+            name: '测试预约',
+            prompt: '模型改写不能替代原文',
+            delayMinutes: 15,
+          },
+          worker: { attempt: job!.attempt, leaseToken: job!.lease!.token },
+          name: '测试预约',
+          prompt: '模型改写不能替代原文',
+          delayMinutes: 15,
+        },
+        finish: () =>
+          failJob({
+            workerId: worker,
+            jobId: job!.id,
+            leaseToken: job!.lease!.token,
+            code: 'FIXTURE_DONE',
+            message: 'Isolated SQL test finished, no model invoked',
+            retryable: false,
+          }),
+      };
+    }
+    async function task(
+      sessionId?: string,
+      prompt = '请在原会话回复测试标记。',
+    ) {
       const id = sessionId ?? (await chat()).id;
       const input = {
         clientRequestId: randomUUID(),
         name: '小任务',
-        prompt: '请在原会话回复测试标记。',
+        prompt,
         runAt: new Date(Date.now() + 6_500).toISOString(),
         timezone: 'Asia/Shanghai',
       };
@@ -206,7 +253,9 @@ suite(
       const [row] =
         await f.db`select (select count(*)::int from allrice_messages) messages,
       (select count(*)::int from allrice_employee_runs) employee_runs,(select count(*)::int from allrice_runs) runs,
-      (select count(*)::int from allrice_jobs) jobs,(select count(*)::int from allrice_automation_runs) automation_runs`;
+      (select count(*)::int from allrice_jobs) jobs,(select count(*)::int from allrice_automation_runs) automation_runs,
+      (select count(*)::int from allrice_automations) automations,
+      (select count(*)::int from allrice_native_once_controls) once_controls`;
       return row;
     }
     async function cloud(enabled: boolean) {
@@ -219,11 +268,11 @@ suite(
         f.db,
       );
     }
-    async function runningOnce() {
+    async function runningOnce(prompt?: string) {
       // These are only jobs in this fixture's owned schema. Other tests may
       // leave a queued synthetic receipt; the next claim must belong to us.
       await f.db`update allrice_jobs set status='canceled' where status='queued'`;
-      const a = await task();
+      const a = await task(undefined, prompt);
       await receipt(a.task.id);
       expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(true);
       const exact = await listOnceTasks(f.context, a.sessionId, {
@@ -243,7 +292,7 @@ suite(
         job!.lease!.token,
       );
       expect(started?.context.runId).toBe(runId);
-      return { ...a, runId, workerId, job: job! };
+      return { ...a, runId, workerId, job: job!, context: started!.context };
     }
     async function nativeInput(r: Awaited<ReturnType<typeof runningOnce>>) {
       const [source] = await f.db<
@@ -915,6 +964,7 @@ suite(
         delayMinutes: 1,
       };
       const first = await createOnceTaskFromExecutionContext(input);
+      expect(first.prompt).toBe('一分钟后在此对话回复测试标记。');
       expect(first.runId).toBeNull();
       expect(first.sessionId).toBe(c.id);
       expect(await createOnceTaskFromExecutionContext(input)).toEqual(first);
@@ -936,7 +986,125 @@ suite(
       expect((await cancelOnceTask(f.context, c.id, first.id)).status).toBe(
         'canceled',
       );
+      await failJob({
+        workerId: worker,
+        jobId: job!.id,
+        leaseToken: job!.lease!.token,
+        code: 'FIXTURE_DONE',
+        message: 'SQL boundary verified',
+        retryable: false,
+      });
     });
+    it('stores the failed real wording verbatim and rejects a model-changed delay before writing', async () => {
+      const text =
+        '请在 15 分钟后，在这个对话中只回复校验词「ONCE-TEST」。请实际创建一次性任务，不要现在执行。';
+      const r = await leasedChat(text);
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 16 }),
+        ).rejects.toMatchObject({ code: 'time_mismatch' });
+        expect(await counts()).toEqual(before);
+        const saved = await createOnceTaskFromExecutionContext(r.input);
+        expect(saved.prompt).toBe(text);
+        expect(saved.runAt).toBeTruthy();
+        expect(await createOnceTaskFromExecutionContext(r.input)).toEqual(
+          saved,
+        );
+        await cancelOnceTask(f.context, r.input.sessionId, saved.id);
+      } finally {
+        await r.finish();
+      }
+    });
+    it('rejects an actual dispatched native occurrence even with scheduling permission', async () => {
+      const r = await runningOnce('请在 15 分钟后回复校验词。');
+      const [binding] =
+        await f.db`select user_message_id from allrice_employee_runs where run_id=${r.runId}`;
+      const before = await counts();
+      try {
+        await expect(
+          createOnceTaskFromExecutionContext({
+            context: r.context,
+            sessionId: r.sessionId,
+            userMessageId: binding!.user_message_id,
+            callId: randomUUID(),
+            arguments: {
+              name: '不能再预约',
+              prompt: '再次执行',
+              delayMinutes: 15,
+            },
+            worker: { attempt: r.job.attempt, leaseToken: r.job.lease!.token },
+            name: '不能再预约',
+            prompt: '再次执行',
+            delayMinutes: 15,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await failJob({
+          workerId: r.workerId,
+          jobId: r.job.id,
+          leaseToken: r.job.lease!.token,
+          code: 'FIXTURE_DONE',
+          message: 'Internal source rejected',
+          retryable: false,
+        });
+      }
+    });
+    it('rejects a legacy occurrence before its run_id link is filled', async () => {
+      const a = await task(),
+        occurrenceId = randomUUID();
+      await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${a.task.id},'queued',clock_timestamp())`;
+      const r = await leasedChat('请在 15 分钟后回复校验词。', occurrenceId);
+      try {
+        const [legacy] =
+          await f.db`select run_id from allrice_automation_runs where id=${occurrenceId}`;
+        expect(legacy!.run_id).toBeNull();
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext(r.input),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await r.finish();
+        await cancelOnceTask(f.context, a.sessionId, a.task.id);
+      }
+    });
+    it('preserves a maximum-length form task on dispatch without truncating or exceeding the message limit', async () => {
+      await f.db`update allrice_jobs set status='canceled' where status='queued'`;
+      const prompt = '字'.repeat(40_000);
+      const a = await task(undefined, prompt);
+      await receipt(a.task.id);
+      expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(true);
+      const rows =
+        await f.db`select m.content->>'text' text from allrice_automation_runs ar
+        join allrice_employee_runs er on er.run_id=ar.run_id
+        join allrice_messages m on m.id=er.user_message_id where ar.automation_id=${a.task.id}`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.text).toBe(prompt);
+    });
+    it.each([
+      '这是一段文档示例：“15 分钟后回复校验词”。请解释，不要预约。',
+      '先回复你好。怎样设置 15 分钟后执行的提醒？',
+      '每隔 15 分钟提醒我一次。',
+      '只有我以后确认了，才在 15 分钟后提醒。',
+      '谢谢，上次那个方案不错。',
+    ])(
+      'does not authorize scheduling from this current message: %s',
+      async (text) => {
+        const r = await leasedChat(text);
+        try {
+          const before = await counts();
+          await expect(
+            createOnceTaskFromExecutionContext(r.input),
+          ).rejects.toMatchObject({ code: 'intent_required' });
+          expect(await counts()).toEqual(before);
+        } finally {
+          await r.finish();
+        }
+      },
+    );
     it('freezes the current version at dispatch and keeps the original binding on later readback', async () => {
       const a = await task();
       const v3 = await publishVersion(3, ['automation.create']);

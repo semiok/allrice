@@ -631,10 +631,12 @@ describe('Codex hosted search Tool Broker integration', () => {
   );
 
   it('keeps authorized read-only tools available without pre-routing side effects', () => {
+    vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
     expect(riceToolRisk('web.search')).toBe('read_only');
     expect(riceToolRisk('browser.run')).toBe('read_only');
     expect(riceToolRisk('automation.create')).toBe('side_effect');
     expect(riceToolRisk('workspace.export.create')).toBe('managed_write');
+    // Even an explicit route cannot expose a disabled scheduling backend.
     expect(
       riceToolDefinitionsForTurn(
         ['network:outbound', 'automation:write'],
@@ -648,7 +650,8 @@ describe('Codex hosted search Tool Broker integration', () => {
         ['web.search', 'web.fetch', 'automation.create'],
         ['automation.create'],
       ).map((tool) => tool.name),
-    ).toEqual(['web.search', 'web.fetch', 'automation.create']);
+    ).toEqual(['web.search', 'web.fetch']);
+    vi.unstubAllEnvs();
   });
 
   it('projects platform previews to read-only tools only', () => {

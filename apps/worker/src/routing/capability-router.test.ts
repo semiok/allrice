@@ -7,7 +7,8 @@ import {
   type EmployeeExecutionSnapshot,
   type RouteRequest,
 } from '@allrice/contracts';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { riceToolDefinitionsForTurn } from '../tool-broker/definitions.js';
 
 import { decideCapabilityRoute } from './capability-router.js';
 
@@ -304,6 +305,78 @@ const tools = [
 ];
 
 describe('capability route decision', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([
+    '请在 15 分钟后，在这个对话中只回复校验词「ONCE-TEST」。请实际创建一次性任务，不要现在执行。',
+    '十分钟后提醒我开会。',
+    '一分钟后在此对话回复测试标记。',
+  ])(
+    'admits native once independently of keywords under confirm_external: %s',
+    (prompt) => {
+      vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+      const input = base({ approvalPolicy: 'confirm_external' });
+      const plan = decideCapabilityRoute({
+        request: { ...input.request, prompt },
+        executionSnapshot: input.snapshot,
+        tools,
+      });
+      expect(
+        plan.candidates.find((c) => c.id === 'tool:automation.create'),
+      ).toMatchObject({ authorized: true, exclusionReason: null });
+      expect(
+        riceToolDefinitionsForTurn(
+          ['automation:write'],
+          ['automation.create'],
+          plan.selectedToolNames,
+        ).map((t) => t.name),
+      ).toEqual(['automation.create']);
+      // An exact backend/authority exception never grants unrelated side effects.
+      const other = decideCapabilityRoute({
+        request: { ...input.request, prompt },
+        executionSnapshot: input.snapshot,
+        tools: [
+          ...tools,
+          {
+            name: 'automation.other',
+            description: 'other',
+            requiredCapability: 'automation:write',
+          },
+        ],
+      });
+      expect(
+        other.candidates.find((c) => c.id === 'tool:automation.other'),
+      ).toMatchObject({
+        authorized: false,
+        exclusionReason: 'excluded_approval_required',
+      });
+    },
+  );
+
+  it('requires the feature, frozen binding and capability, even when selected', () => {
+    vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+    for (const allowed of [undefined, []])
+      expect(
+        riceToolDefinitionsForTurn(['automation:write'], allowed, [
+          'automation.create',
+        ]),
+      ).toEqual([]);
+    expect(
+      riceToolDefinitionsForTurn(
+        [],
+        ['automation.create'],
+        ['automation.create'],
+      ),
+    ).toEqual([]);
+    vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+    expect(
+      riceToolDefinitionsForTurn(
+        ['automation:write'],
+        ['automation.create'],
+        ['automation.create'],
+      ),
+    ).toEqual([]);
+  });
   it('uses direct for ordinary conversation', () => {
     const input = base();
     const plan = decideCapabilityRoute({ ...input, tools });
