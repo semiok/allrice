@@ -74,6 +74,11 @@ suite(
         occurrences: [],
       };
       const scheduleWrites: Record<string, unknown>[] = [];
+      let scheduleReads = 0,
+        releaseInitialScheduleRead: (() => void) | undefined;
+      const initialScheduleRead = new Promise<void>((done) => {
+        releaseInitialScheduleRead = done;
+      });
       let slowId = '',
         holdId = '',
         releaseOldService: (() => void) | undefined;
@@ -86,8 +91,12 @@ suite(
           async (route: Route) => {
             const path = new URL(route.request().url()).pathname;
             if (path.endsWith('/quality/schedule')) {
-              if (route.request().method() === 'GET')
+              if (route.request().method() === 'GET') {
+                // Hold the first real component read until the loading controls
+                // have been checked. No sleep or network-speed assumption.
+                if (++scheduleReads === 1) await initialScheduleRead;
                 return route.fulfill({ json: scheduleView });
+              }
               const input = route.request().postDataJSON();
               scheduleWrites.push(input);
               if (
@@ -170,17 +179,32 @@ suite(
           `http://127.0.0.1:${(server.address() as { port: number }).port}`,
         );
         const daily = page.getByRole('region', { name: '每日固定场景质检' });
+        const scheduleTime = daily.getByLabel('每日检查时间');
+        await daily.waitFor();
+        await expect.poll(() => scheduleReads).toBe(1);
+        expect(await scheduleTime.isDisabled()).toBe(true);
+        expect(
+          await daily
+            .getByRole('button', { name: '开启每日质检' })
+            .isDisabled(),
+        ).toBe(true);
+        expect(scheduleWrites).toEqual([]);
+        releaseInitialScheduleRead?.();
         await expect
           .poll(() =>
             daily.getByRole('button', { name: '开启每日质检' }).isEnabled(),
           )
           .toBe(true);
-        await daily.getByLabel('每日检查时间').fill('09:10');
+        expect(await scheduleTime.isEnabled()).toBe(true);
+        expect(await scheduleTime.inputValue()).toBe('09:00');
+        await scheduleTime.fill('09:10');
         await daily.getByRole('button', { name: '开启每日质检' }).click();
         await daily.getByText('已开启', { exact: true }).waitFor();
         expect(scheduleWrites).toEqual([
           { expectedRevision: 0, enabled: true, time: '09:10' },
         ]);
+        expect(scheduleView.schedule?.time).toBe('09:10');
+        expect(await scheduleTime.inputValue()).toBe('09:10');
         await daily.getByRole('button', { name: '暂停每日质检' }).click();
         await expect
           .poll(() =>
@@ -417,6 +441,8 @@ suite(
         ).toBe(0);
         expect(errors).toEqual([]);
       } finally {
+        // Release even when the loading assertion fails on the old component.
+        releaseInitialScheduleRead?.();
         await browser.close();
         await new Promise<void>((done) => server.close(() => done()));
       }

@@ -129,7 +129,7 @@ export function PlatformQualitySchedule({
             type="time"
             value={time}
             onChange={(e) => setTime(e.target.value)}
-            disabled={writing}
+            disabled={!view || writing}
           />
         </label>
         <AdminStatus tone={view?.schedule?.enabled ? 'success' : 'muted'}>
