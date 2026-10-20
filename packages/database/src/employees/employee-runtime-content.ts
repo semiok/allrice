@@ -69,13 +69,18 @@ export async function prepareEmployeeRuntimeContent(
     employeeId: string;
     employeeVersionId: string;
   },
+  sql?: ContentSql,
 ) {
-  const content = await freezeEmployeeRuntimeContent(context, {
-    instanceId: input.instance.id,
-    employeeId: input.employeeId,
-    employeeVersionId: input.employeeVersionId,
-  });
-  await readEmployeeRuntimeContent(context, content);
+  const content = await freezeEmployeeRuntimeContent(
+    context,
+    {
+      instanceId: input.instance.id,
+      employeeId: input.employeeId,
+      employeeVersionId: input.employeeVersionId,
+    },
+    sql,
+  );
+  await readEmployeeRuntimeContent(context, content, sql);
   return content;
 }
 

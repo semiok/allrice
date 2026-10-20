@@ -4,6 +4,7 @@ import {
 } from '../platform-authority.ts';
 export { isPlatformAdmin } from '../platform-authority.ts';
 import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 
 import {
   EmployeeModelPolicySchema,
@@ -28,6 +29,8 @@ import { DataAccessError } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
 import { readPlatformModelSettings } from './platform-model-settings.ts';
 import { requireEnabledCodexSubscription } from './codex-subscriptions.ts';
+
+type ModelPoolSql = ReturnType<typeof getDatabase> | TransactionSql;
 
 const defaultProviderId = '51000000-0000-4000-8000-000000000001';
 const defaultConnectionId = '52000000-0000-4000-8000-000000000001';
@@ -582,13 +585,15 @@ export async function upsertEmployeeModelPolicy(input: {
   return persistedPolicy;
 }
 
-async function ensureDefaultPolicy(input: {
-  organizationId: string;
-  workspaceId: string;
-  employeeId: string;
-  actorId: string;
-}) {
-  const sql = getDatabase();
+async function ensureDefaultPolicy(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    actorId: string;
+  },
+  sql: ModelPoolSql = getDatabase(),
+) {
   const rows = await sql<PolicyRow[]>`
     insert into allrice_employee_model_policies (
       employee_id, organization_id, workspace_id, connection_id,
@@ -620,13 +625,16 @@ async function ensureDefaultPolicy(input: {
   return mapPolicy(row);
 }
 
-async function resolveFrozenTarget(input: {
-  organizationId: string;
-  connectionId: string;
-  modelCatalogEntryId: string;
-  reasoningEffort: EmployeeModelPolicy['reasoningEffort'];
-}) {
-  const sql = getDatabase();
+async function resolveFrozenTarget(
+  input: {
+    organizationId: string;
+    connectionId: string;
+    modelCatalogEntryId: string;
+    reasoningEffort: EmployeeModelPolicy['reasoningEffort'];
+  },
+  database?: ModelPoolSql,
+) {
+  const sql = database ?? getDatabase();
   const rows = await sql<
     {
       harness: 'codex' | 'dsh';
@@ -649,7 +657,7 @@ async function resolveFrozenTarget(input: {
   `;
   const selection = rows[0];
   if (selection && ['codex', 'openai-codex'].includes(selection.provider_key))
-    await requireEnabledCodexSubscription();
+    await requireEnabledCodexSubscription(database);
   if (!selection) throw new DataAccessError('grant_invalid');
   if (
     !modelProviderRuntimeSupported({
@@ -692,21 +700,27 @@ async function resolveFrozenTarget(input: {
   } as const;
 }
 
-async function freezeEmployeeModelTarget(input: {
-  organizationId: string;
-  workspaceId: string;
-  employeeId: string;
-  ownerId: string;
-}) {
-  const sql = getDatabase();
-  const platformSettings = await readPlatformModelSettings();
+async function freezeEmployeeModelTarget(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    ownerId: string;
+  },
+  database?: ModelPoolSql,
+) {
+  const sql = database ?? getDatabase();
+  const platformSettings = await readPlatformModelSettings(database);
   const configuration = platformSettings.configuration;
-  const policy = await ensureDefaultPolicy({
-    organizationId: input.organizationId,
-    workspaceId: input.workspaceId,
-    employeeId: input.employeeId,
-    actorId: input.ownerId,
-  });
+  const policy = await ensureDefaultPolicy(
+    {
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      employeeId: input.employeeId,
+      actorId: input.ownerId,
+    },
+    database,
+  );
   const connectionId = configuration.connectionId;
   const [catalog] = await sql<{ id: string }[]>`
     select m.id from allrice_model_catalog_entries m
@@ -715,12 +729,15 @@ async function freezeEmployeeModelTarget(input: {
       and m.enabled and m.reasoning_efforts ? ${configuration.reasoningEffort}`;
   if (!catalog) throw new DataAccessError('grant_invalid');
   const modelCatalogEntryId = catalog.id;
-  const selection = await resolveFrozenTarget({
-    organizationId: input.organizationId,
-    connectionId,
-    modelCatalogEntryId,
-    reasoningEffort: configuration.reasoningEffort,
-  });
+  const selection = await resolveFrozenTarget(
+    {
+      organizationId: input.organizationId,
+      connectionId,
+      modelCatalogEntryId,
+      reasoningEffort: configuration.reasoningEffort,
+    },
+    database,
+  );
   if (selection.provider !== 'openai-codex')
     throw new DataAccessError('grant_invalid');
   return {
@@ -746,14 +763,17 @@ async function freezeEmployeeModelTarget(input: {
 }
 
 /** Internal occurrence identity is separate from any product chat Session. */
-export async function freezeExperienceModelSnapshot(input: {
-  organizationId: string;
-  workspaceId: string;
-  employeeId: string;
-  ownerId: string;
-  occurrenceId: string;
-}) {
-  const target = await freezeEmployeeModelTarget(input);
+export async function freezeExperienceModelSnapshot(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    ownerId: string;
+    occurrenceId: string;
+  },
+  database?: ModelPoolSql,
+) {
+  const target = await freezeEmployeeModelTarget(input, database);
   return ExperienceModelSnapshotSchema.parse({
     ...target,
     schemaVersion: 2,
@@ -769,13 +789,16 @@ export async function freezeExperienceModelSnapshot(input: {
   });
 }
 
-export async function freezeSessionModelSnapshot(input: {
-  organizationId: string;
-  workspaceId: string;
-  sessionId: string;
-  employeeVersionId?: string;
-}) {
-  const sql = getDatabase();
+export async function freezeSessionModelSnapshot(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    sessionId: string;
+    employeeVersionId?: string;
+  },
+  database?: ModelPoolSql,
+) {
+  const sql = database ?? getDatabase();
   const sessions = await sql<
     {
       employee_id: string;
@@ -803,11 +826,14 @@ export async function freezeSessionModelSnapshot(input: {
   const session = sessions[0];
   if (!session) throw new DataAccessError('not_found');
   const snapshot = SessionModelSnapshotSchema.parse({
-    ...(await freezeEmployeeModelTarget({
-      ...input,
-      employeeId: session.employee_id,
-      ownerId: session.owner_id,
-    })),
+    ...(await freezeEmployeeModelTarget(
+      {
+        ...input,
+        employeeId: session.employee_id,
+        ownerId: session.owner_id,
+      },
+      database,
+    )),
     schemaVersion: 1,
     sessionId: input.sessionId,
   });

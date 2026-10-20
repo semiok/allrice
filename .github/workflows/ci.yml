@@ -233,6 +233,13 @@ jobs:
           ALLRICE_RUN_DB_INTEGRATION: 1
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: pnpm exec vitest run --maxWorkers=1 packages/database/src/platform-model-settings.integration.test.ts apps/worker/test/met163/image-generation.integration.test.ts
+      - name: Verify employee Run binding in caller transactions
+        env:
+          ALLRICE_RUN_DB_INTEGRATION: 1
+          ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
+        # Real isolated schemas prove one connection, rollback and lock contention.
+        # These checks do not enqueue business work or call a model.
+        run: pnpm exec vitest run --maxWorkers=1 packages/database/src/providers/model-freeze-readers.transaction.integration.test.ts packages/database/src/providers/model-freeze-chain.transaction.integration.test.ts packages/database/src/freeze-helpers.transaction.test.ts packages/database/src/employees/employee-run-binding.transaction.integration.test.ts
       - name: Verify frozen Skill bundles and rollback against PostgreSQL
         env:
           ALLRICE_RUN_DB_INTEGRATION: 1
