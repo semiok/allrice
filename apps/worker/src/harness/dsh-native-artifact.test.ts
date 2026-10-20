@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { BigIntStats, Stats } from 'node:fs';
+import type * as FsPromises from 'node:fs/promises';
 import {
   mkdtemp,
   mkdir,
@@ -24,9 +26,42 @@ import {
 } from './dsh-native-artifact.js';
 import { copyDshNativeArtifact } from './dsh-native-artifact-copy.js';
 
+const leafIo = vi.hoisted(() => ({
+  read: undefined as
+    | undefined
+    | ((path: string, read: () => Promise<unknown>) => Promise<unknown>),
+  stat: undefined as
+    | undefined
+    | ((
+        path: string,
+        stat: () => Promise<Stats | BigIntStats>,
+      ) => Promise<Stats | BigIntStats>),
+}));
+vi.mock('node:fs/promises', async () => {
+  const actual = await vi.importActual<typeof FsPromises>('node:fs/promises');
+  return {
+    ...actual,
+    readFile: async (...args: Parameters<typeof actual.readFile>) =>
+      leafIo.read
+        ? leafIo.read(String(args[0]), () =>
+            Reflect.apply(actual.readFile, actual, args),
+          )
+        : Reflect.apply(actual.readFile, actual, args),
+    lstat: async (...args: Parameters<typeof actual.lstat>) =>
+      leafIo.stat
+        ? leafIo.stat(String(args[0]), () =>
+            Reflect.apply(actual.lstat, actual, args),
+          )
+        : Reflect.apply(actual.lstat, actual, args),
+  };
+});
+
 const roots: string[] = [];
 const testHarnessExecArgv = process.execArgv;
 afterEach(async () => {
+  leafIo.read = undefined;
+  leafIo.stat = undefined;
+  vi.restoreAllMocks();
   process.execArgv = testHarnessExecArgv;
   vi.unstubAllEnvs();
   await Promise.all(
@@ -123,6 +158,17 @@ async function currentCopyFixture() {
   });
   return root;
 }
+async function leafFixture(current = false) {
+  const root = current ? await currentCopyFixture() : await fixture();
+  const folder = 'node_modules/@deepseek-ai/test-root/leaves';
+  const name = (index: number) => String(index).padStart(2, '0') + '.txt';
+  for (let index = 0; index < 12; index++)
+    await put(root, join(folder, name(index)), 'leaf-' + index);
+  return { root, leaf: (index: number) => join(root, folder, name(index)) };
+}
+const isLeaf = (path: string) => /\/leaves\/\d+\.txt$/.test(path);
+const delayLeaf = () => new Promise<void>((resolve) => setTimeout(resolve, 2));
+
 it('copies only the measured closure with original provenance and resolves it after the source disappears', async () => {
   const root = await currentCopyFixture();
   // Unrelated Web/data/credential bytes must never enter a retained runtime.
@@ -797,6 +843,276 @@ describe('native artifact content and launch boundary', () => {
       }),
     ).toThrow('PROFILE_OVERRIDE');
   });
+});
+
+describe('bounded native package leaf reads', () => {
+  it.each([false, true])(
+    'keeps the complete v1 manifest and input reads identical (current=%s)',
+    async (current) => {
+      const f = await leafFixture(current);
+      const memory = vi.spyOn(process, 'availableMemory').mockReturnValue(0);
+      const inputs: string[] = [];
+      leafIo.read = async (path, read) => {
+        const bytes = await read();
+        expect(Buffer.isBuffer(bytes)).toBe(true);
+        inputs.push(JSON.stringify([path, (bytes as Buffer).toString('hex')]));
+        return bytes;
+      };
+      const serial = await measureDshNativeArtifact(f.root);
+      const serialInputs = inputs.splice(0).sort();
+      memory.mockReturnValue(4 * 1024 ** 3);
+      let active = 0,
+        peak = 0;
+      let release!: () => void;
+      const fourReaders = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      leafIo.read = async (path, read) => {
+        if (isLeaf(path)) {
+          active++;
+          peak = Math.max(peak, active);
+          if (active === 4) release();
+        }
+        try {
+          if (isLeaf(path)) await fourReaders;
+          const bytes = await read();
+          expect(Buffer.isBuffer(bytes)).toBe(true);
+          inputs.push(
+            JSON.stringify([path, (bytes as Buffer).toString('hex')]),
+          );
+          return bytes;
+        } finally {
+          if (isLeaf(path)) active--;
+        }
+      };
+      expect(await measureDshNativeArtifact(f.root)).toEqual(serial);
+      expect(inputs.sort()).toEqual(serialInputs);
+      expect(peak).toBe(4);
+      expect(active).toBe(0);
+    },
+  );
+
+  it.each([0, 4 * 1024 ** 3 - 1, Number.NaN, Number.POSITIVE_INFINITY])(
+    'uses one leaf reader with unavailable or low memory (%s)',
+    async (memory) => {
+      const f = await leafFixture();
+      vi.spyOn(process, 'availableMemory').mockReturnValue(memory);
+      let active = 0,
+        peak = 0;
+      leafIo.read = async (path, read) => {
+        if (!isLeaf(path)) return read();
+        active++;
+        peak = Math.max(peak, active);
+        try {
+          await delayLeaf();
+          return await read();
+        } finally {
+          active--;
+        }
+      };
+      await measureDshNativeArtifact(f.root);
+      expect(peak).toBe(1);
+      expect(active).toBe(0);
+    },
+  );
+
+  it('stays serial if the memory probe throws', async () => {
+    const f = await leafFixture();
+    vi.spyOn(process, 'availableMemory').mockImplementation(() => {
+      throw Error('memory probe unavailable');
+    });
+    let active = 0,
+      peak = 0;
+    leafIo.read = async (path, read) => {
+      if (!isLeaf(path)) return read();
+      active++;
+      peak = Math.max(peak, active);
+      try {
+        await delayLeaf();
+        return await read();
+      } finally {
+        active--;
+      }
+    };
+    await measureDshNativeArtifact(f.root);
+    expect(peak).toBe(1);
+    expect(active).toBe(0);
+  });
+
+  it.each(['EIO', 'AbortError'])(
+    'returns the serial-first %s failure after settling every started read',
+    async (reason) => {
+      const f = await leafFixture();
+      vi.spyOn(process, 'availableMemory').mockReturnValue(4 * 1024 ** 3);
+      const first = Object.assign(Error('first leaf'), {
+        name: reason === 'AbortError' ? reason : 'Error',
+        code: reason,
+      });
+      const second = Error('later leaf');
+      let release!: () => void;
+      const laterStarted = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let active = 0;
+      const started: string[] = [],
+        settled: string[] = [],
+        unhandled: unknown[] = [];
+      const onUnhandled = (error: unknown) => unhandled.push(error);
+      process.on('unhandledRejection', onUnhandled);
+      leafIo.read = async (path, read) => {
+        if (!isLeaf(path)) return read();
+        started.push(path);
+        active++;
+        try {
+          if (path === f.leaf(0)) {
+            await laterStarted;
+            await delayLeaf();
+            throw first;
+          }
+          if (path === f.leaf(1)) {
+            release();
+            throw second;
+          }
+          await delayLeaf();
+          return await read();
+        } finally {
+          active--;
+          settled.push(path);
+        }
+      };
+      try {
+        await expect(measureDshNativeArtifact(f.root)).rejects.toBe(first);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(active).toBe(0);
+        expect(started).toContain(f.leaf(1));
+        expect(started.length).toBeLessThanOrEqual(4);
+        expect(settled.sort()).toEqual(started.sort());
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onUnhandled);
+      }
+    },
+  );
+
+  it('keeps an earlier read failure ahead of a later discovery failure', async () => {
+    const f = await leafFixture();
+    vi.spyOn(process, 'availableMemory').mockReturnValue(4 * 1024 ** 3);
+    const first = Error('earlier read'),
+      later = Error('later lstat');
+    let release!: () => void;
+    const discovered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    leafIo.read = async (path, read) => {
+      if (path === f.leaf(0)) {
+        await discovered;
+        throw first;
+      }
+      return read();
+    };
+    leafIo.stat = async (path, stat) => {
+      if (path === f.leaf(1)) {
+        release();
+        throw later;
+      }
+      return stat();
+    };
+    await expect(measureDshNativeArtifact(f.root)).rejects.toBe(first);
+  });
+
+  it('settles earlier leaves before rejecting a symlink', async () => {
+    const f = await leafFixture();
+    await rm(f.leaf(2));
+    await symlink(f.leaf(0), f.leaf(2));
+    vi.spyOn(process, 'availableMemory').mockReturnValue(4 * 1024 ** 3);
+    let active = 0;
+    leafIo.read = async (path, read) => {
+      if (!isLeaf(path)) return read();
+      active++;
+      try {
+        await delayLeaf();
+        return await read();
+      } finally {
+        active--;
+      }
+    };
+    await expect(measureDshNativeArtifact(f.root)).rejects.toThrow(
+      'PACKAGE_FILE_LINK',
+    );
+    expect(active).toBe(0);
+  });
+
+  it('runs a leaf declared above 8 MiB alone', async () => {
+    const f = await leafFixture();
+    vi.spyOn(process, 'availableMemory').mockReturnValue(4 * 1024 ** 3);
+    leafIo.stat = async (path, stat) => {
+      const actual = await stat();
+      if (path === f.leaf(2))
+        Object.defineProperty(actual, 'size', { value: 8 * 1024 ** 2 + 1 });
+      return actual;
+    };
+    let active = 0,
+      largeActive = false,
+      overlaps = 0;
+    leafIo.read = async (path, read) => {
+      if (!isLeaf(path)) return read();
+      const large = path === f.leaf(2);
+      if ((large && active > 0) || largeActive) overlaps++;
+      active++;
+      if (large) largeActive = true;
+      try {
+        await delayLeaf();
+        return await read();
+      } finally {
+        active--;
+        if (large) largeActive = false;
+      }
+    };
+    await measureDshNativeArtifact(f.root);
+    expect(overlaps).toBe(0);
+    expect(active).toBe(0);
+  });
+
+  it('rejects oversized leaves before reading bytes', async () => {
+    const f = await leafFixture();
+    vi.spyOn(process, 'availableMemory').mockReturnValue(4 * 1024 ** 3);
+    leafIo.stat = async (path, stat) => {
+      const actual = await stat();
+      if (path === f.leaf(0))
+        Object.defineProperty(actual, 'size', { value: 256 * 1024 ** 2 + 1 });
+      return actual;
+    };
+    let oversizedReads = 0;
+    leafIo.read = async (path, read) => {
+      if (path === f.leaf(0)) oversizedReads++;
+      return read();
+    };
+    await expect(measureDshNativeArtifact(f.root)).rejects.toThrow(
+      'FILE_TYPE_OR_SIZE',
+    );
+    expect(oversizedReads).toBe(0);
+  });
+
+  it.each([
+    [1, 'FILE_TYPE_OR_SIZE'],
+    [2, 'FILE_RESOLUTION_CHANGED'],
+  ] as const)(
+    'retains the path-replacement rejection after lstat #%s',
+    async (replaceAfter, reason) => {
+      const f = await leafFixture();
+      vi.spyOn(process, 'availableMemory').mockReturnValue(4 * 1024 ** 3);
+      let checks = 0;
+      leafIo.stat = async (path, stat) => {
+        const actual = await stat();
+        if (path === f.leaf(0) && ++checks === replaceAfter) {
+          await rm(path);
+          await symlink(f.leaf(1), path);
+        }
+        return actual;
+      };
+      await expect(measureDshNativeArtifact(f.root)).rejects.toThrow(reason);
+    },
+  );
 });
 
 describe('MET195 observational native metrics', () => {
