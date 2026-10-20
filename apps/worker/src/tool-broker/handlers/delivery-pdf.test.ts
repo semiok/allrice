@@ -55,7 +55,10 @@ vi.mock('../../office/export.js', async (original) => ({
   ...(await original<typeof OfficeExport>()),
   generateOfficeExport: mocks.legacy,
 }));
-import { createWorkspaceExport } from './delivery.js';
+import {
+  createWorkspaceExport,
+  createControlledWorkspaceExport,
+} from './delivery.js';
 
 const original = Buffer.from('authorized original office bytes');
 const rawPdf = Buffer.from('%PDF-1.7\noriginal existing provider bytes\n%%EOF');
@@ -170,6 +173,55 @@ function setup() {
   }));
   return { input, args, officePdf, output };
 }
+
+describe('server-owned business publication composition', () => {
+  beforeEach(() => vi.resetAllMocks());
+  async function setupText() {
+    const fixture = setup();
+    const generator = await vi.importActual<typeof Deliverable>(
+      '../../deliverable-generator.js',
+    );
+    mocks.content.mockImplementation(generator.generateDeliverable);
+    return {
+      ...fixture,
+      args: { format: 'markdown', content: '# 固定版本稿件', fileName: '稿件' },
+    };
+  }
+  it('passes trusted callbacks only from the internal entry, never tool arguments', async () => {
+    const { input, args } = await setupText();
+    const composition = {
+      runId: input.context.runId,
+      requiredTool: 'workspace.brand_content.step' as const,
+      admit: vi.fn(),
+      registered: vi.fn(),
+    };
+    await createControlledWorkspaceExport(
+      { input, arguments: args },
+      composition,
+    );
+    expect(mocks.publish.mock.calls[0]![3]).toBe(composition);
+    mocks.publish.mockClear();
+    await createWorkspaceExport({ input, arguments: { ...args, composition } });
+    expect(mocks.publish.mock.calls[0]![3]).toBeUndefined();
+  });
+  it('cannot degrade a business publication to uncomposed file registration', async () => {
+    const { input, args } = await setupText();
+    mocks.workbench.mockReturnValue(false);
+    await expect(
+      createControlledWorkspaceExport(
+        { input, arguments: args },
+        {
+          runId: input.context.runId,
+          requiredTool: 'workspace.brand_content.step',
+          admit: vi.fn(),
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'TOOL_PUBLICATION_UNAVAILABLE' });
+    expect(mocks.publish).not.toHaveBeenCalled();
+    expect(mocks.register).not.toHaveBeenCalled();
+    expect(mocks.put).not.toHaveBeenCalled();
+  });
+});
 
 describe('Office-to-PDF in the existing export publisher', () => {
   beforeEach(() => {

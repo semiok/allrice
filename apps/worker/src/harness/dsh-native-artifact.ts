@@ -763,7 +763,7 @@ export async function installRetainedDshNativeArtifact(
   input: Parameters<typeof verifyDshNativeArtifact>[0],
 ) {
   if (!approvedArtifact || installing) fail('NOT_INSTALLED');
-  if (retainedArtifacts.size >= 6 || retainedArtifacts.has(input.expectedId))
+  if (retainedArtifacts.size >= 7 || retainedArtifacts.has(input.expectedId))
     fail('RETAINED_DUPLICATE_OR_LIMIT');
   assertNativeLoader();
   installing = true;

@@ -2,6 +2,14 @@
   "schemaVersion": 1,
   "patches": [
     {
+      "id": "allrice-brand-content-read-v1",
+      "issue": "MET-194",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-brand-content-native-tools.mjs",
+      "reason": "Expose only a current-Run scoped read of the custom employee's native brand business records. Writes run through the existing durable Workflow and human review APIs; no DSH core edits, shadow agent loop, model-supplied identity or scheduling clock."
+    },
+    {
       "id": "allrice-observed-model-recovery-v1",
       "issue": "Run 12a3b810; Run 9620a5c1",
       "upstreamVersion": "0.2.1-rc.2",

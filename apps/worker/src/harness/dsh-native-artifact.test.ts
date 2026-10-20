@@ -591,11 +591,11 @@ describe('native artifact content and launch boundary', () => {
       }),
     ).toThrow('PIN_NOT_APPROVED');
   });
-  it('keeps six independently measured readers and rejects a seventh without replacing any pin', async () => {
+  it('keeps seven independently measured readers and rejects an eighth without replacing any pin', async () => {
     process.execArgv = [];
     vi.stubEnv('NODE_OPTIONS', '');
     const candidates = [];
-    for (let index = 0; index < 8; index++) {
+    for (let index = 0; index < 9; index++) {
       const root = await fixture();
       await writeFile(
         join(root, 'apps/worker/dsh/allrice-jsonrpc-runtime.mjs'),
@@ -610,19 +610,35 @@ describe('native artifact content and launch boundary', () => {
       root: first.root,
       expectedId: first.manifest.artifactId,
     });
-    for (const candidate of candidates.slice(1, 7))
+    for (const candidate of candidates.slice(1, 8)) {
+      if (candidate === candidates[7]) {
+        for (const provenance of [
+          { sourceSha: 'c'.repeat(40), sourceTree: 'b'.repeat(40) },
+          { sourceSha: 'a'.repeat(40), sourceTree: 'c'.repeat(40) },
+        ])
+          await expect(
+            registry.installRetainedDshNativeArtifact({
+              root: candidate.root,
+              expectedId: candidate.manifest.artifactId,
+              ...provenance,
+            }),
+          ).rejects.toThrow('SOURCE_MISMATCH');
+      }
       await registry.installRetainedDshNativeArtifact({
         root: candidate.root,
         expectedId: candidate.manifest.artifactId,
+        sourceSha: 'a'.repeat(40),
+        sourceTree: 'b'.repeat(40),
       });
-    const excess = candidates[7]!;
+    }
+    const excess = candidates[8]!;
     await expect(
       registry.installRetainedDshNativeArtifact({
         root: excess.root,
         expectedId: excess.manifest.artifactId,
       }),
     ).rejects.toThrow('RETAINED_DUPLICATE_OR_LIMIT');
-    for (const candidate of candidates.slice(0, 7))
+    for (const candidate of candidates.slice(0, 8))
       expect(
         registry.nativeArtifactLaunchForPin({
           artifactId: candidate.manifest.artifactId,

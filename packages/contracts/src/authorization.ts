@@ -108,8 +108,38 @@ export function authorize(
   action: Action,
   contextInput: RequestContext,
 ): AuthorizationDecision {
+  return authorizeResource(
+    resourceInput,
+    action,
+    RequestContextSchema.parse(contextInput),
+  );
+}
+
+/** Resource decisions for already admitted server work. This projection is
+ * not browser authentication; callers must establish current principal and
+ * execution/occurrence authority before invoking a resource reader. */
+export function authorizeResource(
+  resourceInput: ResourceRef,
+  action: Action,
+  contextInput: Pick<
+    RequestContext,
+    'requestId' | 'actor' | 'organizationId' | 'workspaceId' | 'memberships'
+  >,
+): AuthorizationDecision {
   const resource = ResourceRefSchema.parse(resourceInput);
-  const context = RequestContextSchema.parse(contextInput);
+  const context = RequestContextSchema.pick({
+    requestId: true,
+    actor: true,
+    organizationId: true,
+    workspaceId: true,
+    memberships: true,
+  }).parse({
+    requestId: contextInput.requestId,
+    actor: contextInput.actor,
+    organizationId: contextInput.organizationId,
+    workspaceId: contextInput.workspaceId,
+    memberships: contextInput.memberships,
+  });
   if (context.actor.type !== 'user') {
     return { allowed: false, reason: 'denied_unauthenticated_actor' };
   }

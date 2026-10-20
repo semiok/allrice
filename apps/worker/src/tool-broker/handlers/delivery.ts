@@ -29,7 +29,7 @@ import {
 import { generateDeliverable } from '../../deliverable-generator.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
 import { stringValue, textValue } from '../input-values.js';
-import type { RiceToolHandler } from '../types.js';
+import type { RiceToolHandler, RiceToolHandlerContext } from '../types.js';
 
 function requiresOfficeQuality(request: string | undefined, format: string) {
   return (request ?? '')
@@ -48,10 +48,15 @@ function requiresOfficeQuality(request: string | undefined, format: string) {
     });
 }
 
-export const createWorkspaceExport: RiceToolHandler = async ({
-  input,
-  arguments: args,
-}) => {
+export const createWorkspaceExport: RiceToolHandler = (context) =>
+  createControlledWorkspaceExport(context);
+
+/** Server-only transaction composition; the generic tool never accepts these
+ * callbacks or authority from its JSON arguments. */
+export async function createControlledWorkspaceExport(
+  { input, arguments: args }: RiceToolHandlerContext,
+  composition?: Parameters<typeof publishWorkbenchArtifact>[3],
+) {
   if (!input.sessionId && !input.platformTestRunId) {
     throw new HandlerError(
       'TOOL_SESSION_REQUIRED',
@@ -274,6 +279,15 @@ export const createWorkspaceExport: RiceToolHandler = async ({
   const storage = new LocalStorageAdapter(input.storageRoot);
   const kind = args.artifactKind ?? 'document';
   if (
+    composition &&
+    (!workbenchEnabled() || !input.sessionId || kind !== 'document')
+  )
+    throw new HandlerError(
+      'TOOL_PUBLICATION_UNAVAILABLE',
+      '本次业务稿件需要已启用的原生文档交付。',
+      false,
+    );
+  if (
     kind === 'changeset' &&
     (!workbenchEnabled() || !input.sessionId || format !== 'json')
   )
@@ -315,24 +329,29 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     const artifact = await (async () => {
       input.signal?.throwIfAborted();
       try {
-        return kind === 'changeset'
-          ? await publishWorkbenchChangesetProposal(
-              {
-                ...publication,
-                proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
-              },
+        if (kind === 'changeset')
+          return await publishWorkbenchChangesetProposal(
+            {
+              ...publication,
+              proposal: ChangesetProposalSchema.parse(JSON.parse(content)),
+            },
+            storage,
+          );
+        const artifactInput: Parameters<typeof publishWorkbenchArtifact>[0] = {
+          ...publication,
+          kind,
+          format,
+          bytes,
+          mediaType: generated.mediaType,
+        };
+        return composition
+          ? await publishWorkbenchArtifact(
+              artifactInput,
               storage,
+              undefined,
+              composition,
             )
-          : await publishWorkbenchArtifact(
-              {
-                ...publication,
-                kind,
-                format,
-                bytes,
-                mediaType: generated.mediaType,
-              },
-              storage,
-            );
+          : await publishWorkbenchArtifact(artifactInput, storage);
       } catch (error) {
         if (
           error instanceof ArtifactPublicationParentError &&
@@ -482,4 +501,4 @@ export const createWorkspaceExport: RiceToolHandler = async ({
     await storage.delete(object).catch(() => undefined);
     throw error;
   }
-};
+}

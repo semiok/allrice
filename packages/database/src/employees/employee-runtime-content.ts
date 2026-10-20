@@ -185,7 +185,15 @@ export async function readEmployeeRuntimeContent(
         )
       )
         return unavailable();
-      for (const ref of selected) {
+      const selectedEntries = [
+        ...layer.common.map((ref) => ({ ref, sceneId: null as string | null })),
+        ...(layer.scenes ?? [])
+          .filter((scene) => selectedSceneIds.includes(scene.id))
+          .flatMap((scene) =>
+            scene.references.map((ref) => ({ ref, sceneId: scene.id })),
+          ),
+      ];
+      for (const { ref, sceneId } of selectedEntries) {
         const key = employeeContentReferenceKey(ref),
           identity = `${ref.sourceKind}:${ref.contentId}`;
         if (identities.has(identity) && identities.get(identity) !== key)
@@ -196,6 +204,8 @@ export async function readEmployeeRuntimeContent(
         const source = await resolveEmployeeContentSource({
           context,
           employeeId: snapshot.employeeId,
+          instanceId: snapshot.instanceId,
+          sceneId,
           ownership: layer.ownership,
           ref,
           sql,

@@ -173,7 +173,7 @@ it.each(['sha256:' + 'b'.repeat(64), undefined])(
     );
   },
 );
-it.each([2, 6])(
+it.each([2, 6, 7])(
   'requires independent original provenance for retained slot %i',
   async (slot) => {
     configureCurrent();
@@ -228,7 +228,7 @@ it('refuses an unknown generation in additional slots', async () => {
     'GENERATION',
   );
 });
-it.each([0, 7])(
+it.each([0, 8])(
   'rejects retained slot %i rather than silently dropping history',
   async (slot) => {
     vi.stubEnv(`ALLRICE_DSH_RETAINED_${slot}_ROOT`, '/reviewed/excess');
@@ -336,11 +336,11 @@ it('does not protect a mutable symlink in place of the actual data root', async 
   expect(seam.install).not.toHaveBeenCalled();
 });
 
-it('keeps six exact historical readers beside a distinct primary without evicting slot one', async () => {
+it('keeps seven exact historical readers beside a distinct primary without evicting slot one', async () => {
   configure();
   const ids = [
     id,
-    ...['b', 'c', 'd', 'e', 'f'].map((v) => 'sha256:' + v.repeat(64)),
+    ...['b', 'c', 'd', 'e', 'f', '1'].map((v) => 'sha256:' + v.repeat(64)),
   ];
   for (const [offset, artifactId] of ids.slice(1).entries()) {
     const prefix = 'ALLRICE_DSH_RETAINED_' + (offset + 2) + '_';
@@ -360,7 +360,13 @@ it('keeps six exact historical readers beside a distinct primary without evictin
   const installed = await policy.installConfiguredDshNativeRetention();
   expect(installed.map((item) => item.artifactId)).toEqual(ids);
   expect(policy.retainedDshStorageRoot(id)).toBe(root);
-  expect(policy.retainedDshStorageRoot(ids[5]!)).toBe(root);
+  expect(policy.retainedDshStorageRoot(ids[6]!)).toBe(root);
+  expect(installed[6]).toMatchObject({
+    slot: 7,
+    artifactId: ids[6],
+    sourceSha: 'd'.repeat(40),
+    sourceTree: 'e'.repeat(40),
+  });
   await policy.verifyConfiguredDshNativeReferences({
     artifactId: 'sha256:' + '7'.repeat(64),
     generation: current,
@@ -369,7 +375,7 @@ it('keeps six exact historical readers beside a distinct primary without evictin
   expect(
     approvals.map((item: { artifactId: string }) => item.artifactId),
   ).toEqual(['sha256:' + '7'.repeat(64), ...ids]);
-  expect(approvals).toHaveLength(7);
+  expect(approvals).toHaveLength(8);
   expect(approvals[0].storageRoot).toBe(root + '/new-primary');
   expect(
     approvals

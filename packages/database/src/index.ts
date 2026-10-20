@@ -270,3 +270,16 @@ export {
   type NativeOriginReaderApproval,
   type NativeOriginReaderScope,
 } from './conversation/native-origin-reader.ts';
+
+export * from './brand-content/service.ts';
+
+export * from './brand-content/reads.ts';
+
+export * from './capabilities/workflow-packages.ts';
+
+export * from './brand-content/workflow-start.ts';
+
+export * from './brand-content/workflow-tools.ts';
+
+export * from './brand-content/workspace.ts';
+export * from './brand-content/scheduling.ts';

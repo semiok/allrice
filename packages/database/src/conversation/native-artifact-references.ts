@@ -33,7 +33,7 @@ export type NativeArtifactReferenceApproval = z.infer<typeof approval>;
 export async function verifyNativeArtifactReferenceCoverage(
   input: readonly NativeArtifactReferenceApproval[],
 ) {
-  const approved = z.array(approval).min(1).max(7).parse(input);
+  const approved = z.array(approval).min(1).max(8).parse(input);
   if (new Set(approved.map((a) => a.artifactId)).size !== approved.length)
     throw Error('DSH_NATIVE_ARTIFACT_REFERENCES_DUPLICATE_APPROVAL');
   const readers = configuredNativeOriginReaders();

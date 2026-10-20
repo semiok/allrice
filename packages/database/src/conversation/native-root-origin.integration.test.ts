@@ -42,14 +42,14 @@ const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
     : describe.skip;
-it('rejects an eighth independent reader approval before database access', async () => {
+it('rejects a ninth independent reader approval before database access', async () => {
   const access = vi.spyOn(client, 'getDatabase').mockImplementation(() => {
     throw Error('unexpected_database_access');
   });
   try {
     await expect(
       verifyNativeArtifactReferenceCoverage(
-        ['a', 'b', 'c', 'd', 'e', 'f', '7', '8'].map((letter) => ({
+        ['a', 'b', 'c', 'd', 'e', 'f', '7', '8', '9'].map((letter) => ({
           artifactId: 'sha256:' + letter.repeat(64),
           generation: 'dsh-0.2.1-rc.2-687f282' as const,
           storageRoot: '/synthetic-approved-root',
@@ -443,6 +443,13 @@ suite(
         title: 'Sixth historical reader, never bound',
       });
       await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${sixth.id}`;
+      setArtifact('8');
+      const seventh = await createAssignedChatSession(f.context, {
+        workspaceId: f.workspace,
+        employeeAssignmentId: f.assignment,
+        title: 'Seventh historical reader, never bound',
+      });
+      await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${seventh.id}`;
       setArtifact('f');
       const preview = await packaged();
       await fixture.db`update allrice_platform_employee_test_runs set status='failed',completed_at=clock_timestamp() where id=${preview.test.id}`;
@@ -488,6 +495,7 @@ suite(
         ['e', 'origin:experience_consolidation'],
         ['f', 'origin:platform_employee_test'],
         ['7', 'origin:chat'],
+        ['8', 'origin:chat'],
       ];
       const all = [
         a,
@@ -497,17 +505,17 @@ suite(
         })),
       ];
       const covered = await verifyNativeArtifactReferenceCoverage(all);
-      // A newly promoted primary must coexist with all six historical
+      // A newly promoted primary must coexist with all seven historical
       // readers. Adding capacity grants no authority to alter their pins.
       expect(
         (await verifyNativeArtifactReferenceCoverage([b, ...all])).verified,
       ).toBe(true);
-      expect([b, ...all]).toHaveLength(7);
+      expect([b, ...all]).toHaveLength(8);
       await expect(
         verifyNativeArtifactReferenceCoverage([
           b,
           ...all,
-          { ...b, artifactId: 'sha256:' + '8'.repeat(64) },
+          { ...b, artifactId: 'sha256:' + '9'.repeat(64) },
         ]),
       ).rejects.toThrow();
       expect(covered.references.map((r) => r.source)).toEqual(

@@ -1,6 +1,7 @@
 import {
   RouteCandidateSchema,
   RouteRequestSchema,
+  BrandContentWorkflowInvocationSchema,
   type EmployeeExecutionSnapshot,
   type RouteCandidate,
   type RouteKind,
@@ -183,6 +184,10 @@ export function decideCapabilityRoute(input: {
   const request = RouteRequestSchema.parse(input.request);
   const prompt = normalize(request.prompt);
   const snapshot = input.executionSnapshot;
+  const invocation =
+    snapshot?.schemaVersion === 2 && snapshot.workflowInvocation
+      ? BrandContentWorkflowInvocationSchema.parse(snapshot.workflowInvocation)
+      : undefined;
   if (
     snapshot &&
     (snapshot.tenantContext.organizationId !== request.organizationId ||
@@ -261,6 +266,13 @@ export function decideCapabilityRoute(input: {
     // deliberately absent from the AllRice pre-routing candidate list so the
     // control plane cannot second-guess or duplicate the Harness Agent Loop.
     for (const binding of snapshot.capabilitySnapshot.workflows) {
+      const businessStage =
+        binding.revision.definition.inputSchema['x-allrice-brand-content'];
+      const invocationMatches =
+        invocation?.workflowRevisionId === binding.revision.id &&
+        invocation.input.stage === businessStage &&
+        snapshot.instance?.kind === 'custom' &&
+        invocation.instanceId === snapshot.instance.id;
       const requiredCapabilities = workflowCapabilities(
         binding.revision.definition,
       );
@@ -277,7 +289,11 @@ export function decideCapabilityRoute(input: {
           risk: requiresApproval ? 'high' : 'medium',
           requiresApproval,
           ...authorization({
-            effective: binding.effective,
+            effective:
+              binding.effective &&
+              (businessStage
+                ? invocationMatches
+                : invocation?.workflowRevisionId !== binding.revision.id),
             requiredCapabilities,
             grantedCapabilities,
             requiresApproval,
@@ -355,7 +371,18 @@ export function decideCapabilityRoute(input: {
   if (!best) {
     throw new Error('No authorized route can invoke the employee model');
   }
-  const selected = best.score > 1 ? best : candidates[0]!;
+  const fixed = invocation
+    ? candidates.find(
+        (candidate) =>
+          candidate.id === `workflow:${invocation.workflowRevisionId}` &&
+          candidate.authorized,
+      )
+    : undefined;
+  if (invocation && !fixed)
+    throw new Error(
+      'The requested business workflow is not authorized in this Run',
+    );
+  const selected = fixed ?? (best.score > 1 ? best : candidates[0]!);
   const reasonCodes: RouteReasonCode[] = [];
   if (selected.kind === 'direct') {
     reasonCodes.push(

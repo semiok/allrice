@@ -1,6 +1,25 @@
 import { randomUUID } from 'node:crypto';
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkflowStepRun } from '@allrice/contracts';
+
+const runtime = vi.hoisted(() => ({
+  completeWorkflowRun: vi.fn(),
+  completeWorkflowStep: vi.fn(),
+  failWorkflowStep: vi.fn(),
+  getWorkflowExecution: vi.fn(),
+  pauseWorkflowForApproval: vi.fn(),
+  recordWorkflowEvaluation: vi.fn(),
+  registerWorkflowArtifact: vi.fn(),
+  startWorkflowStep: vi.fn(),
+  put: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock('@allrice/database', () => runtime);
+vi.mock('@allrice/storage', () => ({
+  LocalStorageAdapter: class {
+    put = runtime.put;
+  },
+}));
 
 import {
   executeDurableWorkflow,
@@ -43,7 +62,7 @@ const definition = {
   ],
 };
 
-function step(key: string, status: 'pending' | 'succeeded') {
+function step(key: string, status: WorkflowStepRun['status']) {
   return {
     id: randomUUID(),
     workflowRunId: randomUUID(),
@@ -51,7 +70,7 @@ function step(key: string, status: 'pending' | 'succeeded') {
     name: key,
     kind: key === 'research' ? ('knowledge' as const) : ('approval' as const),
     status,
-    attempt: status === 'succeeded' ? 1 : 0,
+    attempt: status === 'pending' ? 0 : 1,
     maxAttempts: 2,
     inputDigest: null,
     outputDigest: status === 'succeeded' ? `sha256:${'a'.repeat(64)}` : null,
@@ -68,6 +87,7 @@ function step(key: string, status: 'pending' | 'succeeded') {
 }
 
 describe('durable workflow planner', () => {
+  beforeEach(() => vi.clearAllMocks());
   it('rejects withdrawn context on resume before touching a remaining direct tool step', async () => {
     const executeStep = vi.fn();
     // The gate runs before loading or mutating Workflow rows, so existing
@@ -116,5 +136,54 @@ describe('durable workflow planner', () => {
       configured: { format: 'brief' },
       dependencies: { research: 'sha256:evidence' },
     });
+  });
+
+  it('offers an interrupted running step for lease-verified recovery without releasing its successor', () => {
+    expect(
+      readyWorkflowSteps(definition, [
+        step('research', 'running'),
+        step('approve', 'pending'),
+      ]).map((item) => item.key),
+    ).toEqual(['research']);
+    // The planner never infers a completed dependency from an in-flight effect.
+    expect(
+      readyWorkflowSteps(definition, [
+        step('research', 'needs_attention'),
+        step('approve', 'pending'),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('omits synthetic evaluation metrics when a business stage defers evaluation', async () => {
+    const workflowId = randomUUID();
+    runtime.getWorkflowExecution.mockResolvedValue({
+      id: workflowId,
+      status: 'running',
+      definition,
+      steps: [step('research', 'succeeded'), step('approve', 'succeeded')],
+    });
+    runtime.registerWorkflowArtifact.mockResolvedValue({ id: randomUUID() });
+    const executeStep = vi.fn();
+    const result = await executeDurableWorkflow({
+      execution: {
+        context: {
+          organizationId: randomUUID(),
+          workspaceId: randomUUID(),
+          runId: randomUUID(),
+        },
+        job: { ownerId: randomUUID() },
+      },
+      workerId: randomUUID(),
+      jobId: randomUUID(),
+      leaseToken: randomUUID(),
+      leaseMs: 30_000,
+      storageRoot: '/unused-workflow-unit-storage',
+      recordEvaluation: false,
+      executeStep,
+    } as unknown as Parameters<typeof executeDurableWorkflow>[0]);
+    expect(result.metrics).toBeNull();
+    expect(runtime.recordWorkflowEvaluation).not.toHaveBeenCalled();
+    expect(runtime.completeWorkflowRun).toHaveBeenCalledOnce();
+    expect(executeStep).not.toHaveBeenCalled();
   });
 });

@@ -6,6 +6,7 @@ import {
 } from '../experience-consolidation.ts';
 import { EmployeeInstanceError } from '../employees/employee-instances.ts';
 import { ExperienceError } from '../experience.ts';
+import { claimBrandContentReminder } from '../brand-content/scheduling.ts';
 
 import {
   AutomationRunSchema,
@@ -57,6 +58,7 @@ interface AutomationRow {
   updated_at: Date;
   quality_binding: unknown | null;
   experience_binding: unknown | null;
+  brand_content_binding: string | null;
 }
 
 interface AutomationRunRow {
@@ -759,6 +761,7 @@ export async function updateAutomation(
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
+  if (current.brand_content_binding) throw new DataAccessError('grant_invalid');
   const parsed = UpdateAutomationInputSchema.parse(input);
   if (current.trigger_type === 'folder') {
     if (
@@ -860,6 +863,7 @@ export async function deleteAutomation(
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
+  if (current.brand_content_binding) throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   if (current.trigger_type === 'folder')
     await sql`update allrice_automations set status='paused',deleted_at=clock_timestamp(),revision=revision+1,updated_at=clock_timestamp() where id=${current.id}`;
@@ -1050,9 +1054,24 @@ export async function claimDueAutomations(limit = 10) {
     limit ${limit}
   `;
   const claims: AutomationClaim[] = [];
+  let brandReminders = 0;
   for (const candidate of due) {
     const claim = await sql
       .begin(async (transaction) => {
+        // This consumer records a deterministic private-chat reminder in the
+        // existing clock's transaction. It does not enqueue a model Run.
+        if (candidate.brand_content_binding) {
+          if (
+            candidate.next_run_at &&
+            (await claimBrandContentReminder(
+              transaction,
+              candidate.id,
+              candidate.next_run_at,
+            ))
+          )
+            brandReminders++;
+          return null;
+        }
         const locked = await transaction<AutomationRow[]>`
         select a.*, latest.status as last_run_status,
           latest.session_id as last_session_id
@@ -1153,7 +1172,7 @@ export async function claimDueAutomations(limit = 10) {
         await markClaimFailed(claim, error);
     }
   }
-  return recovered + claims.length;
+  return recovered + claims.length + brandReminders;
 }
 
 export async function runAutomationNow(
@@ -1163,6 +1182,7 @@ export async function runAutomationNow(
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const row = await getAutomationRow(context, workspaceId, automationId);
+  if (row.brand_content_binding) throw new DataAccessError('grant_invalid');
   if (row.trigger_type === 'folder') throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   const runs = await sql<AutomationRunRow[]>`

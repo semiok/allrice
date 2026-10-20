@@ -1,5 +1,11 @@
 # DSH 复用与替换清单
 
+## MET194：企业品牌内容业务读取
+
+`allrice-brand-content-read-v1` 通过公开原生工具注册将当前定制员工的品牌业务读取转交现有 Tool Broker。AllRice 负责当前组织、个人实例、来源与任务租约，DSH 保持原模型与 Agent Loop。业务写入复用现有持久 Workflow，采纳、审稿和真实发布回执仍由真人操作；没有 DSH 核心补丁、第二个模型调用器或调度时钟。
+
+当上游提供可以绑定本平台租户业务读取端口的等价接口时，可替换这一层薄工具声明，不能移除 AllRice 的实际来源授权及持久业务回执。回归见 `tool-manifest.contract.test.ts`、`brand-content/workflow-start.test.ts` 与真实隔离的包、业务、步骤恢复 PostgreSQL 检查。站内发布提醒沿用现有 AllRice Automation once，本切片不宣称 MET192 的 DSH Schedule 已上线。
+
 本页是 Allrice 对上游 DSH 的持续复用决策入口，跨 2.x / 3.x 维护。每次升级先检查上游是否已解决我们的适配问题，再决定保留、替换或退役；不能把历史补丁默认当成永久实现。
 
 运行事实仍以 [upstream.json](../../apps/worker/dsh/upstream.json)、[distribution.json](../../apps/worker/dsh/distribution.json)、[compatibility.json](../../apps/worker/dsh/compatibility.json)、[patch-ledger.json](../../apps/worker/dsh/patch-ledger.json) 和依赖锁为准。本页不控制发行渠道、工具授权或候选发布。

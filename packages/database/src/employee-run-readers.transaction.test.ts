@@ -157,14 +157,22 @@ describe('employee Run reader transaction forwarding', () => {
     const result = await resolveEmployeeCapabilitiesForRun(f.identity, tx.sql);
     expect(pool).not.toHaveBeenCalled();
     expect(tx.query).toHaveBeenCalledTimes(2);
-    for (const call of tx.query.mock.calls) {
-      expect(call.slice(1)).toEqual([
-        f.identity.organizationId,
-        f.identity.workspaceId,
-        f.identity.employeeId,
-        false,
-      ]);
-    }
+    expect(tx.query.mock.calls[0]?.slice(1)).toEqual([
+      f.identity.organizationId,
+      f.identity.workspaceId,
+      f.identity.employeeId,
+      null,
+      f.identity.actorId,
+      null,
+      f.identity.actorId,
+      false,
+    ]);
+    expect(tx.query.mock.calls[1]?.slice(1)).toEqual([
+      f.identity.organizationId,
+      f.identity.workspaceId,
+      f.identity.employeeId,
+      false,
+    ]);
     expect(result.workflows.map((item) => item.bindingId)).toEqual(
       f.workflows.map((row) => row.binding_id),
     );

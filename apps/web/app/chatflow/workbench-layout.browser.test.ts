@@ -26,6 +26,9 @@ import {
   McpConnectionSchema,
   type McpConnection,
   OfficeRenderResponseSchema,
+  WorkflowPackageSchema,
+  BrandContentBoardSchema,
+  brandContentTemplateKeys,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
@@ -69,6 +72,86 @@ const now = '2026-09-20T00:00:00.000Z';
 const report =
   '# COIN / MSTR / CRCL · 合成研究报告\n\n| 标的 | 说明 |\n| --- | --- |\n| COIN | 测试数据，非投资建议 |\n\n' +
   '多步研究结果与引用说明。'.repeat(100);
+
+function brandContentPackage() {
+  return WorkflowPackageSchema.parse({
+    organizationId: org,
+    workspaceId: workspace,
+    ownerId: user,
+    assignmentId: id(7),
+    employeeId: id(9),
+    instanceId: id(8100),
+    sceneId: null,
+    workflow: {
+      kind: 'workflow',
+      id: id(8200),
+      workflowId: id(8201),
+      slug: 'brand-topics',
+      name: '生成内容选题',
+      description: '仅用于组件fixture',
+      revision: 1,
+      status: 'published',
+      checksum: `sha256:${'a'.repeat(64)}`,
+      definition: {
+        schemaVersion: 1,
+        steps: [{ key: 'topics', name: '选题', kind: 'model' }],
+      },
+      publishedAt: now,
+    },
+    manifest: {
+      schemaVersion: 1,
+      templateKey: brandContentTemplateKeys.topics,
+      method: {
+        sourceKind: 'procedure',
+        contentId: id(8202),
+        revisionId: id(8203),
+        digest: `sha256:${'b'.repeat(64)}`,
+      },
+      definitionChecksum: `sha256:${'a'.repeat(64)}`,
+    },
+    checksum: `sha256:${'c'.repeat(64)}`,
+    createdAt: now,
+  });
+}
+
+function brandContentBoard() {
+  return BrandContentBoardSchema.parse({
+    brand: {
+      id: id(8210),
+      name: '合成测试品牌',
+      revision: 1,
+      contextRevisionId: id(8211),
+      createdAt: now,
+      updatedAt: now,
+    },
+    contexts: [
+      {
+        id: id(8211),
+        brandName: '合成测试品牌',
+        number: 1,
+        digest: `sha256:${'d'.repeat(64)}`,
+        content: {
+          audience: '单测受众',
+          tone: '准确',
+          requirements: '真实事实',
+          visualBrief: '',
+          facts: [{ id: 'one', text: '仅用于UI单测的事实' }],
+          sourceFiles: [],
+          strategies: [],
+        },
+        createdAt: now,
+      },
+    ],
+    batches: [],
+    topics: [],
+    articles: [],
+    bundles: [],
+    reviews: [],
+    plans: [],
+    receipts: [],
+    truncated: false,
+  });
+}
 function session(sessionId: string): Session {
   return {
     id: sessionId,
@@ -250,6 +333,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       streamingOutput?: boolean;
       controlledStream?: boolean;
       queue?: boolean;
+      brandContent?: { kind: 'general' | 'custom'; registered: boolean };
     } = {},
   ) {
     const context = await browser.newContext({
@@ -319,6 +403,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ] as PersonalSkillItem[])
         : [],
       createdEmployeeInstances: [] as EmployeeInstance[],
+      brandContentKind: options.brandContent?.kind,
+      brandContentRegistered: options.brandContent?.registered ?? false,
+      brandContentCatalogReads: [] as Array<{
+        instanceId: string;
+        viewerId: string;
+      }>,
+      brandContentCatalogDelay: null as Promise<void> | null,
+      brandContentBoardReads: 0,
+      brandContentLaunches: [] as Array<Record<string, unknown>>,
       historyRunning: options.running ?? false,
       bridgeDevices: [] as BridgeDevice[],
       bridgeError: false,
@@ -447,6 +540,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     const withArchive = (item: Session): Session => ({
       ...item,
+      ...(options.brandContent
+        ? {
+            employeeInstanceId:
+              (item.id === A && state.brandContentKind === 'custom') ||
+              item.id === id(8300)
+                ? id(8100)
+                : id(7),
+          }
+        : {}),
       ...(options.employeeHistory && item.id === id(600)
         ? { running: state.historyRunning }
         : {}),
@@ -459,7 +561,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? []
           : state.omitSessionA
             ? [session(B)]
-            : [session(A), session(B)]
+            : [
+                ...(state.brandContentLaunches.length
+                  ? [{ ...session(id(8300)), title: '内容选题工作' }]
+                  : []),
+                session(A),
+                session(B),
+              ]
       ).map(withArchive);
     let releaseStartup!: () => void;
     const startupGate = new Promise<void>((resolve) => {
@@ -533,6 +641,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           contentType: 'application/json',
           body: JSON.stringify(data),
         });
+      const brandContentPath = path.match(
+        /^\/api\/v1\/employee-instances\/([a-f0-9-]{36})\/brand-content(?:\/(workflow))?$/,
+      );
+      if (brandContentPath) {
+        const instanceId = brandContentPath[1]!;
+        if (brandContentPath[2] === 'workflow') {
+          state.brandContentLaunches.push(route.request().postDataJSON());
+          return answer({ sessionId: id(8300), runId: id(8301) });
+        }
+        const packages = state.brandContentRegistered
+          ? [brandContentPackage()]
+          : [];
+        if (url.searchParams.get('catalogOnly') === '1') {
+          state.brandContentCatalogReads.push({
+            instanceId,
+            viewerId: state.viewer,
+          });
+          if (state.brandContentCatalogDelay)
+            await state.brandContentCatalogDelay;
+          return answer({ packages });
+        }
+        state.brandContentBoardReads++;
+        const board = brandContentBoard();
+        return answer({ brands: [board.brand], board, packages, files: [] });
+      }
       if (path === '/api/v1/personal-skills') {
         if (route.request().method() === 'POST') {
           const body = route.request().postDataJSON(),
@@ -1023,19 +1156,49 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       ...(options.employeeDetails ? { instanceId: id(7) } : {}),
                       employeeId: id(9),
                       isDefault: true,
-                      ...(state.createdEmployeeInstances.length
+                      ...(options.brandContent
                         ? {
-                            instances: [
-                              {
-                                ...state.createdEmployeeInstances[0]!,
-                                id: id(7),
-                                kind: 'general',
-                                profile: {},
-                              },
-                              ...state.createdEmployeeInstances,
-                            ],
+                            instances: (['general', 'custom'] as const).map(
+                              (kind) =>
+                                EmployeeInstanceSchema.parse({
+                                  id: kind === 'custom' ? id(8100) : id(7),
+                                  assignmentId: id(7),
+                                  organizationId: org,
+                                  workspaceId: state.workspace,
+                                  ownerId: user,
+                                  kind,
+                                  revision: 1,
+                                  profile:
+                                    kind === 'custom'
+                                      ? { name: '内容同事' }
+                                      : {},
+                                  creationSource: {
+                                    kind: 'tenant_version',
+                                    employeeVersionId: id(8),
+                                  },
+                                  source: {
+                                    kind: 'tenant_version',
+                                    employeeVersionId: id(8),
+                                  },
+                                  createdAt: now,
+                                  updatedAt: now,
+                                  archivedAt: null,
+                                }),
+                            ),
                           }
-                        : {}),
+                        : state.createdEmployeeInstances.length
+                          ? {
+                              instances: [
+                                {
+                                  ...state.createdEmployeeInstances[0]!,
+                                  id: id(7),
+                                  kind: 'general',
+                                  profile: {},
+                                },
+                                ...state.createdEmployeeInstances,
+                              ],
+                            }
+                          : {}),
                       versions: [],
                       currentVersion: {
                         id: id(8),
@@ -1349,11 +1512,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }
       if (path === `/api/v1/sessions/${A}` && state.deepLinkDenied)
         return answer({ error: { message: 'Not accessible' } }, 403);
-      const listedHistory = options.employeeHistory
-        ? employeeHistorySessions.find(
-            (item) => path === `/api/v1/sessions/${item.id}`,
-          )
-        : undefined;
+      const listedHistory =
+        state.brandContentLaunches.length &&
+        path === `/api/v1/sessions/${id(8300)}`
+          ? { ...session(id(8300)), title: '内容选题工作' }
+          : options.employeeHistory
+            ? employeeHistorySessions.find(
+                (item) => path === `/api/v1/sessions/${item.id}`,
+              )
+            : undefined;
       if (
         path === `/api/v1/sessions/${A}` ||
         path === `/api/v1/sessions/${B}` ||
@@ -1461,6 +1628,184 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
     };
   }
+
+  it.each([
+    ['general', true, 0],
+    ['custom', false, 1],
+  ] as const)(
+    'MET194 hides the content workspace for %s registered=%s',
+    async (kind, registered, catalogReads) => {
+      const f = await fixture({ brandContent: { kind, registered } });
+      try {
+        if (catalogReads)
+          await expect
+            .poll(() => f.state.brandContentCatalogReads.length)
+            .toBe(catalogReads);
+        await f.page.evaluate(
+          () =>
+            new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            ),
+        );
+        expect(f.state.brandContentCatalogReads).toHaveLength(catalogReads);
+        expect(
+          await f.page
+            .getByRole('button', { name: '内容工作台', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(f.state.brandContentBoardReads).toBe(0);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  it('MET194 exposes a registered custom workspace and opens its returned Run Session without sending the draft', async () => {
+    const f = await fixture({
+      brandContent: { kind: 'custom', registered: true },
+    });
+    let confirmations = 0;
+    try {
+      const entry = f.page.getByRole('button', {
+        name: '内容工作台',
+        exact: true,
+      });
+      await entry.waitFor();
+      expect(f.state.brandContentBoardReads).toBe(0);
+      const composer = f.page.getByRole('textbox', {
+        name: '给 内容同事 的消息',
+      });
+      await composer.fill('尚未发送的真实草稿应先确认');
+      f.page.on('dialog', async (dialog) => {
+        confirmations++;
+        await dialog.accept();
+      });
+      await entry.click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '内容工作台',
+        exact: true,
+      });
+      await dialog.getByLabel('品牌名称').waitFor();
+      await dialog.getByRole('button', { name: '选题', exact: true }).click();
+      await dialog.getByLabel('发布平台').fill('小红书');
+      await dialog.getByLabel('候选数量').fill('3');
+      await dialog
+        .getByRole('button', { name: '生成候选', exact: true })
+        .click();
+      await expect.poll(() => dialog.count()).toBe(0);
+      await expect
+        .poll(() => f.page.locator('header h1').innerText())
+        .toBe('内容选题工作');
+      expect(confirmations).toBe(1);
+      expect(f.state.brandContentLaunches).toHaveLength(1);
+      expect(f.state.brandContentLaunches[0]).toMatchObject({
+        workspaceId: workspace,
+        brandId: id(8210),
+        stage: 'topics',
+        platform: '小红书',
+        count: 3,
+      });
+      expect(f.state.brandContentLaunches[0]!.requestId).toMatch(
+        /^[a-f0-9-]{36}$/,
+      );
+      expect(f.state.messageInputs).toEqual([]);
+      expect(await composer.inputValue()).toBe('');
+    } finally {
+      await f.close();
+    }
+  }, 30000);
+
+  it('MET194 hides an open workspace on employee switch and ignores the old delayed catalog', async () => {
+    const f = await fixture({
+      brandContent: { kind: 'custom', registered: true },
+    });
+    let release = () => {};
+    try {
+      const generalGroup = f.page.locator(
+        `[data-row-key="workspace:${id(7)}"]`,
+      );
+      await generalGroup.press('ArrowRight');
+      const entry = f.page.getByRole('button', {
+        name: '内容工作台',
+        exact: true,
+      });
+      await entry.waitFor();
+      await entry.click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '内容工作台',
+        exact: true,
+      });
+      await dialog.getByLabel('品牌名称').waitFor();
+      // A scope update can happen while a portal is open (e.g. another account
+      // refresh). Dispatch tests that lifetime without relying on overlay clicks.
+      await f.page
+        .getByRole('treeitem', { name: /^研究任务 B/ })
+        .dispatchEvent('click');
+      await expect.poll(() => dialog.count()).toBe(0);
+      expect(await entry.count()).toBe(0);
+      const before = f.state.brandContentCatalogReads.length;
+      f.state.brandContentCatalogDelay = new Promise<void>((done) => {
+        release = done;
+      });
+      await f.page.getByRole('treeitem', { name: /^研究任务 A/ }).click();
+      await expect
+        .poll(() => f.state.brandContentCatalogReads.length)
+        .toBe(before + 1);
+      expect(await entry.count()).toBe(0);
+      await f.page.getByRole('treeitem', { name: /^研究任务 B/ }).click();
+      release();
+      await f.page.evaluate(
+        () =>
+          new Promise<void>((done) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => done())),
+          ),
+      );
+      expect(await entry.count()).toBe(0);
+      expect(
+        f.state.brandContentCatalogReads.every(
+          (request) => request.instanceId === id(8100),
+        ),
+      ).toBe(true);
+    } finally {
+      release();
+      await f.close();
+    }
+  }, 30000);
+
+  it('MET194 hides the prior viewer workspace before accepting any new catalog', async () => {
+    const f = await fixture({
+      brandContent: { kind: 'custom', registered: true },
+      running: true,
+    });
+    try {
+      const entry = f.page.getByRole('button', {
+        name: '内容工作台',
+        exact: true,
+      });
+      await entry.waitFor();
+      await entry.click();
+      const dialog = f.page.getByRole('dialog', {
+        name: '内容工作台',
+        exact: true,
+      });
+      await dialog.getByLabel('品牌名称').waitFor();
+      f.state.viewer = id(50);
+      f.finishRun();
+      await expect.poll(() => dialog.count()).toBe(0);
+      await expect
+        .poll(() =>
+          f.state.brandContentCatalogReads.some(
+            (request) => request.viewerId === id(50),
+          ),
+        )
+        .toBe(true);
+      expect(await entry.count()).toBe(0);
+      expect(f.state.brandContentBoardReads).toBe(1);
+    } finally {
+      await f.close();
+    }
+  }, 30000);
 
   it('keeps typing and upload clicks responsive with a large JSON preview and preserves its page on hide', async () => {
     const f = await fixture({ artifacts: true });
