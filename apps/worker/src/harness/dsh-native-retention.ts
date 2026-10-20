@@ -298,7 +298,20 @@ export function originDshNativeLaunch(
   profileId: Profile,
   scope?: NativeOriginReaderScope,
 ) {
-  if (!scope && process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH)
+  // Empty second-group or unknown inputs still require scope and strict loading.
+  if (
+    !scope &&
+    Object.entries(process.env).some(
+      ([key, value]) =>
+        key.startsWith('ALLRICE_DSH_ORIGIN_READER_') &&
+        (![
+          'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
+          'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
+          'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
+        ].includes(key) ||
+          Boolean(value)),
+    )
+  )
     fail('ORIGIN_SCOPE_REQUIRED');
   const reader = scope ? nativeOriginReaderForOrigin(origin, scope) : undefined;
   const selected = nativeArtifactLaunchForPin({

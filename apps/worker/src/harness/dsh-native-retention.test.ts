@@ -3,19 +3,21 @@ import { mkdtemp, rm, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import type * as NativeOnceLoader from '../native-schedule-once-loader.js';
+import type { NativeRootOrigin } from '@allrice/database';
 
 const seam = vi.hoisted(() => ({
   install: vi.fn(),
   launch: vi.fn(),
   coverage: vi.fn(),
   controlHistory: vi.fn(),
+  origin: vi.fn(),
 }));
 vi.mock('@allrice/database', () => ({
   verifyNativeArtifactReferenceCoverage: seam.coverage,
   inspectNativeOriginReaderStates: vi.fn().mockResolvedValue([]),
   configuredNativeOriginReaders: vi.fn(() => []),
   nativeOriginReaderForBinding: vi.fn(),
-  nativeOriginReaderForOrigin: vi.fn(),
+  nativeOriginReaderForOrigin: seam.origin,
 }));
 vi.mock('./dsh-native-artifact.js', () => ({
   installRetainedDshNativeArtifact: seam.install,
@@ -36,6 +38,10 @@ const retainedCurrentId = 'sha256:' + 'c'.repeat(64);
 let root: string;
 beforeEach(async () => {
   vi.resetModules();
+  for (const key of Object.keys(process.env))
+    if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
+      vi.stubEnv(key, undefined);
+  seam.origin.mockReset().mockReturnValue(undefined);
   seam.coverage.mockReset().mockResolvedValue({
     verified: true,
     references: [],
@@ -474,4 +480,120 @@ it('MET195 retains the original rejection even if the phase observer throws', as
       },
     }),
   ).rejects.toBe(failure);
+});
+
+function guardOrigin(): NativeRootOrigin {
+  const contextId = '11111111-1111-4111-8111-111111111111';
+  return {
+    schemaVersion: 1,
+    contextKind: 'chat',
+    contextId,
+    rootSeed: contextId,
+    artifactId: retainedCurrentId,
+    distributionGeneration: current,
+    profileId: 'restricted',
+    frozenIdentity: {
+      kind: 'employee_package',
+      checksum: id,
+      sourceId: '22222222-2222-4222-8222-222222222222',
+    },
+  };
+}
+it.each([
+  ['ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', 'synthetic-present-reader-input'],
+  [
+    'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
+    'synthetic-present-reader-input',
+  ],
+  ['ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT', 'synthetic-present-reader-input'],
+  ['ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256', '  '],
+  ['ALLRICE_DSH_ORIGIN_READER_3_APPROVAL_PATH', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_2_ALLOW_EXISTING_WRITER', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH_2', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256_2', '  '],
+  [
+    'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT_2',
+    'synthetic-present-reader-input',
+  ],
+  ['ALLRICE_DSH_ORIGIN_READER_2APPROVAL_PATH', ''],
+  ['ALLRICE_DSH_ORIGIN_READER_02_APPROVAL_PATH', ''],
+  [
+    'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH',
+    'synthetic-present-reader-input',
+  ],
+] as const)(
+  'requires scope before launch for reader input %s = %j',
+  async (key, value) => {
+    vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', '');
+    vi.stubEnv(key, value);
+    const policy = await import('./dsh-native-retention.js');
+    expect(() =>
+      policy.originDshNativeLaunch(guardOrigin(), 'restricted'),
+    ).toThrow('DSH_NATIVE_ARTIFACT_RETAINED_ORIGIN_SCOPE_REQUIRED');
+    expect(seam.origin).not.toHaveBeenCalled();
+    expect(seam.launch).not.toHaveBeenCalled();
+  },
+);
+it('requires scope when the entire second reader group is explicitly empty', async () => {
+  for (const key of [
+    'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH',
+    'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256',
+    'ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT',
+  ])
+    vi.stubEnv(key, '');
+  const policy = await import('./dsh-native-retention.js');
+  expect(() =>
+    policy.originDshNativeLaunch(guardOrigin(), 'restricted'),
+  ).toThrow('DSH_NATIVE_ARTIFACT_RETAINED_ORIGIN_SCOPE_REQUIRED');
+  expect(seam.origin).not.toHaveBeenCalled();
+  expect(seam.launch).not.toHaveBeenCalled();
+});
+it.each(['absent', 'legacy-empty'] as const)(
+  'keeps original verified origin launch with %s reader configuration',
+  async (mode) => {
+    if (mode === 'legacy-empty')
+      for (const key of [
+        'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
+        'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
+        'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
+      ])
+        vi.stubEnv(key, '');
+    const origin = guardOrigin();
+    const launch = {
+      artifactId: origin.artifactId,
+      generation: current,
+      command: '/reviewed/node',
+      args: ['/reviewed/original/entry.mjs'],
+      profile: '/reviewed/original/restricted',
+    };
+    seam.launch.mockReturnValue(launch);
+    const policy = await import('./dsh-native-retention.js');
+    expect(policy.originDshNativeLaunch(origin, 'restricted')).toEqual(launch);
+    expect(seam.launch).toHaveBeenCalledWith({
+      artifactId: origin.artifactId,
+      profileId: 'restricted',
+    });
+    expect(seam.origin).not.toHaveBeenCalled();
+  },
+);
+it('delegates scoped partial second-reader configuration to the strict loader without launch fallback', async () => {
+  vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256', '');
+  seam.origin.mockImplementation(() => {
+    throw Error('DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID');
+  });
+  const origin = guardOrigin();
+  const scope = {
+    organizationId: '33333333-3333-4333-8333-333333333333',
+    workspaceId: '44444444-4444-4444-8444-444444444444',
+    ownerId: '55555555-5555-4555-8555-555555555555',
+  };
+  const policy = await import('./dsh-native-retention.js');
+  expect(() =>
+    policy.originDshNativeLaunch(origin, 'restricted', scope),
+  ).toThrow('DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID');
+  expect(seam.origin).toHaveBeenCalledWith(origin, scope);
+  expect(seam.launch).not.toHaveBeenCalled();
 });

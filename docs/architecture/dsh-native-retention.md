@@ -97,6 +97,20 @@ user permission. The normal Job, lease, owner, cancellation and binding CAS
 checks still run. Missing approval, another context, an earlier source pin,
 wrong storage or modified proof fails closed.
 
+A second independently reviewed source can use the fixed optional
+`ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH`,
+`ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256`, and
+`ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT` tuple. The original tuple remains
+required and its bytes, proof digests and target are unchanged. Both groups
+share the original limits of 64 contexts and 256 KiB of policy data. Partial
+second tuples, unknown reader keys, duplicate sources/contexts/namespaces,
+and source-to-target chains or cycles are rejected together; a bad second
+policy never falls back to the first. Each target must still be covered by
+the existing checked package and reference validation. This adds no execution
+retention slot or automatic retirement authority. The second policy remains
+disabled until its own format, provenance, fence and actual continuation
+evidence passes the same activation procedure below.
+
 Activation is a manual, serial release operation:
 
 1. Inventory the exact source's origins, pins, original storage and processes.
