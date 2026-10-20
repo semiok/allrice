@@ -262,6 +262,14 @@ export {
   verifyNativeArtifactReferenceCoverage,
   type NativeArtifactReferenceApproval,
 } from './conversation/native-artifact-references.ts';
+export {
+  configuredNativeOriginReaders,
+  nativeOriginReaderForOrigin,
+  nativeOriginReaderForBinding,
+  inspectNativeOriginReaderStates,
+  type NativeOriginReaderApproval,
+  type NativeOriginReaderScope,
+} from './conversation/native-origin-reader.ts';
 
 export * from './brand-content/service.ts';
 

@@ -1,0 +1,562 @@
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  configuredNativeOriginReaders,
+  nativeOriginReaderForBinding,
+  nativeOriginReaderForOrigin,
+  type NativeOriginReaderScope,
+} from './conversation/native-origin-reader.ts';
+import {
+  newNativeGeneration,
+  type NativeRootOrigin,
+} from './conversation/native-root-origin.ts';
+
+const invalid = 'DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID';
+const environment = {
+  path: 'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
+  hash: 'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
+  storage: 'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
+  primary: 'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
+  newBirth: 'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
+} as const;
+const checksum = (bytes: string | Buffer) =>
+  'sha256:' + createHash('sha256').update(bytes).digest('hex');
+const sourceArtifactId = checksum('synthetic-original-artifact');
+const targetArtifactId = checksum('synthetic-current-artifact');
+
+// Real files and the production parser only. These synthetic operator inputs
+// do not stand in for DB admission or existing-writer migration evidence.
+describe('exact unbound-chat origin reader configuration', () => {
+  let directory: string;
+  let approvalPath: string;
+  let storageRoot: string;
+  let scope: NativeOriginReaderScope;
+  let origin: NativeRootOrigin;
+
+  beforeEach(() => {
+    for (const name of Object.values(environment)) vi.stubEnv(name, undefined);
+    // macOS /var and some CI temp roots are aliases; the approved path itself
+    // must be canonical, so resolve the parent before creating this fixture.
+    directory = mkdtempSync(
+      join(realpathSync(tmpdir()), 'allrice-origin-reader-'),
+    );
+    approvalPath = join(directory, 'approval.json');
+    storageRoot = join(directory, 'storage');
+    mkdirSync(storageRoot);
+    scope = {
+      organizationId: randomUUID(),
+      workspaceId: randomUUID(),
+      ownerId: randomUUID(),
+    };
+    const contextId = randomUUID();
+    origin = {
+      schemaVersion: 1,
+      contextKind: 'chat',
+      contextId,
+      rootSeed: contextId,
+      distributionGeneration: newNativeGeneration,
+      profileId: 'restricted',
+      artifactId: sourceArtifactId,
+      frozenIdentity: {
+        kind: 'employee_package',
+        checksum: checksum('synthetic-frozen-employee-package'),
+        sourceId: randomUUID(),
+      },
+    };
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (directory) rmSync(directory, { recursive: true, force: true });
+  });
+
+  function policy() {
+    return {
+      schemaVersion: 1,
+      mode: 'unbound_chat_first_writer',
+      sourceArtifactId,
+      targetArtifactId,
+      generation: newNativeGeneration,
+      profileId: 'restricted',
+      sessionFormat: 4,
+      prerequisites: {
+        nodeMajor: Number(process.versions.node.split('.')[0]),
+        platform: process.platform,
+        arch: process.arch,
+        modules: process.versions.modules,
+      },
+      evidenceDigest: checksum('synthetic-reviewed-evidence'),
+      contexts: [{ ...scope, origin }],
+    };
+  }
+  type Policy = ReturnType<typeof policy>;
+  type Binding = Parameters<typeof nativeOriginReaderForBinding>[0];
+
+  function installBytes(bytes: Buffer) {
+    writeFileSync(approvalPath, bytes, { mode: 0o600 });
+    vi.stubEnv(environment.path, approvalPath);
+    vi.stubEnv(environment.hash, checksum(bytes));
+    vi.stubEnv(environment.storage, storageRoot);
+    vi.stubEnv(environment.primary, targetArtifactId);
+    vi.stubEnv(environment.newBirth, targetArtifactId);
+  }
+  function install(value: unknown = policy()) {
+    const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n');
+    installBytes(bytes);
+    return bytes;
+  }
+  function binding(): Binding {
+    const [approved] = configuredNativeOriginReaders();
+    if (!approved) throw Error('approved_fixture_required');
+    return {
+      ...scope,
+      originReaderApprovalDigest: approved.approvalDigest,
+      artifactId: targetArtifactId,
+      contextKind: 'chat',
+      contextId: origin.contextId,
+      profileId: 'restricted',
+      storageNamespace: approved.storageNamespace,
+    };
+  }
+
+  it('returns no approvals or origin redirect when configuration is absent', () => {
+    expect(configuredNativeOriginReaders()).toEqual([]);
+    expect(nativeOriginReaderForOrigin(origin, scope)).toBeUndefined();
+  });
+
+  it('approves the exact file hash, origin, tenant and old storage namespace', () => {
+    const bytes = install();
+    expect(process.env[environment.hash]).toBe(
+      checksum(readFileSync(approvalPath)),
+    );
+    expect(readFileSync(approvalPath)).toEqual(bytes);
+    const approvals = configuredNativeOriginReaders();
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      ...scope,
+      sourceArtifactId,
+      targetArtifactId,
+      generation: newNativeGeneration,
+      profileId: 'restricted',
+      contextId: origin.contextId,
+      evidenceDigest: policy().evidenceDigest,
+      storageNamespace: join(
+        storageRoot,
+        scope.organizationId,
+        scope.workspaceId,
+        scope.ownerId,
+        origin.contextId,
+        'sessions',
+      ),
+    });
+    expect(approvals[0]?.approvalDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(approvals[0]?.originDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(nativeOriginReaderForOrigin(origin, scope)).toEqual(approvals[0]);
+    expect(nativeOriginReaderForBinding(binding())).toEqual(approvals[0]);
+  });
+
+  it('re-hashes changed bytes even when file size and timestamps are preserved', () => {
+    const bytes = install();
+    configuredNativeOriginReaders();
+    const before = statSync(approvalPath);
+    const changed = Buffer.from(
+      bytes
+        .toString()
+        .replace(policy().evidenceDigest, checksum('different-evidence')),
+    );
+    expect(changed.byteLength).toBe(bytes.byteLength);
+    writeFileSync(approvalPath, changed);
+    utimesSync(approvalPath, before.atime, before.mtime);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('does not approve semantically equal JSON with different unapproved bytes', () => {
+    install();
+    writeFileSync(approvalPath, JSON.stringify(policy()));
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each([
+    ['path', ['hash', 'storage']],
+    ['hash', ['path', 'storage']],
+    ['storage', ['path', 'hash']],
+    ['path+hash', ['storage']],
+    ['path+storage', ['hash']],
+    ['hash+storage', ['path']],
+  ] as const)(
+    'rejects partial approval configuration: %s',
+    (_label, missing) => {
+      install();
+      for (const key of missing) vi.stubEnv(environment[key], undefined);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each([
+    ['malformed hash', 'not-a-sha256'],
+    ['wrong hash', checksum('other-file')],
+    ['missing hash prefix', 'a'.repeat(64)],
+  ])('rejects %s', (_label, hash) => {
+    install();
+    vi.stubEnv(environment.hash, hash);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each(['primary', 'newBirth'] as const)(
+    'requires the current primary and new-birth artifact to agree: %s',
+    (key) => {
+      install();
+      vi.stubEnv(environment[key], checksum('different-current-target'));
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+      vi.stubEnv(environment[key], undefined);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it('keeps the exact approved reader when a later primary is promoted, without rewriting its proof', () => {
+    install();
+    const before = configuredNativeOriginReaders();
+    const later = checksum('later-primary');
+    vi.stubEnv(environment.primary, later);
+    vi.stubEnv(environment.newBirth, later);
+    expect(configuredNativeOriginReaders()).toEqual(before);
+    expect(configuredNativeOriginReaders()[0]!.targetArtifactId).toBe(
+      targetArtifactId,
+    );
+    // Launch/coverage separately require this exact target to remain installed
+    // and verified. A new primary is not a version-wide replacement reader.
+  });
+
+  const invalidPolicies: [string, (value: Policy) => unknown][] = [
+    [
+      'same source and target',
+      (p) => ({ ...p, sourceArtifactId: p.targetArtifactId }),
+    ],
+    [
+      'another policy mode',
+      (p) => ({ ...p, mode: 'existing_writer_migration' }),
+    ],
+    [
+      'another distribution generation',
+      (p) => ({ ...p, generation: 'dsh-other' }),
+    ],
+    ['technical profile', (p) => ({ ...p, profileId: 'technical' })],
+    ['another session format', (p) => ({ ...p, sessionFormat: 5 })],
+    [
+      'another Node ABI',
+      (p) => ({
+        ...p,
+        prerequisites: { ...p.prerequisites, modules: 'different' },
+      }),
+    ],
+    [
+      'another Node major',
+      (p) => ({
+        ...p,
+        prerequisites: {
+          ...p.prerequisites,
+          nodeMajor: p.prerequisites.nodeMajor + 1,
+        },
+      }),
+    ],
+    [
+      'another platform',
+      (p) => ({
+        ...p,
+        prerequisites: { ...p.prerequisites, platform: 'different' },
+      }),
+    ],
+    [
+      'another architecture',
+      (p) => ({
+        ...p,
+        prerequisites: { ...p.prerequisites, arch: 'different' },
+      }),
+    ],
+    ['unknown policy field', (p) => ({ ...p, allowSameGeneration: true })],
+    ['no exact contexts', (p) => ({ ...p, contexts: [] })],
+    [
+      'origin from another source',
+      (p) => ({
+        ...p,
+        contexts: [
+          {
+            ...scope,
+            origin: { ...origin, artifactId: checksum('other-source') },
+          },
+        ],
+      }),
+    ],
+    [
+      'origin with another profile',
+      (p) => ({
+        ...p,
+        contexts: [{ ...scope, origin: { ...origin, profileId: 'technical' } }],
+      }),
+    ],
+    [
+      'origin with another root seed',
+      (p) => ({
+        ...p,
+        contexts: [{ ...scope, origin: { ...origin, rootSeed: randomUUID() } }],
+      }),
+    ],
+    [
+      'non-chat origin',
+      (p) => ({
+        ...p,
+        contexts: [
+          {
+            ...scope,
+            origin: { ...origin, contextKind: 'platform_employee_test' },
+          },
+        ],
+      }),
+    ],
+    [
+      'missing published employee version',
+      (p) => ({
+        ...p,
+        contexts: [
+          {
+            ...scope,
+            origin: {
+              ...origin,
+              frozenIdentity: {
+                kind: 'employee_package',
+                checksum: origin.frozenIdentity.checksum,
+              },
+            },
+          },
+        ],
+      }),
+    ],
+    [
+      'extra context field',
+      (p) => ({ ...p, contexts: [{ ...p.contexts[0], allOwners: true }] }),
+    ],
+  ];
+  it.each(invalidPolicies)(
+    'rejects a hash-approved policy with %s',
+    (_label, change) => {
+      install(change(policy()));
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it('rejects duplicate context IDs even with a different tenant scope', () => {
+    const value = policy();
+    value.contexts.push({ ...scope, ownerId: randomUUID(), origin });
+    install(value);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each(['organizationId', 'workspaceId', 'ownerId'] as const)(
+    'rejects an origin lookup in another %s',
+    (key) => {
+      install();
+      expect(() =>
+        nativeOriginReaderForOrigin(origin, { ...scope, [key]: randomUUID() }),
+      ).toThrow(invalid);
+    },
+  );
+
+  const changedOrigins: [
+    string,
+    (value: NativeRootOrigin) => NativeRootOrigin,
+  ][] = [
+    [
+      'source artifact',
+      (o) => ({ ...o, artifactId: checksum('another-source') }),
+    ],
+    ['root seed', (o) => ({ ...o, rootSeed: randomUUID() })],
+    ['context kind', (o) => ({ ...o, contextKind: 'platform_employee_test' })],
+    ['profile', (o) => ({ ...o, profileId: 'technical' })],
+    [
+      'frozen package checksum',
+      (o) => ({
+        ...o,
+        frozenIdentity: {
+          ...o.frozenIdentity,
+          checksum: checksum('other-package'),
+        },
+      }),
+    ],
+    [
+      'published version',
+      (o) => ({
+        ...o,
+        frozenIdentity: { ...o.frozenIdentity, sourceId: randomUUID() },
+      }),
+    ],
+    [
+      'frozen identity kind',
+      (o) => ({
+        ...o,
+        frozenIdentity: { ...o.frozenIdentity, kind: 'internal_recipe' },
+      }),
+    ],
+  ];
+  it.each(changedOrigins)(
+    'rejects a reviewed context with a changed %s',
+    (_label, change) => {
+      install();
+      expect(() => nativeOriginReaderForOrigin(change(origin), scope)).toThrow(
+        invalid,
+      );
+    },
+  );
+
+  it('rejects an extra origin of the retired source and never grants a generation-wide redirect', () => {
+    install();
+    const contextId = randomUUID();
+    const extra = { ...origin, contextId, rootSeed: contextId };
+    expect(() => nativeOriginReaderForOrigin(extra, scope)).toThrow(invalid);
+    expect(
+      nativeOriginReaderForOrigin(
+        {
+          ...extra,
+          artifactId: checksum('unrelated-same-generation-artifact'),
+        },
+        scope,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('keeps the first approval digest stable when another exact context is approved', () => {
+    const value = policy();
+    install(value);
+    const first = nativeOriginReaderForOrigin(origin, scope)!;
+    const contextId = randomUUID();
+    const secondOrigin = { ...origin, contextId, rootSeed: contextId };
+    value.contexts.push({ ...scope, origin: secondOrigin });
+    install(value);
+    expect(nativeOriginReaderForOrigin(origin, scope)).toEqual(first);
+    const second = nativeOriginReaderForOrigin(secondOrigin, scope)!;
+    expect(second.approvalDigest).not.toBe(first.approvalDigest);
+    value.contexts.reverse();
+    install(value);
+    expect(nativeOriginReaderForOrigin(origin, scope)?.approvalDigest).toBe(
+      first.approvalDigest,
+    );
+  });
+
+  it('invalidates a former binding approval when the reviewed evidence changes', () => {
+    install();
+    const previous = binding();
+    install({ ...policy(), evidenceDigest: checksum('new-reviewed-evidence') });
+    expect(() => nativeOriginReaderForBinding(previous)).toThrow(invalid);
+  });
+
+  const changedBindings: [string, (value: Binding) => Binding][] = [
+    [
+      'approval digest',
+      (b) => ({ ...b, originReaderApprovalDigest: checksum('other-approval') }),
+    ],
+    ['old writer artifact', (b) => ({ ...b, artifactId: sourceArtifactId })],
+    [
+      'unapproved target',
+      (b) => ({ ...b, artifactId: checksum('other-target') }),
+    ],
+    ['organization', (b) => ({ ...b, organizationId: randomUUID() })],
+    ['workspace', (b) => ({ ...b, workspaceId: randomUUID() })],
+    ['owner', (b) => ({ ...b, ownerId: randomUUID() })],
+    ['context kind', (b) => ({ ...b, contextKind: 'platform_employee_test' })],
+    ['context ID', (b) => ({ ...b, contextId: randomUUID() })],
+    ['profile', (b) => ({ ...b, profileId: 'technical' })],
+    [
+      'storage namespace',
+      (b) => ({
+        ...b,
+        storageNamespace: join(directory, 'other-storage', 'sessions'),
+      }),
+    ],
+    [
+      'noncanonical namespace',
+      (b) => ({ ...b, storageNamespace: b.storageNamespace + '/' }),
+    ],
+  ];
+  it.each(changedBindings)(
+    'rejects binding with a changed %s',
+    (_label, change) => {
+      install();
+      expect(() => nativeOriginReaderForBinding(change(binding()))).toThrow(
+        invalid,
+      );
+    },
+  );
+
+  it('rejects a symlink approval file', () => {
+    install();
+    const alias = join(directory, 'approval-link.json');
+    symlinkSync(approvalPath, alias);
+    vi.stubEnv(environment.path, alias);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('rejects approval files beneath a symlink directory', () => {
+    install();
+    const alias = join(directory, 'directory-link');
+    symlinkSync(directory, alias, 'dir');
+    vi.stubEnv(environment.path, join(alias, 'approval.json'));
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each(['relative', 'noncanonical', 'missing', 'directory'] as const)(
+    'rejects a %s approval file path',
+    (kind) => {
+      install();
+      const path = {
+        relative: 'approval.json',
+        noncanonical:
+          directory + '/../' + directory.split('/').at(-1) + '/approval.json',
+        missing: join(directory, 'missing.json'),
+        directory,
+      }[kind];
+      vi.stubEnv(environment.path, path);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each(['relative', 'noncanonical', 'missing', 'file', 'symlink'] as const)(
+    'rejects a %s storage root',
+    (kind) => {
+      install();
+      const alias = join(directory, 'storage-link');
+      if (kind === 'symlink') symlinkSync(storageRoot, alias, 'dir');
+      const path = {
+        relative: 'storage',
+        noncanonical: storageRoot + '/../storage',
+        missing: join(directory, 'missing-storage'),
+        file: approvalPath,
+        symlink: alias,
+      }[kind];
+      vi.stubEnv(environment.storage, path);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it('rejects malformed JSON with a correct byte hash', () => {
+    installBytes(Buffer.from('{"schemaVersion":1,'));
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('rejects an oversized file even with its correct byte hash', () => {
+    installBytes(Buffer.alloc(256 * 1024 + 1, ' '));
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+});

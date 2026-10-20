@@ -203,6 +203,8 @@ export interface HarnessExecutionInput {
     ) => Promise<{
       binding: NativeSessionPin | null;
       origin?: NativeRootOrigin | null;
+      /** At least one immutable target-writer binding in this same scope. */
+      originReaderAdopted?: boolean;
       /** A pin/prior adoption/retry cannot create an empty replacement. */
       requiresRecovery: boolean;
       generation?: number;

@@ -67,6 +67,11 @@ function issue(
   // This independently configured ID is not derived from a local manifest,
   // current catalog, timestamp, worker version, model or browser input.
   const artifactId = digest.parse(process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID);
+  if (
+    process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH &&
+    artifactId !== process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID
+  )
+    throw Error('DSH_NATIVE_ORIGIN_READER_NEW_BIRTH_MISMATCH');
   return NativeRootOriginSchema.parse({
     schemaVersion: 1,
     contextKind: kind,
