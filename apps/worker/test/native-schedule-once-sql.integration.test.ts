@@ -11,9 +11,9 @@ import {
   initializeNativeOncePartition,
   listOnceTasks,
 } from '../../../packages/database/src/native-schedule-once-product.ts';
-import { measureDshNativeArtifact } from './harness/dsh-native-artifact.ts';
-import { createNativeOnceControlSource } from './native-schedule-once-loader.ts';
-import { createNativeOnceWorkerRuntime } from './native-schedule-once-runtime.ts';
+import { measureDshNativeArtifact } from '../src/harness/dsh-native-artifact.ts';
+import { createNativeOnceControlSource } from '../src/native-schedule-once-loader.ts';
+import { createNativeOnceWorkerRuntime } from '../src/native-schedule-once-runtime.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
