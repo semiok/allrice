@@ -20,6 +20,7 @@ import { employeeChatUuid } from '../employees/employee-chat-authority.ts';
 import { requireBrandContentScope } from './authority.ts';
 import { getBrandContentBoard } from './reads.ts';
 import { brandContentFail as fail } from './rules.ts';
+import type { BrandContentDatabase, Tx } from './types.ts';
 
 export function brandContentStageInput(
   board: BrandContentBoard,
@@ -254,10 +255,14 @@ export async function assertBrandContentWorkflowStart(
   sessionId: string,
   userMessageId: string,
   invocation: BrandContentWorkflowInvocation,
+  callerSql?: BrandContentDatabase | Tx,
 ) {
   if (context.actor.type !== 'user')
     throw new DataAccessError('authorization_denied');
-  const [row] = await getDatabase()<
+  // Admission can have just inserted the user message in the caller's open
+  // transaction. A separate pool connection cannot observe that message yet.
+  const sql = callerSql ?? getDatabase();
+  const [row] = await sql<
     { invocation: unknown }[]
   >`select start.invocation from allrice_brand_content_workflow_starts start
     join allrice_messages m on m.session_id=start.session_id and m.client_message_id=start.request_id

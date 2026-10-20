@@ -6,6 +6,7 @@ import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ExecutionContextSchema,
+  BrandContentWorkflowInvocationSchema,
   brandContentWorkflowTemplates,
   makeObjectKey,
   type BrandContentBoard,
@@ -61,6 +62,10 @@ import {
   mutateBrandContentInTransaction,
 } from './service.ts';
 import type { Tx } from './types.ts';
+import {
+  assertBrandContentWorkflowStart,
+  brandContentStageInput,
+} from './workflow-start.ts';
 import {
   claimBrandContentReminder,
   registerBrandContentReminder,
@@ -722,6 +727,88 @@ suite(
         vi.unstubAllEnvs();
       }
     }, 30_000);
+
+    it('validates an uncommitted authenticated start and user message on the caller transaction, rejects another owner, and leaves no rows after rollback', async () => {
+      const brand = await prepareBrand(a, 'caller-transaction-start');
+      const request = {
+        workspaceId: a.workspace,
+        brandId: brand.brandId,
+        requestId: randomUUID(),
+        sessionId: a.session.id,
+        stage: 'topics' as const,
+        platform: '小红书',
+        count: 3,
+      };
+      const invocation = BrandContentWorkflowInvocationSchema.parse({
+        schemaVersion: 1,
+        startId: randomUUID(),
+        instanceId: a.instance.id,
+        sceneId: null,
+        // This synthetic fixture exercises authenticated-start SQL visibility.
+        // Package execution is separately checked by the real Start admission.
+        workflowRevisionId: randomUUID(),
+        packageDigest: runtimePolicyDigest({ fixture: request.requestId }),
+        templateKey: 'brand-content-operations.topics',
+        input: brandContentStageInput(await board(brand), request),
+      });
+      const messageId = randomUUID();
+      const rollback = new Error('isolated caller transaction rollback');
+      await expect(
+        fixture.db.begin(async (tx) => {
+          await tx`insert into allrice_brand_content_workflow_starts
+            (id,organization_id,workspace_id,owner_id,instance_id,brand_id,
+              request_id,request_digest,request,invocation,session_id)
+            values (${invocation.startId},${a.org},${a.workspace},${a.user},
+              ${a.instance.id},${brand.brandId},${request.requestId},
+              ${runtimePolicyDigest(request)},${tx.json(request)},
+              ${tx.json(invocation)},${a.session.id})`;
+          await tx`insert into allrice_messages
+            (id,organization_id,workspace_id,session_id,owner_id,role,content,
+              visibility,client_message_id,status,completed_at)
+            values (${messageId},${a.org},${a.workspace},${a.session.id},
+              ${a.user},'user',${tx.json({ text: 'Synthetic caller transaction topics start.' })},
+              'private',${request.requestId},'completed',now())`;
+
+          await expect(
+            assertBrandContentWorkflowStart(
+              a.context,
+              a.session.id,
+              messageId,
+              invocation,
+              tx,
+            ),
+          ).resolves.toBeUndefined();
+          // The default pool is a different real connection. Before COMMIT it
+          // must not see this start/message, reproducing the former failure.
+          await expect(
+            assertBrandContentWorkflowStart(
+              a.context,
+              a.session.id,
+              messageId,
+              invocation,
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          await expect(
+            assertBrandContentWorkflowStart(
+              { ...a.context, actor: b.context.actor },
+              a.session.id,
+              messageId,
+              invocation,
+              tx,
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+      const rows = await fixture.db<{ starts: number; messages: number }[]>`
+        select
+          (select count(*)::int from allrice_brand_content_workflow_starts
+            where id=${invocation.startId}) as starts,
+          (select count(*)::int from allrice_messages
+            where id=${messageId}) as messages`;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!).toMatchObject({ starts: 0, messages: 0 });
+    });
 
     it('persists review-directed native file revisions, a one-slot image revision, approved handoff and a user-provided receipt', async () => {
       const f = await prepareDraft(a, 'full-chain');
