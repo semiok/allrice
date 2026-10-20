@@ -45,6 +45,7 @@ import { projectNativeUsage } from './dsh/native-usage.js';
 import { DshAssistantStream } from './dsh/assistant-stream.js';
 import { toolActivityDetail } from './dsh/tool-activity.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
+import { nativeSessionRecoveryFailure } from './dsh/native-tools.js';
 import type {
   HarnessAdapter,
   HarnessExecutionInput,
@@ -557,9 +558,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         runId: input.assistants!.rootRunId,
         ...(checkedAssistant ? { deliveryMode: 'checked_native_v1' } : {}),
         wireTools: Object.entries(dshNativeWireNames)
-          .filter(([, canonical]) =>
-            input.tools.some((tool) => tool.name === canonical),
-          )
+          .filter(([, canonical]) => runtime.nativeTools.includes(canonical))
           .map(([wire]) => wire),
       });
     let cancellationTask: Promise<unknown> | undefined;
@@ -753,7 +752,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       ? performance.now() - skillEventsStarted
       : 0;
     const initialPrompt = [
-      dshToolBridgeInstructions(input),
+      dshToolBridgeInstructions(input, new Set(runtime.nativeTools)),
       fresh && input.kernel.bootstrapConversation
         ? `Conversation context:\n${input.kernel.bootstrapConversation}`
         : '',
@@ -839,12 +838,8 @@ export class DshHarnessAdapter implements HarnessAdapter {
           );
         try {
           await runtime.client.recover(threadId);
-        } catch {
-          throw new HandlerError(
-            'DSH_NATIVE_SESSION_STORAGE_UNAVAILABLE',
-            '原会话资料暂不可用，已保留绑定与执行记录。',
-            false,
-          );
+        } catch (error) {
+          throw nativeSessionRecoveryFailure(error);
         }
       }
       // Same-authority cold final reconciliation is a read, never a new

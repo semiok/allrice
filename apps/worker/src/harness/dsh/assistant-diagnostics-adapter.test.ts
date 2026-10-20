@@ -186,7 +186,11 @@ function fixture(options: {
     }),
     sessionProjection: async () => ({ contextPressure: null }),
   };
-  const runtime = { client, sessionId: threadId } as unknown as DshRuntime;
+  const runtime = {
+    client,
+    sessionId: threadId,
+    nativeTools: [],
+  } as unknown as DshRuntime;
   vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
     runtime,
     fresh: true,

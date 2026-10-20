@@ -73,10 +73,16 @@ export function dshHostCapabilityInstructions(
   ].join('\n');
 }
 
-export function dshToolBridgeInstructions(input: HarnessExecutionInput) {
-  const nativeTools = input.tools.filter((tool) => isDshNativeTool(tool.name));
+export function dshToolBridgeInstructions(
+  input: HarnessExecutionInput,
+  runtimeNativeTools?: ReadonlySet<string>,
+) {
+  const availableNative = (name: string) =>
+    isDshNativeTool(name) &&
+    (runtimeNativeTools === undefined || runtimeNativeTools.has(name));
+  const nativeTools = input.tools.filter((tool) => availableNative(tool.name));
   const bridgedTools = input.tools.filter(
-    (tool) => !isDshNativeTool(tool.name),
+    (tool) => !availableNative(tool.name),
   );
   if (bridgedTools.length === 0) {
     if (nativeTools.length > 0) {

@@ -53,10 +53,8 @@ import {
   retainedDshStorageRoot,
   assertDshFrozenCompatibility,
 } from '../dsh-native-retention.js';
-import {
-  dshHostCapabilityInstructions,
-  isDshNativeTool,
-} from './tool-bridge.js';
+import { dshHostCapabilityInstructions } from './tool-bridge.js';
+import { selectDshNativeTools } from './native-tools.js';
 
 export interface DshRuntime {
   client: DshProtocolClient;
@@ -608,6 +606,10 @@ export class DshRuntimePool {
       input.input.assistants?.maxOutputTokens ??
       input.input.maxOutputTokens ??
       (input.input.assistants ? 16_000 : undefined);
+    const nativeTools = await selectDshNativeTools(
+      input.input.tools.map((tool) => tool.name),
+      nativeIdentity?.args[0],
+    );
     // Store only per-field hashes in memory so diagnostics can name changed
     // configuration without recording its values.
     const fingerprintInput = {
@@ -638,10 +640,7 @@ export class DshRuntimePool {
       // Only process configuration belongs in the session reuse key.
       assistantsEnabled: !!input.input.assistants,
       maxTokens,
-      nativeTools: input.input.tools
-        .map((tool) => tool.name)
-        .filter(isDshNativeTool)
-        .sort(),
+      nativeTools: [...nativeTools].sort(),
       nativeSkills: input.nativeSkills.map((skill) => ({
         id: skill.id,
         checksum: skill.checksum,
@@ -777,9 +776,6 @@ export class DshRuntimePool {
       environment.OPENAI_COMPATIBLE_API_KEY = credential!.apiKey;
       environment.OPENAI_COMPATIBLE_BASE_URL = input.snapshot.baseUrl!;
     }
-    const nativeTools = input.input.tools
-      .map((tool) => tool.name)
-      .filter(isDshNativeTool);
     const startedAt = new Date().toISOString();
     const runtime: DshRuntime = {
       ...(input.nativePin ? { nativePin: input.nativePin } : {}),
