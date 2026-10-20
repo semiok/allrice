@@ -53,13 +53,18 @@ export const NativeRecurringControlSchema = z
         status: z.enum(['pending', 'confirmed', 'blocked']),
       })
       .strict(),
-    dispatch: z
-      .object({
-        employeeAssignmentId: UuidSchema,
-        employeeInstanceId: UuidSchema,
-        businessSessionId: UuidSchema,
-      })
-      .strict(),
+    // Existing chat identities remain byte-for-byte unchanged. A private
+    // quality schedule delivers to its original durable occurrence queue.
+    dispatch: z.union([
+      z
+        .object({
+          employeeAssignmentId: UuidSchema,
+          employeeInstanceId: UuidSchema,
+          businessSessionId: UuidSchema,
+        })
+        .strict(),
+      z.object({ consumer: z.literal('platform-quality-v1') }).strict(),
+    ]),
   })
   .strict()
   .superRefine((c, ctx) => {
@@ -77,7 +82,7 @@ export const NativeRecurringControlSchema = z
 export type NativeRecurringControl = z.infer<
   typeof NativeRecurringControlSchema
 >;
-export const NativeRecurringRevisionSchema = z
+const NativeRecurringRevisionBase = z
   .object({
     revision: Revision,
     name: z.string().min(1).max(160),
@@ -87,6 +92,14 @@ export const NativeRecurringRevisionSchema = z
     acceptedAt: Instant,
   })
   .strict();
+export const NativeRecurringRevisionSchema = z.union([
+  NativeRecurringRevisionBase,
+  NativeRecurringRevisionBase.extend({
+    consumer: z.literal('platform-quality-v1'),
+    qualityConfigurationDigest: Digest,
+    legacyScheduledFor: Instant.nullable(),
+  }).strict(),
+]);
 export type NativeRecurringRevision = z.infer<
   typeof NativeRecurringRevisionSchema
 >;

@@ -248,6 +248,7 @@ export function createNativeRecurringSqlStore(
           )
         )
           deny('control_changed');
+        const frozenVersions = await versions(tx, row.snapshot.control);
         const planned = prepareNativeRecurringMutation({
           readiness: base.readiness(p!),
           reference,
@@ -256,7 +257,7 @@ export function createNativeRecurringSqlStore(
           dbNowMs: await base.requireActive(tx, p, writer),
           before: row.snapshot,
           write,
-          revisions: await versions(tx, row.snapshot.control),
+          revisions: frozenVersions,
           decodeTask: options.decodeTask,
           admission: admission.get(row.control_id),
         });
@@ -296,6 +297,20 @@ export function createNativeRecurringSqlStore(
           await tx`update allrice_native_recurring_operations set status='applied',updated_at=clock_timestamp()
           where automation_id=${planned.after.control.automationId} and operation_id=${write.mutation.commandId} and status='pending'`;
         const task = planned.after.task as NativeRecurringTask | null;
+        if (
+          row.snapshot.task === null &&
+          task &&
+          'consumer' in planned.after.control.dispatch
+        ) {
+          const { recordQualityNativeClockHandoff } =
+            await import('./platform-quality-native.ts');
+          await recordQualityNativeClockHandoff(
+            tx,
+            planned.after.control,
+            frozenVersions.get(planned.after.control.revision)!,
+            task.record.scheduledAt,
+          );
+        }
         await tx`update allrice_automations set next_run_at=case when status='enabled' and deleted_at is null and ${planned.after.control.command.status === 'confirmed'}
           then ${task?.record.scheduledAt ?? null}::timestamptz else null end where id=${planned.after.control.automationId}`;
         await base.requireActive(tx, p, writer);

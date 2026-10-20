@@ -34,7 +34,7 @@ const reservedSchema = z
   })
   .strict();
 const dispatchWindowMs = 15 * 60_000;
-type Rule = {
+export type QualityScheduleRule = {
   id: string;
   owner_id: string;
   organization_id: string;
@@ -45,8 +45,10 @@ type Rule = {
   status: string;
   deleted_at: Date | null;
   next_run_at: Date | null;
+  clock_owner?: string;
 };
-function configurationDigest(rule: Rule) {
+type Rule = QualityScheduleRule;
+export function qualityScheduleConfigurationDigest(rule: Rule) {
   reservedSchema.parse(rule.quality_binding);
   return qualityDigest([
     rule.id,
@@ -58,6 +60,7 @@ function configurationDigest(rule: Rule) {
     rule.schedule,
   ]);
 }
+const configurationDigest = qualityScheduleConfigurationDigest;
 export function qualityOccurrenceRequestId(id: string) {
   return cloudStableId(`platform-quality-occurrence:${UuidSchema.parse(id)}`);
 }
@@ -65,6 +68,8 @@ async function realAdminLogin(
   context: RequestContext,
   tx: Tx | ReturnType<typeof getDatabase> = getDatabase(),
 ) {
+  // Matches native control/dispatch order, including concurrent admin revocation.
+  await tx`select id from allrice_users where id=${context.actor.id} for no key update`;
   const owner = await requirePlatformAdmin(context, tx);
   const [login] =
     await tx`select id from allrice_sessions where id=${context.sessionId} and user_id=${owner} and revoked_at is null and expires_at>clock_timestamp() for share`;
@@ -169,6 +174,9 @@ export async function updatePlatformQualitySchedule(
       await tx`update allrice_automation_runs set status='failed',error_code=${input.enabled ? 'QUALITY_SCHEDULE_CHANGED' : 'QUALITY_SCHEDULE_PAUSED'},error_message='配置已变更，本轮尚未派发。',completed_at=clock_timestamp() where automation_id=${current.id} and quality_occurrence is not null and run_id is null and status='queued'`;
     }
     if (!written) throw Error('QUALITY_SCHEDULE_WRITE_UNCONFIRMED');
+    const { syncPlatformQualityNative } =
+      await import('./platform-quality-native.ts');
+    await syncPlatformQualityNative(tx, written.id);
     await auditConfiguration(
       tx,
       context,
@@ -199,6 +207,9 @@ export async function deletePlatformQualitySchedule(
       throw new QueueError('conflict');
     await tx`update allrice_automations set status='paused',deleted_at=clock_timestamp(),next_run_at=null,revision=revision+1,updated_at=clock_timestamp() where id=${current.id}`;
     await tx`update allrice_automation_runs set status='failed',error_code='QUALITY_SCHEDULE_DELETED',error_message='配置已移除，本轮尚未派发。',completed_at=clock_timestamp() where automation_id=${current.id} and quality_occurrence is not null and run_id is null and status='queued'`;
+    const { syncPlatformQualityNative } =
+      await import('./platform-quality-native.ts');
+    await syncPlatformQualityNative(tx, current.id);
     await auditConfiguration(tx, context, current, 'automation.quality.delete');
   });
   return getPlatformQualitySchedule(context);
@@ -210,14 +221,39 @@ export async function claimPlatformQualityOccurrence(
   rule: Rule,
   nextRunAt: Date,
 ) {
-  const scheduledFor = rule.next_run_at!,
-    id = randomUUID();
+  const result = await reservePlatformQualityOccurrence(
+    tx,
+    rule,
+    rule.next_run_at!,
+  );
+  // Legacy only. Native projections are updated exclusively from committed
+  // public task records, never by computing the next due time in SQL.
+  await tx`update allrice_automations set next_run_at=${nextRunAt},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
+  return result && !result.reason ? result.id : null;
+}
+
+/** Shared business sink. The caller locks the rule and supplies the actual
+ * source target; native receipts must never read the next_run_at projection. */
+export async function reservePlatformQualityOccurrence(
+  tx: Tx,
+  rule: Rule,
+  scheduledFor: Date,
+  native?: {
+    occurrenceId: string;
+    businessId: string;
+    revision: number;
+    configurationDigest: string;
+    blocked: string | null;
+  },
+  blockedReason?: string,
+) {
+  const id = native?.businessId ?? randomUUID();
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
   const origin = QualityScheduleOriginSchema.parse({
     ...reserved,
     automationId: rule.id,
     occurrenceId: id,
-    revision: rule.revision,
+    revision: native?.revision ?? rule.revision,
     ownerId: rule.owner_id,
     organizationId: rule.organization_id,
     workspaceId: rule.workspace_id,
@@ -225,25 +261,26 @@ export async function claimPlatformQualityOccurrence(
     dispatchDeadlineAt: new Date(
       scheduledFor.getTime() + dispatchWindowMs,
     ).toISOString(),
-    configurationDigest: configurationDigest(rule),
+    configurationDigest:
+      native?.configurationDigest ?? configurationDigest(rule),
   });
   const active =
     await tx`select r.id from allrice_automation_runs r left join allrice_platform_quality_checks q on q.automation_run_id=r.id
     left join allrice_jobs j on j.id=q.job_id where r.automation_id=${rule.id} and r.quality_occurrence is not null and
     ((r.run_id is null and r.status='queued' and (r.quality_occurrence->>'dispatchDeadlineAt')::timestamptz>clock_timestamp()) or j.status in ('queued','claimed','running','waiting_approval')) limit 1`;
   const reason =
-    Date.parse(origin.dispatchDeadlineAt) <= clock!.now.getTime()
+    blockedReason ??
+    native?.blocked ??
+    (Date.parse(origin.dispatchDeadlineAt) <= clock!.now.getTime()
       ? 'QUALITY_DISPATCH_EXPIRED'
       : active.length
         ? 'QUALITY_BUSY'
-        : null;
+        : null);
   const [row] =
-    await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,quality_occurrence,status,error_code,error_message,completed_at)
-    values(${id},${rule.organization_id},${rule.workspace_id},${rule.id},${scheduledFor},${tx.json(origin)},${reason ? 'failed' : 'queued'},${reason},${reason ? '本轮未执行；不会补跑积压周期。' : null},${reason ? clock!.now : null})
+    await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,quality_occurrence,status,error_code,error_message,completed_at,native_recurring_occurrence_id)
+    values(${id},${rule.organization_id},${rule.workspace_id},${rule.id},${scheduledFor},${tx.json(origin)},${reason ? 'failed' : 'queued'},${reason},${reason ? '本轮未执行；不会补跑积压周期。' : null},${reason ? clock!.now : null},${native?.occurrenceId ?? null})
     on conflict(automation_id,scheduled_for) where folder_event_id is null do nothing returning id`;
-  // Advance directly to the future; a restart never floods missed daily runs.
-  await tx`update allrice_automations set next_run_at=${nextRunAt},last_run_at=clock_timestamp(),updated_at=clock_timestamp() where id=${rule.id}`;
-  return row && !reason ? String(row.id) : null;
+  return row ? { id: String(row.id), reason, origin } : null;
 }
 
 /** Rule -> occurrence lock order also used by editing/deletion, all inside the
@@ -285,6 +322,13 @@ export async function admitScheduledQualityOccurrence(
   const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
   if (Date.parse(origin.dispatchDeadlineAt) <= clock!.now.getTime())
     throw new DataAccessError('grant_invalid');
+  // Legacy queued occurrences keep their original provenance after their rule
+  // migrates. Only rows actually delivered by the native clock require it.
+  if (row.native_recurring_occurrence_id) {
+    const { assertQualityNativeOccurrence } =
+      await import('./platform-quality-native.ts');
+    await assertQualityNativeOccurrence(tx, origin);
+  }
 }
 
 export async function bindScheduledQualityOccurrence(

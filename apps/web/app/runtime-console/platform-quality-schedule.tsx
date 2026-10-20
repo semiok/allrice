@@ -14,6 +14,9 @@ const reasons: Record<string, string> = {
   QUALITY_SCHEDULE_PAUSED: '规则已暂停',
   QUALITY_SCHEDULE_DELETED: '规则已移除',
   QUALITY_PREPARATION_BLOCKED: '权限或环境受阻',
+  QUALITY_CLOCK_HANDOFF_MISSED: '已错过本期，不补跑',
+  QUALITY_BEFORE_RESUME: '恢复前的日次不补跑',
+  QUALITY_NATIVE_BLOCKED: '定时触发未获准',
 };
 export function PlatformQualitySchedule({
   onSelect,

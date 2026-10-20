@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql } from 'postgres';
+import type { JobRow } from './queue/row-mappers.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
@@ -39,6 +40,7 @@ export async function lockNativeOnceJobAdmission(
     business_binding: Record<string, unknown> | null;
     control: {
       dispatch: {
+        consumer?: string;
         businessSessionId: string;
         employeeAssignmentId: string;
         employeeInstanceId: string;
@@ -72,6 +74,31 @@ export async function lockNativeOnceJobAdmission(
     }
   }
   if (!binding) return { scheduled: false, allowed: true };
+  if (
+    kind === 'recurring' &&
+    binding.control?.dispatch.consumer === 'platform-quality-v1'
+  ) {
+    // Quality is a private static-check consumer, not a personal cloud chat.
+    // Its original authority gate remains mandatory after the durable handoff.
+    await tx`select id from allrice_users where id=${binding.owner_id} for no key update`;
+    const [proof] = await tx<
+      { valid: boolean }[]
+    >`select allrice_quality_native_handoff_proved(${binding.occurrence_id}::uuid) valid`;
+    const [job] = await tx<
+      JobRow[]
+    >`select * from allrice_jobs where id=${jobId}`;
+    const { isPlatformQualityJobAuthorized } =
+      await import('./platform-quality.ts');
+    return {
+      scheduled: true,
+      runId: binding.run_id,
+      allowed:
+        !!proof?.valid &&
+        binding.outbox_state === 'enqueued' &&
+        !!job &&
+        (await isPlatformQualityJobAuthorized(tx, job)),
+    };
+  }
   await tx`set local lock_timeout='500ms'`;
   await tx`set local statement_timeout='10000ms'`;
   const deny = (): NativeOnceJobAdmission => ({
