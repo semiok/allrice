@@ -3,12 +3,19 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
 import type { RiceToolHandlerContext } from '../types.js';
 
-const { create } = vi.hoisted(() => ({ create: vi.fn() }));
+const { create, createRecurring } = vi.hoisted(() => ({
+  create: vi.fn(),
+  createRecurring: vi.fn(),
+}));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   createOnceTaskFromExecutionContext: create,
+  createRecurringTaskFromExecutionContext: createRecurring,
 }));
-import { NativeOnceProductError } from '@allrice/database';
+import {
+  NativeOnceProductError,
+  NativeRecurringProductError,
+} from '@allrice/database';
 import { createAutomation } from './automation.js';
 import { isConfirmedToolFailure } from '../../errors.js';
 
@@ -131,4 +138,122 @@ it('reports the stored request and actual due time, not the model rewrite', asyn
       worker: { attempt: 1, leaseToken: c.input.managedBrowserJobLeaseToken },
     }),
   );
+});
+
+function recurringCall(): RiceToolHandlerContext {
+  const c = call();
+  c.arguments = {
+    name: '周期核对',
+    prompt: '模型改写',
+    rule: { kind: 'every', seconds: 120 },
+  };
+  c.input.call.arguments = c.arguments;
+  return c;
+}
+
+it.each([
+  ['intent_required', 'AUTOMATION_REQUEST_UNCLEAR'],
+  ['rule_mismatch', 'AUTOMATION_RULE_MISMATCH'],
+] as const)(
+  'explains a confirmed recurring no-write rejection: %s',
+  async (reason, code) => {
+    const c = recurringCall();
+    createRecurring.mockRejectedValueOnce(
+      new NativeRecurringProductError(reason),
+    );
+    const error = await createAutomation(c).catch((e: unknown) => e);
+    expect(error).toMatchObject({ code, retryable: false });
+    expect(
+      isConfirmedToolFailure(error, {
+        runId: c.input.context.runId,
+        callId: c.input.call.id,
+        toolName: c.input.call.name,
+      }),
+    ).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  {
+    name: 'x',
+    prompt: 'x',
+    delayMinutes: 1,
+    rule: { kind: 'every', seconds: 120 },
+  },
+  { name: 'x', prompt: 'x' },
+  { name: 'x', prompt: 'x', rule: { kind: 'every', seconds: 30 } },
+  {
+    name: 'x',
+    prompt: 'x',
+    rule: { kind: 'daily', time: '09:30:00', timezone: 'invalid/zone' },
+  },
+  {
+    name: 'x',
+    prompt: 'x',
+    rule: { kind: 'every', seconds: 120, ownerId: 'foreign' },
+  },
+  { name: 'x', prompt: 'x', delayMinutes: 15, sessionId: 'foreign' },
+])(
+  'rejects ambiguous, out-of-scope or invalid arguments before writes: %j',
+  async (args) => {
+    const c = call();
+    c.arguments = args;
+    await expect(createAutomation(c)).rejects.toMatchObject({
+      code: 'TOOL_INPUT_INVALID',
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(createRecurring).not.toHaveBeenCalled();
+  },
+);
+
+it('reports the saved recurring rule and preparing fact without inventing a next time', async () => {
+  const c = recurringCall();
+  const saved = {
+    id: randomUUID(),
+    clientRequestId: randomUUID(),
+    sessionId: c.input.sessionId,
+    name: '周期核对',
+    prompt:
+      '请每隔两分钟，在当前对话中只回复校验词「RECURRING-NL-A」。请实际创建周期任务，不要现在执行。',
+    rule: { kind: 'every', seconds: 120 },
+    status: 'preparing',
+    nextRunAt: null,
+  };
+  createRecurring.mockResolvedValueOnce(saved);
+  const result = await createAutomation(c);
+  expect(JSON.parse(result.modelContent)).toMatchObject({
+    automationId: saved.id,
+    clientRequestId: saved.clientRequestId,
+    rule: saved.rule,
+    status: 'preparing',
+    nextRunAt: null,
+    prompt: saved.prompt,
+  });
+  expect(result.summary).toContain('等待调度确认');
+  expect(createRecurring).toHaveBeenCalledWith(
+    expect.objectContaining({
+      arguments: c.arguments,
+      rule: saved.rule,
+      userMessageId: c.input.userMessageId,
+      callId: c.input.call.id,
+      worker: { attempt: 1, leaseToken: c.input.managedBrowserJobLeaseToken },
+    }),
+  );
+  expect(create).not.toHaveBeenCalled();
+});
+
+it('does not retry or relabel an unknown recurring COMMIT as a confirmed failure', async () => {
+  const c = recurringCall();
+  const error = new Error('lost recurring COMMIT ACK');
+  createRecurring.mockRejectedValueOnce(error);
+  await expect(createAutomation(c)).rejects.toBe(error);
+  expect(createRecurring).toHaveBeenCalledTimes(1);
+  expect(
+    isConfirmedToolFailure(error, {
+      runId: c.input.context.runId,
+      callId: c.input.call.id,
+      toolName: c.input.call.name,
+    }),
+  ).toBe(false);
 });

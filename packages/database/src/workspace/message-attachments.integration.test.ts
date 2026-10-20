@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
 import { createStorageMetadata, markStorageReady } from '../data.ts';
+import { resolveEmployeeExecution } from '../employees/employeehub.ts';
 import {
   createAssignedChatSession,
   linkFileToSession,
@@ -111,6 +112,22 @@ suite('message-scoped attachment delivery', () => {
       expect(nextPrompt).not.toContain(old.id);
       expect(nextPrompt).not.toContain(corrected.key);
       expect(nextPrompt.startsWith(nextInput.text)).toBe(true);
+      const resolved = await resolveEmployeeExecution({
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        ownerId: f.ownerId,
+        runId: next.run.id,
+      });
+      expect(resolved.currentUserRequest).toBe(nextInput.text);
+      expect(resolved.promptSnapshot.userRequest).toBe(nextPrompt);
+      await expect(
+        resolveEmployeeExecution({
+          organizationId: f.organizationId,
+          workspaceId: f.workspaceId,
+          ownerId: randomUUID(),
+          runId: next.run.id,
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
       expect(await snapshot(first.run.id)).toBe(firstPrompt);
       const [images] = await f.db`
         select prompt_snapshot from allrice_employee_runs where run_id=${next.run.id}`;

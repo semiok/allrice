@@ -70,6 +70,9 @@ export interface HarnessInputDeliveryPort {
 }
 
 export interface HarnessExecutionInput {
+  /** Server-loaded current human message before attachment/template augmentation.
+   * Selects an existing tool transport only; database admission grants writes. */
+  currentUserRequest?: string;
   inputDelivery?: HarnessInputDeliveryPort;
   /**
    * Worker-only, same-Run deterministic delivery check before native finish.

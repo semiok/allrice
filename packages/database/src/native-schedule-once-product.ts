@@ -17,6 +17,7 @@ import {
   employeeChatIdentity,
   employeeChatUuid,
   assertEmployeeChatExecution,
+  assertEmployeeChatHumanSource,
   type EmployeeChatCall,
 } from './employees/employee-chat-authority.ts';
 import { isDeepStrictEqual } from 'node:util';
@@ -660,21 +661,7 @@ export async function createOnceTaskFromExecutionContext(
       instance,
       'automation.create',
     );
-    // A scheduled/internal producer also persists role=user. Its occurrence
-    // exists before the message, even if the legacy dispatcher has not yet
-    // linked run_id. Never let that text authorize another background task.
-    const [source] = await tx<{ internal: boolean }[]>`
-      select exists(select 1 from allrice_automation_runs a
-          where a.run_id=${ctx.runId} or a.id=m.client_message_id)
-        or exists(select 1 from allrice_automation_folder_events e
-          where e.run_id=${ctx.runId} or e.id=m.client_message_id)
-        or exists(select 1 from allrice_workflow_runs w where w.run_id=${ctx.runId})
-        or exists(select 1 from allrice_platform_quality_checks q where q.run_id=${ctx.runId})
-        or exists(select 1 from allrice_platform_repair_tasks r where r.run_id=${ctx.runId})
-        or exists(select 1 from allrice_platform_repository_review_subjects s where s.run_id=${ctx.runId})
-        as internal from allrice_messages m where m.id=${input.userMessageId}`;
-    if (!source || source.internal || current.snapshot.workflowInvocation)
-      throw new DataAccessError('authorization_denied');
+    await assertEmployeeChatHumanSource(tx, input, current);
     const [old] = await tx<
       Plan[]
     >`select * from allrice_automations where organization_id=${scope.organizationId}

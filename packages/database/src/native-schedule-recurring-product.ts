@@ -21,6 +21,8 @@ import {
   type RecurringOccurrence,
   type CreateRecurringTaskInput,
   type ChangeRecurringTaskInput,
+  type RecurringScheduleRule,
+  RecurringScheduleRuleSchema,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
@@ -37,7 +39,17 @@ import {
   lockScheduleTarget,
   readScheduleBrowserScope,
   type ScheduleScope,
+  type ScheduleTarget,
 } from './native-schedule-authority.ts';
+import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
+import { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
+import {
+  assertEmployeeChatExecution,
+  assertEmployeeChatHumanSource,
+  employeeChatIdentity,
+  employeeChatUuid,
+  type EmployeeChatCall,
+} from './employees/employee-chat-authority.ts';
 import {
   nativeOnceDigest,
   nativeOnceReady,
@@ -102,7 +114,9 @@ export class NativeRecurringProductError extends Error {
       | 'request_conflict'
       | 'binding_conflict'
       | 'lease_lost'
-      | 'limit',
+      | 'limit'
+      | 'intent_required'
+      | 'rule_mismatch',
   ) {
     super(`native_recurring_${code}`);
   }
@@ -351,70 +365,174 @@ export async function createRecurringTask(
       input.clientRequestId,
     );
     const digest = runtimePolicyDigest({ sessionId, ...input });
-    await tx`select pg_advisory_xact_lock(hashtextextended(${`recurring-create:${scope.organizationId}:${scope.ownerId}:${input.clientRequestId}`},0))`;
-    const [existing] = await tx<
-      Plan[]
-    >`select * from allrice_automations where organization_id=${scope.organizationId} and owner_id=${scope.ownerId}
+    return enrollRecurringTask(tx, scope, target, sessionId, input, digest);
+  });
+}
+
+/** Shared browser/chat enrollment. The caller holds current principal and
+ * target locks; chat authority and the write remain in this same transaction. */
+async function enrollRecurringTask(
+  tx: Tx,
+  scope: ScheduleScope,
+  target: ScheduleTarget,
+  sessionId: string,
+  input: CreateRecurringTaskInput,
+  digest: string,
+  validateNew?: () => void,
+) {
+  await tx`select pg_advisory_xact_lock(hashtextextended(${`recurring-create:${scope.organizationId}:${scope.ownerId}:${input.clientRequestId}`},0))`;
+  const [existing] = await tx<
+    Plan[]
+  >`select * from allrice_automations where organization_id=${scope.organizationId} and owner_id=${scope.ownerId}
       and clock_owner='native_recurring' and native_recurring_request_id=${input.clientRequestId} for update`;
-    if (existing) {
-      if (
-        existing.native_recurring_request_digest !== digest ||
-        existing.session_id !== sessionId
-      )
-        throw new NativeRecurringProductError('request_conflict');
-      return readTask(tx, existing, true);
-    }
-    const [partition] = await tx<
-      { partition_id: string; activation: NativeOnceReadiness }[]
-    >`
+  if (existing) {
+    if (
+      existing.native_recurring_request_digest !== digest ||
+      existing.session_id !== sessionId
+    )
+      throw new NativeRecurringProductError('request_conflict');
+    return readTask(tx, existing, true);
+  }
+  validateNew?.();
+  const [partition] = await tx<
+    { partition_id: string; activation: NativeOnceReadiness }[]
+  >`
       select partition_id,activation from allrice_native_once_partitions where partition_id='allrice-recurring-v1' for share`;
-    if (!partition || !nativeOnceReady(partition.activation))
-      throw new NativeRecurringProductError('disabled');
-    const [count] = await tx<
-      { count: number }[]
-    >`select count(*)::int count from allrice_automations where organization_id=${scope.organizationId}
+  if (!partition || !nativeOnceReady(partition.activation))
+    throw new NativeRecurringProductError('disabled');
+  const [count] = await tx<
+    { count: number }[]
+  >`select count(*)::int count from allrice_automations where organization_id=${scope.organizationId}
       and owner_id=${scope.ownerId} and clock_owner='native_recurring' and deleted_at is null`;
-    if (count!.count >= 1000) throw new NativeRecurringProductError('limit');
-    const [p] = await tx<Plan[]>`insert into allrice_automations
+  if (count!.count >= 1000) throw new NativeRecurringProductError('limit');
+  const [p] = await tx<Plan[]>`insert into allrice_automations
       (organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,
        next_run_at,clock_owner,native_recurring_request_id,native_recurring_request_digest,native_recurring_revision)
       values(${scope.organizationId},${scope.workspaceId},${scope.ownerId},${input.name},${input.prompt},'schedule',
         ${json(tx, { frequency: 'native_recurring', rule: input.rule })},'enabled','reuse',${target.employee_assignment_id},${sessionId},
         null,'native_recurring',${input.clientRequestId},${digest},1) returning *`;
-    const control: NativeRecurringControl = {
-      kind: 'recurring',
-      partitionId: partition.partition_id,
-      controlId: randomUUID(),
-      ...scope,
-      automationId: p!.id,
-      revision: 1,
-      controlSessionId: `recurring-${randomUUID()}`,
-      rule: input.rule,
-      appliedRevision: null,
-      appliedRule: null,
-      sessionState: 'reserved',
-      nativeTaskId: null,
-      taskDeleted: false,
-      command: { id: randomUUID(), kind: 'create', status: 'pending' },
-      dispatch: {
-        employeeAssignmentId: target.employee_assignment_id,
-        employeeInstanceId: target.employee_instance_id,
-        businessSessionId: sessionId,
-      },
-    };
-    const version = {
-      revision: 1,
-      name: input.name,
-      prompt: input.prompt,
-      rule: input.rule,
-      acceptedAt: p!.created_at.toISOString(),
-    };
-    await tx`insert into allrice_native_recurring_versions(automation_id,revision,configuration) values(${p!.id},1,
+  const control: NativeRecurringControl = {
+    kind: 'recurring',
+    partitionId: partition.partition_id,
+    controlId: randomUUID(),
+    ...scope,
+    automationId: p!.id,
+    revision: 1,
+    controlSessionId: `recurring-${randomUUID()}`,
+    rule: input.rule,
+    appliedRevision: null,
+    appliedRule: null,
+    sessionState: 'reserved',
+    nativeTaskId: null,
+    taskDeleted: false,
+    command: { id: randomUUID(), kind: 'create', status: 'pending' },
+    dispatch: {
+      employeeAssignmentId: target.employee_assignment_id,
+      employeeInstanceId: target.employee_instance_id,
+      businessSessionId: sessionId,
+    },
+  };
+  const version = {
+    revision: 1,
+    name: input.name,
+    prompt: input.prompt,
+    rule: input.rule,
+    acceptedAt: p!.created_at.toISOString(),
+  };
+  await tx`insert into allrice_native_recurring_versions(automation_id,revision,configuration) values(${p!.id},1,
       ${json(tx, { ...version, reservationDigest: reservation(p!, control, version) })})`;
-    await tx`insert into allrice_native_recurring_controls(partition_id,control_id,automation_id,control_session_id,immutable_identity,snapshot)
+  await tx`insert into allrice_native_recurring_controls(partition_id,control_id,automation_id,control_session_id,immutable_identity,snapshot)
       values(${control.partitionId},${control.controlId},${p!.id},${control.controlSessionId},${json(tx, recurringControlIdentity(control))},${json(tx, { control, task: null })})`;
-    await audit(tx, scope, p!.id, 'create');
-    return readTask(tx, p!, true);
+  await audit(tx, scope, p!.id, 'create');
+  return readTask(tx, p!, true);
+}
+
+export async function createRecurringTaskFromExecutionContext(
+  input: EmployeeChatCall & {
+    name: string;
+    prompt: string;
+    rule: RecurringScheduleRule;
+  },
+) {
+  const { ctx, scope } = employeeChatIdentity(input);
+  const rule = RecurringScheduleRuleSchema.parse(input.rule);
+  if (
+    !ctx.policySnapshot.grants.some(
+      (grant) =>
+        grant.resourceType === 'automation' &&
+        grant.action === 'resource:write' &&
+        (grant.workspaceId === null || grant.workspaceId === scope.workspaceId),
+    )
+  )
+    throw new DataAccessError('authorization_denied');
+  const requestId = employeeChatUuid(
+    'native-recurring-call',
+    ctx.organizationId,
+    ctx.workspaceId!,
+    ctx.runId,
+    input.callId,
+  );
+  // The original arguments are part of the identity, even though the model's
+  // prompt is never used as a replacement for the authorized human request.
+  const digest = runtimePolicyDigest({
+    kind: 'native-recurring-call',
+    runId: ctx.runId,
+    callId: input.callId,
+    sessionId: input.sessionId,
+    name: input.name,
+    prompt: input.prompt,
+    rule,
+    arguments: input.arguments,
+  });
+  return employeeAccessTransaction(getDatabase(), async (tx) => {
+    await tx`set local lock_timeout='1000ms'`;
+    await tx`set local statement_timeout='10000ms'`;
+    await acquireDevAdmission(tx);
+    const ownerScope = {
+      organizationId: scope.organizationId,
+      workspaceId: scope.workspaceId,
+      ownerId: scope.actor.id,
+    };
+    await lockSchedulePrincipal(tx, ownerScope, requestId);
+    const work = await readWorkAutomation(tx, {
+      ...ownerScope,
+      userId: ownerScope.ownerId,
+    });
+    if (!work.available || !work.settings.cloud)
+      throw new DataAccessError('authorization_denied');
+    const target = await readScheduleTarget(tx, ownerScope, input.sessionId);
+    const instance = await lockScheduleTarget(tx, ownerScope, target);
+    const current = await assertEmployeeChatExecution(
+      tx,
+      input,
+      instance,
+      'automation.create',
+    );
+    await assertEmployeeChatHumanSource(tx, input, current);
+    if (!nativeRecurringProductEnabled())
+      throw new NativeRecurringProductError('disabled');
+    const intent = explicitRecurringTaskIntent(current.text);
+    const enrollment = CreateRecurringTaskInputSchema.parse({
+      clientRequestId: requestId,
+      name: input.name,
+      prompt: current.text,
+      rule,
+    });
+    return enrollRecurringTask(
+      tx,
+      ownerScope,
+      target,
+      input.sessionId,
+      // Validation above bounds the content. Preserve the exact current-human
+      // bytes in storage, including surrounding whitespace.
+      { ...enrollment, prompt: current.text },
+      digest,
+      () => {
+        if (!intent) throw new NativeRecurringProductError('intent_required');
+        if (!isDeepStrictEqual(rule, intent.rule))
+          throw new NativeRecurringProductError('rule_mismatch');
+      },
+    );
   });
 }
 async function audit(tx: Tx, scope: ScheduleScope, id: string, action: string) {

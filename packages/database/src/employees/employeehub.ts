@@ -1697,6 +1697,7 @@ export async function resolveEmployeeExecution(input: {
       prompt_snapshot: unknown;
       native_skills: unknown;
       execution_snapshot: unknown;
+      current_user_request: string | null;
       system_prompt: string;
       manifest: unknown;
     }[]
@@ -1704,9 +1705,13 @@ export async function resolveEmployeeExecution(input: {
     select er.provider_snapshot, er.skill_bindings, er.native_skills,
       er.prompt_snapshot,
       er.execution_snapshot,
+      m.content->>'text' current_user_request,
       v.system_prompt, v.manifest
     from allrice_employee_runs er
     join allrice_employee_versions v on v.id = er.employee_version_id
+    left join allrice_messages m on m.id=er.user_message_id and m.session_id=er.session_id
+      and m.organization_id=er.organization_id and m.workspace_id=er.workspace_id
+      and m.owner_id=er.owner_id and m.role='user'
     where er.run_id = ${UuidSchema.parse(input.runId)}
       and er.organization_id = ${UuidSchema.parse(input.organizationId)}
       and er.workspace_id = ${UuidSchema.parse(input.workspaceId)}
@@ -1788,6 +1793,11 @@ export async function resolveEmployeeExecution(input: {
       row.provider_snapshot,
     ),
     promptSnapshot,
+    // Worker transport hint only. The frozen prompt also contains attachment
+    // references; never parse them or company-template data as human intent.
+    ...(typeof row.current_user_request === 'string'
+      ? { currentUserRequest: row.current_user_request }
+      : {}),
     nativeSkills,
     executionSnapshot: executionSnapshot.success
       ? executionSnapshot.data

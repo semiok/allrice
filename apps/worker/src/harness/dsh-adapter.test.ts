@@ -13,7 +13,7 @@ import { resolve } from 'node:path';
 import type { DshExecutionSnapshot, HarnessEvent } from '@allrice/contracts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import type { HarnessExecutionInput } from './adapter.js';
+import type { HarnessExecutionInput, HarnessToolCall } from './adapter.js';
 import { DshRuntimePool, type DshRuntime } from './dsh/runtime-pool.js';
 import { DshStartupRejection } from './dsh/startup-rejection.js';
 import { HandlerError } from '../errors.js';
@@ -151,7 +151,356 @@ function executionInput(input: {
   };
 }
 
+/** Actual native Host and its persisted Session; the HTTP peer is synthetic. */
+async function schedulingRuntime(
+  replies: readonly (
+    string | { id: string; arguments: Record<string, unknown> }
+  )[],
+) {
+  const root = await mkdtemp(resolve(tmpdir(), 'allrice-schedule-transport-'));
+  const requests: Record<string, unknown>[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => {
+      requests.push(JSON.parse(Buffer.concat(chunks).toString()));
+      const reply =
+        replies[requests.length - 1] ?? 'UNEXPECTED_PROVIDER_REQUEST';
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const send = (delta: Record<string, unknown>, finish: string | null) =>
+        res.write(
+          `data: ${JSON.stringify({
+            id: `schedule-${requests.length}`,
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: 'schedule-transport',
+            choices: [{ index: 0, delta, finish_reason: finish }],
+          })}\n\n`,
+        );
+      if (typeof reply === 'string') {
+        send({ role: 'assistant', content: reply }, null);
+        send({}, 'stop');
+      } else {
+        send(
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: reply.id,
+                type: 'function',
+                function: {
+                  name: 'automation_create',
+                  arguments: JSON.stringify(reply.arguments),
+                },
+              },
+            ],
+          },
+          null,
+        );
+        send({}, 'tool_calls');
+      }
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const adapter = new DshHarnessAdapter({
+    credentialResolver: { resolve: async () => ({ apiKey: 'synthetic-only' }) },
+    runtimeRoot: root,
+    requestTimeoutMs: 15_000,
+  });
+  adapters.push(adapter);
+  return {
+    adapter,
+    root,
+    requests,
+    provider: {
+      ...snapshot('openai-compatible'),
+      model: 'schedule-transport',
+      baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`,
+    },
+    close: async () => {
+      server.closeAllConnections();
+      await adapter.close();
+      await new Promise<void>((done) => server.close(() => done()));
+      await rm(root, { recursive: true, force: true });
+    },
+  };
+}
+
+const schedulingTools: HarnessExecutionInput['tools'] = [
+  {
+    name: 'automation.create',
+    description: 'Create an explicitly requested once or recurring task',
+    inputSchema: {
+      type: 'object',
+      required: ['name', 'prompt'],
+      properties: {
+        name: { type: 'string' },
+        prompt: { type: 'string' },
+        delayMinutes: { type: 'integer' },
+        rule: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['kind', 'seconds'],
+              properties: {
+                kind: { const: 'every' },
+                seconds: { type: 'integer', minimum: 60 },
+              },
+            },
+            {
+              type: 'object',
+              required: ['kind', 'time', 'timezone'],
+              properties: {
+                kind: { const: 'daily' },
+                time: { type: 'string' },
+                timezone: { type: 'string' },
+              },
+            },
+          ],
+        },
+      },
+    },
+  },
+];
+
 describe('DshHarnessAdapter', () => {
+  it.each([
+    {
+      prompt: '请每隔两分钟提醒我喝水。',
+      rule: { kind: 'every', seconds: 120 },
+    },
+    {
+      prompt: '请每天09:30，时区Asia/Shanghai，提醒我检查报表。',
+      rule: { kind: 'daily', time: '09:30:00', timezone: 'Asia/Shanghai' },
+    },
+  ])(
+    'roundtrips an explicit $rule.kind request through the real Host and canonical Broker envelope',
+    async ({ prompt, rule }) => {
+      const id = randomUUID();
+      const args = { name: '周期校验', prompt, rule };
+      const call = { id, name: 'automation.create', arguments: args };
+      const receipt = JSON.stringify({ syntheticTaskId: randomUUID(), rule });
+      const runtime = await schedulingRuntime([
+        `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+        'SYNTHETIC_RECURRING_RECEIPT_OBSERVED',
+      ]);
+      const events: HarnessEvent[] = [];
+      const onToolCall = vi.fn(async () => ({
+        modelContent: receipt,
+        summary: 'synthetic receipt',
+      }));
+      const input = executionInput({
+        prompt,
+        provider: runtime.provider,
+        events,
+        onToolCall,
+      });
+      input.currentUserRequest = prompt;
+      input.workDirectory = runtime.root;
+      input.tools = schedulingTools;
+      try {
+        const result = await runtime.adapter.execute(input);
+        expect(onToolCall).toHaveBeenCalledExactlyOnceWith(call);
+        expect(runtime.requests).toHaveLength(2);
+        expect(JSON.stringify(runtime.requests[0]?.tools ?? [])).not.toContain(
+          'automation_create',
+        );
+        expect(JSON.stringify(runtime.requests[0]?.messages)).toContain(
+          'automation.create',
+        );
+        expect(JSON.stringify(runtime.requests[1]?.messages)).toContain(
+          JSON.parse(receipt).syntheticTaskId,
+        );
+        expect(result.answer).toBe('SYNTHETIC_RECURRING_RECEIPT_OBSERVED');
+        expect(
+          runtime.adapter.runtimeInventory()[0]?.nativeTools,
+        ).not.toContain('automation.create');
+        expect(
+          events.filter((event) => event.type === 'tool.completed'),
+        ).toEqual([
+          expect.objectContaining({
+            name: 'automation.create',
+            toolCallId: id,
+            source: 'tool_broker',
+          }),
+        ]);
+        expect(
+          JSON.stringify(
+            events.filter(
+              (event) =>
+                event.type === 'assistant.delta' ||
+                event.type === 'assistant.completed',
+            ),
+          ),
+        ).not.toContain('allrice_tool_call');
+      } finally {
+        await runtime.close();
+      }
+    },
+    30_000,
+  );
+
+  it('stops on an unknown recurring Broker result without another provider turn or write', async () => {
+    const prompt = '请每隔两分钟提醒我喝水。';
+    const call = {
+      id: randomUUID(),
+      name: 'automation.create',
+      arguments: {
+        name: '周期校验',
+        prompt,
+        rule: { kind: 'every', seconds: 120 },
+      },
+    };
+    const runtime = await schedulingRuntime([
+      `<allrice_tool_call>${JSON.stringify(call)}</allrice_tool_call>`,
+    ]);
+    const events: HarnessEvent[] = [];
+    const unknown = Error('synthetic commit acknowledgement lost');
+    const onToolCall = vi.fn(async () => {
+      throw unknown;
+    });
+    const input = executionInput({
+      prompt,
+      provider: runtime.provider,
+      events,
+      onToolCall,
+    });
+    input.currentUserRequest = prompt;
+    input.workDirectory = runtime.root;
+    input.tools = schedulingTools;
+    try {
+      await expect(runtime.adapter.execute(input)).rejects.toBe(unknown);
+      expect(onToolCall).toHaveBeenCalledExactlyOnceWith(call);
+      expect(runtime.requests).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'tool.failed')).toEqual([
+        expect.objectContaining({
+          name: 'automation.create',
+          toolCallId: call.id,
+        }),
+      ]);
+      expect(
+        events.some(
+          (event) =>
+            event.type === 'tool.completed' ||
+            event.type === 'assistant.completed',
+        ),
+      ).toBe(false);
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it('recovers the same persisted Session across once → recurring → once callable changes', async () => {
+    const oncePrompt = '请在15分钟后提醒我喝水。';
+    const recurringPrompt = '请每隔两分钟提醒我喝水。';
+    const onceArgs = { name: '一次校验', prompt: oncePrompt, delayMinutes: 15 };
+    const recurringArgs = {
+      name: '周期校验',
+      prompt: recurringPrompt,
+      rule: { kind: 'every', seconds: 120 },
+    };
+    const envelopeId = randomUUID();
+    const runtime = await schedulingRuntime([
+      { id: randomUUID(), arguments: onceArgs },
+      'FIRST_ONCE_RECEIPT',
+      `<allrice_tool_call>${JSON.stringify({ id: envelopeId, name: 'automation.create', arguments: recurringArgs })}</allrice_tool_call>`,
+      'RECURRING_RECEIPT',
+      { id: randomUUID(), arguments: onceArgs },
+      'SECOND_ONCE_RECEIPT',
+    ]);
+    const onToolCall = vi.fn(async (call: HarnessToolCall) => ({
+      modelContent: 'synthetic durable receipt',
+      summary: call.name,
+    }));
+    const first = executionInput({
+      prompt: oncePrompt,
+      provider: runtime.provider,
+      onToolCall,
+    });
+    first.currentUserRequest = oncePrompt;
+    first.workDirectory = runtime.root;
+    first.tools = schedulingTools;
+    try {
+      const onceResult = await runtime.adapter.execute(first);
+      const onceProcess = runtime.adapter.runtimeInventory()[0]!;
+      const second = executionInput({
+        prompt: recurringPrompt,
+        provider: runtime.provider,
+        onToolCall,
+        sameSessionAs: first,
+        threadId: onceResult.threadId,
+      });
+      second.currentUserRequest = recurringPrompt;
+      second.workDirectory = runtime.root;
+      second.tools = schedulingTools;
+      const recurringResult = await runtime.adapter.execute(second);
+      const recurringProcess = runtime.adapter.runtimeInventory()[0]!;
+      const third = executionInput({
+        prompt: oncePrompt,
+        provider: runtime.provider,
+        onToolCall,
+        sameSessionAs: first,
+        threadId: recurringResult.threadId,
+      });
+      third.currentUserRequest = oncePrompt;
+      third.workDirectory = runtime.root;
+      third.tools = schedulingTools;
+      const restoredResult = await runtime.adapter.execute(third);
+      const restoredProcess = runtime.adapter.runtimeInventory()[0]!;
+      expect([
+        onceResult.answer,
+        recurringResult.answer,
+        restoredResult.answer,
+      ]).toEqual([
+        'FIRST_ONCE_RECEIPT',
+        'RECURRING_RECEIPT',
+        'SECOND_ONCE_RECEIPT',
+      ]);
+      expect(recurringResult.threadId).toBe(onceResult.threadId);
+      expect(restoredResult.threadId).toBe(onceResult.threadId);
+      expect([
+        onceProcess.nativeTools,
+        recurringProcess.nativeTools,
+        restoredProcess.nativeTools,
+      ]).toEqual([['automation.create'], [], ['automation.create']]);
+      expect(
+        new Set([onceProcess.id, recurringProcess.id, restoredProcess.id]).size,
+      ).toBe(3);
+      expect(runtime.requests).toHaveLength(6);
+      expect(JSON.stringify(runtime.requests[0]?.tools)).toContain(
+        'automation_create',
+      );
+      expect(JSON.stringify(runtime.requests[2]?.tools ?? [])).not.toContain(
+        'automation_create',
+      );
+      expect(JSON.stringify(runtime.requests[4]?.tools)).toContain(
+        'automation_create',
+      );
+      expect(JSON.stringify(runtime.requests[2]?.messages)).toContain(
+        'FIRST_ONCE_RECEIPT',
+      );
+      expect(JSON.stringify(runtime.requests[4]?.messages)).toContain(
+        'RECURRING_RECEIPT',
+      );
+      expect(onToolCall.mock.calls.map(([call]) => call)).toEqual([
+        expect.objectContaining({
+          name: 'automation.create',
+          arguments: onceArgs,
+        }),
+        { id: envelopeId, name: 'automation.create', arguments: recurringArgs },
+        expect.objectContaining({
+          name: 'automation.create',
+          arguments: onceArgs,
+        }),
+      ]);
+    } finally {
+      await runtime.close();
+    }
+  }, 45_000);
+
   it('bounds a long native question event summary while preserving its exact confirmation payload', async () => {
     const events: HarnessEvent[] = [];
     await createAdapter().execute(

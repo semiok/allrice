@@ -303,6 +303,7 @@ export { nativeOnceDigest } from './native-schedule-once-state.ts';
 
 export {
   createRecurringTask,
+  createRecurringTaskFromExecutionContext,
   listRecurringTasks,
   getRecurringTask,
   changeRecurringTask,
@@ -311,6 +312,7 @@ export {
   lockNativeRecurringAdmissions,
   dispatchNextNativeRecurringOccurrence,
 } from './native-schedule-recurring-product.ts';
+export { explicitRecurringTaskIntent } from './employees/recurring-task-intent.ts';
 export {
   createNativeRecurringSqlStore,
   type NativeRecurringSqlOptions,
