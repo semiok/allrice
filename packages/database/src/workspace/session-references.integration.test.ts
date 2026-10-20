@@ -11,6 +11,7 @@ import {
   updateChatSession,
 } from './service.ts';
 import { resolveEmployeeExecution } from '../employees/employeehub.ts';
+import type { ResourcePrincipal } from '../resource-principal.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -59,6 +60,23 @@ suite('authorized session reference snapshots', () => {
       const snapshot = await capture([source]);
       expect(snapshot[0]?.messages).toHaveLength(2);
       expect(JSON.stringify(snapshot)).not.toContain('RAW_TOOL_SECRET');
+      const principal: ResourcePrincipal = {
+        requestId: randomUUID(),
+        actor: f.context.actor,
+        organizationId: f.organizationId,
+        workspaceId: f.workspaceId,
+        memberships: f.context.memberships,
+      };
+      const serverSnapshot = await f.db.begin((tx) =>
+        captureSessionReferences(
+          tx,
+          principal,
+          f.workspaceId,
+          { id: target, visibility: 'private' },
+          [source],
+        ),
+      );
+      expect(serverSnapshot[0]?.messages).toEqual(snapshot[0]?.messages);
       await expect(capture([target])).rejects.toMatchObject({ code: 'self' });
       await expect(capture([empty])).rejects.toMatchObject({ code: 'empty' });
       await expect(

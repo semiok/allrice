@@ -18,7 +18,10 @@ import {
   type StoragePort,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
-import { readContentPrincipal } from './content-maintenance.ts';
+import {
+  readContentPrincipal,
+  type ContentIdentity,
+} from './content-maintenance.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { DataAccessError } from './data.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
@@ -86,6 +89,19 @@ export async function requireCompanyAssetReader(
     await requireTenantAdministrationTarget(sql, org, null);
     return;
   }
+  return requireCompanyAssetContentReader(context, org, sql);
+}
+
+/** Shared publication reader. Browser callers retain their real login identity;
+ * server callers supply only their authorized actor and tenant scope. */
+export async function requireCompanyAssetContentReader(
+  context: ContentIdentity,
+  org: string,
+  sql: Sql,
+) {
+  UuidSchema.parse(org);
+  if (context.actor.type !== 'user')
+    throw new DataAccessError('authentication_required');
   if (context.organizationId !== org) throw new DataAccessError('not_found');
   const principal = await readContentPrincipal(context, sql);
   if (!principal) throw new DataAccessError('authorization_denied');

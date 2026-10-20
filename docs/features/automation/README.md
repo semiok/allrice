@@ -1,10 +1,32 @@
 # Automation
 
-> Status: **M6 schedule-triggered and dialogue-created automation implemented**
+> Status: **Native once flow implemented behind an explicit deployment flag; existing recurring consumers retained pending migration.**
 
 AllRice 的自动化参考飞书智能伙伴的“触发器 + 技能/工作流 + 执行记录”模型，但复用 AllRice 已有的 Employee、Run、Job、Worker 和权限快照。
 
-## 当前能力
+## 一次性任务（MET192）
+
+当前对话顶部的时钟入口可以创建、查看和取消尚未执行的一次性任务。列表只包含当前真人员工在当前工作区、当前 AI 员工名下的任务；点击记录回到它绑定的原对话。结果使用既有 Run、聊天消息和成果展示。表单使用浏览器时区并将 UTC 时刻与 IANA 时区一起保存；本切片不增加周期表单或全局管理台。
+
+聊天中的 `automation.create(name, prompt, delayMinutes)` 和页面入口采用相同的权限与持久化规则。工具调用还必须来自真实租约下的当前员工 Run，且其冻结快照包含该工具。延迟时刻只在首次提交时计算，重读同一请求不会把时间推后。创建请求结果未知时，页面保留请求标识并精确回读，不自动再建一个任务。
+
+一次性路径复用当前批准执行包的 DSH 公共 Host、Schedule、Workspace 和 Session API。DSH 原生定时器产生持久化回执后，AllRice 在一个 SQL 事务内创建普通聊天消息、冻结执行快照、Run、Job 和回执绑定。原生控制 Session 只管理时间，不执行模型或业务工具；业务执行继续使用普通员工链路。旧 SQL 到期扫描明确排除这些已登记任务。
+
+创建、触发、开始执行和续租均核对当前成员、云端执行开关、员工配发及对话权限。取消在入队前获胜时不生成业务 Run；已经排队或执行的任务使用原对话的停止操作。数据库保存唯一回执、不可变历史及提交时租约校验，未知提交结果先读取同一业务绑定。
+
+### 部署与恢复
+
+- 先应用 `0195_native_schedule_once.sql`。Web 与 Worker 同时设置 `ALLRICE_NATIVE_ONCE_ENABLED=1` 和 `ALLRICE_NATIVE_ONCE_REFERENCE`，后者是精确的 `artifactId/profileId/storageId/stateRoot` 四项引用；缺省关闭。
+- 引用的执行包必须已批准，包含 `native-schedule-host-factory.mjs`。使用独立持久化绝对目录，不能回退到当前包、临时目录或任意模块 URL。新增控制引用也参与执行包保留检查。
+- Worker 维护或退出时停止原生 Schedule、关闭 Host、排空两个持久化后端后才写关闭证明。下一进程凭同一引用和明确关闭证明恢复；只有租约过期、没有关闭证明时不会抢占旧 writer。
+- 健康检查暴露原生调度初始化/关闭故障。该路径失败不应饿死既有自动化或参考资料处理。运行中分区不能静默切换执行包或存储目录。
+- 新包上线还需保留已有最终交付协议批准；不能因为控制 Host 获批就推断业务交付协议也已验收。
+
+### 回归入口
+
+普通 `pnpm test` 覆盖状态、控制器、参数、运行时和持久化端口；CI 另外在真实 Chrome 中验证 `once-tasks.browser.test.ts`，在隔离 PostgreSQL 中验证 `native-schedule-once.integration.test.ts` 与 `native-schedule-once-sql.integration.test.ts`。后者实际启动公共 Host、重启恢复原生任务并入队一个普通 Run，不调用模型。真实 Dev 页面、自然语言创建和到时模型交付必须另行验证，不能以这些确定性检查代替。
+
+## 原有自动化能力（逐步迁移）
 
 - 创建每日或每周自动化任务；
 - Rice 在对话中识别“十分钟后提醒我喝水”这类明确的未来任务，并调用 `automation.create` 自动创建一次性提醒；

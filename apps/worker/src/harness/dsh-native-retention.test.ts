@@ -2,19 +2,31 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, realpath, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import type * as NativeOnceLoader from '../native-schedule-once-loader.js';
 
 const seam = vi.hoisted(() => ({
   install: vi.fn(),
   launch: vi.fn(),
   coverage: vi.fn(),
+  controlHistory: vi.fn(),
 }));
 vi.mock('@allrice/database', () => ({
   verifyNativeArtifactReferenceCoverage: seam.coverage,
   inspectNativeOriginReaderStates: vi.fn().mockResolvedValue([]),
+  configuredNativeOriginReaders: vi.fn(() => []),
+  nativeOriginReaderForBinding: vi.fn(),
+  nativeOriginReaderForOrigin: vi.fn(),
 }));
 vi.mock('./dsh-native-artifact.js', () => ({
   installRetainedDshNativeArtifact: seam.install,
   nativeArtifactLaunchForPin: seam.launch,
+  approvedDshNativeControlArtifact: vi.fn(),
+}));
+vi.mock('../native-schedule-once-loader.js', async () => ({
+  ...(await vi.importActual<typeof NativeOnceLoader>(
+    '../native-schedule-once-loader.js',
+  )),
+  verifyNativeOnceControlHistory: seam.controlHistory,
 }));
 const old = 'dsh-0.1.5-rc.3-a4c74a9';
 const frozen = 'dsh-0.1.1-rc.2-b150a55';
@@ -24,9 +36,12 @@ const retainedCurrentId = 'sha256:' + 'c'.repeat(64);
 let root: string;
 beforeEach(async () => {
   vi.resetModules();
-  seam.coverage
-    .mockReset()
-    .mockResolvedValue({ verified: true, references: [] });
+  seam.coverage.mockReset().mockResolvedValue({
+    verified: true,
+    references: [],
+    nativeOnceControlReferences: [],
+  });
+  seam.controlHistory.mockReset().mockResolvedValue(1);
   seam.install.mockReset().mockImplementation(async (input) => ({
     artifactId: input.expectedId,
     generation: old,
@@ -76,6 +91,44 @@ it('projects the actual installed-primary return shape into the strict reference
       ),
     },
   ]);
+});
+it('keeps closed control references independent of business pins and reads their original history only for retirement checks', async () => {
+  const reference = {
+    artifactId: retainedCurrentId,
+    profileId: 'allrice-once-control-v1',
+    storageId: 'original-once-storage',
+    stateRoot: root,
+  };
+  const controls = [
+    { controlSessionId: 'once-control-session', sessionState: 'ready' },
+  ];
+  seam.coverage.mockResolvedValue({
+    verified: true,
+    references: [
+      {
+        source: 'control:native_once',
+        artifactId: retainedCurrentId,
+        records: 1,
+        covered: true,
+      },
+    ],
+    nativeOnceControlReferences: [
+      { partitionId: 'closed-partition', reference, controls },
+    ],
+  });
+  const policy = await import('./dsh-native-retention.js');
+  await policy.verifyConfiguredDshNativeReferences({
+    artifactId: retainedCurrentId,
+    generation: current,
+  });
+  expect(seam.controlHistory).not.toHaveBeenCalled();
+  const result = await policy.verifyConfiguredDshNativeReferences(
+    { artifactId: retainedCurrentId, generation: current },
+    { requireReaderIdle: true },
+  );
+  expect(seam.controlHistory).toHaveBeenCalledWith(reference, controls);
+  expect(result.nativeOnceControlHistoryVerified).toBe(1);
+  expect(seam.launch).not.toHaveBeenCalled();
 });
 function configureCurrent() {
   configure();

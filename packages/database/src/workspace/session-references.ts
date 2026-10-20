@@ -2,12 +2,12 @@ import { createHash } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
   SessionReferenceSnapshotsSchema,
-  type RequestContext,
   type SessionReferenceSnapshot,
   type Visibility,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { assertEmployeeContentReferenceMessages } from '../employees/employee-runtime-content.ts';
+import type { ResourcePrincipal } from '../resource-principal.ts';
 
 type Reader = ReturnType<typeof getDatabase> | TransactionSql;
 type Principal = {
@@ -52,7 +52,7 @@ async function readableSource(db: Reader, scope: Principal, sessionId: string) {
 /** Capture only tenant-visible conversation text, never tools or nested references. */
 export async function captureSessionReferences(
   db: Reader,
-  context: RequestContext,
+  context: ResourcePrincipal,
   workspaceId: string,
   target: { id: string; visibility: Visibility },
   ids: string[],

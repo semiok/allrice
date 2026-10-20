@@ -1,3 +1,4 @@
+import type { ResourcePrincipal } from './resource-principal.ts';
 import type postgres from 'postgres';
 import { z } from 'zod';
 import {
@@ -9,6 +10,7 @@ import {
   type RequestContext,
   type StoragePort,
 } from '@allrice/contracts';
+import { RequestContextSchema } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import { requirePlatformAdmin, isPlatformAdmin } from './platform-authority.ts';
@@ -279,7 +281,7 @@ function hasQualityMarker(job: JobRow) {
 /** Queue admission rejects public chat/Run requests using this reserved identity. */
 export async function admitQualityEnqueue(
   tx: Tx,
-  context: RequestContext,
+  context: ResourcePrincipal,
   assignmentId: string,
   binding?: QualityBinding,
   repairBinding?: RepairBinding,
@@ -289,7 +291,7 @@ export async function admitQualityEnqueue(
     if (binding || repairBinding) denied();
     await admitRepositoryReviewBinding(
       tx,
-      context,
+      RequestContextSchema.parse(context),
       assignmentId,
       repositoryReviewBinding,
     );
@@ -297,7 +299,12 @@ export async function admitQualityEnqueue(
   }
   if (repairBinding) {
     if (binding) denied();
-    await admitPlatformRepairBinding(tx, context, assignmentId, repairBinding);
+    await admitPlatformRepairBinding(
+      tx,
+      RequestContextSchema.parse(context),
+      assignmentId,
+      repairBinding,
+    );
     return;
   }
   if (!(await qualitySchemaAvailable(tx))) {
@@ -322,7 +329,7 @@ export async function admitQualityEnqueue(
     d.assignment_id !== b.frozen.assignmentId
   )
     denied();
-  await requirePlatformAdmin(context, tx);
+  await requirePlatformAdmin(RequestContextSchema.parse(context), tx);
   await resolvePlatformPreviewContext(
     tx,
     {
@@ -340,7 +347,11 @@ export async function admitQualityEnqueue(
         qualityOccurrenceRequestId(b.frozen.scheduleOrigin.occurrenceId)
     )
       denied();
-    await admitScheduledQualityOccurrence(tx, context, b.frozen.scheduleOrigin);
+    await admitScheduledQualityOccurrence(
+      tx,
+      RequestContextSchema.parse(context),
+      b.frozen.scheduleOrigin,
+    );
   }
 }
 /** Duplicate queue admissions must not alias manual and scheduled requests. */
