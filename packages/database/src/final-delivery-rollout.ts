@@ -2,6 +2,10 @@ import { z } from 'zod';
 import type postgres from 'postgres';
 import { readChatNativeRootOrigin } from './conversation/native-session-binding.ts';
 import { nativeRootDigest } from './conversation/native-root-origin.ts';
+import {
+  checkNativeOriginReaderBindings,
+  nativeOriginReaderForOrigin,
+} from './conversation/native-origin-reader.ts';
 
 const artifactId = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 /** Deployment approval of exact, protocol-tested content IDs. This is a feature
@@ -32,13 +36,23 @@ export async function selectCheckedFinalDeliveryArtifact(
   if (!approved.length) return;
   const origin = await readChatNativeRootOrigin(tx, input);
   if (!origin) return; // Explicit old business birth, never current primary.
+  const reader = nativeOriginReaderForOrigin(origin, input);
+  if (reader) {
+    await checkNativeOriginReaderBindings(tx, reader);
+    // Only this newly admitted Run adopts the exact approved current protocol.
+    // The historical origin and every prior Run snapshot remain untouched.
+    return approved.includes(reader.targetArtifactId)
+      ? reader.targetArtifactId
+      : undefined;
+  }
   const [conflict] = await tx`select 1 from allrice_native_session_bindings
     where context_kind='chat' and context_id=${input.sessionId} and (
       organization_id<>${input.organizationId} or workspace_id<>${input.workspaceId}
       or owner_id<>${input.ownerId} or storage_context_key<>${input.sessionId}
       or artifact_id<>${origin.artifactId} or artifact_manifest_digest<>${origin.artifactId}
       or distribution_generation<>${origin.distributionGeneration} or profile_id<>'restricted'
-      or binding_basis<>'business_root_origin' or root_origin_digest is distinct from ${nativeRootDigest(origin)}) limit 1`;
+      or binding_basis<>'business_root_origin' or origin_reader_approval_digest is not null
+      or root_origin_digest is distinct from ${nativeRootDigest(origin)}) limit 1`;
   if (conflict) throw Error('FINAL_DELIVERY_NATIVE_ORIGIN_CONFLICT');
   // An older exact pin stays on its original protocol. Before any execution,
   // the existing binder/verified artifact registry must still approve its ID.

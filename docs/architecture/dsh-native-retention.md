@@ -78,6 +78,59 @@ policy, not permission to issue a new origin during execution.
 
 ## Cleanup and limits
 
+### Exact unbound chat adoption (MET195 prerequisite)
+
+An explicitly approved chat that has **never acquired an old writer** can use
+an independently verified target package for its first execution. This is not
+an alias for a whole generation and does not migrate an existing native pin.
+The immutable business origin remains the old source; the new pin records the
+actual target writer and `origin_reader_approval_digest`. Every later content
+generation retains that proof and the original tenant/owner/context namespace.
+
+The operator supplies a strict data-only JSON approval using
+`ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH`, its independently reviewed
+`ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256`, and the original explicit
+`ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT`. The file names one exact source,
+one exact target, the DSH generation/profile/session format/Node ABI, an evidence
+digest and at most 64 exact tenant/workspace/owner/origin tuples. It grants no
+user permission. The normal Job, lease, owner, cancellation and binding CAS
+checks still run. Missing approval, another context, an earlier source pin,
+wrong storage or modified proof fails closed.
+
+Activation is a manual, serial release operation:
+
+1. Inventory the exact source's origins, pins, original storage and processes.
+   Preserve archived origins. Compare native public formats and validate a
+   synthetic old-writer/current-reader journal without editing upstream code.
+2. With the candidate environment, run the existing pre-stop verifier. It now
+   checks approval scope/origin, every pin, relevant Run/Job/child/tool/wait
+   records, and the entire virgin namespace when no writer has been adopted.
+   Unknown work is not aged out. This observation is **not** a producer fence.
+3. Hold the existing deployment/QA exclusion, stop the old Web and Worker,
+   verify their actual processes and relevant native children are stopped, then
+   repeat the DB/storage check before enabling the reviewed policy. Any new
+   observation invalidates the earlier idle evidence. Do not close historical
+   unknown permits to force the check through.
+4. Start the candidate Worker, confirm reference and storage checks before its
+   producers, then open Web admission. Startup permits an already adopted
+   target's ordinary crash recovery; its exact journal is checked by the
+   normal per-Job public persistence reader. Planned pre-stop validation also
+   checks all adopted journals. No empty substitute history is created.
+5. Verify a normal isolated user's first execution and a cold continuation,
+   scope rejection, historical reads/downloads, unchanged original origins
+   and target pins. Only then retire the source's **code** approval/directory
+   through the official cleanup process. Keep source provenance, journal/data,
+   history and the approval proof.
+
+The approval target is fixed. A later primary promotion may retain that exact
+target under the existing bounded retention policy; it must not rewrite the
+proof or reinterpret its pins. `NEW_ROOT_ARTIFACT_ID` must still match that
+deployment's primary. The checked-delivery allowlist retains the exact adopted
+target. Rollback after adoption requires a compatibility-aware Worker, the
+same approval and verified target: a pre-adoption release or removal of the
+policy is not a valid rollback. This frees one obsolete source; it does not
+finish MET195's final migration of all existing writers to one current package.
+
 Platform diagnostics and experience consolidation use the configured persistent
 `ALLRICE_DSH_RUNTIME_ROOT` for native journals, including the original immutable
 tenant/owner/context namespace. Their business `workDirectory` and the diagnostic

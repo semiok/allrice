@@ -63,6 +63,9 @@ export function createJobNativeBinding(input: {
               )
             : { binding: null }),
           origin: value.origin,
+          ...('originReaderAdopted' in value
+            ? { originReaderAdopted: value.originReaderAdopted }
+            : {}),
           requiresRecovery: value.requiresRecovery,
         };
       } catch (error) {

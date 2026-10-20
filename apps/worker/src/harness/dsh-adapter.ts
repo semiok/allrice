@@ -252,6 +252,23 @@ export class DshHarnessAdapter implements HarnessAdapter {
         );
       // A missing pin is not proof that a known history may be recreated.
       // Read through the selected artifact's public backend before any new pin.
+      if (
+        nativeDescriptor.originReaderApprovalDigest &&
+        !prepared?.binding &&
+        !prepared?.originReaderAdopted
+      ) {
+        if (!prepared?.origin || prepared.requiresRecovery)
+          throw new HandlerError(
+            'DSH_NATIVE_ORIGIN_READER_RECOVERY_UNPROVEN',
+            '原会话的历史执行尚未完成兼容核验，已保留原记录。',
+            false,
+          );
+        await this.runtimePool.assertOriginReaderFirstWriter(
+          input,
+          threadId,
+          prepared.origin,
+        );
+      }
       if (prepared?.requiresRecovery)
         await this.runtimePool.assertStoredSession(
           input,

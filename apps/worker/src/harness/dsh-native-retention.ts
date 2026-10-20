@@ -1,6 +1,12 @@
 import {
   verifyNativeArtifactReferenceCoverage,
+  configuredNativeOriginReaders,
+  nativeOriginReaderForBinding,
+  nativeOriginReaderForOrigin,
+  inspectNativeOriginReaderStates,
   type NativeRootOrigin,
+  type NativeSessionPin,
+  type NativeOriginReaderScope,
 } from '@allrice/database';
 import { lstat } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
@@ -10,6 +16,8 @@ import {
   nativeArtifactLaunchForPin,
   type DshNativeVerificationObserver,
 } from './dsh-native-artifact.js';
+import { assertVirginNativeNamespace } from './native-origin-storage.js';
+import { assertStoredNativeSession } from './dsh-native-storage.js';
 
 // Finite historical compatibility policy, independent of later promotion.
 const compatibilityGeneration = 'dsh-0.1.5-rc.3-a4c74a9';
@@ -180,12 +188,15 @@ export function employeePreviewStorageRoot() {
 
 /** Reused by the pre-stop release check and before Worker producers start.
  * A free slot is not evidence that an unbound origin no longer needs its code. */
-export function verifyConfiguredDshNativeReferences(primary: {
-  artifactId: string;
-  generation: string;
-}) {
+export async function verifyConfiguredDshNativeReferences(
+  primary: {
+    artifactId: string;
+    generation: string;
+  },
+  options: { requireReaderIdle?: boolean } = {},
+) {
   const previewStorage = { previewStorageRoot: employeePreviewStorageRoot() };
-  return verifyNativeArtifactReferenceCoverage([
+  const coverage = await verifyNativeArtifactReferenceCoverage([
     {
       artifactId: primary.artifactId,
       generation: primary.generation,
@@ -201,6 +212,41 @@ export function verifyConfiguredDshNativeReferences(primary: {
       ...previewStorage,
     })),
   ] as Parameters<typeof verifyNativeArtifactReferenceCoverage>[0]);
+  const states = await inspectNativeOriginReaderStates({
+    requireIdle: options.requireReaderIdle,
+  });
+  for (const { approval, adopted, nativeSessionIds } of states) {
+    const signal = AbortSignal.timeout(30_000);
+    if (!adopted)
+      await assertVirginNativeNamespace(approval.storageNamespace, signal);
+    // A crash restart must let the normal per-Job recovery path diagnose a
+    // missing journal; it must not block all producers on one adopted context.
+    else if (options.requireReaderIdle) {
+      const launch = nativeArtifactLaunchForPin({
+        artifactId: approval.targetArtifactId,
+        profileId: approval.profileId,
+      });
+      for (const nativeSessionId of nativeSessionIds)
+        await assertStoredNativeSession(
+          launch.args[0]!,
+          {
+            nativeSessionId,
+            artifactId: approval.targetArtifactId,
+            artifactManifestDigest: approval.targetArtifactId,
+            distributionGeneration: approval.generation,
+            profileId: approval.profileId,
+            storageContextKey: approval.contextId,
+            storageNamespace: approval.storageNamespace,
+            originReaderApprovalDigest: approval.approvalDigest,
+          },
+          signal,
+        );
+    }
+  }
+  return {
+    ...coverage,
+    ...(states.length ? { readerStorageVerified: states.length } : {}),
+  };
 }
 
 export function assertDshFrozenCompatibility(
@@ -225,9 +271,13 @@ export function assertDshFrozenCompatibility(
 export function originDshNativeLaunch(
   origin: NativeRootOrigin,
   profileId: Profile,
+  scope?: NativeOriginReaderScope,
 ) {
+  if (!scope && process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH)
+    fail('ORIGIN_SCOPE_REQUIRED');
+  const reader = scope ? nativeOriginReaderForOrigin(origin, scope) : undefined;
   const selected = nativeArtifactLaunchForPin({
-    artifactId: origin.artifactId,
+    artifactId: reader?.targetArtifactId ?? origin.artifactId,
     profileId,
   });
   if (
@@ -236,5 +286,48 @@ export function originDshNativeLaunch(
     origin.profileId !== profileId
   )
     fail('ORIGIN_APPROVAL');
-  return selected;
+  return {
+    ...selected,
+    ...(reader
+      ? {
+          originReaderApprovalDigest: reader.approvalDigest,
+          originStorageNamespace: reader.storageNamespace,
+        }
+      : {}),
+  };
+}
+
+/** artifactId remains the actual first writer. This narrow approval never
+ * reinterprets an existing old writer as a newly approved current writer. */
+export function pinnedDshNativeLaunch(pin: NativeSessionPin) {
+  const reader = pin.originReaderApprovalDigest
+    ? nativeOriginReaderForBinding({
+        ...pin,
+        originReaderApprovalDigest: pin.originReaderApprovalDigest,
+      })
+    : undefined;
+  if (
+    reader &&
+    (pin.rootOriginDigest !== reader.originDigest ||
+      pin.artifactManifestDigest !== reader.targetArtifactId ||
+      pin.distributionGeneration !== reader.generation ||
+      pin.bindingBasis !== 'business_root_origin')
+  )
+    fail('ORIGIN_APPROVAL');
+  if (
+    !reader &&
+    configuredNativeOriginReaders().some(
+      (entry) => entry.sourceArtifactId === pin.artifactId,
+    )
+  )
+    fail('EXISTING_WRITER_NOT_MIGRATED');
+  return {
+    ...nativeArtifactLaunchForPin(pin),
+    ...(reader
+      ? {
+          originReaderApprovalDigest: reader.approvalDigest,
+          originStorageNamespace: reader.storageNamespace,
+        }
+      : {}),
+  };
 }

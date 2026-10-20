@@ -10,6 +10,7 @@ const seam = vi.hoisted(() => ({
 }));
 vi.mock('@allrice/database', () => ({
   verifyNativeArtifactReferenceCoverage: seam.coverage,
+  inspectNativeOriginReaderStates: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('./dsh-native-artifact.js', () => ({
   installRetainedDshNativeArtifact: seam.install,

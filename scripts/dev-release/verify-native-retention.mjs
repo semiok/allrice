@@ -47,7 +47,10 @@ try {
   )
     throw Error('DSH_NATIVE_ARTIFACT_NEW_ROOT_APPROVAL');
   const retained = await retention.installConfiguredDshNativeRetention();
-  const coverage = await retention.verifyConfiguredDshNativeReferences(primary);
+  const coverage = await retention.verifyConfiguredDshNativeReferences(
+    primary,
+    { requireReaderIdle: true },
+  );
   console.log(
     JSON.stringify({
       verified: true,

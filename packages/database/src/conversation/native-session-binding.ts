@@ -21,6 +21,10 @@ import {
 import { getExperienceExecutionInTransaction } from '../experience-consolidation.ts';
 import { experienceConsolidationJobType } from '../experience-consolidation-contracts.ts';
 import { bindConversationThreadInTransaction } from './conversation-runtime.ts';
+import {
+  checkNativeOriginReaderBindings,
+  nativeOriginReaderForOrigin,
+} from './native-origin-reader.ts';
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeSessionDescriptorSchema = z
@@ -36,6 +40,7 @@ export const NativeSessionDescriptorSchema = z
     profileId: z.enum(['restricted', 'technical']),
     storageContextKey: z.string().min(1).max(100),
     storageNamespace: z.string().min(1).max(4096),
+    originReaderApprovalDigest: digest.optional(),
   })
   .strict();
 export type NativeSessionDescriptor = z.infer<
@@ -231,6 +236,16 @@ export async function prepareLeasedNativeSession(
   input: NativeSessionPreparationInput,
 ) {
   const origin = await readNativeRootOrigin(tx, job, input.subject);
+  const reader = origin
+    ? nativeOriginReaderForOrigin(origin, {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id,
+        ownerId: job.owner_id,
+      })
+    : undefined;
+  const originReaderAdopted = reader
+    ? await checkNativeOriginReaderBindings(tx, reader)
+    : false;
   const [pin] = await tx`select * from allrice_native_session_bindings
     where native_session_id=${input.nativeSessionId}`;
   if (!pin) {
@@ -245,6 +260,7 @@ export async function prepareLeasedNativeSession(
     return {
       binding: null,
       origin,
+      ...(reader ? { originReaderAdopted } : {}),
       conversation: undefined,
       requiresRecovery:
         job.attempt > 1 ||
@@ -263,6 +279,9 @@ export async function prepareLeasedNativeSession(
     profileId: pin.profile_id,
     storageContextKey: pin.storage_context_key,
     storageNamespace: pin.storage_namespace,
+    ...(pin.origin_reader_approval_digest
+      ? { originReaderApprovalDigest: pin.origin_reader_approval_digest }
+      : {}),
   });
   const admitted = await bindLeasedNativeSession(tx, job, {
     workerId: input.workerId,
@@ -272,7 +291,12 @@ export async function prepareLeasedNativeSession(
     subject: input.subject,
     descriptor,
   });
-  return { ...admitted, origin, requiresRecovery: true };
+  return {
+    ...admitted,
+    origin,
+    ...(reader ? { originReaderAdopted } : {}),
+    requiresRecovery: true,
+  };
 }
 
 /** The queue already owns 703 -> root/clock -> Job. No Run/test row locks:
@@ -320,13 +344,24 @@ export async function bindLeasedNativeSession(
   )
     deny();
   const origin = await readNativeRootOrigin(tx, job, s);
+  const reader = origin
+    ? nativeOriginReaderForOrigin(origin, {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id,
+        ownerId: job.owner_id,
+      })
+    : undefined;
+  if (reader) await checkNativeOriginReaderBindings(tx, reader);
   if (
     origin
-      ? d.artifactId !== origin.artifactId ||
+      ? d.artifactId !== (reader?.targetArtifactId ?? origin.artifactId) ||
         d.distributionGeneration !== origin.distributionGeneration ||
         d.profileId !== origin.profileId ||
-        key !== origin.rootSeed
-      : d.distributionGeneration === newNativeGeneration
+        key !== origin.rootSeed ||
+        d.originReaderApprovalDigest !== reader?.approvalDigest ||
+        (reader && d.storageNamespace !== reader.storageNamespace)
+      : d.distributionGeneration === newNativeGeneration ||
+        d.originReaderApprovalDigest !== undefined
   )
     deny();
   const bindingBasis = origin
@@ -433,10 +468,10 @@ export async function bindLeasedNativeSession(
   await tx`insert into allrice_native_session_bindings
     (native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
       storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,
-      first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest)
+      first_run_id,first_job_id,first_attempt,binding_basis,root_origin_digest,origin_reader_approval_digest)
     values(${d.nativeSessionId},${job.organization_id},${job.workspace_id},${job.owner_id},${s.kind},${s.id},
       ${key},${d.storageNamespace},${d.artifactId},${d.artifactManifestDigest},${d.distributionGeneration},${d.profileId},
-      ${job.run_id},${job.id},${job.attempt},${bindingBasis},${rootOriginDigest}) on conflict(native_session_id) do nothing`;
+      ${job.run_id},${job.id},${job.attempt},${bindingBasis},${rootOriginDigest},${d.originReaderApprovalDigest ?? null}) on conflict(native_session_id) do nothing`;
   const [pin] =
     await tx`select * from allrice_native_session_bindings where native_session_id=${d.nativeSessionId}`;
   const equal =
@@ -453,7 +488,9 @@ export async function bindLeasedNativeSession(
     pin.distribution_generation === d.distributionGeneration &&
     pin.profile_id === d.profileId &&
     pin.binding_basis === bindingBasis &&
-    pin.root_origin_digest === rootOriginDigest;
+    pin.root_origin_digest === rootOriginDigest &&
+    pin.origin_reader_approval_digest ===
+      (d.originReaderApprovalDigest ?? null);
   if (!equal)
     throw new NativeSessionBindingError('NATIVE_SESSION_BINDING_CONFLICT');
   await checkDeadline();
