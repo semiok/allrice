@@ -484,6 +484,69 @@ suite(
       ).toContain(value.workflow.id);
     }, 30_000);
 
+    it.each(['resolution', 'execution', 'content-source'] as const)(
+      'keeps concurrent %s reads compatible with the runtime content lock',
+      async (operation) => {
+        const s = await setup();
+        const methods = await installMethods(s);
+        const prepared = await packageInput(s, methods.common);
+        const value = await register(s, prepared.request);
+        await enable(s, value);
+        let arrived = 0;
+        let release!: () => void;
+        const ready = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const read = () =>
+          fixture.db.begin(async (tx) => {
+            await tx`set local lock_timeout = '3s'`;
+            // Both transactions hold the same shared authority lock before
+            // resolving a Workflow, as concurrent model/tool content checks do.
+            await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${s.owner.organizationId}`},0))`;
+            if (++arrived === 2) release();
+            await ready;
+            if (operation === 'content-source') {
+              const source = await resolveEmployeeContentSource({
+                context: s.owner.context,
+                employeeId: s.employeeId,
+                instanceId: s.instance.id,
+                ownership: {
+                  scope: 'personal',
+                  organizationId: s.owner.organizationId,
+                  ownerId: s.owner.user.id,
+                },
+                ref: {
+                  sourceKind: 'workflow',
+                  contentId: value.workflow.workflowId,
+                  revisionId: value.workflow.id,
+                  digest: value.workflow.checksum,
+                },
+                sql: tx,
+                lock: true,
+                allowDraft: false,
+                frozenPublication: true,
+              });
+              expect(source.dto.available).toBe(true);
+              return source.dto.reference.revisionId;
+            }
+            const resolve =
+              operation === 'execution'
+                ? assertWorkflowPackageExecution
+                : resolveWorkflowPackageForInstance;
+            return (
+              await resolve(s.owner.context, selection(s, value), tx, true)
+            ).package.workflow.id;
+          });
+        // Settle both transactions before fixture cleanup, including failures.
+        const results = await Promise.allSettled([read(), read()]);
+        expect(results).toEqual([
+          { status: 'fulfilled', value: value.workflow.id },
+          { status: 'fulfilled', value: value.workflow.id },
+        ]);
+      },
+      30_000,
+    );
+
     it('serializes identical concurrent registration into one immutable version and rejects changed-input replay', async () => {
       const s = await setup();
       const methods = await installMethods(s);

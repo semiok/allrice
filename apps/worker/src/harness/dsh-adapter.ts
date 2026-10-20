@@ -23,6 +23,7 @@ import type { NativeSessionPin } from '@allrice/database';
 
 import { AgentLoopGuard } from '../agent-loop-guard.js';
 import { HandlerError } from '../errors.js';
+import { contentGuardFailure } from './dsh/content-guard.js';
 import {
   assertFinalDelivery,
   type FinalDeliveryProof,
@@ -361,14 +362,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
       try {
         await input.contentGuard.check();
       } catch (error) {
-        contentAuthorizationFailure ??=
-          error instanceof HandlerError
-            ? error
-            : new HandlerError(
-                'EMPLOYEE_CONTENT_UNAVAILABLE',
-                '当前工作要求或历史资料无法继续使用，请确认后重新发起任务。',
-                false,
-              );
+        contentAuthorizationFailure ??= contentGuardFailure(error);
         throw contentAuthorizationFailure;
       }
     };
@@ -436,14 +430,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             throw Error('employee_scene_unbound');
           return await input.contentGuard.adoptScene(evidence);
         } catch (error) {
-          contentAuthorizationFailure ??=
-            error instanceof HandlerError
-              ? error
-              : new HandlerError(
-                  'EMPLOYEE_CONTENT_UNAVAILABLE',
-                  '当前工作场景无法继续使用，请确认场景和资料后重新发起任务。',
-                  false,
-                );
+          contentAuthorizationFailure ??= contentGuardFailure(error);
           throw contentAuthorizationFailure;
         }
       }
