@@ -1,0 +1,281 @@
+.panel {
+  min-width: 0;
+  padding: 16px;
+  background: #fff;
+  color: #202124;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.panel button,
+.panel input,
+.panel textarea,
+.panel select {
+  font: inherit;
+}
+
+.panel button {
+  min-height: 34px;
+  padding: 5px 11px;
+  border: 1px solid #dcdfe4;
+  border-radius: 7px;
+  background: #fff;
+  color: #30343b;
+  cursor: pointer;
+}
+
+.panel button:hover:not(:disabled) {
+  background: #f5f7fa;
+}
+
+.panel button:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.panel button:focus-visible,
+.panel input:focus-visible,
+.panel textarea:focus-visible,
+.panel select:focus-visible {
+  outline: 2px solid #6585c9;
+  outline-offset: 2px;
+}
+
+.heading,
+.listHeading,
+.taskHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.heading strong {
+  font-size: 14px;
+}
+
+.hint {
+  margin: 7px 0;
+  color: #69707b;
+  overflow-wrap: anywhere;
+}
+
+.error,
+.notice {
+  margin: 10px 0;
+  overflow-wrap: anywhere;
+}
+
+.error {
+  color: #b42318;
+}
+
+.notice {
+  color: #236548;
+}
+
+.pending,
+.confirm {
+  padding: 11px;
+  border: 1px solid #ead8aa;
+  border-radius: 8px;
+  background: #fffaf0;
+}
+
+.pending {
+  margin: 12px 0;
+}
+
+.pending p,
+.confirm p {
+  margin: 4px 0 9px;
+}
+
+.form {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0 20px;
+  padding: 14px;
+  border: 1px solid #dcdfe4;
+  border-radius: 10px;
+}
+
+.form label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: #4b515b;
+}
+
+.form input,
+.form textarea,
+.form select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid #d2d7df;
+  border-radius: 6px;
+  background: #fff;
+  color: #202124;
+}
+
+.form textarea {
+  resize: vertical;
+}
+
+.form input:disabled,
+.form textarea:disabled,
+.form select:disabled {
+  background: #f6f7f9;
+  color: #69707b;
+}
+
+.daily {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.7fr) minmax(140px, 1.3fr);
+  gap: 12px;
+}
+
+.panel .primary {
+  justify-self: start;
+  border-color: #334b72;
+  background: #334b72;
+  color: #fff;
+}
+
+.panel .primary:hover:not(:disabled) {
+  background: #283d5f;
+}
+
+.listHeading {
+  margin-top: 18px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid #eef0f3;
+  font-weight: 500;
+}
+
+.empty {
+  padding: 18px 0;
+  color: #7b818c;
+  text-align: center;
+}
+
+.tasks,
+.occurrences {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.task {
+  padding: 14px 0;
+  border-bottom: 1px solid #eef0f3;
+}
+
+.taskHeading {
+  align-items: flex-start;
+}
+
+.taskHeading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  flex-shrink: 0;
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: #f1f3f6;
+  color: #616976;
+  font-size: 12px;
+}
+
+.status[data-status='enabled'] {
+  background: #edf7f0;
+  color: #33734b;
+}
+
+.status[data-status='failed'] {
+  background: #fff0ee;
+  color: #b42318;
+}
+
+.prompt {
+  display: -webkit-box;
+  margin: 7px 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.confirm {
+  margin-top: 12px;
+}
+
+.more {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+}
+
+.history {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid #dcdfe4;
+  border-radius: 10px;
+}
+
+.history > .heading {
+  margin-bottom: 10px;
+}
+
+.occurrences li {
+  padding: 12px 0;
+  border-bottom: 1px solid #eef0f3;
+}
+
+.history > button:last-child {
+  margin-top: 12px;
+}
+
+@media (max-width: 480px) {
+  .panel {
+    padding: 12px;
+  }
+
+  .panel button {
+    min-height: 40px;
+  }
+
+  .heading {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .form,
+  .history {
+    padding: 11px;
+  }
+
+  .daily {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .form input,
+  .form textarea,
+  .form select {
+    font-size: 16px;
+  }
+}

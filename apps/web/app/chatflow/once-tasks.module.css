@@ -228,3 +228,18 @@
   width: 100%;
   margin-top: 10px;
 }
+
+.sections {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #e4e6e9;
+}
+.sections button {
+  flex: 1;
+}
+.sections button[aria-pressed='true'] {
+  background: #edf3ff;
+  border-color: #8ba7dc;
+  color: #244e97;
+}

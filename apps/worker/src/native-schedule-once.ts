@@ -24,6 +24,7 @@ import type * as ControllerModule from '@deepseek-ai/dsh-api-session-controller'
 import type * as SdkModule from '@deepseek-ai/dsh-sdk-jsonrpc-server';
 import type * as ScheduleModule from '@deepseek-ai/dsh-schedule';
 import { randomUUID, createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { StorageBackend, KvUnit } from '@deepseek-ai/dsh-storage';
 import type {
   ScheduleTask,
@@ -68,6 +69,7 @@ export interface NativeScheduleWriter {
   token: string;
 }
 export interface NativeScheduleControl {
+  kind?: 'once';
   controlId: string;
   organizationId: string;
   workspaceId: string;
@@ -85,6 +87,26 @@ export interface NativeScheduleControl {
     status: 'pending' | 'confirmed' | 'blocked';
   };
 }
+export type NativeScheduleRecurringRule =
+  | { kind: 'every'; seconds: number }
+  | { kind: 'daily'; time: string; timezone: string };
+/** revision/rule are desired; applied* describe the durably installed rule. */
+export interface NativeScheduleRecurringControl extends Omit<
+  NativeScheduleControl,
+  'kind' | 'at' | 'command'
+> {
+  kind: 'recurring';
+  rule: NativeScheduleRecurringRule;
+  appliedRevision: number | null;
+  appliedRule: NativeScheduleRecurringRule | null;
+  command: {
+    id: string;
+    kind: 'create' | 'update' | 'delete';
+    status: 'pending' | 'confirmed' | 'blocked';
+  };
+}
+export type NativeScheduleAnyControl =
+  NativeScheduleControl | NativeScheduleRecurringControl;
 export type NativeScheduleMutation =
   | { kind: 'session_initializing' | 'session_ready'; controlId: string }
   | { kind: 'put_task'; controlId: string; task: ScheduleTask }
@@ -155,7 +177,7 @@ export interface NativeScheduleOnceStore {
     /** Conservative server TTL measured from before this request was sent. */
     remainingMs: number;
     reference: NativeScheduleControlReference;
-    controls: readonly NativeScheduleControl[];
+    controls: readonly NativeScheduleAnyControl[];
   }>;
   renewWriter(
     writer: NativeScheduleWriter,
@@ -163,7 +185,7 @@ export interface NativeScheduleOnceStore {
   assertWriter(writer: NativeScheduleWriter): Promise<boolean>;
   loadControls(
     writer: NativeScheduleWriter,
-  ): Promise<readonly NativeScheduleControl[]>;
+  ): Promise<readonly NativeScheduleAnyControl[]>;
   loadTaskRecords(
     writer: NativeScheduleWriter,
   ): Promise<Record<string, unknown>>;
@@ -198,6 +220,17 @@ export interface NativeScheduleControlHost {
   mountSchedule(): Promise<void>;
   catalog(): Promise<ScheduleCatalogEntry[]>;
   createOnce(sessionId: string, at: string): Promise<ScheduleRecord>;
+  createRecurring?(
+    sessionId: string,
+    rule: NativeScheduleRecurringRule,
+  ): Promise<ScheduleRecord>;
+  /** null is an explicit non-mutating Schedule conflict, never an unknown ACK. */
+  updateRecurring?(
+    sessionId: string,
+    id: string,
+    expected: ScheduleRecord,
+    rule: NativeScheduleRecurringRule,
+  ): Promise<ScheduleRecord | null>;
   deleteOnce(sessionId: string, id: string): Promise<void>;
   /** Stop Schedule and drain it, then SDK.shutdown, root.dispose. Never self-await from KV. */
   close(): Promise<void>;
@@ -286,10 +319,57 @@ function digest(value: unknown): string {
   );
 }
 const identity = (writer: NativeScheduleWriter) => digest(writer);
-function controlsMap(rows: readonly NativeScheduleControl[]) {
+function recurringRuleValid(rule: NativeScheduleRecurringRule): boolean {
+  if (!rule || typeof rule !== 'object' || Array.isArray(rule)) return false;
+  if (rule.kind === 'every')
+    return (
+      Object.keys(rule).sort().join(',') === 'kind,seconds' &&
+      Number.isSafeInteger(rule.seconds) &&
+      rule.seconds >= 60 &&
+      rule.seconds <= 31_536_000
+    );
+  if (
+    rule.kind !== 'daily' ||
+    Object.keys(rule).sort().join(',') !== 'kind,time,timezone' ||
+    !/^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(rule.time) ||
+    typeof rule.timezone !== 'string' ||
+    !rule.timezone ||
+    rule.timezone.length > 64
+  )
+    return false;
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: rule.timezone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+function recurringRecordMatches(
+  record: ScheduleRecord,
+  rule: NativeScheduleRecurringRule,
+) {
+  if (record.kind !== rule.kind) return false;
+  if (rule.kind === 'every')
+    return record.kind === 'every' && record.everySeconds === rule.seconds;
+  if (record.kind !== 'daily') return false;
+  try {
+    return (
+      record.time === `${rule.time}.000` &&
+      new Intl.DateTimeFormat('en', {
+        timeZone: record.timeZone,
+      }).resolvedOptions().timeZone ===
+        new Intl.DateTimeFormat('en', {
+          timeZone: rule.timezone,
+        }).resolvedOptions().timeZone
+    );
+  } catch {
+    return false;
+  }
+}
+function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
   if (rows.length > MAX_CONTROLS)
     throw new NativeScheduleOnceError('binding_invalid');
-  const map = new Map<string, NativeScheduleControl>(),
+  const map = new Map<string, NativeScheduleAnyControl>(),
     sessions = new Set<string>(),
     revisions = new Set<string>(),
     tasks = new Set<string>();
@@ -311,8 +391,19 @@ function controlsMap(rows: readonly NativeScheduleControl[]) {
       revisions.has(revision) ||
       (c.nativeTaskId !== null &&
         (!c.nativeTaskId || tasks.has(c.nativeTaskId))) ||
-      !Number.isFinite(Date.parse(c.at)) ||
-      new Date(c.at).toISOString() !== c.at ||
+      (c.kind !== undefined && c.kind !== 'once' && c.kind !== 'recurring') ||
+      (c.kind === 'recurring'
+        ? !recurringRuleValid(c.rule) ||
+          !['create', 'update', 'delete'].includes(c.command.kind) ||
+          (c.appliedRevision === null) !== (c.appliedRule === null) ||
+          (c.appliedRevision !== null &&
+            (!Number.isSafeInteger(c.appliedRevision) ||
+              c.appliedRevision < 1 ||
+              c.appliedRevision > c.revision ||
+              !recurringRuleValid(c.appliedRule!))) ||
+          (c.nativeTaskId !== null && c.appliedRevision === null)
+        : !Number.isFinite(Date.parse(c.at)) ||
+          new Date(c.at).toISOString() !== c.at) ||
       (c.nativeTaskId !== null && c.sessionState !== 'ready')
     )
       throw new NativeScheduleOnceError('binding_invalid');
@@ -323,7 +414,17 @@ function controlsMap(rows: readonly NativeScheduleControl[]) {
   }
   return map;
 }
-function controlIdentity(c: NativeScheduleControl) {
+function controlIdentity(c: NativeScheduleAnyControl) {
+  if (c.kind === 'recurring')
+    return {
+      kind: c.kind,
+      controlId: c.controlId,
+      organizationId: c.organizationId,
+      workspaceId: c.workspaceId,
+      ownerId: c.ownerId,
+      automationId: c.automationId,
+      controlSessionId: c.controlSessionId,
+    };
   return {
     controlId: c.controlId,
     organizationId: c.organizationId,
@@ -562,7 +663,7 @@ function workspaceSnapshot(
 
 interface Generation {
   writer: NativeScheduleWriter;
-  controls: Map<string, NativeScheduleControl>;
+  controls: Map<string, NativeScheduleAnyControl>;
   deadline: number;
   timer?: ReturnType<typeof setTimeout>;
   host?: NativeScheduleControlHost;
@@ -688,10 +789,10 @@ export function createNativeScheduleOnceController(
     void task.finally(() => g.writes.delete(task)).catch(() => undefined);
     return task;
   }
-  function update(
+  function update<C extends NativeScheduleAnyControl>(
     g: Generation,
-    c: NativeScheduleControl,
-    change: Partial<NativeScheduleControl>,
+    c: C,
+    change: Partial<C>,
   ) {
     g.controls.set(c.controlId, { ...c, ...change });
   }
@@ -710,6 +811,44 @@ export function createNativeScheduleOnceController(
     const c = [...g.controls.values()].find(
       (row) => row.controlSessionId === task.sessionId,
     );
+    if (c?.kind === 'recurring') {
+      const history =
+        task.deliveryHistory?.records ??
+        (task.lastDelivery ? [task.lastDelivery] : []);
+      if (
+        !isDeepStrictEqual(task, value) ||
+        task.record.id !== id ||
+        task.record.title !== TITLE ||
+        task.record.prompt !== PROMPT ||
+        task.status !== 'active' ||
+        c.sessionState !== 'ready' ||
+        c.taskDeleted ||
+        (c.nativeTaskId !== id &&
+          (loading ||
+            c.nativeTaskId !== null ||
+            c.command.kind !== 'create' ||
+            c.command.status !== 'pending')) ||
+        !(
+          (c.appliedRule &&
+            recurringRecordMatches(task.record, c.appliedRule)) ||
+          (c.command.status === 'pending' &&
+            ['create', 'update'].includes(c.command.kind) &&
+            recurringRecordMatches(task.record, c.rule))
+        ) ||
+        history.length > 200 ||
+        history.some(
+          (receipt, index) =>
+            ('prompt' in receipt &&
+              receipt.prompt !== undefined &&
+              receipt.prompt !== PROMPT) ||
+            (index > 0 &&
+              Date.parse(receipt.scheduledAt) <
+                Date.parse(history[index - 1]!.scheduledAt)),
+        )
+      )
+        failure('task_invalid');
+      return { task, control: c };
+    }
     if (
       !c ||
       task.record.id !== id ||
@@ -1061,7 +1200,7 @@ export function createNativeScheduleOnceController(
     });
     return g.closing;
   }
-  async function prepare(g: Generation, c: NativeScheduleControl) {
+  async function prepare(g: Generation, c: NativeScheduleAnyControl) {
     await fenced(g, true);
     if (c.sessionState === 'reserved') {
       await mutate(g, { kind: 'session_initializing', controlId: c.controlId });
@@ -1138,7 +1277,7 @@ export function createNativeScheduleOnceController(
     locallyLive(g, true);
     deadline(g, sentAt, renewed.remainingMs);
     const fresh = controlsMap(await options.store.loadControls(g.writer));
-    const keys = (rows: Map<string, NativeScheduleControl>) =>
+    const keys = (rows: Map<string, NativeScheduleAnyControl>) =>
       digest(
         [...rows.values()]
           .map(controlIdentity)
@@ -1170,12 +1309,21 @@ export function createNativeScheduleOnceController(
         if (id === null) {
           try {
             await fenced(g, true);
-            id = (await g.host!.createOnce(c.controlSessionId, c.at)).id;
+            if (c.kind === 'recurring') {
+              const createRecurring = g.host!.createRecurring;
+              if (!createRecurring) return failure('binding_invalid');
+              id = (
+                await createRecurring.call(g.host, c.controlSessionId, c.rule)
+              ).id;
+            } else id = (await g.host!.createOnce(c.controlSessionId, c.at)).id;
           } catch (error) {
-            if (!(
-              error instanceof NativeScheduleOnceError &&
-              error.code === 'target_not_future'
-            ))
+            if (
+              c.kind === 'recurring' ||
+              !(
+                error instanceof NativeScheduleOnceError &&
+                error.code === 'target_not_future'
+              )
+            )
               throw error;
             await mutate(g, {
               kind: 'reject_command',
@@ -1195,13 +1343,52 @@ export function createNativeScheduleOnceController(
           if (
             !saved ||
             saved.sessionId !== c.controlSessionId ||
-            saved.kind !== 'at' ||
-            saved.scheduledAt !== c.at ||
+            (c.kind === 'recurring'
+              ? !recurringRecordMatches(saved, c.rule)
+              : saved.kind !== 'at' || saved.scheduledAt !== c.at) ||
             saved.title !== TITLE ||
             saved.prompt !== PROMPT
           )
             failure('task_invalid');
         }
+      } else if (c.command.kind === 'update' && c.kind === 'recurring') {
+        const saved = catalog.find((task) => task.id === id);
+        if (
+          !saved ||
+          saved.sessionId !== c.controlSessionId ||
+          saved.status !== 'active' ||
+          saved.title !== TITLE ||
+          saved.prompt !== PROMPT ||
+          id === null ||
+          c.taskDeleted ||
+          !g.host!.updateRecurring
+        )
+          return failure('task_invalid');
+        const expected: ScheduleRecord & {
+          -readonly [
+            K in 'sessionId' | 'status' | 'lastDelivery'
+          ]?: ScheduleCatalogEntry[K];
+        } = { ...saved };
+        delete expected.sessionId;
+        delete expected.status;
+        delete expected.lastDelivery;
+        await fenced(g, true);
+        const changed = await g.host!.updateRecurring(
+          c.controlSessionId,
+          id,
+          expected,
+          c.rule,
+        );
+        // Only the SDK's explicit non-mutating conflict can defer to a fresh tick.
+        if (changed === null) continue;
+        if (
+          changed.id !== id ||
+          changed.title !== TITLE ||
+          changed.prompt !== PROMPT ||
+          !recurringRecordMatches(changed, c.rule) ||
+          g.controls.get(c.controlId)?.nativeTaskId !== id
+        )
+          failure('task_invalid');
       } else if (id !== null && !c.taskDeleted) {
         if (
           !catalog.some(
@@ -1222,6 +1409,12 @@ export function createNativeScheduleOnceController(
       });
       update(g, g.controls.get(c.controlId)!, {
         command: { ...c.command, status: 'confirmed' },
+        ...(c.kind === 'recurring' && c.command.kind !== 'delete'
+          ? {
+              appliedRevision: c.revision,
+              appliedRule: structuredClone(c.rule),
+            }
+          : {}),
       });
     }
   }

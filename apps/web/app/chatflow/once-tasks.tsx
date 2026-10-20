@@ -46,6 +46,7 @@ import {
   type OnceTask,
 } from '@allrice/contracts';
 import css from './once-tasks.module.css';
+import { RecurringTasksPanel } from './recurring-tasks';
 
 type Props = {
   sessionId: string | null;
@@ -194,11 +195,13 @@ export function OnceTasks(props: Props) {
 
 function OnceTasksMenu({
   sessionId,
+  scope,
   headers,
   onOpenSession,
   storageKey,
 }: Props & { storageKey: string | null }) {
   const [open, setOpen] = useState(false);
+  const [section, setSection] = useState<'once' | 'recurring'>('once');
   const openRef = useRef(open);
   openRef.current = open;
   const [visible, setVisible] = useState(true);
@@ -544,7 +547,7 @@ function OnceTasksMenu({
   }, [url, sessionId, headers, acceptTask]);
 
   useEffect(() => {
-    if (!open || !visible || !url) return;
+    if (!open || !visible || !url || section !== 'once') return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
       void read();
@@ -560,7 +563,7 @@ function OnceTasksMenu({
       setChecking(false);
       setSnapshot((previous) => ({ ...previous, loading: false }));
     };
-  }, [open, visible, url, read, reconcile, invalidateRead]);
+  }, [open, section, visible, url, read, reconcile, invalidateRead]);
 
   const close = () => {
     setOpen(false);
@@ -772,225 +775,268 @@ function OnceTasksMenu({
             <div className={css.heading}>
               <div>
                 <h2>定时任务</h2>
-                <p>当前 AI 的一次性任务</p>
+                <p>
+                  {section === 'once'
+                    ? '当前 AI 的一次性任务'
+                    : '当前 AI 的周期任务'}
+                </p>
               </div>
-              <button
-                type="button"
-                disabled={
-                  snapshot.enabled !== true ||
-                  !storageReady ||
-                  pending !== null ||
-                  busy
-                }
-                onClick={() => setFormOpen((value) => !value)}
-              >
-                {formOpen ? '收起' : '新建任务'}
-              </button>
+              {section === 'once' && (
+                <button
+                  type="button"
+                  disabled={
+                    snapshot.enabled !== true ||
+                    !storageReady ||
+                    pending !== null ||
+                    busy
+                  }
+                  onClick={() => setFormOpen((value) => !value)}
+                >
+                  {formOpen ? '收起' : '新建任务'}
+                </button>
+              )}
               <button type="button" aria-label="关闭定时任务" onClick={close}>
                 ×
               </button>
             </div>
-            <div className={css.content}>
-              {notice.text && (
-                <p
-                  className={notice.error ? css.error : css.notice}
-                  role={notice.error ? 'alert' : 'status'}
-                >
-                  {notice.text}
-                </p>
-              )}
-              {snapshot.error && (
-                <p className={css.error} role="alert">
-                  {snapshot.error}
-                </p>
-              )}
-              {storageError && (
-                <p className={css.error} role="alert">
-                  {storageError}
-                </p>
-              )}
-              {pending && (
-                <div className={css.reconcile}>
-                  <p className={css.hint}>
-                    {pending.kind === 'create'
-                      ? '保留原创建请求，等待确认结果。'
-                      : '保留取消请求，等待确认任务状态。'}
-                  </p>
-                  <button
-                    type="button"
-                    disabled={busy || checking}
-                    onClick={() => void reconcile()}
-                  >
-                    {checking
-                      ? '正在确认…'
-                      : pending.kind === 'create'
-                        ? '确认创建结果'
-                        : '确认取消结果'}
-                  </button>
-                </div>
-              )}
-              {snapshot.enabled === false && !snapshot.error && (
-                <p className={css.empty}>当前会话暂不支持定时任务。</p>
-              )}
-              {formOpen && snapshot.enabled === true && (
-                <form className={css.form} onSubmit={create}>
-                  <div className={css.field}>
-                    <label htmlFor={`${id}-prompt`}>任务内容</label>
-                    <textarea
-                      id={`${id}-prompt`}
-                      value={prompt}
-                      onChange={(event) => setPrompt(event.target.value)}
-                      placeholder="到时请帮我…"
-                      rows={3}
-                      disabled={busy || pending !== null}
-                      required
-                    />
-                  </div>
-                  <div className={css.field}>
-                    <label htmlFor={`${id}-time`}>执行时间</label>
-                    <input
-                      id={`${id}-time`}
-                      type="datetime-local"
-                      value={time}
-                      onChange={(event) => setTime(event.target.value)}
-                      disabled={busy || pending !== null}
-                      required
-                    />
-                  </div>
-                  <p className={css.hint}>
-                    按当前时区 {timezone}，在本对话执行一次。
-                  </p>
-                  <button
-                    type="submit"
-                    className={css.primary}
-                    disabled={busy || pending !== null || !storageReady}
-                  >
-                    {busy
-                      ? '提交中…'
-                      : pending !== null
-                        ? '等待确认'
-                        : '创建任务'}
-                  </button>
-                </form>
-              )}
-              <div className={css.listHeading}>
-                <span>
-                  {snapshot.loading
-                    ? '正在读取…'
-                    : `已加载 ${tasks.length} 项任务`}
-                </span>
-                <button
-                  type="button"
-                  onClick={() => void read('refresh', true)}
-                  disabled={snapshot.loading}
-                >
-                  重新读取
-                </button>
-              </div>
-              <ul
-                className={css.list}
-                aria-label="当前 AI 的定时任务"
-                aria-busy={snapshot.loading}
+            <div
+              className={css.sections}
+              role="group"
+              aria-label="定时任务类型"
+            >
+              <button
+                type="button"
+                aria-pressed={section === 'once'}
+                onClick={() => setSection('once')}
               >
-                {tasks.map((task) => (
-                  <li key={task.id} className={css.task}>
-                    <div className={css.taskHeading}>
-                      <p className={css.summary} title={task.prompt}>
-                        {task.name}
-                      </p>
-                      <span className={css.status} data-status={task.status}>
-                        {statusLabels[task.status]}
-                      </span>
-                    </div>
-                    <time
-                      className={css.time}
-                      dateTime={task.runAt}
-                      title={task.timezone}
+                一次性
+              </button>
+              <button
+                type="button"
+                aria-pressed={section === 'recurring'}
+                onClick={() => setSection('recurring')}
+              >
+                周期
+              </button>
+            </div>
+            <div className={css.content}>
+              {section === 'recurring' && sessionId ? (
+                <RecurringTasksPanel
+                  sessionId={sessionId}
+                  scope={scope}
+                  headers={headers}
+                  onOpenSession={(id) => {
+                    setOpen(false);
+                    onOpenSession(id);
+                  }}
+                />
+              ) : (
+                <>
+                  {notice.text && (
+                    <p
+                      className={notice.error ? css.error : css.notice}
+                      role={notice.error ? 'alert' : 'status'}
                     >
-                      {taskTime(task)}
-                    </time>
-                    {task.errorMessage &&
-                      (task.status === 'failed' ||
-                        task.status === 'not_executed') && (
-                        <p className={css.error}>{task.errorMessage}</p>
-                      )}
-                    <div className={css.actions}>
+                      {notice.text}
+                    </p>
+                  )}
+                  {snapshot.error && (
+                    <p className={css.error} role="alert">
+                      {snapshot.error}
+                    </p>
+                  )}
+                  {storageError && (
+                    <p className={css.error} role="alert">
+                      {storageError}
+                    </p>
+                  )}
+                  {pending && (
+                    <div className={css.reconcile}>
+                      <p className={css.hint}>
+                        {pending.kind === 'create'
+                          ? '保留原创建请求，等待确认结果。'
+                          : '保留取消请求，等待确认任务状态。'}
+                      </p>
                       <button
                         type="button"
-                        onClick={() => {
-                          setOpen(false);
-                          onOpenSession(task.sessionId);
-                        }}
+                        disabled={busy || checking}
+                        onClick={() => void reconcile()}
                       >
-                        查看原会话
+                        {checking
+                          ? '正在确认…'
+                          : pending.kind === 'create'
+                            ? '确认创建结果'
+                            : '确认取消结果'}
                       </button>
-                      {task.canCancel &&
-                        (confirmCancel === task.id ? (
-                          <>
-                            <span>取消这项任务？</span>
-                            <button
-                              type="button"
-                              disabled={
-                                busy ||
-                                pending !== null ||
-                                !storageReady ||
-                                snapshot.enabled !== true
-                              }
-                              onClick={() =>
-                                void submit({
-                                  version: 1,
-                                  kind: 'cancel',
-                                  taskId: task.id,
-                                  clientRequestId: task.clientRequestId,
-                                })
-                              }
-                            >
-                              确认取消
-                            </button>
-                            <button
-                              type="button"
-                              disabled={busy || pending !== null}
-                              onClick={() => setConfirmCancel(null)}
-                            >
-                              保留
-                            </button>
-                          </>
-                        ) : (
+                    </div>
+                  )}
+                  {snapshot.enabled === false && !snapshot.error && (
+                    <p className={css.empty}>当前会话暂不支持定时任务。</p>
+                  )}
+                  {formOpen && snapshot.enabled === true && (
+                    <form className={css.form} onSubmit={create}>
+                      <div className={css.field}>
+                        <label htmlFor={`${id}-prompt`}>任务内容</label>
+                        <textarea
+                          id={`${id}-prompt`}
+                          value={prompt}
+                          onChange={(event) => setPrompt(event.target.value)}
+                          placeholder="到时请帮我…"
+                          rows={3}
+                          disabled={busy || pending !== null}
+                          required
+                        />
+                      </div>
+                      <div className={css.field}>
+                        <label htmlFor={`${id}-time`}>执行时间</label>
+                        <input
+                          id={`${id}-time`}
+                          type="datetime-local"
+                          value={time}
+                          onChange={(event) => setTime(event.target.value)}
+                          disabled={busy || pending !== null}
+                          required
+                        />
+                      </div>
+                      <p className={css.hint}>
+                        按当前时区 {timezone}，在本对话执行一次。
+                      </p>
+                      <button
+                        type="submit"
+                        className={css.primary}
+                        disabled={busy || pending !== null || !storageReady}
+                      >
+                        {busy
+                          ? '提交中…'
+                          : pending !== null
+                            ? '等待确认'
+                            : '创建任务'}
+                      </button>
+                    </form>
+                  )}
+                  <div className={css.listHeading}>
+                    <span>
+                      {snapshot.loading
+                        ? '正在读取…'
+                        : `已加载 ${tasks.length} 项任务`}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void read('refresh', true)}
+                      disabled={snapshot.loading}
+                    >
+                      重新读取
+                    </button>
+                  </div>
+                  <ul
+                    className={css.list}
+                    aria-label="当前 AI 的定时任务"
+                    aria-busy={snapshot.loading}
+                  >
+                    {tasks.map((task) => (
+                      <li key={task.id} className={css.task}>
+                        <div className={css.taskHeading}>
+                          <p className={css.summary} title={task.prompt}>
+                            {task.name}
+                          </p>
+                          <span
+                            className={css.status}
+                            data-status={task.status}
+                          >
+                            {statusLabels[task.status]}
+                          </span>
+                        </div>
+                        <time
+                          className={css.time}
+                          dateTime={task.runAt}
+                          title={task.timezone}
+                        >
+                          {taskTime(task)}
+                        </time>
+                        {task.errorMessage &&
+                          (task.status === 'failed' ||
+                            task.status === 'not_executed') && (
+                            <p className={css.error}>{task.errorMessage}</p>
+                          )}
+                        <div className={css.actions}>
                           <button
                             type="button"
-                            disabled={
-                              busy ||
-                              pending !== null ||
-                              !storageReady ||
-                              snapshot.enabled !== true
-                            }
-                            onClick={() => setConfirmCancel(task.id)}
+                            onClick={() => {
+                              setOpen(false);
+                              onOpenSession(task.sessionId);
+                            }}
                           >
-                            取消任务
+                            查看原会话
                           </button>
-                        ))}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-              {snapshot.nextCursor !== null && (
-                <button
-                  type="button"
-                  className={css.more}
-                  disabled={snapshot.loading}
-                  onClick={() => void read('more')}
-                >
-                  {snapshot.loading ? '正在读取…' : '加载更多'}
-                </button>
+                          {task.canCancel &&
+                            (confirmCancel === task.id ? (
+                              <>
+                                <span>取消这项任务？</span>
+                                <button
+                                  type="button"
+                                  disabled={
+                                    busy ||
+                                    pending !== null ||
+                                    !storageReady ||
+                                    snapshot.enabled !== true
+                                  }
+                                  onClick={() =>
+                                    void submit({
+                                      version: 1,
+                                      kind: 'cancel',
+                                      taskId: task.id,
+                                      clientRequestId: task.clientRequestId,
+                                    })
+                                  }
+                                >
+                                  确认取消
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busy || pending !== null}
+                                  onClick={() => setConfirmCancel(null)}
+                                >
+                                  保留
+                                </button>
+                              </>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={
+                                  busy ||
+                                  pending !== null ||
+                                  !storageReady ||
+                                  snapshot.enabled !== true
+                                }
+                                onClick={() => setConfirmCancel(task.id)}
+                              >
+                                取消任务
+                              </button>
+                            ))}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                  {snapshot.nextCursor !== null && (
+                    <button
+                      type="button"
+                      className={css.more}
+                      disabled={snapshot.loading}
+                      onClick={() => void read('more')}
+                    >
+                      {snapshot.loading ? '正在读取…' : '加载更多'}
+                    </button>
+                  )}
+                  {!snapshot.loading &&
+                    !snapshot.error &&
+                    snapshot.enabled === true &&
+                    tasks.length === 0 && (
+                      <p className={css.empty}>
+                        暂无定时任务，也可以在聊天中让 AI 创建。
+                      </p>
+                    )}
+                </>
               )}
-              {!snapshot.loading &&
-                !snapshot.error &&
-                snapshot.enabled === true &&
-                tasks.length === 0 && (
-                  <p className={css.empty}>
-                    暂无定时任务，也可以在聊天中让 AI 创建。
-                  </p>
-                )}
             </div>
           </div>,
           document.body,

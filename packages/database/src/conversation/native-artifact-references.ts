@@ -28,7 +28,10 @@ export type NativeArtifactReferenceApproval = z.infer<typeof approval>;
 const controlReferenceSchema = z
   .object({
     artifactId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-    profileId: z.literal('allrice-once-control-v1'),
+    profileId: z.enum([
+      'allrice-once-control-v1',
+      'allrice-recurring-control-v1',
+    ]),
     storageId: z.string().min(1).max(512),
     stateRoot: z
       .string()
@@ -135,10 +138,20 @@ export async function verifyNativeArtifactReferenceCoverage(
         >`select partition_id,reference from allrice_native_once_partitions order by partition_id`;
         for (const partition of partitions) {
           const reference = controlReferenceSchema.parse(partition.reference);
+          const recurring =
+            reference.profileId === 'allrice-recurring-control-v1';
+          if (
+            partition.partition_id !==
+            (recurring ? 'allrice-recurring-v1' : 'allrice-once-v1')
+          )
+            throw Error('DSH_NATIVE_CONTROL_PARTITION_PROFILE_MISMATCH');
+          const table = recurring
+            ? 'allrice_native_recurring_controls'
+            : 'allrice_native_once_controls';
           const controls = await tx<
             { control_session_id: string; session_state: unknown }[]
           >`select control_session_id,snapshot->'control'->>'sessionState' session_state
-          from allrice_native_once_controls where partition_id=${partition.partition_id} order by control_session_id`;
+          from ${tx(table)} where partition_id=${partition.partition_id} order by control_session_id`;
           nativeOnceControlReferences.push({
             partitionId: partition.partition_id,
             reference,
@@ -155,7 +168,9 @@ export async function verifyNativeArtifactReferenceCoverage(
               a.generation === 'dsh-0.2.1-rc.2-687f282',
           );
           references.push({
-            source: 'control:native_once',
+            source: recurring
+              ? 'control:native_recurring'
+              : 'control:native_once',
             artifactId: reference.artifactId,
             generation: 'dsh-0.2.1-rc.2-687f282',
             profileId: reference.profileId,

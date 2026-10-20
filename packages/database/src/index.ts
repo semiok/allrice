@@ -300,3 +300,18 @@ export {
   type NativeOnceClosedProof,
 } from './native-schedule-once-sql.ts';
 export { nativeOnceDigest } from './native-schedule-once-state.ts';
+
+export {
+  createRecurringTask,
+  listRecurringTasks,
+  getRecurringTask,
+  changeRecurringTask,
+  NativeRecurringProductError,
+  initializeNativeRecurringPartition,
+  lockNativeRecurringAdmissions,
+  dispatchNextNativeRecurringOccurrence,
+} from './native-schedule-recurring-product.ts';
+export {
+  createNativeRecurringSqlStore,
+  type NativeRecurringSqlOptions,
+} from './native-schedule-recurring-sql.ts';

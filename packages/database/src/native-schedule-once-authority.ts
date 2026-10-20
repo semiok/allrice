@@ -12,7 +12,7 @@ export type NativeOnceJobAdmission =
     }
   | { scheduled: false; allowed: true };
 
-/** Called BEFORE root/job locks. Only native once work receives this additional
+/** Called BEFORE root/job locks. Only native scheduled work receives this additional
  * current-authority gate; an ordinary chat keeps its existing policy. Consumers
  * acquire root/job locks with NOWAIT afterwards, so a revocation transaction
  * cannot deadlock against this principal -> assignment -> chat lock order. */
@@ -28,31 +28,49 @@ export async function lockNativeOnceJobAdmission(
   const [schema] =
     await tx`select to_regclass(format('%I.allrice_native_once_occurrences',current_schema())) is not null as available`;
   if (!schema?.available) return { scheduled: false, allowed: true };
-  const [binding] = await tx<
-    {
-      run_id: string;
-      organization_id: string;
-      workspace_id: string;
-      owner_id: string;
-      occurrence_id: string;
-      outbox_state: string;
-      payload_digest: string;
-      business_binding: Record<string, unknown> | null;
-      control: {
-        dispatch: {
-          businessSessionId: string;
-          employeeAssignmentId: string;
-          employeeInstanceId: string;
-          clientMessageId: string;
-        };
+  type Binding = {
+    run_id: string;
+    organization_id: string;
+    workspace_id: string;
+    owner_id: string;
+    occurrence_id: string;
+    outbox_state: string;
+    payload_digest: string;
+    business_binding: Record<string, unknown> | null;
+    control: {
+      dispatch: {
+        businessSessionId: string;
+        employeeAssignmentId: string;
+        employeeInstanceId: string;
+        clientMessageId: string;
       };
-    }[]
+    };
+  };
+  let kind: 'once' | 'recurring' = 'once';
+  let [binding] = await tx<
+    Binding[]
   >`select j.run_id,j.organization_id,j.workspace_id,j.owner_id,ar.native_once_occurrence_id occurrence_id,
       o.outbox_state,o.payload_digest,o.business_binding,c.immutable_control control
     from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id
     left join allrice_native_once_occurrences o on o.occurrence_id=ar.native_once_occurrence_id
     left join allrice_native_once_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
     where j.id=${jobId} and ar.native_once_occurrence_id is not null`;
+  if (!binding) {
+    const [recurringSchema] =
+      await tx`select to_regclass(format('%I.allrice_native_recurring_occurrences',current_schema())) is not null as available`;
+    if (recurringSchema?.available) {
+      [binding] = await tx<
+        Binding[]
+      >`select j.run_id,j.organization_id,j.workspace_id,j.owner_id,ar.native_recurring_occurrence_id occurrence_id,
+        o.outbox_state,o.payload_digest,o.business_binding,
+        c.immutable_identity || jsonb_build_object('dispatch',c.immutable_identity->'dispatch' || jsonb_build_object('clientMessageId',o.client_message_id::text)) control
+        from allrice_automation_runs ar join allrice_jobs j on j.run_id=ar.run_id
+        left join allrice_native_recurring_occurrences o on o.occurrence_id=ar.native_recurring_occurrence_id
+        left join allrice_native_recurring_controls c on c.partition_id=o.partition_id and c.control_id=o.control_id
+        where j.id=${jobId} and ar.native_recurring_occurrence_id is not null`;
+      kind = 'recurring';
+    }
+  }
   if (!binding) return { scheduled: false, allowed: true };
   await tx`set local lock_timeout='500ms'`;
   await tx`set local statement_timeout='10000ms'`;
@@ -61,7 +79,12 @@ export async function lockNativeOnceJobAdmission(
     runId: binding.run_id,
     allowed: false,
   });
-  if (process.env.ALLRICE_NATIVE_ONCE_ENABLED !== '1') return deny();
+  if (
+    (kind === 'once'
+      ? process.env.ALLRICE_NATIVE_ONCE_ENABLED
+      : process.env.ALLRICE_NATIVE_RECURRING_ENABLED) !== '1'
+  )
+    return deny();
   if (
     !binding.control?.dispatch ||
     binding.outbox_state !== 'enqueued' ||

@@ -416,7 +416,11 @@ type EnqueueOptions = {
 };
 type RunAdmission =
   | { kind: 'browser'; context: RequestContext }
-  | { kind: 'native_once'; context: ResourcePrincipal; occurrenceId: string }
+  | {
+      kind: 'native_once' | 'native_recurring';
+      context: ResourcePrincipal;
+      occurrenceId: string;
+    }
   | { kind: 'experience'; context: ResourcePrincipal; occurrenceId: string }
   | { kind: 'maintenance_repair'; context: ResourcePrincipal }
   | { kind: 'maintenance_repository'; context: ResourcePrincipal };
@@ -853,6 +857,39 @@ export async function enqueueNativeOnceRunInTransaction(
   input: unknown,
   options: EnqueueOptions,
 ) {
+  return enqueueNativeScheduledRunInTransaction(
+    transaction,
+    context,
+    occurrenceId,
+    input,
+    options,
+    'native_once',
+  );
+}
+export async function enqueueNativeRecurringRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  occurrenceId: string,
+  input: unknown,
+  options: EnqueueOptions,
+) {
+  return enqueueNativeScheduledRunInTransaction(
+    transaction,
+    context,
+    occurrenceId,
+    input,
+    options,
+    'native_recurring',
+  );
+}
+async function enqueueNativeScheduledRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  occurrenceId: string,
+  input: unknown,
+  options: EnqueueOptions,
+  kind: 'native_once' | 'native_recurring',
+) {
   if (
     Object.keys(options).some(
       (k) => !['employeeBinding', 'conversationDelivery'].includes(k),
@@ -862,9 +899,13 @@ export async function enqueueNativeOnceRunInTransaction(
     options.conversationDelivery.requestedMode !== 'follow_up'
   )
     throw new QueueError('policy_denied');
-  const { assertNativeOnceQueueBinding } =
-    await import('../native-schedule-once-product.ts');
-  await assertNativeOnceQueueBinding(
+  const assertBinding =
+    kind === 'native_once'
+      ? (await import('../native-schedule-once-product.ts'))
+          .assertNativeOnceQueueBinding
+      : (await import('../native-schedule-recurring-product.ts'))
+          .assertNativeRecurringQueueBinding;
+  await assertBinding(
     transaction,
     context,
     occurrenceId,
@@ -872,7 +913,7 @@ export async function enqueueNativeOnceRunInTransaction(
     options.conversationDelivery.clientUserMessageId,
   );
   const admission: RunAdmission = {
-    kind: 'native_once',
+    kind,
     context,
     occurrenceId,
   };
@@ -1482,7 +1523,9 @@ async function enqueueRunInTransaction(
       submittedInput.assistantConfiguration,
     );
     const officePolicyEligible =
-      (admission.kind === 'browser' || admission.kind === 'native_once') &&
+      (admission.kind === 'browser' ||
+        admission.kind === 'native_once' ||
+        admission.kind === 'native_recurring') &&
       submission.type === 'allrice.employee.run' &&
       !!options.conversationDelivery &&
       !options.qualityBinding &&

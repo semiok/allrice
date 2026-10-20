@@ -35,7 +35,7 @@ type AutomationRunStatus = AutomationRun['status'];
 
 interface AutomationRow {
   id: string;
-  clock_owner?: 'legacy' | 'native_once';
+  clock_owner?: 'legacy' | 'native_once' | 'native_recurring';
   organization_id: string;
   workspace_id: string;
   owner_id: string;
@@ -602,6 +602,7 @@ export async function listAutomations(
       and a.workspace_id = ${workspaceId}
       and a.owner_id = ${userId(context)} and a.deleted_at is null
       and a.quality_binding is null and a.experience_binding is null
+      and a.clock_owner<>'native_recurring'
       and (${triggerType ?? null}::text is null or a.trigger_type=${triggerType ?? null})
     order by a.updated_at desc, a.created_at desc, a.id desc
   `;
@@ -763,7 +764,10 @@ export async function updateAutomation(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
   if (current.brand_content_binding) throw new DataAccessError('grant_invalid');
-  if (current.clock_owner === 'native_once')
+  if (
+    current.clock_owner === 'native_once' ||
+    current.clock_owner === 'native_recurring'
+  )
     throw new DataAccessError('grant_invalid');
   const parsed = UpdateAutomationInputSchema.parse(input);
   if (current.trigger_type === 'folder') {
@@ -867,7 +871,10 @@ export async function deleteAutomation(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
   if (current.brand_content_binding) throw new DataAccessError('grant_invalid');
-  if (current.clock_owner === 'native_once')
+  if (
+    current.clock_owner === 'native_once' ||
+    current.clock_owner === 'native_recurring'
+  )
     throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   if (current.trigger_type === 'folder')
@@ -1190,7 +1197,10 @@ export async function runAutomationNow(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const row = await getAutomationRow(context, workspaceId, automationId);
   if (row.brand_content_binding) throw new DataAccessError('grant_invalid');
-  if (row.clock_owner === 'native_once')
+  if (
+    row.clock_owner === 'native_once' ||
+    row.clock_owner === 'native_recurring'
+  )
     throw new DataAccessError('grant_invalid');
   if (row.trigger_type === 'folder') throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
