@@ -263,6 +263,22 @@ describe('DshHarnessAdapter', () => {
         retryable: false,
       });
       expect(requests).toHaveLength(2); // No provider retry or plaintext fallback.
+      const databaseError = Object.assign(new Error('deadlock detected'), {
+        code: '40P01',
+      });
+      input.contentGuard.check = async () => {
+        throw databaseError;
+      };
+      const failure = await adapter
+        .execute(input)
+        .catch((error: unknown) => error);
+      expect(failure).toMatchObject({
+        code: 'EMPLOYEE_CONTENT_CHECK_UNAVAILABLE',
+        retryable: false,
+        cause: databaseError,
+      });
+      expect((failure as Error).cause).toBe(databaseError);
+      expect(requests).toHaveLength(2);
     } finally {
       server.closeAllConnections();
       await adapter.close();

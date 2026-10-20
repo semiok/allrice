@@ -2222,9 +2222,11 @@ export async function executeEmployeeRun({
           errorCode,
           failureCategory:
             errorCode.startsWith('ASSISTANT_') ||
-            ['REFERENCE_UNAVAILABLE', 'EMPLOYEE_CONTENT_UNAVAILABLE'].includes(
-              errorCode,
-            )
+            [
+              'REFERENCE_UNAVAILABLE',
+              'EMPLOYEE_CONTENT_UNAVAILABLE',
+              'EMPLOYEE_CONTENT_CHECK_UNAVAILABLE',
+            ].includes(errorCode)
               ? null
               : classifyProviderFailure(errorCode),
           completedAt: new Date().toISOString(),

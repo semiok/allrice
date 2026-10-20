@@ -109,16 +109,20 @@ async function readScope(
   context: ContentIdentity,
   input: ScopeInput,
   sql: ContentSql,
-  lock: boolean,
+  lock: false | 'read' | 'write',
   allowMissingScene = false,
-  requireWritable = lock,
+  requireWritable = lock === 'write',
 ) {
   const scope = identity(context, input.workspaceId);
-  const principal = await readContentPrincipal(scope, sql, lock);
+  const principal = await readContentPrincipal(scope, sql, !!lock);
   if (!principal || (requireWritable && !principal.writable))
     throw new DataAccessError('authorization_denied');
-  if (lock)
+  if (lock === 'write')
     await sql`select pg_advisory_xact_lock(hashtextextended(${`employee-content:${scope.organizationId}`},0))`;
+  else if (lock === 'read')
+    // Runtime content checks already hold this shared lock before locking the
+    // generation. Upgrading it here deadlocks with concurrent content readers.
+    await sql`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${scope.organizationId}`},0))`;
   let instance = await getEmployeeInstance(
     scope,
     UuidSchema.parse(input.instanceId),
@@ -475,7 +479,7 @@ export async function registerWorkflowPackage(
       );
   }
   return db.begin(async (tx) => {
-    const scope = await readScope(context, request, tx, true);
+    const scope = await readScope(context, request, tx, 'write');
     const prior = await priorRequest(
       scope,
       request.requestId,
@@ -547,7 +551,13 @@ export async function setWorkflowPackageBinding(
   const request = SetWorkflowPackageBindingInputSchema.parse(input);
   const digest = runtimePolicyDigest(request);
   return getDatabase().begin(async (tx) => {
-    const scope = await readScope(context, request, tx, true, !request.enabled);
+    const scope = await readScope(
+      context,
+      request,
+      tx,
+      'write',
+      !request.enabled,
+    );
     const value = await readPackage(
       scope,
       request.workflowRevisionId,
@@ -623,7 +633,12 @@ export async function resolveWorkflowPackageForInstance(
 ) {
   const request = WorkflowPackageSelectionSchema.parse(input);
   const run = async (transaction: ContentSql) => {
-    const scope = await readScope(context, request, transaction, lock);
+    const scope = await readScope(
+      context,
+      request,
+      transaction,
+      lock ? 'read' : false,
+    );
     return resolution(scope, request.workflowRevisionId, transaction, lock);
   };
   if (sql) return run(sql);
@@ -647,7 +662,7 @@ export async function assertWorkflowPackageExecution(
       context,
       request,
       transaction,
-      lock,
+      lock ? 'read' : false,
       false,
       true,
     );

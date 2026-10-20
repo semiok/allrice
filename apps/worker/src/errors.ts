@@ -3,8 +3,9 @@ export class HandlerError extends Error {
     public readonly code: string,
     message: string,
     public readonly retryable: boolean,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }
 
