@@ -41,7 +41,7 @@ import type {
   BrandContentIdentity,
 } from './types.ts';
 
-type ReminderRow = {
+export type ReminderRow = {
   id: string;
   organization_id: string;
   workspace_id: string;
@@ -357,6 +357,11 @@ export async function registerBrandContentReminder(
       tx,
       { authority: 'scheduler', beforeCommit: options.beforeCommit },
     );
+    if (process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1') {
+      const { enrollBrandReminderNative } =
+        await import('./native-reminder.ts');
+      await enrollBrandReminderNative(tx, saved);
+    }
     return registration(saved, false);
   });
 }
@@ -397,17 +402,12 @@ function expectedAdmissionFailure(error: unknown): string | null {
 
 /** Called at the beginning of the existing scanner's transaction, BEFORE it
  * locks the Automation. This owns no timer, network call, LLM, Job or Run. */
-export async function claimBrandContentReminder(
-  tx: Tx,
-  automationId: string,
-  scheduledFor: Date,
-): Promise<string | null> {
+export async function lockBrandContentReminder(tx: Tx, automationId: string) {
   const [binding] = await tx<
     ReminderRow[]
   >`select * from allrice_brand_content_reminders where automation_id=${automationId}`;
   if (!binding) return null;
-  if (binding.state !== 'registered')
-    return binding.state === 'reminded' ? binding.automation_run_id : null;
+  if (binding.state !== 'registered') return null;
   const context = internalContext(binding),
     scope = scopeOf(binding);
   const principal = await readContentPrincipal(context, tx, true);
@@ -498,6 +498,10 @@ export async function claimBrandContentReminder(
   const [automation] = await tx<
     {
       brand_content_binding: string;
+      clock_owner: string;
+      revision: number;
+      status: string;
+      deleted_at: Date | null;
       due: boolean;
       next_run_at: Date | null;
       organization_id: string;
@@ -507,14 +511,13 @@ export async function claimBrandContentReminder(
       session_id: string;
     }[]
   >`
-    select a.brand_content_binding,a.organization_id,a.workspace_id,a.owner_id,a.employee_assignment_id,a.session_id,a.next_run_at,
+    select a.brand_content_binding,a.clock_owner,a.revision,a.status,a.deleted_at,a.organization_id,a.workspace_id,a.owner_id,a.employee_assignment_id,a.session_id,a.next_run_at,
       a.status='enabled' and a.deleted_at is null and a.next_run_at<=clock_timestamp() as due
     from allrice_automations a where a.id=${automationId} for update`;
   const [current] = await tx<
     ReminderRow[]
   >`select * from allrice_brand_content_reminders where id=${binding.id} for update`;
-  if (!current || current.state !== 'registered' || !automation?.due)
-    return current?.state === 'reminded' ? current.automation_run_id : null;
+  if (!current || current.state !== 'registered' || !automation) return null;
   if (
     automation.brand_content_binding !== binding.id ||
     automation.organization_id !== scope.organizationId ||
@@ -522,14 +525,50 @@ export async function claimBrandContentReminder(
     automation.owner_id !== scope.ownerId ||
     automation.employee_assignment_id !== binding.assignment_id ||
     automation.session_id !== binding.session_id ||
-    automation.next_run_at?.getTime() !== binding.scheduled_for.getTime() ||
-    scheduledFor.getTime() !== binding.scheduled_for.getTime()
+    automation.next_run_at?.getTime() !== binding.scheduled_for.getTime()
   )
     blocked = 'BINDING_MISMATCH';
+  const gate = {
+    context,
+    scope,
+    binding: current,
+    approved,
+    plan,
+    automation,
+    blocked,
+  };
+  reminderGates.set(tx, gate);
+  return gate;
+}
+const reminderGates = new WeakMap<Tx, object>();
+export type BrandReminderGate = NonNullable<
+  Awaited<ReturnType<typeof lockBrandContentReminder>>
+>;
+
+/** Shared locked business sink. A copied JSON object cannot authorize a write. */
+export async function completeBrandContentReminder(
+  tx: Tx,
+  gate: BrandReminderGate,
+  options: {
+    clockOwner: 'legacy' | 'native_once';
+    blocked?: string;
+    nativeOccurrenceId?: string;
+  },
+): Promise<string | null> {
+  if (
+    reminderGates.get(tx) !== gate ||
+    gate.automation.clock_owner !== options.clockOwner ||
+    !gate.automation.due
+  )
+    fail('invalid_state');
+  reminderGates.delete(tx);
+  const { context, scope, binding, approved, plan } = gate;
+  const automationId = binding.automation_id;
+  const blocked = gate.blocked ?? options.blocked ?? null;
   const occurrenceId = binding.reserved_occurrence_id;
-  await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,session_id,status,started_at,completed_at,error_code,error_message)
+  await tx`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,scheduled_for,session_id,status,started_at,completed_at,error_code,error_message,native_once_occurrence_id)
     values(${occurrenceId},${scope.organizationId},${scope.workspaceId},${automationId},${binding.scheduled_for},${binding.session_id},${blocked ? 'failed' : 'succeeded'},
-      clock_timestamp(),clock_timestamp(),${blocked},${blocked ? '发布提醒未投递；当前权限、来源或计划已变化，请检查后重新确认排期。' : null})`;
+      clock_timestamp(),clock_timestamp(),${blocked},${blocked ? '发布提醒未投递；当前权限、来源或计划已变化，请检查后重新确认排期。' : null},${options.nativeOccurrenceId ?? null})`;
   await tx`update allrice_automations set status='paused',next_run_at=null,last_run_at=clock_timestamp(),revision=revision+1,updated_at=clock_timestamp() where id=${automationId}`;
   if (blocked || !approved) {
     await tx`update allrice_brand_content_reminders set state='blocked',automation_run_id=${occurrenceId},error_code=${blocked ?? 'SOURCE_UNAVAILABLE'},completed_at=clock_timestamp() where id=${binding.id}`;
@@ -570,4 +609,28 @@ export async function claimBrandContentReminder(
     { authority: 'scheduler' },
   );
   return occurrenceId;
+}
+
+/** The legacy scanner must recheck clock ownership under the same business
+ * locks: its earlier candidate read is not authority after a migration. */
+export async function claimBrandContentReminder(
+  tx: Tx,
+  automationId: string,
+  scheduledFor: Date,
+): Promise<string | null> {
+  const [delivered] = await tx<
+    { automation_run_id: string }[]
+  >`select r.automation_run_id
+    from allrice_brand_content_reminders r join allrice_automations a on a.id=r.automation_id and a.brand_content_binding=r.id
+    where a.id=${automationId} and a.clock_owner='legacy' and r.state='reminded'`;
+  if (delivered) return delivered.automation_run_id;
+  const gate = await lockBrandContentReminder(tx, automationId);
+  if (!gate || gate.automation.clock_owner !== 'legacy' || !gate.automation.due)
+    return null;
+  return completeBrandContentReminder(tx, gate, {
+    clockOwner: 'legacy',
+    ...(scheduledFor.getTime() !== gate.binding.scheduled_for.getTime()
+      ? { blocked: 'BINDING_MISMATCH' }
+      : {}),
+  });
 }

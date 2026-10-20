@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,7 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import {
   ScheduleId,
   scheduleDomain,
+  type ScheduleCatalogEntry,
   type ScheduleTask,
 } from '@deepseek-ai/dsh-schedule';
 import { ToolCallId } from '@deepseek-ai/dsh-llm';
@@ -506,6 +507,198 @@ function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+});
+
+describe('once target_not_future catalog absence', () => {
+  function rejectedCreate() {
+    const f = fixture(),
+      open = vi.mocked(f.factory).getMockImplementation()!,
+      create = vi
+        .fn<NativeScheduleControlHost['createOnce']>()
+        .mockRejectedValue(new NativeScheduleOnceError('target_not_future')),
+      catalog = vi
+        .fn<NativeScheduleControlHost['catalog']>()
+        .mockResolvedValue([]);
+    vi.mocked(f.factory).mockImplementation(async (input) => {
+      const host = await open(input);
+      host.createOnce = create;
+      host.catalog = catalog;
+      return host;
+    });
+    return { ...f, createOnce: create, catalog };
+  }
+  function task(
+    sessionId: string,
+    status: 'active' | 'inactive',
+  ): ScheduleCatalogEntry {
+    return {
+      id: ScheduleId('existing-native-task'),
+      kind: 'at',
+      prompt: PROMPT,
+      scheduledAt: '2030-01-01T00:00:00.000Z',
+      sessionId: SessionId(sessionId),
+      status,
+      title: TITLE,
+      ...(status === 'inactive'
+        ? {
+            lastDelivery: {
+              scheduledAt: '2030-01-01T00:00:00.000Z',
+              deliveredAt: '2030-01-01T00:00:01.000Z',
+              messageId: 'existing-delivery' as NonNullable<
+                ScheduleTask['lastDelivery']
+              >['messageId'],
+            },
+          }
+        : {}),
+    };
+  }
+  const rejections = (f: ReturnType<typeof rejectedCreate>) =>
+    vi
+      .mocked(f.store.commitMutation)
+      .mock.calls.map(([, write]) => write)
+      .filter((write) => write.mutation.kind === 'reject_command');
+
+  it('records a fresh empty catalog and wall-clock observation exactly once', async () => {
+    const f = rejectedCreate(),
+      c = f.create(),
+      startedAt = Date.now();
+    try {
+      await c.tick();
+      const [write] = rejections(f);
+      expect(write?.mutation).toEqual({
+        kind: 'reject_command',
+        controlId: f.rows[0]!.controlId,
+        commandId: f.rows[0]!.command.id,
+        reason: 'target_not_future',
+        absence: {
+          controlSessionId: f.rows[0]!.controlSessionId,
+          catalogDigest:
+            'sha256:' + createHash('sha256').update('[]').digest('hex'),
+          observedAt: expect.any(String),
+          taskCount: 0,
+        },
+      });
+      if (write?.mutation.kind !== 'reject_command')
+        throw Error('missing rejection');
+      const observedAt = write.mutation.absence!.observedAt;
+      expect(new Date(observedAt).toISOString()).toBe(observedAt);
+      expect(Date.parse(observedAt)).toBeGreaterThanOrEqual(startedAt);
+      expect(Date.parse(observedAt)).toBeLessThanOrEqual(Date.now());
+      expect(f.catalog).toHaveBeenCalledTimes(2);
+      expect(f.createOnce).toHaveBeenCalledTimes(1);
+      expect(f.catalog.mock.invocationCallOrder[1]).toBeGreaterThan(
+        f.createOnce.mock.invocationCallOrder[0]!,
+      );
+      expect(f.rows[0]!.command.status).toBe('blocked');
+      await c.tick();
+      expect(rejections(f)).toHaveLength(1);
+      expect(f.createOnce).toHaveBeenCalledTimes(1);
+    } finally {
+      await c.stop();
+    }
+  });
+
+  it('hashes the complete catalog while allowing another Session task', async () => {
+    const f = rejectedCreate(),
+      other = task('another-control-session', 'active'),
+      c = f.create();
+    f.catalog.mockResolvedValueOnce([]).mockResolvedValueOnce([other]);
+    try {
+      await c.tick();
+      const [write] = rejections(f);
+      if (write?.mutation.kind !== 'reject_command')
+        throw Error('missing rejection');
+      // The fixture record above is already in the digest's canonical key order.
+      expect(write.mutation.absence?.catalogDigest).toBe(
+        'sha256:' +
+          createHash('sha256')
+            .update(JSON.stringify([other]))
+            .digest('hex'),
+      );
+      expect(write.mutation.absence?.taskCount).toBe(0);
+    } finally {
+      await c.stop();
+    }
+  });
+
+  it.each(['active', 'inactive'] as const)(
+    'refuses a rejection when the fresh catalog contains a %s Task for this Session',
+    async (status) => {
+      const f = rejectedCreate(),
+        c = f.create();
+      f.catalog
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([task(f.rows[0]!.controlSessionId, status)]);
+      try {
+        await expect(c.tick()).rejects.toMatchObject({ code: 'task_invalid' });
+        expect(rejections(f)).toHaveLength(0);
+        expect(f.rows[0]!.command.status).toBe('pending');
+        expect(f.trace.indexOf('schedule-drain:1')).toBeLessThan(
+          f.trace.indexOf('release:1'),
+        );
+      } finally {
+        await c.stop();
+      }
+    },
+  );
+
+  it('drains without a rejection when the fresh catalog read fails', async () => {
+    const f = rejectedCreate(),
+      c = f.create();
+    f.catalog
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(Error('catalog unavailable'));
+    try {
+      await expect(c.tick()).rejects.toThrow('catalog unavailable');
+      expect(rejections(f)).toHaveLength(0);
+      expect(f.rows[0]!.command.status).toBe('pending');
+      expect(c.status().fault).toBe('host_failed');
+      expect(f.trace).toContain('root-dispose:1');
+      expect(f.trace).toContain('release:1');
+    } finally {
+      await c.stop();
+    }
+  });
+
+  it('refuses a malformed catalog entry without asserting absence', async () => {
+    const f = rejectedCreate(),
+      c = f.create();
+    f.catalog
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{} as ScheduleCatalogEntry]);
+    try {
+      await expect(c.tick()).rejects.toMatchObject({ code: 'task_invalid' });
+      expect(rejections(f)).toHaveLength(0);
+    } finally {
+      await c.stop();
+    }
+  });
+
+  it('reads the exact absence write after an unknown ACK and never creates a replacement', async () => {
+    const f = rejectedCreate(),
+      c = f.create();
+    f.loseAck('reject_command', true, true);
+    try {
+      await expect(c.tick()).rejects.toMatchObject({ code: 'ack_unknown' });
+      const [write] = rejections(f);
+      expect(write?.mutation.kind).toBe('reject_command');
+      expect(f.store.readExactCommit).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(f.store.readExactCommit).mock.calls[0]?.[1]).toEqual(
+        write,
+      );
+      await c.tick();
+      expect(f.hosts).toHaveLength(2);
+      expect(f.trace.indexOf('root-dispose:1')).toBeLessThan(
+        f.trace.indexOf('acquire:2'),
+      );
+      expect(rejections(f)).toHaveLength(1);
+      expect(f.createOnce).toHaveBeenCalledTimes(1);
+      expect(f.records.size).toBe(0);
+      expect(f.rows[0]!.command.status).toBe('blocked');
+    } finally {
+      await c.stop();
+    }
+  });
 });
 
 describe('default-off once Worker controller; store is a scripted control fixture, not SQL admission', () => {

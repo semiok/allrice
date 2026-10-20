@@ -2,6 +2,9 @@
  * and publication input is synthetic. No provider, Dev account or real media
  * publishing is involved. Execute only with the existing dedicated DB gate. */
 import { createHash, randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -56,6 +59,23 @@ import {
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { claimDueAutomations } from '../execution/automation.ts';
 import { getWorkAutomation, updateWorkAutomation } from '../work-automation.ts';
+import {
+  cancelOnceTask,
+  dispatchNextNativeOnceOccurrence,
+  initializeNativeOncePartition,
+  listOnceTasks,
+  lockNativeOnceAdmissions,
+} from '../native-schedule-once-product.ts';
+import { createNativeOnceSqlStore } from '../native-schedule-once-sql.ts';
+import {
+  nativeOnceDigest,
+  type NativeOnceControl,
+  type NativeOnceMutation,
+  type NativeOnceReference,
+  type NativeOnceSnapshot,
+  type NativeOnceTask,
+  type NativeOnceWriter,
+} from '../native-schedule-once-state.ts';
 import { getBrandContentBoard, listBrandContentBrands } from './reads.ts';
 import {
   mutateBrandContent,
@@ -70,6 +90,7 @@ import {
   claimBrandContentReminder,
   registerBrandContentReminder,
 } from './scheduling.ts';
+import { reconcileBrandNativeReminderAttempt } from './native-reminder.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -690,6 +711,9 @@ suite(
     };
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      // Existing scanner cases below continue to exercise the legacy path even
+      // if the invoking shell enables native once for other integration files.
+      vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
@@ -1917,5 +1941,975 @@ suite(
           });
       }
     }, 45_000);
+
+    describe.sequential(
+      'brand native once SQL receipts, not a public Host timer acceptance',
+      () => {
+        let store: ReturnType<typeof createNativeOnceSqlStore>;
+        let writer: NativeOnceWriter;
+        let publicTaskSchema: { parse(value: unknown): NativeOnceTask };
+        const ready = {
+          enabled: true,
+          storageReady: true,
+          legacyClockExcluded: true,
+          controlArtifactApproved: true,
+        };
+        type NativeIdentity = {
+          reminder_id: string;
+          plan_revision: number;
+          reserved_occurrence_id: string;
+          reserved_message_id: string;
+          session_id: string;
+          scheduled_for: Date;
+          business_revision: number;
+          reminder_snapshot: unknown;
+          plan_snapshot: unknown;
+          automation_snapshot: unknown;
+        };
+        beforeAll(async () => {
+          vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+          const reference: NativeOnceReference = {
+            artifactId: 'sha256:' + 'a'.repeat(64),
+            profileId: 'allrice-once-control-v1',
+            storageId: 'isolated-brand-native-sql',
+            stateRoot: await realpath(fixture.storageRoot),
+          };
+          vi.stubEnv(
+            'ALLRICE_NATIVE_ONCE_REFERENCE',
+            JSON.stringify(reference),
+          );
+          expect(await initializeNativeOncePartition(reference)).toMatchObject({
+            reference,
+            activation: ready,
+          });
+          // Use the installed Worker's public schema without adding a database
+          // dependency. Importing this module does not instantiate a Host.
+          const workerRequire = createRequire(
+            new URL('../../../../apps/worker/package.json', import.meta.url),
+          );
+          const schedule = await import(
+            pathToFileURL(workerRequire.resolve('@deepseek-ai/dsh-schedule'))
+              .href
+          );
+          publicTaskSchema = schedule.scheduleDomain.tables.tasks.valueSchema;
+          store = createNativeOnceSqlStore({
+            db: fixture.db,
+            partitionId: 'allrice-once-v1',
+            ownerId: randomUUID(),
+            reference,
+            ttlMs: 300_000,
+            readiness: () => ready,
+            decodeTask: (value) => publicTaskSchema.parse(value),
+            lockAdmission: lockNativeOnceAdmissions,
+            proveClosed: async () => null,
+          });
+          const grant = await store.acquireWriter();
+          expect(grant).not.toBeNull();
+          writer = grant!.writer;
+        }, 30_000);
+        afterAll(() => {
+          // Preserve the enclosing fixture's other env stubs until its cleanup.
+          vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+        });
+
+        async function identity(automationId: string) {
+          const [row] = await fixture.db<NativeIdentity[]>`
+          select r.id as reminder_id,r.plan_revision,r.reserved_occurrence_id,r.reserved_message_id,
+            r.session_id,r.scheduled_for,t.business_revision,
+            to_jsonb(r)-array['state','automation_run_id','delivery_message_id','delivery_content_digest','completed_at','error_code'] as reminder_snapshot,
+            to_jsonb(p)-array['revision','reminder_status','automation_run_id','run_id','reminder_message_id','updated_at'] as plan_snapshot,
+            to_jsonb(a)-array['revision','status','next_run_at','last_run_at','updated_at'] as automation_snapshot
+          from allrice_brand_content_reminders r
+          join allrice_brand_content_plans p on p.id=r.plan_id
+          join allrice_automations a on a.id=r.automation_id
+          join allrice_brand_native_reminder_targets t on t.reminder_id=r.id
+          where r.automation_id=${automationId}`;
+          expect(row).toBeDefined();
+          return row!;
+        }
+        async function control(automationId: string) {
+          const [row] = await fixture.db<{ snapshot: NativeOnceSnapshot }[]>`
+          select snapshot from allrice_native_once_controls
+          where automation_id=${automationId} order by revision desc limit 1`;
+          expect(row).toBeDefined();
+          return row!.snapshot.control;
+        }
+        async function runJobCounts() {
+          const [row] = await fixture.db`select
+          (select count(*)::int from allrice_runs) as runs,
+          (select count(*)::int from allrice_jobs) as jobs,
+          (select count(*)::int from allrice_employee_runs) as employee_runs`;
+          return row!;
+        }
+        async function write(mutation: NativeOnceMutation) {
+          expect(await store.renewWriter(writer)).not.toBeNull();
+          const value = {
+            writeId: randomUUID(),
+            digest: nativeOnceDigest(mutation),
+            mutation,
+          };
+          expect(await store.commitMutation(writer, value)).toBe('committed');
+          expect(await store.readExactCommit(writer, value)).toBe('committed');
+          return value;
+        }
+        async function enrolled(label: string) {
+          const workflow = await ensureReminderPackage();
+          const f = await prepareReminderPlan(a, label, 3_000);
+          const registered = await registerBrandContentReminder(
+            a.context,
+            f.input,
+            {
+              db: fixture.db,
+              workflow: reminderPin(workflow),
+            },
+          );
+          return {
+            ...f,
+            registered,
+            original: await identity(registered.automationId),
+          };
+        }
+        type Enrolled = Awaited<ReturnType<typeof enrolled>>;
+        async function readySession(c: NativeOnceControl) {
+          await write({ kind: 'session_initializing', controlId: c.controlId });
+          await write({ kind: 'session_ready', controlId: c.controlId });
+        }
+        async function preparedClock(f: Enrolled) {
+          const c = await control(f.registered.automationId);
+          await readySession(c);
+          const task = publicTaskSchema.parse({
+            sessionId: c.controlSessionId,
+            record: {
+              id: randomUUID(),
+              kind: 'at',
+              title: 'AllRice once control',
+              prompt:
+                'Synthetic schedule control only. Never execute business work.',
+              scheduledAt: c.at,
+            },
+            status: 'active',
+            deliveryHistory: { records: [], earlierRecordsUnavailable: false },
+          });
+          await write({ kind: 'put_task', controlId: c.controlId, task });
+          await write({
+            kind: 'confirm_command',
+            controlId: c.controlId,
+            commandId: c.command.id,
+            nativeTaskId: task.record.id,
+          });
+          return { control: c, task };
+        }
+        /** The public schema validates this synthetic component-boundary receipt.
+         * Actual SQL admission/store/dispatcher are exercised. No Host, timer
+         * firing, model or filesystem catalog absence is claimed by this fixture. */
+        async function delivered(
+          clock: Awaited<ReturnType<typeof preparedClock>>,
+        ) {
+          await waitUntilReminder(new Date(clock.control.at));
+          const [now] = await fixture.db<
+            { now: Date }[]
+          >`select clock_timestamp() now`;
+          const receipt = {
+            scheduledAt: clock.control.at,
+            deliveredAt: now!.now.toISOString(),
+            messageId: randomUUID(),
+          };
+          const task = publicTaskSchema.parse({
+            ...clock.task,
+            status: 'inactive',
+            lastDelivery: receipt,
+            deliveryHistory: {
+              records: [{ ...receipt, prompt: clock.task.record.prompt }],
+              earlierRecordsUnavailable: false,
+            },
+          });
+          return write({
+            kind: 'put_task',
+            controlId: clock.control.controlId,
+            task,
+          });
+        }
+
+        it('preserves original IDs/P, rejects the locked legacy scanner and ordinary once APIs, and consumes one SQL receipt exactly once without Run/Job', async () => {
+          const f = await enrolled('native-original-private-target');
+          const original = f.original,
+            c = await control(f.registered.automationId);
+          expect(original).toMatchObject({
+            plan_revision: f.registered.revision,
+            session_id: a.session.id,
+            scheduled_for: f.plannedAt,
+            plan_snapshot: {
+              id: f.input.planId,
+              article_id: f.submitted.result.entityId,
+              bundle_digest: f.reviewed.result.bundleDigest,
+              review_id: f.reviewed.result.reviewId,
+            },
+            automation_snapshot: {
+              id: f.registered.automationId,
+              brand_content_binding: original.reminder_id,
+              clock_owner: 'native_once',
+              session_id: a.session.id,
+              schedule: { frequency: 'once', runAt: f.plannedAt.toISOString() },
+            },
+            reminder_snapshot: {
+              workflow_revision_id: (await ensureReminderPackage()).workflow.id,
+              request_id: f.input.requestId,
+              plan_id: f.input.planId,
+            },
+          });
+          expect(c.dispatch).toMatchObject({
+            consumer: 'brand-reminder-v1',
+            reminderId: original.reminder_id,
+            businessRevision: original.business_revision,
+            plannedAt: f.plannedAt.toISOString(),
+            businessOccurrenceId: original.reserved_occurrence_id,
+            businessMessageId: original.reserved_message_id,
+            businessSessionId: a.session.id,
+            employeeInstanceId: a.instance.id,
+            employeeAssignmentId: a.assignmentId,
+          });
+          expect(c.revision).toBe(1);
+          expect(c.dispatch.occurrenceId).not.toBe(
+            original.reserved_occurrence_id,
+          );
+          expect(Date.parse(c.at)).toBeGreaterThan(f.plannedAt.getTime());
+          const fullBusinessState = async () => {
+            const [row] = await fixture.db`
+            select to_jsonb(r) as reminder,to_jsonb(p) as plan,to_jsonb(a) as automation,c.snapshot
+            from allrice_brand_content_reminders r
+            join allrice_brand_content_plans p on p.id=r.plan_id
+            join allrice_automations a on a.id=r.automation_id
+            join allrice_native_once_controls c on c.automation_id=a.id
+            where a.id=${f.registered.automationId}`;
+            return row;
+          };
+          const beforeGuard = await fullBusinessState();
+          expect((await listOnceTasks(a.context, a.session.id)).tasks).toEqual(
+            [],
+          );
+          expect(
+            (
+              await listOnceTasks(a.context, a.session.id, {
+                clientRequestId: original.reminder_id,
+              })
+            ).tasks,
+          ).toEqual([]);
+          await expect(
+            cancelOnceTask(a.context, a.session.id, f.registered.automationId),
+          ).rejects.toMatchObject({ code: 'not_found' });
+          expect(await fullBusinessState()).toEqual(beforeGuard);
+
+          const countsBefore = await runJobCounts(),
+            clock = await preparedClock(f);
+          await waitUntilReminder(new Date(clock.control.at));
+          // A scanner may have read its candidate before ownership changed.
+          // Exercise its sink's lock-time check as well as the outer scanner.
+          expect(
+            await fixture.db.begin((tx) =>
+              claimBrandContentReminder(
+                tx,
+                f.registered.automationId,
+                f.plannedAt,
+              ),
+            ),
+          ).toBeNull();
+          expect(await claimDueAutomations(16)).toBe(0);
+          const [beforeReceipt] = await fixture.db`select
+          (select count(*)::int from allrice_automation_runs where automation_id=${f.registered.automationId}) as occurrences,
+          (select count(*)::int from allrice_messages where id=${original.reserved_message_id}) as messages`;
+          expect(beforeReceipt).toEqual({ occurrences: 0, messages: 0 });
+          const receiptWrite = await delivered(clock);
+          const [native] = await fixture.db`
+          select occurrence_id,outbox_state from allrice_native_once_occurrences
+          where automation_id=${f.registered.automationId}`;
+          expect(native).toEqual({
+            occurrence_id: c.dispatch.occurrenceId,
+            outbox_state: 'pending',
+          });
+          const dispatched = await Promise.all([
+            dispatchNextNativeOnceOccurrence(randomUUID()),
+            dispatchNextNativeOnceOccurrence(randomUUID()),
+          ]);
+          expect(dispatched.filter(Boolean)).toHaveLength(1);
+          // Re-entry and exact historical ACK readback retain the original write.
+          expect(await store.commitMutation(writer, receiptWrite)).toBe(
+            'committed',
+          );
+          expect(await store.readExactCommit(writer, receiptWrite)).toBe(
+            'committed',
+          );
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            false,
+          );
+          const [result] = await fixture.db`
+          select r.state,r.automation_run_id,r.delivery_message_id,o.outbox_state,m.visibility,
+            ar.run_id,ar.session_id,ar.scheduled_for,ar.native_once_occurrence_id,
+            (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages,
+            (select count(*)::int from allrice_automation_runs where automation_id=r.automation_id) as occurrences,
+            (select count(*)::int from allrice_brand_content_receipts where plan_id=r.plan_id) as publication_receipts,
+            (select count(*)::int from allrice_native_once_journal where write_id=${receiptWrite.writeId}) as exact_receipt_writes
+          from allrice_brand_content_reminders r
+          join allrice_automation_runs ar on ar.id=r.reserved_occurrence_id
+          join allrice_native_once_occurrences o on o.occurrence_id=ar.native_once_occurrence_id
+          join allrice_messages m on m.id=r.reserved_message_id
+          where r.automation_id=${f.registered.automationId}`;
+          expect(result).toEqual({
+            state: 'reminded',
+            automation_run_id: original.reserved_occurrence_id,
+            delivery_message_id: original.reserved_message_id,
+            outbox_state: 'enqueued',
+            visibility: 'private',
+            run_id: null,
+            session_id: a.session.id,
+            scheduled_for: f.plannedAt,
+            native_once_occurrence_id: c.dispatch.occurrenceId,
+            messages: 1,
+            occurrences: 1,
+            publication_receipts: 0,
+            exact_receipt_writes: 1,
+          });
+          expect(await identity(f.registered.automationId)).toEqual(original);
+          expect(await runJobCounts()).toEqual(countsBefore);
+          const history = await getChatSessionHistory(
+            a.context,
+            a.workspace,
+            a.session.id,
+          );
+          const message = history.messages.find(
+            (row) => row.id === original.reserved_message_id,
+          );
+          expect(message).toMatchObject({
+            role: 'assistant',
+            status: 'completed',
+            runId: null,
+            sessionId: a.session.id,
+            ownerId: a.user,
+          });
+          expect(message!.content.text).toContain('发布提醒');
+          expect(message!.content.text).toContain(
+            `/api/v1/files/${f.document.object.id}/download`,
+          );
+          expect(message!.content.text).toContain('不表示已对外发布');
+        }, 35_000);
+
+        it('persists the original failed occurrence for cloud loss before receipt and read-only membership before consumption', async () => {
+          const cloudCase = await enrolled('native-cloud-revoked');
+          const readOnlyCase = await enrolled('native-readonly-revoked');
+          const cloudClock = await preparedClock(cloudCase),
+            readOnlyClock = await preparedClock(readOnlyCase);
+          const countsBefore = await runJobCounts();
+          const setCloud = async (enabled: boolean) => {
+            const work = await getWorkAutomation(
+              a.context,
+              a.workspace,
+              fixture.db,
+            );
+            return updateWorkAutomation(
+              a.context,
+              a.workspace,
+              {
+                capability: 'cloud',
+                enabled,
+                expectedRevision: work.revision,
+              },
+              fixture.db,
+            );
+          };
+          await setCloud(false);
+          try {
+            await delivered(cloudClock);
+            const [receipt] =
+              await fixture.db`select outbox_state from allrice_native_once_occurrences
+            where automation_id=${cloudCase.registered.automationId}`;
+            expect(receipt?.outbox_state).toBe('blocked');
+            expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+              true,
+            );
+          } finally {
+            await setCloud(true);
+          }
+          // A pending receipt admitted while writable cannot retain permission
+          // after actual membership changes, even with a stale browser context.
+          await delivered(readOnlyClock);
+          const [pending] =
+            await fixture.db`select outbox_state from allrice_native_once_occurrences
+          where automation_id=${readOnlyCase.registered.automationId}`;
+          expect(pending?.outbox_state).toBe('pending');
+          const memberships = await fixture.db<{ id: string; role: string }[]>`
+          select id,role from allrice_memberships
+          where organization_id=${a.org} and user_id=${a.user} and active
+            and (workspace_id is null or workspace_id=${a.workspace}) order by id`;
+          expect(memberships.length).toBeGreaterThan(0);
+          await fixture.db`update allrice_memberships set role='viewer'
+          where id in ${fixture.db(memberships.map((row) => row.id))}`;
+          try {
+            expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+              true,
+            );
+          } finally {
+            for (const row of memberships)
+              await fixture.db`update allrice_memberships set role=${row.role} where id=${row.id}`;
+          }
+          for (const f of [cloudCase, readOnlyCase]) {
+            const [result] = await fixture.db`
+            select r.state,r.error_code,r.automation_run_id,r.delivery_message_id,
+              a.status,a.next_run_at,p.reminder_status,ar.status as occurrence_status,
+              ar.run_id,ar.scheduled_for,ar.native_once_occurrence_id,o.outbox_state,
+              (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages,
+              (select count(*)::int from allrice_automation_runs where automation_id=r.automation_id) as occurrences
+            from allrice_brand_content_reminders r
+            join allrice_brand_content_plans p on p.id=r.plan_id
+            join allrice_automations a on a.id=r.automation_id
+            join allrice_automation_runs ar on ar.id=r.reserved_occurrence_id
+            join allrice_native_once_occurrences o on o.occurrence_id=ar.native_once_occurrence_id
+            where r.automation_id=${f.registered.automationId}`;
+            expect(result).toEqual({
+              state: 'blocked',
+              error_code: 'AUTHORITY_DENIED',
+              automation_run_id: f.original.reserved_occurrence_id,
+              delivery_message_id: null,
+              status: 'paused',
+              next_run_at: null,
+              reminder_status: 'failed',
+              occurrence_status: 'failed',
+              run_id: null,
+              scheduled_for: f.plannedAt,
+              outbox_state: 'blocked',
+              native_once_occurrence_id: (
+                await control(f.registered.automationId)
+              ).dispatch.occurrenceId,
+              messages: 0,
+              occurrences: 1,
+            });
+            expect(await identity(f.registered.automationId)).toEqual(
+              f.original,
+            );
+          }
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            false,
+          );
+          expect(await runJobCounts()).toEqual(countsBefore);
+        }, 40_000);
+
+        it('records a receipt arriving after cancellation without a private message or business occurrence', async () => {
+          const f = await enrolled('native-late-cancel-receipt'),
+            clock = await preparedClock(f);
+          const countsBefore = await runJobCounts();
+          await mutateBrandContent(
+            a.context,
+            {
+              ...a.scope,
+              brandId: f.brand.brandId,
+              operation: 'plan.cancel',
+              planId: f.input.planId,
+              expectedRevision: f.registered.revision,
+              requestId: freshKey('native-cancel'),
+              reason: 'Synthetic cancellation before receipt.',
+            },
+            { db: fixture.db },
+          );
+          expect(
+            (await control(f.registered.automationId)).command,
+          ).toMatchObject({
+            kind: 'delete',
+            status: 'pending',
+          });
+          const receiptWrite = await delivered(clock);
+          expect(await store.readExactCommit(writer, receiptWrite)).toBe(
+            'committed',
+          );
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            false,
+          );
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            false,
+          );
+          const [result] = await fixture.db`
+          select r.state,r.delivery_message_id,a.status,a.next_run_at,p.state as plan_state,
+            o.outbox_state,o.business_binding,
+            (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages,
+            (select count(*)::int from allrice_automation_runs where automation_id=r.automation_id) as occurrences
+          from allrice_brand_content_reminders r
+          join allrice_brand_content_plans p on p.id=r.plan_id
+          join allrice_automations a on a.id=r.automation_id
+          join allrice_native_once_occurrences o on o.automation_id=a.id
+          where a.id=${f.registered.automationId}`;
+          expect(result).toEqual({
+            state: 'superseded',
+            delivery_message_id: null,
+            status: 'paused',
+            next_run_at: null,
+            plan_state: 'cancelled',
+            outbox_state: 'blocked',
+            business_binding: null,
+            messages: 0,
+            occurrences: 0,
+          });
+          const after = await identity(f.registered.automationId);
+          expect(after.reminder_snapshot).toEqual(f.original.reminder_snapshot);
+          expect(after.scheduled_for).toEqual(f.plannedAt);
+          expect(after.business_revision).toBe(f.original.business_revision);
+          expect(await runJobCounts()).toEqual(countsBefore);
+        }, 35_000);
+
+        it('requires a journaled not-future absence, reserves attempt2 once concurrently, and retains original business IDs/P and attempt1', async () => {
+          const f = await enrolled('native-journaled-next-attempt');
+          const first = await control(f.registered.automationId),
+            countsBefore = await runJobCounts();
+          await readySession(first);
+          expect(await reconcileBrandNativeReminderAttempt()).toBe(false);
+          const unproved: NativeOnceMutation = {
+            kind: 'reject_command',
+            controlId: first.controlId,
+            commandId: first.command.id,
+            reason: 'target_not_future',
+          };
+          const absentWrite = {
+            writeId: randomUUID(),
+            digest: nativeOnceDigest(unproved),
+            mutation: unproved,
+          };
+          await expect(store.commitMutation(writer, absentWrite)).resolves.toBe(
+            'rejected',
+          );
+          expect(await store.readExactCommit(writer, absentWrite)).toBe(
+            'absent',
+          );
+          expect(await reconcileBrandNativeReminderAttempt()).toBe(false);
+          expect((await control(f.registered.automationId)).revision).toBe(1);
+          await waitUntilReminder(new Date(first.at));
+          const [now] = await fixture.db<
+            { now: Date }[]
+          >`select clock_timestamp() now`;
+          const rejected = await write({
+            kind: 'reject_command',
+            controlId: first.controlId,
+            commandId: first.command.id,
+            reason: 'target_not_future',
+            absence: {
+              controlSessionId: first.controlSessionId,
+              catalogDigest: nativeOnceDigest([]),
+              taskCount: 0,
+              observedAt: now!.now.toISOString(),
+            },
+          });
+          const retainedAttempt = async () => {
+            const [row] = await fixture.db`
+            select to_jsonb(c) as control,to_jsonb(j) as journal
+            from allrice_native_once_controls c
+            join allrice_native_once_journal j on j.partition_id=c.partition_id and j.control_id=c.control_id
+            where c.control_id=${first.controlId} and j.write_id=${rejected.writeId}`;
+            return row;
+          };
+          const originalAttempt = await retainedAttempt();
+          expect(originalAttempt).toBeDefined();
+          const reconciled = await Promise.all([
+            reconcileBrandNativeReminderAttempt(),
+            reconcileBrandNativeReminderAttempt(),
+          ]);
+          expect(reconciled.filter(Boolean)).toHaveLength(1);
+          expect(await reconcileBrandNativeReminderAttempt()).toBe(false);
+          const rows = await fixture.db<
+            { revision: number | string; control_id: string }[]
+          >`
+          select revision,control_id from allrice_native_once_controls
+          where automation_id=${f.registered.automationId} order by revision`;
+          expect(rows.map((row) => Number(row.revision))).toEqual([1, 2]);
+          expect(rows[0]!.control_id).toBe(first.controlId);
+          const second = await control(f.registered.automationId);
+          expect(second.controlId).not.toBe(first.controlId);
+          expect(second.controlSessionId).not.toBe(first.controlSessionId);
+          expect(second.dispatch.occurrenceId).not.toBe(
+            first.dispatch.occurrenceId,
+          );
+          expect(second.revision).toBe(2);
+          expect(second.dispatch).toMatchObject({
+            businessRevision: f.original.business_revision,
+            reminderId: f.original.reminder_id,
+            businessOccurrenceId: f.original.reserved_occurrence_id,
+            businessMessageId: f.original.reserved_message_id,
+            plannedAt: f.plannedAt.toISOString(),
+            businessSessionId: a.session.id,
+          });
+          expect(Date.parse(second.at)).toBeGreaterThan(Date.parse(first.at));
+          const [target] = await fixture.db`
+          select attempt,control_id,business_revision from allrice_brand_native_reminder_targets
+          where reminder_id=${f.original.reminder_id}`;
+          expect(target).toEqual({
+            attempt: 2,
+            control_id: second.controlId,
+            business_revision: f.original.business_revision,
+          });
+          expect(await identity(f.registered.automationId)).toEqual(f.original);
+          expect(await retainedAttempt()).toEqual(originalAttempt);
+          await delivered(await preparedClock(f));
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            true,
+          );
+          expect(await dispatchNextNativeOnceOccurrence(randomUUID())).toBe(
+            false,
+          );
+          const [result] = await fixture.db`
+          select r.state,r.automation_run_id,r.delivery_message_id,ar.scheduled_for,
+            ar.native_once_occurrence_id,ar.run_id,
+            (select count(*)::int from allrice_automation_runs where automation_id=r.automation_id) as occurrences,
+            (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages,
+            (select count(*)::int from allrice_native_once_occurrences where control_id=${first.controlId}) as old_native_occurrences
+          from allrice_brand_content_reminders r
+          join allrice_automation_runs ar on ar.id=r.reserved_occurrence_id
+          where r.automation_id=${f.registered.automationId}`;
+          expect(result).toEqual({
+            state: 'reminded',
+            automation_run_id: f.original.reserved_occurrence_id,
+            delivery_message_id: f.original.reserved_message_id,
+            scheduled_for: f.plannedAt,
+            native_once_occurrence_id: second.dispatch.occurrenceId,
+            run_id: null,
+            occurrences: 1,
+            messages: 1,
+            old_native_occurrences: 0,
+          });
+          expect(await identity(f.registered.automationId)).toEqual(f.original);
+          expect(await retainedAttempt()).toEqual(originalAttempt);
+          expect(await runJobCounts()).toEqual(countsBefore);
+        }, 60_000);
+
+        it('enrolls an already registered overdue legacy reminder on enable without changing business revision, original IDs or P', async () => {
+          const workflow = await ensureReminderPackage();
+          const f = await prepareReminderPlan(
+            a,
+            'native-adopt-overdue-legacy',
+            3_000,
+          );
+          vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+          let registered: Awaited<
+            ReturnType<typeof registerBrandContentReminder>
+          >;
+          try {
+            registered = await registerBrandContentReminder(
+              a.context,
+              f.input,
+              {
+                db: fixture.db,
+                workflow: reminderPin(workflow),
+              },
+            );
+          } finally {
+            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+          }
+          const originalRows = async () => {
+            const [row] = await fixture.db<
+              {
+                revision: number;
+                reminder: unknown;
+                plan: unknown;
+                automation: unknown;
+              }[]
+            >`
+              select a.revision,to_jsonb(r) as reminder,to_jsonb(p) as plan,
+                to_jsonb(a)-array['clock_owner','native_once_request_id','native_once_request_digest','updated_at'] as automation
+              from allrice_brand_content_reminders r
+              join allrice_brand_content_plans p on p.id=r.plan_id
+              join allrice_automations a on a.id=r.automation_id
+              where a.id=${registered.automationId}`;
+            return row!;
+          };
+          const before = await originalRows(),
+            countsBefore = await runJobCounts();
+          const [legacy] = await fixture.db`select clock_owner,
+            (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
+            (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets
+            from allrice_automations a where a.id=${registered.automationId}`;
+          expect(legacy).toEqual({
+            clock_owner: 'legacy',
+            controls: 0,
+            targets: 0,
+          });
+          // Observe server time normally; an already passed original P is not
+          // rewritten to a future business schedule to make migration succeed.
+          await waitUntilReminder(f.plannedAt);
+          expect(await reconcileBrandNativeReminderAttempt()).toBe(true);
+          expect(await reconcileBrandNativeReminderAttempt()).toBe(false);
+          expect(await originalRows()).toEqual(before);
+          const original = await identity(registered.automationId);
+          expect(original).toMatchObject({
+            plan_revision: registered.revision,
+            business_revision: before.revision,
+            session_id: a.session.id,
+            scheduled_for: f.plannedAt,
+            reminder_snapshot: {
+              request_id: f.input.requestId,
+              plan_id: f.input.planId,
+              bundle_digest: f.reviewed.result.bundleDigest,
+              workflow_revision_id: workflow.workflow.id,
+              package_digest: workflow.checksum,
+            },
+            automation_snapshot: {
+              clock_owner: 'native_once',
+              native_once_request_id: original.reminder_id,
+              schedule: { frequency: 'once', runAt: f.plannedAt.toISOString() },
+            },
+          });
+          const c = await control(registered.automationId);
+          expect(c.revision).toBe(1);
+          expect(c.dispatch).toMatchObject({
+            consumer: 'brand-reminder-v1',
+            reminderId: original.reminder_id,
+            businessRevision: before.revision,
+            plannedAt: f.plannedAt.toISOString(),
+            businessOccurrenceId: original.reserved_occurrence_id,
+            businessMessageId: original.reserved_message_id,
+            businessSessionId: a.session.id,
+          });
+          expect(Date.parse(c.at)).toBeGreaterThan(f.plannedAt.getTime());
+          expect(
+            await fixture.db.begin((tx) =>
+              claimBrandContentReminder(
+                tx,
+                registered.automationId,
+                f.plannedAt,
+              ),
+            ),
+          ).toBeNull();
+          const [after] = await fixture.db`select a.clock_owner,
+            (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
+            (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets,
+            (select count(*)::int from allrice_automation_runs where automation_id=a.id) as occurrences,
+            (select count(*)::int from allrice_messages where id=${original.reserved_message_id}) as messages
+            from allrice_automations a where a.id=${registered.automationId}`;
+          expect(after).toEqual({
+            clock_owner: 'native_once',
+            controls: 1,
+            targets: 1,
+            occurrences: 0,
+            messages: 0,
+          });
+          expect(await runJobCounts()).toEqual(countsBefore);
+        }, 15_000);
+
+        it('advances a microsecond-precise legacy cursor past a future cloud-denied actor to an authorized reminder in the same millisecond', async () => {
+          expect(b.user).not.toBe(a.user);
+          const deniedWorkflow = await prepareReminderPackage(
+            b,
+            await prepareReminderMethod(b),
+          );
+          const allowedWorkflow = await ensureReminderPackage();
+          const r1 = await prepareReminderPlan(
+            b,
+            'cursor-earliest-denied',
+            60_000,
+          );
+          const r2 = await prepareReminderPlan(
+            a,
+            'cursor-next-authorized',
+            60_000,
+          );
+          let anchor: string | null = null;
+          // The immutable trigger forbids editing created_at after INSERT.
+          // Alter only this fixture table's default inside each real register
+          // transaction, using one DB-clock millisecond and distinct fractions.
+          // The ordinary API/trigger still writes each row; restore the default
+          // before COMMIT. Any error rolls the transactional DDL back as well.
+          const registerAt = (
+            actor: Actor,
+            prepared: Awaited<ReturnType<typeof prepareReminderPlan>>,
+            workflow: WorkflowPackage,
+            micros: 123 | 789,
+          ) =>
+            registerBrandContentReminder(actor.context, prepared.input, {
+              workflow: reminderPin(workflow),
+              db: new Proxy(fixture.db, {
+                get(target, key, receiver) {
+                  if (key !== 'begin')
+                    return Reflect.get(target, key, receiver);
+                  return (work: (tx: Tx) => Promise<unknown>) =>
+                    fixture.db.begin(async (tx) => {
+                      const [owned] = await tx<{ owned: boolean }[]>`select
+                    current_schema() ~ '^p25_[a-f0-9]{32}$'
+                    and c.relnamespace=to_regnamespace(current_schema()) as owned
+                    from pg_class c where c.oid='allrice_brand_content_reminders'::regclass`;
+                      expect(owned?.owned).toBe(true);
+                      if (anchor === null) {
+                        const [clock] = await tx<{ anchor: string }[]>`select
+                      date_trunc('milliseconds',clock_timestamp())::text as anchor`;
+                        anchor = clock!.anchor;
+                      }
+                      await tx`select set_config('allrice.test_brand_cursor_anchor',${anchor},true)`;
+                      await tx.unsafe(
+                        'alter table allrice_brand_content_reminders alter column created_at set default ' +
+                          "(current_setting('allrice.test_brand_cursor_anchor')::timestamptz + interval '" +
+                          micros +
+                          " microseconds')",
+                      );
+                      const result = await work(tx);
+                      await tx.unsafe(
+                        'alter table allrice_brand_content_reminders alter column created_at set default clock_timestamp()',
+                      );
+                      return result;
+                    });
+                },
+              }),
+            });
+          let cloudRevoked = false;
+          vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '0');
+          try {
+            const first = await registerAt(b, r1, deniedWorkflow, 123);
+            const second = await registerAt(a, r2, allowedWorkflow, 789);
+            const work = await getWorkAutomation(
+              b.context,
+              b.workspace,
+              fixture.db,
+            );
+            expect(work.settings.cloud).toBe(true);
+            expect(
+              (await getWorkAutomation(a.context, a.workspace, fixture.db))
+                .settings.cloud,
+            ).toBe(true);
+            await updateWorkAutomation(
+              b.context,
+              b.workspace,
+              {
+                capability: 'cloud',
+                enabled: false,
+                expectedRevision: work.revision,
+              },
+              fixture.db,
+            );
+            cloudRevoked = true;
+            const [precision] = await fixture.db<
+              {
+                same_millisecond: boolean;
+                ordered: boolean;
+                first_fraction: number;
+                second_fraction: number;
+                first_created_at: Date;
+                second_created_at: Date;
+                not_due: boolean;
+              }[]
+            >`select
+              date_trunc('milliseconds',x.created_at)=date_trunc('milliseconds',y.created_at) as same_millisecond,
+              x.created_at<y.created_at as ordered,
+              mod((extract(epoch from x.created_at)*1000000)::bigint,1000)::int as first_fraction,
+              mod((extract(epoch from y.created_at)*1000000)::bigint,1000)::int as second_fraction,
+              x.created_at as first_created_at,y.created_at as second_created_at,
+              x.scheduled_for>clock_timestamp() as not_due
+              from allrice_brand_content_reminders x cross join allrice_brand_content_reminders y
+              where x.automation_id=${first.automationId} and y.automation_id=${second.automationId}`;
+            expect(precision).toMatchObject({
+              same_millisecond: true,
+              ordered: true,
+              first_fraction: 123,
+              second_fraction: 789,
+              not_due: true,
+            });
+            // Both collapse to the same JS Date; using it as the next SQL
+            // cursor would select R1 forever instead of reaching R2.
+            expect(precision!.first_created_at.getTime()).toBe(
+              precision!.second_created_at.getTime(),
+            );
+            const [schema] = await fixture.db<
+              { immutable_trigger_enabled: boolean; created_default: string }[]
+            >`
+              select (select tgenabled='O' from pg_trigger
+                where tgrelid='allrice_brand_content_reminders'::regclass
+                  and tgname='allrice_brand_content_reminder_fixed') as immutable_trigger_enabled,
+                pg_get_expr(d.adbin,d.adrelid) as created_default
+              from pg_attrdef d join pg_attribute a on a.attrelid=d.adrelid and a.attnum=d.adnum
+              where a.attrelid='allrice_brand_content_reminders'::regclass and a.attname='created_at'`;
+            expect(schema).toEqual({
+              immutable_trigger_enabled: true,
+              created_default: 'clock_timestamp()',
+            });
+            const reminderState = async (automationId: string) => {
+              const [row] = await fixture.db`
+                select to_jsonb(r) as reminder,to_jsonb(p) as plan,
+                  to_jsonb(a)-array['clock_owner','native_once_request_id','native_once_request_digest','updated_at'] as automation,
+                  a.revision,a.clock_owner,
+                  (select count(*)::int from allrice_native_once_controls where automation_id=a.id) as controls,
+                  (select count(*)::int from allrice_brand_native_reminder_targets where automation_id=a.id) as targets,
+                  (select count(*)::int from allrice_automation_runs where automation_id=a.id) as occurrences,
+                  (select count(*)::int from allrice_messages where id=r.reserved_message_id) as messages
+                from allrice_brand_content_reminders r
+                join allrice_brand_content_plans p on p.id=r.plan_id
+                join allrice_automations a on a.id=r.automation_id where a.id=${automationId}`;
+              return row!;
+            };
+            const deniedBefore = await reminderState(first.automationId);
+            const allowedBefore = await reminderState(second.automationId);
+            expect(deniedBefore).toMatchObject({
+              clock_owner: 'legacy',
+              controls: 0,
+              targets: 0,
+              occurrences: 0,
+              messages: 0,
+            });
+            expect(allowedBefore).toMatchObject({
+              clock_owner: 'legacy',
+              controls: 0,
+              targets: 0,
+              occurrences: 0,
+              messages: 0,
+            });
+            const countsBefore = await runJobCounts();
+            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+            for (let attempt = 0; attempt < 6; attempt++)
+              await reconcileBrandNativeReminderAttempt();
+            const deniedAfter = await reminderState(first.automationId);
+            const allowedAfter = await reminderState(second.automationId);
+            expect(deniedAfter).toEqual(deniedBefore);
+            expect(allowedAfter).toEqual({
+              ...allowedBefore,
+              clock_owner: 'native_once',
+              controls: 1,
+              targets: 1,
+            });
+            const admitted = await identity(second.automationId);
+            expect(admitted).toMatchObject({
+              business_revision: allowedBefore.revision,
+              plan_revision: second.revision,
+              scheduled_for: r2.plannedAt,
+              session_id: a.session.id,
+              reminder_snapshot: { request_id: r2.input.requestId },
+            });
+            const c = await control(second.automationId);
+            expect(c.revision).toBe(1);
+            expect(c.dispatch).toMatchObject({
+              consumer: 'brand-reminder-v1',
+              businessRevision: allowedBefore.revision,
+              plannedAt: r2.plannedAt.toISOString(),
+              businessOccurrenceId: admitted.reserved_occurrence_id,
+              businessMessageId: admitted.reserved_message_id,
+              businessSessionId: a.session.id,
+            });
+            expect(await runJobCounts()).toEqual(countsBefore);
+            const [stillFuture] = await fixture.db<
+              { not_due: boolean }[]
+            >`select
+              scheduled_for>clock_timestamp() as not_due from allrice_brand_content_reminders
+              where automation_id=${first.automationId}`;
+            expect(stillFuture?.not_due).toBe(true);
+          } finally {
+            vi.stubEnv('ALLRICE_NATIVE_ONCE_ENABLED', '1');
+            if (cloudRevoked) {
+              const work = await getWorkAutomation(
+                b.context,
+                b.workspace,
+                fixture.db,
+              );
+              await updateWorkAutomation(
+                b.context,
+                b.workspace,
+                {
+                  capability: 'cloud',
+                  enabled: true,
+                  expectedRevision: work.revision,
+                },
+                fixture.db,
+              );
+            }
+          }
+        }, 20_000);
+      },
+    );
   },
 );

@@ -3,6 +3,7 @@ import type { TransactionSql } from 'postgres';
 import {
   NativeOnceStateError,
   nativeOnceDigest,
+  validNativeOnceDispatch,
   prepareNativeOnceMutation,
   verifyExactNativeOnceCommit,
   type NativeOnceAdmissionFacts,
@@ -166,8 +167,7 @@ export function createNativeOnceSqlStore(options: NativeOnceSqlOptions) {
           c.controlSessionId,
           c.at,
         ].every(id) ||
-        !Object.values(c.dispatch).every(id) ||
-        !/^sha256:[a-f0-9]{64}$/.test(c.dispatch.reservationDigest) ||
+        !validNativeOnceDispatch(c.dispatch) ||
         !['reserved', 'initializing', 'ready'].includes(c.sessionState) ||
         !['create', 'delete'].includes(c.command.kind) ||
         !['pending', 'confirmed', 'blocked'].includes(c.command.status) ||

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   nativeOnceDigest,
   nativeOnceReady,
+  validNativeOnceDispatch,
   nativeOnceWriterRemaining,
   planNativeOnceAcquire,
   planNativeOnceRenew,
@@ -740,5 +741,74 @@ describe('exact native write ACK is history, never renewed admission', () => {
     const cycle: { self?: unknown } = {};
     cycle.self = cycle;
     expect(() => nativeOnceDigest(cycle)).toThrow('invalid_json');
+  });
+});
+
+describe('brand reminder closed dispatch variant and rejected creation proof', () => {
+  function brand() {
+    const c = control();
+    c.dispatch = {
+      ...c.dispatch,
+      consumer: 'brand-reminder-v1',
+      reminderId: 'reminder-a',
+      businessRevision: 1,
+      plannedAt: at,
+      businessOccurrenceId: 'original-occurrence',
+      businessMessageId: 'original-message',
+    };
+    return c;
+  }
+  it('preserves ordinary reservations and rejects unknown or malformed business fields', () => {
+    expect(validNativeOnceDispatch(control().dispatch)).toBe(true);
+    const d = brand().dispatch;
+    expect(validNativeOnceDispatch(d)).toBe(true);
+    for (const patch of [
+      { consumer: 'other' },
+      { businessRevision: '1' },
+      { businessRevision: 0 },
+      { plannedAt: 'yesterday' },
+      { businessMessageId: '' },
+      { extra: true },
+    ]) {
+      expect(validNativeOnceDispatch({ ...d, ...patch } as typeof d)).toBe(
+        false,
+      );
+    }
+  });
+  it('requires absence for a new brand rejection, but still reads old ordinary rejection journals', () => {
+    const c = brand();
+    const m: NativeOnceMutation = {
+      kind: 'reject_command',
+      controlId: c.controlId,
+      commandId: c.command.id,
+      reason: 'target_not_future',
+    };
+    expect(prepare(m).after.control.command.status).toBe('blocked');
+    expect(() => prepare(m, { before: { control: c, task: null } })).toThrow(
+      'command_cas',
+    );
+    const absence = {
+      controlSessionId: c.controlSessionId,
+      catalogDigest: nativeOnceDigest([]),
+      observedAt: new Date(now).toISOString(),
+      taskCount: 0 as const,
+    };
+    const accepted = prepare(
+      { ...m, absence },
+      { before: { control: c, task: null } },
+    );
+    expect(accepted.journal.write.mutation).toEqual({ ...m, absence });
+    expect(() =>
+      prepare(
+        { ...m, absence: { ...absence, controlSessionId: 'another-session' } },
+        { before: { control: c, task: null } },
+      ),
+    ).toThrow('command_cas');
+    expect(() =>
+      prepare(
+        { ...m, absence: { ...absence, taskCount: 1 as 0 } },
+        { before: { control: c, task: null } },
+      ),
+    ).toThrow('write_invalid');
   });
 });
