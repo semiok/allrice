@@ -172,5 +172,53 @@ suite(
       expect(final!.closed).toBe(true);
       expect(final!.close_proof).not.toEqual(closed!.close_proof);
     });
+    it('records a real rejected creation and complete catalog absence, then cold restores without creating a replacement', async () => {
+      const chat = await createChatSession(fixture.context, {
+        workspaceId: fixture.workspaceId,
+        employeeAssignmentId: fixture.assignmentId,
+        title: 'Expired native creation proof',
+      });
+      const created = await createOnceTask(fixture.context, chat.id, {
+        clientRequestId: randomUUID(),
+        name: 'No task duplicate',
+        prompt: 'No model must run.',
+        runAt: new Date(Date.now() + 6000).toISOString(),
+        timezone: 'UTC',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 6500));
+      const first = runtime();
+      await first.tick();
+      const [control] =
+        await fixture.db`select control_id,control_session_id,native_task_id,snapshot from allrice_native_once_controls where automation_id=${created.id}`;
+      expect(control!.native_task_id).toBeNull();
+      expect(
+        control!.snapshot.control.command.status,
+        JSON.stringify(first.status()),
+      ).toBe('blocked');
+      const journal =
+        await fixture.db`select mutation from allrice_native_once_journal where control_id=${control!.control_id} and mutation->>'kind'='reject_command'`;
+      expect(journal).toHaveLength(1);
+      expect(journal[0]!.mutation).toMatchObject({
+        reason: 'target_not_future',
+        absence: {
+          controlSessionId: control!.control_session_id,
+          taskCount: 0,
+          catalogDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          observedAt: expect.any(String),
+        },
+      });
+      await first.stop();
+      const second = runtime();
+      await second.tick();
+      await second.tick();
+      expect(
+        await fixture.db`select id from allrice_automation_runs where automation_id=${created.id}`,
+      ).toHaveLength(0);
+      expect(
+        await fixture.db`select control_id from allrice_native_once_controls where automation_id=${created.id}`,
+      ).toHaveLength(1);
+      expect(second.status().controller?.stats.adapterCalls).toBe(0);
+      await second.stop();
+    });
   },
 );

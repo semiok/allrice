@@ -14,4 +14,6 @@ export async function invalidateBrandContentReminder(
       and r.plan_id=${plan.id}`;
   await tx`update allrice_brand_content_reminders set state='superseded',error_code=${reason},completed_at=clock_timestamp()
     where automation_id=${plan.automation_id} and plan_id=${plan.id} and state='registered'`;
+  const { cancelBrandNativeReminder } = await import('./native-reminder.ts');
+  await cancelBrandNativeReminder(tx, plan.automation_id);
 }

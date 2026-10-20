@@ -122,6 +122,12 @@ export type NativeScheduleMutation =
       controlId: string;
       commandId: string;
       reason: 'target_not_future';
+      absence?: {
+        controlSessionId: string;
+        catalogDigest: string;
+        observedAt: string;
+        taskCount: 0;
+      };
     };
 export interface NativeScheduleWrite {
   writeId: string;
@@ -1325,11 +1331,32 @@ export function createNativeScheduleOnceController(
               )
             )
               throw error;
+            await fenced(g, true);
+            const observedCatalog = await g.host!.catalog();
+            if (!Array.isArray(observedCatalog)) failure('task_invalid');
+            for (const task of observedCatalog)
+              if (
+                !task ||
+                typeof task.id !== 'string' ||
+                !task.id ||
+                typeof task.sessionId !== 'string' ||
+                !task.sessionId ||
+                (task.status !== 'active' && task.status !== 'inactive') ||
+                task.sessionId === c.controlSessionId
+              )
+                failure('task_invalid');
+            await fenced(g, true);
             await mutate(g, {
               kind: 'reject_command',
               controlId: c.controlId,
               commandId: c.command.id,
               reason: 'target_not_future',
+              absence: {
+                controlSessionId: c.controlSessionId,
+                catalogDigest: digest(observedCatalog),
+                observedAt: new Date(Date.now()).toISOString(),
+                taskCount: 0,
+              },
             });
             update(g, g.controls.get(c.controlId)!, {
               command: { ...c.command, status: 'blocked' },

@@ -191,6 +191,71 @@ export function planNativeOnceClosed(
     : null;
 }
 
+type NativeOnceDispatchBase = {
+  occurrenceId: string;
+  employeeAssignmentId: string;
+  employeeInstanceId: string;
+  businessSessionId: string;
+  clientMessageId: string;
+  reservationDigest: string;
+};
+export type NativeOnceDispatch = NativeOnceDispatchBase &
+  (
+    | { consumer?: never }
+    | {
+        consumer: 'brand-reminder-v1';
+        reminderId: string;
+        businessRevision: number;
+        plannedAt: string;
+        businessOccurrenceId: string;
+        businessMessageId: string;
+      }
+  );
+/** Historical ordinary reservations keep their exact bytes. Business consumers
+ * use a closed variant, never unchecked extra properties on a chat target. */
+export function validNativeOnceDispatch(value: NativeOnceDispatch): boolean {
+  if (!value || typeof value !== 'object') return false;
+  const base = [
+    'occurrenceId',
+    'employeeAssignmentId',
+    'employeeInstanceId',
+    'businessSessionId',
+    'clientMessageId',
+    'reservationDigest',
+  ];
+  const extra =
+    value.consumer === 'brand-reminder-v1'
+      ? [
+          'consumer',
+          'reminderId',
+          'businessRevision',
+          'plannedAt',
+          'businessOccurrenceId',
+          'businessMessageId',
+        ]
+      : [];
+  if (
+    Object.keys(value).sort().join(',') !==
+      [...base, ...extra].sort().join(',') ||
+    !base.every((k) =>
+      goodId((value as unknown as Record<string, string>)[k]!),
+    ) ||
+    !/^sha256:[a-f0-9]{64}$/.test(value.reservationDigest)
+  )
+    return false;
+  return (
+    value.consumer !== 'brand-reminder-v1' ||
+    ([
+      value.reminderId,
+      value.businessOccurrenceId,
+      value.businessMessageId,
+    ].every(goodId) &&
+      Number.isSafeInteger(value.businessRevision) &&
+      value.businessRevision > 0 &&
+      Number.isFinite(Date.parse(value.plannedAt)) &&
+      new Date(value.plannedAt).toISOString() === value.plannedAt)
+  );
+}
 export interface NativeOnceControl {
   partitionId: string;
   controlId: string;
@@ -210,21 +275,24 @@ export interface NativeOnceControl {
     status: 'pending' | 'confirmed' | 'blocked';
   };
   /** Private DB reservation, NOT the synthetic native control Session. */
-  dispatch: {
-    occurrenceId: string;
-    employeeAssignmentId: string;
-    employeeInstanceId: string;
-    businessSessionId: string;
-    clientMessageId: string;
-    reservationDigest: string;
-  };
+  dispatch: NativeOnceDispatch;
 }
 export type NativeOnceMutation = { controlId: string } & (
   | { kind: 'session_initializing' | 'session_ready' }
   | { kind: 'put_task'; task: unknown }
   | { kind: 'delete_task'; nativeTaskId: string }
   | { kind: 'confirm_command'; commandId: string; nativeTaskId: string | null }
-  | { kind: 'reject_command'; commandId: string; reason: 'target_not_future' }
+  | {
+      kind: 'reject_command';
+      commandId: string;
+      reason: 'target_not_future';
+      absence?: {
+        controlSessionId: string;
+        catalogDigest: string;
+        observedAt: string;
+        taskCount: 0;
+      };
+    }
 );
 export interface NativeOnceWrite {
   writeId: string;
@@ -333,8 +401,7 @@ function checkControl(c: NativeOnceControl) {
     Object.entries(controlIdentity(c)).some(
       ([k, v]) => k !== 'revision' && k !== 'dispatch' && !goodId(v as string),
     ) ||
-    Object.values(c.dispatch).some((v) => !goodId(v)) ||
-    !/^sha256:[a-f0-9]{64}$/.test(c.dispatch.reservationDigest)
+    !validNativeOnceDispatch(c.dispatch)
   )
     deny('control_invalid');
 }
@@ -367,6 +434,17 @@ function checkWrite(write: NativeOnceWrite) {
       return;
     case 'reject_command':
       if (!goodId(m.commandId) || m.reason !== 'target_not_future')
+        deny('write_invalid');
+      if (
+        m.absence &&
+        (Object.keys(m.absence).sort().join(',') !==
+          'catalogDigest,controlSessionId,observedAt,taskCount' ||
+          !goodId(m.absence.controlSessionId) ||
+          !/^sha256:[a-f0-9]{64}$/.test(m.absence.catalogDigest) ||
+          m.absence.taskCount !== 0 ||
+          !Number.isFinite(Date.parse(m.absence.observedAt)) ||
+          new Date(m.absence.observedAt).toISOString() !== m.absence.observedAt)
+      )
         deny('write_invalid');
       return;
     default:
@@ -574,7 +652,9 @@ export function prepareNativeOnceMutation(input: {
       c.command.kind !== 'create' ||
       c.command.status !== 'pending' ||
       c.nativeTaskId !== null ||
-      after.task !== null
+      after.task !== null ||
+      (m.absence && m.absence.controlSessionId !== c.controlSessionId) ||
+      (c.dispatch.consumer === 'brand-reminder-v1' && !m.absence)
     )
       deny('command_cas');
     c.command.status = 'blocked';

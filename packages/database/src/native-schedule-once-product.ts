@@ -50,6 +50,11 @@ import {
   type NativeOnceReadiness,
 } from './native-schedule-once-state.ts';
 import type { NativeOnceLockedAdmission } from './native-schedule-once-sql.ts';
+import {
+  lockBrandNativeReminderAdmission,
+  dispatchBrandNativeReminder,
+  reconcileBrandNativeReminderAttempt,
+} from './brand-content/native-reminder.ts';
 
 type Tx = TransactionSql;
 type Plan = {
@@ -123,6 +128,11 @@ export async function lockNativeOnceAdmissions(
       `${b.organizationId}:${b.ownerId}:${b.automationId}`,
     ),
   )) {
+    if (c.dispatch.consumer === 'brand-reminder-v1') {
+      const facts = await lockBrandNativeReminderAdmission(tx, c);
+      if (facts) result.set(c.controlId, facts);
+      continue;
+    }
     const scope = {
       organizationId: c.organizationId,
       workspaceId: c.workspaceId,
@@ -294,7 +304,7 @@ async function enroll(
   const [old] = await tx<
     Plan[]
   >`select * from allrice_automations where organization_id=${scope.organizationId}
-    and owner_id=${scope.ownerId} and native_once_request_id=${input.clientRequestId} and clock_owner='native_once' for update`;
+    and owner_id=${scope.ownerId} and native_once_request_id=${input.clientRequestId} and clock_owner='native_once' and brand_content_binding is null for update`;
   if (old) {
     if (
       old.native_once_request_digest !== requestDigest ||
@@ -424,7 +434,7 @@ export async function listOnceTasks(
     const plans = await tx<Plan[]>`select a.* from allrice_automations a
       join allrice_native_once_controls c on c.automation_id=a.id and c.revision=a.revision
       where a.organization_id=${scope.organizationId} and a.workspace_id=${scope.workspaceId} and a.owner_id=${scope.ownerId}
-        and a.employee_assignment_id=${target.employee_assignment_id} and a.clock_owner='native_once'
+        and a.employee_assignment_id=${target.employee_assignment_id} and a.clock_owner='native_once' and a.brand_content_binding is null
         and c.immutable_control->'dispatch'->>'employeeInstanceId'=${target.employee_instance_id}
         and (${query.clientRequestId ?? null}::uuid is null or a.native_once_request_id=${query.clientRequestId ?? null}::uuid)
         and (${cursor?.createdAt ?? null}::timestamptz is null or (a.created_at,a.id)<(${cursor?.createdAt ?? null}::timestamptz,${cursor?.id ?? null}::uuid))
@@ -485,7 +495,11 @@ export async function cancelOnceTask(
     const [projection] = await tx<
       ControlRow[]
     >`select partition_id,control_id,snapshot from allrice_native_once_controls where automation_id=${taskId}`;
-    if (!projection) throw new DataAccessError('not_found');
+    if (
+      !projection ||
+      projection.snapshot.control.dispatch.consumer === 'brand-reminder-v1'
+    )
+      throw new DataAccessError('not_found');
     await lockPrincipal(tx, scope, context.requestId, {
       ...context,
       workspaceId: scope.workspaceId,
@@ -495,7 +509,7 @@ export async function cancelOnceTask(
     const [p] = await tx<
       Plan[]
     >`select * from allrice_automations where id=${taskId} and organization_id=${scope.organizationId}
-      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and clock_owner='native_once' for update`;
+      and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and clock_owner='native_once' and brand_content_binding is null for update`;
     if (
       !p ||
       p.employee_assignment_id !== target.employee_assignment_id ||
@@ -665,7 +679,7 @@ export async function createOnceTaskFromExecutionContext(
     const [old] = await tx<
       Plan[]
     >`select * from allrice_automations where organization_id=${scope.organizationId}
-      and owner_id=${scope.actor.id} and native_once_request_id=${requestId} and clock_owner='native_once' for update`;
+      and owner_id=${scope.actor.id} and native_once_request_id=${requestId} and clock_owner='native_once' and brand_content_binding is null for update`;
     if (old) {
       if (
         old.native_once_request_digest !== logicalDigest ||
@@ -798,9 +812,12 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
     await acquireDevAdmission(tx);
     const [row] = await tx<
       OccurrenceRow[]
-    >`select * from allrice_native_once_occurrences
-      where outbox_state='pending' and (outbox_owner_id is null or outbox_expires_at<=clock_timestamp())
-      order by created_at,occurrence_id limit 1 for update skip locked`;
+    >`select o.* from allrice_native_once_occurrences o
+      where (o.outbox_state='pending' or (o.outbox_state='blocked' and exists (
+        select 1 from allrice_brand_native_reminder_targets t join allrice_brand_content_reminders r on r.id=t.reminder_id
+        where t.control_id=o.control_id and t.partition_id=o.partition_id and r.state='registered')))
+        and (o.outbox_owner_id is null or o.outbox_expires_at<=clock_timestamp())
+      order by o.created_at,o.occurrence_id limit 1 for update of o skip locked`;
     if (!row) return null;
     const [claimed] = await tx<
       OccurrenceRow[]
@@ -809,7 +826,7 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
       where occurrence_id=${row.occurrence_id} returning *`;
     return claimed!;
   });
-  if (!occurrence) return false;
+  if (!occurrence) return reconcileBrandNativeReminderAttempt();
   // A failed/unknown COMMIT leaves the durable occurrence for exact readback.
   // No new key, receipt or message is created by error handling.
   await db.begin(async (tx) => {
@@ -827,6 +844,16 @@ export async function dispatchNextNativeOnceOccurrence(workerId: string) {
         workspaceId: control.workspaceId,
         ownerId: control.ownerId,
       };
+    if (control.dispatch.consumer === 'brand-reminder-v1') {
+      await dispatchBrandNativeReminder(
+        tx,
+        control,
+        occurrence,
+        workerId,
+        tokenDigest,
+      );
+      return;
+    }
     const facts = (await lockNativeOnceAdmissions(tx, [control])).get(
       control.controlId,
     );
