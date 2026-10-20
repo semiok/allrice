@@ -511,7 +511,7 @@ suite(
       const chatSubject = f.input.subject;
       if (chatSubject.kind !== 'chat') throw Error('chat_fixture_required');
       await fixture.db`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy,phase)
-        values(${f.rootRunId},${f.org},${f.workspace},${fixture.db.json(resolveTaskRuntimePolicy([]))},'terminal')`;
+        values(${f.rootRunId},${f.org},${f.workspace},${fixture.db.json({ ...resolveTaskRuntimePolicy([]) })},'terminal')`;
       await fixture.db`insert into allrice_native_question_waits(run_id,question_id,checkpoint,config_checksum,generation,state)
         values(${f.rootRunId},${questionId},${fixture.db.json({
           sessionId: approved.input.descriptor.nativeSessionId,
