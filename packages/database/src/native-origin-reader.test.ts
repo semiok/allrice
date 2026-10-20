@@ -21,6 +21,7 @@ import {
   type NativeOriginReaderScope,
 } from './conversation/native-origin-reader.ts';
 import {
+  nativeRootDigest,
   newNativeGeneration,
   type NativeRootOrigin,
 } from './conversation/native-root-origin.ts';
@@ -33,6 +34,11 @@ const environment = {
   primary: 'ALLRICE_DSH_NATIVE_ARTIFACT_ID',
   newBirth: 'ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID',
 } as const;
+const secondEnvironment = {
+  path: 'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH',
+  hash: 'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256',
+  storage: 'ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT',
+} as const;
 const checksum = (bytes: string | Buffer) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');
 const sourceArtifactId = checksum('synthetic-original-artifact');
@@ -44,11 +50,20 @@ describe('exact unbound-chat origin reader configuration', () => {
   let directory: string;
   let approvalPath: string;
   let storageRoot: string;
+  let secondApprovalPath: string;
+  let secondStorageRoot: string;
   let scope: NativeOriginReaderScope;
   let origin: NativeRootOrigin;
 
   beforeEach(() => {
-    for (const name of Object.values(environment)) vi.stubEnv(name, undefined);
+    for (const name of new Set([
+      ...Object.values(environment),
+      ...Object.values(secondEnvironment),
+      ...Object.keys(process.env).filter((key) =>
+        key.startsWith('ALLRICE_DSH_ORIGIN_READER_'),
+      ),
+    ]))
+      vi.stubEnv(name, undefined);
     // macOS /var and some CI temp roots are aliases; the approved path itself
     // must be canonical, so resolve the parent before creating this fixture.
     directory = mkdtempSync(
@@ -57,6 +72,9 @@ describe('exact unbound-chat origin reader configuration', () => {
     approvalPath = join(directory, 'approval.json');
     storageRoot = join(directory, 'storage');
     mkdirSync(storageRoot);
+    secondApprovalPath = join(directory, 'approval-2.json');
+    secondStorageRoot = join(directory, 'storage-2');
+    mkdirSync(secondStorageRoot);
     scope = {
       organizationId: randomUUID(),
       workspaceId: randomUUID(),
@@ -118,6 +136,56 @@ describe('exact unbound-chat origin reader configuration', () => {
     const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n');
     installBytes(bytes);
     return bytes;
+  }
+  function secondPolicy(): Policy {
+    const value = policy();
+    const contextId = randomUUID();
+    value.sourceArtifactId = checksum('synthetic-second-original-artifact');
+    value.targetArtifactId = checksum('synthetic-second-reader-target');
+    value.evidenceDigest = checksum('synthetic-second-reviewed-evidence');
+    value.contexts = [
+      {
+        ...scope,
+        origin: {
+          ...origin,
+          contextId,
+          rootSeed: contextId,
+          artifactId: value.sourceArtifactId,
+        },
+      },
+    ];
+    return value;
+  }
+  function installSecondBytes(bytes: Buffer) {
+    writeFileSync(secondApprovalPath, bytes, { mode: 0o600 });
+    vi.stubEnv(secondEnvironment.path, secondApprovalPath);
+    vi.stubEnv(secondEnvironment.hash, checksum(bytes));
+    vi.stubEnv(secondEnvironment.storage, secondStorageRoot);
+    vi.stubEnv(environment.primary, targetArtifactId);
+    vi.stubEnv(environment.newBirth, targetArtifactId);
+  }
+  function installSecond(value: unknown = secondPolicy()) {
+    const bytes = Buffer.from(JSON.stringify(value, null, 2) + '\n');
+    installSecondBytes(bytes);
+    return bytes;
+  }
+  function withContexts(value: Policy, count: number): Policy {
+    const base = value.contexts[0]!;
+    return {
+      ...value,
+      contexts: Array.from({ length: count }, (_, i) => {
+        const contextId = i ? randomUUID() : base.origin.contextId;
+        return {
+          ...base,
+          origin: { ...base.origin, contextId, rootSeed: contextId },
+        };
+      }),
+    };
+  }
+  function paddedPolicy(value: Policy, bytes: number) {
+    const json = Buffer.from(JSON.stringify(value));
+    if (json.byteLength > bytes) throw Error('padded_fixture_too_large');
+    return Buffer.concat([json, Buffer.alloc(bytes - json.byteLength, ' ')]);
   }
   function binding(): Binding {
     const [approved] = configuredNativeOriginReaders();
@@ -554,6 +622,281 @@ describe('exact unbound-chat origin reader configuration', () => {
     installBytes(Buffer.from('{"schemaVersion":1,'));
     expect(() => configuredNativeOriginReaders()).toThrow(invalid);
   });
+
+  it('keeps the exact original per-policy proof and raw file when a second reader is added', () => {
+    const value = policy();
+    const bytes = install(value);
+    const { contexts, ...proof } = value;
+    const storageNamespace = join(
+      storageRoot,
+      scope.organizationId,
+      scope.workspaceId,
+      scope.ownerId,
+      origin.contextId,
+      'sessions',
+    );
+    const original = configuredNativeOriginReaders()[0]!;
+    // Independent reference to the original digest contract: no combined proof,
+    // slot, policy order or second-file fields may enter an existing approval.
+    expect(original.approvalDigest).toBe(
+      nativeRootDigest({ proof, entry: contexts[0]!, storageNamespace }),
+    );
+    const second = secondPolicy();
+    installSecond(second);
+    const approvals = configuredNativeOriginReaders();
+    expect(approvals).toHaveLength(2);
+    expect(approvals[0]).toEqual(original);
+    expect(readFileSync(approvalPath)).toEqual(bytes);
+    expect(process.env[environment.hash]).toBe(checksum(bytes));
+    expect(nativeOriginReaderForOrigin(origin, scope)).toEqual(original);
+    expect(
+      nativeOriginReaderForOrigin(second.contexts[0]!.origin, scope),
+    ).toEqual(approvals[1]);
+    const later = checksum('later-primary-with-two-exact-readers');
+    vi.stubEnv(environment.primary, later);
+    vi.stubEnv(environment.newBirth, later);
+    expect(configuredNativeOriginReaders()).toEqual(approvals);
+  });
+
+  it('re-hashes the second file after same-size edits with unchanged timestamps', () => {
+    install();
+    const value = secondPolicy();
+    const bytes = installSecond(value);
+    expect(configuredNativeOriginReaders()).toHaveLength(2);
+    const before = statSync(secondApprovalPath);
+    const changed = Buffer.from(
+      bytes
+        .toString()
+        .replace(
+          value.evidenceDigest,
+          checksum('changed-second-review-evidence'),
+        ),
+    );
+    expect(changed.byteLength).toBe(bytes.byteLength);
+    writeFileSync(secondApprovalPath, changed);
+    utimesSync(secondApprovalPath, before.atime, before.mtime);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    expect(() => nativeOriginReaderForOrigin(origin, scope)).toThrow(invalid);
+  });
+
+  it('selects the second exact target, scope and namespace without adopting its old writer', () => {
+    install();
+    const second = secondPolicy();
+    installSecond(second);
+    const [first, approved] = configuredNativeOriginReaders();
+    expect(approved!.targetArtifactId).not.toBe(first!.targetArtifactId);
+    const input: Binding = {
+      ...scope,
+      originReaderApprovalDigest: approved!.approvalDigest,
+      artifactId: approved!.targetArtifactId,
+      contextKind: 'chat',
+      contextId: approved!.contextId,
+      profileId: 'restricted',
+      storageNamespace: approved!.storageNamespace,
+    };
+    expect(nativeOriginReaderForBinding(input)).toEqual(approved);
+    for (const change of [
+      { originReaderApprovalDigest: first!.approvalDigest },
+      { artifactId: second.sourceArtifactId },
+      { artifactId: first!.targetArtifactId },
+      { storageNamespace: first!.storageNamespace },
+      { organizationId: randomUUID() },
+      { workspaceId: randomUUID() },
+      { ownerId: randomUUID() },
+    ])
+      expect(() =>
+        nativeOriginReaderForBinding({ ...input, ...change }),
+      ).toThrow(invalid);
+    const contextId = randomUUID();
+    expect(() =>
+      nativeOriginReaderForOrigin(
+        { ...second.contexts[0]!.origin, contextId, rootSeed: contextId },
+        scope,
+      ),
+    ).toThrow(invalid);
+  });
+
+  it('preserves the old all-blank configuration behavior with no second group', () => {
+    for (const key of ['path', 'hash', 'storage'] as const)
+      vi.stubEnv(environment[key], '  ');
+    expect(configuredNativeOriginReaders()).toEqual([]);
+  });
+
+  it('rejects a second group without the complete original three inputs', () => {
+    installSecond();
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each([
+    ['path', ['hash', 'storage']],
+    ['hash', ['path', 'storage']],
+    ['storage', ['path', 'hash']],
+    ['path+hash', ['storage']],
+    ['path+storage', ['hash']],
+    ['hash+storage', ['path']],
+  ] as const)('rejects partial second configuration: %s', (_label, missing) => {
+    install();
+    installSecond();
+    for (const key of missing) vi.stubEnv(secondEnvironment[key], undefined);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('rejects an explicitly empty second group instead of ignoring it', () => {
+    install();
+    for (const name of Object.values(secondEnvironment)) vi.stubEnv(name, '  ');
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each(['0', '1', '01', '02', '3', '8', '100'])(
+    'rejects indexed reader alias %s even with no original policy',
+    (slot) => {
+      vi.stubEnv(
+        `ALLRICE_DSH_ORIGIN_READER_${slot}_APPROVAL_PATH`,
+        approvalPath,
+      );
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+  it('rejects an unknown second-group field', () => {
+    install();
+    installSecond();
+    vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_2_ALLOW_EXISTING_WRITER', '1');
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each(
+    [
+      'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH_2',
+      'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256_2',
+      'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT_2',
+      'ALLRICE_DSH_ORIGIN_READER_2APPROVAL_PATH',
+      'ALLRICE_DSH_ORIGIN_READER_ALLOW_EXISTING_WRITER',
+      'ALLRICE_DSH_ORIGIN_READER_',
+      'ALLRICE_DSH_ORIGIN_READER_2_ALLOW_EXISTING_WRITER',
+      'ALLRICE_DSH_ORIGIN_READER_3_APPROVAL_PATH',
+    ].flatMap((name) =>
+      ['', 'synthetic-unsupported-reader-input'].flatMap((value) =>
+        (['absent', 'original', 'both'] as const).map((configuration) => ({
+          name,
+          value,
+          configuration,
+        })),
+      ),
+    ),
+  )(
+    'rejects unsupported reader key $name with value "$value" and $configuration valid configuration',
+    ({ name, value, configuration }) => {
+      if (configuration !== 'absent') install();
+      if (configuration === 'both') installSecond();
+      expect(configuredNativeOriginReaders()).toHaveLength(
+        configuration === 'absent' ? 0 : configuration === 'original' ? 1 : 2,
+      );
+      vi.stubEnv(name, value);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+      expect(() => nativeOriginReaderForOrigin(origin, scope)).toThrow(invalid);
+    },
+  );
+
+  it('allows a combined 64 contexts and rejects 65 without increasing either file limit', () => {
+    install(withContexts(policy(), 32));
+    const second = withContexts(secondPolicy(), 32);
+    installSecond(second);
+    expect(configuredNativeOriginReaders()).toHaveLength(64);
+    installSecond(withContexts(second, 33));
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('applies the 256KiB limit to the actual sum of both approved files', () => {
+    installBytes(paddedPolicy(policy(), 128 * 1024));
+    const second = secondPolicy();
+    installSecondBytes(paddedPolicy(second, 128 * 1024));
+    expect(configuredNativeOriginReaders()).toHaveLength(2);
+    installSecondBytes(paddedPolicy(second, 128 * 1024 + 1));
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('rejects one source split between two policies', () => {
+    install();
+    const second = secondPolicy();
+    second.sourceArtifactId = sourceArtifactId;
+    second.contexts[0]!.origin.artifactId = sourceArtifactId;
+    installSecond(second);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('rejects a duplicate context across sources even with a different owner', () => {
+    install();
+    const second = secondPolicy();
+    second.contexts[0] = {
+      ...scope,
+      ownerId: randomUUID(),
+      origin: {
+        ...second.contexts[0]!.origin,
+        contextId: origin.contextId,
+        rootSeed: origin.contextId,
+      },
+    };
+    installSecond(second);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it('rejects a repeated policy/namespace/proof rather than returning duplicate approvals', () => {
+    const bytes = install();
+    installSecondBytes(bytes);
+    vi.stubEnv(secondEnvironment.storage, storageRoot);
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+  });
+
+  it.each(['forward', 'reverse', 'cycle'] as const)(
+    'rejects a source-target %s across the two policies',
+    (kind) => {
+      install();
+      const second = secondPolicy();
+      if (kind !== 'reverse') {
+        second.sourceArtifactId = targetArtifactId;
+        second.contexts[0]!.origin.artifactId = targetArtifactId;
+      }
+      if (kind !== 'forward') second.targetArtifactId = sourceArtifactId;
+      installSecond(second);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each([
+    'hash',
+    'abi',
+    'scope',
+    'mode',
+    'symlink',
+    'storage-symlink',
+  ] as const)(
+    'does not fall back to the original reader when the second has invalid %s',
+    (kind) => {
+      install();
+      const second = secondPolicy();
+      if (kind === 'abi') second.prerequisites.modules = 'different';
+      if (kind === 'scope') second.contexts[0]!.ownerId = 'not-a-uuid';
+      installSecond(
+        kind === 'mode'
+          ? { ...second, mode: 'existing_writer_migration' }
+          : second,
+      );
+      if (kind === 'hash')
+        vi.stubEnv(secondEnvironment.hash, checksum('other-second-file'));
+      if (kind === 'symlink') {
+        const alias = join(directory, 'second-approval-link.json');
+        symlinkSync(secondApprovalPath, alias);
+        vi.stubEnv(secondEnvironment.path, alias);
+      }
+      if (kind === 'storage-symlink') {
+        const alias = join(directory, 'second-storage-link');
+        symlinkSync(secondStorageRoot, alias, 'dir');
+        vi.stubEnv(secondEnvironment.storage, alias);
+      }
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+      expect(() => nativeOriginReaderForOrigin(origin, scope)).toThrow(invalid);
+    },
+  );
 
   it('rejects an oversized file even with its correct byte hash', () => {
     installBytes(Buffer.alloc(256 * 1024 + 1, ' '));

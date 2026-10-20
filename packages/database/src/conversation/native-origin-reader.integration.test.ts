@@ -53,6 +53,8 @@ const suite =
     : describe.skip;
 const source = 'sha256:' + 'b'.repeat(64);
 const target = 'sha256:' + 'a'.repeat(64);
+const secondSource = 'sha256:' + 'c'.repeat(64);
+const secondTarget = 'sha256:' + 'd'.repeat(64);
 const sha256 = (bytes: string | Buffer) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');
 
@@ -65,12 +67,13 @@ suite(
     let assistantRuntimePolicy: EmployeeRuntimePolicy;
     let temporary: string | undefined;
     let storageRoot: string;
+    let secondStorageRoot: string;
     let policyPath: string;
 
     const clearPolicy = () => {
-      vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', undefined);
-      vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256', undefined);
-      vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT', undefined);
+      for (const key of Object.keys(process.env))
+        if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
+          vi.stubEnv(key, undefined);
     };
 
     beforeEach(async () => {
@@ -92,8 +95,10 @@ suite(
         await mkdtemp(join(tmpdir(), 'met195-reader-')),
       );
       storageRoot = join(temporary, 'source-data');
+      secondStorageRoot = join(temporary, 'second-source-data');
       policyPath = join(temporary, 'approved-reader.json');
       await mkdir(storageRoot, { mode: 0o700 });
+      await mkdir(secondStorageRoot, { mode: 0o700 });
       const employee = await createEmployeeAdministrationFixture(fixture.db);
       const assistantDefinition = {
         ...employee.definition,
@@ -150,9 +155,12 @@ suite(
       }
     }, 30_000);
 
-    async function subject(withAssistantAuthority = false) {
+    async function subject(
+      withAssistantAuthority = false,
+      original = { artifactId: source, storageRoot },
+    ) {
       clearPolicy();
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', source);
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', original.artifactId);
       const selectedPackage = withAssistantAuthority
         ? assistantRuntimePackage
         : runtimePackage;
@@ -169,7 +177,7 @@ suite(
       from allrice_chat_sessions where id=${f.session}`;
       const origin = NativeRootOriginSchema.parse(birth!.native_root_origin);
       expect(origin).toMatchObject({
-        artifactId: source,
+        artifactId: original.artifactId,
         contextId: f.session,
         rootSeed: f.session,
         frozenIdentity: {
@@ -188,9 +196,10 @@ suite(
         contextKey: f.session,
         distributionGeneration: newNativeGeneration,
       });
-      descriptor.artifactId = descriptor.artifactManifestDigest = source;
+      descriptor.artifactId = descriptor.artifactManifestDigest =
+        original.artifactId;
       descriptor.storageNamespace = join(
-        storageRoot,
+        original.storageRoot,
         f.org,
         f.workspace,
         f.user,
@@ -215,13 +224,23 @@ suite(
     }
     type Subject = Awaited<ReturnType<typeof subject>>;
 
-    async function approve(f: Subject) {
-      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', target);
+    async function approve(f: Subject, group: 1 | 2 = 1) {
+      const readerTarget = group === 2 ? secondTarget : target;
+      const readerPath =
+        group === 2 ? join(temporary!, 'approved-reader-2.json') : policyPath;
+      const readerStorage = group === 2 ? secondStorageRoot : storageRoot;
+      vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', readerTarget);
+      vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', readerTarget);
+      if (group === 2)
+        vi.stubEnv(
+          'ALLRICE_CHECKED_DELIVERY_ARTIFACT_IDS',
+          JSON.stringify([target, secondTarget]),
+        );
       const policy = {
         schemaVersion: 1,
         mode: 'unbound_chat_first_writer',
-        sourceArtifactId: source,
-        targetArtifactId: target,
+        sourceArtifactId: f.origin.artifactId,
+        targetArtifactId: readerTarget,
         generation: newNativeGeneration,
         profileId: 'restricted',
         sessionFormat: 4,
@@ -232,7 +251,9 @@ suite(
           modules: process.versions.modules,
         },
         evidenceDigest: sha256(
-          'isolated SQL regression, not real journal proof',
+          group === 2
+            ? 'isolated SQL second-reader regression, not real journal proof'
+            : 'isolated SQL regression, not real journal proof',
         ),
         contexts: [
           {
@@ -244,18 +265,23 @@ suite(
         ],
       };
       const bytes = JSON.stringify(policy);
-      await writeFile(policyPath, bytes, { mode: 0o600 });
-      vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH', policyPath);
-      vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256', sha256(bytes));
-      vi.stubEnv('ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT', storageRoot);
+      await writeFile(readerPath, bytes, { mode: 0o600 });
+      const prefix =
+        group === 2
+          ? 'ALLRICE_DSH_ORIGIN_READER_2_'
+          : 'ALLRICE_DSH_ORIGIN_READER_';
+      vi.stubEnv(prefix + 'APPROVAL_PATH', readerPath);
+      vi.stubEnv(prefix + 'APPROVAL_SHA256', sha256(bytes));
+      vi.stubEnv(prefix + 'STORAGE_ROOT', readerStorage);
       const entries = configuredNativeOriginReaders();
-      expect(entries).toHaveLength(1);
-      const approval = entries[0]!;
+      expect(entries).toHaveLength(group);
+      const approval = entries.find((entry) => entry.contextId === f.session)!;
+      expect(approval).toBeDefined();
       expect(approval.originDigest).toBe(nativeRootDigest(f.origin));
       const descriptor: NativeSessionDescriptor = {
         ...f.input.descriptor,
-        artifactId: target,
-        artifactManifestDigest: target,
+        artifactId: readerTarget,
+        artifactManifestDigest: readerTarget,
         storageNamespace: approval.storageNamespace,
         originReaderApprovalDigest: approval.approvalDigest,
       };
@@ -277,13 +303,19 @@ suite(
       ownerId: f.user,
       sessionId: f.session,
     });
-    const targetCoverage = () =>
+    const targetCoverage = (
+      additional: { artifactId: string; storageRoot: string }[] = [],
+    ) =>
       verifyNativeArtifactReferenceCoverage([
         {
           artifactId: target,
           generation: newNativeGeneration,
           storageRoot: join(temporary!, 'current-data'),
         },
+        ...additional.map((entry) => ({
+          ...entry,
+          generation: newNativeGeneration,
+        })),
       ]);
     const pinRows = (
       f: Subject,
@@ -796,6 +828,237 @@ suite(
           await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.session}`
         )[0]!.native_root_origin,
       ).toEqual(f.origin);
+    }, 30_000);
+
+    it('keeps an adopted original reader unchanged while a second target first-binds and cold-prepares later generations', async () => {
+      const first = await subject();
+      const next = await subject(false, {
+        artifactId: secondSource,
+        storageRoot: secondStorageRoot,
+      });
+      const firstApproved = await approve(first);
+      const firstBound = await bindJobNativeSession(firstApproved.input);
+      const firstRows = await pinRows(first);
+      const firstBytes = await readFile(policyPath);
+      const nextApproved = await approve(next, 2);
+      expect(configuredNativeOriginReaders()).toEqual([
+        firstApproved.approval,
+        nextApproved.approval,
+      ]);
+      expect(await readFile(policyPath)).toEqual(firstBytes);
+      expect(process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256).toBe(
+        sha256(firstBytes),
+      );
+      expect(
+        await prepareJobNativeSession(preparation(firstApproved.input)),
+      ).toMatchObject({
+        binding: firstBound.binding,
+        originReaderAdopted: true,
+        requiresRecovery: true,
+      });
+      expect(
+        await prepareJobNativeSession(preparation(nextApproved.input)),
+      ).toMatchObject({
+        binding: null,
+        origin: next.origin,
+        originReaderAdopted: false,
+        requiresRecovery: false,
+      });
+      const nextBound = await bindJobNativeSession(nextApproved.input);
+      expect(nextBound.binding).toMatchObject({
+        artifactId: secondTarget,
+        artifactManifestDigest: secondTarget,
+        storageNamespace: nextApproved.approval.storageNamespace,
+        originReaderApprovalDigest: nextApproved.approval.approvalDigest,
+        rootOriginDigest: nativeRootDigest(next.origin),
+        firstRunId: next.rootRunId,
+        firstJobId: next.worker.jobId,
+      });
+      const nextFirstRow = (await pinRows(next))[0]!;
+      expect(
+        await prepareJobNativeSession(preparation(nextApproved.input)),
+      ).toMatchObject({
+        binding: nextBound.binding,
+        originReaderAdopted: true,
+        requiresRecovery: true,
+      });
+      const [current] =
+        await fixture.db`select * from allrice_conversation_runtimes where session_id=${next.session}`;
+      const later: NativeSessionLeaseInput = {
+        ...nextApproved.input,
+        subject: {
+          kind: 'chat',
+          id: next.session,
+          configChecksum: current!.config_checksum,
+          generation: current!.thread_generation,
+          expectedThreadId: current!.thread_id,
+        },
+        descriptor: {
+          ...nextApproved.input.descriptor,
+          nativeSessionId: `dsh-${next.session}-content-${randomUUID()}`,
+        },
+      };
+      expect(await prepareJobNativeSession(preparation(later))).toMatchObject({
+        binding: null,
+        originReaderAdopted: true,
+        requiresRecovery: false,
+      });
+      const laterBound = await bindJobNativeSession(later);
+      expect(laterBound.binding).toMatchObject({
+        artifactId: secondTarget,
+        originReaderApprovalDigest: nextApproved.approval.approvalDigest,
+        storageNamespace: nextApproved.approval.storageNamespace,
+      });
+      expect(
+        (await prepareJobNativeSession(preparation(later))).binding,
+      ).toEqual(laterBound.binding);
+      const nextRows = await pinRows(next);
+      expect(nextRows).toHaveLength(2);
+      expect(
+        nextRows.find(
+          (row) => row.native_session_id === nextFirstRow.native_session_id,
+        ),
+      ).toEqual(nextFirstRow);
+      expect(await pinRows(first)).toEqual(firstRows);
+      for (const [f, expectedTarget] of [
+        [first, target],
+        [next, secondTarget],
+      ] as const) {
+        const [row] =
+          await fixture.db`select native_root_origin from allrice_chat_sessions where id=${f.session}`;
+        expect(row!.native_root_origin).toEqual(f.origin);
+        expect(
+          await fixture.db.begin((tx) =>
+            selectCheckedFinalDeliveryArtifact(tx, scope(f)),
+          ),
+        ).toBe(expectedTarget);
+      }
+      const coverage = await targetCoverage([
+        {
+          artifactId: secondTarget,
+          storageRoot: join(temporary!, 'second-current-data'),
+        },
+      ]);
+      expect(coverage.compatibleOrigins).toEqual([
+        {
+          contextId: first.session,
+          sourceArtifactId: source,
+          targetArtifactId: target,
+          approvalDigest: firstApproved.approval.approvalDigest,
+        },
+        {
+          contextId: next.session,
+          sourceArtifactId: secondSource,
+          targetArtifactId: secondTarget,
+          approvalDigest: nextApproved.approval.approvalDigest,
+        },
+      ]);
+    }, 30_000);
+
+    it('rejects cross-policy scope and proof, unlisted second-source contexts and an unverified second target', async () => {
+      const first = await subject();
+      const next = await subject(false, {
+        artifactId: secondSource,
+        storageRoot: secondStorageRoot,
+      });
+      const unlisted = await subject(false, {
+        artifactId: secondSource,
+        storageRoot: secondStorageRoot,
+      });
+      const firstApproved = await approve(first);
+      await bindJobNativeSession(firstApproved.input);
+      const firstRows = await pinRows(first);
+      const nextApproved = await approve(next, 2);
+      const crossScope: NativeSessionLeaseInput = {
+        ...nextApproved.input,
+        workerId: first.input.workerId,
+        jobId: first.input.jobId,
+        leaseToken: first.input.leaseToken,
+        attempt: first.input.attempt,
+      };
+      await expect(bindJobNativeSession(crossScope)).rejects.toMatchObject({
+        code: 'NATIVE_SESSION_ADMISSION_DENIED',
+      });
+      await expect(
+        prepareJobNativeSession(preparation(crossScope)),
+      ).rejects.toMatchObject({ code: 'NATIVE_SESSION_ADMISSION_DENIED' });
+      for (const change of [
+        { originReaderApprovalDigest: firstApproved.approval.approvalDigest },
+        { artifactId: target, artifactManifestDigest: target },
+        { storageNamespace: firstApproved.approval.storageNamespace },
+      ])
+        await expect(
+          bindJobNativeSession({
+            ...nextApproved.input,
+            descriptor: { ...nextApproved.input.descriptor, ...change },
+          }),
+        ).rejects.toMatchObject({ code: 'NATIVE_SESSION_ADMISSION_DENIED' });
+      await expect(bindJobNativeSession(unlisted.input)).rejects.toThrow(
+        'DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID',
+      );
+      await expect(
+        prepareJobNativeSession(preparation(unlisted.input)),
+      ).rejects.toThrow('DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID');
+      await expect(targetCoverage()).rejects.toThrow(
+        'DSH_NATIVE_ORIGIN_READER_TARGET_UNVERIFIED',
+      );
+      await expect(
+        targetCoverage([
+          {
+            artifactId: secondTarget,
+            storageRoot: join(temporary!, 'second-current-data'),
+          },
+          { artifactId: secondSource, storageRoot: secondStorageRoot },
+        ]),
+      ).rejects.toThrow('DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED');
+      expect(await pinRows(first)).toEqual(firstRows);
+      expect(await pinRows(next)).toHaveLength(0);
+      expect(await pinRows(unlisted)).toHaveLength(0);
+      expect(
+        (await bindJobNativeSession(nextApproved.input)).binding.artifactId,
+      ).toBe(secondTarget);
+    }, 30_000);
+
+    it('refuses an existing second-source writer without migrating it or changing the adopted original reader', async () => {
+      const first = await subject();
+      const written = await subject(false, {
+        artifactId: secondSource,
+        storageRoot: secondStorageRoot,
+      });
+      const original = await bindJobNativeSession(written.input);
+      expect(original.binding.artifactId).toBe(secondSource);
+      expect(original.binding).not.toHaveProperty('originReaderApprovalDigest');
+      const writtenRows = await pinRows(written);
+      const firstApproved = await approve(first);
+      await bindJobNativeSession(firstApproved.input);
+      const firstRows = await pinRows(first);
+      const approved = await approve(written, 2);
+      await expect(inspectNativeOriginReaderStates()).rejects.toThrow(
+        'DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID',
+      );
+      await expect(bindJobNativeSession(approved.input)).rejects.toThrow(
+        'DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID',
+      );
+      await expect(
+        prepareJobNativeSession(preparation(approved.input)),
+      ).rejects.toThrow('DSH_NATIVE_ORIGIN_READER_APPROVAL_INVALID');
+      await expect(
+        targetCoverage([
+          {
+            artifactId: secondTarget,
+            storageRoot: join(temporary!, 'second-current-data'),
+          },
+          { artifactId: secondSource, storageRoot: secondStorageRoot },
+        ]),
+      ).rejects.toThrow('DSH_NATIVE_ARTIFACT_REFERENCES_UNCOVERED');
+      expect(await pinRows(written)).toEqual(writtenRows);
+      expect(await pinRows(first)).toEqual(firstRows);
+      const [row] =
+        await fixture.db`select native_root_origin from allrice_chat_sessions where id=${written.session}`;
+      expect(row!.native_root_origin).toEqual(written.origin);
+      expect(configuredNativeOriginReaders()[0]).toEqual(
+        firstApproved.approval,
+      );
     }, 30_000);
 
     it('re-admits actual Job authority on cold prepare: foreign owner, revoked membership and lost lease are denied', async () => {

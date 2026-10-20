@@ -72,94 +72,178 @@ function absolute(value: string) {
   return value;
 }
 
-/** Independent operator approval, not a code registry or permission grant.
- * One retired source, exact previously unbound chat origins, one verified
- * current target. No version-wide aliases, existing-writer migration or model
- * supplied paths. The storage env is an explicit cleanup protection reference.
- * Read/hash the bounded data file rather than accepting mtime as approval. */
+const secondReaderEnvironment = [
+  'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH',
+  'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256',
+  'ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT',
+] as const;
+const readerEnvironment = [
+  'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
+  'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
+  'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
+  ...secondReaderEnvironment,
+] as const;
+const maximumPolicyBytes = 256 * 1024;
+
+function loadNativeOriginReaderPolicy(
+  {
+    path,
+    expected,
+    storage,
+  }: {
+    path: string | undefined;
+    expected: string | undefined;
+    storage: string | undefined;
+  },
+  maximumBytes: number,
+) {
+  if (!path || !expected || !storage || !digest.safeParse(expected).success)
+    fail();
+  absolute(path);
+  absolute(storage);
+  const stat = lstatSync(path);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    stat.size > maximumBytes ||
+    realpathSync(path) !== path
+  )
+    fail();
+  const storageStat = lstatSync(storage);
+  if (
+    !storageStat.isDirectory() ||
+    storageStat.isSymbolicLink() ||
+    realpathSync(storage) !== storage
+  )
+    fail();
+  const bytes = readFileSync(path);
+  if (bytes.byteLength > maximumBytes) fail();
+  if ('sha256:' + createHash('sha256').update(bytes).digest('hex') !== expected)
+    fail();
+  const policy = policySchema.parse(JSON.parse(bytes.toString('utf8')));
+  if (
+    policy.sourceArtifactId === policy.targetArtifactId ||
+    !digest.safeParse(process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID).success ||
+    process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID !==
+      process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID ||
+    policy.prerequisites.nodeMajor !==
+      Number(process.versions.node.split('.')[0]) ||
+    policy.prerequisites.platform !== process.platform ||
+    policy.prerequisites.arch !== process.arch ||
+    policy.prerequisites.modules !== process.versions.modules
+  )
+    fail();
+  const { contexts, ...proof } = policy;
+  const seen = new Set<string>();
+  const approvals = contexts.map((entry) => {
+    const { origin } = entry;
+    if (
+      seen.has(origin.contextId) ||
+      origin.contextKind !== 'chat' ||
+      origin.rootSeed !== origin.contextId ||
+      origin.artifactId !== policy.sourceArtifactId ||
+      origin.profileId !== policy.profileId ||
+      origin.distributionGeneration !== policy.generation
+    )
+      fail();
+    seen.add(origin.contextId);
+    const storageNamespace = posix.join(
+      storage,
+      entry.organizationId,
+      entry.workspaceId,
+      entry.ownerId,
+      origin.contextId,
+      'sessions',
+    );
+    return {
+      organizationId: entry.organizationId,
+      workspaceId: entry.workspaceId,
+      ownerId: entry.ownerId,
+      approvalDigest: nativeRootDigest({ proof, entry, storageNamespace }),
+      sourceArtifactId: policy.sourceArtifactId,
+      targetArtifactId: policy.targetArtifactId,
+      generation: policy.generation,
+      profileId: policy.profileId,
+      contextId: origin.contextId,
+      originDigest: nativeRootDigest(origin),
+      sourceOrigin: origin,
+      storageNamespace,
+      evidenceDigest: policy.evidenceDigest,
+    };
+  });
+  return {
+    byteLength: bytes.byteLength,
+    sourceArtifactId: policy.sourceArtifactId,
+    targetArtifactId: policy.targetArtifactId,
+    approvals,
+  };
+}
+
+/** Independent operator approvals, not code registries or permission grants.
+ * Two fixed policy groups share the original context/byte limits. Each retains
+ * its exact source, target, proof and namespace; no aliases or writer migration.
+ * Both storage envs explicitly protect data from cleanup. Every call re-hashes
+ * both bounded files, and no partial result survives a second-policy failure. */
 export function configuredNativeOriginReaders(): readonly NativeOriginReaderApproval[] {
-  const path = process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH?.trim();
-  const expected =
-    process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256?.trim();
-  const storage = process.env.ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT?.trim();
-  if (!path && !expected && !storage) return [];
   try {
-    if (!path || !expected || !storage || !digest.safeParse(expected).success)
-      fail();
-    absolute(path);
-    absolute(storage);
-    const stat = lstatSync(path);
-    if (
-      !stat.isFile() ||
-      stat.isSymbolicLink() ||
-      stat.size > 256 * 1024 ||
-      realpathSync(path) !== path
-    )
-      fail();
-    const storageStat = lstatSync(storage);
-    if (
-      !storageStat.isDirectory() ||
-      storageStat.isSymbolicLink() ||
-      realpathSync(storage) !== storage
-    )
-      fail();
-    const bytes = readFileSync(path);
-    if (
-      'sha256:' + createHash('sha256').update(bytes).digest('hex') !==
-      expected
-    )
-      fail();
-    const policy = policySchema.parse(JSON.parse(bytes.toString('utf8')));
-    if (
-      policy.sourceArtifactId === policy.targetArtifactId ||
-      !digest.safeParse(process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID).success ||
-      process.env.ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID !==
-        process.env.ALLRICE_DSH_NATIVE_ARTIFACT_ID ||
-      policy.prerequisites.nodeMajor !==
-        Number(process.versions.node.split('.')[0]) ||
-      policy.prerequisites.platform !== process.platform ||
-      policy.prerequisites.arch !== process.arch ||
-      policy.prerequisites.modules !== process.versions.modules
-    )
-      fail();
-    const { contexts, ...proof } = policy;
-    const seen = new Set<string>();
-    return contexts.map((entry) => {
-      const { origin } = entry;
+    for (const name of Object.keys(process.env)) {
       if (
-        seen.has(origin.contextId) ||
-        origin.contextKind !== 'chat' ||
-        origin.rootSeed !== origin.contextId ||
-        origin.artifactId !== policy.sourceArtifactId ||
-        origin.profileId !== policy.profileId ||
-        origin.distributionGeneration !== policy.generation
+        name.startsWith('ALLRICE_DSH_ORIGIN_READER_') &&
+        !readerEnvironment.some((allowed) => name === allowed)
       )
         fail();
-      seen.add(origin.contextId);
-      const storageNamespace = posix.join(
-        storage,
-        entry.organizationId,
-        entry.workspaceId,
-        entry.ownerId,
-        origin.contextId,
-        'sessions',
+    }
+    const path = process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH?.trim();
+    const expected =
+      process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256?.trim();
+    const storage = process.env.ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT?.trim();
+    const hasSecond = secondReaderEnvironment.some(
+      (name) => process.env[name] !== undefined,
+    );
+    if (!path && !expected && !storage && !hasSecond) return [];
+    const first = loadNativeOriginReaderPolicy(
+      { path, expected, storage },
+      maximumPolicyBytes,
+    );
+    const policies = [first];
+    if (hasSecond) {
+      policies.push(
+        loadNativeOriginReaderPolicy(
+          {
+            path: process.env.ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH?.trim(),
+            expected:
+              process.env.ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256?.trim(),
+            storage:
+              process.env.ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT?.trim(),
+          },
+          maximumPolicyBytes - first.byteLength,
+        ),
       );
-      return {
-        organizationId: entry.organizationId,
-        workspaceId: entry.workspaceId,
-        ownerId: entry.ownerId,
-        approvalDigest: nativeRootDigest({ proof, entry, storageNamespace }),
-        sourceArtifactId: policy.sourceArtifactId,
-        targetArtifactId: policy.targetArtifactId,
-        generation: policy.generation,
-        profileId: policy.profileId,
-        contextId: origin.contextId,
-        originDigest: nativeRootDigest(origin),
-        sourceOrigin: origin,
-        storageNamespace,
-        evidenceDigest: policy.evidenceDigest,
-      };
-    });
+    }
+    const sources = new Set(policies.map((policy) => policy.sourceArtifactId));
+    const targets = new Set(policies.map((policy) => policy.targetArtifactId));
+    if (
+      sources.size !== policies.length ||
+      policies.some((policy) => targets.has(policy.sourceArtifactId))
+    )
+      fail();
+    const approvals = policies.flatMap((policy) => policy.approvals);
+    if (approvals.length > 64) fail();
+    const contexts = new Set<string>();
+    const proofs = new Set<string>();
+    const namespaces = new Set<string>();
+    for (const approval of approvals) {
+      if (
+        contexts.has(approval.contextId) ||
+        proofs.has(approval.approvalDigest) ||
+        namespaces.has(approval.storageNamespace)
+      )
+        fail();
+      contexts.add(approval.contextId);
+      proofs.add(approval.approvalDigest);
+      namespaces.add(approval.storageNamespace);
+    }
+    return approvals;
   } catch {
     return fail();
   }
