@@ -244,6 +244,31 @@ export async function openNativeScheduleControlHost(
         throw error;
       }
     },
+    async createRecurring(sessionId, rule) {
+      live();
+      const timing = recurringTiming(rule);
+      return ctx.schedule.create(m.sessions.SessionId(sessionId), {
+        title: TITLE,
+        prompt: PROMPT,
+        ...(timing.kind === 'every'
+          ? { every_seconds: timing.every_seconds }
+          : { daily: timing.daily }),
+      });
+    },
+    async updateRecurring(sessionId, id, expected, rule) {
+      live();
+      const result = await ctx.schedule.update({
+        sessionId: m.sessions.SessionId(sessionId),
+        id: m.schedule.ScheduleId(id),
+        expected: globalThis.structuredClone(expected),
+        change: recurringTiming(rule),
+        title: TITLE,
+        prompt: PROMPT,
+      });
+      if ('record' in result) return result.record;
+      if ('code' in result && result.code === 'schedule_conflict') return null;
+      throw new NativeScheduleOnceError('task_invalid');
+    },
     async deleteOnce(sessionId, id) {
       live();
       await ctx.schedule.delete({
@@ -274,4 +299,32 @@ export async function openNativeScheduleControlHost(
       return closing;
     },
   };
+  function recurringTiming(rule) {
+    if (
+      rule?.kind === 'every' &&
+      Object.keys(rule).sort().join(',') === 'kind,seconds' &&
+      Number.isSafeInteger(rule.seconds) &&
+      rule.seconds >= 60 &&
+      rule.seconds <= 31_536_000
+    )
+      return { kind: 'every', every_seconds: rule.seconds };
+    if (
+      rule?.kind === 'daily' &&
+      Object.keys(rule).sort().join(',') === 'kind,time,timezone' &&
+      /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/.test(rule.time) &&
+      typeof rule.timezone === 'string' &&
+      rule.timezone.length <= 64
+    ) {
+      try {
+        new Intl.DateTimeFormat('en', { timeZone: rule.timezone });
+      } catch {
+        throw new NativeScheduleOnceError('binding_invalid');
+      }
+      return {
+        kind: 'daily',
+        daily: { time: rule.time, time_zone: rule.timezone },
+      };
+    }
+    throw new NativeScheduleOnceError('binding_invalid');
+  }
 }

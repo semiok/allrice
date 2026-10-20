@@ -80,7 +80,58 @@ export class NativeOnceWorkerRuntimeError extends Error {
   }
 }
 
-async function productionDatabase(): Promise<NativeOnceWorkerDatabasePorts> {
+async function productionDatabase(
+  profileId: string,
+): Promise<NativeOnceWorkerDatabasePorts> {
+  if (profileId === 'allrice-recurring-control-v1') {
+    const db = await import('@allrice/database');
+    assertDatabaseApis(db, [
+      'getDatabase',
+      'nativeOnceDigest',
+      'lockNativeOnceAdmissions',
+      'initializeNativeRecurringPartition',
+      'dispatchNextNativeRecurringOccurrence',
+      'createNativeRecurringSqlStore',
+      'lockNativeRecurringAdmissions',
+    ]);
+    // Keep the lifecycle independent of the document/receipt format. The exact
+    // profile selects a fixed in-repository adapter, never a fallback backend.
+    return {
+      getDatabase: db.getDatabase,
+      nativeOnceDigest: db.nativeOnceDigest,
+      lockNativeOnceAdmissions: db.lockNativeOnceAdmissions,
+      initializeNativeOncePartition: db.initializeNativeRecurringPartition,
+      dispatchNextNativeOnceOccurrence:
+        db.dispatchNextNativeRecurringOccurrence,
+      createNativeOnceSqlStore(options) {
+        const store = db.createNativeRecurringSqlStore({
+          ...options,
+          lockAdmission: db.lockNativeRecurringAdmissions,
+        });
+        return {
+          ...store,
+          commitMutation(writer, write) {
+            if (write.mutation.kind === 'reject_command')
+              return Promise.resolve('rejected');
+            return store.commitMutation(writer, {
+              ...write,
+              mutation: write.mutation,
+            });
+          },
+          readExactCommit(writer, write) {
+            if (write.mutation.kind === 'reject_command')
+              return Promise.resolve('unknown');
+            return store.readExactCommit(writer, {
+              ...write,
+              mutation: write.mutation,
+            });
+          },
+        };
+      },
+    };
+  }
+  if (profileId !== 'allrice-once-control-v1')
+    throw new Error('binding_invalid');
   const module: unknown = await import('@allrice/database');
   const required = [
     'getDatabase',
@@ -90,6 +141,11 @@ async function productionDatabase(): Promise<NativeOnceWorkerDatabasePorts> {
     'initializeNativeOncePartition',
     'dispatchNextNativeOnceOccurrence',
   ];
+  assertDatabaseApis(module, required);
+  return module as NativeOnceWorkerDatabasePorts;
+}
+
+function assertDatabaseApis(module: unknown, required: readonly string[]) {
   if (
     !module ||
     typeof module !== 'object' ||
@@ -98,7 +154,6 @@ async function productionDatabase(): Promise<NativeOnceWorkerDatabasePorts> {
     )
   )
     throw new Error('database_api_unavailable');
-  return module as NativeOnceWorkerDatabasePorts;
 }
 
 async function verifyStorageRoot(path: string) {
@@ -201,7 +256,9 @@ export function createNativeOnceWorkerRuntime(
         reference.stateRoot,
       );
       if (stopRequested) return;
-      const db = await (testPorts.loadDatabase ?? productionDatabase)();
+      const db = testPorts.loadDatabase
+        ? await testPorts.loadDatabase()
+        : await productionDatabase(reference.profileId);
       if (stopRequested) return;
       const initialized = await db.initializeNativeOncePartition(reference);
       if (stopRequested) return;

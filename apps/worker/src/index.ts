@@ -70,6 +70,7 @@ import {
 import { createWorkerStartupObservation } from './startup-observation.js';
 import {
   configuredNativeOnceControlSource,
+  configuredNativeRecurringControlSource,
   createNativeOnceWorkerService,
 } from './native-schedule-once-loader.js';
 
@@ -184,6 +185,12 @@ const nativeOnceControl = createNativeOnceWorkerService({
   source: nativeOnceControlSource,
   readMaintenance: readDevMaintenance,
 });
+const nativeRecurringControl = createNativeOnceWorkerService({
+  workerId,
+  source: configuredNativeRecurringControlSource(),
+  readMaintenance: readDevMaintenance,
+});
+const nativeScheduleControls = [nativeOnceControl, nativeRecurringControl];
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
     ? await startup.run('maintenance_diagnostics', () =>
@@ -279,7 +286,8 @@ function mcpDiscoveryTick() {
 
 async function refreshReadiness() {
   try {
-    if (nativeOnceControl.enabled) await nativeOnceControl.admissionOpen();
+    for (const control of nativeScheduleControls)
+      if (control.enabled) await control.admissionOpen();
     await pingDatabase();
     await queueSummary();
     databaseReady = true;
@@ -383,9 +391,12 @@ const server = createServer(async (request, response) => {
     let maintenance;
     try {
       maintenance = await readDevMaintenance();
-      await nativeOnceControl.observeMaintenance(maintenance);
+      for (const control of nativeScheduleControls)
+        await control.observeMaintenance(maintenance);
     } catch {
-      await nativeOnceControl.stop().catch(() => undefined);
+      await Promise.allSettled(
+        nativeScheduleControls.map((control) => control.stop()),
+      );
       response.writeHead(503);
       response.end(
         JSON.stringify(
@@ -408,8 +419,22 @@ const server = createServer(async (request, response) => {
       nativeOnceControl.enabled &&
       nativeOnceStatus.state === 'closed' &&
       (!maintenance || maintenance.state === 'open');
+    const nativeRecurringStatus = nativeRecurringControl.status();
+    const nativeRecurringBlocked =
+      nativeRecurringStatus.state === 'blocked' ||
+      (nativeRecurringStatus.state === 'cold' &&
+        'lastFault' in nativeRecurringStatus &&
+        nativeRecurringStatus.lastFault?.phase === 'initialization');
+    const nativeRecurringRestartRequired =
+      nativeRecurringControl.enabled &&
+      nativeRecurringStatus.state === 'closed' &&
+      (!maintenance || maintenance.state === 'open');
     const ready =
-      databaseReady && !nativeOnceBlocked && !nativeOnceRestartRequired;
+      databaseReady &&
+      !nativeOnceBlocked &&
+      !nativeOnceRestartRequired &&
+      !nativeRecurringBlocked &&
+      !nativeRecurringRestartRequired;
     response.statusCode = ready ? 200 : 503;
     if (ready) response.once('finish', () => startup.mark('health_ready'));
     response.end(
@@ -421,7 +446,11 @@ const server = createServer(async (request, response) => {
             ? 'native_once_blocked'
             : nativeOnceRestartRequired
               ? 'native_once_restart_required'
-              : lastDatabaseError,
+              : nativeRecurringBlocked
+                ? 'native_recurring_blocked'
+                : nativeRecurringRestartRequired
+                  ? 'native_recurring_restart_required'
+                  : lastDatabaseError,
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
         nativeArtifact,
@@ -429,6 +458,9 @@ const server = createServer(async (request, response) => {
         nativeArtifactReferenceCoverage,
         ...(nativeOnceControl.enabled
           ? { nativeOnceControl: nativeOnceStatus }
+          : {}),
+        ...(nativeRecurringControl.enabled
+          ? { nativeRecurringControl: nativeRecurringStatus }
           : {}),
         ...(maintenance ? { maintenance } : {}),
         ...(maintenance
@@ -521,21 +553,23 @@ async function runAutomationTick() {
     // wrapper too, so a native Schedule timer cannot outlive closed admission.
     // Its own admission still guards the independent producers below. A once
     // Host fault must not starve existing automations or reference ingestion.
-    if (nativeOnceControl.enabled) {
-      await nativeOnceControl.admissionOpen().catch((error: unknown) => {
-        console.error('[M6] native once admission failed', {
-          message: error instanceof Error ? error.message : 'unknown error',
+    for (const control of nativeScheduleControls)
+      if (control.enabled) {
+        await control.admissionOpen().catch((error: unknown) => {
+          console.error('[M6] native schedule admission failed', {
+            message: error instanceof Error ? error.message : 'unknown error',
+          });
         });
-      });
-    }
+      }
     await runProducer('automation', async () => {
       admitted = true;
       if (stopping) return;
-      await nativeOnceControl.tick().catch((error: unknown) => {
-        console.error('[M6] native once scheduler failed', {
-          message: error instanceof Error ? error.message : 'unknown error',
+      for (const control of nativeScheduleControls)
+        await control.tick().catch((error: unknown) => {
+          console.error('[M6] native schedule scheduler failed', {
+            message: error instanceof Error ? error.message : 'unknown error',
+          });
         });
-      });
       if (stopping) return;
       await processNextReference(
         process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
@@ -555,7 +589,10 @@ async function runAutomationTick() {
         await syncExperienceAdoptions();
       }
     });
-    if (!admitted && nativeOnceControl.enabled) await nativeOnceControl.stop();
+    if (!admitted)
+      await Promise.all(
+        nativeScheduleControls.map((control) => control.stop()),
+      );
   } catch (error) {
     console.error('[M6] automation scheduler failed', {
       message: error instanceof Error ? error.message : 'unknown error',
@@ -703,7 +740,9 @@ function shutdown(signal: string) {
   void previewClosing?.catch(() => undefined);
   // stop() fences further once ticks/consumer admission synchronously, then
   // drains the current tick, public Schedule/SDK/root, both backends and writes.
-  const nativeOnceClosing = nativeOnceControl.stop();
+  const nativeOnceClosing = Promise.all(
+    nativeScheduleControls.map((control) => control.stop()),
+  );
   void nativeOnceClosing.catch(() => undefined);
   shutdownTask = (async () => {
     console.info(`[M5] received ${signal}; stopping worker`);

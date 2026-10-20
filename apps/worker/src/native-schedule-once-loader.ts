@@ -49,7 +49,7 @@ const invalid = (): never => {
   throw new NativeScheduleOnceError('binding_invalid');
 };
 
-export function parseNativeOnceControlReference(
+export function parseNativeScheduleControlReference(
   value: unknown,
 ): NativeScheduleControlReference {
   if (
@@ -78,7 +78,9 @@ export function parseNativeOnceControlReference(
   const ref = value as NativeScheduleControlReference;
   if (
     !/^sha256:[a-f0-9]{64}$/.test(ref.artifactId) ||
-    ref.profileId !== 'allrice-once-control-v1' ||
+    !['allrice-once-control-v1', 'allrice-recurring-control-v1'].includes(
+      ref.profileId,
+    ) ||
     Buffer.byteLength(ref.storageId) > 512 ||
     Buffer.byteLength(ref.stateRoot) > 4096 ||
     !isAbsolute(ref.stateRoot) ||
@@ -86,6 +88,15 @@ export function parseNativeOnceControlReference(
   )
     return invalid();
   return Object.freeze(structuredClone(ref));
+}
+
+/** Historical once entry remains strict; new callers explicitly choose the new profile. */
+export function parseNativeOnceControlReference(
+  value: unknown,
+): NativeScheduleControlReference {
+  const ref = parseNativeScheduleControlReference(value);
+  if (ref.profileId !== 'allrice-once-control-v1') return invalid();
+  return ref;
 }
 
 /** Private test seams only; deployment settings cannot supply functions/URLs. */
@@ -104,7 +115,7 @@ export function createNativeOnceControlSource(
   reference: NativeScheduleControlReference,
   testPorts: NativeOnceLoaderTestPorts = {},
 ): NativeScheduleControlSource {
-  const ref = parseNativeOnceControlReference(reference);
+  const ref = parseNativeScheduleControlReference(reference);
   const artifact = (
     testPorts.approvedArtifact ?? approvedDshNativeControlArtifact
   )(ref.artifactId);
@@ -225,6 +236,22 @@ export function configuredNativeOnceControlSource(
     parseNativeOnceControlReference(raw),
     testPorts,
   );
+}
+
+export function configuredNativeRecurringControlSource(
+  environment: Readonly<Record<string, string | undefined>> = process.env,
+  testPorts: NativeOnceLoaderTestPorts = {},
+) {
+  if (environment.ALLRICE_NATIVE_RECURRING_ENABLED !== '1') return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(environment.ALLRICE_NATIVE_RECURRING_REFERENCE ?? 'null');
+  } catch {
+    return invalid();
+  }
+  const reference = parseNativeScheduleControlReference(raw);
+  if (reference.profileId !== 'allrice-recurring-control-v1') return invalid();
+  return createNativeOnceControlSource(reference, testPorts);
 }
 
 /** Retirement/readback only: metadata through this exact artifact's public

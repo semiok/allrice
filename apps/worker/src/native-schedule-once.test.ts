@@ -22,10 +22,14 @@ import {
   NativeScheduleOnceError,
   openPublicNativeScheduleOnceHost,
   type NativeScheduleControl,
+  type NativeScheduleAnyControl,
+  type NativeScheduleRecurringControl,
+  type NativeScheduleRecurringRule,
   type NativeScheduleControlHost,
   type NativeScheduleControlReference,
   type NativeScheduleControlSource,
   type NativeScheduleHostFactory,
+  type NativeScheduleHostModule,
   type NativeScheduleMutation,
   type NativeScheduleOnceStore,
   type NativeSchedulePublicModules,
@@ -70,7 +74,9 @@ function row(
     ...overrides,
   };
 }
-function fixture(initial: NativeScheduleControl[] = [row()]) {
+function fixture<C extends NativeScheduleAnyControl = NativeScheduleControl>(
+  initial: C[] = [row()] as unknown as C[],
+) {
   const trace: string[] = [],
     rows = structuredClone(initial),
     records = new Map<string, ScheduleTask>(),
@@ -124,7 +130,13 @@ function fixture(initial: NativeScheduleControl[] = [row()]) {
       records.delete(m.nativeTaskId);
       c.taskDeleted = true;
     }
-    if (m.kind === 'confirm_command') c.command.status = 'confirmed';
+    if (m.kind === 'confirm_command') {
+      c.command.status = 'confirmed';
+      if (c.kind === 'recurring' && c.command.kind !== 'delete') {
+        c.appliedRevision = c.revision;
+        c.appliedRule = structuredClone(c.rule);
+      }
+    }
     if (m.kind === 'reject_command') c.command.status = 'blocked';
     journal.set(write.writeId, structuredClone(write));
   }
@@ -217,6 +229,8 @@ function fixture(initial: NativeScheduleControl[] = [row()]) {
   };
   const hosts: FakeHost[] = [];
   let creations = 0;
+  let updates = 0,
+    updateConflict = false;
   const factory: NativeScheduleHostFactory = vi.fn(
     async ({ backend, auxiliaryBackend }) => {
       const number = hosts.length + 1,
@@ -307,6 +321,80 @@ function fixture(initial: NativeScheduleControl[] = [row()]) {
             };
             await h.unit!.putRecord('tasks', task.record.id, task);
             cache.set(task.record.id, task);
+            return task.record;
+          });
+        },
+        createRecurring(id, rule) {
+          return track(async () => {
+            creations++;
+            trace.push(`create-recurring:${number}`);
+            const task: ScheduleTask = {
+              sessionId: SessionId(id),
+              status: 'active',
+              record: {
+                id: ScheduleId(`native-${creations}`),
+                title: TITLE,
+                prompt: PROMPT,
+                scheduledAt: '2030-01-01T00:00:00.000Z',
+                ...(rule.kind === 'every'
+                  ? { kind: 'every' as const, everySeconds: rule.seconds }
+                  : {
+                      kind: 'daily' as const,
+                      time: `${rule.time}.000`,
+                      timeZone: rule.timezone,
+                    }),
+              },
+              deliveryHistory: {
+                records: [],
+                earlierRecordsUnavailable: false,
+              },
+            };
+            await h.unit!.putRecord('tasks', task.record.id, task);
+            cache.set(task.record.id, task);
+            return task.record;
+          });
+        },
+        updateRecurring(sessionId, id, expected, rule) {
+          return track(async () => {
+            updates++;
+            trace.push(`update-recurring:${number}`);
+            const old = cache.get(id)!;
+            if (
+              old.sessionId !== sessionId ||
+              JSON.stringify(old.record) !== JSON.stringify(expected)
+            )
+              throw Error('expected must contain the full exact record');
+            if (updateConflict) {
+              updateConflict = false;
+              return null;
+            }
+            const same =
+              old.record.kind === rule.kind &&
+              (rule.kind === 'every'
+                ? old.record.kind === 'every' &&
+                  old.record.everySeconds === rule.seconds
+                : old.record.kind === 'daily' &&
+                  old.record.time === `${rule.time}.000` &&
+                  old.record.timeZone === rule.timezone);
+            if (same) return old.record; // Public Schedule no-op performs no KV write.
+            const task: ScheduleTask = {
+              ...old,
+              record: {
+                id: old.record.id,
+                title: TITLE,
+                prompt: PROMPT,
+                scheduledAt: '2030-01-01T01:00:00.000Z',
+                ...(rule.kind === 'every'
+                  ? { kind: 'every' as const, everySeconds: rule.seconds }
+                  : {
+                      kind: 'daily' as const,
+                      time: `${rule.time}.000`,
+                      timeZone: rule.timezone,
+                    }),
+              },
+            };
+            await h.unit!.putRecord('tasks', id, task);
+            cache.set(id, task);
             return task.record;
           });
         },
@@ -406,6 +494,12 @@ function fixture(initial: NativeScheduleControl[] = [row()]) {
     },
     creations() {
       return creations;
+    },
+    updates() {
+      return updates;
+    },
+    conflictNextUpdate() {
+      updateConflict = true;
     },
   };
 }
@@ -793,6 +887,375 @@ const emptyWorkspaceGlobal = () => ({
   archivedSessionIds: [],
   pinnedSessionIds: [],
 });
+function recurringRow(
+  rule: NativeScheduleRecurringRule = { kind: 'every', seconds: 60 },
+): NativeScheduleRecurringControl {
+  const base: Omit<ReturnType<typeof row>, 'at'> & { at?: string } = row();
+  delete base.at;
+  return {
+    ...base,
+    kind: 'recurring',
+    rule,
+    appliedRevision: null,
+    appliedRule: null,
+  };
+}
+
+describe('recurring control union over the same fenced Host and KV lifecycle', () => {
+  it.each<NativeScheduleRecurringRule>([
+    { kind: 'every', seconds: 60 },
+    { kind: 'daily', time: '09:30:00', timezone: 'Asia/Shanghai' },
+  ])('creates %j once across repeated ticks', async (rule) => {
+    const f = fixture([recurringRow(rule)]),
+      c = f.create();
+    await c.tick();
+    await c.tick();
+    expect(f.creations()).toBe(1);
+    expect(f.rows[0]!.command.status).toBe('confirmed');
+    expect(f.rows[0]!.appliedRule).toEqual(rule);
+    expect(f.records.get(f.rows[0]!.nativeTaskId!)!.record.kind).toBe(
+      rule.kind,
+    );
+    await c.stop();
+  });
+
+  it('confirms metadata-only edits through a same-rule SDK update without resetting target', async () => {
+    const f = fixture([recurringRow()]),
+      c = f.create();
+    await c.tick();
+    const id = f.rows[0]!.nativeTaskId!,
+      before = structuredClone(f.records.get(id)!);
+    f.rows[0]!.revision = 2;
+    f.rows[0]!.command = {
+      id: randomUUID(),
+      kind: 'update',
+      status: 'pending',
+    };
+    await c.tick();
+    await c.tick();
+    expect(f.updates()).toBe(1);
+    expect(f.creations()).toBe(1);
+    expect(f.hosts).toHaveLength(1);
+    expect(f.records.get(id)).toEqual(before);
+    expect(f.rows[0]!.appliedRevision).toBe(2);
+    expect(f.rows[0]!.nativeTaskId).toBe(id);
+    await c.stop();
+  });
+
+  it('updates interval to daily with the complete observed record and keeps both IDs', async () => {
+    const f = fixture([recurringRow()]),
+      c = f.create();
+    await c.tick();
+    const id = f.rows[0]!.nativeTaskId!,
+      session = f.rows[0]!.controlSessionId;
+    f.rows[0]!.revision = 2;
+    f.rows[0]!.rule = {
+      kind: 'daily',
+      time: '08:00:00',
+      timezone: 'Europe/London',
+    };
+    f.rows[0]!.command = {
+      id: randomUUID(),
+      kind: 'update',
+      status: 'pending',
+    };
+    await c.tick();
+    expect(f.updates()).toBe(1);
+    expect(f.creations()).toBe(1);
+    expect(f.hosts).toHaveLength(1);
+    expect(f.rows[0]!.nativeTaskId).toBe(id);
+    expect(f.rows[0]!.controlSessionId).toBe(session);
+    expect(f.records.get(id)!.record).toMatchObject({
+      kind: 'daily',
+      time: '08:00:00.000',
+      timeZone: 'Europe/London',
+    });
+    await c.stop();
+  });
+
+  it('does not confirm an explicit non-mutating SDK conflict, then refreshes its expected record', async () => {
+    const f = fixture([recurringRow()]),
+      c = f.create();
+    await c.tick();
+    f.rows[0]!.revision = 2;
+    f.rows[0]!.rule = { kind: 'every', seconds: 120 };
+    f.rows[0]!.command = {
+      id: randomUUID(),
+      kind: 'update',
+      status: 'pending',
+    };
+    f.conflictNextUpdate();
+    await c.tick();
+    expect(f.rows[0]!.command.status).toBe('pending');
+    await c.tick();
+    expect(f.rows[0]!.command.status).toBe('confirmed');
+    expect(f.updates()).toBe(2);
+    expect(f.creations()).toBe(1);
+    await c.stop();
+  });
+
+  it('retains oldest-first full history and allows the native 200-record prune on cold restore', async () => {
+    const f = fixture([recurringRow()]),
+      first = f.create();
+    await first.tick();
+    const id = f.rows[0]!.nativeTaskId!,
+      original = f.records.get(id)!;
+    const history = Array.from({ length: 200 }, (_, index) => ({
+      scheduledAt: new Date(Date.UTC(2030, 0, 1, 0, index)).toISOString(),
+      deliveredAt: new Date(Date.UTC(2030, 0, 1, 0, index, 1)).toISOString(),
+      messageId: `message-${index}` as NonNullable<
+        ScheduleTask['lastDelivery']
+      >['messageId'],
+      prompt: PROMPT,
+    }));
+    const { prompt, ...lastDelivery } = history.at(-1)!;
+    expect(prompt).toBe(PROMPT);
+    const retained: ScheduleTask = {
+      ...original,
+      lastDelivery,
+      record: {
+        ...original.record,
+        scheduledAt: new Date(Date.UTC(2030, 0, 1, 0, 200)).toISOString(),
+      },
+      deliveryHistory: { records: history, earlierRecordsUnavailable: false },
+    };
+    await f.hosts[0]!.unit!.putRecord('tasks', id, retained);
+    const added = {
+      scheduledAt: new Date(Date.UTC(2030, 0, 1, 0, 200)).toISOString(),
+      deliveredAt: new Date(Date.UTC(2030, 0, 1, 0, 200, 1)).toISOString(),
+      messageId: 'message-200' as NonNullable<
+        ScheduleTask['lastDelivery']
+      >['messageId'],
+    };
+    retained.record = {
+      ...retained.record,
+      scheduledAt: new Date(Date.UTC(2030, 0, 1, 0, 201)).toISOString(),
+    };
+    retained.lastDelivery = added;
+    retained.deliveryHistory = {
+      records: [...history.slice(1), { ...added, prompt: PROMPT }],
+      earlierRecordsUnavailable: true,
+      earlierRecordsPruned: true,
+    };
+    await f.hosts[0]!.unit!.putRecord('tasks', id, retained);
+    expect(f.records.get(id)).toEqual(retained);
+    await first.stop();
+    const second = f.create();
+    await second.tick();
+    expect(f.creations()).toBe(1);
+    expect(f.hosts[1]!.cache.get(id)).toEqual(retained);
+    expect(f.trace).toContain(`resume:${f.rows[0]!.controlSessionId}`);
+    await second.stop();
+  });
+
+  it('rejects oversized or reversed native receipt history before committing it', async () => {
+    for (const reversed of [false, true]) {
+      const f = fixture([recurringRow()]),
+        c = f.create();
+      await c.tick();
+      const id = f.rows[0]!.nativeTaskId!,
+        task = structuredClone(f.records.get(id)!);
+      const records = Array.from(
+        { length: reversed ? 2 : 201 },
+        (_, index) => ({
+          scheduledAt: new Date(
+            Date.UTC(2029, 0, 1, 0, reversed ? 2 - index : index),
+          ).toISOString(),
+          deliveredAt: new Date(Date.UTC(2029, 0, 1, 0, index)).toISOString(),
+          messageId: `history-${index}` as NonNullable<
+            ScheduleTask['lastDelivery']
+          >['messageId'],
+        }),
+      );
+      task.lastDelivery = records.at(-1)!;
+      task.deliveryHistory = { records, earlierRecordsUnavailable: false };
+      const before = vi.mocked(f.store.commitMutation).mock.calls.length;
+      await expect(
+        f.hosts[0]!.unit!.putRecord('tasks', id, task),
+      ).rejects.toMatchObject({ code: 'task_invalid' });
+      expect(vi.mocked(f.store.commitMutation).mock.calls).toHaveLength(before);
+      await c.stop();
+    }
+  });
+
+  it('does not resend an unknown native receipt or create a replacement after recovery', async () => {
+    const f = fixture([recurringRow()]),
+      c = f.create();
+    await c.tick();
+    const id = f.rows[0]!.nativeTaskId!,
+      task = structuredClone(f.records.get(id)!);
+    task.lastDelivery = {
+      scheduledAt: task.record.scheduledAt,
+      deliveredAt: '2030-01-01T00:00:01.000Z',
+      messageId: 'one-native-receipt' as NonNullable<
+        ScheduleTask['lastDelivery']
+      >['messageId'],
+    };
+    task.record = { ...task.record, scheduledAt: '2030-01-01T00:01:00.000Z' };
+    task.deliveryHistory = {
+      records: [{ ...task.lastDelivery, prompt: PROMPT }],
+      earlierRecordsUnavailable: false,
+    };
+    f.loseAck('put_task', true, true);
+    await expect(
+      f.hosts[0]!.unit!.putRecord('tasks', id, task),
+    ).rejects.toMatchObject({ code: 'ack_unknown' });
+    await c.tick();
+    expect(f.creations()).toBe(1);
+    expect(
+      vi
+        .mocked(f.store.commitMutation)
+        .mock.calls.filter(([, w]) => w.mutation.kind === 'put_task'),
+    ).toHaveLength(2);
+    await c.stop();
+  });
+
+  it('deletes through the existing durable KV tombstone and confirms only after it persists', async () => {
+    const f = fixture([recurringRow()]),
+      c = f.create();
+    await c.tick();
+    const id = f.rows[0]!.nativeTaskId!;
+    f.rows[0]!.command = {
+      id: randomUUID(),
+      kind: 'delete',
+      status: 'pending',
+    };
+    await c.tick();
+    expect(f.records.has(id)).toBe(false);
+    expect(f.rows[0]!.taskDeleted).toBe(true);
+    expect(f.rows[0]!.command.status).toBe('confirmed');
+    expect(f.rows[0]!.nativeTaskId).toBe(id);
+    await c.stop();
+  });
+});
+
+describe('recurring control public Host selector adapter with scripted services only', () => {
+  async function adapter() {
+    const record = {
+      id: ScheduleId('stable-task'),
+      kind: 'every' as const,
+      everySeconds: 60,
+      scheduledAt: '2030-01-01T00:00:00.000Z',
+      title: TITLE,
+      prompt: PROMPT,
+    };
+    let result: Record<string, unknown> = {
+      id: record.id,
+      updated: false,
+      record,
+    };
+    const schedule = {
+      create: vi.fn<(...args: unknown[]) => Promise<typeof record>>(
+        async () => record,
+      ),
+      update: vi.fn<(...args: unknown[]) => Promise<typeof result>>(
+        async () => result,
+      ),
+    };
+    class Context {
+      schedule = schedule;
+      on() {}
+    }
+    const modules = {
+      cordis: { Context },
+      llm: { LlmAdapter: class {} },
+      sessions: { SessionId },
+      schedule: { ScheduleId },
+      credentials: {
+        credentialKey: () => 'browser-signing-only',
+        CredentialProvider: class {},
+      },
+    } as unknown as NativeSchedulePublicModules;
+    const f = fixture([]);
+    const { openNativeScheduleControlHost } = (await import(
+      new URL('../dsh/native-schedule-host-factory.mjs', import.meta.url).href
+    )) as { openNativeScheduleControlHost: NativeScheduleHostModule };
+    const host = await openNativeScheduleControlHost(
+      {
+        source: { ...f.source, loadModules: async () => modules },
+        backend: { async close() {} },
+        auxiliaryBackend: { async close() {} },
+        stats: {
+          preStepDenials: 0,
+          modelGateDenials: 0,
+          adapterCalls: 0,
+          toolDenials: 0,
+        },
+      },
+      NativeScheduleOnceError,
+    );
+    return {
+      host,
+      schedule,
+      record,
+      setResult(value: Record<string, unknown>) {
+        result = value;
+      },
+    };
+  }
+
+  it('uses public every_seconds and daily.time_zone without calculating targets', async () => {
+    const f = await adapter();
+    await f.host.createRecurring!('same-session', {
+      kind: 'every',
+      seconds: 120,
+    });
+    await f.host.createRecurring!('same-session', {
+      kind: 'daily',
+      time: '09:30:00',
+      timezone: 'Asia/Shanghai',
+    });
+    expect(f.schedule.create.mock.calls.map((args) => args[1])).toEqual([
+      { title: TITLE, prompt: PROMPT, every_seconds: 120 },
+      {
+        title: TITLE,
+        prompt: PROMPT,
+        daily: { time: '09:30:00', time_zone: 'Asia/Shanghai' },
+      },
+    ]);
+  });
+
+  it('passes the complete expected record and accepts a proven no-op update', async () => {
+    const f = await adapter();
+    expect(
+      await f.host.updateRecurring!('same-session', f.record.id, f.record, {
+        kind: 'every',
+        seconds: 60,
+      }),
+    ).toEqual(f.record);
+    expect(f.schedule.update.mock.calls[0]![0]).toEqual({
+      sessionId: SessionId('same-session'),
+      id: f.record.id,
+      expected: f.record,
+      change: { kind: 'every', every_seconds: 60 },
+      title: TITLE,
+      prompt: PROMPT,
+    });
+  });
+
+  it('defers only an explicit non-mutating schedule_conflict', async () => {
+    const f = await adapter();
+    f.setResult({ id: f.record.id, updated: false, code: 'schedule_conflict' });
+    expect(
+      await f.host.updateRecurring!('same-session', f.record.id, f.record, {
+        kind: 'every',
+        seconds: 60,
+      }),
+    ).toBeNull();
+    f.setResult({
+      id: f.record.id,
+      updated: false,
+      code: 'schedule_not_found',
+    });
+    await expect(
+      f.host.updateRecurring!('same-session', f.record.id, f.record, {
+        kind: 'every',
+        seconds: 60,
+      }),
+    ).rejects.toMatchObject({ code: 'task_invalid' });
+  });
+});
+
 describe('generation-bound workspace auxiliary port; scripted SQL semantics only', () => {
   it.each(['foreign path', 'UTF-8 title bound'] as const)(
     'rejects %s before persisting a workspace record',

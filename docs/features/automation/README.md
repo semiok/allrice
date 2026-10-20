@@ -1,12 +1,12 @@
 # Automation
 
-> Status: **Native once flow implemented behind an explicit deployment flag; existing recurring consumers retained pending migration.**
+> Status: **Native once and recurring task management implemented behind explicit deployment flags; legacy consumers retained pending migration.**
 
 AllRice 的自动化参考飞书智能伙伴的“触发器 + 技能/工作流 + 执行记录”模型，但复用 AllRice 已有的 Employee、Run、Job、Worker 和权限快照。
 
 ## 一次性任务（MET192）
 
-当前对话顶部的时钟入口可以创建、查看和取消尚未执行的一次性任务。列表只包含当前真人员工在当前工作区、当前 AI 员工名下的任务；点击记录回到它绑定的原对话。结果使用既有 Run、聊天消息和成果展示。表单使用浏览器时区并将 UTC 时刻与 IANA 时区一起保存；本切片不增加周期表单或全局管理台。
+当前对话顶部的时钟入口可以创建、查看和取消尚未执行的一次性任务。列表只包含当前真人员工在当前工作区、当前 AI 员工名下的任务；点击记录回到它绑定的原对话。结果使用既有 Run、聊天消息和成果展示。表单使用浏览器时区并将 UTC 时刻与 IANA 时区一起保存。
 
 聊天中的 `automation.create(name, prompt, delayMinutes)` 和页面入口采用相同的权限与持久化规则。工具调用还必须来自真实租约下的当前员工 Run，且其冻结快照包含该工具。延迟时刻只在首次提交时计算，重读同一请求不会把时间推后。创建请求结果未知时，页面保留请求标识并精确回读，不自动再建一个任务。
 
@@ -27,6 +27,23 @@ AllRice 的自动化参考飞书智能伙伴的“触发器 + 技能/工作流 +
 ### 回归入口
 
 普通 `pnpm test` 覆盖状态、控制器、参数、运行时和持久化端口；CI 另外在真实 Chrome 中验证 `once-tasks.browser.test.ts`，在隔离 PostgreSQL 中验证 `native-schedule-once.integration.test.ts` 与 `native-schedule-once-sql.integration.test.ts`。后者实际启动公共 Host、重启恢复原生任务并入队一个普通 Run，不调用模型。真实 Dev 页面、自然语言创建和到时模型交付必须另行验证，不能以这些确定性检查代替。
+
+## 周期任务（MET192）
+
+同一个时钟入口增加“周期任务”，先提供固定间隔（至少一分钟）和每日指定时间／IANA 时区。任务绑定当前对话；每一期使用普通员工 Run，执行记录可打开原对话。时间计算、时区及夏令时行为由批准包的 DSH Schedule 公共接口负责，没有增加 SQL 到期时钟或业务 Agent。
+
+- 创建后等待原生任务确认；编辑保留原 Task 和控制 Session，配置版本不可改写。每个到期回执绑定实际生效的配置，旧配置回执不会执行新版内容。
+- 暂停、编辑和删除会阻止尚未入队的旧回执；已排队或运行的工作仍通过原对话停止。恢复只接收恢复时刻之后的周期，不补发暂停期间积压任务。
+- 操作使用版本检查与固定请求标识。未知写入先精确回读原请求和结果；页面关闭、切换账号或隐藏后不会继续后台轮询，也不会自动重发写入。
+- 删除保留设置版本和逐期历史。当前云端权限、成员和配发在修改、派发及执行准入时重新校验，历史不会因为撤权或删除而改成成功。
+
+### 部署与回归
+
+先应用 `0196_native_schedule_recurring.sql`；Web/Worker 同时显式启用 `ALLRICE_NATIVE_RECURRING_ENABLED=1`，配置 `ALLRICE_NATIVE_RECURRING_REFERENCE` 的批准包 ID、`allrice-recurring-control-v1`、独立 storage ID 和持久目录。原一次性分区保持自己的精确引用，不能跟随新包静默重指向。新控制分区与一次性复用 writer 租约、工作区持久化和双后端关闭证明，重启仍需原引用和明确关闭证明。
+
+默认测试覆盖契约、控制器、状态及接口。CI 追加 `recurring-tasks.browser.test.ts` 的真实 Chrome 管理流程，以及 `native-schedule-recurring.integration.test.ts` 的隔离 PostgreSQL 事务与权限检查。Worker 的同名 integration 文件使用实际公开 Host，验证固定间隔到期、同任务改为 daily、两期入队、关闭后新 epoch 恢复和保留删除历史，全程不调用模型。真实 Dev 的创建、模型结果、管理和隔离另行验收。
+
+这一步只新增上述表单管理流程。自然语言周期创建、原有普通自动化、经验整理、质量任务等消费者迁移继续按独立切片推进；旧消费者没有被改成新时钟所有者。
 
 ## 原有自动化能力（逐步迁移）
 

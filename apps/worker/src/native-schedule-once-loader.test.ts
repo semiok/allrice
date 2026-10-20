@@ -4,9 +4,11 @@ import type * as Database from '@allrice/database';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configuredNativeOnceControlSource,
+  configuredNativeRecurringControlSource,
   createNativeOnceControlSource,
   createNativeOnceWorkerService,
   parseNativeOnceControlReference,
+  parseNativeScheduleControlReference,
   type NativeOnceLoaderTestPorts,
 } from './native-schedule-once-loader.js';
 import type { ApprovedDshNativeControlArtifact } from './harness/dsh-native-artifact.js';
@@ -125,6 +127,42 @@ function loaderFixture() {
 }
 
 describe('approved native once loader', () => {
+  it('requires the recurring profile explicitly and preserves the exact approved reference', async () => {
+    const f = loaderFixture();
+    const reference = {
+      ...f.reference,
+      profileId: 'allrice-recurring-control-v1',
+    };
+    expect(parseNativeScheduleControlReference(reference)).toEqual(reference);
+    expect(() => parseNativeOnceControlReference(reference)).toThrow(
+      'BINDING_INVALID',
+    );
+    expect(
+      configuredNativeRecurringControlSource(
+        { ALLRICE_NATIVE_RECURRING_REFERENCE: 'invalid' },
+        f.ports,
+      ),
+    ).toBeNull();
+    expect(() =>
+      configuredNativeRecurringControlSource(
+        {
+          ALLRICE_NATIVE_RECURRING_ENABLED: '1',
+          ALLRICE_NATIVE_RECURRING_REFERENCE: JSON.stringify(f.reference),
+        },
+        f.ports,
+      ),
+    ).toThrow('BINDING_INVALID');
+    const source = configuredNativeRecurringControlSource(
+      {
+        ALLRICE_NATIVE_RECURRING_ENABLED: '1',
+        ALLRICE_NATIVE_RECURRING_REFERENCE: JSON.stringify(reference),
+      },
+      f.ports,
+    )!;
+    expect(source.reference).toEqual(reference);
+    expect(await source.loadHostFactory()).toBe(f.open);
+    expect(f.ports.approvedArtifact).toHaveBeenCalledWith(reference.artifactId);
+  });
   it('disabled does not parse settings or query/load an artifact', () => {
     const f = loaderFixture();
     expect(

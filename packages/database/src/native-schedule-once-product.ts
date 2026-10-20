@@ -1,3 +1,12 @@
+import {
+  scheduleIdentity as identity,
+  lockSchedulePrincipal as lockPrincipal,
+  readScheduleTarget as targetMetadata,
+  lockScheduleTarget as lockTarget,
+  readScheduleBrowserScope as browserScope,
+  type ScheduleScope as Scope,
+  type ScheduleTarget as Target,
+} from './native-schedule-authority.ts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
 import { explicitOnceTaskIntent } from './employees/once-task-intent.ts';
 import { randomUUID } from 'node:crypto';
@@ -19,7 +28,6 @@ import {
   OnceTaskListQuerySchema,
   RequestContextSchema,
   UuidSchema,
-  MembershipSchema,
   TimestampSchema,
   type CreateOnceTaskInput,
   type OnceTask,
@@ -30,7 +38,6 @@ import { DataAccessError } from './data.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { readWorkAutomation } from './work-automation.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
-import { resolveEmployeeSessionInstance } from './employees/employee-instances.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { acquireDevAdmission } from './dev-maintenance.ts';
@@ -44,15 +51,6 @@ import {
 import type { NativeOnceLockedAdmission } from './native-schedule-once-sql.ts';
 
 type Tx = TransactionSql;
-type Scope = { organizationId: string; workspaceId: string; ownerId: string };
-type Target = {
-  id: string;
-  employee_assignment_id: string;
-  employee_instance_id: string;
-  organization_id: string;
-  workspace_id: string;
-  owner_id: string;
-};
 type Plan = {
   id: string;
   organization_id: string;
@@ -94,87 +92,7 @@ export class NativeOnceProductError extends Error {
 }
 export const nativeOnceProductEnabled = () =>
   process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1';
-const identity = (s: Scope) => ({
-  actor: { type: 'user' as const, id: s.ownerId },
-  organizationId: s.organizationId,
-  workspaceId: s.workspaceId,
-});
 const json = (tx: Tx, v: unknown) => tx.json(JSON.parse(JSON.stringify(v)));
-
-/** Current rows, not a synthetic browser session or a saved membership list. */
-async function lockPrincipal(
-  tx: Tx,
-  scope: Scope,
-  requestId: string,
-  browser?: RequestContext,
-): Promise<ResourcePrincipal> {
-  for (const v of Object.values(scope)) UuidSchema.parse(v);
-  const current = await readContentPrincipal(
-    browser ?? identity(scope),
-    tx,
-    'update_user',
-  );
-  if (!current?.writable) throw new DataAccessError('authorization_denied');
-  const rows = await tx<
-    {
-      id: string;
-      user_id: string;
-      organization_id: string;
-      workspace_id: string | null;
-      role: string;
-      active: boolean;
-    }[]
-  >`
-    select id,user_id,organization_id,workspace_id,role,active from allrice_memberships
-    where organization_id=${scope.organizationId} and user_id=${scope.ownerId} and active
-      and (workspace_id is null or workspace_id=${scope.workspaceId}) order by id for share`;
-  return {
-    ...identity(scope),
-    requestId,
-    memberships: rows.map((r) =>
-      MembershipSchema.parse({
-        id: r.id,
-        userId: r.user_id,
-        organizationId: r.organization_id,
-        workspaceId: r.workspace_id,
-        role: r.role,
-        active: r.active,
-      }),
-    ),
-  };
-}
-
-async function targetMetadata(tx: Tx, scope: Scope, sessionId: string) {
-  const [row] = await tx<Target[]>`
-    select id,organization_id,workspace_id,owner_id,employee_assignment_id,
-      coalesce(employee_instance_id,employee_assignment_id) employee_instance_id
-    from allrice_chat_sessions where id=${UuidSchema.parse(sessionId)}
-      and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-      and owner_id=${scope.ownerId} and archived_at is null`;
-  if (!row) throw new DataAccessError('not_found');
-  return row;
-}
-
-async function lockTarget(tx: Tx, scope: Scope, target: Target) {
-  const instance = await resolveEmployeeSessionInstance(
-    identity(scope),
-    target.employee_assignment_id,
-    target.employee_instance_id,
-    tx,
-  );
-  await assertWorkbenchSession(tx, identity(scope), target.id, true);
-  // This lane is for ordinary work. Privileged platform drivers keep their own
-  // existing authorization and cannot be scheduled by copying their IDs.
-  const [ordinary] = await tx`
-    select a.id from allrice_employee_assignments a
-    join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id
-    where a.id=${target.employee_assignment_id} and a.organization_id=${scope.organizationId}
-      and a.workspace_id=${scope.workspaceId} and a.user_id=${scope.ownerId} and a.active and e.status='active'
-      and e.employee_key not like 'platform-%' for share of a,e`;
-  if (!ordinary || instance.id !== target.employee_instance_id)
-    throw new DataAccessError('authorization_denied');
-  return instance;
-}
 
 function reservation(p: Plan, c: NativeOnceControl) {
   return runtimePolicyDigest({
@@ -293,25 +211,6 @@ export async function lockNativeOnceAdmissions(
     });
   }
   return result;
-}
-
-async function browserScope(
-  tx: Tx,
-  context: RequestContext,
-  sessionId: string,
-) {
-  if (context.actor.type !== 'user')
-    throw new DataAccessError('authentication_required');
-  const [row] = await tx<{ workspace_id: string }[]>`
-    select workspace_id from allrice_chat_sessions where id=${UuidSchema.parse(sessionId)}
-      and organization_id=${context.organizationId} and owner_id=${context.actor.id}
-      and (${context.workspaceId}::uuid is null or workspace_id=${context.workspaceId}) and archived_at is null`;
-  if (!row) throw new DataAccessError('not_found');
-  return {
-    organizationId: context.organizationId,
-    workspaceId: row.workspace_id,
-    ownerId: context.actor.id,
-  };
 }
 
 async function readTask(tx: Tx, p: Plan): Promise<OnceTask> {

@@ -51,12 +51,13 @@ function fixture(
     dispatch?: () => Promise<boolean>;
     loadModules?: () => Promise<NativeSchedulePublicModules>;
     testPorts?: Partial<NativeOnceWorkerRuntimeTestPorts>;
+    profileId?: string;
   } = {},
 ) {
   const trace: string[] = [];
   const reference: NativeScheduleControlReference = {
     artifactId: 'approved-test-artifact',
-    profileId: 'once-control-test-profile',
+    profileId: overrides.profileId ?? 'allrice-once-control-v1',
     storageId: 'test-stable-storage',
     stateRoot: '/approved/test-once-state',
   };
@@ -540,6 +541,28 @@ describe('native once Worker runtime', () => {
     const f = fixture({ testPorts: { loadDatabase: undefined } });
     await expect(f.runtime.tick()).rejects.toMatchObject({
       fault: { phase: 'initialization', code: 'database_api_unavailable' },
+    });
+    expect(f.hostFactory).not.toHaveBeenCalled();
+  });
+
+  it('reports missing recurring production APIs before starting a Host', async () => {
+    const f = fixture({
+      profileId: 'allrice-recurring-control-v1',
+      testPorts: { loadDatabase: undefined },
+    });
+    await expect(f.runtime.tick()).rejects.toMatchObject({
+      fault: { phase: 'initialization', code: 'database_api_unavailable' },
+    });
+    expect(f.hostFactory).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unregistered production profile without falling back to once', async () => {
+    const f = fixture({
+      profileId: 'unknown-profile',
+      testPorts: { loadDatabase: undefined },
+    });
+    await expect(f.runtime.tick()).rejects.toMatchObject({
+      fault: { phase: 'initialization', code: 'binding_invalid' },
     });
     expect(f.hostFactory).not.toHaveBeenCalled();
   });

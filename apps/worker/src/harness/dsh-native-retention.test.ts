@@ -98,44 +98,47 @@ it('projects the actual installed-primary return shape into the strict reference
     },
   ]);
 });
-it('keeps closed control references independent of business pins and reads their original history only for retirement checks', async () => {
-  const reference = {
-    artifactId: retainedCurrentId,
-    profileId: 'allrice-once-control-v1',
-    storageId: 'original-once-storage',
-    stateRoot: root,
-  };
-  const controls = [
-    { controlSessionId: 'once-control-session', sessionState: 'ready' },
-  ];
-  seam.coverage.mockResolvedValue({
-    verified: true,
-    references: [
-      {
-        source: 'control:native_once',
-        artifactId: retainedCurrentId,
-        records: 1,
-        covered: true,
-      },
-    ],
-    nativeOnceControlReferences: [
-      { partitionId: 'closed-partition', reference, controls },
-    ],
-  });
-  const policy = await import('./dsh-native-retention.js');
-  await policy.verifyConfiguredDshNativeReferences({
-    artifactId: retainedCurrentId,
-    generation: current,
-  });
-  expect(seam.controlHistory).not.toHaveBeenCalled();
-  const result = await policy.verifyConfiguredDshNativeReferences(
-    { artifactId: retainedCurrentId, generation: current },
-    { requireReaderIdle: true },
-  );
-  expect(seam.controlHistory).toHaveBeenCalledWith(reference, controls);
-  expect(result.nativeOnceControlHistoryVerified).toBe(1);
-  expect(seam.launch).not.toHaveBeenCalled();
-});
+it.each(['once', 'recurring'] as const)(
+  'keeps closed %s control references independent of business pins and reads their original history only for retirement checks',
+  async (kind) => {
+    const reference = {
+      artifactId: retainedCurrentId,
+      profileId: `allrice-${kind}-control-v1`,
+      storageId: 'original-once-storage',
+      stateRoot: root,
+    };
+    const controls = [
+      { controlSessionId: 'once-control-session', sessionState: 'ready' },
+    ];
+    seam.coverage.mockResolvedValue({
+      verified: true,
+      references: [
+        {
+          source: `control:native_${kind}`,
+          artifactId: retainedCurrentId,
+          records: 1,
+          covered: true,
+        },
+      ],
+      nativeOnceControlReferences: [
+        { partitionId: 'closed-partition', reference, controls },
+      ],
+    });
+    const policy = await import('./dsh-native-retention.js');
+    await policy.verifyConfiguredDshNativeReferences({
+      artifactId: retainedCurrentId,
+      generation: current,
+    });
+    expect(seam.controlHistory).not.toHaveBeenCalled();
+    const result = await policy.verifyConfiguredDshNativeReferences(
+      { artifactId: retainedCurrentId, generation: current },
+      { requireReaderIdle: true },
+    );
+    expect(seam.controlHistory).toHaveBeenCalledWith(reference, controls);
+    expect(result.nativeOnceControlHistoryVerified).toBe(1);
+    expect(seam.launch).not.toHaveBeenCalled();
+  },
+);
 function configureCurrent() {
   configure();
   vi.stubEnv('ALLRICE_DSH_RETAINED_2_ROOT', '/reviewed/current-a');

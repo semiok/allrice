@@ -19,7 +19,7 @@ import {
 import { assertVirginNativeNamespace } from './native-origin-storage.js';
 import { assertStoredNativeSession } from './dsh-native-storage.js';
 import {
-  parseNativeOnceControlReference,
+  parseNativeScheduleControlReference,
   verifyNativeOnceControlHistory,
 } from '../native-schedule-once-loader.js';
 
@@ -223,7 +223,7 @@ export async function verifyConfiguredDshNativeReferences(
   // DB returns this independent control class for every persistent partition,
   // including closed/expired writers. No business pin/profile is manufactured.
   for (const control of coverage.nativeOnceControlReferences) {
-    const reference = parseNativeOnceControlReference(control.reference);
+    const reference = parseNativeScheduleControlReference(control.reference);
     const stat = await lstat(reference.stateRoot);
     if (
       !stat.isDirectory() ||

@@ -1901,13 +1901,38 @@ export async function prepareNativeOnceChatRunInTransaction(
   context: ResourcePrincipal,
   occurrenceId: string,
 ) {
-  const { nativeOnceMessageReservation } =
-    await import('../native-schedule-once-product.ts');
-  const reservation = nativeOnceMessageReservation(
+  return prepareNativeScheduledChatRunInTransaction(
     transaction,
     context,
     occurrenceId,
+    'once',
   );
+}
+export async function prepareNativeRecurringChatRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  occurrenceId: string,
+) {
+  return prepareNativeScheduledChatRunInTransaction(
+    transaction,
+    context,
+    occurrenceId,
+    'recurring',
+  );
+}
+async function prepareNativeScheduledChatRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  occurrenceId: string,
+  kind: 'once' | 'recurring',
+) {
+  const readReservation =
+    kind === 'once'
+      ? (await import('../native-schedule-once-product.ts'))
+          .nativeOnceMessageReservation
+      : (await import('../native-schedule-recurring-product.ts'))
+          .nativeRecurringMessageReservation;
+  const reservation = readReservation(transaction, context, occurrenceId);
   const workspaceId = reservation.workspaceId;
   const [session] = await transaction<SessionRow[]>`
     select * from allrice_chat_sessions where id=${reservation.sessionId}
@@ -1952,9 +1977,12 @@ export async function prepareNativeOnceChatRunInTransaction(
     binding,
     database,
   );
-  const { enqueueNativeOnceRunInTransaction } =
-    await import('../execution/queue.ts');
-  const queued = await enqueueNativeOnceRunInTransaction(
+  const queue = await import('../execution/queue.ts');
+  const enqueue =
+    kind === 'once'
+      ? queue.enqueueNativeOnceRunInTransaction
+      : queue.enqueueNativeRecurringRunInTransaction;
+  const queued = await enqueue(
     transaction,
     context,
     occurrenceId,
@@ -1970,7 +1998,10 @@ export async function prepareNativeOnceChatRunInTransaction(
       action: 'message.create',
       resourceType: 'message',
       resourceId: result.userMessage.id,
-      reason: 'native_once_occurrence',
+      reason:
+        kind === 'once'
+          ? 'native_once_occurrence'
+          : 'native_recurring_occurrence',
     },
     transaction,
   );

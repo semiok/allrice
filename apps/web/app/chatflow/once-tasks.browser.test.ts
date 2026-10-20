@@ -269,10 +269,7 @@ suite('once task header: scoped UI with synthetic HTTP', () => {
       ],
       // Use the actual new schemas, without building the contracts package.
       alias: {
-        '@allrice/contracts': resolve(
-          root,
-          'packages/contracts/src/native-schedule.ts',
-        ),
+        '@allrice/contracts': resolve(root, 'packages/contracts/src/index.ts'),
       },
       bundle: true,
       write: false,
