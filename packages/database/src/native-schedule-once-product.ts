@@ -1,4 +1,5 @@
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
+import { explicitOnceTaskIntent } from './employees/once-task-intent.ts';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -82,6 +83,8 @@ export class NativeOnceProductError extends Error {
     readonly code:
       | 'disabled'
       | 'time_invalid'
+      | 'intent_required'
+      | 'time_mismatch'
       | 'request_conflict'
       | 'binding_conflict'
       | 'lease_lost',
@@ -752,7 +755,27 @@ export async function createOnceTaskFromExecutionContext(
       throw new DataAccessError('authorization_denied');
     const target = await targetMetadata(tx, ownerScope, input.sessionId);
     const instance = await lockTarget(tx, ownerScope, target);
-    await assertEmployeeChatExecution(tx, input, instance, 'automation.create');
+    const current = await assertEmployeeChatExecution(
+      tx,
+      input,
+      instance,
+      'automation.create',
+    );
+    // A scheduled/internal producer also persists role=user. Its occurrence
+    // exists before the message, even if the legacy dispatcher has not yet
+    // linked run_id. Never let that text authorize another background task.
+    const [source] = await tx<{ internal: boolean }[]>`
+      select exists(select 1 from allrice_automation_runs a
+          where a.run_id=${ctx.runId} or a.id=m.client_message_id)
+        or exists(select 1 from allrice_automation_folder_events e
+          where e.run_id=${ctx.runId} or e.id=m.client_message_id)
+        or exists(select 1 from allrice_workflow_runs w where w.run_id=${ctx.runId})
+        or exists(select 1 from allrice_platform_quality_checks q where q.run_id=${ctx.runId})
+        or exists(select 1 from allrice_platform_repair_tasks r where r.run_id=${ctx.runId})
+        or exists(select 1 from allrice_platform_repository_review_subjects s where s.run_id=${ctx.runId})
+        as internal from allrice_messages m where m.id=${input.userMessageId}`;
+    if (!source || source.internal || current.snapshot.workflowInvocation)
+      throw new DataAccessError('authorization_denied');
     const [old] = await tx<
       Plan[]
     >`select * from allrice_automations where organization_id=${scope.organizationId}
@@ -765,6 +788,10 @@ export async function createOnceTaskFromExecutionContext(
         throw new NativeOnceProductError('request_conflict');
       return readTask(tx, old);
     }
+    const intent = explicitOnceTaskIntent(current.text);
+    if (!intent) throw new NativeOnceProductError('intent_required');
+    if (intent.delayMinutes !== input.delayMinutes)
+      throw new NativeOnceProductError('time_mismatch');
     const [clock] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
     return enroll(
       tx,
@@ -773,7 +800,9 @@ export async function createOnceTaskFromExecutionContext(
       CreateOnceTaskInputSchema.parse({
         clientRequestId: requestId,
         name: input.name,
-        prompt: input.prompt,
+        // The model supplies a title and call arguments, not a replacement for
+        // the user's authorized work. Preserve the original request verbatim.
+        prompt: intent.authoritativeRequest,
         runAt: new Date(
           clock!.now.getTime() + input.delayMinutes * 60_000,
         ).toISOString(),
@@ -826,11 +855,18 @@ export function nativeOnceMessageReservation(
     !isDeepStrictEqual(r.principal, context)
   )
     throw new NativeOnceProductError('binding_conflict');
+  const duePrompt = [
+    '这项一次性任务已经到期，请现在执行下面原始要求中的工作。',
+    '原文中的相对时间和“不要现在执行”指预约创建时刻；本轮无需再次等待、创建或修改预约。',
+    `原始要求：\n${r.plan.prompt}`,
+  ].join('\n');
   return {
     workspaceId: r.plan.workspace_id,
     sessionId: r.control.dispatch.businessSessionId,
     clientMessageId: r.control.dispatch.clientMessageId,
-    prompt: r.plan.prompt,
+    // New chat requests are bounded to 32k. Existing/form tasks may use the
+    // entire 40k message limit: retain their original behavior and every byte.
+    prompt: duePrompt.length <= 40_000 ? duePrompt : r.plan.prompt,
   };
 }
 export async function assertNativeOnceQueueBinding(

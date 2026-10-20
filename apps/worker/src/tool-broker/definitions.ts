@@ -760,6 +760,9 @@ export function riceToolDefinitionsForCapabilities(
   return riceToolDefinitions.filter(
     (definition) =>
       (!allowed || allowed.has(definition.name)) &&
+      (definition.name !== 'automation.create' ||
+        (allowed?.has(definition.name) &&
+          process.env.ALLRICE_NATIVE_ONCE_ENABLED === '1')) &&
       (!definition.name.startsWith('local.file.') ||
         (allowed?.has(definition.name) &&
           runtimeFeatureEnabled('ALLRICE_RUNTIME_POLICY_ENABLED') &&
@@ -830,8 +833,9 @@ export function riceToolDefinitionsForCapabilities(
 /**
  * Stable DSH turn capability set. Tenant-authorized read-only tools are always
  * visible to the native Agent Loop. Exact-approval adapters are also visible
- * after frozen/environment admission; other side-effect and secret-bearing
- * tools require an explicit Skill/Workflow/Tool route selection.
+ * after frozen/environment admission. One-time scheduling separately verifies
+ * the current human request in its database transaction; it must not depend on
+ * route keywords. Other side-effect and secret-bearing tools require a route.
  */
 export function riceToolDefinitionsForTurn(
   capabilities: SkillCapability[],
@@ -852,6 +856,7 @@ export function riceToolDefinitionsForTurn(
         riceToolRisk(definition.name) ?? '',
       ) ||
       nativeGovernedToolNames.has(definition.name) ||
+      definition.name === 'automation.create' ||
       selected.has(definition.name),
   );
 }

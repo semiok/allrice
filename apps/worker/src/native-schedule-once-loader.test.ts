@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import type * as NativeFs from 'node:fs/promises';
+import type * as Database from '@allrice/database';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   configuredNativeOnceControlSource,
@@ -15,7 +16,11 @@ import type { RiceToolExecutionInput } from './tool-broker/types.js';
 import { createAutomation } from './tool-broker/handlers/automation.js';
 
 const db = vi.hoisted(() => ({ createOnceTaskFromExecutionContext: vi.fn() }));
-vi.mock('@allrice/database', () => db);
+vi.mock('@allrice/database', async (original) => ({
+  ...db,
+  NativeOnceProductError: (await original<typeof Database>())
+    .NativeOnceProductError,
+}));
 beforeEach(() => vi.clearAllMocks());
 function deferred() {
   let resolve!: () => void;

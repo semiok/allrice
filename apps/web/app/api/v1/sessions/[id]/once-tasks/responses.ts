@@ -6,6 +6,8 @@ export function onceErrorResponse(error: unknown) {
     const messages = {
       disabled: '定时任务暂不可用，请稍后再试。',
       time_invalid: '请选择未来一年内的执行时间。',
+      intent_required: '请明确说明多少分钟后执行什么任务。',
+      time_mismatch: '执行时间与本次要求不一致，请核对后再试。',
       request_conflict: '该请求已保存为另一项任务，请刷新后查看。',
       binding_conflict: '任务状态已变化，请刷新后查看。',
       lease_lost: '任务状态正在更新，请稍后查看。',

@@ -152,8 +152,9 @@ suite(
       expect(rows[0]).toMatchObject({
         outbox_state: 'enqueued',
         status: 'queued',
-        text: input.prompt,
+        text: expect.stringContaining(input.prompt),
       });
+      expect(rows[0]!.text).toContain('这项一次性任务已经到期');
       expect(rows[0]!.business_binding.runId).toBe(result.runId);
       await second.tick();
       await second.tick();
