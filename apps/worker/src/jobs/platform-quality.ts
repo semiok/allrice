@@ -349,7 +349,9 @@ export async function executePlatformQualityCheck(
           },
         ],
         limits: {
-          timeoutMs: 30000,
+          // The same deadline covers offline manager preparation and the build.
+          // Use the existing standard profile budget for cold sandbox startup.
+          timeoutMs: 60000,
           outputBytes: 16384,
           memoryMiB: 512,
           cpuMillis: 1000,
