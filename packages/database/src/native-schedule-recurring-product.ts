@@ -66,6 +66,11 @@ import {
   type NativeRecurringAdmission,
   type NativeRecurringOccurrence,
 } from './native-schedule-recurring-state.ts';
+import {
+  lockPlatformQualityNativeAdmission,
+  dispatchPlatformQualityNative,
+  migrateOneLegacyQualitySchedule,
+} from './platform-quality-native.ts';
 
 type Tx = TransactionSql;
 type Plan = {
@@ -155,6 +160,8 @@ function reservation(
   c: NativeRecurringControl,
   v: Omit<NativeRecurringRevision, 'reservationDigest'>,
 ) {
+  if ('consumer' in c.dispatch || 'consumer' in v)
+    throw new NativeRecurringProductError('binding_conflict');
   return runtimePolicyDigest({
     ...scopeOf(p),
     automationId: p.id,
@@ -735,6 +742,11 @@ export async function lockNativeRecurringAdmissions(
       `${b.organizationId}:${b.ownerId}:${b.automationId}`,
     ),
   )) {
+    if ('consumer' in c.dispatch) {
+      const admission = await lockPlatformQualityNativeAdmission(tx, c);
+      if (admission) result.set(c.controlId, admission);
+      continue;
+    }
     const scope = scopeOf(c),
       principal = await readContentPrincipal(
         scheduleIdentity(scope),
@@ -876,6 +888,7 @@ export function nativeRecurringMessageReservation(
   const r = dispatchReservations.get(tx);
   if (
     !r ||
+    'consumer' in r.control.dispatch ||
     r.occurrence.occurrence_id !== occurrenceId ||
     !isDeepStrictEqual(r.principal, principal)
   )
@@ -909,6 +922,7 @@ export async function assertNativeRecurringQueueBinding(
   const input = nativeRecurringMessageReservation(tx, context, occurrenceId),
     r = dispatchReservations.get(tx)!;
   if (
+    'consumer' in r.control.dispatch ||
     binding.sessionId !== input.sessionId ||
     binding.employeeAssignmentId !== r.control.dispatch.employeeAssignmentId ||
     binding.executionSnapshot.instance?.id !==
@@ -936,9 +950,12 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
     await acquireDevAdmission(tx);
     const [row] = await tx<
       OccurrenceRow[]
-    >`select * from allrice_native_recurring_occurrences
-      where outbox_state='pending' and (outbox_owner_id is null or outbox_expires_at<=clock_timestamp())
-      order by created_at,occurrence_id limit 1 for update skip locked`;
+    >`select o.* from allrice_native_recurring_occurrences o
+      where (o.outbox_state='pending' or (o.outbox_state='blocked' and o.payload->'control'->'dispatch'->>'consumer'='platform-quality-v1'
+        and o.outbox_reason<>'QUALITY_TARGET_ALREADY_CLAIMED'
+        and not exists(select 1 from allrice_automation_runs ar where ar.native_recurring_occurrence_id=o.occurrence_id)))
+        and (o.outbox_owner_id is null or o.outbox_expires_at<=clock_timestamp())
+      order by o.created_at,o.occurrence_id limit 1 for update of o skip locked`;
     if (!row) return null;
     const [claimed] = await tx<
       OccurrenceRow[]
@@ -947,7 +964,7 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
       where occurrence_id=${row.occurrence_id} returning *`;
     return claimed!;
   });
-  if (!occurrence) return false;
+  if (!occurrence) return migrateOneLegacyQualitySchedule();
   await db.begin(async (tx) => {
     await tx`set local lock_timeout='1000ms'`;
     await tx`set local statement_timeout='10000ms'`;
@@ -958,9 +975,19 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
       where partition_id=${occurrence.partition_id} and control_id=${occurrence.control_id}`;
     if (!projection) throw new NativeRecurringProductError('binding_conflict');
     const control = NativeRecurringControlSchema.parse(
-        projection.snapshot.control,
-      ),
-      scope = scopeOf(control);
+      projection.snapshot.control,
+    );
+    if ('consumer' in control.dispatch) {
+      await dispatchPlatformQualityNative(
+        tx,
+        control,
+        occurrence,
+        workerId,
+        tokenDigest,
+      );
+      return;
+    }
+    const scope = scopeOf(control);
     const fact = (await lockNativeRecurringAdmissions(tx, [control])).get(
       control.controlId,
     );
