@@ -21,8 +21,10 @@ import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { DataAccessError } from './data.ts';
 import {
   CompanyAssetError,
-  requireCompanyAssetReader,
+  requireCompanyAssetContentReader,
 } from './company-assets.ts';
+import type { ContentIdentity } from './content-maintenance.ts';
+import type { ResourcePrincipal } from './resource-principal.ts';
 import { readArtifactBytes } from './artifact-review.ts';
 
 type Db = ReturnType<typeof getDatabase>;
@@ -63,6 +65,37 @@ export async function captureCompanyRunAssets(
   text: string,
   selections: unknown = [],
 ): Promise<CompanyRunSnapshot> {
+  return captureCompanyRunAssetsCore(tx, context, employeeId, text, selections);
+}
+
+/** Server admission uses current company authority without a browser login. */
+export async function captureCompanyRunAssetsForPrincipal(
+  tx: postgres.TransactionSql,
+  principal: ResourcePrincipal,
+  employeeId: string,
+  text: string,
+  selections: unknown = [],
+): Promise<CompanyRunSnapshot> {
+  return captureCompanyRunAssetsCore(
+    tx,
+    {
+      actor: principal.actor,
+      organizationId: principal.organizationId,
+      workspaceId: principal.workspaceId,
+    },
+    employeeId,
+    text,
+    selections,
+  );
+}
+
+async function captureCompanyRunAssetsCore(
+  tx: postgres.TransactionSql,
+  context: ContentIdentity,
+  employeeId: string,
+  text: string,
+  selections: unknown,
+): Promise<CompanyRunSnapshot> {
   const chosen = CompanyTemplateSelectionSchema.array()
     .max(3)
     .parse(selections);
@@ -72,16 +105,28 @@ export async function captureCompanyRunAssets(
   // authority is an additional gate only when this input uses company material;
   // an empty publication must not impose a new login protocol on legacy callers.
   if (chosen.length)
-    await requireCompanyAssetReader(context, context.organizationId, tx);
+    await requireCompanyAssetContentReader(context, context.organizationId, tx);
   const [platform] = await tx<{ employee_id: string }[]>`
     select employee_id from allrice_platform_employee_tenant_assignments
     where organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and tenant_employee_id=${UuidSchema.parse(employeeId)} and active limit 1`;
-  const candidates = await tx<RevisionRow[]>`
-    select r.* from allrice_company_assets a
+  // Discover and lock metadata before reading any publication body. Pin this
+  // set so a concurrent new publication cannot bypass the reader gate.
+  const publishedRules = await tx<{ id: string }[]>`
+    select r.id from allrice_company_assets a
     join allrice_company_asset_revisions r on r.id=a.published_revision_id and r.asset_id=a.id
     where a.organization_id=${context.organizationId} and a.kind='rule' and a.state='published'
     order by a.id for share of a,r`;
+  if (publishedRules.length && !chosen.length)
+    await requireCompanyAssetContentReader(context, context.organizationId, tx);
+  const candidates = publishedRules.length
+    ? await tx<RevisionRow[]>`
+      select r.* from allrice_company_assets a
+      join allrice_company_asset_revisions r on r.id=a.published_revision_id and r.asset_id=a.id
+      where a.organization_id=${context.organizationId} and a.kind='rule' and a.state='published'
+        and r.id in ${tx(publishedRules.map((r) => r.id))}
+      order by a.id for share of a,r`
+    : [];
   const task = text.toLocaleLowerCase();
   const rules = candidates.flatMap((row) => {
     const r = revision(row),
@@ -99,8 +144,6 @@ export async function captureCompanyRunAssets(
     return [{ assetId: row.asset_id, revision: r }];
   });
   const templates: CompanyRunSnapshot['templates'] = [];
-  if (rules.length && !chosen.length)
-    await requireCompanyAssetReader(context, context.organizationId, tx);
   for (const selection of chosen) {
     const [row] = await tx<RevisionRow[]>`
       select r.* from allrice_company_assets a

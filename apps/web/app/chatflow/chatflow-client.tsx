@@ -50,6 +50,7 @@ import {
   companyAssetUrl,
 } from './company-template-publisher';
 import { AssistantHistoryButton } from './assistant-history-button';
+import { OnceTasks } from './once-tasks';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
@@ -1732,6 +1733,28 @@ export function ChatFlowClient({
                 <div
                   className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                 >
+                  <OnceTasks
+                    scope={`${settingsScope}/${activeEmployee ? employeeChoiceId(activeEmployee) : ''}`}
+                    sessionId={
+                      activeId && activeSession?.id === activeId
+                        ? activeId
+                        : null
+                    }
+                    headers={tenantHeaders}
+                    onOpenSession={(sessionId) => {
+                      if (sessionId !== activeId && !confirmSessionNavigation())
+                        return;
+                      if (sessionId !== activeId) {
+                        clearPendingAttachments();
+                        setSessionReferences([]);
+                        setReferenceSelections([]);
+                        setCompanyReferences([]);
+                        setReferencePickerOpen(false);
+                        setDraft('');
+                      }
+                      selectSession(sessionId);
+                    }}
+                  />
                   <button
                     type="button"
                     className={workbenchUi.entry}

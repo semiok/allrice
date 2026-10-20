@@ -1,4 +1,4 @@
-import { createAutomationFromExecutionContext } from '@allrice/database';
+import { createOnceTaskFromExecutionContext } from '@allrice/database';
 
 import { HandlerError } from '../../errors.js';
 import { stringValue } from '../input-values.js';
@@ -8,6 +8,20 @@ export const createAutomation: RiceToolHandler = async ({
   input,
   arguments: args,
 }) => {
+  if (
+    !input.sessionId ||
+    !input.userMessageId ||
+    !input.call.id ||
+    input.platformTestRunId ||
+    !Number.isSafeInteger(input.managedBrowserJobAttempt) ||
+    (input.managedBrowserJobAttempt ?? 0) < 1 ||
+    !input.managedBrowserJobLeaseToken
+  )
+    throw new HandlerError(
+      'AUTOMATION_UNAVAILABLE',
+      '当前任务不能创建一次性任务。',
+      false,
+    );
   const delayMinutes = args.delayMinutes;
   if (
     typeof delayMinutes !== 'number' ||
@@ -21,9 +35,16 @@ export const createAutomation: RiceToolHandler = async ({
       false,
     );
   }
-  const automation = await createAutomationFromExecutionContext({
+  const automation = await createOnceTaskFromExecutionContext({
     context: input.context,
     sessionId: input.sessionId,
+    userMessageId: input.userMessageId,
+    callId: input.call.id,
+    arguments: args,
+    worker: {
+      attempt: input.managedBrowserJobAttempt!,
+      leaseToken: input.managedBrowserJobLeaseToken,
+    },
     name: stringValue(args.name, 'name'),
     prompt: stringValue(args.prompt, 'prompt'),
     delayMinutes,
@@ -32,10 +53,11 @@ export const createAutomation: RiceToolHandler = async ({
     modelContent: JSON.stringify({
       automationId: automation.id,
       name: automation.name,
-      runAt: automation.nextRunAt,
-      sessionId: automation.lastSessionId,
+      runAt: automation.runAt,
+      sessionId: automation.sessionId,
+      status: automation.status,
     }),
-    summary: `已创建一次性自动化，将于 ${automation.nextRunAt ?? '指定时间'} 执行`,
+    summary: `已创建一次性任务，计划于 ${automation.runAt} 执行`,
     itemCount: 1,
   };
 };

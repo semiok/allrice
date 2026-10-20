@@ -71,9 +71,12 @@ export async function assertEmployeeChatExecution(
   },
 ) {
   const { ctx, scope } = employeeChatIdentity(input, fail);
-  const operation = employeeCustomizationToolsForInstance(before.kind).find(
-    (entry) => entry.name === tool,
-  );
+  const operation =
+    tool === 'automation.create'
+      ? { capability: 'automation:write' as const }
+      : employeeCustomizationToolsForInstance(before.kind).find(
+          (entry) => entry.name === tool,
+        );
   if (!operation || before.ownerId !== scope.actor.id) fail();
   await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
   // Cancellation takes root/job locks before employee authority. NOWAIT

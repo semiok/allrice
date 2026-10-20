@@ -1,3 +1,8 @@
+import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
+import {
+  lockNativeOnceJobAdmission,
+  type NativeOnceJobAdmission,
+} from '../native-schedule-once-authority.ts';
 import {
   assertJobCompletionGuard,
   type JobCompletionGuard,
@@ -207,6 +212,7 @@ function requireUser(context: ResourcePrincipal) {
 async function requireExecutionMembership(
   context: ResourcePrincipal,
   workspaceId: string,
+  transaction?: TransactionSql,
 ) {
   const userId = requireUser(context);
   const permitted = context.memberships.some(
@@ -219,7 +225,7 @@ async function requireExecutionMembership(
       (membership.role === 'admin' || membership.role === 'member'),
   );
   if (!permitted) {
-    const sql = getDatabase();
+    const sql = transaction ?? getDatabase();
     await sql`
       insert into allrice_audit_events (
         organization_id, workspace_id, actor_id, action, resource_type,
@@ -410,9 +416,36 @@ type EnqueueOptions = {
 };
 type RunAdmission =
   | { kind: 'browser'; context: RequestContext }
+  | { kind: 'native_once'; context: ResourcePrincipal; occurrenceId: string }
   | { kind: 'experience'; context: ResourcePrincipal; occurrenceId: string }
   | { kind: 'maintenance_repair'; context: ResourcePrincipal }
   | { kind: 'maintenance_repository'; context: ResourcePrincipal };
+
+/** Parsed and policy-checked by enqueueRunCore before its transaction starts. */
+type ParsedEnqueueRun = {
+  submission: z.infer<typeof CreateRunInputSchema>;
+  options: EnqueueOptions;
+  ownerId: string;
+  workspaceId: string;
+  taskPolicy: NonNullable<
+    EnqueueOptions['employeeBinding']
+  >['executionSnapshot']['taskRuntimePolicy'];
+  instanceIdentity: {
+    actor: ResourcePrincipal['actor'];
+    organizationId: string;
+    workspaceId: string;
+  };
+  availableAt: Date;
+  timeoutAt: Date;
+};
+
+type RawEnqueueRunResult = {
+  runId: string;
+  jobId: string;
+  created: boolean;
+  delivery: 'immediate' | 'follow_up' | 'steer_pending';
+  activeRunId: string | null;
+};
 
 /** @internal New-Run server projection. An employee/browser snapshot cannot
  * opt in, opt out or copy this policy from another Run. */
@@ -561,16 +594,13 @@ export async function enqueueMaintenanceRepositoryRun(
     { repositoryBinding: b },
   );
 }
-async function enqueueRunCore(
+async function prepareEnqueueRun(
   admission: RunAdmission,
   input: unknown,
   options: EnqueueOptions,
+  transaction?: TransactionSql,
 ) {
   const context = admission.context;
-  const browserContext = () => {
-    if (admission.kind !== 'browser') throw new QueueError('policy_denied');
-    return admission.context;
-  };
   const submission = CreateRunInputSchema.parse(input);
   if (
     (submission.type === experienceConsolidationJobType) !==
@@ -726,8 +756,12 @@ async function enqueueRunCore(
   if (submission.timeoutMs === 0 && taskPolicy?.timeoutMs !== 0)
     throw new QueueError('policy_denied');
   const ownerId = requireUser(context);
-  const workspaceId = await resolveWorkspaceId(context, submission.workspaceId);
-  await requireExecutionMembership(context, workspaceId);
+  const workspaceId = await resolveWorkspaceId(
+    context,
+    submission.workspaceId,
+    transaction,
+  );
+  await requireExecutionMembership(context, workspaceId, transaction);
   // Resource authority is shared with scheduled/folder work, whose context
   // uses correlation IDs rather than a browser login. Re-read its current
   // owner/membership/assignment; browser authentication stays at its entry.
@@ -736,723 +770,64 @@ async function enqueueRunCore(
     organizationId: context.organizationId,
     workspaceId,
   };
-  let availableAt = submission.availableAt
+  const availableAt = submission.availableAt
     ? new Date(submission.availableAt)
     : new Date();
-  let timeoutAt =
+  const timeoutAt =
     submission.timeoutMs === 0
       ? unboundedTaskDeadline
       : new Date(
           Math.max(Date.now(), availableAt.getTime()) + submission.timeoutMs,
         );
+  return {
+    submission,
+    options,
+    ownerId,
+    workspaceId,
+    taskPolicy,
+    instanceIdentity,
+    availableAt,
+    timeoutAt,
+  };
+}
+
+async function enqueueRunCore(
+  admission: RunAdmission,
+  input: unknown,
+  options: EnqueueOptions,
+) {
+  const context = admission.context;
+  const browserContext = () => {
+    if (admission.kind !== 'browser') throw new QueueError('policy_denied');
+    return admission.context;
+  };
+  const parsed = await prepareEnqueueRun(admission, input, options);
+  const {
+    submission,
+    ownerId,
+    workspaceId,
+    taskPolicy,
+    instanceIdentity,
+    availableAt,
+    timeoutAt,
+  } = parsed;
   const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
-    if (
-      admission.kind === 'maintenance_repair' ||
-      admission.kind === 'maintenance_repository'
-    ) {
-      // Serialize before taking issuer/grant/attempt locks. In particular a
-      // second start must never hold issuer SHARE while awaiting this mutex.
-      await transaction`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
-      if (options.employeeBinding?.executionSnapshot.instance) {
-        const { lockEmployeeInstanceAdmissionIdentity } =
-          await import('../employees/employee-instances.ts');
-        await lockEmployeeInstanceAdmissionIdentity(
-          transaction,
-          instanceIdentity,
-        );
-      }
-      await transaction`select id from allrice_users where id=${ownerId} for no key update`;
-    }
-    await acquireDevAdmission(transaction);
-    if (admission.kind === 'maintenance_repository') {
-      const b = MaintenanceRepositoryBindingSchema.parse(
-        options.repositoryBinding,
-      );
-      if (b.request.action === 'publish') {
-        const g = await assertMaintenanceGrant(transaction, b.grantId, ownerId);
-        timeoutAt = new Date(
-          Math.min(timeoutAt.getTime(), Date.parse(g.frozen.expiresAt)),
-        );
-      } else
-        await assertMaintenanceReconciliation(transaction, b.grantId, ownerId);
-    }
-
-    await transaction`
-      select pg_advisory_xact_lock(
-        hashtextextended(${`${context.organizationId}:${submission.idempotencyKey}`}, 0)
-      )
-    `;
-    const existing = await transaction<
+  const result = await sql.begin((transaction) =>
+    enqueueRunInTransaction(
+      admission,
       {
-        run_id: string;
-        workspace_id: string;
-        owner_id: string;
-        payload: { type?: unknown; input?: unknown };
-      }[]
-    >`
-      select run_id, workspace_id, owner_id, payload from allrice_jobs
-      where organization_id = ${context.organizationId}
-        and idempotency_key = ${submission.idempotencyKey}
-    `;
-    if (existing[0]) {
-      if (
-        existing[0].workspace_id !== workspaceId ||
-        existing[0].owner_id !== ownerId ||
-        existing[0].payload.type !== submission.type ||
-        (submission.type === experienceConsolidationJobType ||
-        submission.type === platformTechnicalJobType ||
-        submission.type === repositoryPublicationJobType ||
-        submission.type === repositoryMergeJobType ||
-        options.qualityBinding ||
-        options.repairBinding ||
-        options.repositoryReviewBinding
-          ? technicalDigest(existing[0].payload.input) !==
-            technicalDigest(submission.input)
-          : JSON.stringify(existing[0].payload.input) !==
-            JSON.stringify(submission.input))
-      ) {
-        throw new QueueError('conflict');
-      }
-      if (options.qualityBinding)
-        await assertExistingPlatformQualityBinding(
-          transaction,
-          { ...browserContext(), workspaceId },
-          existing[0].run_id,
-          options.qualityBinding,
-        );
-      if (options.repairBinding)
-        await assertExistingRepairBinding(
-          transaction,
-          { ...context, workspaceId },
-          existing[0].run_id,
-          options.repairBinding,
-        );
-      if (options.repositoryMergeBinding)
-        await assertExistingRepositoryMerge(
-          transaction,
-          { ...browserContext(), workspaceId },
-          existing[0].run_id,
-          options.repositoryMergeBinding,
-        );
-      if (options.repositoryBinding)
-        await assertExistingRepositoryAction(
-          transaction,
-          { ...context, workspaceId },
-          existing[0].run_id,
-          options.repositoryBinding,
-        );
-      if (options.repositoryReviewBinding)
-        await assertExistingRepositoryReviewBinding(
-          transaction,
-          { ...browserContext(), workspaceId },
-          existing[0].run_id,
-          options.repositoryReviewBinding,
-        );
-      return {
-        runId: existing[0].run_id,
-        created: false,
-        delivery: 'immediate' as const,
-        activeRunId: null as string | null,
-      };
-    }
-
-    // Folder event authority takes user SHARE. Acquire the final user lock
-    // before that branch so concurrent events cannot both upgrade SHARE.
-    if (options.employeeBinding?.executionSnapshot.instance) {
-      const { lockEmployeeInstanceAdmissionIdentity } =
-        await import('../employees/employee-instances.ts');
-      await lockEmployeeInstanceAdmissionIdentity(
-        transaction,
-        instanceIdentity,
-      );
-      if (options.employeeBinding.executionSnapshot.content) {
-        const { assertEmployeeContentAdmission } =
-          await import('../employees/employee-runtime-content.ts');
-        await assertEmployeeContentAdmission(
-          transaction,
-          instanceIdentity,
-          options.employeeBinding.executionSnapshot.content,
-        );
-      }
-    }
-    if (options.employeeBinding?.promptSnapshot.referenceSelections) {
-      // Final admission rechecks authority after the message transaction. Pins
-      // cannot sneak through a department move or a source withdrawal.
-      const { assertReferenceSelections } =
-        await import('../reference-runtime.ts');
-      await assertReferenceSelections(
-        instanceIdentity,
-        options.employeeBinding.promptSnapshot.referenceSelections,
-        transaction,
-        true,
-      );
-      if (!options.employeeBinding.executionSnapshot.content)
-        throw new QueueError('policy_denied');
-    }
-    if (options.folderEventId) {
-      const { assertFolderTriggerMessage } =
-        await import('../folder-triggers.ts');
-      const binding = options.employeeBinding;
-      if (!binding || !options.conversationDelivery)
-        throw new QueueError('policy_denied');
-      const attachments = await transaction<
-        { object_id: string }[]
-      >`select object_id from allrice_message_attachments where message_id=${binding.userMessageId} and organization_id=${context.organizationId} and workspace_id=${workspaceId}`;
-      await assertFolderTriggerMessage(
-        transaction,
-        options.folderEventId,
-        { ...browserContext(), workspaceId },
-        binding.sessionId,
-        options.conversationDelivery.clientUserMessageId,
-        attachments.map((a) => a.object_id),
-      );
-    }
-    if (options.employeeBinding) {
-      if (options.employeeBinding.executionSnapshot.instance) {
-        const { assertEmployeeInstanceAdmission } =
-          await import('../employees/employee-instances.ts');
-        const snapshot = options.employeeBinding.executionSnapshot.instance;
-        if (
-          snapshot.assignmentId !==
-            options.employeeBinding.employeeAssignmentId ||
-          snapshot.source.employeeVersionId !==
-            options.employeeBinding.employeeVersionId
-        )
-          throw new QueueError('policy_denied');
-        await assertEmployeeInstanceAdmission(
-          transaction,
-          instanceIdentity,
-          options.employeeBinding.sessionId,
-          snapshot,
-        );
-      }
-      if (admission.kind === 'maintenance_repair') {
-        if (
-          !options.repairBinding ||
-          options.repairBinding.frozen.version !== 2
-        )
-          throw new QueueError('policy_denied');
-        await admitPlatformRepairBinding(
-          transaction,
-          { ...context, workspaceId },
-          options.employeeBinding.employeeAssignmentId,
-          options.repairBinding,
-        );
-        const grant = await assertMaintenanceGrant(
-          transaction,
-          options.repairBinding.frozen.maintenance.grantId,
-          ownerId,
-        );
-        if (taskPolicy?.authorizationExpiresAt !== grant.frozen.expiresAt)
-          throw new QueueError('policy_denied');
-        timeoutAt = new Date(
-          Math.min(timeoutAt.getTime(), Date.parse(grant.frozen.expiresAt)),
-        );
-      } else
-        await admitQualityEnqueue(
-          transaction,
-          { ...browserContext(), workspaceId },
-          options.employeeBinding.employeeAssignmentId,
-          options.qualityBinding,
-          options.repairBinding,
-          options.repositoryReviewBinding,
-        );
-      const { assertWorkbenchSession } = await import('../artifact-review.ts');
-      await assertWorkbenchSession(
-        transaction,
-        { ...context, workspaceId },
-        options.employeeBinding.sessionId,
-        true,
-      );
-    }
-
-    let delivery: 'immediate' | 'follow_up' | 'steer_pending' = 'immediate';
-    let activeRunId: string | null = null;
-    let expectedTurnId: string | null = null;
-    let expectedGeneration: number | null = null;
-    if (options.changesetAction && options.conversationDelivery) {
-      const action = options.changesetAction;
-      await prepareChangesetAction(
-        transaction,
-        { ...browserContext(), workspaceId },
-        options.conversationDelivery.sessionId,
-        action,
-      );
-      const duplicate =
-        await transaction`select run_id from allrice_changeset_runs where organization_id=${context.organizationId} and workspace_id=${workspaceId} and actor_id=${ownerId} and artifact_id=${action.artifactId} and restore_of is not distinct from ${action.restoreOf}::uuid`;
-      if (duplicate.length)
-        throw new ArtifactReviewError('changeset_already_requested');
-    }
-    if (options.reviewContinuation && options.conversationDelivery) {
-      await prepareReviewContinuation(
-        transaction,
-        { ...browserContext(), workspaceId },
-        options.conversationDelivery.sessionId,
-        options.reviewContinuation,
-      );
-      const feedbackId =
-        options.reviewContinuation.kind === 'version_feedback'
-          ? options.reviewContinuation.feedbackId
-          : null;
-      const prior =
-        await transaction`select response_id from allrice_review_continuations
-        where organization_id=${context.organizationId} and workspace_id=${workspaceId} and actor_id=${ownerId}
-        and artifact_id=${options.reviewContinuation.artifactId} and kind=${options.reviewContinuation.kind}
-        and feedback_id is not distinct from ${feedbackId}::uuid`;
-      if (prior.length) throw new ArtifactReviewError('review_already_sent');
-    }
-    if (options.conversationDelivery) {
-      const runtimeRows = await transaction<
-        {
-          state: string;
-          active_run_id: string | null;
-          active_turn_id: string | null;
-          thread_generation: number;
-        }[]
-      >`
-        select state, active_run_id, active_turn_id, thread_generation
-        from allrice_conversation_runtimes
-        where organization_id = ${context.organizationId}
-          and workspace_id = ${workspaceId}
-          and session_id = ${options.conversationDelivery.sessionId}
-          and owner_id = ${ownerId}
-        for update
-      `;
-      const runtime = runtimeRows[0];
-      if (
-        options.conversationDelivery.requestedMode === 'steer' &&
-        (runtime?.state !== 'running' ||
-          !runtime.active_run_id ||
-          !runtime.active_turn_id ||
-          runtime.active_turn_id !==
-            options.conversationDelivery.expectedTurnId ||
-          runtime.thread_generation !==
-            options.conversationDelivery.expectedGeneration)
-      )
-        throw new ArtifactReviewError('input_turn_changed');
-      // Admission is already serialized by the Session lock. A committed Run
-      // owns this conversation even before the Worker creates/acquires its
-      // native runtime. Include that startup window and released queue heads.
-      const [pending] =
-        runtime?.state === 'running' && runtime.active_run_id
-          ? []
-          : await transaction<{ run_id: string }[]>`
-              select e.run_id from allrice_employee_runs e
-              join allrice_runs r on r.id=e.run_id
-              where e.organization_id=${context.organizationId}
-                and e.workspace_id=${workspaceId}
-                and e.session_id=${options.conversationDelivery.sessionId}
-                and r.owner_id=${ownerId}
-                and r.state in ('queued','running','waiting_approval')
-              order by e.created_at,e.run_id limit 1`;
-      activeRunId =
-        runtime?.state === 'running'
-          ? runtime.active_run_id
-          : (pending?.run_id ?? null);
-      if (activeRunId) {
-        const exactTurn =
-          runtime?.state === 'running' &&
-          !options.conversationDelivery.hasAttachments &&
-          options.conversationDelivery.requestedMode !== 'follow_up' &&
-          runtime.active_turn_id !== null &&
-          options.conversationDelivery.expectedTurnId ===
-            runtime.active_turn_id &&
-          options.conversationDelivery.expectedGeneration ===
-            runtime.thread_generation;
-        delivery = exactTurn ? 'steer_pending' : 'follow_up';
-        expectedTurnId = exactTurn ? runtime!.active_turn_id : null;
-        expectedGeneration = exactTurn ? runtime!.thread_generation : null;
-        availableAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        timeoutAt =
-          submission.timeoutMs === 0
-            ? unboundedTaskDeadline
-            : new Date(availableAt.getTime() + submission.timeoutMs);
-      }
-    }
-    // Authorization expiry is independent of an unlimited execution budget.
-    const policyExpiresAt = new Date(
-      availableAt.getTime() +
-        Math.max(submission.timeoutMs, 3_600_000) +
-        24 * 60 * 60 * 1000,
-    );
-
-    await transaction`select id from allrice_users where id = ${ownerId} for no key update`;
-    const versions = await transaction<{ version: number }[]>`
-      select coalesce(max(version), 0)::integer + 1 as version
-      from allrice_policy_snapshots
-      where organization_id = ${context.organizationId}
-        and subject_id = ${ownerId}
-    `;
-    const policyVersion = versions[0]?.version ?? 1;
-    const policies = await transaction<{ id: string }[]>`
-      insert into allrice_policy_snapshots (
-        organization_id, subject_id, version, payload, expires_at
-      ) values (
-        ${context.organizationId}, ${ownerId}, ${policyVersion},
-        ${transaction.json(
-          toJsonValue({
-            memberships: context.memberships.filter(
-              (membership) =>
-                membership.organizationId === context.organizationId &&
-                (membership.workspaceId === null ||
-                  membership.workspaceId === workspaceId),
-            ),
-            grants: [
-              {
-                resourceType: 'job',
-                action: 'job:execute',
-                workspaceId,
-              },
-              ...(options.employeeBinding
-                ? ['storage_object', 'memory', 'chat_session'].map(
-                    (resourceType) => ({
-                      resourceType,
-                      action: 'resource:read' as const,
-                      workspaceId,
-                    }),
-                  )
-                : []),
-              ...(options.employeeBinding
-                ? [
-                    {
-                      resourceType: 'automation',
-                      action: 'resource:write' as const,
-                      workspaceId,
-                    },
-                  ]
-                : []),
-              ...(options.workflowBinding
-                ? ['storage_object', 'memory', 'chat_session'].map(
-                    (resourceType) => ({
-                      resourceType,
-                      action: 'resource:read' as const,
-                      workspaceId,
-                    }),
-                  )
-                : []),
-            ],
-          }),
-        )},
-        ${policyExpiresAt}
-      )
-      returning id
-    `;
-    const policy = policies[0];
-    if (!policy) throw new Error('policy snapshot creation failed');
-    const payload = JobPayloadSchema.parse({
-      schemaVersion: 1,
-      type: submission.type,
-      input: submission.input,
-    });
-    const runs = await transaction<{ id: string }[]>`
-      insert into allrice_runs (
-        organization_id, workspace_id, owner_id, state, visibility,
-        policy_snapshot_id, execution_spec, input, request_id
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${ownerId}, 'queued', 'private',
-        ${policy.id},
-        ${transaction.json(
-          toJsonValue({
-            schemaVersion: 1,
-            handler: submission.type,
-            employeeVersionId:
-              options.employeeBinding?.employeeVersionId ?? null,
-            skillVersionId: options.skillBinding?.skillVersionId ?? null,
-            provider:
-              options.skillBinding || options.employeeBinding ? 'codex' : null,
-            skillVersionIds:
-              options.employeeBinding?.skillVersionIds ?? undefined,
-            workflowRevisionId:
-              options.workflowBinding?.workflowRevisionId ?? undefined,
-            employeeId: options.workflowBinding?.employeeId ?? undefined,
-          }),
-        )},
-        ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}
-      )
-      returning id
-    `;
-    const run = runs[0];
-    if (!run) throw new Error('run creation failed');
-    const jobs = await transaction<{ id: string }[]>`
-      insert into allrice_jobs (
-        organization_id, workspace_id, owner_id, run_id, status,
-        idempotency_key, priority, max_attempts, available_at, timeout_at, payload
-      ) values (
-        ${context.organizationId}, ${workspaceId}, ${ownerId}, ${run.id}, 'queued',
-        ${submission.idempotencyKey}, ${submission.priority},
-        ${submission.maxAttempts}, ${availableAt}, ${taskPolicy && admission.kind !== 'maintenance_repair' ? unboundedTaskDeadline : timeoutAt},
-        ${transaction.json(toJsonValue(payload))}
-      )
-      returning id
-    `;
-    const job = jobs[0];
-    if (!job) throw new Error('job creation failed');
-    if (admission.kind === 'experience')
-      await bindExperienceRun(
-        transaction,
-        admission.occurrenceId,
-        run.id,
+        submission,
+        options,
         ownerId,
-      );
-    if (options.repositoryMergeBinding) {
-      await bindRepositoryMerge(
-        transaction,
-        { ...browserContext(), workspaceId },
-        run.id,
-        job.id,
-        options.repositoryMergeBinding,
-      );
-      const [bound] = await transaction<
-        JobRow[]
-      >`select * from allrice_jobs where id=${job.id}`;
-      if (!bound || !(await isRepositoryMergeJobAuthorized(transaction, bound)))
-        throw new QueueError('policy_denied');
-    }
-    if (options.repositoryBinding) {
-      await bindRepositoryAction(
-        transaction,
-        { ...context, workspaceId },
-        run.id,
-        job.id,
-        options.repositoryBinding,
-      );
-      const [bound] = await transaction<
-        JobRow[]
-      >`select * from allrice_jobs where id=${job.id}`;
-      if (!bound || !(await isRepositoryActionAuthorized(transaction, bound)))
-        throw new QueueError('policy_denied');
-    }
-    if (options.technicalBinding) {
-      await bindPlatformTechnicalTask(
-        transaction,
-        { ...browserContext(), workspaceId },
-        run.id,
-        job.id,
-        options.technicalBinding,
-      );
-      const [boundJob] = await transaction<
-        JobRow[]
-      >`select * from allrice_jobs where id=${job.id}`;
-      if (
-        !boundJob ||
-        !(await isPlatformTechnicalJobAuthorized(transaction, boundJob))
-      )
-        throw new QueueError('policy_denied');
-    }
-    if (taskPolicy) {
-      if (taskPolicy.timeoutMs !== submission.timeoutMs)
-        throw new QueueError('conflict');
-      await transaction`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
-        values(${run.id},${context.organizationId},${workspaceId},${transaction.json(toJsonValue(taskPolicy))})`;
-    }
-    if (options.changesetAction && options.conversationDelivery) {
-      const action = options.changesetAction;
-      await transaction`insert into allrice_changeset_runs(run_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,restore_of)
-        values(${run.id},${context.organizationId},${workspaceId},${options.conversationDelivery.sessionId},${ownerId},${action.artifactId},${action.checksum},${action.restoreOf})`;
-    }
-    if (options.reviewContinuation && options.conversationDelivery) {
-      const review = options.reviewContinuation;
-      await transaction`insert into allrice_review_continuations
-        (response_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,kind,feedback_id,run_id)
-        values (${options.conversationDelivery.clientUserMessageId},${context.organizationId},${workspaceId},
-          ${options.conversationDelivery.sessionId},${ownerId},${review.artifactId},${review.checksum},${review.kind},
-          ${review.kind === 'version_feedback' ? review.feedbackId : null},${run.id})`;
-    }
-    if (options.conversationDelivery && delivery !== 'immediate') {
-      await transaction`
-        insert into allrice_conversation_followups (
-          run_id, organization_id, workspace_id, session_id, owner_id,
-          user_message_id, assistant_message_id, client_user_message_id,
-          mode, state
-        ) values (
-          ${run.id}, ${context.organizationId}, ${workspaceId},
-          ${options.conversationDelivery.sessionId}, ${ownerId},
-          ${options.conversationDelivery.userMessageId},
-          ${options.conversationDelivery.assistantMessageId},
-          ${options.conversationDelivery.clientUserMessageId},
-          ${delivery === 'steer_pending' ? 'steer_only' : 'follow_up'},
-          'queued'
-        )
-      `;
-      if (
-        delivery === 'steer_pending' &&
-        expectedTurnId !== null &&
-        expectedGeneration !== null
-      ) {
-        await transaction`
-          insert into allrice_conversation_commands (
-            organization_id, workspace_id, session_id, owner_id,
-            followup_run_id, command_type, client_user_message_id,
-            expected_generation, expected_turn_id, message, input_kind
-          ) values (
-            ${context.organizationId}, ${workspaceId},
-            ${options.conversationDelivery.sessionId}, ${ownerId}, ${run.id},
-            'steer', ${options.conversationDelivery.clientUserMessageId},
-            ${expectedGeneration}, ${expectedTurnId},
-            ${options.conversationDelivery.message},
-            ${options.conversationDelivery.message.startsWith('allrice:user-question:v1:') ? 'ask_user' : 'steer_current'}
-          )
-        `;
-      }
-    }
-    if (options.skillBinding) {
-      await transaction`
-        insert into allrice_skill_runs (
-          run_id, organization_id, workspace_id, installation_id,
-          skill_version_id, provider, provider_snapshot
-        ) values (
-          ${run.id}, ${context.organizationId}, ${workspaceId},
-          ${options.skillBinding.installationId},
-          ${options.skillBinding.skillVersionId}, 'codex',
-          ${transaction.json(
-            toJsonValue(options.skillBinding.providerSnapshot),
-          )}
-        )
-      `;
-    }
-    if (options.employeeBinding) {
-      const submittedInput =
-        submission.input &&
-        typeof submission.input === 'object' &&
-        !Array.isArray(submission.input)
-          ? (submission.input as Record<string, unknown>)
-          : {};
-      const assistantConfiguration = AssistantRunConfigurationSchema.safeParse(
-        submittedInput.assistantConfiguration,
-      );
-      const officePolicyEligible =
-        admission.kind === 'browser' &&
-        submission.type === 'allrice.employee.run' &&
-        !!options.conversationDelivery &&
-        !options.qualityBinding &&
-        !options.repairBinding &&
-        !options.repositoryReviewBinding &&
-        !options.repositoryBinding &&
-        !options.repositoryMergeBinding &&
-        !options.technicalBinding &&
-        !options.workflowBinding &&
-        !options.skillBinding &&
-        runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') &&
-        runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
-        assistantConfiguration.success &&
-        assistantConfiguration.data.allowAssistants &&
-        options.employeeBinding.providerSnapshot.provider === 'dsh' &&
-        options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
-          'assistant.delegate',
-        ) &&
-        options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
-          'workspace.export.create',
-        );
-      const executionSnapshot = EmployeeExecutionSnapshotSchema.parse({
-        ...freezeOfficeFirstDeliverySnapshot(
-          options.employeeBinding.executionSnapshot,
-          officePolicyEligible,
-          officePolicyEligible
-            ? await selectCheckedFinalDeliveryArtifact(transaction, {
-                organizationId: context.organizationId,
-                workspaceId,
-                ownerId,
-                sessionId: options.employeeBinding.sessionId,
-              })
-            : undefined,
-        ),
-        tenantContext: {
-          organizationId: context.organizationId,
-          workspaceId,
-          actorId: ownerId,
-          policySnapshotId: policy.id,
-        },
-        createdAt: new Date().toISOString(),
-      });
-      await transaction`
-        insert into allrice_employee_runs (
-          run_id, organization_id, workspace_id, owner_id,
-          employee_assignment_id, employee_version_id, session_id,
-          user_message_id, assistant_message_id, status, provider_snapshot,
-          skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
-          created_at
-        ) values (
-          ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
-          ${options.employeeBinding.employeeAssignmentId},
-          ${options.employeeBinding.employeeVersionId},
-          ${options.employeeBinding.sessionId},
-          ${options.employeeBinding.userMessageId},
-          ${options.employeeBinding.assistantMessageId}, 'queued',
-          ${transaction.json(
-            toJsonValue(options.employeeBinding.providerSnapshot),
-          )},
-          ${transaction.json(toJsonValue(options.employeeBinding.skillBindings))},
-          ${transaction.json(toJsonValue(options.employeeBinding.nativeSkills))},
-          ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))},
-          ${transaction.json(toJsonValue(executionSnapshot))},
-          ${executionSnapshot.createdAt}
-        )
-      `;
-    }
-    if (options.qualityBinding && options.employeeBinding) {
-      await bindPlatformQualityCheck(
-        transaction,
-        { ...browserContext(), workspaceId },
-        run.id,
-        job.id,
-        options.employeeBinding.sessionId,
-        options.qualityBinding,
-      );
-    }
-    if (options.repairBinding && options.employeeBinding)
-      await bindPlatformRepairTask(
-        transaction,
-        { ...context, workspaceId },
-        run.id,
-        job.id,
-        options.employeeBinding.sessionId,
-        options.repairBinding,
-      );
-    if (options.repositoryReviewBinding && options.employeeBinding)
-      await bindRepositoryReview(
-        transaction,
-        { ...browserContext(), workspaceId },
-        run.id,
-        job.id,
-        options.employeeBinding.sessionId,
-        options.repositoryReviewBinding,
-      );
-    if (options.employeeBinding?.promptSnapshot.companyAssets) {
-      const { recordCompanyRunSelections } =
-        await import('../company-run-assets.ts');
-      await recordCompanyRunSelections(transaction, {
-        organizationId: context.organizationId,
         workspaceId,
-        ownerId,
-        runId: run.id,
-      });
-    }
-    await appendEvent(transaction, {
-      organizationId: context.organizationId,
-      workspaceId,
-      runId: run.id,
-      type: 'run.created',
-      payload: {
-        jobId: job.id,
-        status: 'queued',
-        availableAt: availableAt.toISOString(),
+        taskPolicy,
+        instanceIdentity,
+        availableAt,
+        timeoutAt,
       },
-    });
-    await audit(transaction, {
-      organizationId: context.organizationId,
-      workspaceId,
-      actorId: ownerId,
-      action: 'run.enqueue',
-      resourceType: 'run',
-      resourceId: run.id,
-      decision: 'allowed',
-      reason: 'frozen_policy_snapshot',
-      requestId: context.requestId,
-      metadata: { jobId: job.id, policySnapshotId: policy.id },
-    });
-    return { runId: run.id, created: true, delivery, activeRunId };
-  });
+      transaction,
+    ),
+  );
   const row =
     admission.kind !== 'browser'
       ? await selectRunJob(context.organizationId, workspaceId, result.runId)
@@ -1466,6 +841,782 @@ async function enqueueRunCore(
     created: result.created,
     delivery: result.delivery,
     activeRunId: result.activeRunId,
+  };
+}
+
+/** Internal ordinary-employee path; product dispatcher already owns the
+ * occurrence and content lock order, and this same TX verifies it again. */
+export async function enqueueNativeOnceRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  occurrenceId: string,
+  input: unknown,
+  options: EnqueueOptions,
+) {
+  if (
+    Object.keys(options).some(
+      (k) => !['employeeBinding', 'conversationDelivery'].includes(k),
+    ) ||
+    !options.employeeBinding ||
+    !options.conversationDelivery ||
+    options.conversationDelivery.requestedMode !== 'follow_up'
+  )
+    throw new QueueError('policy_denied');
+  const { assertNativeOnceQueueBinding } =
+    await import('../native-schedule-once-product.ts');
+  await assertNativeOnceQueueBinding(
+    transaction,
+    context,
+    occurrenceId,
+    options.employeeBinding,
+    options.conversationDelivery.clientUserMessageId,
+  );
+  const admission: RunAdmission = {
+    kind: 'native_once',
+    context,
+    occurrenceId,
+  };
+  const parsed = await prepareEnqueueRun(
+    admission,
+    input,
+    options,
+    transaction,
+  );
+  if (
+    parsed.submission.type !== 'allrice.employee.run' ||
+    parsed.workspaceId !== context.workspaceId ||
+    parsed.submission.idempotencyKey !==
+      `employee-message:${options.conversationDelivery.clientUserMessageId}`
+  )
+    throw new QueueError('policy_denied');
+  return enqueueRunInTransaction(admission, parsed, transaction);
+}
+
+/** Existing queue writes in the caller's transaction. This private core neither
+ * opens a connection nor maps a Run through an uncommitted pool read. Admission
+ * parsing and policy checks remain the responsibility of enqueueRunCore. */
+async function enqueueRunInTransaction(
+  admission: RunAdmission,
+  parsed: ParsedEnqueueRun,
+  transaction: TransactionSql,
+): Promise<RawEnqueueRunResult> {
+  const context = admission.context;
+  const browserContext = () => {
+    if (admission.kind !== 'browser') throw new QueueError('policy_denied');
+    return admission.context;
+  };
+  const {
+    submission,
+    options,
+    ownerId,
+    workspaceId,
+    taskPolicy,
+    instanceIdentity,
+  } = parsed;
+  let { availableAt, timeoutAt } = parsed;
+  if (
+    admission.kind === 'maintenance_repair' ||
+    admission.kind === 'maintenance_repository'
+  ) {
+    // Serialize before taking issuer/grant/attempt locks. In particular a
+    // second start must never hold issuer SHARE while awaiting this mutex.
+    await transaction`select pg_advisory_xact_lock(hashtext('allrice-central-maintenance-repair'))`;
+    if (options.employeeBinding?.executionSnapshot.instance) {
+      const { lockEmployeeInstanceAdmissionIdentity } =
+        await import('../employees/employee-instances.ts');
+      await lockEmployeeInstanceAdmissionIdentity(
+        transaction,
+        instanceIdentity,
+      );
+    }
+    await transaction`select id from allrice_users where id=${ownerId} for no key update`;
+  }
+  await acquireDevAdmission(transaction);
+  if (admission.kind === 'maintenance_repository') {
+    const b = MaintenanceRepositoryBindingSchema.parse(
+      options.repositoryBinding,
+    );
+    if (b.request.action === 'publish') {
+      const g = await assertMaintenanceGrant(transaction, b.grantId, ownerId);
+      timeoutAt = new Date(
+        Math.min(timeoutAt.getTime(), Date.parse(g.frozen.expiresAt)),
+      );
+    } else
+      await assertMaintenanceReconciliation(transaction, b.grantId, ownerId);
+  }
+
+  await transaction`
+    select pg_advisory_xact_lock(
+      hashtextextended(${`${context.organizationId}:${submission.idempotencyKey}`}, 0)
+    )
+  `;
+  const existing = await transaction<
+    {
+      id: string;
+      run_id: string;
+      workspace_id: string;
+      owner_id: string;
+      payload: { type?: unknown; input?: unknown };
+    }[]
+  >`
+    select id, run_id, workspace_id, owner_id, payload from allrice_jobs
+    where organization_id = ${context.organizationId}
+      and idempotency_key = ${submission.idempotencyKey}
+  `;
+  if (existing[0]) {
+    if (
+      existing[0].workspace_id !== workspaceId ||
+      existing[0].owner_id !== ownerId ||
+      existing[0].payload.type !== submission.type ||
+      (submission.type === experienceConsolidationJobType ||
+      submission.type === platformTechnicalJobType ||
+      submission.type === repositoryPublicationJobType ||
+      submission.type === repositoryMergeJobType ||
+      options.qualityBinding ||
+      options.repairBinding ||
+      options.repositoryReviewBinding
+        ? technicalDigest(existing[0].payload.input) !==
+          technicalDigest(submission.input)
+        : JSON.stringify(existing[0].payload.input) !==
+          JSON.stringify(submission.input))
+    ) {
+      throw new QueueError('conflict');
+    }
+    if (options.qualityBinding)
+      await assertExistingPlatformQualityBinding(
+        transaction,
+        { ...browserContext(), workspaceId },
+        existing[0].run_id,
+        options.qualityBinding,
+      );
+    if (options.repairBinding)
+      await assertExistingRepairBinding(
+        transaction,
+        { ...context, workspaceId },
+        existing[0].run_id,
+        options.repairBinding,
+      );
+    if (options.repositoryMergeBinding)
+      await assertExistingRepositoryMerge(
+        transaction,
+        { ...browserContext(), workspaceId },
+        existing[0].run_id,
+        options.repositoryMergeBinding,
+      );
+    if (options.repositoryBinding)
+      await assertExistingRepositoryAction(
+        transaction,
+        { ...context, workspaceId },
+        existing[0].run_id,
+        options.repositoryBinding,
+      );
+    if (options.repositoryReviewBinding)
+      await assertExistingRepositoryReviewBinding(
+        transaction,
+        { ...browserContext(), workspaceId },
+        existing[0].run_id,
+        options.repositoryReviewBinding,
+      );
+    return {
+      runId: existing[0].run_id,
+      jobId: existing[0].id,
+      created: false,
+      delivery: 'immediate' as const,
+      activeRunId: null as string | null,
+    };
+  }
+
+  // Folder event authority takes user SHARE. Acquire the final user lock
+  // before that branch so concurrent events cannot both upgrade SHARE.
+  if (options.employeeBinding?.executionSnapshot.instance) {
+    const { lockEmployeeInstanceAdmissionIdentity } =
+      await import('../employees/employee-instances.ts');
+    await lockEmployeeInstanceAdmissionIdentity(transaction, instanceIdentity);
+    if (options.employeeBinding.executionSnapshot.content) {
+      const { assertEmployeeContentAdmission } =
+        await import('../employees/employee-runtime-content.ts');
+      await assertEmployeeContentAdmission(
+        transaction,
+        instanceIdentity,
+        options.employeeBinding.executionSnapshot.content,
+      );
+    }
+  }
+  if (options.employeeBinding?.promptSnapshot.referenceSelections) {
+    // Final admission rechecks authority after the message transaction. Pins
+    // cannot sneak through a department move or a source withdrawal.
+    const { assertReferenceSelections } =
+      await import('../reference-runtime.ts');
+    await assertReferenceSelections(
+      instanceIdentity,
+      options.employeeBinding.promptSnapshot.referenceSelections,
+      transaction,
+      true,
+    );
+    if (!options.employeeBinding.executionSnapshot.content)
+      throw new QueueError('policy_denied');
+  }
+  if (options.folderEventId) {
+    const { assertFolderTriggerMessage } =
+      await import('../folder-triggers.ts');
+    const binding = options.employeeBinding;
+    if (!binding || !options.conversationDelivery)
+      throw new QueueError('policy_denied');
+    const attachments = await transaction<
+      { object_id: string }[]
+    >`select object_id from allrice_message_attachments where message_id=${binding.userMessageId} and organization_id=${context.organizationId} and workspace_id=${workspaceId}`;
+    await assertFolderTriggerMessage(
+      transaction,
+      options.folderEventId,
+      { ...browserContext(), workspaceId },
+      binding.sessionId,
+      options.conversationDelivery.clientUserMessageId,
+      attachments.map((a) => a.object_id),
+    );
+  }
+  if (options.employeeBinding) {
+    if (options.employeeBinding.executionSnapshot.instance) {
+      const { assertEmployeeInstanceAdmission } =
+        await import('../employees/employee-instances.ts');
+      const snapshot = options.employeeBinding.executionSnapshot.instance;
+      if (
+        snapshot.assignmentId !==
+          options.employeeBinding.employeeAssignmentId ||
+        snapshot.source.employeeVersionId !==
+          options.employeeBinding.employeeVersionId
+      )
+        throw new QueueError('policy_denied');
+      await assertEmployeeInstanceAdmission(
+        transaction,
+        instanceIdentity,
+        options.employeeBinding.sessionId,
+        snapshot,
+      );
+    }
+    if (admission.kind === 'maintenance_repair') {
+      if (!options.repairBinding || options.repairBinding.frozen.version !== 2)
+        throw new QueueError('policy_denied');
+      await admitPlatformRepairBinding(
+        transaction,
+        { ...context, workspaceId },
+        options.employeeBinding.employeeAssignmentId,
+        options.repairBinding,
+      );
+      const grant = await assertMaintenanceGrant(
+        transaction,
+        options.repairBinding.frozen.maintenance.grantId,
+        ownerId,
+      );
+      if (taskPolicy?.authorizationExpiresAt !== grant.frozen.expiresAt)
+        throw new QueueError('policy_denied');
+      timeoutAt = new Date(
+        Math.min(timeoutAt.getTime(), Date.parse(grant.frozen.expiresAt)),
+      );
+    } else
+      await admitQualityEnqueue(
+        transaction,
+        { ...context, workspaceId },
+        options.employeeBinding.employeeAssignmentId,
+        options.qualityBinding,
+        options.repairBinding,
+        options.repositoryReviewBinding,
+      );
+    const { assertWorkbenchSession } = await import('../artifact-review.ts');
+    await assertWorkbenchSession(
+      transaction,
+      { ...context, workspaceId },
+      options.employeeBinding.sessionId,
+      true,
+    );
+  }
+
+  let delivery: 'immediate' | 'follow_up' | 'steer_pending' = 'immediate';
+  let activeRunId: string | null = null;
+  let expectedTurnId: string | null = null;
+  let expectedGeneration: number | null = null;
+  if (options.changesetAction && options.conversationDelivery) {
+    const action = options.changesetAction;
+    await prepareChangesetAction(
+      transaction,
+      { ...browserContext(), workspaceId },
+      options.conversationDelivery.sessionId,
+      action,
+    );
+    const duplicate =
+      await transaction`select run_id from allrice_changeset_runs where organization_id=${context.organizationId} and workspace_id=${workspaceId} and actor_id=${ownerId} and artifact_id=${action.artifactId} and restore_of is not distinct from ${action.restoreOf}::uuid`;
+    if (duplicate.length)
+      throw new ArtifactReviewError('changeset_already_requested');
+  }
+  if (options.reviewContinuation && options.conversationDelivery) {
+    await prepareReviewContinuation(
+      transaction,
+      { ...browserContext(), workspaceId },
+      options.conversationDelivery.sessionId,
+      options.reviewContinuation,
+    );
+    const feedbackId =
+      options.reviewContinuation.kind === 'version_feedback'
+        ? options.reviewContinuation.feedbackId
+        : null;
+    const prior =
+      await transaction`select response_id from allrice_review_continuations
+      where organization_id=${context.organizationId} and workspace_id=${workspaceId} and actor_id=${ownerId}
+      and artifact_id=${options.reviewContinuation.artifactId} and kind=${options.reviewContinuation.kind}
+      and feedback_id is not distinct from ${feedbackId}::uuid`;
+    if (prior.length) throw new ArtifactReviewError('review_already_sent');
+  }
+  if (options.conversationDelivery) {
+    const runtimeRows = await transaction<
+      {
+        state: string;
+        active_run_id: string | null;
+        active_turn_id: string | null;
+        thread_generation: number;
+      }[]
+    >`
+      select state, active_run_id, active_turn_id, thread_generation
+      from allrice_conversation_runtimes
+      where organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and session_id = ${options.conversationDelivery.sessionId}
+        and owner_id = ${ownerId}
+      for update
+    `;
+    const runtime = runtimeRows[0];
+    if (
+      options.conversationDelivery.requestedMode === 'steer' &&
+      (runtime?.state !== 'running' ||
+        !runtime.active_run_id ||
+        !runtime.active_turn_id ||
+        runtime.active_turn_id !==
+          options.conversationDelivery.expectedTurnId ||
+        runtime.thread_generation !==
+          options.conversationDelivery.expectedGeneration)
+    )
+      throw new ArtifactReviewError('input_turn_changed');
+    // Admission is already serialized by the Session lock. A committed Run
+    // owns this conversation even before the Worker creates/acquires its
+    // native runtime. Include that startup window and released queue heads.
+    const [pending] =
+      runtime?.state === 'running' && runtime.active_run_id
+        ? []
+        : await transaction<{ run_id: string }[]>`
+            select e.run_id from allrice_employee_runs e
+            join allrice_runs r on r.id=e.run_id
+            where e.organization_id=${context.organizationId}
+              and e.workspace_id=${workspaceId}
+              and e.session_id=${options.conversationDelivery.sessionId}
+              and r.owner_id=${ownerId}
+              and r.state in ('queued','running','waiting_approval')
+            order by e.created_at,e.run_id limit 1`;
+    activeRunId =
+      runtime?.state === 'running'
+        ? runtime.active_run_id
+        : (pending?.run_id ?? null);
+    if (activeRunId) {
+      const exactTurn =
+        runtime?.state === 'running' &&
+        !options.conversationDelivery.hasAttachments &&
+        options.conversationDelivery.requestedMode !== 'follow_up' &&
+        runtime.active_turn_id !== null &&
+        options.conversationDelivery.expectedTurnId ===
+          runtime.active_turn_id &&
+        options.conversationDelivery.expectedGeneration ===
+          runtime.thread_generation;
+      delivery = exactTurn ? 'steer_pending' : 'follow_up';
+      expectedTurnId = exactTurn ? runtime!.active_turn_id : null;
+      expectedGeneration = exactTurn ? runtime!.thread_generation : null;
+      availableAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      timeoutAt =
+        submission.timeoutMs === 0
+          ? unboundedTaskDeadline
+          : new Date(availableAt.getTime() + submission.timeoutMs);
+    }
+  }
+  // Authorization expiry is independent of an unlimited execution budget.
+  const policyExpiresAt = new Date(
+    availableAt.getTime() +
+      Math.max(submission.timeoutMs, 3_600_000) +
+      24 * 60 * 60 * 1000,
+  );
+
+  await transaction`select id from allrice_users where id = ${ownerId} for no key update`;
+  const versions = await transaction<{ version: number }[]>`
+    select coalesce(max(version), 0)::integer + 1 as version
+    from allrice_policy_snapshots
+    where organization_id = ${context.organizationId}
+      and subject_id = ${ownerId}
+  `;
+  const policyVersion = versions[0]?.version ?? 1;
+  const policies = await transaction<{ id: string }[]>`
+    insert into allrice_policy_snapshots (
+      organization_id, subject_id, version, payload, expires_at
+    ) values (
+      ${context.organizationId}, ${ownerId}, ${policyVersion},
+      ${transaction.json(
+        toJsonValue({
+          memberships: context.memberships.filter(
+            (membership) =>
+              membership.organizationId === context.organizationId &&
+              (membership.workspaceId === null ||
+                membership.workspaceId === workspaceId),
+          ),
+          grants: [
+            {
+              resourceType: 'job',
+              action: 'job:execute',
+              workspaceId,
+            },
+            ...(options.employeeBinding
+              ? ['storage_object', 'memory', 'chat_session'].map(
+                  (resourceType) => ({
+                    resourceType,
+                    action: 'resource:read' as const,
+                    workspaceId,
+                  }),
+                )
+              : []),
+            ...(options.employeeBinding
+              ? [
+                  {
+                    resourceType: 'automation',
+                    action: 'resource:write' as const,
+                    workspaceId,
+                  },
+                ]
+              : []),
+            ...(options.workflowBinding
+              ? ['storage_object', 'memory', 'chat_session'].map(
+                  (resourceType) => ({
+                    resourceType,
+                    action: 'resource:read' as const,
+                    workspaceId,
+                  }),
+                )
+              : []),
+          ],
+        }),
+      )},
+      ${policyExpiresAt}
+    )
+    returning id
+  `;
+  const policy = policies[0];
+  if (!policy) throw new Error('policy snapshot creation failed');
+  const payload = JobPayloadSchema.parse({
+    schemaVersion: 1,
+    type: submission.type,
+    input: submission.input,
+  });
+  const runs = await transaction<{ id: string }[]>`
+    insert into allrice_runs (
+      organization_id, workspace_id, owner_id, state, visibility,
+      policy_snapshot_id, execution_spec, input, request_id
+    ) values (
+      ${context.organizationId}, ${workspaceId}, ${ownerId}, 'queued', 'private',
+      ${policy.id},
+      ${transaction.json(
+        toJsonValue({
+          schemaVersion: 1,
+          handler: submission.type,
+          employeeVersionId: options.employeeBinding?.employeeVersionId ?? null,
+          skillVersionId: options.skillBinding?.skillVersionId ?? null,
+          provider:
+            options.skillBinding || options.employeeBinding ? 'codex' : null,
+          skillVersionIds:
+            options.employeeBinding?.skillVersionIds ?? undefined,
+          workflowRevisionId:
+            options.workflowBinding?.workflowRevisionId ?? undefined,
+          employeeId: options.workflowBinding?.employeeId ?? undefined,
+        }),
+      )},
+      ${transaction.json(toJsonValue(submission.input))}, ${context.requestId}
+    )
+    returning id
+  `;
+  const run = runs[0];
+  if (!run) throw new Error('run creation failed');
+  const jobs = await transaction<{ id: string }[]>`
+    insert into allrice_jobs (
+      organization_id, workspace_id, owner_id, run_id, status,
+      idempotency_key, priority, max_attempts, available_at, timeout_at, payload
+    ) values (
+      ${context.organizationId}, ${workspaceId}, ${ownerId}, ${run.id}, 'queued',
+      ${submission.idempotencyKey}, ${submission.priority},
+      ${submission.maxAttempts}, ${availableAt}, ${taskPolicy && admission.kind !== 'maintenance_repair' ? unboundedTaskDeadline : timeoutAt},
+      ${transaction.json(toJsonValue(payload))}
+    )
+    returning id
+  `;
+  const job = jobs[0];
+  if (!job) throw new Error('job creation failed');
+  if (admission.kind === 'experience')
+    await bindExperienceRun(
+      transaction,
+      admission.occurrenceId,
+      run.id,
+      ownerId,
+    );
+  if (options.repositoryMergeBinding) {
+    await bindRepositoryMerge(
+      transaction,
+      { ...browserContext(), workspaceId },
+      run.id,
+      job.id,
+      options.repositoryMergeBinding,
+    );
+    const [bound] = await transaction<
+      JobRow[]
+    >`select * from allrice_jobs where id=${job.id}`;
+    if (!bound || !(await isRepositoryMergeJobAuthorized(transaction, bound)))
+      throw new QueueError('policy_denied');
+  }
+  if (options.repositoryBinding) {
+    await bindRepositoryAction(
+      transaction,
+      { ...context, workspaceId },
+      run.id,
+      job.id,
+      options.repositoryBinding,
+    );
+    const [bound] = await transaction<
+      JobRow[]
+    >`select * from allrice_jobs where id=${job.id}`;
+    if (!bound || !(await isRepositoryActionAuthorized(transaction, bound)))
+      throw new QueueError('policy_denied');
+  }
+  if (options.technicalBinding) {
+    await bindPlatformTechnicalTask(
+      transaction,
+      { ...browserContext(), workspaceId },
+      run.id,
+      job.id,
+      options.technicalBinding,
+    );
+    const [boundJob] = await transaction<
+      JobRow[]
+    >`select * from allrice_jobs where id=${job.id}`;
+    if (
+      !boundJob ||
+      !(await isPlatformTechnicalJobAuthorized(transaction, boundJob))
+    )
+      throw new QueueError('policy_denied');
+  }
+  if (taskPolicy) {
+    if (taskPolicy.timeoutMs !== submission.timeoutMs)
+      throw new QueueError('conflict');
+    await transaction`insert into allrice_task_clocks(run_id,organization_id,workspace_id,policy)
+      values(${run.id},${context.organizationId},${workspaceId},${transaction.json(toJsonValue(taskPolicy))})`;
+  }
+  if (options.changesetAction && options.conversationDelivery) {
+    const action = options.changesetAction;
+    await transaction`insert into allrice_changeset_runs(run_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,restore_of)
+      values(${run.id},${context.organizationId},${workspaceId},${options.conversationDelivery.sessionId},${ownerId},${action.artifactId},${action.checksum},${action.restoreOf})`;
+  }
+  if (options.reviewContinuation && options.conversationDelivery) {
+    const review = options.reviewContinuation;
+    await transaction`insert into allrice_review_continuations
+      (response_id,organization_id,workspace_id,session_id,actor_id,artifact_id,checksum,kind,feedback_id,run_id)
+      values (${options.conversationDelivery.clientUserMessageId},${context.organizationId},${workspaceId},
+        ${options.conversationDelivery.sessionId},${ownerId},${review.artifactId},${review.checksum},${review.kind},
+        ${review.kind === 'version_feedback' ? review.feedbackId : null},${run.id})`;
+  }
+  if (options.conversationDelivery && delivery !== 'immediate') {
+    await transaction`
+      insert into allrice_conversation_followups (
+        run_id, organization_id, workspace_id, session_id, owner_id,
+        user_message_id, assistant_message_id, client_user_message_id,
+        mode, state
+      ) values (
+        ${run.id}, ${context.organizationId}, ${workspaceId},
+        ${options.conversationDelivery.sessionId}, ${ownerId},
+        ${options.conversationDelivery.userMessageId},
+        ${options.conversationDelivery.assistantMessageId},
+        ${options.conversationDelivery.clientUserMessageId},
+        ${delivery === 'steer_pending' ? 'steer_only' : 'follow_up'},
+        'queued'
+      )
+    `;
+    if (
+      delivery === 'steer_pending' &&
+      expectedTurnId !== null &&
+      expectedGeneration !== null
+    ) {
+      await transaction`
+        insert into allrice_conversation_commands (
+          organization_id, workspace_id, session_id, owner_id,
+          followup_run_id, command_type, client_user_message_id,
+          expected_generation, expected_turn_id, message, input_kind
+        ) values (
+          ${context.organizationId}, ${workspaceId},
+          ${options.conversationDelivery.sessionId}, ${ownerId}, ${run.id},
+          'steer', ${options.conversationDelivery.clientUserMessageId},
+          ${expectedGeneration}, ${expectedTurnId},
+          ${options.conversationDelivery.message},
+          ${options.conversationDelivery.message.startsWith('allrice:user-question:v1:') ? 'ask_user' : 'steer_current'}
+        )
+      `;
+    }
+  }
+  if (options.skillBinding) {
+    await transaction`
+      insert into allrice_skill_runs (
+        run_id, organization_id, workspace_id, installation_id,
+        skill_version_id, provider, provider_snapshot
+      ) values (
+        ${run.id}, ${context.organizationId}, ${workspaceId},
+        ${options.skillBinding.installationId},
+        ${options.skillBinding.skillVersionId}, 'codex',
+        ${transaction.json(toJsonValue(options.skillBinding.providerSnapshot))}
+      )
+    `;
+  }
+  if (options.employeeBinding) {
+    const submittedInput =
+      submission.input &&
+      typeof submission.input === 'object' &&
+      !Array.isArray(submission.input)
+        ? (submission.input as Record<string, unknown>)
+        : {};
+    const assistantConfiguration = AssistantRunConfigurationSchema.safeParse(
+      submittedInput.assistantConfiguration,
+    );
+    const officePolicyEligible =
+      (admission.kind === 'browser' || admission.kind === 'native_once') &&
+      submission.type === 'allrice.employee.run' &&
+      !!options.conversationDelivery &&
+      !options.qualityBinding &&
+      !options.repairBinding &&
+      !options.repositoryReviewBinding &&
+      !options.repositoryBinding &&
+      !options.repositoryMergeBinding &&
+      !options.technicalBinding &&
+      !options.workflowBinding &&
+      !options.skillBinding &&
+      runtimeFeatureEnabled('ALLRICE_ASSISTANTS_ENABLED') &&
+      runtimeFeatureEnabled('ALLRICE_WORKBENCH_ENABLED') &&
+      assistantConfiguration.success &&
+      assistantConfiguration.data.allowAssistants &&
+      options.employeeBinding.providerSnapshot.provider === 'dsh' &&
+      options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
+        'assistant.delegate',
+      ) &&
+      options.employeeBinding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
+        'workspace.export.create',
+      );
+    const executionSnapshot = EmployeeExecutionSnapshotSchema.parse({
+      ...freezeOfficeFirstDeliverySnapshot(
+        options.employeeBinding.executionSnapshot,
+        officePolicyEligible,
+        officePolicyEligible
+          ? await selectCheckedFinalDeliveryArtifact(transaction, {
+              organizationId: context.organizationId,
+              workspaceId,
+              ownerId,
+              sessionId: options.employeeBinding.sessionId,
+            })
+          : undefined,
+      ),
+      tenantContext: {
+        organizationId: context.organizationId,
+        workspaceId,
+        actorId: ownerId,
+        policySnapshotId: policy.id,
+      },
+      createdAt: new Date().toISOString(),
+    });
+    await transaction`
+      insert into allrice_employee_runs (
+        run_id, organization_id, workspace_id, owner_id,
+        employee_assignment_id, employee_version_id, session_id,
+        user_message_id, assistant_message_id, status, provider_snapshot,
+        skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
+        created_at
+      ) values (
+        ${run.id}, ${context.organizationId}, ${workspaceId}, ${ownerId},
+        ${options.employeeBinding.employeeAssignmentId},
+        ${options.employeeBinding.employeeVersionId},
+        ${options.employeeBinding.sessionId},
+        ${options.employeeBinding.userMessageId},
+        ${options.employeeBinding.assistantMessageId}, 'queued',
+        ${transaction.json(
+          toJsonValue(options.employeeBinding.providerSnapshot),
+        )},
+        ${transaction.json(toJsonValue(options.employeeBinding.skillBindings))},
+        ${transaction.json(toJsonValue(options.employeeBinding.nativeSkills))},
+        ${transaction.json(toJsonValue(options.employeeBinding.promptSnapshot))},
+        ${transaction.json(toJsonValue(executionSnapshot))},
+        ${executionSnapshot.createdAt}
+      )
+    `;
+  }
+  if (options.qualityBinding && options.employeeBinding) {
+    await bindPlatformQualityCheck(
+      transaction,
+      { ...browserContext(), workspaceId },
+      run.id,
+      job.id,
+      options.employeeBinding.sessionId,
+      options.qualityBinding,
+    );
+  }
+  if (options.repairBinding && options.employeeBinding)
+    await bindPlatformRepairTask(
+      transaction,
+      { ...context, workspaceId },
+      run.id,
+      job.id,
+      options.employeeBinding.sessionId,
+      options.repairBinding,
+    );
+  if (options.repositoryReviewBinding && options.employeeBinding)
+    await bindRepositoryReview(
+      transaction,
+      { ...browserContext(), workspaceId },
+      run.id,
+      job.id,
+      options.employeeBinding.sessionId,
+      options.repositoryReviewBinding,
+    );
+  if (options.employeeBinding?.promptSnapshot.companyAssets) {
+    const { recordCompanyRunSelections } =
+      await import('../company-run-assets.ts');
+    await recordCompanyRunSelections(transaction, {
+      organizationId: context.organizationId,
+      workspaceId,
+      ownerId,
+      runId: run.id,
+    });
+  }
+  await appendEvent(transaction, {
+    organizationId: context.organizationId,
+    workspaceId,
+    runId: run.id,
+    type: 'run.created',
+    payload: {
+      jobId: job.id,
+      status: 'queued',
+      availableAt: availableAt.toISOString(),
+    },
+  });
+  await audit(transaction, {
+    organizationId: context.organizationId,
+    workspaceId,
+    actorId: ownerId,
+    action: 'run.enqueue',
+    resourceType: 'run',
+    resourceId: run.id,
+    decision: 'allowed',
+    reason: 'frozen_policy_snapshot',
+    requestId: context.requestId,
+    metadata: { jobId: job.id, policySnapshotId: policy.id },
+  });
+  return {
+    runId: run.id,
+    jobId: job.id,
+    created: true,
+    delivery,
+    activeRunId,
   };
 }
 
@@ -2077,105 +2228,161 @@ export async function startClaimedJob(
   const jobId = UuidSchema.parse(jobIdInput);
   const leaseToken = UuidSchema.parse(leaseTokenInput);
   const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
-    if (!(await devAdmissionOpen(transaction))) return null;
-    await refreshTaskClockForJob(transaction, jobId);
-    const jobs = await transaction<JobRow[]>`
-      select * from allrice_jobs where id = ${jobId} for update
+  let retryOnceLock = false;
+  const result = await employeeAccessTransaction(
+    sql,
+    async (transaction) => {
+      if (!(await devAdmissionOpen(transaction))) return null;
+      const once = await lockNativeOnceJobAdmission(transaction, jobId);
+      retryOnceLock = once.scheduled;
+      if (once.scheduled) await lockRootCreation(transaction, once.runId, true);
+      await refreshTaskClockForJob(transaction, jobId);
+      const jobs = await transaction<JobRow[]>`
+      select * from allrice_jobs where id = ${jobId} for update ${once.scheduled ? transaction`nowait` : transaction``}
     `;
-    const [startClock] = await transaction<
-      { now: Date }[]
-    >`select clock_timestamp() as now`;
-    const now = startClock!.now;
-    const job = jobs[0];
-    if (
-      job &&
-      isDevReleaseControlType((job.payload as { type?: unknown })?.type)
-    )
-      throw new QueueError('policy_denied');
-    if (
-      !job ||
-      job.status !== 'claimed' ||
-      job.worker_id !== workerId ||
-      job.lease_token !== leaseToken ||
-      !job.lease_expires_at ||
-      job.lease_expires_at <= now
-    ) {
-      throw new QueueError('lease_lost');
-    }
-    if (job.cancel_requested_at) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'canceled',
-        runStatus: 'canceled',
-        eventType: 'run.canceled',
-        payload: { reason: job.cancel_reason ?? 'user_requested' },
-      });
-      return { execution: null, denied: false };
-    }
-    if (job.timeout_at <= now) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'failed',
-        runStatus: 'failed',
-        eventType: 'run.failed',
-        code: 'JOB_TIMEOUT',
-        message: 'Job timed out before execution started',
-        payload: { code: 'JOB_TIMEOUT' },
-      });
-      return { execution: null, denied: false };
-    }
-    if (await stopUnauthorizedTechnicalJob(transaction, job))
-      return { execution: null, denied: true };
-    const policies = await transaction<PolicyRow[]>`
+      const [startClock] = await transaction<
+        { now: Date }[]
+      >`select clock_timestamp() as now`;
+      const now = startClock!.now;
+      const job = jobs[0];
+      if (
+        job &&
+        isDevReleaseControlType((job.payload as { type?: unknown })?.type)
+      )
+        throw new QueueError('policy_denied');
+      if (
+        !job ||
+        job.status !== 'claimed' ||
+        job.worker_id !== workerId ||
+        job.lease_token !== leaseToken ||
+        !job.lease_expires_at ||
+        job.lease_expires_at <= now
+      ) {
+        throw new QueueError('lease_lost');
+      }
+      if (job.cancel_requested_at) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'canceled',
+          runStatus: 'canceled',
+          eventType: 'run.canceled',
+          payload: { reason: job.cancel_reason ?? 'user_requested' },
+        });
+        return { execution: null, denied: false };
+      }
+      if (job.timeout_at <= now) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'JOB_TIMEOUT',
+          message: 'Job timed out before execution started',
+          payload: { code: 'JOB_TIMEOUT' },
+        });
+        return { execution: null, denied: false };
+      }
+      if (!once.allowed) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'failed',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'NATIVE_SCHEDULE_AUTH_REVOKED',
+          message:
+            'The scheduled task no longer has current execution permission',
+          payload: { code: 'NATIVE_SCHEDULE_AUTH_REVOKED' },
+        });
+        return { execution: null, denied: true };
+      }
+      if (await stopUnauthorizedTechnicalJob(transaction, job))
+        return { execution: null, denied: true };
+      const policies = await transaction<PolicyRow[]>`
       select p.*
       from allrice_policy_snapshots p
       join allrice_runs r on r.policy_snapshot_id = p.id
       where r.id = ${job.run_id}
     `;
-    const policy = policies[0];
-    if (!policy) throw new Error('run policy snapshot missing');
-    const policySnapshot = PolicySnapshotSchema.parse({
-      id: policy.id,
-      organizationId: policy.organization_id,
-      subjectId: policy.subject_id,
-      version: policy.version,
-      issuedAt: policy.issued_at.toISOString(),
-      expiresAt: policy.expires_at.toISOString(),
-      memberships: policy.payload.memberships ?? [],
-      grants: policy.payload.grants ?? [],
-    });
-    const context = ExecutionContextSchema.parse({
-      executionId: randomUUID(),
-      runId: job.run_id,
-      jobId: job.id,
-      worker: { type: 'worker', id: workerId },
-      delegatedBy: { type: 'user', id: job.owner_id },
-      organizationId: job.organization_id,
-      workspaceId: job.workspace_id,
-      policySnapshot,
-      startedAt: now.toISOString(),
-    });
-    const decision = authorizeExecution(
-      {
-        type: 'job',
-        id: job.id,
+      const policy = policies[0];
+      if (!policy) throw new Error('run policy snapshot missing');
+      const policySnapshot = PolicySnapshotSchema.parse({
+        id: policy.id,
+        organizationId: policy.organization_id,
+        subjectId: policy.subject_id,
+        version: policy.version,
+        issuedAt: policy.issued_at.toISOString(),
+        expiresAt: policy.expires_at.toISOString(),
+        memberships: policy.payload.memberships ?? [],
+        grants: policy.payload.grants ?? [],
+      });
+      const context = ExecutionContextSchema.parse({
+        executionId: randomUUID(),
+        runId: job.run_id,
+        jobId: job.id,
+        worker: { type: 'worker', id: workerId },
+        delegatedBy: { type: 'user', id: job.owner_id },
         organizationId: job.organization_id,
         workspaceId: job.workspace_id,
-        ownerId: job.owner_id,
-        visibility: 'private',
-        archivedAt: null,
-      },
-      'job:execute',
-      context,
-      now,
-    );
-    if (!decision.allowed) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'dead_letter',
-        runStatus: 'failed',
-        eventType: 'run.failed',
-        code: 'POLICY_DENIED',
-        message: 'Frozen policy denied Worker execution',
-        payload: { code: 'POLICY_DENIED', reason: decision.reason },
+        policySnapshot,
+        startedAt: now.toISOString(),
+      });
+      const decision = authorizeExecution(
+        {
+          type: 'job',
+          id: job.id,
+          organizationId: job.organization_id,
+          workspaceId: job.workspace_id,
+          ownerId: job.owner_id,
+          visibility: 'private',
+          archivedAt: null,
+        },
+        'job:execute',
+        context,
+        now,
+      );
+      if (!decision.allowed) {
+        await transitionTerminal(transaction, job, {
+          jobStatus: 'dead_letter',
+          runStatus: 'failed',
+          eventType: 'run.failed',
+          code: 'POLICY_DENIED',
+          message: 'Frozen policy denied Worker execution',
+          payload: { code: 'POLICY_DENIED', reason: decision.reason },
+        });
+        await audit(transaction, {
+          organizationId: job.organization_id,
+          workspaceId: job.workspace_id,
+          actorId: null,
+          action: 'job.execute',
+          resourceType: 'job',
+          resourceId: job.id,
+          decision: 'denied',
+          reason: decision.reason,
+          requestId: null,
+          metadata: { workerId },
+        });
+        return { execution: null, denied: true };
+      }
+      await bindPlatformTechnicalAttempt(transaction, job);
+      const updated = await transaction<JobRow[]>`
+      update allrice_jobs set status = 'running', updated_at = now()
+      where id = ${job.id}
+      returning *
+    `;
+      await transaction`
+      update allrice_runs
+      set state = 'running', started_at = coalesce(started_at, now()),
+          updated_at = now()
+      where id = ${job.run_id}
+    `;
+      await transaction`
+      update allrice_employee_runs
+      set status = 'running', started_at = coalesce(started_at, now())
+      where run_id = ${job.run_id}
+    `;
+      await appendEvent(transaction, {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id,
+        runId: job.run_id,
+        type: 'run.started',
+        payload: { jobId: job.id, workerId, attempt: job.attempt },
       });
       await audit(transaction, {
         organizationId: job.organization_id,
@@ -2184,73 +2391,37 @@ export async function startClaimedJob(
         action: 'job.execute',
         resourceType: 'job',
         resourceId: job.id,
-        decision: 'denied',
+        decision: 'allowed',
         reason: decision.reason,
         requestId: null,
-        metadata: { workerId },
+        metadata: { runId: job.run_id, attempt: job.attempt, workerId },
       });
-      return { execution: null, denied: true };
-    }
-    await bindPlatformTechnicalAttempt(transaction, job);
-    const updated = await transaction<JobRow[]>`
-      update allrice_jobs set status = 'running', updated_at = now()
-      where id = ${job.id}
-      returning *
-    `;
-    await transaction`
-      update allrice_runs
-      set state = 'running', started_at = coalesce(started_at, now()),
-          updated_at = now()
-      where id = ${job.run_id}
-    `;
-    await transaction`
-      update allrice_employee_runs
-      set status = 'running', started_at = coalesce(started_at, now())
-      where run_id = ${job.run_id}
-    `;
-    await appendEvent(transaction, {
-      organizationId: job.organization_id,
-      workspaceId: job.workspace_id,
-      runId: job.run_id,
-      type: 'run.started',
-      payload: { jobId: job.id, workerId, attempt: job.attempt },
-    });
-    await audit(transaction, {
-      organizationId: job.organization_id,
-      workspaceId: job.workspace_id,
-      actorId: null,
-      action: 'job.execute',
-      resourceType: 'job',
-      resourceId: job.id,
-      decision: 'allowed',
-      reason: decision.reason,
-      requestId: null,
-      metadata: { runId: job.run_id, attempt: job.attempt, workerId },
-    });
-    const running = updated[0];
-    if (!running) throw new Error('job start failed');
-    // Only a persisted quiescent checkpoint can keep its original question
-    // across owners. Transient native callbacks are still not recoverable.
-    if (await refreshTaskClock(transaction, job.run_id)) {
-      const [waits] =
-        await transaction`select to_regclass(format('%I.allrice_native_question_waits',current_schema())) is not null as available`;
-      if (waits?.available)
-        await transaction`update allrice_task_questions q set pending=false where q.run_id=${job.run_id} and q.pending
+      const running = updated[0];
+      if (!running) throw new Error('job start failed');
+      // Only a persisted quiescent checkpoint can keep its original question
+      // across owners. Transient native callbacks are still not recoverable.
+      if (await refreshTaskClock(transaction, job.run_id)) {
+        const [waits] =
+          await transaction`select to_regclass(format('%I.allrice_native_question_waits',current_schema())) is not null as available`;
+        if (waits?.available)
+          await transaction`update allrice_task_questions q set pending=false where q.run_id=${job.run_id} and q.pending
         and not exists(select 1 from allrice_native_question_waits w where w.run_id=q.run_id and w.question_id=q.question_id and w.state='ready')`;
-      else
-        await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
-    }
-    const clock = await refreshTaskClock(transaction, job.run_id);
-    if (clock) running.timeout_at = clock.deadlineAt;
-    return {
-      execution: {
-        context,
-        job: mapJob(running),
-        payload: JobPayloadSchema.parse(running.payload),
-      },
-      denied: false,
-    };
-  });
+        else
+          await transaction`update allrice_task_questions set pending=false where run_id=${job.run_id} and pending`;
+      }
+      const clock = await refreshTaskClock(transaction, job.run_id);
+      if (clock) running.timeout_at = clock.deadlineAt;
+      return {
+        execution: {
+          context,
+          job: mapJob(running),
+          payload: JobPayloadSchema.parse(running.payload),
+        },
+        denied: false,
+      };
+    },
+    { retryLockBusy: () => retryOnceLock },
+  );
   if (!result) return null;
   if (result.denied) throw new QueueError('policy_denied');
   return result.execution;
@@ -2285,6 +2456,7 @@ async function lockedLeasedJob(
   workerId: string,
   jobId: string,
   leaseToken: string,
+  once?: NativeOnceJobAdmission,
 ) {
   // These transactions contain only queue control/receipt SQL, never model,
   // tool or human waits. A blocked heartbeat/event write must roll back rather
@@ -2294,10 +2466,11 @@ async function lockedLeasedJob(
   const [scope] = await transaction<
     { run_id: string }[]
   >`select run_id from allrice_jobs where id=${jobId}`;
-  if (scope) await lockRootCreation(transaction, scope.run_id);
+  if (scope)
+    await lockRootCreation(transaction, scope.run_id, once?.scheduled === true);
   await refreshTaskClockForJob(transaction, jobId);
   const rows = await transaction<JobRow[]>`
-    select * from allrice_jobs where id = ${jobId} for update
+    select * from allrice_jobs where id = ${jobId} for update ${once?.scheduled ? transaction`nowait` : transaction``}
   `;
   const job = rows[0];
   if (job && isDevReleaseControlType((job.payload as { type?: unknown })?.type))
@@ -2339,15 +2512,39 @@ async function lockRootCreation(
  * bindLeasedNativeSession explicitly denies them for new native dispatch. */
 export async function bindJobNativeSession(input: NativeSessionLeaseInput) {
   const value = NativeSessionLeaseInputSchema.parse(input);
-  return getDatabase().begin(async (tx) => {
-    const job = await lockedLeasedJob(
-      tx,
-      value.workerId,
-      value.jobId,
-      value.leaseToken,
-    );
-    return bindLeasedNativeSession(tx, job, value);
-  });
+  let retryOnceLock = false;
+  const result = await employeeAccessTransaction(
+    getDatabase(),
+    async (tx) => {
+      const once = await lockNativeOnceJobAdmission(tx, value.jobId);
+      retryOnceLock = once.scheduled;
+      const job = await lockedLeasedJob(
+        tx,
+        value.workerId,
+        value.jobId,
+        value.leaseToken,
+        once,
+      );
+      if (!once.allowed) {
+        await requestEmployeeAccessCancellationTransaction(
+          tx,
+          job.run_id,
+          'native_schedule_authority_revoked',
+          {
+            actorId: null,
+            requestId: null,
+            actorLabel: 'native_schedule_current_authority',
+          },
+        );
+        return null;
+      }
+      return bindLeasedNativeSession(tx, job, value);
+    },
+    { retryLockBusy: () => retryOnceLock },
+  );
+  if (!result)
+    throw new NativeSessionBindingError('NATIVE_SESSION_ADMISSION_DENIED');
+  return result;
 }
 
 /** Provisional routing lookup only. A returned pin has passed the complete
@@ -2356,26 +2553,50 @@ export async function prepareJobNativeSession(
   input: NativeSessionPreparationInput,
 ) {
   const value = NativeSessionPreparationInputSchema.parse(input);
-  return getDatabase().begin(async (tx) => {
-    const job = await lockedLeasedJob(
-      tx,
-      value.workerId,
-      value.jobId,
-      value.leaseToken,
-    );
-    const [at] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
-    if (
-      job.attempt !== value.attempt ||
-      job.cancel_requested_at ||
-      job.drain_reason ||
-      job.drain_deadline_at ||
-      !job.lease_expires_at ||
-      job.lease_expires_at <= at!.now ||
-      job.timeout_at <= at!.now
-    )
-      throw new NativeSessionBindingError('NATIVE_SESSION_ADMISSION_DENIED');
-    return prepareLeasedNativeSession(tx, job, value);
-  });
+  let retryOnceLock = false;
+  const result = await employeeAccessTransaction(
+    getDatabase(),
+    async (tx) => {
+      const once = await lockNativeOnceJobAdmission(tx, value.jobId);
+      retryOnceLock = once.scheduled;
+      const job = await lockedLeasedJob(
+        tx,
+        value.workerId,
+        value.jobId,
+        value.leaseToken,
+        once,
+      );
+      if (!once.allowed) {
+        await requestEmployeeAccessCancellationTransaction(
+          tx,
+          job.run_id,
+          'native_schedule_authority_revoked',
+          {
+            actorId: null,
+            requestId: null,
+            actorLabel: 'native_schedule_current_authority',
+          },
+        );
+        return null;
+      }
+      const [at] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
+      if (
+        job.attempt !== value.attempt ||
+        job.cancel_requested_at ||
+        job.drain_reason ||
+        job.drain_deadline_at ||
+        !job.lease_expires_at ||
+        job.lease_expires_at <= at!.now ||
+        job.timeout_at <= at!.now
+      )
+        throw new NativeSessionBindingError('NATIVE_SESSION_ADMISSION_DENIED');
+      return prepareLeasedNativeSession(tx, job, value);
+    },
+    { retryLockBusy: () => retryOnceLock },
+  );
+  if (!result)
+    throw new NativeSessionBindingError('NATIVE_SESSION_ADMISSION_DENIED');
+  return result;
 }
 
 export async function heartbeatJob(
@@ -2388,30 +2609,59 @@ export async function heartbeatJob(
   const jobId = UuidSchema.parse(jobIdInput);
   const leaseToken = UuidSchema.parse(leaseTokenInput);
   const sql = getDatabase();
-  return sql.begin(async (transaction) => {
-    const job = await lockedLeasedJob(transaction, workerId, jobId, leaseToken);
-    const cause = queueStopCause(job, new Date());
-    if (cause) return stopJobOrDrain(transaction, job, cause, leaseMs);
-    if (await stopUnauthorizedTechnicalJob(transaction, job))
-      return { active: false, canceled: false };
-    const now = new Date();
-    const expiresAt = leaseDeadline(leaseMs, now);
-    await transaction`
+  let retryOnceLock = false;
+  return employeeAccessTransaction(
+    sql,
+    async (transaction) => {
+      const once = await lockNativeOnceJobAdmission(transaction, jobId);
+      retryOnceLock = once.scheduled;
+      let job = await lockedLeasedJob(
+        transaction,
+        workerId,
+        jobId,
+        leaseToken,
+        once,
+      );
+      if (!once.allowed && !job.cancel_requested_at) {
+        await requestEmployeeAccessCancellationTransaction(
+          transaction,
+          job.run_id,
+          'native_schedule_authority_revoked',
+          {
+            actorId: null,
+            requestId: null,
+            actorLabel: 'native_schedule_current_authority',
+          },
+        );
+        const [canceled] = await transaction<
+          JobRow[]
+        >`select * from allrice_jobs where id=${jobId}`;
+        job = canceled!;
+      }
+      const cause = queueStopCause(job, new Date());
+      if (cause) return stopJobOrDrain(transaction, job, cause, leaseMs);
+      if (await stopUnauthorizedTechnicalJob(transaction, job))
+        return { active: false, canceled: false };
+      const now = new Date();
+      const expiresAt = leaseDeadline(leaseMs, now);
+      await transaction`
       update allrice_jobs
       set heartbeat_at = ${now}, lease_expires_at = ${expiresAt},
           updated_at = ${now}
       where id = ${job.id}
     `;
-    // Renew only steps owned by this same live job incarnation. The job/root
-    // locks above serialize takeover, cancellation and an absolute deadline.
-    await transaction`update allrice_workflow_step_runs s
+      // Renew only steps owned by this same live job incarnation. The job/root
+      // locks above serialize takeover, cancellation and an absolute deadline.
+      await transaction`update allrice_workflow_step_runs s
       set lease_expires_at=least(${expiresAt}::timestamptz,${job.timeout_at}::timestamptz),updated_at=${now}
       from allrice_workflow_runs w
       where w.id=s.workflow_run_id and w.run_id=${job.run_id}
         and w.organization_id=${job.organization_id} and w.workspace_id=${job.workspace_id}
         and w.owner_id=${job.owner_id} and s.status='running' and s.lease_token=${leaseToken}`;
-    return { active: true, canceled: false };
-  });
+      return { active: true, canceled: false };
+    },
+    { retryLockBusy: () => retryOnceLock },
+  );
 }
 
 export async function appendJobEvent(input: {

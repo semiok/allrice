@@ -14,6 +14,7 @@ export class EmployeeAccessBusyError extends Error {
  * waiting in the reverse order; bounded retries start with no locks held. */
 async function retryEmployeeAccessTransaction<T>(
   run: () => Promise<T>,
+  retryLockBusy: () => boolean,
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -23,7 +24,8 @@ async function retryEmployeeAccessTransaction<T>(
         !error ||
         typeof error !== 'object' ||
         !('code' in error) ||
-        error.code !== '55P03'
+        error.code !== '55P03' ||
+        !retryLockBusy()
       )
         throw error;
       if (attempt >= 4) throw new EmployeeAccessBusyError();
@@ -35,8 +37,12 @@ async function retryEmployeeAccessTransaction<T>(
 export function employeeAccessTransaction<T>(
   sql: ReturnType<typeof getDatabase>,
   run: (tx: postgres.TransactionSql) => Promise<T>,
+  options: { retryLockBusy?: () => boolean } = {},
 ) {
-  return retryEmployeeAccessTransaction(() => sql.begin(run));
+  return retryEmployeeAccessTransaction(
+    () => sql.begin(run),
+    options.retryLockBusy ?? (() => true),
+  );
 }
 
 /** Call only inside the authorized assignment/instance mutation transaction.

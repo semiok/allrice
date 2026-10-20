@@ -18,7 +18,10 @@ import { readSessionSteering } from './steering-history.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { captureReferenceSelections } from '../reference-runtime.ts';
-import { captureCompanyRunAssets } from '../company-run-assets.ts';
+import {
+  captureCompanyRunAssets,
+  captureCompanyRunAssetsForPrincipal,
+} from '../company-run-assets.ts';
 import { completedBudgetAnswers } from './budget-answer.ts';
 import { messageRequestWithAttachments } from './message-attachments.ts';
 import {
@@ -36,6 +39,7 @@ import {
   MemoryRevisionSchema,
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
+  RequestContextSchema,
   resolveAssistantPreference,
   defaultAssistantRunConfiguration,
   UpdateChatSessionInputSchema,
@@ -104,6 +108,7 @@ type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
 type EmployeeAssignment = z.infer<typeof EmployeeAssignmentSchema>;
 type WorkspaceMemory = z.infer<typeof WorkspaceMemorySchema>;
+type WorkspaceSql = ReturnType<typeof getDatabase> | TransactionSql;
 
 interface AssignmentRow {
   assignment_id: string;
@@ -1128,15 +1133,17 @@ function vectorLiteral(values: number[]) {
   return `[${values.join(',')}]`;
 }
 
-async function loadWorkspaceMemoryRecallCandidates(input: {
-  context: RequestContext;
-  workspaceId: string;
-  employeeId?: string;
-  query: string;
-  poolSize: number;
-  durableOnly: boolean;
-}) {
-  const sql = getDatabase();
+async function loadWorkspaceMemoryRecallCandidates(
+  input: {
+    context: ResourcePrincipal;
+    workspaceId: string;
+    employeeId?: string;
+    query: string;
+    poolSize: number;
+    durableOnly: boolean;
+  },
+  sql: WorkspaceSql = getDatabase(),
+) {
   const employeeScope = input.employeeId ?? null;
   const embedding = vectorLiteral(embedWorkspaceText(input.query));
   const rows = await sql<MemoryRecallRow[]>`
@@ -1204,19 +1211,23 @@ async function loadWorkspaceMemoryRecallCandidates(input: {
 }
 
 async function recallForReply(
-  context: RequestContext,
+  context: ResourcePrincipal,
   workspaceId: string,
   employeeId: string | undefined,
   text: string,
+  sql: WorkspaceSql = getDatabase(),
 ) {
-  const candidates = await loadWorkspaceMemoryRecallCandidates({
-    context,
-    workspaceId,
-    employeeId,
-    query: text,
-    poolSize: 60,
-    durableOnly: true,
-  });
+  const candidates = await loadWorkspaceMemoryRecallCandidates(
+    {
+      context,
+      workspaceId,
+      employeeId,
+      query: text,
+      poolSize: 60,
+      durableOnly: true,
+    },
+    sql,
+  );
   const recalled = applyWorkspaceMemoryRecallBudget(
     rankWorkspaceMemoryRecallCandidates(candidates, {
       threshold: workspaceMemoryRecallPolicy.automaticThreshold,
@@ -1226,7 +1237,6 @@ async function recallForReply(
     workspaceMemoryRecallPolicy.maximumAutomaticBytes,
   );
   if (recalled.length > 0) {
-    const sql = getDatabase();
     const recalledIds = recalled.map((memory) => memory.id);
     await sql`
       update allrice_memories
@@ -1296,6 +1306,682 @@ export async function authorizeSessionOwner(
   return mapSession(session);
 }
 
+type ChatMessagePersistenceInput = {
+  context: ResourcePrincipal;
+  workspaceId: string;
+  session: SessionRow;
+  message: z.infer<typeof SendChatMessageInputSchema>;
+  requestDigest: string;
+  options: {
+    folderEventId?: string;
+    workflowInvocation?: BrandContentWorkflowInvocation;
+  };
+};
+
+type PersistedChatMessage = {
+  userMessage: MessageRow;
+  assistantMessage: MessageRow;
+  currentAssignment: { employee_id: string; employee_version_id: string };
+};
+
+type ChatRunPreparationInput = Omit<
+  ChatMessagePersistenceInput,
+  'requestDigest'
+> & {
+  result: PersistedChatMessage;
+  effectiveEmployeeVersionId: string;
+  assistantPreference:
+    ReturnType<typeof resolveAssistantPreference> | undefined;
+  conversationMessage: string;
+};
+
+type ChatRunDatabase =
+  | { kind: 'database'; sql: ReturnType<typeof getDatabase> }
+  | { kind: 'transaction'; sql: TransactionSql };
+
+/** Reuse the existing message writes in the caller's transaction. The caller
+ * authorizes the Session and owns the outer lock order and rollback boundary.
+ * Keep message.text mutations on the same parsed input for continuation replay. */
+async function persistChatMessageInTransaction(
+  transaction: TransactionSql,
+  input: ChatMessagePersistenceInput,
+): Promise<PersistedChatMessage> {
+  const { context, workspaceId, session, message, requestDigest, options } =
+    input;
+  if (options.folderEventId) {
+    const { assertFolderTriggerMessage } =
+      await import('../folder-triggers.ts');
+    await assertFolderTriggerMessage(
+      transaction,
+      options.folderEventId,
+      { ...RequestContextSchema.parse(context), workspaceId },
+      session.id,
+      message.clientMessageId,
+      message.attachmentIds,
+    );
+  }
+  await transaction`
+    select pg_advisory_xact_lock(
+      hashtextextended(${`${session.id}:${message.clientMessageId}`}, 50)
+    )
+  `;
+  const { resolveEmployeeSessionInstance } =
+    await import('../employees/employee-instances.ts');
+  try {
+    await resolveEmployeeSessionInstance(
+      // Shared with scheduled/folder work: its sessionId can be a device or
+      // correlation ID, not a browser login. Current owner authority is checked.
+      {
+        actor: context.actor,
+        organizationId: context.organizationId,
+        workspaceId,
+      },
+      session.employee_assignment_id,
+      session.employee_instance_id ?? undefined,
+      transaction,
+    );
+  } catch (error) {
+    if (
+      error instanceof DataAccessError &&
+      error.code === 'authorization_denied'
+    ) {
+      // Preserve the existing missing-assignment / read-only-workbench errors.
+      // This is still a rejection; no alternate path can admit the input.
+      const [available] =
+        await transaction`select id from allrice_employee_assignments
+        where id=${session.employee_assignment_id} and organization_id=${context.organizationId}
+          and workspace_id=${workspaceId} and active`;
+      if (!available) throw new DataAccessError('not_found');
+      await assertWorkbenchSession(
+        transaction,
+        { ...context, workspaceId },
+        session.id,
+        true,
+      );
+    }
+    throw error;
+  }
+  await assertWorkbenchSession(
+    transaction,
+    { ...context, workspaceId },
+    session.id,
+    true,
+  );
+  const employeeRows = await transaction<
+    { employee_id: string; employee_version_id: string }[]
+  >`
+    select a.employee_id, case when allrice_native_session_version_compatible(s.native_root_origin,v.manifest)
+      then a.employee_version_id else s.employee_version_id end employee_version_id
+    from allrice_employee_assignments a
+    join allrice_employee_versions v on v.id=a.employee_version_id
+    join allrice_chat_sessions s on s.id=${session.id} and s.employee_assignment_id=a.id
+    where a.id = ${session.employee_assignment_id}
+      and a.organization_id = ${context.organizationId}
+      and a.workspace_id = ${workspaceId}
+      and a.active
+  `;
+  const currentAssignment = employeeRows[0];
+  if (!currentAssignment) throw new DataAccessError('not_found');
+  // Same-engine publications apply on the next turn. Cross-engine updates
+  // require a new Session; both the stored version and this Run's selected
+  // version must remain compatible with the immutable birth/legacy reader.
+  // Already-enqueued Runs keep their own frozen package.
+  const effectiveEmployeeVersionId = currentAssignment.employee_version_id;
+  if (session.employee_version_id !== effectiveEmployeeVersionId) {
+    await transaction`
+      update allrice_chat_sessions
+      set employee_version_id = ${effectiveEmployeeVersionId}
+      where id = ${session.id}
+        and organization_id = ${context.organizationId}
+        and workspace_id = ${workspaceId}
+        and employee_assignment_id = ${session.employee_assignment_id}
+        and employee_version_id = ${session.employee_version_id}
+    `;
+    await audit(
+      {
+        context,
+        workspaceId,
+        action: 'session.employee.version.refresh',
+        resourceType: 'chat_session',
+        resourceId: session.id,
+        reason: 'active_assignment_version_applied_on_next_turn',
+      },
+      transaction,
+    );
+  }
+
+  const existing = await transaction<MessageRow[]>`
+    select * from allrice_messages
+    where session_id = ${session.id}
+      and owner_id = ${requireUser(context)}
+      and client_message_id = ${message.clientMessageId}
+  `;
+  let userMessage = existing[0];
+  if (userMessage) {
+    const [receipt] = await transaction<{ request_digest: string }[]>`
+      select request_digest from allrice_chat_input_requests where user_message_id=${userMessage.id}`;
+    if (
+      (receipt && receipt.request_digest !== requestDigest) ||
+      (!receipt &&
+        (ChatMessageContentSchema.parse(userMessage.content).text !==
+          message.text ||
+          message.reviewContinuation ||
+          message.changesetAction ||
+          message.companyTemplates?.length ||
+          message.referenceRevisionIds?.length ||
+          message.assistantPreference))
+    )
+      throw new ArtifactReviewError('input_id_conflict');
+    message.text = ChatMessageContentSchema.parse(userMessage.content).text;
+  }
+  if (!userMessage) {
+    if (message.changesetAction)
+      message.text = (
+        await prepareChangesetAction(
+          transaction,
+          { ...RequestContextSchema.parse(context), workspaceId },
+          session.id,
+          message.changesetAction,
+        )
+      ).text;
+    if (message.reviewContinuation) {
+      message.text = (
+        await prepareReviewContinuation(
+          transaction,
+          { ...RequestContextSchema.parse(context), workspaceId },
+          session.id,
+          message.reviewContinuation,
+        )
+      ).text;
+    }
+    if (message.attachmentIds.length > 0) {
+      const files = await transaction<
+        { id: string; owner_id: string; file_name: string }[]
+      >`
+        select o.id, o.owner_id, f.file_name
+        from allrice_storage_objects o
+        join allrice_file_references f on f.object_id = o.id
+        where o.id in ${transaction(message.attachmentIds)}
+          and o.organization_id = ${context.organizationId}
+          and o.workspace_id = ${workspaceId}
+          and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
+    and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
+    and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
+    and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
+    and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
+          and o.state = 'ready'
+          and f.session_id = ${session.id}
+      `;
+      if (files.length !== new Set(message.attachmentIds).size) {
+        throw new DataAccessError('authorization_denied');
+      }
+    }
+    const references = await captureSessionReferences(
+      transaction,
+      context,
+      workspaceId,
+      session,
+      message.sessionReferenceIds ?? [],
+    );
+    const referenceSelections = await captureReferenceSelections(
+      { ...context, workspaceId },
+      message.referenceRevisionIds ?? [],
+      transaction,
+    );
+    const companyAssets =
+      'sessionId' in context
+        ? await captureCompanyRunAssets(
+            transaction,
+            { ...RequestContextSchema.parse(context), workspaceId },
+            currentAssignment.employee_id,
+            message.text,
+            message.companyTemplates ?? [],
+          )
+        : await captureCompanyRunAssetsForPrincipal(
+            transaction,
+            { ...context, workspaceId },
+            currentAssignment.employee_id,
+            message.text,
+            message.companyTemplates ?? [],
+          );
+    const users = await transaction<MessageRow[]>`
+      insert into allrice_messages (
+        organization_id, workspace_id, session_id, owner_id, role,
+        content, visibility, client_message_id, status, completed_at, session_references
+      ) values (
+        ${context.organizationId}, ${workspaceId}, ${session.id},
+        ${requireUser(context)}, 'user',
+        ${transaction.json({
+          text: message.text,
+          companyAssets,
+          ...(referenceSelections.length ? { referenceSelections } : {}),
+          citations: [],
+          ...(references.length
+            ? {
+                sessionReferences: references.map(({ sessionId, label }) => ({
+                  sessionId,
+                  label,
+                })),
+              }
+            : {}),
+          ...(message.changesetAction
+            ? {
+                interaction: {
+                  type: 'changeset_request',
+                  action: message.changesetAction,
+                },
+              }
+            : {}),
+          ...(message.userQuestionAnswer
+            ? {
+                interaction: {
+                  type: 'user_question_answer',
+                  answer: message.userQuestionAnswer,
+                },
+              }
+            : {}),
+          ...(message.reviewContinuation
+            ? {
+                interaction: {
+                  type: 'review_response',
+                  review: message.reviewContinuation,
+                },
+              }
+            : {}),
+        })},
+        ${session.visibility}, ${message.clientMessageId}, 'completed', now(), ${transaction.json(references)}
+      )
+      returning *
+    `;
+    userMessage = users[0];
+    if (!userMessage) throw new Error('user message creation failed');
+    await transaction`insert into allrice_chat_input_requests
+      (user_message_id,organization_id,workspace_id,session_id,owner_id,client_message_id,request_digest,kind)
+      values (${userMessage.id},${context.organizationId},${workspaceId},${session.id},${context.actor.id},
+      ${message.clientMessageId},${requestDigest},${
+        (message.changesetAction
+          ? 'changeset_request'
+          : message.reviewContinuation?.kind) ??
+        (message.userQuestionAnswer
+          ? 'ask_user'
+          : message.deliveryMode === 'steer'
+            ? 'steer_current'
+            : message.deliveryMode === 'follow_up'
+              ? 'queue_next'
+              : 'message')
+      })`;
+    if (message.attachmentIds.length > 0) {
+      for (const objectId of new Set(message.attachmentIds)) {
+        await transaction`
+          insert into allrice_message_attachments (
+            organization_id, workspace_id, message_id, object_id,
+            attached_by, file_name
+          )
+          select
+            ${context.organizationId}, ${workspaceId}, ${userMessage.id},
+            o.id, ${requireUser(context)},
+            f.file_name
+          from allrice_storage_objects o
+          join allrice_file_references f on f.object_id = o.id
+          where o.id = ${objectId} and f.session_id = ${session.id}
+          on conflict (message_id, object_id) do nothing
+        `;
+      }
+    }
+  }
+  const existingReplies = await transaction<MessageRow[]>`
+    select * from allrice_messages
+    where session_id = ${session.id}
+      and reply_to_id = ${userMessage.id}
+      and role = 'assistant'
+    order by created_at
+    limit 1
+  `;
+  let assistantMessage = existingReplies[0];
+  if (!assistantMessage) {
+    const replies = await transaction<MessageRow[]>`
+      insert into allrice_messages (
+        organization_id, workspace_id, session_id, owner_id, role,
+        content, visibility, reply_to_id, status, completed_at
+      ) values (
+        ${context.organizationId}, ${workspaceId}, ${session.id},
+        ${requireUser(context)}, 'assistant',
+        ${transaction.json({ text: 'Rice 正在处理…', citations: [] })},
+        ${session.visibility}, ${userMessage.id}, 'pending', null
+      )
+      returning *
+    `;
+    assistantMessage = replies[0];
+  }
+  if (!assistantMessage) throw new Error('assistant message creation failed');
+  await transaction`
+    update allrice_chat_sessions set updated_at = now()
+    where id = ${session.id}
+  `;
+  return { userMessage, assistantMessage, currentAssignment };
+}
+
+/** This body-reading phase stays outside sendChatMessage's enqueue catch.
+ * A transaction caller must establish current content authority before entry. */
+async function loadChatRunContext(
+  input: Pick<
+    ChatRunPreparationInput,
+    'context' | 'workspaceId' | 'session' | 'message' | 'result'
+  >,
+  sql: WorkspaceSql,
+) {
+  const { context, workspaceId, session, message, result } = input;
+  const historyRows = await sql<MessageRow[]>`
+    select m.* from allrice_messages m
+    where organization_id = ${context.organizationId}
+      and workspace_id = ${workspaceId}
+      and session_id = ${session.id}
+      and status = 'completed'
+      and id <> ${result.userMessage.id}
+      and not exists (
+        select 1 from allrice_conversation_followups f
+        where f.user_message_id=coalesce(m.reply_to_id,m.id)
+          and f.state in ('queued','released','canceled')
+      )
+    order by created_at, id
+  `;
+  const attachmentRows =
+    message.attachmentIds.length === 0
+      ? []
+      : await sql<{ object_id: string; file_name: string }[]>`
+          select object_id, file_name from allrice_message_attachments
+          where message_id = ${result.userMessage.id}
+        `;
+  const attachmentNames = new Map(
+    attachmentRows.map((attachment) => [
+      attachment.object_id,
+      attachment.file_name,
+    ]),
+  );
+  const attachedFiles = await Promise.all(
+    message.attachmentIds.map((objectId) =>
+      getStoredFile(RequestContextSchema.parse(context), objectId, sql),
+    ),
+  );
+  const imageMediaTypes = new Set<ImageMediaType>([
+    'image/png',
+    'image/jpeg',
+    'image/webp',
+    'image/gif',
+  ]);
+  const imageAttachments = attachedFiles.flatMap((file) =>
+    imageMediaTypes.has(file.object.mediaType as ImageMediaType)
+      ? [
+          {
+            object: file.object as typeof file.object & {
+              mediaType: ImageMediaType;
+            },
+            fileName: attachmentNames.get(file.object.id) ?? 'Attached image',
+          },
+        ]
+      : [],
+  );
+  const userRequest = messageRequestWithAttachments(
+    message.text,
+    result.userMessage.id,
+    attachedFiles.map((file) => {
+      const fileName = attachmentNames.get(file.object.id);
+      if (!fileName) throw new DataAccessError('authorization_denied');
+      return { object: file.object, fileName };
+    }),
+  );
+  return { historyRows, userRequest, imageAttachments };
+}
+
+type ChatRunContext = Awaited<ReturnType<typeof loadChatRunContext>>;
+
+/** Freeze the real employee binding with the same SQL as memory recall. */
+async function prepareChatRunBinding(
+  input: ChatRunPreparationInput,
+  runContext: ChatRunContext,
+  database: ChatRunDatabase,
+) {
+  const {
+    context,
+    workspaceId,
+    session,
+    message,
+    result,
+    effectiveEmployeeVersionId,
+  } = input;
+  const { historyRows, userRequest, imageAttachments } = runContext;
+  const sql = database.sql;
+  const transaction =
+    database.kind === 'transaction' ? database.sql : undefined;
+  const memories = await recallForReply(
+    context,
+    workspaceId,
+    result.currentAssignment.employee_id,
+    message.text,
+    sql,
+  );
+  const { prepareEmployeeRunBinding } =
+    await import('../employees/employeehub.ts');
+  const binding = await prepareEmployeeRunBinding(
+    {
+      context,
+      workspaceId,
+      assignmentId: session.employee_assignment_id,
+      employeeVersionId: effectiveEmployeeVersionId,
+      sessionId: session.id,
+      userMessageId: result.userMessage.id,
+      assistantMessageId: result.assistantMessage.id,
+      ...(input.options.workflowInvocation
+        ? { workflowInvocation: input.options.workflowInvocation }
+        : {}),
+      promptSnapshot: {
+        systemPrompt: '',
+        referenceSelections: ChatMessageContentSchema.parse(
+          result.userMessage.content,
+        ).referenceSelections,
+        companyAssets: ChatMessageContentSchema.parse(
+          result.userMessage.content,
+        ).companyAssets,
+        conversation: historyRows.slice(-80).map((row) => ({
+          id: row.id,
+          role: row.role,
+          text: ChatMessageContentSchema.parse(row.content).text,
+        })),
+        memories,
+        userRequest,
+        imageAttachments,
+        sessionReferences: SessionReferenceSnapshotsSchema.parse(
+          result.userMessage.session_references ?? [],
+        ),
+      },
+    },
+    transaction,
+  );
+  return binding;
+}
+
+/** Prepare the original queue input; the public wrapper retains actual enqueue.
+ * Existing callers use the original short work-settings transaction. An outer
+ * transaction caller reads those settings directly on its existing SQL. */
+async function prepareChatRunInput(
+  input: ChatRunPreparationInput,
+  binding: Awaited<ReturnType<typeof prepareChatRunBinding>>,
+  database: ChatRunDatabase,
+) {
+  const {
+    context,
+    workspaceId,
+    session,
+    message,
+    options,
+    result,
+    assistantPreference,
+    conversationMessage,
+  } = input;
+  const readSettings = (transaction: TransactionSql) =>
+    readWorkAutomation(transaction, {
+      organizationId: context.organizationId,
+      workspaceId,
+      userId: context.actor.id,
+    });
+  const workAutomation =
+    database.kind === 'transaction'
+      ? await readSettings(database.sql)
+      : await database.sql.begin(readSettings);
+  const allowAssistants =
+    assistantPreference?.allowAssistants === true &&
+    workAutomation.settings.assistants;
+
+  if (
+    allowAssistants &&
+    (!assistantRuntimeEnabled() ||
+      !binding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
+        'assistant.delegate',
+      ))
+  )
+    throw new AssistantRuntimeError('forbidden');
+  return {
+    submission: {
+      workspaceId,
+      idempotencyKey: `employee-message:${message.clientMessageId}`,
+      type: 'allrice.employee.run',
+      input: {
+        employeeAssignmentId: binding.employeeAssignmentId,
+        employeeVersionId: binding.employeeVersionId,
+        sessionId: binding.sessionId,
+        userMessageId: binding.userMessageId,
+        assistantMessageId: binding.assistantMessageId,
+        ...(assistantPreference
+          ? {
+              assistantConfiguration: {
+                ...defaultAssistantRunConfiguration(),
+                allowAssistants,
+              },
+            }
+          : {}),
+      },
+      maxAttempts: 2,
+      timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
+    },
+    enqueueOptions: {
+      employeeBinding: binding,
+      ...(options.folderEventId
+        ? { folderEventId: options.folderEventId }
+        : {}),
+      ...(message.reviewContinuation
+        ? { reviewContinuation: message.reviewContinuation }
+        : {}),
+      ...(message.changesetAction
+        ? { changesetAction: message.changesetAction }
+        : {}),
+      conversationDelivery: {
+        sessionId: session.id,
+        userMessageId: result.userMessage.id,
+        assistantMessageId: result.assistantMessage.id,
+        clientUserMessageId: message.clientMessageId,
+        message: conversationMessage,
+        requestedMode: message.deliveryMode,
+        ...(message.expectedTurnId
+          ? { expectedTurnId: message.expectedTurnId }
+          : {}),
+        ...(message.expectedGeneration === undefined
+          ? {}
+          : { expectedGeneration: message.expectedGeneration }),
+        hasAttachments: message.attachmentIds.length > 0,
+      },
+    },
+  };
+}
+
+/** Internal native occurrence admission. The product dispatcher has already
+ * locked current authority and installs a transaction-local reservation. No
+ * browser payload can supply that reservation or select a different message. */
+export async function prepareNativeOnceChatRunInTransaction(
+  transaction: TransactionSql,
+  context: ResourcePrincipal,
+  occurrenceId: string,
+) {
+  const { nativeOnceMessageReservation } =
+    await import('../native-schedule-once-product.ts');
+  const reservation = nativeOnceMessageReservation(
+    transaction,
+    context,
+    occurrenceId,
+  );
+  const workspaceId = reservation.workspaceId;
+  const [session] = await transaction<SessionRow[]>`
+    select * from allrice_chat_sessions where id=${reservation.sessionId}
+      and organization_id=${context.organizationId} and workspace_id=${workspaceId}
+      and owner_id=${context.actor.id} and archived_at is null`;
+  if (!session) throw new DataAccessError('authorization_denied');
+  const message = SendChatMessageInputSchema.parse({
+    text: reservation.prompt,
+    attachmentIds: [],
+    clientMessageId: reservation.clientMessageId,
+    deliveryMode: 'follow_up',
+  });
+  const requestDigest = `sha256:${createHash('sha256').update(JSON.stringify(message)).digest('hex')}`;
+  const result = await persistChatMessageInTransaction(transaction, {
+    context,
+    workspaceId,
+    session,
+    message,
+    requestDigest,
+    options: {},
+  });
+  const preparation: ChatRunPreparationInput = {
+    context,
+    workspaceId,
+    session,
+    message,
+    result,
+    options: {},
+    effectiveEmployeeVersionId: result.currentAssignment.employee_version_id,
+    assistantPreference: resolveAssistantPreference(undefined, message.text),
+    conversationMessage: message.text,
+  };
+  const database: ChatRunDatabase = { kind: 'transaction', sql: transaction };
+  const runContext = await loadChatRunContext(preparation, transaction);
+  const binding = await prepareChatRunBinding(
+    preparation,
+    runContext,
+    database,
+  );
+  const { submission, enqueueOptions } = await prepareChatRunInput(
+    preparation,
+    binding,
+    database,
+  );
+  const { enqueueNativeOnceRunInTransaction } =
+    await import('../execution/queue.ts');
+  const queued = await enqueueNativeOnceRunInTransaction(
+    transaction,
+    context,
+    occurrenceId,
+    submission,
+    enqueueOptions,
+  );
+  if (queued.delivery === 'steer_pending')
+    throw new DataAccessError('authorization_denied');
+  await audit(
+    {
+      context,
+      workspaceId,
+      action: 'message.create',
+      resourceType: 'message',
+      resourceId: result.userMessage.id,
+      reason: 'native_once_occurrence',
+    },
+    transaction,
+  );
+  return {
+    ...queued,
+    userMessageId: binding.userMessageId,
+    assistantMessageId: binding.assistantMessageId,
+    employeeVersionId: binding.employeeVersionId,
+  };
+}
+
 export async function sendChatMessage(
   context: RequestContext,
   workspaceId: string,
@@ -1332,310 +2018,16 @@ export async function sendChatMessage(
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
-  const result = await sql.begin(async (transaction) => {
-    if (options.folderEventId) {
-      const { assertFolderTriggerMessage } =
-        await import('../folder-triggers.ts');
-      await assertFolderTriggerMessage(
-        transaction,
-        options.folderEventId,
-        { ...context, workspaceId },
-        session.id,
-        message.clientMessageId,
-        message.attachmentIds,
-      );
-    }
-    await transaction`
-      select pg_advisory_xact_lock(
-        hashtextextended(${`${session.id}:${message.clientMessageId}`}, 50)
-      )
-    `;
-    const { resolveEmployeeSessionInstance } =
-      await import('../employees/employee-instances.ts');
-    try {
-      await resolveEmployeeSessionInstance(
-        // Shared with scheduled/folder work: its sessionId can be a device or
-        // correlation ID, not a browser login. Current owner authority is checked.
-        {
-          actor: context.actor,
-          organizationId: context.organizationId,
-          workspaceId,
-        },
-        session.employee_assignment_id,
-        session.employee_instance_id ?? undefined,
-        transaction,
-      );
-    } catch (error) {
-      if (
-        error instanceof DataAccessError &&
-        error.code === 'authorization_denied'
-      ) {
-        // Preserve the existing missing-assignment / read-only-workbench errors.
-        // This is still a rejection; no alternate path can admit the input.
-        const [available] =
-          await transaction`select id from allrice_employee_assignments
-          where id=${session.employee_assignment_id} and organization_id=${context.organizationId}
-            and workspace_id=${workspaceId} and active`;
-        if (!available) throw new DataAccessError('not_found');
-        await assertWorkbenchSession(
-          transaction,
-          { ...context, workspaceId },
-          session.id,
-          true,
-        );
-      }
-      throw error;
-    }
-    await assertWorkbenchSession(
-      transaction,
-      { ...context, workspaceId },
-      session.id,
-      true,
-    );
-    const employeeRows = await transaction<
-      { employee_id: string; employee_version_id: string }[]
-    >`
-      select a.employee_id, case when allrice_native_session_version_compatible(s.native_root_origin,v.manifest)
-        then a.employee_version_id else s.employee_version_id end employee_version_id
-      from allrice_employee_assignments a
-      join allrice_employee_versions v on v.id=a.employee_version_id
-      join allrice_chat_sessions s on s.id=${session.id} and s.employee_assignment_id=a.id
-      where a.id = ${session.employee_assignment_id}
-        and a.organization_id = ${context.organizationId}
-        and a.workspace_id = ${workspaceId}
-        and a.active
-    `;
-    const currentAssignment = employeeRows[0];
-    if (!currentAssignment) throw new DataAccessError('not_found');
-    // Same-engine publications apply on the next turn. Cross-engine updates
-    // require a new Session; both the stored version and this Run's selected
-    // version must remain compatible with the immutable birth/legacy reader.
-    // Already-enqueued Runs keep their own frozen package.
-    const effectiveEmployeeVersionId = currentAssignment.employee_version_id;
-    if (session.employee_version_id !== effectiveEmployeeVersionId) {
-      await transaction`
-        update allrice_chat_sessions
-        set employee_version_id = ${effectiveEmployeeVersionId}
-        where id = ${session.id}
-          and organization_id = ${context.organizationId}
-          and workspace_id = ${workspaceId}
-          and employee_assignment_id = ${session.employee_assignment_id}
-          and employee_version_id = ${session.employee_version_id}
-      `;
-      await audit(
-        {
-          context,
-          workspaceId,
-          action: 'session.employee.version.refresh',
-          resourceType: 'chat_session',
-          resourceId: session.id,
-          reason: 'active_assignment_version_applied_on_next_turn',
-        },
-        transaction,
-      );
-    }
-
-    const existing = await transaction<MessageRow[]>`
-      select * from allrice_messages
-      where session_id = ${session.id}
-        and owner_id = ${requireUser(context)}
-        and client_message_id = ${message.clientMessageId}
-    `;
-    let userMessage = existing[0];
-    if (userMessage) {
-      const [receipt] = await transaction<{ request_digest: string }[]>`
-        select request_digest from allrice_chat_input_requests where user_message_id=${userMessage.id}`;
-      if (
-        (receipt && receipt.request_digest !== requestDigest) ||
-        (!receipt &&
-          (ChatMessageContentSchema.parse(userMessage.content).text !==
-            message.text ||
-            message.reviewContinuation ||
-            message.changesetAction ||
-            message.companyTemplates?.length ||
-            message.referenceRevisionIds?.length ||
-            message.assistantPreference))
-      )
-        throw new ArtifactReviewError('input_id_conflict');
-      message.text = ChatMessageContentSchema.parse(userMessage.content).text;
-    }
-    if (!userMessage) {
-      if (message.changesetAction)
-        message.text = (
-          await prepareChangesetAction(
-            transaction,
-            { ...context, workspaceId },
-            session.id,
-            message.changesetAction,
-          )
-        ).text;
-      if (message.reviewContinuation) {
-        message.text = (
-          await prepareReviewContinuation(
-            transaction,
-            { ...context, workspaceId },
-            session.id,
-            message.reviewContinuation,
-          )
-        ).text;
-      }
-      if (message.attachmentIds.length > 0) {
-        const files = await transaction<
-          { id: string; owner_id: string; file_name: string }[]
-        >`
-          select o.id, o.owner_id, f.file_name
-          from allrice_storage_objects o
-          join allrice_file_references f on f.object_id = o.id
-          where o.id in ${transaction(message.attachmentIds)}
-            and o.organization_id = ${context.organizationId}
-            and o.workspace_id = ${workspaceId}
-            and (o.owner_id = ${requireUser(context)} or o.visibility <> 'private')
-      and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
-      and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
-      and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
-      and not exists(select 1 from allrice_company_run_assets reserved where reserved.material_object_id=o.id)
-            and o.state = 'ready'
-            and f.session_id = ${session.id}
-        `;
-        if (files.length !== new Set(message.attachmentIds).size) {
-          throw new DataAccessError('authorization_denied');
-        }
-      }
-      const references = await captureSessionReferences(
-        transaction,
-        context,
-        workspaceId,
-        session,
-        message.sessionReferenceIds ?? [],
-      );
-      const referenceSelections = await captureReferenceSelections(
-        { ...context, workspaceId },
-        message.referenceRevisionIds ?? [],
-        transaction,
-      );
-      const companyAssets = await captureCompanyRunAssets(
-        transaction,
-        { ...context, workspaceId },
-        currentAssignment.employee_id,
-        message.text,
-        message.companyTemplates ?? [],
-      );
-      const users = await transaction<MessageRow[]>`
-        insert into allrice_messages (
-          organization_id, workspace_id, session_id, owner_id, role,
-          content, visibility, client_message_id, status, completed_at, session_references
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${session.id},
-          ${requireUser(context)}, 'user',
-          ${transaction.json({
-            text: message.text,
-            companyAssets,
-            ...(referenceSelections.length ? { referenceSelections } : {}),
-            citations: [],
-            ...(references.length
-              ? {
-                  sessionReferences: references.map(({ sessionId, label }) => ({
-                    sessionId,
-                    label,
-                  })),
-                }
-              : {}),
-            ...(message.changesetAction
-              ? {
-                  interaction: {
-                    type: 'changeset_request',
-                    action: message.changesetAction,
-                  },
-                }
-              : {}),
-            ...(message.userQuestionAnswer
-              ? {
-                  interaction: {
-                    type: 'user_question_answer',
-                    answer: message.userQuestionAnswer,
-                  },
-                }
-              : {}),
-            ...(message.reviewContinuation
-              ? {
-                  interaction: {
-                    type: 'review_response',
-                    review: message.reviewContinuation,
-                  },
-                }
-              : {}),
-          })},
-          ${session.visibility}, ${message.clientMessageId}, 'completed', now(), ${transaction.json(references)}
-        )
-        returning *
-      `;
-      userMessage = users[0];
-      if (!userMessage) throw new Error('user message creation failed');
-      await transaction`insert into allrice_chat_input_requests
-        (user_message_id,organization_id,workspace_id,session_id,owner_id,client_message_id,request_digest,kind)
-        values (${userMessage.id},${context.organizationId},${workspaceId},${session.id},${context.actor.id},
-        ${message.clientMessageId},${requestDigest},${
-          (message.changesetAction
-            ? 'changeset_request'
-            : message.reviewContinuation?.kind) ??
-          (message.userQuestionAnswer
-            ? 'ask_user'
-            : message.deliveryMode === 'steer'
-              ? 'steer_current'
-              : message.deliveryMode === 'follow_up'
-                ? 'queue_next'
-                : 'message')
-        })`;
-      if (message.attachmentIds.length > 0) {
-        for (const objectId of new Set(message.attachmentIds)) {
-          await transaction`
-            insert into allrice_message_attachments (
-              organization_id, workspace_id, message_id, object_id,
-              attached_by, file_name
-            )
-            select
-              ${context.organizationId}, ${workspaceId}, ${userMessage.id},
-              o.id, ${requireUser(context)},
-              f.file_name
-            from allrice_storage_objects o
-            join allrice_file_references f on f.object_id = o.id
-            where o.id = ${objectId} and f.session_id = ${session.id}
-            on conflict (message_id, object_id) do nothing
-          `;
-        }
-      }
-    }
-    const existingReplies = await transaction<MessageRow[]>`
-      select * from allrice_messages
-      where session_id = ${session.id}
-        and reply_to_id = ${userMessage.id}
-        and role = 'assistant'
-      order by created_at
-      limit 1
-    `;
-    let assistantMessage = existingReplies[0];
-    if (!assistantMessage) {
-      const replies = await transaction<MessageRow[]>`
-        insert into allrice_messages (
-          organization_id, workspace_id, session_id, owner_id, role,
-          content, visibility, reply_to_id, status, completed_at
-        ) values (
-          ${context.organizationId}, ${workspaceId}, ${session.id},
-          ${requireUser(context)}, 'assistant',
-          ${transaction.json({ text: 'Rice 正在处理…', citations: [] })},
-          ${session.visibility}, ${userMessage.id}, 'pending', null
-        )
-        returning *
-      `;
-      assistantMessage = replies[0];
-    }
-    if (!assistantMessage) throw new Error('assistant message creation failed');
-    await transaction`
-      update allrice_chat_sessions set updated_at = now()
-      where id = ${session.id}
-    `;
-    return { userMessage, assistantMessage, currentAssignment };
-  });
+  const result = await sql.begin((transaction) =>
+    persistChatMessageInTransaction(transaction, {
+      context,
+      workspaceId,
+      session,
+      message,
+      requestDigest,
+      options,
+    }),
+  );
   const effectiveEmployeeVersionId =
     result.currentAssignment.employee_version_id;
   await audit({
@@ -1690,176 +2082,35 @@ export async function sendChatMessage(
     `;
     if (retries[0]) result.assistantMessage = retries[0];
   }
-  const historyRows = await sql<MessageRow[]>`
-    select m.* from allrice_messages m
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and session_id = ${session.id}
-      and status = 'completed'
-      and id <> ${result.userMessage.id}
-      and not exists (
-        select 1 from allrice_conversation_followups f
-        where f.user_message_id=coalesce(m.reply_to_id,m.id)
-          and f.state in ('queued','released','canceled')
-      )
-    order by created_at, id
-  `;
-  const attachmentRows =
-    message.attachmentIds.length === 0
-      ? []
-      : await sql<{ object_id: string; file_name: string }[]>`
-          select object_id, file_name from allrice_message_attachments
-          where message_id = ${result.userMessage.id}
-        `;
-  const attachmentNames = new Map(
-    attachmentRows.map((attachment) => [
-      attachment.object_id,
-      attachment.file_name,
-    ]),
-  );
-  const attachedFiles = await Promise.all(
-    message.attachmentIds.map((objectId) => getStoredFile(context, objectId)),
-  );
-  const imageMediaTypes = new Set<ImageMediaType>([
-    'image/png',
-    'image/jpeg',
-    'image/webp',
-    'image/gif',
-  ]);
-  const imageAttachments = attachedFiles.flatMap((file) =>
-    imageMediaTypes.has(file.object.mediaType as ImageMediaType)
-      ? [
-          {
-            object: file.object as typeof file.object & {
-              mediaType: ImageMediaType;
-            },
-            fileName: attachmentNames.get(file.object.id) ?? 'Attached image',
-          },
-        ]
-      : [],
-  );
-  const userRequest = messageRequestWithAttachments(
-    message.text,
-    result.userMessage.id,
-    attachedFiles.map((file) => {
-      const fileName = attachmentNames.get(file.object.id);
-      if (!fileName) throw new DataAccessError('authorization_denied');
-      return { object: file.object, fileName };
-    }),
+  const runContext = await loadChatRunContext(
+    { context, workspaceId, session, message, result },
+    sql,
   );
   try {
-    const memories = await recallForReply(
+    const runPreparation: ChatRunPreparationInput = {
       context,
       workspaceId,
-      result.currentAssignment.employee_id,
-      message.text,
+      session,
+      message,
+      options,
+      result,
+      effectiveEmployeeVersionId,
+      assistantPreference,
+      conversationMessage,
+    };
+    const database: ChatRunDatabase = { kind: 'database', sql };
+    const binding = await prepareChatRunBinding(
+      runPreparation,
+      runContext,
+      database,
     );
-    const { prepareEmployeeRunBinding } =
-      await import('../employees/employeehub.ts');
-    const binding = await prepareEmployeeRunBinding({
-      context,
-      workspaceId,
-      assignmentId: session.employee_assignment_id,
-      employeeVersionId: effectiveEmployeeVersionId,
-      sessionId: session.id,
-      userMessageId: result.userMessage.id,
-      assistantMessageId: result.assistantMessage.id,
-      ...(options.workflowInvocation
-        ? { workflowInvocation: options.workflowInvocation }
-        : {}),
-      promptSnapshot: {
-        systemPrompt: '',
-        referenceSelections: ChatMessageContentSchema.parse(
-          result.userMessage.content,
-        ).referenceSelections,
-        companyAssets: ChatMessageContentSchema.parse(
-          result.userMessage.content,
-        ).companyAssets,
-        conversation: historyRows.slice(-80).map((row) => ({
-          id: row.id,
-          role: row.role,
-          text: ChatMessageContentSchema.parse(row.content).text,
-        })),
-        memories,
-        userRequest,
-        imageAttachments,
-        sessionReferences: SessionReferenceSnapshotsSchema.parse(
-          result.userMessage.session_references ?? [],
-        ),
-      },
-    });
     const { enqueueRun, getRun } = await import('../execution/queue.ts');
-    const workAutomation = await sql.begin((transaction) =>
-      readWorkAutomation(transaction, {
-        organizationId: context.organizationId,
-        workspaceId,
-        userId: context.actor.id,
-      }),
+    const { submission, enqueueOptions } = await prepareChatRunInput(
+      runPreparation,
+      binding,
+      database,
     );
-    const allowAssistants =
-      assistantPreference?.allowAssistants === true &&
-      workAutomation.settings.assistants;
-
-    if (
-      allowAssistants &&
-      (!assistantRuntimeEnabled() ||
-        !binding.executionSnapshot.capabilitySnapshot.bindings.toolNames.includes(
-          'assistant.delegate',
-        ))
-    )
-      throw new AssistantRuntimeError('forbidden');
-    const queued = await enqueueRun(
-      context,
-      {
-        workspaceId,
-        idempotencyKey: `employee-message:${message.clientMessageId}`,
-        type: 'allrice.employee.run',
-        input: {
-          employeeAssignmentId: binding.employeeAssignmentId,
-          employeeVersionId: binding.employeeVersionId,
-          sessionId: binding.sessionId,
-          userMessageId: binding.userMessageId,
-          assistantMessageId: binding.assistantMessageId,
-          ...(assistantPreference
-            ? {
-                assistantConfiguration: {
-                  ...defaultAssistantRunConfiguration(),
-                  allowAssistants,
-                },
-              }
-            : {}),
-        },
-        maxAttempts: 2,
-        timeoutMs: binding.executionSnapshot.runtimePolicy.timeoutMs,
-      },
-      {
-        employeeBinding: binding,
-        ...(options.folderEventId
-          ? { folderEventId: options.folderEventId }
-          : {}),
-        ...(message.reviewContinuation
-          ? { reviewContinuation: message.reviewContinuation }
-          : {}),
-        ...(message.changesetAction
-          ? { changesetAction: message.changesetAction }
-          : {}),
-        conversationDelivery: {
-          sessionId: session.id,
-          userMessageId: result.userMessage.id,
-          assistantMessageId: result.assistantMessage.id,
-          clientUserMessageId: message.clientMessageId,
-          message: conversationMessage,
-          requestedMode: message.deliveryMode,
-          ...(message.expectedTurnId
-            ? { expectedTurnId: message.expectedTurnId }
-            : {}),
-          ...(message.expectedGeneration === undefined
-            ? {}
-            : { expectedGeneration: message.expectedGeneration }),
-          hasAttachments: message.attachmentIds.length > 0,
-        },
-      },
-    );
+    const queued = await enqueueRun(context, submission, enqueueOptions);
     const responseRun =
       queued.delivery === 'steer_pending' && queued.activeRunId
         ? await getRun(context, workspaceId, queued.activeRunId)

@@ -68,6 +68,10 @@ import {
 } from './maintenance-diagnosis.js';
 
 import { createWorkerStartupObservation } from './startup-observation.js';
+import {
+  configuredNativeOnceControlSource,
+  createNativeOnceWorkerService,
+} from './native-schedule-once-loader.js';
 
 const startup = createWorkerStartupObservation();
 const port = Number(process.env.ALLRICE_WORKER_PORT ?? 3101);
@@ -170,10 +174,16 @@ const nativeArtifactReferenceCoverage = await startup.run(
   'native_reference_coverage',
   () => verifyConfiguredDshNativeReferences(nativeArtifact),
 );
+const nativeOnceControlSource = configuredNativeOnceControlSource();
 startup.mark('verification_checks_completed');
 const producerLifecycle = await startup.run('producer_lifecycle', () =>
   installDevProducerLifecycle('worker'),
 );
+const nativeOnceControl = createNativeOnceWorkerService({
+  workerId,
+  source: nativeOnceControlSource,
+  readMaintenance: readDevMaintenance,
+});
 const maintenanceDiagnosticRuntime =
   process.env.ALLRICE_MAINTENANCE_CENTRAL_ENABLED === '1'
     ? await startup.run('maintenance_diagnostics', () =>
@@ -192,7 +202,7 @@ let stopping = false;
 const runProducer = workerProducerRunner(producerLifecycle, () => stopping);
 const maintenanceReportingAborter = new AbortController();
 let tickRunning = false;
-let automationTickRunning = false;
+let automationTask: Promise<void> | null = null;
 let platformEmployeeTestTickRunning = false;
 const activeExecutions = new Set<Promise<void>>();
 const activeAborters = new Set<() => void>();
@@ -269,6 +279,7 @@ function mcpDiscoveryTick() {
 
 async function refreshReadiness() {
   try {
+    if (nativeOnceControl.enabled) await nativeOnceControl.admissionOpen();
     await pingDatabase();
     await queueSummary();
     databaseReady = true;
@@ -372,7 +383,9 @@ const server = createServer(async (request, response) => {
     let maintenance;
     try {
       maintenance = await readDevMaintenance();
+      await nativeOnceControl.observeMaintenance(maintenance);
     } catch {
+      await nativeOnceControl.stop().catch(() => undefined);
       response.writeHead(503);
       response.end(
         JSON.stringify(
@@ -385,20 +398,38 @@ const server = createServer(async (request, response) => {
       );
       return;
     }
-    response.statusCode = databaseReady ? 200 : 503;
-    if (databaseReady)
-      response.once('finish', () => startup.mark('health_ready'));
+    const nativeOnceStatus = nativeOnceControl.status();
+    const nativeOnceBlocked =
+      nativeOnceStatus.state === 'blocked' ||
+      (nativeOnceStatus.state === 'cold' &&
+        'lastFault' in nativeOnceStatus &&
+        nativeOnceStatus.lastFault?.phase === 'initialization');
+    const nativeOnceRestartRequired =
+      nativeOnceControl.enabled &&
+      nativeOnceStatus.state === 'closed' &&
+      (!maintenance || maintenance.state === 'open');
+    const ready =
+      databaseReady && !nativeOnceBlocked && !nativeOnceRestartRequired;
+    response.statusCode = ready ? 200 : 503;
+    if (ready) response.once('finish', () => startup.mark('health_ready'));
     response.end(
       JSON.stringify({
         ...makeHealthResponse(
           'worker',
-          databaseReady ? 'ready' : 'not_ready',
-          lastDatabaseError,
+          ready ? 'ready' : 'not_ready',
+          nativeOnceBlocked
+            ? 'native_once_blocked'
+            : nativeOnceRestartRequired
+              ? 'native_once_restart_required'
+              : lastDatabaseError,
         ),
         ...(serviceBuildIdentity ? { identity: serviceBuildIdentity } : {}),
         nativeArtifact,
         retainedNativeArtifacts,
         nativeArtifactReferenceCoverage,
+        ...(nativeOnceControl.enabled
+          ? { nativeOnceControl: nativeOnceStatus }
+          : {}),
         ...(maintenance ? { maintenance } : {}),
         ...(maintenance
           ? { producerLifecycle: readDevProducerLifecycle('worker') }
@@ -476,11 +507,36 @@ async function tick() {
   }
 }
 
-async function automationTick() {
-  if (automationTickRunning || stopping || !databaseReady) return;
-  automationTickRunning = true;
+function automationTick() {
+  if (automationTask || stopping || !databaseReady) return automationTask;
+  automationTask = runAutomationTick().finally(() => {
+    automationTask = null;
+  });
+  return automationTask;
+}
+async function runAutomationTick() {
+  let admitted = false;
   try {
+    // workerProducerRunner swallows maintenance refusal. Observe it outside that
+    // wrapper too, so a native Schedule timer cannot outlive closed admission.
+    // Its own admission still guards the independent producers below. A once
+    // Host fault must not starve existing automations or reference ingestion.
+    if (nativeOnceControl.enabled) {
+      await nativeOnceControl.admissionOpen().catch((error: unknown) => {
+        console.error('[M6] native once admission failed', {
+          message: error instanceof Error ? error.message : 'unknown error',
+        });
+      });
+    }
     await runProducer('automation', async () => {
+      admitted = true;
+      if (stopping) return;
+      await nativeOnceControl.tick().catch((error: unknown) => {
+        console.error('[M6] native once scheduler failed', {
+          message: error instanceof Error ? error.message : 'unknown error',
+        });
+      });
+      if (stopping) return;
       await processNextReference(
         process.env.ALLRICE_STORAGE_ROOT ?? '.local/storage',
       );
@@ -499,12 +555,11 @@ async function automationTick() {
         await syncExperienceAdoptions();
       }
     });
+    if (!admitted && nativeOnceControl.enabled) await nativeOnceControl.stop();
   } catch (error) {
     console.error('[M6] automation scheduler failed', {
       message: error instanceof Error ? error.message : 'unknown error',
     });
-  } finally {
-    automationTickRunning = false;
   }
 }
 
@@ -646,6 +701,10 @@ function shutdown(signal: string) {
   // Fence preview admission before waiting for commands or service shutdown.
   const previewClosing = cloudPreviewTransport?.close();
   void previewClosing?.catch(() => undefined);
+  // stop() fences further once ticks/consumer admission synchronously, then
+  // drains the current tick, public Schedule/SDK/root, both backends and writes.
+  const nativeOnceClosing = nativeOnceControl.stop();
+  void nativeOnceClosing.catch(() => undefined);
   shutdownTask = (async () => {
     console.info(`[M5] received ${signal}; stopping worker`);
     stopping = true;
@@ -677,6 +736,8 @@ function shutdown(signal: string) {
     await codexAuthorizationTask;
     await codexProbeTask;
     await maintenanceReportingTask;
+    await nativeOnceClosing;
+    await automationTask;
     await producerLifecycle.waitForCurrentRoots();
     await closeHarnessAdapters();
     await dshInventoryTask;

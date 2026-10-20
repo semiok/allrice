@@ -283,3 +283,20 @@ export * from './brand-content/workflow-tools.ts';
 
 export * from './brand-content/workspace.ts';
 export * from './brand-content/scheduling.ts';
+
+export {
+  createOnceTask,
+  createOnceTaskFromExecutionContext,
+  listOnceTasks,
+  cancelOnceTask,
+  NativeOnceProductError,
+  initializeNativeOncePartition,
+  lockNativeOnceAdmissions,
+  dispatchNextNativeOnceOccurrence,
+} from './native-schedule-once-product.ts';
+export {
+  createNativeOnceSqlStore,
+  type NativeOnceSqlOptions,
+  type NativeOnceClosedProof,
+} from './native-schedule-once-sql.ts';
+export { nativeOnceDigest } from './native-schedule-once-state.ts';

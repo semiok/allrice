@@ -25,6 +25,26 @@ const approval = z
   })
   .strict();
 export type NativeArtifactReferenceApproval = z.infer<typeof approval>;
+const controlReferenceSchema = z
+  .object({
+    artifactId: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    profileId: z.literal('allrice-once-control-v1'),
+    storageId: z.string().min(1).max(512),
+    stateRoot: z
+      .string()
+      .refine(
+        (value) => posix.isAbsolute(value) && posix.resolve(value) === value,
+      ),
+  })
+  .strict();
+export type NativeOnceControlReference = {
+  partitionId: string;
+  reference: z.infer<typeof controlReferenceSchema>;
+  controls: {
+    controlSessionId: string;
+    sessionState: 'reserved' | 'initializing' | 'ready';
+  }[];
+};
 
 /** Deployment/startup check, not execution authority. Keep archived and terminal
  * references: neither implies the original journal may be moved or deleted.
@@ -49,18 +69,20 @@ export async function verifyNativeArtifactReferenceCoverage(
   )
     throw Error('DSH_NATIVE_ORIGIN_READER_TARGET_UNVERIFIED');
   const db = getDatabase();
-  const references = await db.begin('read only', async (tx) => {
-    await tx`set local statement_timeout='5000'`;
-    return tx<
-      {
-        source: string;
-        artifactId: string | null;
-        generation: string | null;
-        profileId: string | null;
-        records: number;
-        covered: boolean;
-      }[]
-    >`with approved as (
+  const snapshot = await db.begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      await tx`set local statement_timeout='5000'`;
+      const references = await tx<
+        {
+          source: string;
+          artifactId: string | null;
+          generation: string | null;
+          profileId: string | null;
+          records: number;
+          covered: boolean;
+        }[]
+      >`with approved as (
       select * from jsonb_to_recordset(${tx.json(approved)})
         as a("artifactId" text,generation text,"storageRoot" text,"previewStorageRoot" text)
     ), compatible as (
@@ -102,7 +124,50 @@ export async function verifyNativeArtifactReferenceCoverage(
         and c."organizationId"=r.organization_id and c."workspaceId"=r.workspace_id and c."ownerId"=r.owner_id
     group by r.source,r.artifact_id,r.generation,r.profile_id
     order by r.source,r.artifact_id,r.generation,r.profile_id`;
-  });
+      // A closed Host still owns history and a future restart. There is no
+      // implicit retirement from TTL, lack of business pins or terminal tasks.
+      const [schema] =
+        await tx`select to_regclass(format('%I.allrice_native_once_partitions',current_schema())) is not null available`;
+      const nativeOnceControlReferences: NativeOnceControlReference[] = [];
+      if (schema?.available) {
+        const partitions = await tx<
+          { partition_id: string; reference: unknown }[]
+        >`select partition_id,reference from allrice_native_once_partitions order by partition_id`;
+        for (const partition of partitions) {
+          const reference = controlReferenceSchema.parse(partition.reference);
+          const controls = await tx<
+            { control_session_id: string; session_state: unknown }[]
+          >`select control_session_id,snapshot->'control'->>'sessionState' session_state
+          from allrice_native_once_controls where partition_id=${partition.partition_id} order by control_session_id`;
+          nativeOnceControlReferences.push({
+            partitionId: partition.partition_id,
+            reference,
+            controls: controls.map((c) => ({
+              controlSessionId: c.control_session_id,
+              sessionState: z
+                .enum(['reserved', 'initializing', 'ready'])
+                .parse(c.session_state),
+            })),
+          });
+          const descriptor = approved.find(
+            (a) =>
+              a.artifactId === reference.artifactId &&
+              a.generation === 'dsh-0.2.1-rc.2-687f282',
+          );
+          references.push({
+            source: 'control:native_once',
+            artifactId: reference.artifactId,
+            generation: 'dsh-0.2.1-rc.2-687f282',
+            profileId: reference.profileId,
+            records: 1,
+            covered: !!descriptor,
+          });
+        }
+      }
+      return { references, nativeOnceControlReferences };
+    },
+  );
+  const { references, nativeOnceControlReferences } = snapshot;
   const missing = references.filter((r) => !r.covered);
   if (missing.length)
     throw Error(
@@ -111,6 +176,7 @@ export async function verifyNativeArtifactReferenceCoverage(
   return {
     verified: true as const,
     references,
+    nativeOnceControlReferences,
     ...(readers.length
       ? {
           compatibleOrigins: readers.map(

@@ -590,6 +590,29 @@ describe('native artifact content and launch boundary', () => {
         profileId: 'restricted',
       }),
     ).toThrow('PIN_NOT_APPROVED');
+    const control = registry.approvedDshNativeControlArtifact(
+      second.artifactId,
+    );
+    expect(control).toEqual({
+      artifactId: second.artifactId,
+      generation: second.content.generation,
+      root: retained,
+      content: {
+        files: second.content.files,
+        packages: second.content.packages,
+      },
+    });
+    control.content.files.length = 0;
+    expect(
+      registry.approvedDshNativeControlArtifact(second.artifactId).content
+        .files,
+    ).toEqual(second.content.files);
+    expect(
+      registry.approvedDshNativeControlArtifact(first.artifactId).root,
+    ).toBe(root);
+    expect(() =>
+      registry.approvedDshNativeControlArtifact('sha256:' + '0'.repeat(64)),
+    ).toThrow('CONTROL_NOT_APPROVED');
   });
   it('keeps seven independently measured readers and rejects an eighth without replacing any pin', async () => {
     process.execArgv = [];

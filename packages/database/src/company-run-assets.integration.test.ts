@@ -19,9 +19,15 @@ import {
   createSession,
   ensureBootstrapPortalPrincipal,
 } from './identity.ts';
-import { mutateCompanyAsset, listCompanyAssets } from './company-assets.ts';
+import {
+  mutateCompanyAsset,
+  listCompanyAssets,
+  requireCompanyAssetReader,
+} from './company-assets.ts';
+import type { ResourcePrincipal } from './resource-principal.ts';
 import {
   captureCompanyRunAssets,
+  captureCompanyRunAssetsForPrincipal,
   getCompanyRunMaterial,
   markCompanyMaterialRead,
   markCompanyRunLoaded,
@@ -253,6 +259,104 @@ suite(
         },
       };
     }
+    const principal = (): ResourcePrincipal => ({
+      requestId: randomUUID(),
+      actor: owner.actor,
+      organizationId: owner.organizationId,
+      workspaceId: owner.workspaceId,
+      memberships: owner.memberships,
+    });
+    it('captures the same published material for a server principal without a browser login', async () => {
+      const server = principal();
+      expect(server).not.toHaveProperty('sessionId');
+      expect(server).not.toHaveProperty('authenticatedAt');
+      const expected = await capture();
+      const snapshot = await f.db.begin((tx) =>
+        captureCompanyRunAssetsForPrincipal(
+          tx,
+          server,
+          a.versionId,
+          'make report',
+          [selection()],
+        ),
+      );
+      expect(snapshot).toEqual(expected);
+      // A structural browser context remains a browser call; a revoked or
+      // unknown login must not silently turn into the server reader path.
+      const invalidBrowser = { ...owner, sessionId: randomUUID() };
+      await expect(capture(invalidBrowser)).rejects.toThrow(
+        'authorization_denied',
+      );
+      await expect(
+        f.db.begin((tx) =>
+          requireCompanyAssetReader(
+            { ...admin, sessionId: randomUUID() },
+            owner.organizationId,
+            tx,
+            true,
+          ),
+        ),
+      ).rejects.toThrow('authorization_denied');
+    });
+    it('sees uncommitted member revocation before reading automatic rule or selected template bodies', async () => {
+      const statements: string[] = [];
+      const originalDebug = f.db.options.debug;
+      const rollback = Error('company_principal_revocation_rollback');
+      f.db.options.debug = (_connection, query) => {
+        statements.push(query.replace(/\s+/g, ' ').trim().toLowerCase());
+      };
+      vi.mocked(client.getDatabase).mockImplementation(() => {
+        throw Error('global_database_forbidden');
+      });
+      try {
+        await expect(
+          f.db.begin(async (tx) => {
+            await tx`update allrice_memberships set active=false
+              where user_id=${owner.actor.id} and organization_id=${owner.organizationId}`;
+            statements.length = 0;
+            await expect(
+              captureCompanyRunAssetsForPrincipal(
+                tx,
+                principal(),
+                a.versionId,
+                'make report',
+              ),
+            ).rejects.toThrow('authorization_denied');
+            expect(
+              statements.some((s) =>
+                s.startsWith('select r.id from allrice_company_assets'),
+              ),
+            ).toBe(true);
+            expect(
+              statements.some((s) =>
+                s.startsWith('select r.* from allrice_company_assets'),
+              ),
+            ).toBe(false);
+            statements.length = 0;
+            await expect(
+              captureCompanyRunAssetsForPrincipal(
+                tx,
+                principal(),
+                a.versionId,
+                'make report',
+                [selection()],
+              ),
+            ).rejects.toThrow('authorization_denied');
+            expect(
+              statements.some((s) => s.includes('from allrice_company_assets')),
+            ).toBe(false);
+            throw rollback;
+          }),
+        ).rejects.toBe(rollback);
+      } finally {
+        f.db.options.debug = originalDebug;
+        vi.mocked(client.getDatabase).mockReturnValue(f.db);
+      }
+      const [membership] = await f.db<{ active: boolean }[]>`
+        select bool_and(active) as active from allrice_memberships
+        where user_id=${owner.actor.id} and organization_id=${owner.organizationId}`;
+      expect(membership?.active).toBe(true);
+    });
     it('freezes exact rules and selected parameters; a later publication changes only the next snapshot', async () => {
       v1 = await capture();
       execution = await freeze(v1);

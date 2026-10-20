@@ -725,6 +725,36 @@ const retainedArtifacts = new Map<
   string,
   Awaited<ReturnType<typeof verifyDshNativeArtifact>>
 >();
+
+export interface ApprovedDshNativeControlArtifact {
+  artifactId: string;
+  generation: string;
+  root: string;
+  content: Pick<DshNativeArtifactContent, 'files' | 'packages'>;
+}
+
+/** Read-only exact lookup for a private control carrier. It registers nothing,
+ * grants no business profile, and never substitutes another approved reader. */
+export function approvedDshNativeControlArtifact(
+  artifactId: string,
+): ApprovedDshNativeControlArtifact {
+  assertNativeLoader();
+  const artifact =
+    retainedArtifacts.get(artifactId) ??
+    (approvedArtifact?.artifactId === artifactId
+      ? approvedArtifact
+      : undefined);
+  if (!artifact) fail('CONTROL_NOT_APPROVED');
+  return structuredClone({
+    artifactId: artifact.artifactId,
+    generation: artifact.content.generation,
+    root: artifact.root,
+    content: {
+      files: artifact.content.files,
+      packages: artifact.content.packages,
+    },
+  });
+}
 let installing = false;
 function assertNativeLoader() {
   const options = [...process.execArgv, process.env.NODE_OPTIONS ?? ''].join(

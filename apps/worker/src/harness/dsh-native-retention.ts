@@ -8,7 +8,7 @@ import {
   type NativeSessionPin,
   type NativeOriginReaderScope,
 } from '@allrice/database';
-import { lstat } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { DSH_MISSING_FROZEN_GENERATION } from '@allrice/contracts';
 import {
@@ -18,6 +18,10 @@ import {
 } from './dsh-native-artifact.js';
 import { assertVirginNativeNamespace } from './native-origin-storage.js';
 import { assertStoredNativeSession } from './dsh-native-storage.js';
+import {
+  parseNativeOnceControlReference,
+  verifyNativeOnceControlHistory,
+} from '../native-schedule-once-loader.js';
 
 // Finite historical compatibility policy, independent of later promotion.
 const compatibilityGeneration = 'dsh-0.1.5-rc.3-a4c74a9';
@@ -215,6 +219,24 @@ export async function verifyConfiguredDshNativeReferences(
   const states = await inspectNativeOriginReaderStates({
     requireIdle: options.requireReaderIdle,
   });
+  let nativeOnceControlHistoryVerified = 0;
+  // DB returns this independent control class for every persistent partition,
+  // including closed/expired writers. No business pin/profile is manufactured.
+  for (const control of coverage.nativeOnceControlReferences) {
+    const reference = parseNativeOnceControlReference(control.reference);
+    const stat = await lstat(reference.stateRoot);
+    if (
+      !stat.isDirectory() ||
+      stat.isSymbolicLink() ||
+      (await realpath(reference.stateRoot)) !== reference.stateRoot
+    )
+      fail('CONTROL_STORAGE_ROOT');
+    if (options.requireReaderIdle)
+      nativeOnceControlHistoryVerified += await verifyNativeOnceControlHistory(
+        reference,
+        control.controls,
+      );
+  }
   for (const { approval, adopted, nativeSessionIds } of states) {
     const signal = AbortSignal.timeout(30_000);
     if (!adopted)
@@ -246,6 +268,9 @@ export async function verifyConfiguredDshNativeReferences(
   return {
     ...coverage,
     ...(states.length ? { readerStorageVerified: states.length } : {}),
+    ...(coverage.nativeOnceControlReferences.length
+      ? { nativeOnceControlHistoryVerified }
+      : {}),
   };
 }
 

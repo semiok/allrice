@@ -35,6 +35,7 @@ type AutomationRunStatus = AutomationRun['status'];
 
 interface AutomationRow {
   id: string;
+  clock_owner?: 'legacy' | 'native_once';
   organization_id: string;
   workspace_id: string;
   owner_id: string;
@@ -762,6 +763,8 @@ export async function updateAutomation(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
   if (current.brand_content_binding) throw new DataAccessError('grant_invalid');
+  if (current.clock_owner === 'native_once')
+    throw new DataAccessError('grant_invalid');
   const parsed = UpdateAutomationInputSchema.parse(input);
   if (current.trigger_type === 'folder') {
     if (
@@ -864,6 +867,8 @@ export async function deleteAutomation(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const current = await getAutomationRow(context, workspaceId, automationId);
   if (current.brand_content_binding) throw new DataAccessError('grant_invalid');
+  if (current.clock_owner === 'native_once')
+    throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   if (current.trigger_type === 'folder')
     await sql`update allrice_automations set status='paused',deleted_at=clock_timestamp(),revision=revision+1,updated_at=clock_timestamp() where id=${current.id}`;
@@ -1049,7 +1054,7 @@ export async function claimDueAutomations(limit = 10) {
       select r.status, r.session_id from allrice_automation_runs r
       where r.automation_id = a.id order by r.created_at desc limit 1
     ) latest on true
-    where a.trigger_type='schedule' and a.deleted_at is null and a.status = 'enabled' and a.next_run_at is not null and a.next_run_at <= now()
+    where a.clock_owner='legacy' and a.trigger_type='schedule' and a.deleted_at is null and a.status = 'enabled' and a.next_run_at is not null and a.next_run_at <= now()
     order by a.next_run_at, a.id
     limit ${limit}
   `;
@@ -1080,7 +1085,7 @@ export async function claimDueAutomations(limit = 10) {
           select r.status, r.session_id from allrice_automation_runs r
           where r.automation_id = a.id order by r.created_at desc limit 1
         ) latest on true
-        where a.id = ${candidate.id} and a.status = 'enabled' and a.deleted_at is null and a.trigger_type='schedule'
+        where a.id = ${candidate.id} and a.clock_owner='legacy' and a.status = 'enabled' and a.deleted_at is null and a.trigger_type='schedule'
         for update of a
       `;
         const row = locked[0];
@@ -1183,6 +1188,8 @@ export async function runAutomationNow(
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const row = await getAutomationRow(context, workspaceId, automationId);
   if (row.brand_content_binding) throw new DataAccessError('grant_invalid');
+  if (row.clock_owner === 'native_once')
+    throw new DataAccessError('grant_invalid');
   if (row.trigger_type === 'folder') throw new DataAccessError('grant_invalid');
   const sql = getDatabase();
   const runs = await sql<AutomationRunRow[]>`
