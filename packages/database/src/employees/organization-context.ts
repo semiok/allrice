@@ -1,4 +1,5 @@
 import type { EmployeePromptSnapshotSchema } from '@allrice/contracts';
+import type { TransactionSql } from 'postgres';
 import { getDatabase } from '../core/client.ts';
 
 type OrganizationContext = ReturnType<
@@ -9,8 +10,8 @@ type OrganizationContext = ReturnType<
 export async function readEmployeeOrganizationContext(
   organizationId: string,
   userId: string,
+  db: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ): Promise<OrganizationContext> {
-  const db = getDatabase();
   const [person] = await db`
     select o.name as company_name,o.business_context,coalesce(p.display_name,u.display_name) as display_name,
       coalesce(p.job_title,'') as job_title,coalesce(p.responsibilities,'') as responsibilities

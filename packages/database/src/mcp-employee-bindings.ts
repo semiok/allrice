@@ -227,41 +227,49 @@ export function createEmployeeMcpBindingStore(
       scopeInput: McpScope,
       employeeId: string,
       employeeVersionId: string,
+      transaction?: Tx,
     ): Promise<FrozenMcpTool[]> {
       if (transport !== 'streamable_http') throw new McpError('MCP_DENIED');
       const scope = McpScopeSchema.parse(scopeInput),
         eid = UuidSchema.parse(employeeId),
         vid = UuidSchema.parse(employeeVersionId);
-      const authorizations = await db().begin(
-        async (tx): Promise<Binding[]> => {
-          await currentMember(tx, scope, false);
-          const [version] =
-            await tx`select v.manifest from allrice_employee_versions v join allrice_employees e on e.id=v.employee_id and e.organization_id=v.organization_id and e.workspace_id=v.workspace_id
-          where v.id=${vid} and v.employee_id=${eid} and v.organization_id=${scope.organizationId} and v.workspace_id=${scope.workspaceId} and e.status='active' for share of e,v`;
-          if (!version || mcpEmployeeEligibility(version.manifest).length)
-            return [];
-          const [assignment] =
-            await tx`select id from allrice_employee_assignments where employee_id=${eid} and employee_version_id=${vid} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and user_id=${scope.actorId} and active for share`;
-          if (!assignment) return [];
-          // A member-connected application inherits the published employee's
-          // MCP capability. No manual tool matrix or new employee publication.
-          await tx`insert into allrice_employee_mcp_bindings(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id,enabled,granted_by)
+      const readAuthorizations = async (tx: Tx): Promise<Binding[]> => {
+        await currentMember(tx, scope, false);
+        // A caller transaction may already hold assignment locks. Its late
+        // employee/version lock must not wait for a writer that needs those
+        // assignments; let 55P03 abort the caller's whole transaction for retry.
+        const [version] =
+          await tx`select v.manifest from allrice_employee_versions v join allrice_employees e on e.id=v.employee_id and e.organization_id=v.organization_id and e.workspace_id=v.workspace_id
+          where v.id=${vid} and v.employee_id=${eid} and v.organization_id=${scope.organizationId} and v.workspace_id=${scope.workspaceId} and e.status='active' for share of e,v ${transaction ? tx`nowait` : tx``}`;
+        if (!version || mcpEmployeeEligibility(version.manifest).length)
+          return [];
+        const [assignment] =
+          await tx`select id from allrice_employee_assignments where employee_id=${eid} and employee_version_id=${vid} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and user_id=${scope.actorId} and active for share`;
+        if (!assignment) return [];
+        // A member-connected application inherits the published employee's
+        // MCP capability. No manual tool matrix or new employee publication.
+        await tx`insert into allrice_employee_mcp_bindings(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id,enabled,granted_by)
             select c.organization_id,c.workspace_id,${eid},${vid},c.binding_id,true,${scope.actorId}
             from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id
             where c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId}
               and c.managed_by=${scope.actorId} and b.enabled and c.discovery_state='ready'
               and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and not x.connected)
             on conflict(organization_id,workspace_id,employee_id,employee_version_id,connector_binding_id) do nothing`;
-          const rows = await tx<
-            Binding[]
-          >`select * from allrice_employee_mcp_bindings where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and employee_id=${eid} and employee_version_id=${vid} and enabled for share`;
-          return [...rows];
-        },
-      );
+        const rows = await tx<
+          Binding[]
+        >`select * from allrice_employee_mcp_bindings where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and employee_id=${eid} and employee_version_id=${vid} and enabled for share`;
+        return [...rows];
+      };
+      const authorizations = transaction
+        ? await readAuthorizations(transaction)
+        : await db().begin(readAuthorizations);
       if (!authorizations.length) return [];
-      const tools = await createMcpStore({ database: db() }).freeze(
+      const tools = await createMcpStore(
+        transaction ? {} : { database: db() },
+      ).freeze(
         scope,
         authorizations.map((a) => a.connector_binding_id),
+        transaction,
       );
       return tools.flatMap((tool) => {
         const grant = authorizations.find(

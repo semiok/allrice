@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import {
   PlatformModelSettingsSchema,
   UpdatePlatformModelSettingsSchema,
@@ -16,8 +17,10 @@ export class PlatformModelSettingsConflict extends Error {
 }
 
 /** Internal execution read. Callers must already own their Run/context. */
-export async function readPlatformModelSettings() {
-  const [row] = await getDatabase()<
+export async function readPlatformModelSettings(
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+) {
+  const [row] = await sql<
     {
       revision: number;
       configuration: unknown;

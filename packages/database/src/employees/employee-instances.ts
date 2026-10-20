@@ -648,8 +648,8 @@ export async function prepareEmployeeInstanceSnapshot(
   sessionId: string,
   assignmentId: string,
   versionId: string,
+  sql: Sql = getDatabase(),
 ): Promise<EmployeeInstanceSnapshot> {
-  const sql = getDatabase();
   const [session] = await sql<
     { instance_id: string }[]
   >`select coalesce(employee_instance_id,employee_assignment_id) instance_id

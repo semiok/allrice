@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { TransactionSql } from 'postgres';
 import type { RequestContext } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { requirePlatformAdmin } from '../platform-authority.ts';
@@ -26,14 +27,18 @@ export class CodexSubscriptionError extends Error {
   }
 }
 
-export async function readEnabledCodexSubscription() {
-  const [row] = await getDatabase()<{ slot: 1 | 2 }[]>`
+export async function readEnabledCodexSubscription(
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+) {
+  const [row] = await sql<{ slot: 1 | 2 }[]>`
     select slot from allrice_codex_subscriptions where enabled`;
   return row?.slot ?? null;
 }
 
-export async function requireEnabledCodexSubscription() {
-  const slot = await readEnabledCodexSubscription();
+export async function requireEnabledCodexSubscription(
+  sql?: ReturnType<typeof getDatabase> | TransactionSql,
+) {
+  const slot = await readEnabledCodexSubscription(sql);
   if (slot === null) throw new CodexSubscriptionError('disabled');
   return slot;
 }

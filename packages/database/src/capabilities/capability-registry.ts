@@ -341,14 +341,16 @@ function mapKnowledgeRevision(rows: KnowledgeRevisionRow[]) {
   });
 }
 
-async function loadEmployeeCapabilityDirectory(input: {
-  organizationId: string;
-  workspaceId: string;
-  employeeId: string;
-  actorId: string;
-  adminView: boolean;
-}): Promise<EmployeeCapabilityDirectory> {
-  const sql = getDatabase();
+async function loadEmployeeCapabilityDirectory(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    actorId: string;
+    adminView: boolean;
+  },
+  sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
+): Promise<EmployeeCapabilityDirectory> {
   const [workflowRows, knowledgeRows] = await Promise.all([
     sql<WorkflowBindingRow[]>`
       select b.id as binding_id, b.bound_by, b.bound_at,
@@ -574,19 +576,25 @@ export async function listEmployeeCapabilities(
   });
 }
 
-export async function resolveEmployeeCapabilitiesForRun(input: {
-  organizationId: string;
-  workspaceId: string;
-  employeeId: string;
-  actorId: string;
-}) {
-  return loadEmployeeCapabilityDirectory({
-    organizationId: UuidSchema.parse(input.organizationId),
-    workspaceId: UuidSchema.parse(input.workspaceId),
-    employeeId: UuidSchema.parse(input.employeeId),
-    actorId: UuidSchema.parse(input.actorId),
-    adminView: false,
-  });
+export async function resolveEmployeeCapabilitiesForRun(
+  input: {
+    organizationId: string;
+    workspaceId: string;
+    employeeId: string;
+    actorId: string;
+  },
+  sql?: ReturnType<typeof getDatabase> | TransactionSql,
+) {
+  return loadEmployeeCapabilityDirectory(
+    {
+      organizationId: UuidSchema.parse(input.organizationId),
+      workspaceId: UuidSchema.parse(input.workspaceId),
+      employeeId: UuidSchema.parse(input.employeeId),
+      actorId: UuidSchema.parse(input.actorId),
+      adminView: false,
+    },
+    sql,
+  );
 }
 
 export async function createWorkflow(context: RequestContext, input: unknown) {

@@ -368,12 +368,15 @@ export function createLocalMcpStore(
       scopeInput: McpScope,
       employeeId: string,
       employeeVersionId: string,
+      transaction?: Tx,
     ): Promise<LocalMcpSnapshot> {
       const scope = McpScopeSchema.parse(scopeInput);
-      return db().begin(async (tx) => {
+      const freeze = async (tx: Tx): Promise<LocalMcpSnapshot> => {
         await member(tx, scope);
+        // A caller may already hold assignment locks needed by an employee
+        // writer. Propagate 55P03 so the whole caller transaction can retry.
         const [version] =
-          await tx`select v.manifest from allrice_employee_versions v join allrice_employees e on e.id=v.employee_id where v.id=${employeeVersionId} and e.id=${employeeId} and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.status='active' for share of e,v`;
+          await tx`select v.manifest from allrice_employee_versions v join allrice_employees e on e.id=v.employee_id where v.id=${employeeVersionId} and e.id=${employeeId} and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.status='active' for share of e,v ${transaction ? tx`nowait` : tx``}`;
         if (
           !version ||
           mcpEmployeeEligibility(version.manifest, 'local_stdio').length
@@ -425,7 +428,8 @@ export function createLocalMcpStore(
               );
         }
         return LocalMcpSnapshotSchema.parse(result);
-      });
+      };
+      return transaction ? freeze(transaction) : db().begin(freeze);
     },
     /** Only a durable device receipt from a governed discovery operation may
      * populate the catalog. No browser-supplied tools/list is accepted. */

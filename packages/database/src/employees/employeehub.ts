@@ -1,5 +1,6 @@
 import {
   freezePersonalSkills,
+  freezePersonalSkillsInTransaction,
   assertFrozenPersonalSkills,
 } from './personal-skills.ts';
 import {
@@ -17,6 +18,7 @@ import {
 } from '../platform-authority.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 
 import {
   AssignEmployeeVersionInputSchema,
@@ -1150,18 +1152,24 @@ export async function setDefaultEmployee(
   });
 }
 
-export async function prepareEmployeeRunBinding(input: {
-  context: Pick<RequestContext, 'actor' | 'organizationId'>;
-  workspaceId: string;
-  assignmentId: string;
-  employeeVersionId: string;
-  sessionId: string;
-  userMessageId: string;
-  assistantMessageId: string;
-  promptSnapshot: EmployeeRunBinding['promptSnapshot'];
-}): Promise<EmployeeRunBinding> {
+/** An existing admission transaction may freeze the entire binding before its
+ * message/Run commit. The caller owns authority, locks and rollback; this helper
+ * neither commits nor substitutes a pool connection on that path. */
+export async function prepareEmployeeRunBinding(
+  input: {
+    context: Pick<RequestContext, 'actor' | 'organizationId'>;
+    workspaceId: string;
+    assignmentId: string;
+    employeeVersionId: string;
+    sessionId: string;
+    userMessageId: string;
+    assistantMessageId: string;
+    promptSnapshot: EmployeeRunBinding['promptSnapshot'];
+  },
+  transaction?: TransactionSql,
+): Promise<EmployeeRunBinding> {
   const actorId = userId(input.context);
-  const sql = getDatabase();
+  const sql = transaction ?? getDatabase();
   const rows = await sql<EmployeeAssignmentRow[]>`
     select a.id as assignment_id, a.user_id, a.organization_id,
       a.workspace_id, a.is_default, a.active, a.assigned_by, a.assigned_at,
@@ -1197,6 +1205,7 @@ export async function prepareEmployeeRunBinding(input: {
     input.sessionId,
     input.assignmentId,
     input.employeeVersionId,
+    transaction,
   );
   const { prepareEmployeeRuntimeContent } =
     await import('./employee-runtime-content.ts');
@@ -1205,11 +1214,15 @@ export async function prepareEmployeeRunBinding(input: {
     organizationId: input.context.organizationId,
     workspaceId: input.workspaceId,
   };
-  const content = await prepareEmployeeRuntimeContent(contentIdentity, {
-    instance,
-    employeeId: assignment.employee_id,
-    employeeVersionId: assignment.id,
-  });
+  const content = await prepareEmployeeRuntimeContent(
+    contentIdentity,
+    {
+      instance,
+      employeeId: assignment.employee_id,
+      employeeVersionId: assignment.id,
+    },
+    transaction,
+  );
   const manifest = EmployeeManifestSchema.safeParse(assignment.manifest);
   if (
     !manifest.success ||
@@ -1218,12 +1231,15 @@ export async function prepareEmployeeRunBinding(input: {
   ) {
     throw new EmployeeHubError('provider_invalid');
   }
-  const capabilityDirectory = await resolveEmployeeCapabilitiesForRun({
-    organizationId: input.context.organizationId,
-    workspaceId: input.workspaceId,
-    employeeId: assignment.employee_id,
-    actorId,
-  });
+  const capabilityDirectory = await resolveEmployeeCapabilitiesForRun(
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      employeeId: assignment.employee_id,
+      actorId,
+    },
+    transaction,
+  );
   const mutableSkillRows = await sql<
     {
       id: string;
@@ -1357,13 +1373,17 @@ export async function prepareEmployeeRunBinding(input: {
   const organizationContext = await readEmployeeOrganizationContext(
     input.context.organizationId,
     actorId,
+    transaction,
   );
-  const modelSnapshot = await freezeSessionModelSnapshot({
-    organizationId: input.context.organizationId,
-    workspaceId: input.workspaceId,
-    sessionId: input.sessionId,
-    employeeVersionId: assignment.id,
-  });
+  const modelSnapshot = await freezeSessionModelSnapshot(
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      employeeVersionId: assignment.id,
+    },
+    transaction,
+  );
   // Read compatibility does not authorize a new Run under an unimplemented
   // historical OAuth mode. Do not silently convert it into an API credential.
   if (
@@ -1453,15 +1473,22 @@ export async function prepareEmployeeRunBinding(input: {
       ...(skill.bundle ? { bundle: skill.bundle } : {}),
     }),
   );
+  const baseSkills = await freezeEmployeeBaseSkills(
+    originalNativeSkills,
+    transaction,
+  );
   const {
     nativeSkills,
     catalog: baseSkillCatalog,
     personalSkills,
-  } = await freezePersonalSkills(
-    contentIdentity,
-    instance,
-    await freezeEmployeeBaseSkills(originalNativeSkills),
-  );
+  } = transaction
+    ? await freezePersonalSkillsInTransaction(
+        transaction,
+        contentIdentity,
+        instance,
+        baseSkills,
+      )
+    : await freezePersonalSkills(contentIdentity, instance, baseSkills);
   const mcpEnabled =
     runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
     manifest.data.schemaVersion === 2 &&
@@ -1476,6 +1503,7 @@ export async function prepareEmployeeRunBinding(input: {
           },
           assignment.employee_id,
           assignment.id,
+          transaction,
         )
       : [];
   const localMcp =
@@ -1488,6 +1516,7 @@ export async function prepareEmployeeRunBinding(input: {
           },
           assignment.employee_id,
           assignment.id,
+          transaction,
         )
       : { connections: [], tools: [] };
   // Published MCP capability includes connection setup before any application

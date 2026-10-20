@@ -498,16 +498,18 @@ export function createMcpStore(
     async freeze(
       scopeInput: McpScope,
       connectionIds?: readonly string[],
+      transaction?: Tx,
     ): Promise<FrozenMcpTool[]> {
       const scope = McpScopeSchema.parse(scopeInput);
-      const rows = await db()<
+      const sql = transaction ?? db();
+      const rows = await sql<
         { binding_id: string }[]
       >`select c.binding_id,c.managed_by from allrice_mcp_binding_config c join allrice_connector_bindings b on b.id=c.binding_id join allrice_connector_definitions d on d.id=b.connector_id where c.transport='streamable_http' and c.organization_id=${scope.organizationId} and c.workspace_id=${scope.workspaceId} and b.enabled and d.enabled and (c.managed_by is null or c.managed_by=${scope.actorId}) and not exists(select 1 from allrice_mcp_member_connections x where x.binding_id=c.binding_id and x.user_id=${scope.actorId} and not x.connected)`;
       const frozen: FrozenMcpTool[] = [];
       for (const row of rows) {
         if (connectionIds && !connectionIds.includes(row.binding_id)) continue;
-        const c = await read(scope, row.binding_id);
-        for (const tool of await tools(scope, c.id))
+        const c = await read(scope, row.binding_id, sql);
+        for (const tool of await tools(scope, c.id, sql))
           if (tool.available && tool.allowed)
             frozen.push(
               FrozenMcpToolSchema.parse({
