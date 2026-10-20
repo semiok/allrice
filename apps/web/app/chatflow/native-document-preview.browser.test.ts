@@ -72,8 +72,10 @@ suite('DSH native document previews', () => {
       const path = new URL(request.url!, 'http://localhost').pathname;
       if (path === '/csv-download-fixture.html') {
         response.setHeader('content-type', 'text/html; charset=utf-8');
+        // Keep the Blob URL alive until this fixture's page closes. A click
+        // returning does not prove that the browser has consumed the URL.
         response.end(
-          `<button>下载差异 CSV</button><script>document.querySelector('button').addEventListener('click', () => { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['id,amount\\n002,55.00\\n'],{type:'text/csv'}));a.download='diff.csv';a.click();URL.revokeObjectURL(a.href) });try { parent.previewEscaped=true } catch {}</script>`,
+          `<button>下载差异 CSV</button><script>document.querySelector('button').addEventListener('click', () => { const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['id,amount\\n002,55.00\\n'],{type:'text/csv'}));a.download='diff.csv';a.click() });try { parent.previewEscaped=true } catch {}</script>`,
         );
         return;
       }
@@ -376,6 +378,15 @@ suite('DSH native document previews', () => {
     ]);
     try {
       const frame = page.frameLocator('iframe[data-project-service-preview]');
+      await expect
+        .poll(
+          () =>
+            frame
+              .locator('body')
+              .evaluate((node) => node.ownerDocument.readyState),
+          { timeout: 5000 },
+        )
+        .toBe('complete');
       await frame
         .getByRole('button', { name: '下载差异 CSV', exact: true })
         .waitFor({ timeout: 5000 });
