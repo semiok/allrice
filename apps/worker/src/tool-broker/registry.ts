@@ -12,6 +12,10 @@ import {
   inspectEmployeeMethodTest,
 } from './handlers/employee-method.js';
 import { generateImage } from './handlers/image.js';
+import {
+  readBrandContent,
+  executeBrandContentStep,
+} from './handlers/brand-content.js';
 import { updateEmployeeProfile } from './handlers/employee-profile.js';
 import { runProjectWorkspace } from './handlers/project.js';
 import { executeLocalFileTool } from './handlers/local-files.js';
@@ -80,6 +84,11 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'workspace.brand_content.read': registration('workspace', readBrandContent),
+  'workspace.brand_content.step': registration(
+    'workspace',
+    executeBrandContentStep,
+  ),
   'workspace.employee.method.prepare_activation': registration(
     'workspace',
     prepareEmployeeMethodActivation,

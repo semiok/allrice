@@ -62,6 +62,7 @@ import {
 import { skillNativeTools } from './allrice-skill-native-tools.mjs';
 import { reconciliationNativeTools } from './allrice-reconciliation-native-tools.mjs';
 import { employeeProfileNativeTools } from './allrice-employee-profile-native-tools.mjs';
+import { brandContentNativeTools } from './allrice-brand-content-native-tools.mjs';
 import { technicalNativeTools } from './allrice-technical-native-tools.mjs';
 import { workbenchNativeTools } from './allrice-workbench-native-tools.mjs';
 import {
@@ -111,6 +112,7 @@ const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
 const maximumSearchResponseBytes = 2_000_000;
 const maximumNativeSkillBodyBytes = 500_000;
 const brokerNativeTools = [
+  ...brandContentNativeTools,
   ...employeeProfileNativeTools,
   ...personalSkillNativeTools,
   ...employeeMethodNativeTools,

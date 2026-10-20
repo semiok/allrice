@@ -2,6 +2,7 @@ import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
 import { ReferenceSelectionsSchema } from './reference-library.ts';
 import { CompanyRunSnapshotSchema } from './company-assets.ts';
 import { EmployeeRuntimeContentSchema } from './employee-content.ts';
+import { BrandContentWorkflowInvocationSchema } from './brand-content-workflow.ts';
 import { z } from 'zod';
 import { PersonalSkillSnapshotSchema } from './personal-skills.ts';
 import { EmployeeAccentColorSchema } from './employee-colors.ts';
@@ -697,6 +698,7 @@ export const EmployeeExecutionSnapshotV2Schema =
     schemaVersion: z.literal(2),
     // No default: old Run JSON remains unchanged.
     instance: EmployeeInstanceSnapshotSchema.optional(),
+    workflowInvocation: BrandContentWorkflowInvocationSchema.optional(),
     baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
     content: EmployeeRuntimeContentSchema.optional(),
     modelSnapshot: SessionModelSnapshotSchema.optional(),

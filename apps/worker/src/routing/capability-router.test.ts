@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import {
   EmployeeExecutionSnapshotSchema,
+  BrandContentWorkflowInvocationSchema,
+  brandContentTemplateKeys,
   type EmployeeExecutionSnapshot,
   type RouteRequest,
 } from '@allrice/contracts';
@@ -464,4 +466,250 @@ describe('capability route decision', () => {
     expect(plan.selectedKnowledgeRevisionIds).toHaveLength(1);
     expect(plan.selectedToolNames).toEqual([]);
   });
+});
+
+type SnapshotV2 = Extract<EmployeeExecutionSnapshot, { schemaVersion: 2 }>;
+type WorkflowBinding = SnapshotV2['capabilitySnapshot']['workflows'][number];
+
+function businessWorkflowRouteFixture() {
+  const original = base();
+  const directory = withCapabilities(original.snapshot);
+  if (directory.schemaVersion !== 2) throw Error('v2 fixture required');
+  const ordinary = directory.capabilitySnapshot.workflows[0]!;
+  const workflowId = randomUUID();
+  const instanceId = randomUUID();
+  const business = (revision: number, name: string): WorkflowBinding => ({
+    ...structuredClone(ordinary),
+    bindingId: randomUUID(),
+    revision: {
+      ...structuredClone(ordinary.revision),
+      id: randomUUID(),
+      workflowId,
+      revision,
+      slug: `brand-content-topics-v${revision}`,
+      name,
+      checksum: `sha256:${String(revision).repeat(64)}`,
+      definition: {
+        ...structuredClone(ordinary.revision.definition),
+        inputSchema: { 'x-allrice-brand-content': 'topics' },
+      },
+    },
+  });
+  const old = business(1, '旧版品牌内容流程');
+  const newer = business(2, '新版品牌内容流程');
+  const invocation = BrandContentWorkflowInvocationSchema.parse({
+    schemaVersion: 1,
+    startId: randomUUID(),
+    instanceId,
+    sceneId: null,
+    workflowRevisionId: old.revision.id,
+    packageDigest: `sha256:${'a'.repeat(64)}`,
+    templateKey: brandContentTemplateKeys.topics,
+    input: {
+      stage: 'topics',
+      brandId: randomUUID(),
+      brandName: '仅用于路由fixture的品牌',
+      contextRevisionId: randomUUID(),
+      contextDigest: `sha256:${'b'.repeat(64)}`,
+      context: {
+        audience: '单测受众',
+        tone: '准确',
+        requirements: '仅用给定事实',
+        facts: [{ id: 'one', text: '仅用于单测的事实' }],
+      },
+      platform: '小红书',
+      count: 5,
+    },
+  });
+  const snapshot = EmployeeExecutionSnapshotSchema.parse({
+    ...directory,
+    instance: {
+      id: instanceId,
+      assignmentId: directory.assignment.id,
+      organizationId: directory.tenantContext.organizationId,
+      workspaceId: directory.tenantContext.workspaceId,
+      ownerId: directory.tenantContext.actorId,
+      kind: 'custom',
+      revision: 1,
+      profile: { name: '普通名字也不提供路由授权' },
+      creationSource: {
+        kind: 'tenant_version',
+        employeeVersionId: directory.employee.versionId,
+      },
+      source: {
+        kind: 'tenant_version',
+        employeeVersionId: directory.employee.versionId,
+      },
+    },
+    workflowInvocation: invocation,
+    capabilitySnapshot: {
+      ...directory.capabilitySnapshot,
+      workflows: [newer, ordinary, old],
+    },
+  });
+  if (snapshot.schemaVersion !== 2) throw Error('v2 fixture required');
+  return {
+    snapshot,
+    request: original.request,
+    old: snapshot.capabilitySnapshot.workflows.find(
+      (binding) => binding.revision.id === old.revision.id,
+    )!,
+    newer: snapshot.capabilitySnapshot.workflows.find(
+      (binding) => binding.revision.id === newer.revision.id,
+    )!,
+    ordinary: snapshot.capabilitySnapshot.workflows.find(
+      (binding) => binding.revision.id === ordinary.revision.id,
+    )!,
+  };
+}
+
+describe('MET194 explicit fixed business workflow routing', () => {
+  it.each([
+    '你好',
+    '请生成品牌内容选题',
+    '新版品牌内容流程，请采用最新发布的方法',
+  ])(
+    'does not infer a private business invocation from prompt %s or a matching employee name',
+    (prompt) => {
+      const f = businessWorkflowRouteFixture();
+      delete f.snapshot.workflowInvocation;
+      if (f.snapshot.instance)
+        f.snapshot.instance.profile.name = '品牌内容选题专员';
+      const plan = decideCapabilityRoute({
+        request: { ...f.request, prompt },
+        executionSnapshot: f.snapshot,
+        tools,
+      });
+      expect(plan.selectedKind).toBe('direct');
+      expect(plan.selectedWorkflowRevisionIds).toEqual([]);
+      for (const binding of [f.old, f.newer])
+        expect(
+          plan.candidates.find(
+            (candidate) => candidate.id === `workflow:${binding.revision.id}`,
+          ),
+        ).toMatchObject({
+          authorized: false,
+          exclusionReason: 'excluded_not_effective',
+        });
+    },
+  );
+
+  it('preserves ordinary authorized workflow routing without turning it into a private business invocation', () => {
+    const f = businessWorkflowRouteFixture();
+    delete f.snapshot.workflowInvocation;
+    const plan = decideCapabilityRoute({
+      request: { ...f.request, prompt: '运行周报工作流' },
+      executionSnapshot: f.snapshot,
+      tools,
+    });
+    expect(plan.selectedWorkflowRevisionIds).toEqual([f.ordinary.revision.id]);
+  });
+
+  it('keeps the frozen v1 selection when v2 is present, first in the directory, and explicitly named', () => {
+    const f = businessWorkflowRouteFixture();
+    const pinBefore = structuredClone(f.snapshot.workflowInvocation);
+    const plan = decideCapabilityRoute({
+      request: {
+        ...f.request,
+        prompt: '新版品牌内容流程 brand-content-topics-v2，请使用最新版本',
+      },
+      executionSnapshot: f.snapshot,
+      tools,
+    });
+    expect(plan.selectedKind).toBe('workflow');
+    expect(plan.selectedWorkflowRevisionIds).toEqual([f.old.revision.id]);
+    expect(plan.selectedCandidateId).toBe(
+      `workflow:${f.snapshot.workflowInvocation!.workflowRevisionId}`,
+    );
+    const v2 = plan.candidates.find(
+      (candidate) => candidate.id === `workflow:${f.newer.revision.id}`,
+    )!;
+    const v1 = plan.candidates.find(
+      (candidate) => candidate.id === `workflow:${f.old.revision.id}`,
+    )!;
+    expect(v2.score).toBeGreaterThan(v1.score);
+    expect(v2.authorized).toBe(false);
+    expect(f.snapshot.workflowInvocation).toEqual(pinBefore);
+  });
+
+  it.each(['missing_v1', 'disabled_v1', 'unknown_pin'] as const)(
+    'fails closed for %s even when v2 and an ordinary named workflow remain available',
+    (change) => {
+      const f = businessWorkflowRouteFixture();
+      if (change === 'missing_v1')
+        f.snapshot.capabilitySnapshot.workflows =
+          f.snapshot.capabilitySnapshot.workflows.filter(
+            (binding) => binding.revision.id !== f.old.revision.id,
+          );
+      if (change === 'disabled_v1') {
+        f.old.effective = false;
+        f.old.disabledReason = 'binding_disabled';
+      }
+      if (change === 'unknown_pin')
+        f.snapshot.workflowInvocation!.workflowRevisionId = randomUUID();
+      expect(() =>
+        decideCapabilityRoute({
+          request: { ...f.request, prompt: '运行周报工作流或新版品牌内容流程' },
+          executionSnapshot: f.snapshot,
+          tools,
+        }),
+      ).toThrow('business workflow is not authorized');
+    },
+  );
+
+  it.each(['workflowRevisionId', 'packageDigest', 'startId'] as const)(
+    'rejects a persisted invocation missing %s instead of falling through to a named workflow',
+    (field) => {
+      const f = businessWorkflowRouteFixture();
+      // Simulate corrupt historical JSON at the execution boundary; no schema
+      // wrapper in the test may sanitize this before the router sees it.
+      Reflect.deleteProperty(f.snapshot.workflowInvocation!, field);
+      expect(() =>
+        decideCapabilityRoute({
+          request: { ...f.request, prompt: '运行周报工作流' },
+          executionSnapshot: f.snapshot,
+          tools,
+        }),
+      ).toThrow();
+    },
+  );
+
+  it.each([
+    'digest_format',
+    'template_stage',
+    'binding_stage',
+    'missing_business_marker',
+    'ordinary_workflow_pin',
+    'other_instance',
+    'general_instance',
+  ] as const)(
+    'rejects %s rather than borrowing another workflow or package scope',
+    (mismatch) => {
+      const f = businessWorkflowRouteFixture();
+      if (mismatch === 'digest_format')
+        f.snapshot.workflowInvocation!.packageDigest = 'not-a-package-digest';
+      if (mismatch === 'template_stage')
+        f.snapshot.workflowInvocation!.templateKey =
+          brandContentTemplateKeys.article;
+      if (mismatch === 'binding_stage')
+        f.old.revision.definition.inputSchema['x-allrice-brand-content'] =
+          'article';
+      if (mismatch === 'missing_business_marker')
+        delete f.old.revision.definition.inputSchema['x-allrice-brand-content'];
+      if (mismatch === 'ordinary_workflow_pin')
+        f.snapshot.workflowInvocation!.workflowRevisionId =
+          f.ordinary.revision.id;
+      if (mismatch === 'other_instance')
+        f.snapshot.workflowInvocation!.instanceId = randomUUID();
+      if (mismatch === 'general_instance')
+        f.snapshot.instance!.kind = 'general';
+      expect(() =>
+        decideCapabilityRoute({
+          request: { ...f.request, prompt: '运行周报工作流' },
+          executionSnapshot: f.snapshot,
+          tools,
+        }),
+      ).toThrow();
+    },
+  );
 });

@@ -18,6 +18,8 @@ import {
   useMemo,
   useRef,
   useState,
+  lazy,
+  Suspense,
 } from 'react';
 
 import type {
@@ -112,6 +114,7 @@ import { projectBridgeView } from './bridge-view';
 import { useRunStream } from './use-run-stream';
 import { useSession } from './use-session';
 import { createSessionActions } from './session-actions';
+import { useBrandContentWorkspace } from './use-brand-content-workspace';
 import {
   UserQuestionComposer,
   userQuestionAnswerText,
@@ -120,6 +123,12 @@ import {
 // DSH's whole-row disclosures are divs with button semantics, not <button>s.
 const transcriptDisclosureSelector =
   'button[aria-expanded], [data-disclosure-row][aria-expanded], summary';
+
+const BrandContentPanel = lazy(() =>
+  import('./brand-content-panel').then((module) => ({
+    default: module.BrandContentPanel,
+  })),
+);
 
 export function ChatFlowClient({
   workbenchEnabled = false,
@@ -247,6 +256,8 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const currentSettingsScope = useRef(settingsScope);
+  currentSettingsScope.current = settingsScope;
   const imageScope = `${settingsScope}/${activeId}`;
   const messageImages = useMemo(
     () => ({
@@ -1065,6 +1076,43 @@ export function ChatFlowClient({
       window.confirm('当前有尚未发送的消息或附件，切换工作会清空它们。继续吗？')
     );
   }
+  function openBrandContentSession(sessionId: string) {
+    if (!workspace || !confirmSessionNavigation()) return;
+    if (sessionId !== activeId) {
+      clearPendingAttachments();
+      setSessionReferences([]);
+      setReferenceSelections([]);
+      setCompanyReferences([]);
+      setReferencePickerOpen(false);
+      setDraft('');
+    }
+    if (layout.compact) setSidebarCollapsed(true);
+    // Select the server-created Session before refreshing. Otherwise a fresh
+    // draft's workspace refresh may automatically select a different recent task.
+    selectSession(sessionId);
+    const action = sessionActions.begin('brand-content-navigation');
+    if (!action) return;
+    const scope = settingsScope;
+    void (async () => {
+      try {
+        await loadWorkspace();
+        await nextPaint();
+        if (!action.current() || currentSettingsScope.current !== scope) return;
+        // A revision may reuse the selected Session. Read its new Run even when
+        // selectSession correctly leaves the same selection untouched.
+        await loadHistory(sessionId);
+      } catch (cause) {
+        if (action.current() && currentSettingsScope.current === scope)
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : '内容工作会话读取失败，请刷新后重试。',
+          );
+      } finally {
+        action.finish();
+      }
+    })();
+  }
   function startEmployeeSession(
     assignmentId: string,
     created?: EmployeeInstance,
@@ -1695,6 +1743,21 @@ export function ChatFlowClient({
                   >
                     参考资料
                   </button>
+                  <BrandContentWorkspaceEntry
+                    key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
+                    scopeId={settingsScope}
+                    workspaceId={workspace.workspaceId}
+                    viewerId={workspace.viewerId}
+                    instanceId={activeEmployee?.instanceId}
+                    kind={
+                      activeEmployee?.instances?.find(
+                        (instance) => instance.id === activeEmployee.instanceId,
+                      )?.kind
+                    }
+                    employeeName={activeEmployeeName}
+                    headers={tenantHeaders}
+                    onOpenSession={openBrandContentSession}
+                  />
                   {workbenchEnabled ? (
                     <button
                       type="button"
@@ -2069,5 +2132,54 @@ export function ChatFlowClient({
         versions={deliverableVersions}
       />
     </main>
+  );
+}
+
+function BrandContentWorkspaceEntry({
+  employeeName,
+  onOpenSession,
+  ...scope
+}: {
+  scopeId: string;
+  workspaceId: string;
+  viewerId?: string | null;
+  instanceId?: string;
+  kind?: 'general' | 'custom';
+  employeeName: string;
+  headers: Record<string, string>;
+  onOpenSession: (sessionId: string) => void;
+}) {
+  const catalog = useBrandContentWorkspace(scope);
+  const [openedScope, setOpenedScope] = useState<string | null>(null);
+  if (!catalog.available || !scope.instanceId) return null;
+  const open = openedScope === catalog.scope;
+  return (
+    <>
+      <button
+        type="button"
+        className={workbenchUi.entry}
+        aria-expanded={open}
+        onClick={() => setOpenedScope(catalog.scope)}
+      >
+        内容工作台
+      </button>
+      {open && (
+        <Suspense fallback={<span role="status">正在打开内容工作台…</span>}>
+          <BrandContentPanel
+            key={catalog.scope}
+            scopeId={scope.scopeId}
+            workspaceId={scope.workspaceId}
+            instanceId={scope.instanceId}
+            employeeName={employeeName}
+            headers={scope.headers}
+            onClose={() => setOpenedScope(null)}
+            onOpenSession={(sessionId) => {
+              setOpenedScope(null);
+              onOpenSession(sessionId);
+            }}
+          />
+        </Suspense>
+      )}
+    </>
   );
 }

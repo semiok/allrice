@@ -348,6 +348,8 @@ async function loadEmployeeCapabilityDirectory(
     employeeId: string;
     actorId: string;
     adminView: boolean;
+    instanceId?: string;
+    sceneId?: string | null;
   },
   sql: ReturnType<typeof getDatabase> | TransactionSql = getDatabase(),
 ): Promise<EmployeeCapabilityDirectory> {
@@ -365,6 +367,23 @@ async function loadEmployeeCapabilityDirectory(
         and b.workspace_id = ${input.workspaceId}
         and b.employee_id = ${input.employeeId}
         and b.enabled
+        and (b.instance_id is null or (
+          b.instance_id=${input.instanceId ?? null}::uuid
+          and b.owner_id=${input.actorId}
+          and (b.scene_id is null or b.scene_id=${input.sceneId ?? null}::uuid)
+          and exists (
+            select 1 from allrice_employee_instances i
+            join allrice_employee_assignments a on a.id=i.assignment_id
+            where i.id=b.instance_id and i.organization_id=b.organization_id
+              and i.workspace_id=b.workspace_id and i.owner_id=b.owner_id
+              and i.kind='custom' and i.archived_at is null
+              and i.assignment_id=b.assignment_id and a.employee_id=b.employee_id and a.active
+              and a.user_id=${input.actorId}
+              and not exists(select 1 from allrice_platform_employee_tenant_assignments d
+                where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
+                  and d.tenant_employee_id=a.employee_id and not d.active)
+          )
+        ))
         and (${input.adminView} or (
           w.status = 'active' and r.status = 'published'
         ))
@@ -427,6 +446,7 @@ export async function listCapabilityCatalog(
       where w.organization_id = ${context.organizationId}
         and w.workspace_id = ${workspaceId}
         and w.status = 'active' and r.status = 'published'
+        and not exists(select 1 from allrice_workflow_packages p where p.workflow_revision_id=r.id)
       order by w.id, r.revision desc
     `,
     sql<KnowledgeRevisionRow[]>`
@@ -582,6 +602,8 @@ export async function resolveEmployeeCapabilitiesForRun(
     workspaceId: string;
     employeeId: string;
     actorId: string;
+    instanceId?: string;
+    sceneId?: string | null;
   },
   sql?: ReturnType<typeof getDatabase> | TransactionSql,
 ) {
@@ -591,6 +613,15 @@ export async function resolveEmployeeCapabilitiesForRun(
       workspaceId: UuidSchema.parse(input.workspaceId),
       employeeId: UuidSchema.parse(input.employeeId),
       actorId: UuidSchema.parse(input.actorId),
+      ...(input.instanceId
+        ? { instanceId: UuidSchema.parse(input.instanceId) }
+        : {}),
+      ...(input.sceneId !== undefined
+        ? {
+            sceneId:
+              input.sceneId === null ? null : UuidSchema.parse(input.sceneId),
+          }
+        : {}),
       adminView: false,
     },
     sql,
@@ -682,6 +713,8 @@ export async function publishWorkflowRevision(
       where id = ${workflowId}
         and organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId} and status = 'active'
+        and not exists(select 1 from allrice_workflow_packages p
+          join allrice_workflow_revisions r on r.id=p.workflow_revision_id where r.workflow_id=${workflowId})
       for update
     `;
     const workflow = workflows[0];
@@ -979,6 +1012,7 @@ export async function manageEmployeeCapabilities(
           and r.workspace_id = ${workspaceId}
           and r.id in ${transaction(workflowRevisionIds)}
           and r.status = 'published' and w.status = 'active'
+          and not exists(select 1 from allrice_workflow_packages p where p.workflow_revision_id=r.id)
       `;
       if (
         new Set(rows.map((row) => row.id)).size !== workflowRevisionIds.length
@@ -1008,6 +1042,7 @@ export async function manageEmployeeCapabilities(
         updated_at = now()
       where organization_id = ${context.organizationId}
         and workspace_id = ${workspaceId} and employee_id = ${employeeId}
+        and instance_id is null
     `;
     await transaction`
       update allrice_employee_knowledge_bindings set enabled = false,
