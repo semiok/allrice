@@ -573,7 +573,6 @@ export function ChatFlowClient({
     setAttachmentPreview,
     setFilePickerOpen,
     setPendingAttachments,
-    setUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
     cancelBridgeUpload,
@@ -1508,7 +1507,6 @@ export function ChatFlowClient({
       onUploadAttachments={uploadAttachments}
       onCancelBridgeUpload={cancelBridgeUpload}
       bridgeUploadStatus={bridgeUploadStatus}
-      onUploadVisibilityChange={setUploadVisibility}
       pendingAttachments={
         visibleSubmission
           ? pendingAttachments.filter(
@@ -1516,7 +1514,6 @@ export function ChatFlowClient({
             )
           : pendingAttachments
       }
-      uploadVisibility={uploadVisibility}
     />
   );
 
@@ -1672,18 +1669,11 @@ export function ChatFlowClient({
         collapsed={sidebarCollapsed}
         overlay={layout.compact && !sidebarCollapsed}
         onCollapsedChange={setSidebarCollapsed}
-        onCreateEmployee={() => {
-          if (confirmSessionNavigation()) setEmployeePickerOpen(true);
-        }}
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;
           setAutomationNavigation(null);
           if (assignmentId) startEmployeeSession(assignmentId);
-          else if (employeeChoices(workspace).length === 1)
-            startEmployeeSession(
-              employeeChoiceId(employeeChoices(workspace)[0]!),
-            );
-          else if (employeeChoices(workspace).length > 1)
+          else if (employeeChoices(workspace).length > 0)
             setEmployeePickerOpen(true);
           else setError('当前没有可用员工，请先派驻员工。');
         }}
@@ -1898,7 +1888,7 @@ export function ChatFlowClient({
                     )}
                     <div className={styles.heroHeadline}>
                       <span className={styles.heroMark} aria-hidden="true">
-                        {activeEmployeeName.slice(0, 1)}
+                        {Array.from(activeEmployeeName)[0]}
                       </span>
                       <h1>与 {activeEmployeeName} 工作</h1>
                       <p>

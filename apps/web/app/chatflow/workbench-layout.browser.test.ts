@@ -8,6 +8,7 @@ import { officePreview } from '@allrice/office-runtime';
 import type { CloudOperationView } from '@allrice/database';
 import type {
   Browser,
+  Page,
   Locator,
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
@@ -58,6 +59,12 @@ async function selectSettings(dialog: Locator, label: string) {
       .locator('nav')
       .getByRole('button', { name: label, exact: true })
       .click();
+}
+
+async function selectSessionAction(page: Page, row: Locator, name: string) {
+  await row.hover();
+  await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
+  await page.getByRole('menuitem', { name, exact: true }).click();
 }
 
 const id = (n: number) =>
@@ -417,6 +424,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       bridgeError: false,
       bridgeSelections: [] as string[],
       archivedIds: new Set<string>(),
+      sessionEdits: new Map<string, Partial<Session>>(),
       archiveActive: options.archiveActive ?? false,
       archiveError: false,
       sessionListError: false,
@@ -553,6 +561,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ? { running: state.historyRunning }
         : {}),
       archivedAt: state.archivedIds.has(item.id) ? now : item.archivedAt,
+      ...state.sessionEdits.get(item.id),
     });
     const sessionList = () =>
       (options.employeeHistory
@@ -910,7 +919,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         !path.includes('/queued-messages/')
       ) {
         const body = route.request().postDataJSON();
-        state.archiveRequests.push(body);
+        if (body.archived !== undefined) state.archiveRequests.push(body);
         if (state.archiveError)
           return answer({ error: { message: '测试：归档暂时失败' } }, 503);
         if (body.archived && state.archiveActive && !body.stopActivity)
@@ -926,8 +935,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             409,
           );
         const target = path.split('/').at(-1)!;
-        if (body.archived) state.archivedIds.add(target);
-        else state.archivedIds.delete(target);
+        if (body.archived !== undefined) {
+          if (body.archived) state.archivedIds.add(target);
+          else state.archivedIds.delete(target);
+        }
+        const changes = state.sessionEdits.get(target) ?? {};
+        if (body.title !== undefined) changes.title = body.title;
+        if (body.pinned !== undefined)
+          changes.pinnedAt = body.pinned ? now : null;
+        state.sessionEdits.set(target, changes);
         return answer({ session: withArchive(session(target)) });
       }
       if (path.endsWith('/workspace-selection')) {
@@ -3043,7 +3059,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const f = await fixture();
     try {
       f.state.reply =
-        '# 样式验收\n\n| 项目 | 金额 |\n| --- | --- |\n| 合成数据 | 123 |\n\n```javascript\nconst total = 123;\n```';
+        '# 样式验收\n\n正文与**加粗正文**。\n\n| 项目 | 金额 |\n| --- | --- |\n| 合成数据 | 123 |\n\n```javascript\nconst total = 123;\n```';
       await f.page.reload();
       const row = f.page.locator(`#message-${id(20)}`);
       const heading = row.getByRole('heading', { name: '样式验收' });
@@ -3060,6 +3076,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .first()
           .evaluate((node) => getComputedStyle(node).fontSize),
       ).toBe('13px');
+      expect(
+        await row
+          .locator('p')
+          .first()
+          .evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('16px');
+      expect(
+        await row
+          .locator('strong')
+          .first()
+          .evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('16px');
+      expect(
+        await f.page
+          .getByRole('textbox', { name: '给 Rice 的消息' })
+          .evaluate((node) => getComputedStyle(node).fontSize),
+      ).toBe('16px');
       const code = row.locator('pre code').first();
       await code.waitFor();
       expect(
@@ -4118,13 +4151,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it.each([
-    [1440, 1],
-    [390, 1],
-    [1440, 2],
+  it.each<[number, number, string]>([
+    [1440, 1, '财务助手'],
+    [390, 1, '财务助手'],
+    [1440, 2, '🤖文案专家'],
   ])(
-    'creates a private Xiaobai with one idempotent request at width %s with %s assigned employees',
-    async (width, employeeCount) => {
+    'creates a named colored employee with one idempotent request at width %s with %s assigned employees: %s',
+    async (width, employeeCount, employeeName) => {
       const f = await fixture({ width, touch: width < 600, employeeCount });
       const created = EmployeeInstanceSchema.parse({
         id: id(8100),
@@ -4134,7 +4167,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ownerId: user,
         kind: 'custom',
         revision: 1,
-        profile: { name: '小白', expressionStyle: 'structured' },
+        profile: {
+          name: employeeName,
+          expressionStyle: 'structured',
+          appearance: {
+            avatarType: 'initials',
+            avatarValue: Array.from(employeeName)[0]!,
+            accentColor: 'coral',
+          },
+        },
         creationSource: { kind: 'tenant_version', employeeVersionId: id(8) },
         source: { kind: 'tenant_version', employeeVersionId: id(8) },
         createdAt: now,
@@ -4172,25 +4213,46 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page
             .getByRole('button', { name: '展开侧边栏', exact: true })
             .click();
+        expect(
+          await f.page
+            .getByRole('button', { name: '定制小白', exact: true })
+            .count(),
+        ).toBe(0);
         await f.page
-          .getByRole('button', { name: '定制小白', exact: true })
+          .getByRole('button', { name: '新的工作', exact: true })
           .click();
-        const picker = f.page.getByRole('dialog', { name: '选择 AI 员工' });
-        if (employeeCount > 1)
-          expect(
-            await picker
-              .getByRole('combobox', { name: '小白的基础员工' })
-              .inputValue(),
-          ).toBe(id(7));
-        else expect(await picker.getByRole('combobox').count()).toBe(0);
-        await picker
-          .getByRole('button', { name: '创建小白', exact: true })
+        const chooser = f.page.getByRole('dialog', { name: '选择 AI 员工' });
+        expect(await chooser.getByRole('button').nth(1).innerText()).toContain(
+          '创建自己的 AI 员工',
+        );
+        await chooser
+          .getByRole('button', { name: '创建自己的 AI 员工', exact: true })
           .click();
+        const picker = f.page.getByRole('dialog', {
+          name: '创建自己的 AI 员工',
+        });
+        expect(await picker.getByRole('combobox').count()).toBe(0);
+        expect(
+          await picker.getByRole('radio', { name: '科技蓝' }).isChecked(),
+        ).toBe(true);
+        expect(await picker.getByRole('radio').count()).toBe(10);
+        const nameInput = picker.getByRole('textbox', { name: '员工名字' });
+        expect(await nameInput.getAttribute('placeholder')).toBe(
+          '例如： 文案专家、财务助手、商务分析师',
+        );
+        await nameInput.fill(employeeName);
+        await picker.getByRole('radio', { name: '珊瑚红' }).check();
+        await picker.getByRole('button', { name: '创建', exact: true }).click();
         await picker.getByRole('alert').waitFor();
-        await picker
-          .getByRole('button', { name: '创建小白', exact: true })
-          .click();
+        await picker.getByRole('button', { name: '创建', exact: true }).click();
         await expect.poll(() => picker.count()).toBe(0);
+        await expect
+          .poll(() =>
+            f.page
+              .locator('main > section')
+              .getAttribute('data-employee-accent'),
+          )
+          .toBe('coral');
         expect(requests).toHaveLength(2);
         expect(requests[1]).toEqual(requests[0]);
         expect(requests[0]).toMatchObject({
@@ -4199,7 +4261,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           profile: created.profile,
         });
         expect(requests[0]).not.toHaveProperty('ownerId');
-        const input = f.page.getByRole('textbox', { name: '给 小白 的消息' });
+        const input = f.page.getByRole('textbox', {
+          name: `给 ${employeeName} 的消息`,
+        });
         await input.fill('请把你的名字改为小禾。以后回答保持简洁。');
         await input.press('Enter');
         await expect.poll(() => sessions.length).toBe(1);
@@ -4214,6 +4278,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.close();
       }
     },
+    30_000,
   );
 
   it('uses the published employee color across sidebar, picker, conversation and profile', async () => {
@@ -5139,7 +5204,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() =>
           picker
-            .locator('[data-default-employee="true"]')
+            .locator('[data-create-employee]')
             .evaluate((element) => element === document.activeElement),
         )
         .toBe(true);
@@ -5244,9 +5309,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .getByRole('button', { name: '新的工作', exact: true })
           .click();
+        if (employeeCount)
+          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).waitFor();
         expect(
           await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
-        ).toBe(0);
+        ).toBe(employeeCount ? 1 : 0);
         if (!employeeCount)
           expect(
             await f.page
@@ -5526,24 +5593,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const add = await f.page
           .getByRole('button', { name: '添加文件', exact: true })
           .boundingBox();
-        const visibility = await f.page
-          .getByRole('combobox', { name: '上传文件可见范围' })
-          .boundingBox();
+        expect(
+          await f.page
+            .getByRole('combobox', { name: '上传文件可见范围' })
+            .count(),
+        ).toBe(0);
         const textarea = await input.boundingBox();
-        expect(add!.x + add!.width).toBeLessThan(visibility!.x);
-        expect(Math.abs(add!.y - visibility!.y)).toBeLessThan(2);
         const send = await f.page
           .getByRole('button', { name: '发送', exact: true })
           .boundingBox();
+        expect(add!.x + add!.width).toBeLessThan(send!.x);
         expect(
-          Math.abs(
-            send!.y + send!.height / 2 - visibility!.y - visibility!.height / 2,
-          ),
+          Math.abs(send!.y + send!.height / 2 - add!.y - add!.height / 2),
         ).toBeLessThan(2);
-        expect(visibility!.x + visibility!.width).toBeLessThan(send!.x);
-        expect(visibility!.y).toBeGreaterThanOrEqual(
-          textarea!.y + textarea!.height,
-        );
+        expect(add!.y).toBeGreaterThanOrEqual(textarea!.y + textarea!.height);
         await input.fill('保留问题和键盘操作');
         await f.page
           .getByRole('button', { name: '添加文件', exact: true })
@@ -8846,7 +8909,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .getByRole('button', { name: '新的工作', exact: true })
           .click();
-        expect(new URL(f.page.url()).searchParams.has('session')).toBe(false);
+        await f.page
+          .getByRole('dialog', { name: '选择 AI 员工' })
+          .locator('[data-default-employee="true"]')
+          .click();
+        await expect
+          .poll(() => new URL(f.page.url()).searchParams.has('session'))
+          .toBe(false);
       } finally {
         await f.close();
       }
@@ -9595,7 +9664,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const center = (await f.page.locator('main > section').boundingBox())!;
       for (const control of [
         f.page.getByRole('button', { name: '添加文件', exact: true }),
-        f.page.getByRole('combobox', { name: '上传文件可见范围' }),
         f.page.getByRole('button', { name: '发送', exact: true }),
       ]) {
         const box = (await control.boundingBox())!;
@@ -10168,6 +10236,93 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.close();
     }
   });
+  it.each([1440, 390])(
+    'persists native session menu pins and rename without double-click editing at %i',
+    async (width) => {
+      const f = await fixture({ width, touch: width < 600 });
+      try {
+        await f.page.evaluate(() =>
+          Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: {
+              writeText: async (value: string) =>
+                sessionStorage.setItem('copied-session', value),
+            },
+          }),
+        );
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        const row = f.page.locator(`[data-row-key="session:${B}"]`);
+        await row.hover();
+        expect(
+          await row
+            .getByRole('button', { name: '归档会话', exact: true })
+            .count(),
+        ).toBe(0);
+        await row.dblclick();
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await row.hover();
+        expect(
+          await f.page.getByRole('dialog', { name: '重命名会话' }).count(),
+        ).toBe(0);
+        await row.getByRole('button', { name: /^会话.*的操作$/ }).click();
+        expect(await f.page.getByRole('menuitem').allTextContents()).toEqual([
+          '置顶会话',
+          '重命名',
+          '归档会话',
+          '复制 Session ID',
+        ]);
+        await f.page
+          .getByRole('menuitem', { name: '置顶会话', exact: true })
+          .click();
+        await expect
+          .poll(() => f.state.sessionEdits.get(B)?.pinnedAt)
+          .toBe(now);
+        await row.getByRole('img', { name: '已置顶' }).waitFor();
+        expect(
+          await f.page
+            .locator('[data-row-key^="session:"]')
+            .first()
+            .getAttribute('data-row-key'),
+        ).toBe(`session:${B}`);
+        await selectSessionAction(f.page, row, '重命名');
+        const rename = f.page.getByRole('dialog', { name: '重命名会话' });
+        await rename
+          .getByRole('textbox', { name: '会话名称' })
+          .fill('新的会话名称');
+        await rename.getByRole('button', { name: '保存', exact: true }).click();
+        await expect.poll(() => rename.count()).toBe(0);
+        await selectSessionAction(f.page, row, '复制 Session ID');
+        expect(
+          await f.page.evaluate(() => sessionStorage.getItem('copied-session')),
+        ).toBe(B);
+        await f.page.reload();
+        if (width < 600)
+          await f.page
+            .getByRole('button', { name: '展开侧边栏', exact: true })
+            .click();
+        await row.getByText('新的会话名称', { exact: true }).waitFor();
+        await row.getByRole('img', { name: '已置顶' }).waitFor();
+        await selectSessionAction(f.page, row, '取消置顶');
+        await expect
+          .poll(() => f.state.sessionEdits.get(B)?.pinnedAt)
+          .toBeNull();
+        await expect
+          .poll(() => row.getByRole('img', { name: '已置顶' }).count())
+          .toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
   it('archives with native Undo and restores an archived read-only transcript', async () => {
     const f = await fixture({ artifacts: true });
     try {
@@ -10191,7 +10346,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.screenshot({ path: '.local/archive-entry-desktop.png' });
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
       await row.hover();
-      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await selectSessionAction(f.page, row, '归档会话');
       await f.page.getByRole('button', { name: '恢复并继续' }).waitFor();
       expect(await f.page.getByRole('dialog').count()).toBe(0);
       expect(await row.count()).toBe(0);
@@ -10206,7 +10361,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page.getByRole('button', { name: '恢复并继续' }).count(),
       ).toBe(0);
       await row.hover();
-      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await selectSessionAction(f.page, row, '归档会话');
       await f.page.getByRole('button', { name: '恢复并继续' }).waitFor();
       await f.entry.click();
       await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
@@ -10245,13 +10400,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     try {
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
       await row.hover();
-      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await selectSessionAction(f.page, row, '归档会话');
       const dialog = f.page.getByRole('dialog');
       await dialog.getByText('正在分析报表', { exact: false }).waitFor();
       await dialog.getByRole('button', { name: '取消', exact: true }).click();
       expect(f.state.archivedIds.size).toBe(0);
       await row.hover();
-      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await selectSessionAction(f.page, row, '归档会话');
       await dialog
         .getByRole('button', { name: '停止并归档', exact: true })
         .click();
@@ -10533,7 +10688,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.archiveError = true;
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
       await row.hover();
-      await row.getByRole('button', { name: '归档会话', exact: true }).click();
+      await selectSessionAction(f.page, row, '归档会话');
       await f.page
         .getByRole('alert')
         .filter({ hasText: '测试：归档暂时失败' })
@@ -10607,7 +10762,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await row.waitFor();
       if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
         await f.page.screenshot({ path: '.local/archive-mobile.png' });
-      await row.getByRole('button', { name: '取消归档', exact: true }).click();
+      await selectSessionAction(f.page, row, '取消归档');
       await expect.poll(() => f.state.archivedIds.has(A)).toBe(false);
       expect(f.errors).toEqual([]);
     } finally {

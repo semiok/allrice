@@ -28,12 +28,10 @@ import type { ComposerDraftStore } from '../../lib/chatflow/composer-draft-store
 import { resizeComposerTextarea } from './chatflow-utils';
 import {
   IconPlusOutlineRegular,
-  IconGlobeOutlineRegular,
   IconFolderOpenOutlineRegular,
   IconLinkOutlineRegular,
   Menu,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { ComposerSelect } from './composer-select';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 
@@ -42,7 +40,7 @@ import {
   bridgeComposerStatus,
   type BridgeConnectionState,
 } from './bridge-view';
-import type { History, PendingAttachment, Visibility } from './chatflow-types';
+import type { History, PendingAttachment } from './chatflow-types';
 import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
 
@@ -85,7 +83,6 @@ interface ChatComposerProps {
   nativeContextStatus: History['nativeContextStatus'];
   contextCompacting?: boolean;
   pendingAttachments: PendingAttachment[];
-  uploadVisibility: Visibility;
   onAttachmentMenuOpenChange: (open: boolean) => void;
   onCancelRun: () => void | Promise<void>;
   onDraftChange: (draft: string) => void;
@@ -98,7 +95,6 @@ interface ChatComposerProps {
   onUploadAttachments: (files: FileList | File[]) => void;
   onCancelBridgeUpload?: () => void | Promise<void>;
   bridgeUploadStatus?: string | null;
-  onUploadVisibilityChange: (visibility: Visibility) => void;
 }
 
 export function DraftChatComposer({
@@ -153,7 +149,6 @@ export function ChatComposer({
   nativeContextStatus,
   contextCompacting = false,
   pendingAttachments,
-  uploadVisibility,
   onAttachmentMenuOpenChange,
   onCancelRun,
   onDraftChange,
@@ -166,7 +161,6 @@ export function ChatComposer({
   onUploadAttachments,
   onCancelBridgeUpload,
   bridgeUploadStatus,
-  onUploadVisibilityChange,
 }: ChatComposerProps) {
   useLayoutEffect(() => {
     resizeComposerTextarea(composerInput.current);
@@ -360,54 +354,6 @@ export function ChatComposer({
                 type="file"
               />
             </div>
-            <ComposerSelect
-              aria-label="上传文件可见范围"
-              compact="visibility"
-              disabled={busy}
-              title={
-                uploadVisibility === 'workspace'
-                  ? '新上传的文件：工作区成员可见'
-                  : '新上传的文件：仅自己可见'
-              }
-              label={
-                uploadVisibility === 'workspace' ? (
-                  <>
-                    <span className={styles.composerVisibilityScope}>
-                      工作区
-                    </span>
-                    公开
-                  </>
-                ) : (
-                  '私有'
-                )
-              }
-              icon={
-                uploadVisibility === 'workspace' ? (
-                  <IconGlobeOutlineRegular size={16} />
-                ) : (
-                  <svg
-                    width="16"
-                    height="16"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <rect x="5" y="10" width="14" height="11" rx="3" />
-                    <path d="M8 10V7a4 4 0 0 1 8 0v3M12 15v2" />
-                  </svg>
-                )
-              }
-              onChange={(event) =>
-                onUploadVisibilityChange(event.target.value as Visibility)
-              }
-              value={uploadVisibility}
-            >
-              <option value="workspace">工作区公开</option>
-              <option value="private">私有 · 仅自己可见</option>
-            </ComposerSelect>
             {taskSuggestions && onPrepareTask && onTaskPreparation && (
               <TaskSuggestions
                 key={taskScope}

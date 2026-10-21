@@ -7,47 +7,6 @@
   scrollbar-gutter: stable;
   padding: 8px;
 }
-.createPersonal {
-  display: grid;
-  gap: 12px;
-  margin-top: 16px;
-  padding: 18px;
-  border: 1px solid var(--dsw-alias-border-l2, #ddd);
-  border-radius: 12px;
-  color: var(--dsw-alias-label-primary);
-}
-.createPersonal p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--dsw-alias-label-secondary);
-}
-.createPersonal label {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  font-size: 13px;
-}
-.createPersonal select,
-.createPersonal button {
-  border: 1px solid var(--dsw-alias-border-l2, #ddd);
-  border-radius: 8px;
-  background: var(--dsw-alias-interactive-bg-hover);
-  color: inherit;
-  font: inherit;
-  padding: 9px 14px;
-}
-.createPersonal button {
-  justify-self: start;
-  cursor: pointer;
-}
-.createPersonal button:disabled {
-  opacity: 0.6;
-  cursor: wait;
-}
-.createPersonal [role='alert'] {
-  color: #b42318;
-}
 .root[data-collapsed] {
   /* The native rail already supplies its horizontal inset. */
   padding: 0;

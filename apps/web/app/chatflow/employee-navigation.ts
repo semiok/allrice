@@ -34,12 +34,13 @@ export const employeeAccent = resolveEmployeeAccent;
 
 export const employeeSessionPreviewLimit = 5;
 
-/** Selected and running work take slots within the preview, never extra rows. */
+/** Pinned, selected and running work take preview slots, never extra rows. */
 export function employeeSessionPreview(
   sessions: readonly SessionNode[],
   activeId: string | null,
 ) {
   const preferred = [
+    ...sessions.filter((row) => row.pinned),
     ...sessions.filter((row) => row.id === activeId),
     ...sessions.filter((row) => row.running || row.runningSubagentCount > 0),
     ...sessions,
@@ -217,7 +218,9 @@ export function employeeGroups(
     list,
     nativeGroups,
     {
-      pinnedSessionIds: [],
+      pinnedSessionIds: sessions
+        .filter((s) => s.pinnedAt && !s.archivedAt)
+        .map((s) => s.id),
       archivedSessionIds: sessions.filter((s) => s.archivedAt).map((s) => s.id),
       archivedFilter,
     },
