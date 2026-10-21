@@ -17,7 +17,12 @@ export async function GET(
       { id } = await route.params;
     const file = await readWorkbenchFile(context, UuidSchema.parse(id));
     const stream = await getStorageAdapter().get(file.object);
-    await readWorkbenchFile(context, id);
+    try {
+      await readWorkbenchFile(context, id);
+    } catch (error) {
+      await stream.cancel();
+      throw error;
+    }
     const name =
       [...file.row.file_name]
         .map((character) =>
