@@ -72,17 +72,17 @@ function absolute(value: string) {
   return value;
 }
 
-const secondReaderEnvironment = [
-  'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH',
-  'ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256',
-  'ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT',
-] as const;
-const readerEnvironment = [
-  'ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH',
-  'ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256',
-  'ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT',
-  ...secondReaderEnvironment,
-] as const;
+const readerEnvironmentGroups = Array.from({ length: 8 }, (_, index) => {
+  const prefix = `ALLRICE_DSH_ORIGIN_READER_${index ? `${index + 1}_` : ''}`;
+  return {
+    path: `${prefix}APPROVAL_PATH`,
+    expected: `${prefix}APPROVAL_SHA256`,
+    storage: `${prefix}STORAGE_ROOT`,
+  };
+});
+const readerEnvironment = new Set(
+  readerEnvironmentGroups.flatMap((group) => Object.values(group)),
+);
 const maximumPolicyBytes = 256 * 1024;
 
 function loadNativeOriginReaderPolicy(
@@ -180,45 +180,49 @@ function loadNativeOriginReaderPolicy(
 }
 
 /** Independent operator approvals, not code registries or permission grants.
- * Two fixed policy groups share the original context/byte limits. Each retains
+ * Up to eight policy groups share the original context/byte limits. Each retains
  * its exact source, target, proof and namespace; no aliases or writer migration.
- * Both storage envs explicitly protect data from cleanup. Every call re-hashes
- * both bounded files, and no partial result survives a second-policy failure. */
+ * Explicit storage envs protect data from cleanup. Every call re-hashes every
+ * bounded file, and no partial result survives any policy failure. */
 export function configuredNativeOriginReaders(): readonly NativeOriginReaderApproval[] {
   try {
     for (const name of Object.keys(process.env)) {
       if (
         name.startsWith('ALLRICE_DSH_ORIGIN_READER_') &&
-        !readerEnvironment.some((allowed) => name === allowed)
+        !readerEnvironment.has(name)
       )
         fail();
     }
-    const path = process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_PATH?.trim();
-    const expected =
-      process.env.ALLRICE_DSH_ORIGIN_READER_APPROVAL_SHA256?.trim();
-    const storage = process.env.ALLRICE_DSH_ORIGIN_READER_STORAGE_ROOT?.trim();
-    const hasSecond = secondReaderEnvironment.some(
-      (name) => process.env[name] !== undefined,
-    );
-    if (!path && !expected && !storage && !hasSecond) return [];
-    const first = loadNativeOriginReaderPolicy(
-      { path, expected, storage },
-      maximumPolicyBytes,
-    );
-    const policies = [first];
-    if (hasSecond) {
-      policies.push(
-        loadNativeOriginReaderPolicy(
-          {
-            path: process.env.ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH?.trim(),
-            expected:
-              process.env.ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256?.trim(),
-            storage:
-              process.env.ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT?.trim(),
-          },
-          maximumPolicyBytes - first.byteLength,
-        ),
-      );
+    const groups = readerEnvironmentGroups.map((names) => ({
+      path: process.env[names.path]?.trim(),
+      expected: process.env[names.expected]?.trim(),
+      storage: process.env[names.storage]?.trim(),
+      present: Object.values(names).some(
+        (name) => process.env[name] !== undefined,
+      ),
+    }));
+    const first = groups[0]!;
+    // Preserve the original all-blank disabled configuration. Extra groups,
+    // even explicitly blank ones, require complete contiguous approvals.
+    if (
+      !first.path &&
+      !first.expected &&
+      !first.storage &&
+      !groups.slice(1).some((group) => group.present)
+    )
+      return [];
+    const policies: ReturnType<typeof loadNativeOriginReaderPolicy>[] = [];
+    let remainingBytes = maximumPolicyBytes;
+    let gap = false;
+    for (const group of groups) {
+      if (!group.present) {
+        gap = true;
+        continue;
+      }
+      if (gap) fail();
+      const policy = loadNativeOriginReaderPolicy(group, remainingBytes);
+      remainingBytes -= policy.byteLength;
+      policies.push(policy);
     }
     const sources = new Set(policies.map((policy) => policy.sourceArtifactId));
     const targets = new Set(policies.map((policy) => policy.targetArtifactId));

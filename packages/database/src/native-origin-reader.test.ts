@@ -169,6 +169,47 @@ describe('exact unbound-chat origin reader configuration', () => {
     installSecondBytes(bytes);
     return bytes;
   }
+  function groupEnvironment(group: number) {
+    if (group === 1) return environment;
+    const prefix = `ALLRICE_DSH_ORIGIN_READER_${group}_`;
+    return {
+      path: `${prefix}APPROVAL_PATH`,
+      hash: `${prefix}APPROVAL_SHA256`,
+      storage: `${prefix}STORAGE_ROOT`,
+    };
+  }
+  function groupPolicy(group: number): Policy {
+    if (group === 1) return policy();
+    if (group === 2) return secondPolicy();
+    const value = secondPolicy();
+    value.sourceArtifactId = checksum(`synthetic-source-${group}`);
+    value.targetArtifactId = checksum(`synthetic-target-${group}`);
+    value.contexts[0]!.origin.artifactId = value.sourceArtifactId;
+    return value;
+  }
+  function installGroup(group: number, value: Policy, bytes?: Buffer) {
+    const body = bytes ?? Buffer.from(JSON.stringify(value, null, 2) + '\n');
+    if (group === 1) installBytes(body);
+    else if (group === 2) installSecondBytes(body);
+    else {
+      const names = groupEnvironment(group);
+      const path = join(directory, `approval-${group}.json`);
+      const storage = join(directory, `storage-${group}`);
+      mkdirSync(storage, { recursive: true });
+      writeFileSync(path, body, { mode: 0o600 });
+      vi.stubEnv(names.path, path);
+      vi.stubEnv(names.hash, checksum(body));
+      vi.stubEnv(names.storage, storage);
+    }
+    return body;
+  }
+  function installGroups(count: number) {
+    return Array.from({ length: count }, (_, index) => {
+      const value = groupPolicy(index + 1);
+      installGroup(index + 1, value);
+      return value;
+    });
+  }
   function withContexts(value: Policy, count: number): Policy {
     const base = value.contexts[0]!;
     return {
@@ -747,7 +788,7 @@ describe('exact unbound-chat origin reader configuration', () => {
     expect(() => configuredNativeOriginReaders()).toThrow(invalid);
   });
 
-  it.each(['0', '1', '01', '02', '3', '8', '100'])(
+  it.each(['0', '1', '01', '02', '9', '100'])(
     'rejects indexed reader alias %s even with no original policy',
     (slot) => {
       vi.stubEnv(
@@ -773,7 +814,7 @@ describe('exact unbound-chat origin reader configuration', () => {
       'ALLRICE_DSH_ORIGIN_READER_ALLOW_EXISTING_WRITER',
       'ALLRICE_DSH_ORIGIN_READER_',
       'ALLRICE_DSH_ORIGIN_READER_2_ALLOW_EXISTING_WRITER',
-      'ALLRICE_DSH_ORIGIN_READER_3_APPROVAL_PATH',
+      'ALLRICE_DSH_ORIGIN_READER_9_APPROVAL_PATH',
     ].flatMap((name) =>
       ['', 'synthetic-unsupported-reader-input'].flatMap((value) =>
         (['absent', 'original', 'both'] as const).map((configuration) => ({
@@ -902,4 +943,183 @@ describe('exact unbound-chat origin reader configuration', () => {
     installBytes(Buffer.alloc(256 * 1024 + 1, ' '));
     expect(() => configuredNativeOriginReaders()).toThrow(invalid);
   });
+
+  it.each([3, 8])(
+    'supports %i groups without changing either original proof, file or target',
+    (count) => {
+      const values = installGroups(2);
+      const original = configuredNativeOriginReaders();
+      const bytes = [approvalPath, secondApprovalPath].map((path) =>
+        readFileSync(path),
+      );
+      for (let group = 3; group <= count; group++) {
+        const value = groupPolicy(group);
+        installGroup(group, value);
+        values.push(value);
+      }
+      const approvals = configuredNativeOriginReaders();
+      expect(approvals).toHaveLength(count);
+      expect(approvals.slice(0, 2)).toEqual(original);
+      expect(
+        [approvalPath, secondApprovalPath].map((path) => readFileSync(path)),
+      ).toEqual(bytes);
+      for (const [index, value] of values.entries()) {
+        const approved = approvals[index]!;
+        expect(
+          nativeOriginReaderForOrigin(value.contexts[0]!.origin, scope),
+        ).toEqual(approved);
+        const input: Binding = {
+          ...scope,
+          originReaderApprovalDigest: approved.approvalDigest,
+          artifactId: approved.targetArtifactId,
+          contextKind: 'chat',
+          contextId: approved.contextId,
+          profileId: 'restricted',
+          storageNamespace: approved.storageNamespace,
+        };
+        expect(nativeOriginReaderForBinding(input)).toEqual(approved);
+        expect(() =>
+          nativeOriginReaderForBinding({
+            ...input,
+            artifactId: value.sourceArtifactId,
+          }),
+        ).toThrow(invalid);
+      }
+    },
+  );
+
+  it('allows independent sources to share an approved target', () => {
+    const values = installGroups(8);
+    values.forEach((value, index) => {
+      value.targetArtifactId = targetArtifactId;
+      installGroup(index + 1, value);
+    });
+    expect(
+      configuredNativeOriginReaders().map((entry) => entry.targetArtifactId),
+    ).toEqual(Array(8).fill(targetArtifactId));
+  });
+
+  it.each([1, 2, 4, 7])(
+    'rejects a missing group %i before a later complete group',
+    (gap) => {
+      installGroups(8);
+      const names = groupEnvironment(gap);
+      for (const key of ['path', 'hash', 'storage'] as const)
+        vi.stubEnv(names[key], undefined);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each([3, 8])('rejects partial or explicitly blank group %i', (group) => {
+    installGroups(group - 1);
+    const names = groupEnvironment(group);
+    vi.stubEnv(names.path, '');
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    for (const key of ['path', 'hash', 'storage'] as const)
+      vi.stubEnv(names[key], '  ');
+    expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    const value = groupPolicy(group);
+    for (const key of ['path', 'hash', 'storage'] as const) {
+      installGroup(group, value);
+      vi.stubEnv(names[key], undefined);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    }
+  });
+
+  it.each([3, 8])(
+    'shares the 64-context limit across all %i groups',
+    (count) => {
+      const values = installGroups(count);
+      installGroup(count, withContexts(values[count - 1]!, 65 - count));
+      expect(configuredNativeOriginReaders()).toHaveLength(64);
+      installGroup(count, withContexts(values[count - 1]!, 66 - count));
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each([3, 8])(
+    'shares the 256KiB byte limit across all %i groups',
+    (count) => {
+      const values = installGroups(count);
+      const perFile = Math.floor((256 * 1024) / count);
+      values.forEach((value, index) => {
+        const size =
+          index === count - 1 ? 256 * 1024 - perFile * index : perFile;
+        installGroup(index + 1, value, paddedPolicy(value, size));
+      });
+      expect(configuredNativeOriginReaders()).toHaveLength(count);
+      const last = values[count - 1]!;
+      installGroup(
+        count,
+        last,
+        paddedPolicy(last, 256 * 1024 - perFile * (count - 1) + 1),
+      );
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each(['source', 'context', 'repeated-policy', 'chain', 'cycle'] as const)(
+    'rejects nonadjacent cross-group %s conflicts',
+    (kind) => {
+      const values = installGroups(8);
+      const third = values[2]!;
+      const last = values[7]!;
+      if (kind === 'source') {
+        last.sourceArtifactId = third.sourceArtifactId;
+        last.contexts[0]!.origin.artifactId = third.sourceArtifactId;
+      } else if (kind === 'context') {
+        last.contexts[0]!.origin.contextId =
+          third.contexts[0]!.origin.contextId;
+        last.contexts[0]!.origin.rootSeed = third.contexts[0]!.origin.rootSeed;
+      } else if (kind === 'repeated-policy') {
+        installGroup(8, third);
+        vi.stubEnv(
+          groupEnvironment(8).storage,
+          process.env[groupEnvironment(3).storage],
+        );
+        expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+        return;
+      } else {
+        third.targetArtifactId = last.sourceArtifactId;
+        if (kind === 'cycle') last.targetArtifactId = third.sourceArtifactId;
+        installGroup(3, third);
+      }
+      installGroup(8, last);
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+    },
+  );
+
+  it.each(['hash', 'abi', 'symlink'] as const)(
+    'fails the whole configuration on invalid final-group %s',
+    (kind) => {
+      const values = installGroups(8);
+      const names = groupEnvironment(8);
+      expect(configuredNativeOriginReaders()).toHaveLength(8);
+      if (kind === 'hash') {
+        const path = process.env[names.path]!;
+        const before = statSync(path);
+        const bytes = readFileSync(path);
+        const changed = Buffer.from(
+          bytes
+            .toString()
+            .replace(
+              values[7]!.evidenceDigest,
+              checksum('changed-last-review'),
+            ),
+        );
+        expect(changed.byteLength).toBe(bytes.byteLength);
+        writeFileSync(path, changed);
+        utimesSync(path, before.atime, before.mtime);
+      } else if (kind === 'abi') {
+        values[7]!.prerequisites.modules = 'different';
+        installGroup(8, values[7]!);
+      } else {
+        const alias = join(directory, 'last-approval-alias.json');
+        symlinkSync(process.env[names.path]!, alias);
+        vi.stubEnv(names.path, alias);
+      }
+      expect(() => configuredNativeOriginReaders()).toThrow(invalid);
+      expect(() => nativeOriginReaderForOrigin(origin, scope)).toThrow(invalid);
+    },
+  );
 });
