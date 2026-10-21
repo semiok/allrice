@@ -5,10 +5,22 @@ import {
   findPaneContentTab,
   findTabPane,
 } from '@deepseek-ai/dsh-client-ui-dockkit';
+import {
+  FileTypeIcon,
+  classifyFileType,
+} from '@deepseek-ai/dsh-client-ui-primitives';
+import moduleUi from './workbench-modules.module.css';
 import { GUIDE_KIND, pageAddress } from './dsh-upstream/dock/contract/seed';
 import { dockLabels, useNativeDock } from './use-native-dock';
 import { WorkspaceFileTree } from './workspace-file-tree';
 import { WorkspaceFilePreview } from './workspace-file-preview';
+import {
+  WorkbenchStart,
+  WorkbenchIcon,
+  moduleLabels,
+  type WorkbenchModule,
+} from './workbench-modules';
+import { ReferenceSnapshotPreview } from './workbench-reference-preview';
 import {
   NativeDocumentPreview,
   hasSourcePreview,
@@ -75,6 +87,21 @@ class DiffBoundary extends Component<
   }
 }
 type Props = {
+  desktop?: boolean;
+  moduleRequest?: {
+    kind: WorkbenchModule | 'guide' | 'reference';
+    revision: number;
+    id?: string;
+    title?: string;
+  };
+  workflowAvailable?: boolean;
+  experienceAvailable?: boolean;
+  renderModule?: (
+    kind: WorkbenchModule,
+    active: boolean,
+    onOpenFile: (id: string, title: string) => void,
+  ) => ReactNode;
+  onModuleViewed?: (kind: WorkbenchModule) => void;
   open: boolean;
   width: number;
   dockScope: string;
@@ -106,7 +133,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
   const panel = useRef<HTMLElement>(null),
     previousFocus = useRef<HTMLElement | null>(null);
   const close = props.onClose;
-  const dock = useNativeDock(props.dockScope, () => true, props.onClose);
+  const dock = useNativeDock(
+    props.dockScope,
+    () => true,
+    props.onClose,
+    props.desktop ? '开始' : '交付成果',
+  );
   const fullscreen = props.narrow || dock.surface.layout.mode === 'fullscreen';
   useEffect(() => {
     if (!props.open) return;
@@ -129,6 +161,42 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         previousFocus.current.focus();
     };
   }, [fullscreen, props.open]);
+  useEffect(() => {
+    if (props.open) dock.reveal();
+  }, [props.open]);
+  useEffect(() => {
+    if (!props.open || !props.desktop) return;
+    for (const paneId of dockPaneIds(dock.surface.layout)) {
+      const pane = dock.surface.layout.nodes[paneId];
+      const tab =
+        pane?.kind === 'pane' && pane.activeTabId
+          ? dock.surface.layout.tabs[pane.activeTabId]
+          : null;
+      if (tab && ['files', 'experience', 'workflow'].includes(tab.kind))
+        props.onModuleViewed?.(tab.kind as WorkbenchModule);
+    }
+  }, [props.open, props.desktop, dock.surface.layout, props.onModuleViewed]);
+  const lastModuleRequest = useRef(0);
+  useEffect(() => {
+    const request = props.moduleRequest;
+    if (
+      !props.desktop ||
+      !request ||
+      request.revision === lastModuleRequest.current
+    )
+      return;
+    lastModuleRequest.current = request.revision;
+    dock.open(
+      request.kind,
+      request.id ?? pageAddress(request.kind),
+      request.title ??
+        (request.kind === 'guide'
+          ? '开始'
+          : request.kind === 'reference'
+            ? '参考资料'
+            : moduleLabels[request.kind]),
+    );
+  });
   const previousSelection = useRef<string | null | undefined>(undefined);
   const previousRequest = useRef(0);
   function openArtifact(id: string, paneId?: Parameters<typeof dock.open>[3]) {
@@ -158,7 +226,11 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     previousRequest.current = props.selectionRequest ?? 0;
     if (props.selectedId && !restoring) openArtifact(props.selectedId);
     else if (!props.selectedId && props.selectionRequest)
-      dock.open(GUIDE_KIND, pageAddress(GUIDE_KIND), '交付成果');
+      dock.open(
+        GUIDE_KIND,
+        pageAddress(GUIDE_KIND),
+        props.desktop ? '开始' : '交付成果',
+      );
   });
   const lastTaskRequest = useRef(0);
   useEffect(() => {
@@ -195,7 +267,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-hidden={!props.open || undefined}
         inert={!props.open}
         role={fullscreen ? 'dialog' : 'complementary'}
-        aria-label={props.taskRequest ? '任务与交付成果' : '交付成果'}
+        aria-label={
+          props.desktop
+            ? '工作台'
+            : props.taskRequest
+              ? '任务与交付成果'
+              : '交付成果'
+        }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
         onKeyDown={(event) => {
@@ -245,7 +323,39 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               dock.intents.focusTab(id);
             },
           }}
-          labels={dockLabels}
+          labels={
+            props.desktop
+              ? {
+                  ...dockLabels,
+                  addTab: '新建标签页',
+                  emptyPane: '打开文件、经验或工作流',
+                }
+              : dockLabels
+          }
+          renderTabTitle={
+            props.desktop
+              ? (tab) => (
+                  <span className={moduleUi.dockTitle}>
+                    {['files', 'experience', 'workflow'].includes(tab.kind) ? (
+                      <span className={moduleUi[tab.kind]}>
+                        <WorkbenchIcon
+                          kind={tab.kind as WorkbenchModule}
+                          size={17}
+                        />
+                      </span>
+                    ) : tab.kind === GUIDE_KIND ? (
+                      <WorkbenchIcon kind="start" size={16} />
+                    ) : (
+                      <FileTypeIcon
+                        kind={classifyFileType(tab.title)}
+                        size={16}
+                      />
+                    )}
+                    <span>{tab.title}</span>
+                  </span>
+                )
+              : undefined
+          }
           canSplit={
             !props.narrow && dockPaneIds(dock.surface.layout).length < 2
           }
@@ -270,6 +380,47 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   findTabPane(dock.surface.layout, tab.id).activeTabId ===
                     tab.id,
               )
+            ) : props.desktop && tab.kind === GUIDE_KIND ? (
+              <WorkbenchStart
+                experience={!!props.experienceAvailable}
+                workflow={!!props.workflowAvailable}
+                onOpen={(kind) => {
+                  dock.open(
+                    kind,
+                    pageAddress(kind),
+                    moduleLabels[kind],
+                    findTabPane(dock.surface.layout, tab.id).id,
+                    tab.id,
+                  );
+                }}
+              />
+            ) : props.desktop &&
+              ['files', 'experience', 'workflow'].includes(tab.kind) ? (
+              props.renderModule?.(
+                tab.kind as WorkbenchModule,
+                props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id,
+                (id, title) =>
+                  dock.open(
+                    'managedFile',
+                    id,
+                    title,
+                    findTabPane(dock.surface.layout, tab.id).id,
+                  ),
+              )
+            ) : tab.kind === 'reference' ? (
+              <ReferenceSnapshotPreview
+                revisionId={tab.contentId}
+                title={tab.title}
+                workspaceId={props.workspaceId}
+                headers={props.tenantHeaders}
+                active={
+                  props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id
+                }
+              />
             ) : tab.kind === 'files' ? (
               <WorkspaceFileTree
                 tabId={tab.id}
@@ -294,8 +445,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     );
                 }}
               />
-            ) : tab.kind === 'file' ? (
+            ) : tab.kind === 'file' || tab.kind === 'managedFile' ? (
               <WorkspaceFilePreview
+                unified={tab.kind === 'managedFile'}
                 active={
                   props.open &&
                   findTabPane(dock.surface.layout, tab.id).activeTabId ===
@@ -307,7 +459,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 tenantHeaders={props.tenantHeaders}
                 onVersion={(id, title) =>
                   dock.open(
-                    'file',
+                    tab.kind,
                     id,
                     title,
                     findTabPane(dock.surface.layout, tab.id).id,
@@ -326,8 +478,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                 selectedId={tab.kind === 'artifact' ? tab.contentId : null}
                 onCatalog={() =>
                   dock.open(
-                    GUIDE_KIND,
-                    pageAddress(GUIDE_KIND),
+                    props.desktop ? 'deliverables' : GUIDE_KIND,
+                    props.desktop
+                      ? pageAddress('deliverables')
+                      : pageAddress(GUIDE_KIND),
                     '交付成果',
                     findTabPane(dock.surface.layout, tab.id).id,
                   )
@@ -356,11 +510,20 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   aria-label={fullscreen ? '退出全屏' : '全屏查看'}
                   onClick={() => dock.setFullscreen(!fullscreen)}
                 >
-                  {fullscreen ? '↙' : '⛶'}
+                  {props.desktop ? (
+                    <WorkbenchIcon
+                      kind={fullscreen ? 'restore' : 'fullscreen'}
+                      size={19}
+                    />
+                  ) : fullscreen ? (
+                    '↙'
+                  ) : (
+                    '⛶'
+                  )}
                 </button>
               ) : null}
               <button type="button" aria-label="关闭工作台" onClick={close}>
-                ×
+                {props.desktop ? <WorkbenchIcon kind="panel" size={19} /> : '×'}
               </button>
             </>
           }

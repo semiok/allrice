@@ -1,5 +1,10 @@
 'use client';
 import { ReferenceLibrary } from './reference-library';
+import {
+  UnifiedWorkbenchControls,
+  announceWorkbenchRead,
+} from './unified-workbench-controls';
+import type { WorkbenchModule } from './workbench-modules';
 
 import {
   employeeChoices,
@@ -28,6 +33,7 @@ import type {
   TaskNextSteps,
   UserQuestionAnswerSubmission,
   EmployeeInstance,
+  ReferenceRevision,
 } from '@allrice/contracts';
 import { isMessageRunActive } from './run-view';
 
@@ -131,6 +137,17 @@ const BrandContentPanel = lazy(() =>
   })),
 );
 
+const WorkbenchFilesPanel = lazy(() =>
+  import('./workbench-files-panel').then((module) => ({
+    default: module.WorkbenchFilesPanel,
+  })),
+);
+const WorkbenchExperiencePanel = lazy(() =>
+  import('./workbench-experience-panel').then((module) => ({
+    default: module.WorkbenchExperiencePanel,
+  })),
+);
+
 export function ChatFlowClient({
   workbenchEnabled = false,
   localCommandsEnabled = false,
@@ -180,11 +197,6 @@ export function ChatFlowClient({
   const [referenceToView, setReferenceToView] = useState<ReferenceDraft | null>(
     null,
   );
-  const openReference = useCallback((reference: ReferenceDraft) => {
-    setRecommendedTemplates(false);
-    setReferenceToView(reference);
-    setReferenceLibraryOpen(true);
-  }, []);
   const [referenceLibraryOpen, setReferenceLibraryOpen] = useState(false);
   const [recommendedTemplates, setRecommendedTemplates] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -440,7 +452,57 @@ export function ChatFlowClient({
   const fileScope = `${workspace?.viewerId}/${workspace?.workspaceId}/${activeId ?? 'draft'}`;
   const currentFilesRequest =
     filesRequest.scope === fileScope ? filesRequest.revision : 0;
+  const [moduleRequest, setModuleRequest] = useState<{
+    scope: string;
+    kind: WorkbenchModule | 'guide' | 'reference';
+    revision: number;
+    id?: string;
+    title?: string;
+    category?: 'all' | 'reference' | 'artifact';
+  } | null>(null);
+  const [workbenchCapabilities, setWorkbenchCapabilities] = useState<{
+    scope: string;
+    workflow: boolean;
+  } | null>(null);
+  const currentModuleRequest =
+    moduleRequest?.scope === fileScope ? moduleRequest : undefined;
+  const requestWorkbenchModule = (
+    kind: WorkbenchModule | 'guide' | 'reference',
+    options?: {
+      id?: string;
+      title?: string;
+      category?: 'all' | 'reference' | 'artifact';
+    },
+  ) => {
+    setModuleRequest((previous) => ({
+      scope: fileScope,
+      kind,
+      revision: (previous?.revision ?? 0) + 1,
+      ...options,
+    }));
+    workbench.show(undefined, true);
+  };
+  const openReference = useCallback(
+    (reference: ReferenceDraft) => {
+      if (layout.compact || !workbenchEnabled) {
+        setRecommendedTemplates(false);
+        setReferenceToView(reference);
+        setReferenceLibraryOpen(true);
+      } else {
+        setModuleRequest((previous) => ({
+          scope: fileScope,
+          kind: 'reference',
+          id: reference.revisionId,
+          title: `${reference.fileName} · v${reference.revision}`,
+          revision: (previous?.revision ?? 0) + 1,
+        }));
+        showWorkbench(undefined, true);
+      }
+    },
+    [layout.compact, workbenchEnabled, fileScope, showWorkbench],
+  );
   const hasWorkbenchContent =
+    (!layout.compact && !!currentModuleRequest) ||
     !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
     workbench.artifacts.length > 0 ||
@@ -1461,6 +1523,10 @@ export function ChatFlowClient({
         )
       }
       onOpenReferenceLibrary={() => {
+        if (!layout.compact && workbenchEnabled) {
+          requestWorkbenchModule('files', { category: 'reference' });
+          return;
+        }
         setRecommendedTemplates(false);
         setReferenceToView(null);
         setReferenceLibraryOpen(true);
@@ -1492,7 +1558,11 @@ export function ChatFlowClient({
       onCancelRun={cancelRun}
       onLoadBridgeDevices={openBridgeSettings}
       onOpenAttachment={setAttachmentPreview}
-      onOpenWorkspaceFiles={openWorkspaceFiles}
+      onOpenWorkspaceFiles={() => {
+        if (!layout.compact && workbenchEnabled)
+          requestWorkbenchModule('files');
+        else openWorkspaceFiles();
+      }}
       onRemoveAttachment={removePendingAttachment}
       onRetryAttachment={(target) => {
         setPendingAttachments((current) =>
@@ -1578,6 +1648,7 @@ export function ChatFlowClient({
       {archive.overlays}
       {referenceLibraryOpen && workspace && (
         <ReferenceLibrary
+          hideUpload={!layout.compact}
           key={`references/${settingsScope}/${referenceToView?.revisionId ?? 'choose'}`}
           workspaceId={workspace.workspaceId}
           headers={tenantHeaders}
@@ -1769,91 +1840,105 @@ export function ChatFlowClient({
                 <div className={conversationUi.titleRow}>
                   <div className={conversationUi.titleCluster}>
                     <div className={conversationUi.crumbs}>
-                      <span className={conversationUi.crumbSeg}>
-                        <button
-                          className={conversationUi.crumb}
-                          onClick={() => {
-                            if (!confirmSessionNavigation()) return;
-                            if (activeEmployee)
-                              startEmployeeSession(
-                                employeeChoiceId(activeEmployee),
-                              );
-                          }}
-                          type="button"
-                        >
-                          与 {activeEmployeeName} 工作
-                        </button>
-                        <span className={conversationUi.crumbSep}>/</span>
-                      </span>
                       <h1>{activeSession?.title ?? '新的工作'}</h1>
                     </div>
                   </div>
                   <div
                     className={`${conversationUi.headerActions} ${styles.conversationActions}`}
                   >
-                    <button
-                      type="button"
-                      className={workbenchUi.entry}
-                      onClick={() => {
-                        setRecommendedTemplates(false);
-                        setReferenceToView(null);
-                        setReferenceLibraryOpen(true);
-                      }}
-                    >
-                      参考资料
-                    </button>
-                    <BrandContentWorkspaceEntry
-                      key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
-                      scopeId={settingsScope}
-                      workspaceId={workspace.workspaceId}
-                      viewerId={workspace.viewerId}
-                      instanceId={activeEmployee?.instanceId}
-                      kind={
-                        activeEmployee?.instances?.find(
-                          (instance) =>
-                            instance.id === activeEmployee.instanceId,
-                        )?.kind
-                      }
-                      employeeName={activeEmployeeName}
-                      headers={tenantHeaders}
-                      onOpenSession={openBrandContentSession}
-                    />
-                    {workbenchEnabled ? (
-                      <button
-                        type="button"
-                        className={workbenchUi.entry}
-                        onClick={() => {
-                          setFilesRequest((previous) => ({
-                            scope: fileScope,
-                            revision: previous.revision + 1,
-                          }));
-                          workbench.show(undefined, true);
+                    {!layout.compact && workbenchEnabled ? (
+                      <UnifiedWorkbenchControls
+                        scope={`${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`}
+                        scopeId={settingsScope}
+                        workspaceId={workspace.workspaceId}
+                        viewerId={workspace.viewerId}
+                        instanceId={activeEmployee?.instanceId}
+                        kind={
+                          activeEmployee?.instances?.find(
+                            (instance) =>
+                              instance.id === activeEmployee.instanceId,
+                          )?.kind
+                        }
+                        headers={tenantHeaders}
+                        refreshKey={`${activeId}/${history?.messages.length}/${history?.messages.at(-1)?.status}`}
+                        open={workbenchOpen}
+                        onOpen={(kind) => requestWorkbenchModule(kind)}
+                        onToggle={() => {
+                          if (workbenchOpen) dismissWorkbench();
+                          else if (!hasWorkbenchContent)
+                            requestWorkbenchModule('guide');
+                          else layout.show();
                         }}
-                      >
-                        工作区文件
-                      </button>
-                    ) : null}
-                    {workbenchEnabled && hasWorkbenchContent ? (
-                      <button
-                        type="button"
-                        ref={workbenchEntry}
-                        className={workbenchUi.entry}
-                        aria-expanded={workbenchOpen}
-                        aria-controls="artifact-workbench"
-                        onClick={() => {
-                          workbench.show();
-                          void workbench.reload();
-                        }}
-                      >
-                        ▤ 交付成果
-                        {workbench.artifacts.length
-                          ? ` · ${workbench.artifacts.length}`
-                          : ''}
-                        {workbench.noticeId && !workbenchOpen
-                          ? ' · 新成果'
-                          : ''}
-                      </button>
-                    ) : null}
+                        entryRef={workbenchEntry}
+                        onCapabilities={setWorkbenchCapabilities}
+                      />
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className={workbenchUi.entry}
+                          onClick={() => {
+                            setRecommendedTemplates(false);
+                            setReferenceToView(null);
+                            setReferenceLibraryOpen(true);
+                          }}
+                        >
+                          参考资料
+                        </button>
+                        <BrandContentWorkspaceEntry
+                          key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
+                          scopeId={settingsScope}
+                          workspaceId={workspace.workspaceId}
+                          viewerId={workspace.viewerId}
+                          instanceId={activeEmployee?.instanceId}
+                          kind={
+                            activeEmployee?.instances?.find(
+                              (instance) =>
+                                instance.id === activeEmployee.instanceId,
+                            )?.kind
+                          }
+                          employeeName={activeEmployeeName}
+                          headers={tenantHeaders}
+                          onOpenSession={openBrandContentSession}
+                        />
+                        {workbenchEnabled ? (
+                          <button
+                            type="button"
+                            className={workbenchUi.entry}
+                            onClick={() => {
+                              setFilesRequest((previous) => ({
+                                scope: fileScope,
+                                revision: previous.revision + 1,
+                              }));
+                              workbench.show(undefined, true);
+                            }}
+                          >
+                            工作区文件
+                          </button>
+                        ) : null}
+                        {workbenchEnabled && hasWorkbenchContent ? (
+                          <button
+                            type="button"
+                            ref={workbenchEntry}
+                            className={workbenchUi.entry}
+                            aria-expanded={workbenchOpen}
+                            aria-controls="artifact-workbench"
+                            onClick={() => {
+                              workbench.show();
+                              void workbench.reload();
+                            }}
+                          >
+                            ▤ 交付成果
+                            {workbench.artifacts.length
+                              ? ` · ${workbench.artifacts.length}`
+                              : ''}
+                            {workbench.noticeId && !workbenchOpen
+                              ? ' · 新成果'
+                              : ''}
+                          </button>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 </div>
               </header>
@@ -2091,6 +2176,130 @@ export function ChatFlowClient({
 
       {(workbenchEnabled || currentAutomationRequest) && hasWorkbenchContent ? (
         <ArtifactWorkbench
+          desktop={!layout.compact}
+          moduleRequest={currentModuleRequest}
+          experienceAvailable={!!activeEmployee?.instanceId}
+          workflowAvailable={
+            workbenchCapabilities?.scope ===
+              `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}` &&
+            workbenchCapabilities.workflow
+          }
+          onModuleViewed={(kind) =>
+            announceWorkbenchRead(
+              `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
+              kind,
+            )
+          }
+          renderModule={(kind, active, onOpenFile) => (
+            <Suspense fallback={<p role="status">正在打开工作台…</p>}>
+              {kind === 'files' ? (
+                <WorkbenchFilesPanel
+                  workspaceId={workspace.workspaceId}
+                  sessionId={activeId}
+                  headers={tenantHeaders}
+                  active={active}
+                  initialCategory={
+                    currentModuleRequest?.kind === 'files'
+                      ? currentModuleRequest.category
+                      : undefined
+                  }
+                  readOnly={sessionArchived}
+                  onRead={() =>
+                    announceWorkbenchRead(
+                      `${settingsScope}/${activeEmployee?.instanceId ?? 'none'}`,
+                      'files',
+                    )
+                  }
+                  onOpen={(file) => {
+                    const artifact = workbench.artifacts.find(
+                      (item) => item.object.id === file.objectId,
+                    );
+                    if (artifact) showWorkbench(artifact.id);
+                    else onOpenFile(file.objectId, file.fileName);
+                  }}
+                  onTemplate={(reference) => {
+                    setRecommendedTemplates(false);
+                    setReferenceToView(reference);
+                    setReferenceLibraryOpen(true);
+                  }}
+                  onUse={(reference: ReferenceRevision) => {
+                    if (
+                      referenceSelections.length >= 3 &&
+                      !referenceSelections.some(
+                        (item) => item.revisionId === reference.revisionId,
+                      )
+                    ) {
+                      setError('每次任务最多引用 3 份资料。');
+                      return;
+                    }
+                    setReferenceSelections((current) =>
+                      current.some(
+                        (item) => item.revisionId === reference.revisionId,
+                      )
+                        ? current
+                        : [...current, reference],
+                    );
+                    requestAnimationFrame(() => composerInput.current?.focus());
+                  }}
+                />
+              ) : kind === 'experience' ? (
+                <WorkbenchExperiencePanel
+                  scopeId={settingsScope}
+                  workspaceId={workspace.workspaceId}
+                  instanceId={activeEmployee?.instanceId}
+                  employees={employeeChoices(workspace).flatMap((employee) =>
+                    employee.instanceId
+                      ? [
+                          {
+                            id: employee.instanceId,
+                            name:
+                              employeeChoiceProfile(
+                                workspace,
+                                employeeChoiceId(employee),
+                              )?.name ?? employee.currentVersion.manifest.name,
+                          },
+                        ]
+                      : [],
+                  )}
+                  headers={tenantHeaders}
+                  active={active}
+                  automatic={experienceEnabled}
+                  onCorrect={(instanceId, text) => {
+                    if (activeEmployee?.instanceId !== instanceId) {
+                      if (!confirmSessionNavigation()) return;
+                      startEmployeeSession(instanceId);
+                      setDraft(text);
+                    } else
+                      setDraft(
+                        [draftStore.getSnapshot(), text]
+                          .filter(Boolean)
+                          .join('\n'),
+                      );
+                    layout.close();
+                    requestAnimationFrame(() => composerInput.current?.focus());
+                  }}
+                />
+              ) : activeEmployee?.instanceId &&
+                workbenchCapabilities?.scope ===
+                  `${settingsScope}/${activeEmployee.instanceId}` &&
+                workbenchCapabilities.workflow ? (
+                <BrandContentPanel
+                  key={`${settingsScope}/${activeEmployee.instanceId}`}
+                  embedded
+                  active={active}
+                  scopeId={settingsScope}
+                  workspaceId={workspace.workspaceId}
+                  instanceId={activeEmployee.instanceId}
+                  employeeName={activeEmployeeName}
+                  headers={tenantHeaders}
+                  onClose={dismissWorkbench}
+                  onOpenSession={openBrandContentSession}
+                />
+              ) : (
+                <p role="status">这位员工当前没有可用的工作流。</p>
+              )}
+            </Suspense>
+          )}
           onOpenReference={openReference}
           taskRequest={currentAutomationRequest}
           renderTask={(taskId, active) => (
@@ -2108,9 +2317,9 @@ export function ChatFlowClient({
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
           onBrowseFiles={browseWorkbench}
-          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
+          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}/${layout.compact ? 'mobile' : 'desktop-v2'}`}
           filesRequest={currentFilesRequest}
-          dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
+          dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}${layout.compact ? '' : '/desktop-v2'}`}
           sessionId={activeId}
           workspaceId={workspace.workspaceId}
           tenantHeaders={tenantHeaders}

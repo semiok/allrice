@@ -37,6 +37,11 @@ import {
   legacyReferenceAuthority,
   assertLegacyReferenceRevision,
 } from './reference-company-templates.ts';
+import {
+  workbenchReferenceAccess,
+  workbenchFileSchemaReady,
+  workbenchOriginFileAccess,
+} from './workbench-file-access.ts';
 
 type Sql = ReturnType<typeof getDatabase> | postgres.TransactionSql;
 export class ReferenceLibraryError extends Error {
@@ -161,6 +166,15 @@ export async function referenceSourceAccess(
   // existing company asset API, never a second set of Knowledge mutations.
   if (legacy && maintain && !allowLegacyProcessing)
     throw new DataAccessError('not_found');
+  const boundAccess =
+    !sharedReader && !legacy
+      ? await workbenchReferenceAccess(
+          context,
+          sourceId,
+          sql,
+          maintain || lockRead,
+        )
+      : null;
   const [s] = await sql<
     SourceRow[]
   >`select id,organization_id,workspace_id,ownership,status,legacy_company_asset_id
@@ -168,9 +182,10 @@ export async function referenceSourceAccess(
     ${maintain ? sql`for update` : lockRead ? sql`for share` : sql``}`;
   if (!s) throw new DataAccessError('not_found');
   const ownership = ContentOwnershipSchema.parse(s.ownership);
-  const access = sharedReader
+  const baseAccess = sharedReader
     ? sharedReader.access(ownership)
     : await referenceAccess(context, ownership, sql, maintain, lockRead);
+  const access = boundAccess ? { ...baseAccess, ...boundAccess } : baseAccess;
   if (!access.canRead || (maintain && !access.canMaintain))
     throw new DataAccessError('not_found');
   return {
@@ -185,6 +200,7 @@ export async function listReferenceRevisions(
   contextInput: RequestContext,
   workspaceId: string,
   sourceId?: string,
+  includeManagedFiles = false,
 ): Promise<ReferenceRevision[]> {
   const context = scoped(contextInput, workspaceId),
     sql = getDatabase();
@@ -200,9 +216,30 @@ export async function listReferenceRevisions(
   const result: ReferenceRevision[] = [];
   for (const s of sources) {
     const ownership = ContentOwnershipSchema.parse(s.ownership),
-      access = await referenceAccess(context, ownership, sql);
+      baseAccess = await referenceAccess(context, ownership, sql),
+      boundAccess = !s.legacy_company_asset_id
+        ? await workbenchReferenceAccess(context, s.id, sql)
+        : null,
+      access = boundAccess ? { ...baseAccess, ...boundAccess } : baseAccess;
     if (!access.canRead || (s.status === 'archived' && !access.canMaintain))
       continue;
+    if (
+      !sourceId &&
+      !includeManagedFiles &&
+      (await workbenchFileSchemaReady(sql))
+    ) {
+      const [managed] =
+        await sql`select b.source_id,p.reference_enabled,p.reference_source_id
+        from allrice_workbench_reference_bindings b
+        left join allrice_workbench_file_policies p on p.object_id=b.origin_object_id
+          or p.series_id in (select d.series_id from allrice_deliverable_versions d where d.object_id=b.origin_object_id)
+        where b.source_id=${s.id}`;
+      if (
+        managed &&
+        (!managed.reference_enabled || managed.reference_source_id !== s.id)
+      )
+        continue;
+    }
     const rows =
       await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,r.checksum as manifest_digest,o.checksum,o.size_bytes,o.media_type,
       r.legacy_company_revision_id,cr.digest as company_digest,
@@ -296,6 +333,7 @@ export async function getReferenceFile(
 export async function prepareReferenceUpload(
   contextInput: RequestContext,
   input: unknown,
+  binding?: { originObjectId: string },
 ) {
   const v = ReferenceUploadInputSchema.parse(input),
     context = scoped(contextInput, v.workspaceId);
@@ -310,10 +348,29 @@ export async function prepareReferenceUpload(
   const checksum =
     `sha256:${createHash('sha256').update(bytes).digest('hex')}` as StorageObject['checksum'];
   const ownership = referenceOwnership(context, v);
-  const requestInput = { ...metadata, checksum, sizeBytes: bytes.length };
+  const requestInput = {
+    ...metadata,
+    checksum,
+    sizeBytes: bytes.length,
+    ...(binding
+      ? { originObjectId: UuidSchema.parse(binding.originObjectId) }
+      : {}),
+  };
   const result = await getDatabase().begin(async (tx) => {
     await lockWorkspaceStorageQuota(tx, context.organizationId, v.workspaceId);
     if (!(await referenceAccess(context, ownership, tx, true)).canMaintain)
+      throw new DataAccessError('authorization_denied');
+    if (
+      binding &&
+      !(
+        await workbenchOriginFileAccess(
+          context,
+          binding.originObjectId,
+          tx,
+          true,
+        )
+      ).canRead
+    )
       throw new DataAccessError('authorization_denied');
     await lockReferenceRequest(tx, context, v.requestId);
     const prior = await findReferenceRequest(
@@ -323,7 +380,7 @@ export async function prepareReferenceUpload(
       'upload',
       requestInput,
     );
-    if (prior) return readReferenceReservation(tx, context, prior);
+    if (prior) return readReferenceReservation(tx, context, prior, binding);
     const saved = await reserveReferenceFile(
       tx,
       context,
@@ -333,6 +390,9 @@ export async function prepareReferenceUpload(
       bytes.length,
       requestInput,
     );
+    if (binding)
+      await tx`insert into allrice_workbench_reference_bindings(source_id,origin_object_id,organization_id)
+        values (${saved.sourceId},${binding.originObjectId},${context.organizationId})`;
     await recordReferenceRequest(
       tx,
       context,
@@ -518,6 +578,7 @@ async function readReferenceReservation(
   tx: postgres.TransactionSql,
   context: RequestContext,
   revisionId: string,
+  binding?: { originObjectId: string },
 ) {
   const [r] =
     await tx`select knowledge_source_id,file_object_id,source_artifact_version_id,created_by,workspace_id from allrice_knowledge_revisions where id=${revisionId}`;
@@ -537,11 +598,21 @@ async function readReferenceReservation(
   // no longer depends on the original file/Session lifecycle.
   if (file.state === 'pending' && r.source_artifact_version_id)
     await requireReferenceArtifact(tx, context, r.source_artifact_version_id);
-  const { source } = await referenceSourceAccess(
+  if (binding) {
+    const [saved] =
+      await tx`select origin_object_id from allrice_workbench_reference_bindings
+      where source_id=${r.knowledge_source_id} and organization_id=${context.organizationId}`;
+    if (
+      r.created_by !== context.actor.id ||
+      saved?.origin_object_id !== binding.originObjectId
+    )
+      throw new ReferenceLibraryError('request_conflict');
+  }
+  const { source } = await pendingReferenceUploadAccess(
     context,
-    r.knowledge_source_id,
+    { knowledge_source_id: r.knowledge_source_id, created_by: r.created_by },
     tx,
-    true,
+    !!binding,
   );
   if (source.status !== 'active') throw new DataAccessError('not_found');
   return {
@@ -550,6 +621,29 @@ async function readReferenceReservation(
     object: object(file),
     alreadyReady: file.state === 'ready',
   };
+}
+
+/** Only a snapshot's original uploader may finish its pending reservation.
+ * Read-only recipients may copy bytes they can still read, but gain no right
+ * to edit a shared source or change the original file's policy. */
+async function pendingReferenceUploadAccess(
+  context: RequestContext,
+  revision: { knowledge_source_id: string; created_by: string },
+  tx: postgres.TransactionSql,
+  bound: boolean,
+) {
+  if (bound) {
+    const principal = await readContentPrincipal(context, tx, true);
+    if (!principal?.writable || revision.created_by !== context.actor.id)
+      throw new DataAccessError('authorization_denied');
+  }
+  return referenceSourceAccess(
+    context,
+    revision.knowledge_source_id,
+    tx,
+    !bound,
+    bound,
+  );
 }
 
 /** Call only after LocalStorageAdapter verified exact bytes. Recheck authority
@@ -570,11 +664,17 @@ export async function completeReferenceUpload(
       await tx`select state from allrice_storage_objects where id=${r.file_object_id}`;
     if (file?.state === 'pending' && r.source_artifact_version_id)
       await requireReferenceArtifact(tx, c, r.source_artifact_version_id);
-    const { source } = await referenceSourceAccess(
+    const bound = await workbenchReferenceAccess(
       c,
       r.knowledge_source_id,
       tx,
       true,
+    );
+    const { source } = await pendingReferenceUploadAccess(
+      c,
+      { knowledge_source_id: r.knowledge_source_id, created_by: r.created_by },
+      tx,
+      bound !== null,
     );
     if (source.status !== 'active') throw new DataAccessError('not_found');
     await tx`update allrice_storage_objects set state='ready',updated_at=clock_timestamp() where id=${r.file_object_id} and state='pending'`;

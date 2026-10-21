@@ -86,10 +86,21 @@ export function DocumentVersions(props: {
   workspaceId: string;
   headers: Record<string, string>;
   version?: number;
-  onSelect: (version: DeliverableVersion) => void;
+  baseUrl?: string;
+  onSelect: (
+    version: Pick<
+      DeliverableVersion,
+      'id' | 'objectId' | 'fileName' | 'version' | 'createdAt'
+    >,
+  ) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [versions, setVersions] = useState<DeliverableVersion[]>([]);
+  const [versions, setVersions] = useState<
+    Pick<
+      DeliverableVersion,
+      'id' | 'objectId' | 'fileName' | 'version' | 'createdAt'
+    >[]
+  >([]);
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
   useEffect(() => {
@@ -99,7 +110,7 @@ export function DocumentVersions(props: {
     setError(false);
     setLoading(true);
     void workbenchJson(
-      `/api/v1/files/${props.objectId}/versions?workspaceId=${encodeURIComponent(props.workspaceId)}`,
+      `${props.baseUrl ?? '/api/v1/files'}/${props.objectId}/versions?workspaceId=${encodeURIComponent(props.workspaceId)}`,
       props.headers,
       { signal: controller.signal },
     )
@@ -114,7 +125,7 @@ export function DocumentVersions(props: {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [open, props.objectId, props.workspaceId, props.headers]);
+  }, [open, props.objectId, props.workspaceId, props.headers, props.baseUrl]);
   return (
     <Menu
       open={open}

@@ -48,6 +48,7 @@ import {
   assertToolBrokerSourceFile,
 } from './execution/tool-broker.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
+import { workbenchFileAccess } from './workbench-file-access.ts';
 import {
   parseOfficeDeliveryReceiptForObject,
   readBoundOfficeDeliveryReceipt,
@@ -970,7 +971,10 @@ export async function readArtifact(
     1,
   );
   if (!row) fail('artifact_not_found');
-  return mapArtifact(row);
+  const artifact = mapArtifact(row);
+  const fileAccess = await workbenchFileAccess(context, artifact.object.id, db);
+  if (fileAccess && !fileAccess.canRead) fail('artifact_not_found');
+  return artifact;
 }
 export async function getWorkbenchArtifact(
   context: WorkbenchPrincipal,

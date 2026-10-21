@@ -621,3 +621,7 @@ Web 九个已用包固定0.2.1-rc.2，另显式登记 primitives 实际引用的
 `collapsedSessionRows` 在新版消失且watermark语义不同，因此明确独立固定旧0.1.7-rc.1来源，保留五条普通会话与运行项；不将其冒称新版watermark实现。顶层0.1.1-rc.2样式/独立摘录仍如实保留旧来源pin。本次只升级12组组件与实际npmUI软件，不声称旧样式已全部迁移。
 
 PDF/Excel将现有LoadingIndicator传给真实原生正文的必需loading注入值，动态chunk仍仅在打开文件时从本地同源接口加载。真实并发预览回归覆盖chunk注册、解析阶段反馈和原生可读内容；类型、来源、浏览器和实际Dev按版本留证。MCP/调度依旧复用当前Worker和原生Host，未因为UI升级增加另一套执行服务。
+
+### MET198：桌面业务页通过现有公开 Dock 接入
+
+此项沿用已固定的 `ui-dockkit@0.2.1-rc.2`、现有原生 store 和已导出的 `openContent.replaceTab`；只增加 AllRice 业务页注册、开始页卡片与宿主输入样式。标签、分栏、浮动、全屏、关闭和恢复仍由 DSH 管理，没有新增上游源码补丁或执行内核补偿。文件多部门授权由 AllRice 数据层负责；经验和工作流复用既有读取/事务。手机导航与终端不在此项实施范围，详细边界见[原生工作台说明](../features/native-workbench/README.md#met-198桌面统一工作台)。
