@@ -6,7 +6,7 @@ import {
   EmployeeMethodRestoreSchema,
   EmployeeMethodTestStartSchema,
   EmployeeMethodTestInspectSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 const reference = {
   type: 'object',
   additionalProperties: false,

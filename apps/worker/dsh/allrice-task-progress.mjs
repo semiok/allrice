@@ -1,4 +1,4 @@
-import { readDshToolResult } from '@allrice/contracts';
+import { readDshToolResult } from '@allrice/contracts/native-runtime';
 /* Native DSH middleware only; no Agent loop, extra model or action authority. */
 import { createHash, randomUUID } from 'node:crypto';
 import {

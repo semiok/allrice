@@ -73,6 +73,7 @@ function loaderFixture() {
     generation: 'dsh-0.2.1-rc.2-687f282',
     root,
     content: {
+      schemaVersion: 1,
       files: [
         {
           path: factory.slice(root.length + 1),
@@ -126,7 +127,136 @@ function loaderFixture() {
   };
 }
 
+function v2LoaderFixture() {
+  const f = loaderFixture();
+  f.artifact.content.schemaVersion = 2;
+  const mapping = {
+    cordis: { specifier: '@deepseek-ai/cordis', anchor: 'factory' },
+    llm: { specifier: '@deepseek-ai/dsh-llm', anchor: 'factory' },
+    sessions: { specifier: '@deepseek-ai/dsh-session', anchor: 'factory' },
+    projections: {
+      specifier: '@deepseek-ai/dsh-session-projection',
+      anchor: 'factory',
+    },
+    systemPrompt: {
+      specifier: '@deepseek-ai/dsh-system-prompt',
+      anchor: 'factory',
+    },
+    files: { specifier: '@deepseek-ai/dsh-fs-local', anchor: 'factory' },
+    directory: {
+      specifier: '@deepseek-ai/dsh-working-directory',
+      anchor: 'factory',
+    },
+    tools: { specifier: '@deepseek-ai/dsh-tools', anchor: 'factory' },
+    agents: { specifier: '@deepseek-ai/dsh-agent', anchor: 'factory' },
+    loop: { specifier: '@deepseek-ai/dsh-agent-loop', anchor: 'factory' },
+    jsonl: {
+      specifier: '@deepseek-ai/dsh-session-persistence-jsonl',
+      anchor: 'factory',
+    },
+    storage: { specifier: '@deepseek-ai/dsh-storage', anchor: 'factory' },
+    domain: { specifier: '@deepseek-ai/dsh-storage-domain', anchor: 'factory' },
+    workspace: { specifier: '@deepseek-ai/dsh-workspace', anchor: 'factory' },
+    typert: {
+      specifier: '@deepseek-ai/dsh-typert-registry',
+      anchor: 'factory',
+    },
+    defaultModel: {
+      specifier: '@deepseek-ai/dsh-agent-default-model',
+      anchor: 'factory',
+    },
+    credentials: {
+      specifier: '@deepseek-ai/dsh-credentials',
+      anchor: 'factory',
+    },
+    commands: { specifier: '@deepseek-ai/dsh-commands', anchor: 'controller' },
+    connection: {
+      specifier: '@deepseek-ai/dsh-client-connection',
+      anchor: 'controller',
+    },
+    attachment: {
+      specifier: '@deepseek-ai/dsh-attachment-local',
+      anchor: 'factory',
+    },
+    upload: {
+      specifier: '@deepseek-ai/dsh-client-file-upload',
+      anchor: 'factory',
+    },
+    query: {
+      specifier: '@deepseek-ai/dsh-session-query-sqlite',
+      anchor: 'factory',
+    },
+    controller: {
+      specifier: '@deepseek-ai/dsh-api-session-controller',
+      anchor: 'factory',
+    },
+    sdk: {
+      specifier: '@deepseek-ai/dsh-sdk-jsonrpc-server',
+      anchor: 'factory',
+    },
+    schedule: { specifier: '@deepseek-ai/dsh-schedule', anchor: 'factory' },
+  };
+  f.imports.mockImplementation(async (path: string) =>
+    path === f.factory
+      ? {
+          openNativeScheduleControlHost: f.open,
+          nativeScheduleModuleMap: mapping,
+        }
+      : { path },
+  );
+  return { ...f, mapping };
+}
+
 describe('approved native once loader', () => {
+  it('v2 consumes the measured factory mapping and shares the already verified factory import', async () => {
+    const f = v2LoaderFixture();
+    const source = createNativeOnceControlSource(f.reference, f.ports);
+    const modules = await source.loadModules();
+    expect(Object.keys(modules).sort()).toEqual(Object.keys(f.mapping).sort());
+    expect(await source.loadHostFactory()).toBe(f.open);
+    expect(
+      f.imports.mock.calls.filter(([path]) => path === f.factory),
+    ).toHaveLength(1);
+    for (const key of ['commands', 'connection'] as const)
+      expect(f.resolveModule).toHaveBeenCalledWith(
+        f.root + '/packages/dsh-api-session-controller/index.js',
+        f.mapping[key].specifier,
+      );
+  });
+  it('v2 rejects a missing measured map before importing a dependency', async () => {
+    const f = v2LoaderFixture();
+    f.imports.mockResolvedValue({ openNativeScheduleControlHost: f.open });
+    const source = createNativeOnceControlSource(f.reference, f.ports);
+    await expect(source.loadModules()).rejects.toThrow('BINDING_INVALID');
+    expect(f.imports.mock.calls.map(([path]) => path)).toEqual([f.factory]);
+  });
+  it('v2 rejects a changed controller resolution anchor without using the old fallback map', async () => {
+    const f = v2LoaderFixture();
+    f.mapping.commands.anchor = 'factory';
+    const source = createNativeOnceControlSource(f.reference, f.ports);
+    await expect(source.loadModules()).rejects.toThrow('BINDING_INVALID');
+    expect(f.imports.mock.calls.map(([path]) => path)).toEqual([f.factory]);
+  });
+  it('v2 rejects hidden map keys and accessors before importing any dependency', async () => {
+    for (const tamper of [
+      (map: object) =>
+        Object.defineProperty(map, 'extra', { value: {}, enumerable: false }),
+      (map: object) =>
+        Object.defineProperty(map, 'commands', {
+          get() {
+            throw Error('getter must not run');
+          },
+          enumerable: true,
+        }),
+    ]) {
+      const f = v2LoaderFixture();
+      tamper(f.mapping);
+      const source = createNativeOnceControlSource(f.reference, f.ports);
+      await expect(source.loadModules()).rejects.toThrow('BINDING_INVALID');
+      expect(f.imports.mock.calls.map(([path]) => path)).toEqual([f.factory]);
+    }
+  });
+
   it('requires the recurring profile explicitly and preserves the exact approved reference', async () => {
     const f = loaderFixture();
     const reference = {

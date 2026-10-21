@@ -1,7 +1,7 @@
 import {
   PersonalSkillInstallInputSchema,
   PersonalSkillVersionInputSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 
 export const personalSkillNativeTools = [
   {

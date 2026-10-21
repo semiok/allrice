@@ -67,18 +67,46 @@ export async function copyDshNativeArtifact(input: {
   };
   for (const fact of original.content.files)
     await file(join(source, fact.path));
+  if (original.content.schemaVersion === 2)
+    // Parsed/projection-checked support remains necessary for remeasurement.
+    // Its unrelated raw bytes do not become native execution authority.
+    for (const path of [
+      'apps/worker/dsh/distribution.json',
+      'pnpm-workspace.yaml',
+      'apps/worker/package.json',
+    ])
+      await file(join(source, path));
   for (const pkg of original.content.packages) {
     const from = join(source, pkg.path);
     const to = join(target, inside(from));
     await mkdir(dirname(to), { recursive: true, mode: 0o700 });
     if (pkg.name === '@allrice/contracts') {
       await file(join(from, 'package.json'));
-      await cp(join(from, 'dist'), join(to, 'dist'), {
-        recursive: true,
-        mode: constants.COPYFILE_FICLONE,
-        force: false,
-        errorOnExist: true,
-      });
+      if (original.content.schemaVersion === 2) {
+        const runtime = original.content.contractsRuntime;
+        if (
+          !runtime ||
+          runtime.packagePath !== pkg.path ||
+          !runtime.files.length
+        )
+          throw Error('DSH_NATIVE_ARTIFACT_COPY_CONTRACTS_RUNTIME_MISSING');
+        for (const member of runtime.files) {
+          if (
+            !member.path.startsWith('dist/') ||
+            !member.path.endsWith('.js') ||
+            resolve(from, member.path) !== join(from, member.path) ||
+            !resolve(from, member.path).startsWith(from + sep)
+          )
+            throw Error('DSH_NATIVE_ARTIFACT_COPY_CONTRACTS_RUNTIME_PATH');
+          await file(join(from, member.path));
+        }
+      } else
+        await cp(join(from, 'dist'), join(to, 'dist'), {
+          recursive: true,
+          mode: constants.COPYFILE_FICLONE,
+          force: false,
+          errorOnExist: true,
+        });
     } else
       await cp(from, to, {
         recursive: true,

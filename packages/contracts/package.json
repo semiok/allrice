@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./native-runtime": {
+      "types": "./dist/native-runtime.d.ts",
+      "default": "./dist/native-runtime.js"
     }
   },
   "scripts": {

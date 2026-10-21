@@ -371,6 +371,16 @@ export async function prepareServiceBuildManifest(input: {
   }
   for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
     await walk(root, path, 'graph', files, input.observe);
+  // Governance/install provenance is sealed by the full service release,
+  // independent of the narrower portable native execution identity.
+  for (const name of [
+    'distribution.json',
+    'compatibility.json',
+    'patch-ledger.json',
+    'upstream.json',
+  ])
+    await walk(root, 'apps/worker/dsh/' + name, 'graph', files, input.observe);
+  await walk(root, 'patches', 'graph', files, input.observe);
   files.sort(
     (a, b) => a.path.localeCompare(b.path) || a.scope.localeCompare(b.scope),
   );

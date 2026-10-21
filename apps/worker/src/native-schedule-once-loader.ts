@@ -157,6 +157,86 @@ export function createNativeOnceControlSource(
       )
         return invalid();
     })());
+  // Only execute the already measured factory after its exact bytes pass.
+  // v2 consumes the same literal mapping that the native verifier measured.
+  let factoryModule: Promise<Record<string, unknown>> | undefined;
+  const loadFactory = () =>
+    (factoryModule ??= (async () => {
+      await verifyFactory();
+      return importModule(factory);
+    })());
+  type ModuleSelection = {
+    specifier: string;
+    anchor: 'factory' | 'controller';
+  };
+  const selectedModuleMap = async (): Promise<
+    Record<string, ModuleSelection>
+  > => {
+    if (artifact.content.schemaVersion === 1)
+      return Object.fromEntries(
+        Object.entries(moduleNames).map(([key, name]) => [
+          key,
+          {
+            specifier: '@deepseek-ai/' + name,
+            anchor: ['commands', 'connection'].includes(key)
+              ? 'controller'
+              : 'factory',
+          },
+        ]),
+      );
+    if (artifact.content.schemaVersion !== 2) return invalid();
+    const value = (await loadFactory()).nativeScheduleModuleMap;
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype
+    )
+      return invalid();
+    const entries = Object.entries(Object.getOwnPropertyDescriptors(value));
+    if (
+      Reflect.ownKeys(value).length !== entries.length ||
+      entries.length !== Object.keys(moduleNames).length ||
+      entries.some(
+        ([key, descriptor]) =>
+          !Object.hasOwn(moduleNames, key) ||
+          !descriptor.enumerable ||
+          !('value' in descriptor),
+      )
+    )
+      return invalid();
+    const result: Record<string, ModuleSelection> = {};
+    for (const [key, descriptor] of entries) {
+      const item = descriptor.value;
+      if (
+        !item ||
+        typeof item !== 'object' ||
+        Array.isArray(item) ||
+        Object.getPrototypeOf(item) !== Object.prototype ||
+        Reflect.ownKeys(item).length !== 2
+      )
+        return invalid();
+      const fields = Object.getOwnPropertyDescriptors(item);
+      if (
+        !fields.specifier?.enumerable ||
+        !('value' in fields.specifier) ||
+        !fields.anchor?.enumerable ||
+        !('value' in fields.anchor)
+      )
+        return invalid();
+      const specifier = fields.specifier.value,
+        anchor = fields.anchor.value;
+      if (
+        specifier !==
+          '@deepseek-ai/' + moduleNames[key as keyof typeof moduleNames] ||
+        anchor !==
+          (['commands', 'connection'].includes(key) ? 'controller' : 'factory')
+      )
+        return invalid();
+      result[key] = { specifier, anchor };
+    }
+    return result;
+  };
   let modules: Promise<NativeSchedulePublicModules> | undefined;
   let host:
     ReturnType<NativeScheduleControlSource['loadHostFactory']> | undefined;
@@ -165,18 +245,18 @@ export function createNativeOnceControlSource(
     loadModules() {
       modules ??= (async () => {
         await verifyFactory();
+        const mapping = await selectedModuleMap();
         const controller = await actualPath(
-          resolveModule(factory, '@deepseek-ai/dsh-api-session-controller'),
+          resolveModule(factory, mapping.controller!.specifier),
         );
         const cordis = await actualPath(
-          resolveModule(factory, '@deepseek-ai/cordis'),
+          resolveModule(factory, mapping.cordis!.specifier),
         );
         const selected: Array<[string, string]> = [];
-        for (const [key, name] of Object.entries(moduleNames)) {
-          const specifier = '@deepseek-ai/' + name;
+        for (const [key, { specifier, anchor }] of Object.entries(mapping)) {
           const path = await actualPath(
             resolveModule(
-              ['commands', 'connection'].includes(key) ? controller : factory,
+              anchor === 'controller' ? controller : factory,
               specifier,
             ),
           );
@@ -208,8 +288,7 @@ export function createNativeOnceControlSource(
     },
     loadHostFactory() {
       host ??= (async () => {
-        await verifyFactory();
-        const loaded = await importModule(factory);
+        const loaded = await loadFactory();
         if (typeof loaded.openNativeScheduleControlHost !== 'function')
           return invalid();
         return loaded.openNativeScheduleControlHost as Awaited<

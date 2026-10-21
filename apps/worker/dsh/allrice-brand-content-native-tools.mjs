@@ -1,4 +1,4 @@
-import { BrandContentToolReadSchema } from '@allrice/contracts';
+import { BrandContentToolReadSchema } from '@allrice/contracts/native-runtime';
 
 export const brandContentNativeTools = [
   {

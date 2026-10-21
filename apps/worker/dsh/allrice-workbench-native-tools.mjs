@@ -10,7 +10,7 @@ import {
   NativeOfficeExportSchema,
   OfficePdfExportSchema,
   ExecutionLocationSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 
 export const workbenchNativeTools = [
   ...['generate', 'edit'].map((action) => ({

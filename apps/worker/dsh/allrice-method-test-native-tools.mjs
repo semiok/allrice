@@ -1,4 +1,4 @@
-import { EmployeeMethodFileStepSchema } from '@allrice/contracts';
+import { EmployeeMethodFileStepSchema } from '@allrice/contracts/native-runtime';
 
 /** Private to the isolated candidate-test harness, absent from employee skills
  * and the public tool manifest. The host verifies actual test/lease identity. */
