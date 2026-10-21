@@ -2713,13 +2713,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByText('执行失败', { exact: true })
             .count(),
         ).toBe(0);
-        await expect
-          .poll(() =>
-            f.page
-              .locator('main > section')
-              .getAttribute('data-employee-accent'),
-          )
-          .toBe('coral');
         expect(requests).toHaveLength(2);
       } finally {
         release();
@@ -4253,6 +4246,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await picker.getByRole('alert').waitFor();
         await picker.getByRole('button', { name: '创建', exact: true }).click();
         await expect.poll(() => picker.count()).toBe(0);
+        await expect
+          .poll(() =>
+            f.page
+              .locator('main > section')
+              .getAttribute('data-employee-accent'),
+          )
+          .toBe('coral');
         expect(requests).toHaveLength(2);
         expect(requests[1]).toEqual(requests[0]);
         expect(requests[0]).toMatchObject({
