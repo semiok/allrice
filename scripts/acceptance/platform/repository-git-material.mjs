@@ -1,5 +1,12 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+// Kept usable before dependencies/builds exist. The CI regression verifies
+// these fixed source budgets against the registered product profile.
+export const repositoryGitMaterialLimits = Object.freeze({
+  files: 4096,
+  fileBytes: 2_000_000,
+  totalBytes: 40_000_000,
+});
 /** Shared operator/CI reader. Reads immutable tracked blobs, never credentials or build caches. */
 export function readRepositoryGitMaterial(root, sha) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw Error('REPOSITORY_SHA_INVALID');
@@ -25,15 +32,16 @@ export function readRepositoryGitMaterial(root, sha) {
     });
   if (
     !rows.length ||
-    rows.length > 4096 ||
-    rows.some((r) => r.size > 2_000_000) ||
-    rows.reduce((n, r) => n + r.size, 0) > 32_000_000
+    rows.length > repositoryGitMaterialLimits.files ||
+    rows.some((r) => r.size > repositoryGitMaterialLimits.fileBytes) ||
+    rows.reduce((n, r) => n + r.size, 0) >
+      repositoryGitMaterialLimits.totalBytes
   )
     throw Error('REPOSITORY_SOURCE_LIMIT');
   const blobs = execFileSync('git', ['cat-file', '--batch'], {
     cwd: root,
     input: rows.map((r) => r.oid).join('\n') + '\n',
-    maxBuffer: 34_000_000,
+    maxBuffer: repositoryGitMaterialLimits.totalBytes + 2_000_000,
   });
   let offset = 0;
   const files = rows.map((row) => {

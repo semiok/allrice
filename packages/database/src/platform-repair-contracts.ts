@@ -19,9 +19,9 @@ export * from './platform-repair-compiled-contracts.ts';
 export const repositorySourceLimits = Object.freeze({
   files: 4096,
   fileBytes: 2_000_000,
-  totalBytes: 32_000_000,
+  totalBytes: 40_000_000,
   archiveBytes: 12_000_000,
-  jsonBytes: 48_000_000,
+  jsonBytes: 60_000_000,
 });
 export const maintenanceCompiledProfileId =
   'allrice.maintenance.compiled.v1' as const;

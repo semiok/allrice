@@ -47,6 +47,21 @@ private credential store.
 
 The repository pins pnpm in `package.json` and the Node major in `.nvmrc`. Run `pnpm doctor` before setup when diagnosing a teammate's machine.
 
+### Repository source receipt before pushing
+
+After committing a clean candidate, run the same immutable source capture used
+at the beginning of every CI job:
+
+```bash
+node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/prepush.json
+```
+
+The complete tracked tree is retained. The private repository source profile
+allows at most 4,096 files, 2,000,000 bytes per file and 40,000,000 total source
+bytes; expanded JSON is bounded at 60,000,000 bytes and gzip archives remain
+bounded at 12,000,000 bytes. CI and product limits have a shared regression
+check. These limits do not change ordinary project, Bridge or cloud wire limits.
+
 ## Default database: Docker Compose
 
 `pnpm dev` uses `compose.dev.yaml` when `DATABASE_URL` is blank. It starts `pgvector/pgvector:pg17` with these development-only defaults:

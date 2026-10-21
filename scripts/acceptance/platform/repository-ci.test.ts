@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import {
   mkdtempSync,
   mkdirSync,
@@ -13,14 +15,134 @@ import {
   repositoryMaterialDigest,
   repositoryDependencyDigest,
   repositoryGitTree,
+  validateRepositoryArchive,
+  repositoryDigest,
+  readRepositoryArchive,
 } from '@allrice/database';
-import { RepositoryCiReceiptSchema } from '@allrice/database/technical-contracts';
+import {
+  RepositoryCiReceiptSchema,
+  repositorySourceLimits,
+  RepositoryBaselineSchema,
+  RepositoryVerificationSchema,
+  repairProfileId,
+} from '@allrice/database/technical-contracts';
 import {
   readRepositoryGitMaterial,
   ciMaterialDigest,
+  repositoryGitMaterialLimits,
 } from './repository-git-material.mjs';
 
 describe('immutable CI material capture and final production inventory', () => {
+  it('keeps CI and registered source bounds aligned, accepts the exact total bound and rejects overflow without omitting blobs', () => {
+    expect(repositoryGitMaterialLimits).toEqual({
+      files: repositorySourceLimits.files,
+      fileBytes: repositorySourceLimits.fileBytes,
+      totalBytes: repositorySourceLimits.totalBytes,
+    });
+    expect(repositorySourceLimits.jsonBytes).toBe(60_000_000);
+    expect(repositorySourceLimits.archiveBytes).toBe(12_000_000);
+    const root = mkdtempSync(join(tmpdir(), 'allrice-ci-source-bound-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Fixture');
+      git('config', 'user.email', 'fixture@example.test');
+      const chunk = Buffer.alloc(repositorySourceLimits.fileBytes, 'x');
+      const count = repositorySourceLimits.totalBytes / chunk.length;
+      expect(Number.isInteger(count)).toBe(true);
+      const lock = Buffer.from('lockfileVersion: 9\n');
+      writeFileSync(join(root, 'pnpm-lock.yaml'), lock);
+      for (let i = 0; i < count; i++)
+        writeFileSync(
+          join(root, `source-${i}.txt`),
+          i === 0 ? chunk.subarray(lock.length) : chunk,
+        );
+      git('add', '.');
+      git('commit', '-qm', 'exact source limit');
+      const archive = readRepositoryGitMaterial(root, git('rev-parse', 'HEAD'));
+      expect(archive.files).toHaveLength(count + 1);
+      expect(archive.files.reduce((n, f) => n + f.sizeBytes, 0)).toBe(
+        repositorySourceLimits.totalBytes,
+      );
+      expect(validateRepositoryArchive(archive).files).toHaveLength(count + 1);
+      expect(ciMaterialDigest(archive.files)).toBe(
+        repositoryMaterialDigest(archive.files),
+      );
+      expect(repositoryGitTree(archive)).toBe(git('rev-parse', 'HEAD^{tree}'));
+      expect(Buffer.byteLength(JSON.stringify(archive))).toBeLessThan(
+        repositorySourceLimits.jsonBytes,
+      );
+      const packed = gzipSync(Buffer.from(JSON.stringify(archive)));
+      const baseline = RepositoryBaselineSchema.parse({
+        version: 1,
+        id: randomUUID(),
+        repositoryId: 'semiok/allrice',
+        sourceSha: git('rev-parse', 'HEAD'),
+        gitTree: git('rev-parse', 'HEAD^{tree}'),
+        sourceDigest: repositoryMaterialDigest(archive.files),
+        rootLockChecksum: archive.files.find(
+          (f) => f.path === 'pnpm-lock.yaml',
+        )!.checksum,
+        dependencyConfigurationDigest: repositoryDependencyDigest(
+          archive.files,
+        ),
+        archiveChecksum: repositoryDigest(packed),
+        archiveBytes: packed.length,
+        fileCount: archive.files.length,
+        sourceBytes: repositorySourceLimits.totalBytes,
+        observedDevSha: '3'.repeat(40),
+        registeredAt: new Date().toISOString(),
+        materializer: 'git-tracked-json-gzip-v1',
+        profileId: repairProfileId,
+        dependencyMode: 'runtime_builtins_only',
+        monorepoDependenciesInstalled: false,
+      });
+      expect(readRepositoryArchive(packed, baseline).files).toHaveLength(
+        count + 1,
+      );
+      expect(
+        RepositoryBaselineSchema.safeParse({
+          ...baseline,
+          sourceBytes: repositorySourceLimits.totalBytes + 1,
+        }).success,
+      ).toBe(false);
+      for (const report of RepositoryVerificationSchema.options) {
+        expect(
+          report.shape.sourceBytes.safeParse(repositorySourceLimits.totalBytes)
+            .success,
+        ).toBe(true);
+        expect(
+          report.shape.sourceBytes.safeParse(
+            repositorySourceLimits.totalBytes + 1,
+          ).success,
+        ).toBe(false);
+      }
+      writeFileSync(join(root, 'overflow.txt'), 'x');
+      git('add', '.');
+      git('commit', '-qm', 'one byte over source limit');
+      expect(() =>
+        readRepositoryGitMaterial(root, git('rev-parse', 'HEAD')),
+      ).toThrow('REPOSITORY_SOURCE_LIMIT');
+      expect(() =>
+        validateRepositoryArchive({
+          ...archive,
+          files: [
+            ...archive.files,
+            {
+              path: 'overflow.txt',
+              mode: '100644',
+              sizeBytes: 1,
+              checksum: repositoryDigest('x'),
+              contentBase64: Buffer.from('x').toString('base64'),
+            },
+          ],
+        }),
+      ).toThrow('REPOSITORY_SOURCE_CHANGED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
   it('matches the product material/tree identity, keeps merge and head SHAs separate, and refuses missing outputs or changed tracked source', () => {
     const root = mkdtempSync(join(tmpdir(), 'allrice-ci-receipt-'));
     const git = (...args: string[]) =>
