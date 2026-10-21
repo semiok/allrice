@@ -23,15 +23,19 @@ Worker development uses `node --watch dist/index.js`, the same compiled entry as
 normal startup, without a TypeScript loader exemption. While editing Worker
 TypeScript, run `pnpm --filter @allrice/worker exec tsc -p tsconfig.build.json --watch`
 in a second terminal. Node restarts when compiled files change. Changes to native
-modules, profiles, contracts dist or dependencies require repeating preparation,
-reviewing the new ID, and restarting with that ID. The preparation command never
+modules, profiles, imported contracts JavaScript or resolved dependencies require
+repeating preparation, reviewing the ID, and restarting with that ID. Preparation
+uses the versioned execution boundary described in
+[native artifact retention](../architecture/dsh-native-retention.md#schema-v2-execution-content):
+unrelated settings, business data, declarations/maps and unused lock metadata do
+not create a different native ID. The preparation command never
 automatically approves shared Dev or Prod, and neither development nor production
 startup bypasses native content verification.
 
 ## Requirements
 
 - Node.js 22+
-- pnpm 11+
+- pnpm matching the repository's `packageManager` pin (currently 10.33.3)
 - Docker Desktop, or Docker Engine with the Compose plugin
 - a platform administrator who can complete DSH's Codex subscription OAuth
 
