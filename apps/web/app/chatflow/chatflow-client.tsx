@@ -1557,11 +1557,7 @@ export function ChatFlowClient({
       onCancelRun={cancelRun}
       onLoadBridgeDevices={openBridgeSettings}
       onOpenAttachment={setAttachmentPreview}
-      onOpenWorkspaceFiles={() => {
-        if (!layout.compact && workbenchEnabled)
-          requestWorkbenchModule('files');
-        else openWorkspaceFiles();
-      }}
+      onOpenWorkspaceFiles={openWorkspaceFiles}
       onRemoveAttachment={removePendingAttachment}
       onRetryAttachment={(target) => {
         setPendingAttachments((current) =>

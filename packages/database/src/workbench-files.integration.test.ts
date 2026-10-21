@@ -31,6 +31,7 @@ import {
   listReferenceRevisions,
 } from './reference-library.ts';
 import { readReferenceSelection } from './reference-runtime.ts';
+import { listWorkspaceFiles } from './workspace/service.ts';
 import {
   getStoredFile,
   createStorageMetadata,
@@ -177,6 +178,11 @@ suite(
       const t = await setup(),
         input = uploadInput(t.owner),
         file = await uploadWorkbenchFile(t.owner, input, storage());
+      expect(
+        (await listWorkspaceFiles(t.owner, t.owner.workspaceId!)).find(
+          (item) => item.id === file.objectId,
+        )?.fileName,
+      ).toBe(input.fileName);
       expect(
         (await readWorkbenchFile(t.owner, file.objectId)).policy?.scope,
       ).toBe('personal');

@@ -1715,15 +1715,64 @@ suite(
               },
             }),
           );
+          if (width > 760) {
+            await f.page.route('**/api/v1/workbench/files?*', (route) =>
+              route.fulfill({
+                json: {
+                  files: [
+                    {
+                      objectId: childId,
+                      workspaceId: B,
+                      fileName: reference.fileName,
+                      mediaType: reference.mediaType,
+                      sizeBytes: reference.sizeBytes,
+                      checksum: reference.checksum,
+                      createdAt: now,
+                      ownedByMe: false,
+                      canMaintain: false,
+                      revision: 0,
+                      sharing: {
+                        scope: 'company',
+                        departmentIds: [],
+                        departmentNames: [],
+                      },
+                      category: 'reference',
+                      sessionIds: [],
+                      artifact: null,
+                      isReference: true,
+                      reference,
+                    },
+                  ],
+                  truncated: false,
+                  options: {
+                    writable: false,
+                    maintenanceLevel: 'personal',
+                    departmentId: null,
+                    departments: [],
+                  },
+                },
+              }),
+            );
+            await f.page.route(
+              '**/api/v1/workbench/files/*/reference?*',
+              (route) => route.fulfill({ json: { reference } }),
+            );
+          }
           await f.page
             .getByRole('button', { name: '添加文件', exact: true })
             .click();
           await f.page
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
-          await f.page
-            .getByRole('button', { name: '引用 v1', exact: true })
-            .click();
+          if (width > 760)
+            await f.page
+              .getByRole('region', { name: '工作区文件', exact: true })
+              .getByRole('button', { name: '用于本次任务', exact: true })
+              .click();
+          else
+            await f.page
+              .getByRole('button', { name: '引用 v1', exact: true })
+              .click();
           const chip = f.page.getByRole('button', {
             name: '移除资料 Budget-v1.txt v1',
             exact: true,

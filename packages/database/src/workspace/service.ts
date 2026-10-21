@@ -74,6 +74,7 @@ import {
   getStoredFile,
 } from '../data.ts';
 import { getDatabase } from '../core/client.ts';
+import { workbenchFileSchemaReady } from '../workbench-file-access.ts';
 import {
   assistantRuntimeEnabled,
   AssistantRuntimeError,
@@ -2290,6 +2291,7 @@ export async function listWorkspaceFiles(
 ) {
   const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
   const sql = getDatabase();
+  const policyNames = await workbenchFileSchemaReady(sql);
   const rows = await sql<
     {
       id: string;
@@ -2304,11 +2306,12 @@ export async function listWorkspaceFiles(
     }[]
   >`
     select o.id, o.owner_id,
-      coalesce(deliverable.file_name, max(f.file_name), '未命名文件') as file_name,
+      coalesce(deliverable.file_name, max(f.file_name), ${policyNames ? sql`max(p.file_name)` : sql`null::text`}, '未命名文件') as file_name,
       o.media_type, o.size_bytes, o.visibility, o.category,
       deliverable.version as deliverable_version, o.created_at
     from allrice_storage_objects o
     left join allrice_file_references f on f.object_id = o.id
+    ${policyNames ? sql`left join allrice_workbench_file_policies p on p.object_id=o.id` : sql``}
     left join lateral (
       select version.file_name, version.version
       from allrice_deliverable_versions version
@@ -2356,10 +2359,12 @@ export async function linkWorkspaceFileToSession(input: {
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
+  const policyNames = await workbenchFileSchemaReady(sql);
   const rows = await sql<{ id: string; file_name: string }[]>`
-    select o.id, coalesce(max(f.file_name), '未命名文件') as file_name
+    select o.id, coalesce(max(f.file_name), ${policyNames ? sql`max(p.file_name)` : sql`null::text`}, '未命名文件') as file_name
     from allrice_storage_objects o
     left join allrice_file_references f on f.object_id = o.id
+    ${policyNames ? sql`left join allrice_workbench_file_policies p on p.object_id=o.id` : sql``}
     where o.id = ${UuidSchema.parse(input.objectId)}
       and o.organization_id = ${input.context.organizationId}
       and o.workspace_id = ${input.workspaceId}
