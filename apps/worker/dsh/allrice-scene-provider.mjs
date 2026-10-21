@@ -1,9 +1,9 @@
-import { readDshToolResult } from '@allrice/contracts';
+import { readDshToolResult } from '@allrice/contracts/native-runtime';
 import { renderSkillContent } from '@deepseek-ai/dsh-skill';
 import {
   EmployeeRuntimeSceneSchema,
   EmployeeSceneReadSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 
 const providerName = 'allrice-scenes';
 const resourcePrefix = 'AllRice scene receipt: ';

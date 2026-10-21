@@ -2,13 +2,13 @@
 import {
   PersonalSkillPinSchema,
   ExperienceSourceHandleSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 import { personalSkillNativeTools } from './allrice-personal-skill-native-tools.mjs';
 import { managedToolWaitTimeoutMs } from './allrice-tool-timeouts.mjs';
 import { methodTestNativeTools } from './allrice-method-test-native-tools.mjs';
 import { employeeMethodNativeTools } from './allrice-employee-method-native-tools.mjs';
 import { generateCodexImage } from './allrice-codex-images.mjs';
-import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts';
+import { RuntimeLocalCommandToolInputSchema } from '@allrice/contracts/native-runtime';
 import { preparedMethodQuestions } from './allrice-method-questions.mjs';
 import {
   nativeContextProjection,

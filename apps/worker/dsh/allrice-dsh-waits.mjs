@@ -1,4 +1,4 @@
-import { readDshToolResult } from '@allrice/contracts';
+import { readDshToolResult } from '@allrice/contracts/native-runtime';
 /** Persist only quiescent user-question boundaries. This does not serialize a
  * JavaScript continuation or restart the original task prompt. */
 import { KNOWN_SESSION_EVENT_TYPES } from '@deepseek-ai/dsh-session';

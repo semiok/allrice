@@ -1,4 +1,4 @@
-import { EmployeeProfileChatInputSchema } from '@allrice/contracts';
+import { EmployeeProfileChatInputSchema } from '@allrice/contracts/native-runtime';
 
 export const employeeProfileNativeTools = [
   {

@@ -55,6 +55,11 @@ async function fixture() {
     'package.json': '{"name":"allrice"}',
     'pnpm-lock.yaml': 'lockfileVersion: 9.0\n',
     'pnpm-workspace.yaml': 'packages: [apps/*, packages/*]\n',
+    'apps/worker/dsh/distribution.json': '{"selected":"fixture"}',
+    'apps/worker/dsh/compatibility.json': '{"history":"fixture"}',
+    'apps/worker/dsh/patch-ledger.json': '{"history":"fixture"}',
+    'apps/worker/dsh/upstream.json': '{"history":"fixture"}',
+    'patches/fixture.patch': 'installation provenance fixture',
   };
   for (const [path, text] of Object.entries(files)) {
     await mkdir(dirname(join(root, path)), { recursive: true });
@@ -115,6 +120,25 @@ it('cannot obtain verified identity from a correct release env SHA with an absen
   );
   await rm(join(f.root, '.local/dev-build-identity.json'));
   expect(await f.verify('web')).toBeNull();
+});
+it('keeps complete governance and installation sources sealed independently of native artifact selection', async () => {
+  for (const path of [
+    'apps/worker/dsh/distribution.json',
+    'apps/worker/dsh/compatibility.json',
+    'apps/worker/dsh/patch-ledger.json',
+    'apps/worker/dsh/upstream.json',
+    'patches/fixture.patch',
+  ]) {
+    const f = await fixture();
+    expect(f.manifest.files.some((file) => file.path === path)).toBe(true);
+    await writeFile(
+      join(f.root, path),
+      'changed provenance without executable change',
+    );
+    await expect(f.verify('worker')).rejects.toThrow(
+      'DEV_BUILD_IDENTITY_INVALID',
+    );
+  }
 });
 it('rejects changed Web output, Worker entrypoint and transitive runtime graph while declared SHA stays correct', async () => {
   for (const [path, service] of [

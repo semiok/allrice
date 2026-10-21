@@ -1,7 +1,7 @@
 import {
   LocalFileToolArguments,
   FileDerivationArgumentsSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 
 const path = {
   type: 'string',

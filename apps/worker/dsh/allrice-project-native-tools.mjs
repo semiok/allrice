@@ -1,4 +1,4 @@
-import { ProjectWorkspaceToolInputSchema } from '@allrice/contracts';
+import { ProjectWorkspaceToolInputSchema } from '@allrice/contracts/native-runtime';
 import {
   sandboxExecutionParameter,
   sandboxNetworkParameter,

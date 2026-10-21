@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { subscribe } from 'node:diagnostics_channel';
 import { performance } from 'node:perf_hooks';
 import { types } from 'node:util';
-import { ModelTransportFailureCodeSchema } from '@allrice/contracts';
+import { ModelTransportFailureCodeSchema } from '@allrice/contracts/native-runtime';
 import {
   closeOpenAICodexWebSocketSessions,
   getOpenAICodexWebSocketDebugStats,

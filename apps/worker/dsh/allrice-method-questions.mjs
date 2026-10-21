@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   UserQuestionItemSchema,
   methodActivationQuestionPrefix,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 
 // rc.3's ask_user_question consumer drops detail before the native service.
 // Restore that presentation field only from this agent's latest Broker receipt.

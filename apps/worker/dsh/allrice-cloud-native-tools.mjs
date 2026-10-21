@@ -7,7 +7,7 @@ import { z } from 'zod';
 import {
   SandboxNetworkRequestSchema,
   SandboxExecutionRequestSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 
 // The DSH DSL projects shape only. These bounds run before JSON-RPC; the
 // production Broker repeats its authoritative schema, tenant and approval checks.

@@ -598,6 +598,7 @@ describe('native artifact content and launch boundary', () => {
       generation: second.content.generation,
       root: retained,
       content: {
+        schemaVersion: 1,
         files: second.content.files,
         packages: second.content.packages,
       },

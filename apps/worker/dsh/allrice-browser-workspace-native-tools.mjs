@@ -3,7 +3,7 @@ import { z } from 'zod';
 import {
   BrowserVerificationPlanSchema,
   StaticBrowserReferenceSchema,
-} from '@allrice/contracts';
+} from '@allrice/contracts/native-runtime';
 // Rich constraints remain authoritative in the Broker, before any browser I/O.
 const schema = z
   .object({

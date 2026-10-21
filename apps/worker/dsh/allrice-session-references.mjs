@@ -1,7 +1,7 @@
 import { Context } from '@deepseek-ai/cordis';
 import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm';
 import SessionReferenceResolver from '@deepseek-ai/dsh-session-reference';
-import { SessionReferenceSnapshotsSchema } from '@allrice/contracts';
+import { SessionReferenceSnapshotsSchema } from '@allrice/contracts/native-runtime';
 
 /** Adapt only platform-authorized frozen text to the native reference service.
  * This isolated query port cannot list/read runtime journals or other tenants.

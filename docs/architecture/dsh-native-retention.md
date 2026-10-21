@@ -167,6 +167,49 @@ Web/Worker builds is an additional policy and does not supersede native history
 references. No automatic history retirement or compaction is implemented here.
 
 Schema-v1 content IDs, exact old IDs, source provenance and original storage
-namespaces remain unchanged. A lock-only edit currently can produce a different
-ID; it must follow the same A→B procedure. Cross-platform/Node-ABI history
-execution is not promised. No second Worker, AgentLoop or scheduler is added.
+namespaces remain unchanged. Remeasuring v1 still includes its original broad
+inputs, including lock metadata. Cross-platform/Node-ABI history execution is
+not promised. No second Worker, AgentLoop or scheduler is added.
+
+## Schema-v2 execution content
+
+Both native preparation commands explicitly produce schema v2. Verification
+dispatches from the approved manifest's version and rejects unknown versions;
+it never retries a failed v2 verification as v1. The measurement API retains
+its v1 default for callers checking historical manifests.
+
+V2 measures native modules and profiles, the JavaScript closure reached through
+`@allrice/contracts/native-runtime`, and the actual resolved production package
+closure. The contracts entry exports only values used by native adapters and
+does not re-export the general contracts barrel. Executed files remain fully
+hashed: this is a module boundary, not symbol-level tree shaking. An otherwise
+unrelated edit inside an imported JavaScript file still changes the content ID.
+
+The native schedule factory declares its literal module map. The verifier and
+approved loader use the same roots, including controller-local CJS resolution,
+metadata imports, profile-only dependencies and the effective native loader
+platform package. Unknown dynamic imports or unresolved required dependencies
+fail closed. Third-party package contents remain conservatively measured in
+full; optional and peer dependency resolution is retained.
+
+Employee settings, business data, unrelated Web/source files, unreachable
+contracts modules, declarations/maps and unused installation metadata are not
+native code authority. V2 projects the selected distribution and necessary
+loader-installation facts rather than hashing whole workspace/lock/governance
+files. Applied patches are measured through their installed execution bytes.
+Full service-build identity separately seals the raw governance files and
+patch recipes; it is not relaxed by native content equivalence. Install and
+verify the selected dependencies before preparing a new native manifest.
+
+The portable copy retains the original manifest/source, necessary support
+metadata, exact package instances/resolver links and only the measured
+contracts JavaScript closure. It re-verifies the destination ID before
+reporting success, copies no storage, and grants no deployment approval.
+
+Run the existing native-artifact, v2, loader and service-build regression tests
+when changing this boundary. Validate an actual installed closure and portable
+copy as well: unrelated inputs must retain the ID, while executed modules,
+required contracts and installed dependencies must change it and invalidate
+the old approval. Service source SHA/tree may change while the native ID stays
+the same. This format does not retire any historical consumer or complete the
+single-current-package migration by itself.

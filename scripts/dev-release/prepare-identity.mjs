@@ -31,7 +31,9 @@ const manifest = await prepareServiceBuildManifest({
   sourceSha,
   sourceTree: git('rev-parse', 'HEAD^{tree}'),
 });
-const nativeArtifact = await measureDshNativeArtifact(root);
+const nativeArtifact = await measureDshNativeArtifact(root, undefined, {
+  schemaVersion: 2,
+});
 nativeArtifact.source = { sha: sourceSha, tree: manifest.sourceTree };
 await mkdir(join(root, '.local'), { recursive: true, mode: 0o700 });
 const target = join(root, '.local/dev-build-identity.json'),
@@ -57,6 +59,7 @@ console.log(
     webBuildId: manifest.webBuildId,
     releaseAdmission: 'disabled',
     nativeArtifactId: nativeArtifact.artifactId,
+    nativeArtifactSchemaVersion: nativeArtifact.content.schemaVersion,
     nativePackageCount: nativeArtifact.content.packages.length,
     nativeArtifactApprovalGranted: false,
   }),

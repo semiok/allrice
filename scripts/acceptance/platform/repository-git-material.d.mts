@@ -1,3 +1,8 @@
+export const repositoryGitMaterialLimits: Readonly<{
+  files: number;
+  fileBytes: number;
+  totalBytes: number;
+}>;
 export function readRepositoryGitMaterial(
   root: string,
   sha: string,

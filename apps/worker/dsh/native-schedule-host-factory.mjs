@@ -2,6 +2,64 @@
 // No credentials-local, provider, webserver, database or arbitrary module import.
 import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
+// Measured literal dependency roots; the approved loader consumes this same map.
+export const nativeScheduleModuleMap = {
+  cordis: { specifier: '@deepseek-ai/cordis', anchor: 'factory' },
+  llm: { specifier: '@deepseek-ai/dsh-llm', anchor: 'factory' },
+  sessions: { specifier: '@deepseek-ai/dsh-session', anchor: 'factory' },
+  projections: {
+    specifier: '@deepseek-ai/dsh-session-projection',
+    anchor: 'factory',
+  },
+  systemPrompt: {
+    specifier: '@deepseek-ai/dsh-system-prompt',
+    anchor: 'factory',
+  },
+  files: { specifier: '@deepseek-ai/dsh-fs-local', anchor: 'factory' },
+  directory: {
+    specifier: '@deepseek-ai/dsh-working-directory',
+    anchor: 'factory',
+  },
+  tools: { specifier: '@deepseek-ai/dsh-tools', anchor: 'factory' },
+  agents: { specifier: '@deepseek-ai/dsh-agent', anchor: 'factory' },
+  loop: { specifier: '@deepseek-ai/dsh-agent-loop', anchor: 'factory' },
+  jsonl: {
+    specifier: '@deepseek-ai/dsh-session-persistence-jsonl',
+    anchor: 'factory',
+  },
+  storage: { specifier: '@deepseek-ai/dsh-storage', anchor: 'factory' },
+  domain: { specifier: '@deepseek-ai/dsh-storage-domain', anchor: 'factory' },
+  workspace: { specifier: '@deepseek-ai/dsh-workspace', anchor: 'factory' },
+  typert: { specifier: '@deepseek-ai/dsh-typert-registry', anchor: 'factory' },
+  defaultModel: {
+    specifier: '@deepseek-ai/dsh-agent-default-model',
+    anchor: 'factory',
+  },
+  credentials: { specifier: '@deepseek-ai/dsh-credentials', anchor: 'factory' },
+  commands: { specifier: '@deepseek-ai/dsh-commands', anchor: 'controller' },
+  connection: {
+    specifier: '@deepseek-ai/dsh-client-connection',
+    anchor: 'controller',
+  },
+  attachment: {
+    specifier: '@deepseek-ai/dsh-attachment-local',
+    anchor: 'factory',
+  },
+  upload: {
+    specifier: '@deepseek-ai/dsh-client-file-upload',
+    anchor: 'factory',
+  },
+  query: {
+    specifier: '@deepseek-ai/dsh-session-query-sqlite',
+    anchor: 'factory',
+  },
+  controller: {
+    specifier: '@deepseek-ai/dsh-api-session-controller',
+    anchor: 'factory',
+  },
+  sdk: { specifier: '@deepseek-ai/dsh-sdk-jsonrpc-server', anchor: 'factory' },
+  schedule: { specifier: '@deepseek-ai/dsh-schedule', anchor: 'factory' },
+};
 const TITLE = 'AllRice once control';
 const PROMPT = 'Synthetic schedule control only. Never execute business work.';
 const INIT = 'Initialize isolated once control. No business execution.';

@@ -23,15 +23,19 @@ Worker development uses `node --watch dist/index.js`, the same compiled entry as
 normal startup, without a TypeScript loader exemption. While editing Worker
 TypeScript, run `pnpm --filter @allrice/worker exec tsc -p tsconfig.build.json --watch`
 in a second terminal. Node restarts when compiled files change. Changes to native
-modules, profiles, contracts dist or dependencies require repeating preparation,
-reviewing the new ID, and restarting with that ID. The preparation command never
+modules, profiles, imported contracts JavaScript or resolved dependencies require
+repeating preparation, reviewing the ID, and restarting with that ID. Preparation
+uses the versioned execution boundary described in
+[native artifact retention](../architecture/dsh-native-retention.md#schema-v2-execution-content):
+unrelated settings, business data, declarations/maps and unused lock metadata do
+not create a different native ID. The preparation command never
 automatically approves shared Dev or Prod, and neither development nor production
 startup bypasses native content verification.
 
 ## Requirements
 
 - Node.js 22+
-- pnpm 11+
+- pnpm matching the repository's `packageManager` pin (currently 10.33.3)
 - Docker Desktop, or Docker Engine with the Compose plugin
 - a platform administrator who can complete DSH's Codex subscription OAuth
 
@@ -42,6 +46,21 @@ public device-code challenge; DSH stores and refreshes the OAuth grant in its
 private credential store.
 
 The repository pins pnpm in `package.json` and the Node major in `.nvmrc`. Run `pnpm doctor` before setup when diagnosing a teammate's machine.
+
+### Repository source receipt before pushing
+
+After committing a clean candidate, run the same immutable source capture used
+at the beginning of every CI job:
+
+```bash
+node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/prepush.json
+```
+
+The complete tracked tree is retained. The private repository source profile
+allows at most 4,096 files, 2,000,000 bytes per file and 40,000,000 total source
+bytes; expanded JSON is bounded at 60,000,000 bytes and gzip archives remain
+bounded at 12,000,000 bytes. CI and product limits have a shared regression
+check. These limits do not change ordinary project, Bridge or cloud wire limits.
 
 ## Default database: Docker Compose
 

@@ -15,6 +15,9 @@
     "paths": {
       "@allrice/browser-control": ["packages/browser-control/src/index.ts"],
       "@allrice/contracts": ["packages/contracts/src/index.ts"],
+      "@allrice/contracts/native-runtime": [
+        "packages/contracts/src/native-runtime.ts"
+      ],
       "@allrice/database": ["packages/database/src/index.ts"],
       "@allrice/storage": ["packages/storage/src/index.ts"],
       "@allrice/office-runtime": ["packages/office-runtime/src/index.ts"],

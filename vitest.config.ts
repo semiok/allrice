@@ -35,6 +35,9 @@ export default defineConfig({
       '@allrice/browser-control': fileURLToPath(
         new URL('./packages/browser-control/src/index.ts', import.meta.url),
       ),
+      '@allrice/contracts/native-runtime': fileURLToPath(
+        new URL('./packages/contracts/src/native-runtime.ts', import.meta.url),
+      ),
       '@allrice/contracts': fileURLToPath(
         new URL('./packages/contracts/src/index.ts', import.meta.url),
       ),
