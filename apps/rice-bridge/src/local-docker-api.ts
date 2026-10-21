@@ -1,5 +1,5 @@
 import { streamProjectLogs } from '@allrice/project-runtime';
-import { request } from 'node:http';
+import { request, type IncomingMessage } from 'node:http';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { lstat, realpath } from 'node:fs/promises';
@@ -232,12 +232,30 @@ export class LocalDockerApi {
     path: string,
     body?: unknown,
     timeoutMs = 15_000,
+    signal?: AbortSignal,
   ): Promise<T> {
+    signal?.throwIfAborted();
     const bytes =
       body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     if (bytes && bytes.length > 1_000_000)
       throw new LocalCommandError('RUNNER_INPUT_LIMIT');
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let response: IncomingMessage | undefined;
+      const cleanup = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener('abort', abort);
+      };
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+        // Reject before closing: a queued response end must not report success.
+        response?.destroy();
+        req.destroy();
+      };
+      const abort = () => fail(signal?.reason);
       const req = request(
         {
           socketPath: this.socketPath,
@@ -251,51 +269,72 @@ export class LocalDockerApi {
             : {},
         },
         (res) => {
+          response = res;
+          res.once('error', fail);
+          if (settled) {
+            res.destroy();
+            return;
+          }
           const output: Buffer[] = [];
           let size = 0;
           res.on('data', (chunk: Buffer) => {
+            if (settled) return;
             size += chunk.length;
             if (size > 2_000_000)
-              req.destroy(new LocalCommandError('DAEMON_RESPONSE_LIMIT'));
+              fail(new LocalCommandError('DAEMON_RESPONSE_LIMIT'));
             else output.push(chunk);
           });
-          res.once('error', reject);
+          res.once('aborted', () =>
+            fail(new LocalCommandError('DAEMON_RESPONSE_INTERRUPTED')),
+          );
           res.once('end', () => {
+            if (settled) return;
+            if (signal?.aborted) {
+              abort();
+              return;
+            }
             if (
               !res.statusCode ||
               res.statusCode < 200 ||
               res.statusCode > 299
             ) {
-              reject(
-                new LocalCommandError(`DAEMON_HTTP_${res.statusCode ?? 0}`),
-              );
+              fail(new LocalCommandError(`DAEMON_HTTP_${res.statusCode ?? 0}`));
               return;
             }
             try {
-              resolve(
-                (size
-                  ? JSON.parse(Buffer.concat(output).toString('utf8'))
-                  : null) as T,
-              );
+              const value = (
+                size ? JSON.parse(Buffer.concat(output).toString('utf8')) : null
+              ) as T;
+              settled = true;
+              cleanup();
+              resolve(value);
             } catch {
-              reject(new LocalCommandError('INVALID_DAEMON_RESPONSE'));
+              fail(new LocalCommandError('INVALID_DAEMON_RESPONSE'));
             }
           });
         },
       );
-      req.once('error', reject);
+      req.once('error', fail);
       // Dribbling bytes must not keep an authorization or stop request alive.
       const timer = setTimeout(
-        () => req.destroy(new LocalCommandError('DAEMON_TIMEOUT')),
+        () => fail(new LocalCommandError('DAEMON_TIMEOUT')),
         timeoutMs,
       );
-      req.once('close', () => clearTimeout(timer));
-      req.end(bytes);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      if (!settled) req.end(bytes);
     });
   }
 
   /** Docker's non-TTY multiplexed frames, bounded before decoding any JSON lines. */
-  async logs(id: string, receive: (bytes: Buffer) => void, timeoutMs: number) {
-    return streamProjectLogs(this.socketPath, id, receive, timeoutMs);
+  async logs(
+    id: string,
+    receive: (bytes: Buffer) => void,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    await streamProjectLogs(this.socketPath, id, receive, timeoutMs, signal);
+    signal?.throwIfAborted();
   }
 }

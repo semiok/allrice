@@ -620,6 +620,30 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func prepareEnvironment() { action("prepare") }
     @objc private func pause() { action("pause") }
     @objc private func resume() { action("resume") }
+    private var preparationStepLabels: [String: String] {
+        ["download": "下载运行环境", "verify_download": "校验下载", "extract": "解压运行环境",
+         "vm_wait": "等待沙箱启动", "vm_start": "启动沙箱", "vm_stop": "停止沙箱",
+         "vm_status": "核实沙箱停止状态", "engine_socket": "检查环境连接", "engine_info": "读取环境状态",
+         "image_check": "检查运行镜像", "image_import": "导入运行镜像", "probe_create": "创建环境探测",
+         "probe_start": "启动环境探测", "probe_logs": "读取探测结果", "probe_inspect": "核实探测状态",
+         "probe_cleanup": "清理环境探测", "browser_prepare": "准备独立浏览器",
+         "pdf_prepare": "准备文档环境", "command_prepare": "准备命令环境"]
+    }
+
+    private func safePreparationRows(_ key: String) -> [[String: Any]] {
+        let preparation = (state["shutdown"] as? [String: Any])?["preparation"] as? [String: Any] ?? state["preparation"] as? [String: Any]
+        let rows = preparation?[key] as? [[String: Any]] ?? []
+        let components = Set(["vm", "python", "node", "browser", "pdf", "command"])
+        return rows.prefix(16).compactMap { row in
+            guard let component = row["component"] as? String, components.contains(component),
+                  let step = row["step"] as? String, self.preparationStepLabels[step] != nil else { return nil }
+            var safe: [String: Any] = ["component": component, "step": step,
+                "elapsedMs": max(0, min(604_800_000, row["elapsedMs"] as? Int ?? 0))]
+            if let status = row["state"] as? String, ["started", "completed", "failed"].contains(status) { safe["state"] = status }
+            return safe
+        }
+    }
+
     private var stopPhaseLabel: String {
         let phases = ["control": "等待当前操作收尾", "foreground": "停止前台任务",
                       "browser": "关闭独立浏览器", "preparation": "停止环境准备",
@@ -627,7 +651,15 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                       "local_processes": "停止本地服务", "sandbox": "停止本地沙箱",
                       "receipts": "保存并回传执行记录", "journal": "关闭执行日志"]
         let phase = (state["shutdown"] as? [String: Any])?["phase"] as? String ?? ""
-        return phases[phase] ?? "等待核心确认（暂未收到阶段信息）"
+        let base = phases[phase] ?? "等待核心确认（暂未收到阶段信息）"
+        if phase == "preparation" || phase == "sandbox" {
+            let details = safePreparationRows("active").suffix(3).compactMap { row -> String? in
+                guard let step = row["step"] as? String, let label = self.preparationStepLabels[step] else { return nil }
+                return label
+            }
+            if !details.isEmpty { return base + "：" + details.joined(separator: "、") }
+        }
+        return base
     }
 
     private func nativeExitDiagnostics() -> [String: Any] {
@@ -640,6 +672,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "coreRunning": process?.isRunning == true, "waitLimitMs": 60_000,
             "lastStateAgeMs": Int(max(0, ProcessInfo.processInfo.systemUptime - stateReceivedAt) * 1000),
             "stopPhase": stopPhaseLabel]
+        result["preparation"] = ["active": safePreparationRows("active"), "history": safePreparationRows("history")]
         for key in ["activeForeground", "activeServices", "pendingReceipts", "unknownOperations"] {
             result[key] = max(0, min(1_000_000, state[key] as? Int ?? 0))
         }
@@ -706,6 +739,7 @@ final class RiceBridgeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             "DESKTOP_REVOKED_CLEANUP_PENDING": "此前解除配对已在服务端生效，但旧凭证或配置尚未完全清理；不代表之后的新配对被撤销。请保留诊断记录，不要使用旧令牌重试撤销。",
             "DESKTOP_CONFIG_INVALID": "本机配置无法安全读取，请保留原文件并检查诊断。",
             "DESKTOP_STOP_UNCONFIRMED": "核心未能确认安全停止，不能显示已暂停或已完成退出。请保留配对与执行日志，检查本机沙箱和诊断后再处理。",
+            "STOP_NOT_CONFIRMED": "沙箱或环境探测的停止状态尚未确认，不能显示安全退出。请保留执行记录，并查看退出诊断中的准备步骤后再处理。",
             "UPDATE_DRAIN_BROWSER_ACTIVE": "请先从菜单明确关闭独立浏览器和项目预览，再重新检查更新。更新不会代替你强制停止浏览器任务。",
             "UPDATE_DRAIN_UNCONFIRMED": "仍有活跃任务、未知执行或无法安全读取的日志，尚不能更新。请检查任务与诊断并等待停止确认；不要清空执行日志或强制覆盖应用。",
             "UPDATE_TRUST_UNCONFIGURED": "此构建尚未配置受信发布者。请等待管理员提供经过签名与公证的构建；不要粘贴来历不明的公钥或关闭系统保护。",

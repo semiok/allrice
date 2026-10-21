@@ -144,6 +144,7 @@ export async function runDesktopController() {
     pendingReceipts: runtime.pendingReceipts,
     unknownOperations: runtime.unknownOperations,
     shutdown: shutdownState.snapshot(),
+    preparation: shutdownState.preparationSnapshot(),
   });
   const publish = () =>
     send({ type: 'state', sequence: ++sequence, state: state() });
@@ -274,6 +275,7 @@ export async function runDesktopController() {
       },
       onNotice: note,
       onStopPhase: (phase) => shutdownState.enter(phase),
+      onPreparationStep: (event) => shutdownState.observePreparation(event),
       chooseWorkspace: () =>
         new Promise<string>((resolve, reject) => {
           if (closing || abort?.signal.aborted)
@@ -597,6 +599,7 @@ export async function runDesktopController() {
           pendingReceipts: runtime.pendingReceipts,
           unknownOperations: runtime.unknownOperations,
           shutdown: shutdownState.snapshot(),
+          preparation: shutdownState.preparationSnapshot(),
           notices,
         });
         continue;

@@ -1,5 +1,38 @@
 # Bridge control timing
 
+## Desktop exit during preparation
+
+Runtime preparation and task execution have separate cancellation paths. On
+desktop quit, Python Engine JSON/log requests receive the preparation signal;
+late replies cannot start another image/probe step or advertise availability.
+Once probe creation may have committed, cleanup uses a separate 10s budget:
+read back the unique attempt/name and fixed image, confirm stop, delete, and
+confirm absence. An unknown create/stop/delete remains `STOP_NOT_CONFIRMED`.
+
+The managed VM's owned start/stop CLI is observed through actual child exit.
+Cancellation or its deadline sends TERM, then KILL only to that exact child;
+inherited stdout pipes cannot keep the result open indefinitely. Stop uses a
+25s child budget followed by a 5s independent query of the dedicated private
+Colima profile. A successful/killed CLI is not VM-stop evidence. A running,
+malformed or unqueryable profile, or an unconfirmed child exit, retains recovery
+state and cannot report safe shutdown. Unrelated processes and profiles are
+outside this authority.
+
+Desktop diagnostics expose only fixed component/step identifiers, elapsed
+milliseconds and a bounded history. They distinguish downloads, VM startup,
+Engine checks, probe logs/cleanup and VM stop verification without exporting
+paths, URLs, arguments or credentials. The existing 60s native observation
+boundary still offers recovery while cleanup is observed; it does not authorize
+abandoning effects or automatic force-exit.
+
+Core preparation coverage lives in `core-preparation-shutdown.test.ts`; real
+HTTP and cancellation boundaries in `preflight-cancellation.test.ts`,
+`local-docker-cancellation.test.ts` and `project-logs.test.ts`; owned child and VM
+confirmation in `managed-stop-deadline.test.ts`. These deterministic fixtures
+complement actual packaged-Core/native-menu acceptance on Intel and Apple
+silicon. Idle exit or a simulated Core alone cannot establish preparation exit
+coverage. Preserve the original failed diagnostic when a later candidate passes.
+
 Finite local commands, Python and project commands use three separate clocks:
 
 - The authority freezes the task/command budget before preparation. The existing 10/30/60 minute policy and progress-based extensions remain unchanged.

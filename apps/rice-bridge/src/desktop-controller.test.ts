@@ -548,35 +548,39 @@ it('fixture close waits for pipe drain after a spawn error but remains bounded',
   ).resolves.toBeUndefined();
 });
 
-it('stops a server-rejected identity, retains pairing evidence and exposes recovery instead of endless reconnecting', async () => {
-  const f = await fixture();
-  f.rejectPairing();
-  const app = f.launch();
-  await app.waitUntil(() =>
-    app.frames.some(
-      (frame) =>
-        frame.type === 'state' &&
-        (frame.state as Record<string, unknown>)?.pairingRequired === true &&
-        (frame.state as Record<string, unknown>)?.connection === 'stopped',
-    ),
-  );
-  expect((await app.request('status')).data).toMatchObject({
-    pairingRequired: true,
-    deviceId,
-    connection: 'stopped',
-  });
-  expect((await app.request('diagnostics')).data).toMatchObject({
-    pairingRequired: true,
-    notices: expect.arrayContaining([
-      expect.objectContaining({ code: 'BRIDGE_PAIRING_REJECTED' }),
-    ]),
-  });
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
-  expect(f.polls()).toBe(0);
-  expect((await app.request('resume')).ok).toBe(false);
-  expect((await app.request('stop')).ok).toBe(true);
-  await exited(app.child);
-});
+it(
+  'stops a server-rejected identity, retains pairing evidence and exposes recovery instead of endless reconnecting',
+  async () => {
+    const f = await fixture();
+    f.rejectPairing();
+    const app = f.launch();
+    await app.waitUntil(() =>
+      app.frames.some(
+        (frame) =>
+          frame.type === 'state' &&
+          (frame.state as Record<string, unknown>)?.pairingRequired === true &&
+          (frame.state as Record<string, unknown>)?.connection === 'stopped',
+      ),
+    );
+    expect((await app.request('status')).data).toMatchObject({
+      pairingRequired: true,
+      deviceId,
+      connection: 'stopped',
+    });
+    expect((await app.request('diagnostics')).data).toMatchObject({
+      pairingRequired: true,
+      notices: expect.arrayContaining([
+        expect.objectContaining({ code: 'BRIDGE_PAIRING_REJECTED' }),
+      ]),
+    });
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toEqual(f.config);
+    expect(f.polls()).toBe(0);
+    expect((await app.request('resume')).ok).toBe(false);
+    expect((await app.request('stop')).ok).toBe(true);
+    await exited(app.child);
+  },
+  startupWaitMs + shutdownWaitMs + exitWaitMs,
+);
 
 it('real CLI desktop keeps existing pairing, pauses pending polling, resumes and stops without secrets', async () => {
   const f = await fixture();
@@ -650,30 +654,34 @@ it('keeps read-only diagnostics and duplicate stop observations responsive durin
   expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject(f.config);
 }, 15_000);
 
-it('explicit pause survives reopening, and resume restores the same pairing', async () => {
-  const f = await fixture();
-  const app = f.launch();
-  await app.waitUntil(() => f.polls() > 0);
-  await app.request('pause');
-  expect(JSON.parse(await readFile(f.path, 'utf8')).paused).toBe(true);
-  await app.request('stop');
-  await exited(app.child);
-  const polls = f.polls(),
-    reopened = f.launch();
-  expect((await reopened.request('status')).data).toMatchObject({
-    mode: 'paused',
-  });
-  await delay(100);
-  expect(f.polls()).toBe(polls);
-  await reopened.request('resume');
-  await reopened.waitUntil(() => f.polls() > polls);
-  expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject({
-    ...f.config,
-    paused: false,
-  });
-  await reopened.request('stop');
-  await exited(reopened.child);
-}, 15000);
+it(
+  'explicit pause survives reopening, and resume restores the same pairing',
+  async () => {
+    const f = await fixture();
+    const app = f.launch();
+    await app.waitUntil(() => f.polls() > 0);
+    await app.request('pause');
+    expect(JSON.parse(await readFile(f.path, 'utf8')).paused).toBe(true);
+    await app.request('stop');
+    await exited(app.child);
+    const polls = f.polls(),
+      reopened = f.launch();
+    expect((await reopened.request('status')).data).toMatchObject({
+      mode: 'paused',
+    });
+    await delay(100);
+    expect(f.polls()).toBe(polls);
+    await reopened.request('resume');
+    await reopened.waitUntil(() => f.polls() > polls);
+    expect(JSON.parse(await readFile(f.path, 'utf8'))).toMatchObject({
+      ...f.config,
+      paused: false,
+    });
+    await reopened.request('stop');
+    await exited(reopened.child);
+  },
+  2 * (startupWaitMs + shutdownWaitMs + exitWaitMs),
+);
 
 it('P14 native protocol fails closed without trust, drains acquisition without deleting pairing and resumes', async () => {
   const f = await fixture();

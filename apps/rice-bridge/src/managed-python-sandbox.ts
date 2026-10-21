@@ -32,6 +32,15 @@ import {
   managedSandboxVersion,
 } from './managed-sandbox-release.js';
 import { managedSandboxLicenses } from './managed-sandbox-licenses.js';
+import {
+  OwnedStopProcessExitUnconfirmed,
+  runOwnedStopProcess,
+} from './owned-stop-process.js';
+import {
+  withPreparationStep,
+  type PreparationObserver,
+  type PreparationStep,
+} from './preparation-progress.js';
 
 const exec = promisify(execFile);
 async function privateDirectory(path: string) {
@@ -158,12 +167,40 @@ export class ManagedPythonSandbox {
   readonly vmHome: string;
   private readonly tools: string;
   private started = false;
+  private vmStartRequested = false;
+  private ownedExitUnconfirmed = false;
   private vmPreparation: Promise<void> | undefined;
+  private vmStop: Promise<void> | undefined;
+  // Includes TERM, KILL and exit observation; status has its own bounded read.
+  private readonly processTimeouts = {
+    start: 180_000,
+    stop: 25_000,
+    status: 5_000,
+  };
   readonly preparation = new Map<
     BridgePreparationProgress['component'],
     BridgePreparationProgress
   >();
   onPreparation?: () => void;
+  onPreparationStep?: PreparationObserver;
+  private step<T>(
+    component: BridgePreparationProgress['component'],
+    step: PreparationStep,
+    signal: AbortSignal | undefined,
+    operation: () => Promise<T>,
+  ) {
+    return withPreparationStep(
+      this.onPreparationStep,
+      component,
+      step,
+      async () => {
+        signal?.throwIfAborted();
+        const value = await operation();
+        signal?.throwIfAborted();
+        return value;
+      },
+    );
+  }
   private readonly downloadFailures = new Map<
     BridgePreparationProgress['component'],
     unknown
@@ -230,10 +267,12 @@ export class ManagedPythonSandbox {
     signal: AbortSignal,
   ) {
     try {
-      await downloadManagedRuntimeAsset(path, asset, signal, {
-        onProgress: (progress) =>
-          this.progress(component, progress.stage, progress),
-      });
+      await this.step(component, 'download', signal, () =>
+        downloadManagedRuntimeAsset(path, asset, signal, {
+          onProgress: (progress) =>
+            this.progress(component, progress.stage, progress),
+        }),
+      );
     } catch (error) {
       this.downloadFailures.set(component, error);
       throw error;
@@ -255,11 +294,13 @@ export class ManagedPythonSandbox {
       release,
       socketPath: join(this.vmHome, 'c', managedSandboxProfile, 'docker.sock'),
     });
+    this.runner.onPreparationStep = (event) => this.onPreparationStep?.(event);
   }
   private environment() {
     return managedSandboxEnvironment(this.vmHome, this.tools);
   }
   private async extract(archive: string, target: string, signal: AbortSignal) {
+    signal.throwIfAborted();
     const { stdout } = await exec('/usr/bin/tar', ['-tzf', archive], {
       signal,
       timeout: 30_000,
@@ -272,6 +313,7 @@ export class ManagedPythonSandbox {
         .some((path) => path.startsWith('/') || path.split('/').includes('..'))
     )
       throw new LocalCommandError('RUNTIME_ARCHIVE_UNSAFE');
+    signal.throwIfAborted();
     await exec('/usr/bin/tar', ['-xzf', archive, '-C', target], {
       signal,
       timeout: 60_000,
@@ -288,7 +330,15 @@ export class ManagedPythonSandbox {
         this.vmPreparation = undefined;
       });
     }
-    await this.vmPreparation;
+    // The flight already owns startup/cleanup effects. A synchronous observer
+    // cancellation must still join it before reporting the preparation ended.
+    const preparation = this.vmPreparation;
+    await withPreparationStep(
+      this.onPreparationStep,
+      'vm',
+      'vm_wait',
+      () => preparation,
+    );
     signal.throwIfAborted();
   }
   private async startVM(signal: AbortSignal) {
@@ -316,6 +366,7 @@ export class ManagedPythonSandbox {
       }),
     ]);
     const [major, minor] = mac.trim().split('.').map(Number);
+    signal.throwIfAborted();
     if (
       !major ||
       major < 13 ||
@@ -374,20 +425,26 @@ export class ManagedPythonSandbox {
       await privateDirectory(stage);
       await privateDirectory(join(stage, 'bin'));
       try {
-        await this.extract(
-          join(this.root, 'archives', distribution.lima.fileName),
-          stage,
-          signal,
+        await this.step('vm', 'extract', signal, () =>
+          this.extract(
+            join(this.root, 'archives', distribution.lima.fileName),
+            stage,
+            signal,
+          ),
         );
-        await this.extract(
-          join(this.root, 'archives', distribution.agents.fileName),
-          stage,
-          signal,
+        await this.step('vm', 'extract', signal, () =>
+          this.extract(
+            join(this.root, 'archives', distribution.agents.fileName),
+            stage,
+            signal,
+          ),
         );
-        await this.extract(
-          join(this.root, 'archives', distribution.docker.fileName),
-          stage,
-          signal,
+        await this.step('vm', 'extract', signal, () =>
+          this.extract(
+            join(this.root, 'archives', distribution.docker.fileName),
+            stage,
+            signal,
+          ),
         );
         await copyFile(
           join(this.root, 'archives', 'colima'),
@@ -443,21 +500,31 @@ export class ManagedPythonSandbox {
       !(await matches(binary, distribution.colima))
     )
       throw new LocalCommandError('RUNTIME_TOOL_CHANGED');
+    signal.throwIfAborted();
+    await this.launchVM(
+      binary,
+      managedSandboxStartArguments(
+        join(this.root, 'archives', distribution.guest.fileName),
+        distribution.nativeArchitecture,
+      ),
+      signal,
+    );
+  }
+  private async launchVM(binary: string, args: string[], signal: AbortSignal) {
     // Every resume is bounded and rewrites our fixed flags, not user defaults.
     try {
-      await exec(
-        binary,
-        managedSandboxStartArguments(
-          join(this.root, 'archives', distribution.guest.fileName),
-          distribution.nativeArchitecture,
-        ),
-        {
+      await this.step('vm', 'vm_start', signal, async () => {
+        this.vmStartRequested = true;
+        const result = await runOwnedStopProcess(binary, args, {
           env: this.environment(),
           signal,
-          timeout: 180_000,
+          timeoutMs: this.processTimeouts.start,
           maxBuffer: 256_000,
-        },
-      );
+        });
+        signal.throwIfAborted();
+        if (result.exitCode !== 0 || result.interrupted)
+          throw new LocalCommandError('NATIVE_VM_UNAVAILABLE');
+      });
       this.started = true;
       signal.throwIfAborted();
       const yaml = await readFile(
@@ -470,11 +537,20 @@ export class ManagedPythonSandbox {
         ),
         'utf8',
       );
+      signal.throwIfAborted();
       assertManagedSandboxConfiguration(yaml);
     } catch (error) {
+      if (error instanceof OwnedStopProcessExitUnconfirmed)
+        this.ownedExitUnconfirmed = true;
       // Only failed VM startup owns this cleanup. An image download must never
       // stop the shared VM or invalidate another already-ready runtime.
-      await this.stop().catch(() => undefined);
+      try {
+        await this.stop();
+      } catch (cleanupError) {
+        const unknown = new LocalCommandError('STOP_NOT_CONFIRMED');
+        unknown.cause = new AggregateError([error, cleanupError]);
+        throw unknown;
+      }
       throw error;
     }
   }
@@ -482,10 +558,32 @@ export class ManagedPythonSandbox {
     await this.prepareVM(signal);
     return this.prepareComponent('python', () => this.preparePython(signal));
   }
+  private importImage(
+    component: 'python' | 'node',
+    path: string,
+    size: number,
+    signal: AbortSignal,
+  ) {
+    return this.step(component, 'image_import', signal, async () => {
+      const stream = createReadStream(path, { signal });
+      // The Engine verifies its socket before attaching pipeline listeners.
+      // Cancellation in that await must not emit an unhandled stream error.
+      stream.on('error', () => undefined);
+      try {
+        await this.runner.api.loadImageArchive(stream, size, signal);
+      } finally {
+        stream.destroy();
+      }
+    });
+  }
   private async preparePython(signal: AbortSignal) {
+    signal.throwIfAborted();
     try {
-      return await this.runner.preflight(signal);
+      const result = await this.runner.preflight(signal);
+      signal.throwIfAborted();
+      return result;
     } catch (error) {
+      signal.throwIfAborted();
       if (
         !(error instanceof LocalCommandError) ||
         error.code !== 'DAEMON_HTTP_404'
@@ -506,38 +604,54 @@ export class ManagedPythonSandbox {
       },
       signal,
     );
-    await this.runner.api.loadImageArchive(
-      createReadStream(path),
+    await this.importImage(
+      'python',
+      path,
       this.release.archive.sizeBytes,
       signal,
     );
-    return this.runner.preflight(signal, true);
+    signal.throwIfAborted();
+    const result = await this.runner.preflight(signal, true);
+    signal.throwIfAborted();
+    return result;
   }
   async prepareNodeImage(signal: AbortSignal) {
     await this.prepareVM(signal);
     return this.prepareComponent('node', () => this.prepareNode(signal));
   }
   private async prepareNode(signal: AbortSignal) {
+    signal.throwIfAborted();
     const release = managedNodePayloadForPlatform(`macos-${process.arch}`);
     if (!this.started || !release)
       throw new LocalCommandError('PROJECT_RUNTIME_UNAVAILABLE');
-    const inspect = async () => {
-      const image = await this.runner.api.json<{
-        Id: string;
-        Architecture: string;
-        Os: string;
-      }>('GET', `/images/${release.imageId}/json`);
-      if (
-        image.Id !== release.imageId ||
-        image.Architecture !== release.architecture ||
-        image.Os !== 'linux'
-      )
-        throw new LocalCommandError('TOOLCHAIN_CHANGED');
-    };
+    const inspect = () =>
+      this.step('node', 'image_check', signal, async () => {
+        const image = await this.step('node', 'engine_socket', signal, () =>
+          this.runner.api.json<{
+            Id: string;
+            Architecture: string;
+            Os: string;
+          }>(
+            'GET',
+            `/images/${release.imageId}/json`,
+            undefined,
+            15_000,
+            signal,
+          ),
+        );
+        signal.throwIfAborted();
+        if (
+          image.Id !== release.imageId ||
+          image.Architecture !== release.architecture ||
+          image.Os !== 'linux'
+        )
+          throw new LocalCommandError('TOOLCHAIN_CHANGED');
+      });
     try {
       await inspect();
       return;
     } catch (error) {
+      signal.throwIfAborted();
       if (
         !(error instanceof LocalCommandError) ||
         error.code !== 'DAEMON_HTTP_404'
@@ -558,22 +672,122 @@ export class ManagedPythonSandbox {
       },
       signal,
     );
-    await this.runner.api.loadImageArchive(
-      createReadStream(path),
-      release.archive.sizeBytes,
-      signal,
-    );
+    await this.importImage('node', path, release.archive.sizeBytes, signal);
     await inspect();
   }
   async stop() {
+    if (!this.vmStop)
+      this.vmStop = this.stopVM().finally(() => {
+        this.vmStop = undefined;
+      });
+    return this.vmStop;
+  }
+  private async stopVM() {
+    try {
+      await this.stopAndConfirmVM();
+    } catch (cause) {
+      const error = new LocalCommandError('STOP_NOT_CONFIRMED');
+      error.cause = cause;
+      throw error;
+    }
+  }
+  private async stopAndConfirmVM() {
     const binary = join(this.tools, 'bin', 'colima');
-    if (!(await lstat(binary).catch(() => null))) return;
+    const exists = (path: string) =>
+      lstat(path).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      });
+    if (!(await exists(binary))) {
+      // Download-only cancellation before any start has no owned VM effect.
+      // Existing profile metadata or any attempted start needs a real query.
+      if (
+        !this.started &&
+        !this.vmStartRequested &&
+        !this.ownedExitUnconfirmed &&
+        !(await exists(
+          join(this.vmHome, 'c', '_lima', `colima-${managedSandboxProfile}`),
+        ))
+      )
+        return;
+      throw new LocalCommandError('STOP_NOT_CONFIRMED');
+    }
     // Only our private profile; no global/default/Node VM stop or removal.
-    await exec(binary, ['stop', '--profile', managedSandboxProfile], {
-      env: this.environment(),
-      timeout: 30_000,
-      maxBuffer: 65_536,
-    });
+    let stopFailure: unknown;
+    try {
+      await this.step('vm', 'vm_stop', undefined, async () => {
+        const result = await runOwnedStopProcess(
+          binary,
+          ['stop', '--profile', managedSandboxProfile],
+          {
+            env: this.environment(),
+            timeoutMs: this.processTimeouts.stop,
+          },
+        );
+        if (result.exitCode !== 0 || result.interrupted) {
+          const error = new LocalCommandError('VM_STOP_COMMAND_FAILED');
+          error.cause = result;
+          throw error;
+        }
+      });
+    } catch (error) {
+      stopFailure = error;
+      if (error instanceof OwnedStopProcessExitUnconfirmed)
+        this.ownedExitUnconfirmed = true;
+      // Even a failed/killed CLI can have stopped the VM. Only the independent
+      // profile read below can confirm that; a successful CLI alone cannot.
+    }
+    try {
+      await this.step('vm', 'vm_status', undefined, async () => {
+        let result;
+        try {
+          result = await runOwnedStopProcess(
+            binary,
+            ['list', '--profile', managedSandboxProfile, '--json'],
+            {
+              env: this.environment(),
+              timeoutMs: this.processTimeouts.status,
+            },
+          );
+        } catch (error) {
+          if (error instanceof OwnedStopProcessExitUnconfirmed)
+            this.ownedExitUnconfirmed = true;
+          throw error;
+        }
+        if (
+          result.exitCode !== 0 ||
+          result.interrupted ||
+          this.ownedExitUnconfirmed
+        ) {
+          const error = new LocalCommandError('STOP_NOT_CONFIRMED');
+          error.cause = result;
+          throw error;
+        }
+        // Pinned Colima 0.10.3 `list --json` emits one JSON object per line and
+        // --profile filters to this profile. Empty success means no such VM.
+        const rows: unknown[] = result.stdout
+          .split('\n')
+          .filter((line) => line.trim())
+          .map((line) => JSON.parse(line));
+        if (
+          rows.length > 1 ||
+          rows.some(
+            (row) =>
+              !row ||
+              typeof row !== 'object' ||
+              !('name' in row) ||
+              row.name !== managedSandboxProfile ||
+              !('status' in row) ||
+              row.status !== 'Stopped',
+          )
+        )
+          throw new LocalCommandError('STOP_NOT_CONFIRMED');
+      });
+    } catch (statusFailure) {
+      if (stopFailure) throw new AggregateError([stopFailure, statusFailure]);
+      throw statusFailure;
+    }
     this.started = false;
+    this.vmStartRequested = false;
   }
 }
