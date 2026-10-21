@@ -268,7 +268,8 @@ export async function listReferenceRevisions(
           status: s.status,
           processing: r.file_state === 'pending' ? 'uploading' : r.state,
           failure: r.failure,
-          canMaintain: !s.legacy_company_asset_id && access.canMaintain,
+          canMaintain:
+            !s.legacy_company_asset_id && !boundAccess && access.canMaintain,
           canRetryProcessing:
             access.canMaintain &&
             (r.state !== 'unsupported' ||
@@ -468,6 +469,10 @@ async function reserveReferenceFile(
     revision = 1;
   if (v.sourceId) {
     const found = await referenceSourceAccess(context, v.sourceId, tx, true);
+    // Managed snapshots keep their exact origin/version. Publishing different
+    // bytes through the legacy uploader would sever that immutable binding.
+    if (await workbenchReferenceAccess(context, v.sourceId, tx))
+      throw new ReferenceLibraryError('source_unavailable');
     source = found.source;
     if (
       !isDeepStrictEqual(found.ownership, ownership) ||
@@ -481,11 +486,13 @@ async function reserveReferenceFile(
     revision = latest.value + 1;
   } else {
     const id = randomUUID();
+    // The existing ownership_shape binds a private source to its logical
+    // owner. The actual uploader remains revision.created_by and audit.actor_id.
     const [created] = await tx<
       SourceRow[]
     >`insert into allrice_knowledge_sources
         (id,organization_id,workspace_id,slug,name,description,created_by,ownership)
-        values (${id},${context.organizationId},${v.workspaceId},${'reference-' + id},${v.fileName},${v.purpose || '参考资料'},${context.actor.id},${tx.json(ownership)}) returning *`;
+        values (${id},${context.organizationId},${v.workspaceId},${'reference-' + id},${v.fileName},${v.purpose || '参考资料'},${ownership.scope === 'personal' ? ownership.ownerId : context.actor.id},${tx.json(ownership)}) returning *`;
     source = created!;
   }
   // Resolve actual current memberships. Platform sessions intentionally omit

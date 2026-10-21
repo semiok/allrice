@@ -27,6 +27,7 @@ import {
 } from './workbench-files.ts';
 import {
   getReferenceFile,
+  prepareReferenceUpload,
   listReferenceRevisions,
 } from './reference-library.ts';
 import { readReferenceSelection } from './reference-runtime.ts';
@@ -361,6 +362,49 @@ suite(
         '按已经确认的回款统计收入。',
       );
     });
+    it('never turns a retained copy into an independently editable file or source, even for a company maintainer', async () => {
+      const t = await setup(),
+        file = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+          storage(),
+        );
+      const reference = await captureWorkbenchFileReference(
+        t.maintainer,
+        t.maintainer.workspaceId!,
+        file.objectId,
+        randomUUID(),
+        storage(),
+      );
+      const copy = await getReferenceFile(
+        t.maintainer,
+        t.maintainer.workspaceId!,
+        reference.revisionId,
+      );
+      await expect(
+        readWorkbenchFile(t.maintainer, copy.object.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        change(t.maintainer, copy.object.id, 0, {
+          sharing: { scope: 'personal', departmentIds: [] },
+        }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        prepareReferenceUpload(t.owner, {
+          workspaceId: t.owner.workspaceId,
+          requestId: randomUUID(),
+          sourceId: reference.sourceId,
+          expectedRevision: 1,
+          scope: 'personal',
+          fileName: '替换的内容.txt',
+          mediaType: 'text/plain',
+          contentBase64: Buffer.from('different bytes').toString('base64'),
+        }),
+      ).rejects.toMatchObject({ code: 'source_unavailable' });
+      expect(
+        (await readWorkbenchFile(t.maintainer, file.objectId)).canMaintain,
+      ).toBe(true);
+    });
     it('revokes prior signed URLs and rechecks membership for newly issued grants', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
@@ -472,7 +516,7 @@ suite(
         const prepared = await createStorageMetadata(owner, {
           id,
           workspaceId: owner.workspaceId,
-          category: 'exports',
+          category: 'artifacts',
           mediaType: 'text/plain',
           sizeBytes: bytes.length,
           checksum:

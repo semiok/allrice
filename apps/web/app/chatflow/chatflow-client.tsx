@@ -2207,6 +2207,16 @@ export function ChatFlowClient({
                     if (artifact) showWorkbench(artifact.id);
                     else onOpenFile(file.objectId, file.fileName);
                   }}
+                  onTemplates={() => {
+                    setRecommendedTemplates(true);
+                    setReferenceToView(null);
+                    setReferenceLibraryOpen(true);
+                  }}
+                  onHistory={() => {
+                    setRecommendedTemplates(false);
+                    setReferenceToView(null);
+                    setReferenceLibraryOpen(true);
+                  }}
                   onTemplate={(reference) => {
                     setRecommendedTemplates(false);
                     setReferenceToView(reference);
@@ -2255,7 +2265,10 @@ export function ChatFlowClient({
                   active={active}
                   automatic={experienceEnabled}
                   onCorrect={(instanceId, text) => {
-                    if (activeEmployee?.instanceId !== instanceId) {
+                    if (
+                      sessionArchived ||
+                      activeEmployee?.instanceId !== instanceId
+                    ) {
                       if (!confirmSessionNavigation()) return;
                       startEmployeeSession(instanceId);
                       setDraft(text);
@@ -2307,9 +2320,9 @@ export function ChatFlowClient({
           width={resize.width}
           selectionRequest={workbench.selectionRequest}
           onBrowseFiles={browseWorkbench}
-          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}/${layout.compact ? 'mobile' : 'desktop-v2'}`}
+          key={`artifacts/${workspace.viewerId ?? ''}/${workspace.workspaceId}/${activeId}`}
           filesRequest={currentFilesRequest}
-          dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}${layout.compact ? '' : '/desktop-v2'}`}
+          dockScope={`${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId ?? 'anonymous'}/${activeId ?? 'draft'}`}
           sessionId={activeId}
           workspaceId={workspace.workspaceId}
           tenantHeaders={tenantHeaders}

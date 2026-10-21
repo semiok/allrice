@@ -351,10 +351,10 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                         size={16}
                       />
                     )}
-                    <span>{tab.title}</span>
+                    <span>{tab.kind === GUIDE_KIND ? '开始' : tab.title}</span>
                   </span>
                 )
-              : undefined
+              : (tab) => (tab.kind === GUIDE_KIND ? '交付成果' : tab.title)
           }
           canSplit={
             !props.narrow && dockPaneIds(dock.surface.layout).length < 2

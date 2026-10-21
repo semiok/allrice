@@ -20,6 +20,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { DshDialog } from './dsh-upstream/Dialog';
+import { isToolResultFile } from '../../lib/chatflow/document-reader-model';
 import { WorkbenchIcon } from './workbench-modules';
 import css from './workbench-files-panel.module.css';
 const scopeNames = {
@@ -55,6 +56,8 @@ export function WorkbenchFilesPanel(props: {
   onUse: (reference: ReferenceRevision) => void;
   onTemplate?: (reference: ReferenceRevision) => void;
   onRead?: () => void;
+  onHistory?: () => void;
+  onTemplates?: () => void;
 }) {
   const [scope, setScope] = useState('all'),
     [query, setQuery] = useState(''),
@@ -306,6 +309,20 @@ export function WorkbenchFilesPanel(props: {
           </button>
         ))}
       </nav>
+      {category === 'reference' && (props.onHistory || props.onTemplates) && (
+        <div className={css.referenceActions}>
+          {props.onTemplates && (
+            <button type="button" onClick={props.onTemplates}>
+              公司范本
+            </button>
+          )}
+          {props.onHistory && (
+            <button type="button" onClick={props.onHistory}>
+              历史资料
+            </button>
+          )}
+        </div>
+      )}
       {error && (
         <p className={css.error} role="alert">
           {error}
@@ -351,7 +368,9 @@ export function WorkbenchFilesPanel(props: {
                 onClick={() => props.onOpen(file)}
                 title={file.fileName}
               >
-                {file.fileName}
+                {isToolResultFile(file.fileName, file.objectId)
+                  ? `${file.fileName.startsWith('tool-result-web-search-') ? '搜索资料' : '工具记录'} · ${file.objectId.slice(0, 8)}`
+                  : file.fileName}
               </button>
               <small>
                 {file.artifact ? `v${file.artifact.version} · ` : ''}
@@ -438,8 +457,12 @@ function FileSettings(props: {
   onSaved: () => void;
 }) {
   const initial = props.file?.sharing.scope;
-  const [scope, setScope] = useState<WorkbenchFileSharing['scope']>(
-    initial === 'departments' || initial === 'company' ? initial : 'personal',
+  const [scope, setScope] = useState<WorkbenchFileSharing['scope'] | null>(
+    !props.file || initial === 'personal'
+      ? 'personal'
+      : initial === 'departments' || initial === 'company'
+        ? initial
+        : null,
   );
   const [departments, setDepartments] = useState(
       props.file?.sharing.departmentIds ?? [],
@@ -474,6 +497,7 @@ function FileSettings(props: {
     setBusy(true);
     setError('');
     try {
+      if (!scope) throw Error('请先选择文件的新可见范围。');
       const sharing: WorkbenchFileSharing = {
         scope,
         departmentIds: scope === 'departments' ? departments : [],
@@ -581,6 +605,11 @@ function FileSettings(props: {
         )}
         <fieldset disabled={busy}>
           <legend>可见范围</legend>
+          {scope === null && props.file && (
+            <p className={css.hint}>
+              当前为{range(props.file)}。请选择要保存的新范围。
+            </p>
+          )}
           <div className={css.ranges}>
             {(['personal', 'departments', 'company'] as const).map((value) => (
               <label key={value}>
@@ -652,7 +681,10 @@ function FileSettings(props: {
           <button type="button" disabled={busy} onClick={props.onClose}>
             取消
           </button>
-          <button type="submit" disabled={busy || !props.options.writable}>
+          <button
+            type="submit"
+            disabled={busy || !props.options.writable || scope === null}
+          >
             {busy ? '正在保存…' : '保存'}
           </button>
         </div>

@@ -128,6 +128,15 @@ export async function readWorkbenchFile(
   const principal = await readContentPrincipal(context, sql);
   if (!principal) throw new DataAccessError('authorization_denied');
   const row = await facts(objectId, sql);
+  if (row.source_id) {
+    const [binding] = await sql<{ origin_object_id: string }[]>`
+      select origin_object_id from allrice_workbench_reference_bindings
+      where source_id=${row.source_id} and organization_id=${context.organizationId}`;
+    // Retained bytes are only available through the governed reference. They
+    // must never acquire an independent file policy that outlives its origin.
+    if (binding && binding.origin_object_id !== row.id)
+      throw new DataAccessError('not_found');
+  }
   const policy = await workbenchFileAccess(context, objectId, sql);
   let canMaintain = false;
   if (policy) {
@@ -137,7 +146,10 @@ export async function readWorkbenchFile(
     const source = await referenceSourceAccess(context, row.source_id, sql);
     if (source.source.status !== 'active')
       throw new DataAccessError('not_found');
-    canMaintain = source.access.canMaintain;
+    canMaintain =
+      source.access.canMaintain &&
+      source.ownership.scope !== 'platform' &&
+      !source.legacy;
   } else {
     await getStoredFile(context, objectId, sql);
     canMaintain =
@@ -402,6 +414,27 @@ export async function updateWorkbenchFile(
   const inputDigest = digest(JSON.stringify({ objectId, ...value }));
   const initial = await readWorkbenchFile(context, objectId);
   if (!initial.canMaintain) throw new DataAccessError('authorization_denied');
+  const [completed] = await db<
+    { object_id: string; input_digest: string; result_revision: number }[]
+  >`
+    select object_id,input_digest,result_revision from allrice_workbench_file_mutations
+    where organization_id=${context.organizationId} and actor_id=${context.actor.id} and request_id=${value.requestId}`;
+  if (completed) {
+    if (
+      completed.object_id !== objectId ||
+      completed.input_digest !== inputDigest
+    )
+      throw new WorkbenchFileError(
+        'request_conflict',
+        '请求内容已变化，请重新读取后操作。',
+      );
+    return { objectId, revision: completed.result_revision };
+  }
+  if ((initial.policy?.revision ?? 0) !== value.expectedRevision)
+    throw new WorkbenchFileError(
+      'version_conflict',
+      '文件设置已变化，请刷新后再保存。',
+    );
   const referenceCopy =
     value.isReference === true
       ? await snapshotFile(context, initial, value.requestId, storage)
@@ -536,7 +569,7 @@ export async function readWorkbenchFileCatalog(
     left join lateral (select series_id,file_name,version from allrice_deliverable_versions where object_id=o.id order by version desc limit 1) d on true
     left join allrice_workbench_file_policies p on p.object_id=o.id or (d.series_id is not null and p.series_id=d.series_id)
     left join lateral (select file_name from allrice_file_references where object_id=o.id order by created_at desc limit 1) f on true
-    where o.organization_id=${context.organizationId} and o.state='ready' and o.deleted_at is null and o.category in ('uploads','exports')
+    where o.organization_id=${context.organizationId} and o.state='ready' and o.deleted_at is null and (o.category in ('uploads','exports') or (o.category='artifacts' and d.series_id is not null))
       and (o.workspace_id=${input.workspaceId} or p.scope in ('departments','company'))
       and (o.owner_id=${context.actor.id} or o.visibility<>'private' or p.scope='company'
         or (p.scope='departments' and (${principal.maintenanceLevel === 'company'} or ${principal.departmentId}::uuid=any(p.department_ids))))

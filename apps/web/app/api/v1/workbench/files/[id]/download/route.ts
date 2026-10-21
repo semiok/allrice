@@ -19,8 +19,17 @@ export async function GET(
     const stream = await getStorageAdapter().get(file.object);
     await readWorkbenchFile(context, id);
     const name =
-      file.row.file_name.replace(/[\\/\x00-\x1f\x7f]/g, '-').slice(0, 160) ||
-      'allrice-file';
+      [...file.row.file_name]
+        .map((character) =>
+          character === '\\' ||
+          character === '/' ||
+          character.charCodeAt(0) < 32 ||
+          character.charCodeAt(0) === 127
+            ? '-'
+            : character,
+        )
+        .join('')
+        .slice(0, 160) || 'allrice-file';
     return new Response(stream, {
       headers: {
         ...workbenchFileHeaders,
