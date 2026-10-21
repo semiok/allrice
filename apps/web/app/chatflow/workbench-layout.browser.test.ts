@@ -10758,7 +10758,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await row.waitFor();
       if (process.env.ALLRICE_ARCHIVE_SCREENSHOTS === '1')
         await f.page.screenshot({ path: '.local/archive-mobile.png' });
-      await row.getByRole('button', { name: '取消归档', exact: true }).click();
+      await selectSessionAction(f.page, row, '取消归档');
       await expect.poll(() => f.state.archivedIds.has(A)).toBe(false);
       expect(f.errors).toEqual([]);
     } finally {

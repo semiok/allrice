@@ -469,7 +469,7 @@ export function useSessionArchive({
         pending.current.get(id) === operation
       ) {
         pending.current.delete(id);
-        setEditing(null);
+        setEditing((current) => (current === id ? null : current));
       }
     }
   }
@@ -581,7 +581,8 @@ export function useSessionArchive({
             onClose={() => setRename(null)}
             onSubmit={async (title) => {
               if (await editSession(rename.sessionId, { title }))
-                if (currentScope.current === scope) setRename(null);
+                if (currentScope.current === scope)
+                  setRename((current) => (current === rename ? null : current));
             }}
           />
         ) : null}
