@@ -1,0 +1,89 @@
+/* AllRice host styling; pinned DSH input styles and composer behavior stay intact. */
+@media (min-width: 761px) {
+  .card {
+    gap: 11px;
+    padding-top: 15px;
+    border-radius: 23px;
+    border-color: color-mix(
+      in srgb,
+      var(--dsw-alias-label-primary) 12%,
+      transparent
+    );
+    box-shadow:
+      0 2px 5px light-dark(#14223206, #0000001a),
+      0 12px 32px -17px light-dark(#14223230, #00000060);
+    transition:
+      border-color 140ms ease,
+      box-shadow 140ms ease;
+  }
+
+  .card:focus-within {
+    border-color: color-mix(
+      in srgb,
+      var(--dsw-alias-state-business-primary) 40%,
+      var(--dsw-alias-border-l2-darkmode-thin)
+    );
+    box-shadow:
+      0 2px 5px light-dark(#14223206, #0000001a),
+      0 14px 34px -17px light-dark(#4766b036, #00000060);
+  }
+
+  .card textarea {
+    min-height: 54px;
+    padding: 1px 18px 0;
+    font-family: var(--ds-font-family-ui, ui-sans-serif, system-ui, sans-serif);
+    font-size: 16px;
+    font-weight: 400;
+    line-height: 25px;
+  }
+
+  .row {
+    padding: 0 12px 10px;
+  }
+
+  .row button {
+    font-weight: 400;
+  }
+
+  .row button[aria-label='添加文件'] svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .row button[aria-label='发送'] svg,
+  .row button[aria-label='排队发送'] svg {
+    width: 22px;
+    height: 22px;
+    stroke-width: 2.1;
+  }
+
+  .status {
+    padding: 8px 10px 0;
+  }
+
+  .status > div {
+    width: 100%;
+    justify-content: space-between;
+    gap: 6px 14px;
+  }
+
+  .status.status button {
+    background: transparent;
+    color: var(--dsw-alias-label-tertiary);
+  }
+
+  .status.status button[data-online] {
+    background: transparent;
+    color: light-dark(#25805b, #91c7ac);
+  }
+
+  .status.status button > span:first-child {
+    background: currentColor;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card {
+    transition: none;
+  }
+}

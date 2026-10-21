@@ -43,6 +43,7 @@ import {
 import type { History, PendingAttachment } from './chatflow-types';
 import inputUi from './dsh-upstream/InputBar.module.css';
 import styles from './dsh-saas.module.css';
+import composerUi from './chat-composer.module.css';
 
 interface ChatComposerProps {
   taskSuggestions?: TaskSuggestionDisplay[];
@@ -189,7 +190,7 @@ export function ChatComposer({
           )}
         </div>
       ) : null}
-      <div className={inputUi.card}>
+      <div className={`${inputUi.card} ${composerUi.card}`}>
         <CompanyTemplateDraftChips
           references={companyReferences}
           disabled={busy}
@@ -263,7 +264,9 @@ export function ChatComposer({
           ref={composerInput}
           value={draft}
         />
-        <div className={`${inputUi.row} ${styles.composerRow}`}>
+        <div
+          className={`${inputUi.row} ${styles.composerRow} ${composerUi.row}`}
+        >
           <div className={`${inputUi.tools} ${styles.composerTools}`}>
             <div className={styles.attachmentMenuAnchor}>
               <Menu
@@ -428,10 +431,11 @@ export function ChatComposer({
           </div>
         </div>
       </div>
-      <div className={styles.composerStatus}>
+      <div className={`${styles.composerStatus} ${composerUi.status}`}>
         <div className={styles.composerStatusLeft}>
           <button
             aria-label={bridgeStatus.ariaLabel}
+            data-online={bridgeStatus.online || undefined}
             className={`${styles.localWorkspaceStatus} ${
               bridgeStatus.online
                 ? styles.localWorkspaceOnline

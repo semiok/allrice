@@ -7,6 +7,7 @@ import {
   useState,
   type FormEvent,
   type ReactNode,
+  type ComponentProps,
 } from 'react';
 import { z } from 'zod';
 import {
@@ -64,6 +65,8 @@ type Start = (
 ) => Promise<void>;
 
 export interface BrandContentPanelProps {
+  embedded?: boolean;
+  active?: boolean;
   scopeId?: string;
   workspaceId: string;
   instanceId: string;
@@ -71,6 +74,20 @@ export interface BrandContentPanelProps {
   headers: Record<string, string>;
   onClose: () => void;
   onOpenSession: (sessionId: string) => void;
+}
+
+function BrandContentShell({
+  embedded,
+  children,
+  ...props
+}: ComponentProps<typeof DshDialog> & { embedded?: boolean }) {
+  return embedded ? (
+    <section aria-label="内容工作台" className={`${css.body} ${css.embedded}`}>
+      {children}
+    </section>
+  ) : (
+    <DshDialog {...props}>{children}</DshDialog>
+  );
 }
 
 const stageNames: Record<Stage, string> = {
@@ -238,12 +255,13 @@ function BrandContentReader(props: BrandContentPanelProps) {
   );
 
   useEffect(() => {
+    if (props.active === false) return;
     const controller = new AbortController();
     setData(null);
     setError('');
     void read(selected, controller.signal);
     return () => controller.abort();
-  }, [read, selected]);
+  }, [read, selected, props.active]);
 
   useEffect(() => {
     if (data?.board) {
@@ -441,8 +459,10 @@ function BrandContentReader(props: BrandContentPanelProps) {
     } else setCreating(false);
   };
 
+  if (props.active === false) return null;
   return (
-    <DshDialog
+    <BrandContentShell
+      embedded={props.embedded}
       ariaLabel="内容工作台"
       title="内容工作台"
       eyebrow={props.employeeName}
@@ -605,7 +625,7 @@ function BrandContentReader(props: BrandContentPanelProps) {
           </>
         )}
       </div>
-    </DshDialog>
+    </BrandContentShell>
   );
 }
 

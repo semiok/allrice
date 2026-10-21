@@ -52,7 +52,9 @@ export function ReferenceLibrary({
   initialReference,
   onPrepareTemplate,
   initialTemplates,
+  hideUpload = false,
 }: {
+  hideUpload?: boolean;
   workspaceId: string;
   headers: Record<string, string>;
   onClose: () => void;
@@ -425,7 +427,7 @@ export function ReferenceLibrary({
           )}
         </section>
       )}
-      {options?.writable && (
+      {options?.writable && !hideUpload && (
         <fieldset disabled={busy} className={css.upload}>
           <legend>{updating ? '更新参考资料' : '上传参考资料'}</legend>
           <label>

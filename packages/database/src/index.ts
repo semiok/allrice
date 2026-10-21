@@ -331,3 +331,5 @@ export {
   getAutomationCatalogOperation,
   changeAutomationCatalogTask,
 } from './automation-catalog.ts';
+
+export * from './workbench-files.ts';

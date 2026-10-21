@@ -40,6 +40,7 @@ export function useBrandContentWorkspace(input: {
     scope: string;
     generation: number;
     available: boolean;
+    keys: string[];
   } | null>(null);
 
   useEffect(() => {
@@ -68,10 +69,25 @@ export function useBrandContentWorkspace(input: {
             item.ownerId === viewerId &&
             keys.includes(item.manifest.templateKey),
         );
-        if (current()) setSnapshot({ scope, generation, available });
+        if (current())
+          setSnapshot({
+            scope,
+            generation,
+            available,
+            keys: catalog.packages
+              .filter(
+                (item) =>
+                  item.instanceId === instanceId &&
+                  item.workspaceId === workspaceId &&
+                  item.ownerId === viewerId &&
+                  keys.includes(item.manifest.templateKey),
+              )
+              .map((item) => item.workflow.id + '/' + item.checksum),
+          });
       })
       .catch(() => {
-        if (current()) setSnapshot({ scope, generation, available: false });
+        if (current())
+          setSnapshot({ scope, generation, available: false, keys: [] });
       })
       .finally(() => window.clearTimeout(timeout));
     return () => {
@@ -82,6 +98,10 @@ export function useBrandContentWorkspace(input: {
 
   return {
     scope: `${scope}/${generation}`,
+    keys:
+      snapshot?.scope === scope && snapshot.generation === generation
+        ? snapshot.keys
+        : [],
     available:
       eligible &&
       snapshot?.scope === scope &&

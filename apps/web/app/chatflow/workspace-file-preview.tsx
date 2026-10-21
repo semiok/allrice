@@ -21,6 +21,7 @@ export function WorkspaceFilePreview(props: {
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   active?: boolean;
+  unified?: boolean;
   onVersion: (id: string, title: string) => void;
 }) {
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
@@ -29,7 +30,8 @@ export function WorkspaceFilePreview(props: {
   const [source, setSource] = useState(false);
   const [interactive, setInteractive] = useState(false);
   const toolResult = isToolResultFile(props.title, props.objectId);
-  const base = `/api/v1/files/${encodeURIComponent(props.objectId)}`;
+  const baseUrl = props.unified ? '/api/v1/workbench/files' : '/api/v1/files';
+  const base = `${baseUrl}/${encodeURIComponent(props.objectId)}`;
   const query = `?workspaceId=${encodeURIComponent(props.workspaceId)}&name=${encodeURIComponent(props.title)}`;
   useEffect(() => {
     const controller = new AbortController();
@@ -92,6 +94,7 @@ export function WorkspaceFilePreview(props: {
       >
         {!toolResult ? (
           <DocumentVersions
+            baseUrl={baseUrl}
             objectId={props.objectId}
             workspaceId={props.workspaceId}
             headers={props.tenantHeaders}

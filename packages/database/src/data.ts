@@ -21,6 +21,7 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
+import { workbenchFileAccess } from './workbench-file-access.ts';
 
 const CreateStorageMetadataSchema = z
   .object({
@@ -302,7 +303,10 @@ export async function getStoredFile(
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
   try {
-    authorizeFile(context, row, 'resource:read');
+    const access = await workbenchFileAccess(context, row.id, sql);
+    if (access) {
+      if (!access.canRead) throw new DataAccessError('authorization_denied');
+    } else authorizeFile(context, row, 'resource:read');
   } catch (error) {
     await audit(
       {
@@ -437,6 +441,16 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('grant_invalid');
+  const access = await workbenchFileAccess(
+    {
+      actor: { type: 'user', id: grant.subjectId },
+      organizationId: row.organization_id,
+      workspaceId: row.workspace_id,
+    },
+    row.id,
+    sql,
+  );
+  if (access && !access.canRead) throw new DataAccessError('grant_invalid');
   return mapStoredFile(row);
 }
 

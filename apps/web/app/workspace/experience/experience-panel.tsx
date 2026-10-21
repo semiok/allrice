@@ -115,7 +115,9 @@ export function ExperienceReviewCard({
 export function ExperienceDraftCard({
   batch,
   sourceContext,
+  activeOnly = false,
 }: {
+  activeOnly?: boolean;
   batch: ExperienceDraftBatch;
   sourceContext?: { workspaceId: string; headers?: Record<string, string> };
 }) {
@@ -149,94 +151,104 @@ export function ExperienceDraftCard({
       {batch.sourceState === 'unavailable' && (
         <p>来源或访问权限已变化，仅保留历史；不会据此新增采用。</p>
       )}
-      {batch.drafts.map((draft, index) => (
-        <section key={index}>
-          <p className={styles.rule}>{draft.rule}</p>
-          <p>适用范围：{draft.applicability}</p>
-          {batch.adoptions
-            ?.filter((a) => a.draftIndex === index)
-            .map((a) => (
-              <div key={a.memoryId} data-experience-adoption={a.memoryId}>
-                <p>
-                  {a.state === 'active'
-                    ? '已采用 · 仅用于此私人 AI 员工'
-                    : a.state === 'forgotten'
-                      ? '已撤回 · 不再采用'
-                      : '已停用 · 依据已变化'}
-                </p>
-                <p>
-                  {a.reason ??
-                    `版本 ${a.revision} · 已为 ${a.recallCount} 次任务提供经验`}
-                </p>
-                {a.state === 'active' && (
+      {batch.drafts.map((draft, index) =>
+        activeOnly &&
+        !batch.adoptions?.some(
+          (adoption) =>
+            adoption.draftIndex === index && adoption.state === 'active',
+        ) ? null : (
+          <section key={index}>
+            <p className={styles.rule}>{draft.rule}</p>
+            <p>适用范围：{draft.applicability}</p>
+            {batch.adoptions
+              ?.filter(
+                (a) =>
+                  a.draftIndex === index &&
+                  (!activeOnly || a.state === 'active'),
+              )
+              .map((a) => (
+                <div key={a.memoryId} data-experience-adoption={a.memoryId}>
                   <p>
-                    如需撤回，可在聊天中说：请忘记“{draft.rule}”这条个人经验。
+                    {a.state === 'active'
+                      ? '已采用 · 仅用于此私人 AI 员工'
+                      : a.state === 'forgotten'
+                        ? '已撤回 · 不再采用'
+                        : '已停用 · 依据已变化'}
                   </p>
-                )}
-                {a.state === 'active' && sourceContext && (
-                  <ExperienceSources
-                    {...sourceContext}
-                    instanceId={batch.instanceId}
-                    memoryId={a.memoryId}
-                    revision={a.revision}
-                  />
-                )}
-              </div>
-            ))}
-          {batch.validations
-            .filter((v) => v.draftIndex === index)
-            .map((v) => (
-              <div key={v.id} data-experience-validation={v.id}>
-                <p>
-                  {v.validationStatus === 'passed'
-                    ? batch.adoptions?.some((a) => a.draftIndex === index)
-                      ? '专项样例通过'
-                      : '专项样例通过 · 尚未启用'
-                    : v.validationStatus === 'failed'
-                      ? '专项验证未通过 · 未启用'
-                      : v.validationStatus === 'not_verified'
-                        ? '验证未完成 · 未启用'
-                        : '专项验证中 · 未启用'}
-                </p>
-                <p>
-                  {batch.adoptions?.some((a) => a.draftIndex === index)
-                    ? v.coverage.replace('，尚未启用。', '。')
-                    : v.coverage}
-                </p>
-                <details>
-                  <summary>查看验证依据</summary>
                   <p>
-                    验证任务：{v.runId ?? '等待执行'}；原稿版本：
-                    {batch.revision}
+                    {a.reason ??
+                      `版本 ${a.revision} · 已为 ${a.recallCount} 次任务提供经验`}
                   </p>
-                  <p>原稿校验值：{v.outputDigest}</p>
-                  {v.assertion?.checks.map((c) => (
-                    <p key={c.id}>
-                      {c.id}：{c.passed ? '通过' : '未通过'}
+                  {a.state === 'active' && (
+                    <p>
+                      如需撤回，可在聊天中说：请忘记“{draft.rule}”这条个人经验。
                     </p>
-                  ))}
-                </details>
-              </div>
-            ))}
-          <details>
-            <summary>查看整理依据</summary>
-            <p>{draft.reason}</p>
-            <p>
-              {draft.confidence === 'consistent'
-                ? '多条反馈一致；采用状态以验证结果为准。'
-                : '初步提炼；采用状态以验证结果为准。'}
-            </p>
-            <small>来源：{draft.sourceIds.join('、')}</small>
-            {(batch.skillDependencies ?? []).map((pin) => (
-              <p key={`${pin.bindingId}/${pin.versionId}`}>
-                本批来源使用的个人技能版本：{pin.versionId}；校验值：
-                {pin.packageChecksum ?? pin.definitionChecksum}
-                。仅当前仍有权限且版本匹配时可采用。
+                  )}
+                  {a.state === 'active' && sourceContext && (
+                    <ExperienceSources
+                      {...sourceContext}
+                      instanceId={batch.instanceId}
+                      memoryId={a.memoryId}
+                      revision={a.revision}
+                    />
+                  )}
+                </div>
+              ))}
+            {batch.validations
+              .filter((v) => v.draftIndex === index)
+              .map((v) => (
+                <div key={v.id} data-experience-validation={v.id}>
+                  <p>
+                    {v.validationStatus === 'passed'
+                      ? batch.adoptions?.some((a) => a.draftIndex === index)
+                        ? '专项样例通过'
+                        : '专项样例通过 · 尚未启用'
+                      : v.validationStatus === 'failed'
+                        ? '专项验证未通过 · 未启用'
+                        : v.validationStatus === 'not_verified'
+                          ? '验证未完成 · 未启用'
+                          : '专项验证中 · 未启用'}
+                  </p>
+                  <p>
+                    {batch.adoptions?.some((a) => a.draftIndex === index)
+                      ? v.coverage.replace('，尚未启用。', '。')
+                      : v.coverage}
+                  </p>
+                  <details>
+                    <summary>查看验证依据</summary>
+                    <p>
+                      验证任务：{v.runId ?? '等待执行'}；原稿版本：
+                      {batch.revision}
+                    </p>
+                    <p>原稿校验值：{v.outputDigest}</p>
+                    {v.assertion?.checks.map((c) => (
+                      <p key={c.id}>
+                        {c.id}：{c.passed ? '通过' : '未通过'}
+                      </p>
+                    ))}
+                  </details>
+                </div>
+              ))}
+            <details>
+              <summary>查看整理依据</summary>
+              <p>{draft.reason}</p>
+              <p>
+                {draft.confidence === 'consistent'
+                  ? '多条反馈一致；采用状态以验证结果为准。'
+                  : '初步提炼；采用状态以验证结果为准。'}
               </p>
-            ))}
-          </details>
-        </section>
-      ))}
+              <small>来源：{draft.sourceIds.join('、')}</small>
+              {(batch.skillDependencies ?? []).map((pin) => (
+                <p key={`${pin.bindingId}/${pin.versionId}`}>
+                  本批来源使用的个人技能版本：{pin.versionId}；校验值：
+                  {pin.packageChecksum ?? pin.definitionChecksum}
+                  。仅当前仍有权限且版本匹配时可采用。
+                </p>
+              ))}
+            </details>
+          </section>
+        ),
+      )}
       {batch.validationNotes.map((note, index) => (
         <p key={index}>{note}</p>
       ))}

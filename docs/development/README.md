@@ -199,6 +199,17 @@ This prevents the misleading state where liveness passes but a teammate is devel
 | `pnpm test`               | Run unit/contract tests                             |
 | `pnpm build`              | Build packages and applications                     |
 
+## Unified desktop workbench schema (MET198)
+
+The existing `ALLRICE_WORKBENCH_ENABLED` surface uses migration
+`0201_workbench_file_policies.sql` for explicit file sharing, reference-origin
+bindings and idempotent policy receipts. Apply migrations through the normal
+`pnpm db:migrate` / `pnpm db:setup` workflow before switching the matching Web
+release. No backfill changes existing file/chat permissions. Mobile navigation,
+Bridge binaries and DSH execution packages are not replaced by this UI feature.
+For the current behavior and authorization boundaries see
+[the native workbench guide](../features/native-workbench/README.md#met-198桌面统一工作台).
+
 ## Troubleshooting
 
 - **`Docker Compose is required`**: install and start Docker Desktop, then confirm `docker compose version` works. Or configure an existing database with `DATABASE_URL`.

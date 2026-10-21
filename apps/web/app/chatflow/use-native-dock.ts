@@ -30,19 +30,19 @@ export const dockLabels: DockLabels = {
     bottom: '在下方查看',
   },
 };
-const nativeStore = createSidebarRightStore(() => ({
-  kind: GUIDE_KIND,
-  title: '交付成果',
-}));
 
 /** Native state and validated persistence. Allrice only scopes it and supplies content. */
 export function useNativeDock(
   scope: string,
   canClose: (id: TabId) => boolean,
   onClose: () => void,
+  guideTitle = '交付成果',
 ) {
   const [store] = useState(() => {
-    const instance = nativeStore.create(scope);
+    const instance = createSidebarRightStore(() => ({
+      kind: GUIDE_KIND,
+      title: guideTitle,
+    })).create(scope);
     instance.actions.open(scope);
     instance.actions.setExpanded(scope, true);
     return instance;
@@ -59,10 +59,17 @@ export function useNativeDock(
     contentId: string,
     title: string,
     paneId?: PaneId,
+    replaceTab?: TabId,
   ) => {
     actions.openContent(
       scope,
-      { kind, contentId, title, ...(paneId ? { paneId } : {}) },
+      {
+        kind,
+        contentId,
+        title,
+        ...(paneId ? { paneId } : {}),
+        ...(replaceTab ? { replaceTab } : {}),
+      },
       () => {},
     );
   };
@@ -71,7 +78,7 @@ export function useNativeDock(
     focusPane: (id) => actions.focusPane(scope, id),
     splitPane: (id) => actions.splitPane(scope, id),
     addTab: (paneId) =>
-      open(GUIDE_KIND, pageAddress(GUIDE_KIND), '交付成果', paneId),
+      open(GUIDE_KIND, pageAddress(GUIDE_KIND), guideTitle, paneId),
     closeTab: (id) => {
       if (!canClose(id)) return;
       actions.closeTab(scope, id);
@@ -89,6 +96,7 @@ export function useNativeDock(
   return {
     surface,
     open,
+    reveal: () => actions.open(scope),
     intents,
     canCloseTab: (id: TabId) => canCloseTab(surface, id),
     setFullscreen: (value: boolean) =>
