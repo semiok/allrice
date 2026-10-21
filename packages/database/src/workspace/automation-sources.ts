@@ -65,6 +65,15 @@ export async function readCreatedAutomationIds(
   const [schema] =
     await sql`select to_regclass(format('%I.allrice_task_calls',current_schema())) is not null available`;
   if (!schema?.available) return new Map();
+  // Most conversations have no schedules. Check actual plans before reading
+  // their call ledger; never transfer/hash every ordinary tool call on a poll.
+  const plans = await sql<{ id: string; request_id: string }[]>`
+    select id,coalesce(to_jsonb(a)->>'native_recurring_request_id',to_jsonb(a)->>'native_once_request_id') request_id
+    from allrice_automations a where organization_id=${context.organizationId} and workspace_id=${workspaceId}
+      and owner_id=${ownerId} and session_id=${sessionId} and trigger_type='schedule'
+      and coalesce(to_jsonb(a)->>'native_recurring_request_id',to_jsonb(a)->>'native_once_request_id') is not null
+    order by created_at,id`;
+  if (!plans.length) return new Map();
   const calls = await sql<{ run_id: string; call_id: string }[]>`
     select distinct c.run_id,c.call_id from allrice_task_calls c
     join allrice_employee_runs er on er.run_id=c.run_id
@@ -85,13 +94,6 @@ export async function readCreatedAutomationIds(
         ),
         call.run_id,
       );
-  const ids = [...requests.keys()];
-  const plans = await sql<{ id: string; request_id: string }[]>`
-    select id,coalesce(to_jsonb(a)->>'native_recurring_request_id',to_jsonb(a)->>'native_once_request_id') request_id
-    from allrice_automations a where organization_id=${context.organizationId} and workspace_id=${workspaceId}
-      and owner_id=${ownerId} and session_id=${sessionId} and trigger_type='schedule'
-      and (to_jsonb(a)->>'native_recurring_request_id'=any(${ids}::text[]) or to_jsonb(a)->>'native_once_request_id'=any(${ids}::text[]))
-    order by created_at,id`;
   const result = new Map<string, string[]>();
   for (const plan of plans) {
     const runId = requests.get(plan.request_id);
