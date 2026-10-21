@@ -97,17 +97,21 @@ user permission. The normal Job, lease, owner, cancellation and binding CAS
 checks still run. Missing approval, another context, an earlier source pin,
 wrong storage or modified proof fails closed.
 
-A second independently reviewed source can use the fixed optional
-`ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_PATH`,
-`ALLRICE_DSH_ORIGIN_READER_2_APPROVAL_SHA256`, and
-`ALLRICE_DSH_ORIGIN_READER_2_STORAGE_ROOT` tuple. The original tuple remains
-required and its bytes, proof digests and target are unchanged. Both groups
-share the original limits of 64 contexts and 256 KiB of policy data. Partial
-second tuples, unknown reader keys, duplicate sources/contexts/namespaces,
-and source-to-target chains or cycles are rejected together; a bad second
-policy never falls back to the first. Each target must still be covered by
+Additional independently reviewed sources can use the fixed optional groups
+2 through 8: `ALLRICE_DSH_ORIGIN_READER_<n>_APPROVAL_PATH`,
+`ALLRICE_DSH_ORIGIN_READER_<n>_APPROVAL_SHA256`, and
+`ALLRICE_DSH_ORIGIN_READER_<n>_STORAGE_ROOT`. Configured groups must form a
+complete contiguous prefix starting with the original unnumbered tuple.
+The original groups' bytes, proof digests and targets are unchanged. All groups
+share the original total limits of 64 contexts and 256 KiB of policy data.
+Partial or blank extra tuples, gaps, unknown or aliased keys (including `_1_`,
+`_02_` and `_9_`), duplicate sources/contexts/namespaces, and source-to-target
+chains or cycles are rejected together; a bad policy never falls back to
+earlier groups. Multiple sources may share a target. Every file is rehashed on
+every load; group order and other approvals never enter an existing proof.
+Each target must still be covered by
 the existing checked package and reference validation. This adds no execution
-retention slot or automatic retirement authority. The second policy remains
+retention slot or automatic retirement authority. Each additional policy remains
 disabled until its own format, provenance, fence and actual continuation
 evidence passes the same activation procedure below.
 
