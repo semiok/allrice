@@ -50,7 +50,7 @@ import {
   companyAssetUrl,
 } from './company-template-publisher';
 import { AssistantHistoryButton } from './assistant-history-button';
-import { OnceTasks } from './once-tasks';
+import { AutomationTaskList, AutomationTaskDetail } from './automation-tasks';
 import { WorkspaceStartup } from './workspace-startup';
 import { QueuedMessagesDock } from './queued-messages-dock';
 import { TaskPlanDock } from './task-plan-dock';
@@ -257,6 +257,24 @@ export function ChatFlowClient({
     workspace?.sessions.find((s) => s.id === activeId)?.archivedAt,
   );
   const settingsScope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
+  const [automationNavigation, setAutomationNavigation] = useState<{
+    scope: string;
+    view: 'catalog' | 'create';
+  } | null>(null);
+  const automationsOpen =
+    automationNavigation?.scope === settingsScope &&
+    automationNavigation.view === 'catalog';
+  const automationCreate =
+    automationNavigation?.scope === settingsScope &&
+    automationNavigation.view === 'create';
+  const [automationRequest, setAutomationRequest] = useState<{
+    scope: string;
+    id: string;
+    title: string;
+    revision: number;
+  } | null>(null);
+  const currentAutomationRequest =
+    automationRequest?.scope === settingsScope ? automationRequest : undefined;
   const currentSettingsScope = useRef(settingsScope);
   currentSettingsScope.current = settingsScope;
   const imageScope = `${settingsScope}/${activeId}`;
@@ -365,6 +383,7 @@ export function ChatFlowClient({
   );
   const selectSession = useCallback(
     (sessionId: string | null) => {
+      setAutomationNavigation(null);
       if (sessionId !== null && captureSelection().sessionId === sessionId)
         return;
       setActiveId(sessionId, sessionId === null);
@@ -386,7 +405,17 @@ export function ChatFlowClient({
     setSidebarCollapsed,
     narrow: workbenchNarrow,
   } = layout;
-  const workbenchRequested = workbenchEnabled && layout.open;
+  const workbenchRequested =
+    (workbenchEnabled || !!currentAutomationRequest) && layout.open;
+  const openAutomationTask = (task: { id: string; name?: string }) => {
+    setAutomationRequest((previous) => ({
+      scope: settingsScope,
+      id: task.id,
+      title: task.name ?? '自动化任务',
+      revision: (previous?.revision ?? 0) + 1,
+    }));
+    layout.show();
+  };
   const workbenchEntry = useRef<HTMLButtonElement>(null);
   const workbench = useArtifactWorkbench({
     enabled: workbenchEnabled,
@@ -412,6 +441,7 @@ export function ChatFlowClient({
   const currentFilesRequest =
     filesRequest.scope === fileScope ? filesRequest.revision : 0;
   const hasWorkbenchContent =
+    !!currentAutomationRequest ||
     currentFilesRequest > 0 ||
     workbench.artifacts.length > 0 ||
     workbench.selectedId !== null;
@@ -1582,6 +1612,12 @@ export function ChatFlowClient({
       )}
       <ChatSidebar
         experienceEnabled={experienceEnabled}
+        automationsActive={automationsOpen}
+        onOpenAutomations={() => {
+          setAutomationNavigation({ scope: settingsScope, view: 'catalog' });
+          setSettings(null);
+          if (layout.compact) setSidebarCollapsed(true);
+        }}
         archive={archive}
         capabilities={
           <CapabilityContent
@@ -1641,6 +1677,7 @@ export function ChatFlowClient({
         }}
         onNewSession={(assignmentId) => {
           if (!confirmSessionNavigation()) return;
+          setAutomationNavigation(null);
           if (assignmentId) startEmployeeSession(assignmentId);
           else if (employeeChoices(workspace).length === 1)
             startEmployeeSession(
@@ -1700,350 +1737,372 @@ export function ChatFlowClient({
         )}
         style={employeeAccentStyle(activeEmployeeName, activeEmployeeColor)}
       >
-        <div
-          className={conversationUi.root}
-          data-phase={isEmptyConversation ? 'hero' : 'active'}
-        >
-          {
-            <header
-              className={`${conversationUi.header} ${styles.conversationHeader}`}
-            >
-              <div className={conversationUi.titleRow}>
-                <div className={conversationUi.titleCluster}>
-                  <div className={conversationUi.crumbs}>
-                    <span className={conversationUi.crumbSeg}>
-                      <button
-                        className={conversationUi.crumb}
-                        onClick={() => {
-                          if (!confirmSessionNavigation()) return;
-                          if (activeEmployee)
-                            startEmployeeSession(
-                              employeeChoiceId(activeEmployee),
-                            );
-                        }}
-                        type="button"
-                      >
-                        与 {activeEmployeeName} 工作
-                      </button>
-                      <span className={conversationUi.crumbSep}>/</span>
-                    </span>
-                    <h1>{activeSession?.title ?? '新的工作'}</h1>
+        {automationsOpen ? (
+          <AutomationTaskList
+            key={`automations/${settingsScope}`}
+            workspaceId={workspace.workspaceId}
+            scope={settingsScope}
+            headers={tenantHeaders}
+            employees={employeeChoices(workspace).map((employee) => ({
+              id: employeeChoiceId(employee),
+              name: employee.currentVersion.manifest.name,
+            }))}
+            selectedId={currentAutomationRequest?.id}
+            onSelect={openAutomationTask}
+            onNew={() => {
+              if (!confirmSessionNavigation()) return;
+              if (activeEmployee)
+                startEmployeeSession(employeeChoiceId(activeEmployee));
+              else setEmployeePickerOpen(true);
+              setAutomationNavigation({ scope: settingsScope, view: 'create' });
+            }}
+          />
+        ) : (
+          <div
+            className={conversationUi.root}
+            data-phase={isEmptyConversation ? 'hero' : 'active'}
+          >
+            {
+              <header
+                className={`${conversationUi.header} ${styles.conversationHeader}`}
+              >
+                <div className={conversationUi.titleRow}>
+                  <div className={conversationUi.titleCluster}>
+                    <div className={conversationUi.crumbs}>
+                      <span className={conversationUi.crumbSeg}>
+                        <button
+                          className={conversationUi.crumb}
+                          onClick={() => {
+                            if (!confirmSessionNavigation()) return;
+                            if (activeEmployee)
+                              startEmployeeSession(
+                                employeeChoiceId(activeEmployee),
+                              );
+                          }}
+                          type="button"
+                        >
+                          与 {activeEmployeeName} 工作
+                        </button>
+                        <span className={conversationUi.crumbSep}>/</span>
+                      </span>
+                      <h1>{activeSession?.title ?? '新的工作'}</h1>
+                    </div>
                   </div>
+                  <div
+                    className={`${conversationUi.headerActions} ${styles.conversationActions}`}
+                  >
+                    <button
+                      type="button"
+                      className={workbenchUi.entry}
+                      onClick={() => {
+                        setRecommendedTemplates(false);
+                        setReferenceToView(null);
+                        setReferenceLibraryOpen(true);
+                      }}
+                    >
+                      参考资料
+                    </button>
+                    <BrandContentWorkspaceEntry
+                      key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
+                      scopeId={settingsScope}
+                      workspaceId={workspace.workspaceId}
+                      viewerId={workspace.viewerId}
+                      instanceId={activeEmployee?.instanceId}
+                      kind={
+                        activeEmployee?.instances?.find(
+                          (instance) =>
+                            instance.id === activeEmployee.instanceId,
+                        )?.kind
+                      }
+                      employeeName={activeEmployeeName}
+                      headers={tenantHeaders}
+                      onOpenSession={openBrandContentSession}
+                    />
+                    {workbenchEnabled ? (
+                      <button
+                        type="button"
+                        className={workbenchUi.entry}
+                        onClick={() => {
+                          setFilesRequest((previous) => ({
+                            scope: fileScope,
+                            revision: previous.revision + 1,
+                          }));
+                          workbench.show(undefined, true);
+                        }}
+                      >
+                        工作区文件
+                      </button>
+                    ) : null}
+                    {workbenchEnabled && hasWorkbenchContent ? (
+                      <button
+                        type="button"
+                        ref={workbenchEntry}
+                        className={workbenchUi.entry}
+                        aria-expanded={workbenchOpen}
+                        aria-controls="artifact-workbench"
+                        onClick={() => {
+                          workbench.show();
+                          void workbench.reload();
+                        }}
+                      >
+                        ▤ 交付成果
+                        {workbench.artifacts.length
+                          ? ` · ${workbench.artifacts.length}`
+                          : ''}
+                        {workbench.noticeId && !workbenchOpen
+                          ? ' · 新成果'
+                          : ''}
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              </header>
+            }
+
+            {historyLoading ? (
+              <div className={conversationUi.scrollBody}>
+                <div
+                  className={styles.historyLoading}
+                  role="status"
+                  aria-live="polite"
+                >
+                  {error || '正在加载会话…'}
+                  {error ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        void loadHistory(activeId!).catch((cause) =>
+                          setError(
+                            cause instanceof Error
+                              ? cause.message
+                              : '会话加载失败',
+                          ),
+                        )
+                      }
+                    >
+                      重试
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : isEmptyConversation ? (
+              <div className={conversationUi.scrollBody}>
+                <section className={styles.emptyStage}>
+                  <div className={styles.heroStack}>
+                    {automationCreate && (
+                      <p>
+                        说明什么时候、由谁做什么，例如“每 2
+                        分钟提醒我喝水”或“每天 09:00，Asia/Shanghai
+                        时区，整理当天工作”。
+                      </p>
+                    )}
+                    <div className={styles.heroHeadline}>
+                      <span className={styles.heroMark} aria-hidden="true">
+                        {activeEmployeeName.slice(0, 1)}
+                      </span>
+                      <h1>与 {activeEmployeeName} 工作</h1>
+                      <p>
+                        {employeeIntroduction(
+                          activeEmployee,
+                          activeEmployeeProfile,
+                        )}
+                      </p>
+                    </div>
+                    {renderComposer(true)}
+                  </div>
+                </section>
+              </div>
+            ) : (
+              <div
+                className={`${conversationUi.scrollBody} ${styles.conversationBody}`}
+                data-conversation-scroll
+                ref={conversationScroll}
+              >
+                <ConversationTurnNavigator
+                  streamingOutput={preferences.value.streamingOutput}
+                  key={`turns/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
+                  messages={history?.messages ?? []}
+                  runViews={runViews}
+                  scrollRef={conversationScroll}
+                  columnRef={transcriptColumn}
+                  onNavigateAway={pauseTranscriptFollowing}
+                />
+                <div
+                  className={conversationUi.viewArea}
+                  onClickCapture={(event) => {
+                    const target = event.target;
+                    if (
+                      target instanceof Element &&
+                      target.closest(transcriptDisclosureSelector)
+                    ) {
+                      // Manual disclosure changes are reading actions, not new
+                      // output. Pause before React/native details resize so the
+                      // bottom-follow observer cannot scroll the trigger away.
+                      pauseTranscriptFollowing();
+                    }
+                  }}
+                  onKeyDownCapture={(event) => {
+                    // The native DSH row toggles directly on Enter/Space without
+                    // emitting a click, so keyboard expansion needs the same pause.
+                    if (
+                      (event.key === 'Enter' || event.key === ' ') &&
+                      event.target instanceof Element &&
+                      event.target.closest(transcriptDisclosureSelector)
+                    ) {
+                      pauseTranscriptFollowing();
+                    }
+                  }}
+                >
+                  {workbenchEnabled && activeId ? (
+                    <InteractionStatusPanel
+                      data={interactions.data}
+                      error={interactions.error}
+                      sessionId={activeId}
+                      onArtifact={(id) => {
+                        workbench.show(id);
+                      }}
+                      onOperation={(id) => {
+                        const card = document.getElementById(`operation-${id}`);
+                        if (!card) {
+                          setError(
+                            '动作卡片尚未就绪，请稍候重试；不会代替你批准或重放操作。',
+                          );
+                          return;
+                        }
+                        card.tabIndex = -1;
+                        card.scrollIntoView({
+                          block: 'center',
+                          behavior: 'smooth',
+                        });
+                        card.focus({ preventScroll: true });
+                      }}
+                    />
+                  ) : null}
+                  {workbenchEnabled && assistants.error ? (
+                    <p role="status">
+                      {assistants.error}{' '}
+                      <button type="button" onClick={assistants.reload}>
+                        重试助手记录
+                      </button>
+                    </p>
+                  ) : null}
+                  {!workbenchEnabled && interactions.error ? (
+                    <p role="status">{interactions.error}</p>
+                  ) : null}
+                  {workbenchEnabled && assistants.hasMore ? (
+                    <AssistantHistoryButton
+                      key={activeId}
+                      onLoadMore={assistants.loadMore}
+                    />
+                  ) : null}
+                  <MessageFeedbackProvider
+                    readOnly={sessionArchived}
+                    key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
+                    sessionId={activeId!}
+                    workspaceId={workspace.workspaceId}
+                    headers={tenantHeaders}
+                  >
+                    <ChatTranscript
+                      onOpenReference={openReference}
+                      onOpenAutomation={(id) => openAutomationTask({ id })}
+                      streamingOutput={preferences.value.streamingOutput}
+                      employeeName={activeEmployeeName}
+                      atBottom={atTranscriptBottom}
+                      localCommandsEnabled={localCommandsEnabled}
+                      localMcpEnabled={localMcpEnabled}
+                      assistantTrees={assistants.trees}
+                      onResolveArtifactLink={workbench.resolveDownloadLink}
+                      runTimings={interactions.data?.runTimings}
+                      onAssistantChanged={assistants.reload}
+                      messages={transcriptMessages}
+                      messageImages={messageImages}
+                      onLoadRunTrace={loadRunTrace}
+                      onRecoverRun={recoverRun}
+                      onScrollToBottom={scrollToTranscriptBottom}
+                      recoverableRunView={recoverableRunView}
+                      runTraces={runTraces}
+                      runViews={runViews}
+                      tenantHeaders={tenantHeaders}
+                      transcriptColumn={transcriptColumn}
+                      workspaceId={workspace.workspaceId}
+                      artifacts={workbench.artifacts}
+                      onOpenArtifact={showWorkbench}
+                    />
+                  </MessageFeedbackProvider>
                 </div>
                 <div
-                  className={`${conversationUi.headerActions} ${styles.conversationActions}`}
+                  className={`${conversationUi.composerSeat} ${conversationUi.composerStack} ${styles.composerDock}`}
+                  data-composer-seat
                 >
-                  <OnceTasks
-                    scope={`${settingsScope}/${activeEmployee ? employeeChoiceId(activeEmployee) : ''}`}
-                    sessionId={
-                      activeId && activeSession?.id === activeId
-                        ? activeId
-                        : null
-                    }
-                    headers={tenantHeaders}
-                    onOpenSession={(sessionId) => {
-                      if (sessionId !== activeId && !confirmSessionNavigation())
-                        return;
-                      if (sessionId !== activeId) {
-                        clearPendingAttachments();
-                        setSessionReferences([]);
-                        setReferenceSelections([]);
-                        setCompanyReferences([]);
-                        setReferencePickerOpen(false);
-                        setDraft('');
-                      }
-                      selectSession(sessionId);
-                    }}
-                  />
-                  <button
-                    type="button"
-                    className={workbenchUi.entry}
-                    onClick={() => {
-                      setRecommendedTemplates(false);
-                      setReferenceToView(null);
-                      setReferenceLibraryOpen(true);
-                    }}
-                  >
-                    参考资料
-                  </button>
-                  <BrandContentWorkspaceEntry
-                    key={`${settingsScope}/${workspace.viewerId}/${activeEmployee?.instanceId ?? 'none'}`}
-                    scopeId={settingsScope}
-                    workspaceId={workspace.workspaceId}
-                    viewerId={workspace.viewerId}
-                    instanceId={activeEmployee?.instanceId}
-                    kind={
-                      activeEmployee?.instances?.find(
-                        (instance) => instance.id === activeEmployee.instanceId,
-                      )?.kind
-                    }
-                    employeeName={activeEmployeeName}
-                    headers={tenantHeaders}
-                    onOpenSession={openBrandContentSession}
-                  />
-                  {workbenchEnabled ? (
-                    <button
-                      type="button"
-                      className={workbenchUi.entry}
-                      onClick={() => {
-                        setFilesRequest((previous) => ({
-                          scope: fileScope,
-                          revision: previous.revision + 1,
-                        }));
-                        workbench.show(undefined, true);
-                      }}
-                    >
-                      工作区文件
-                    </button>
-                  ) : null}
-                  {workbenchEnabled && hasWorkbenchContent ? (
-                    <button
-                      type="button"
-                      ref={workbenchEntry}
-                      className={workbenchUi.entry}
-                      aria-expanded={workbenchOpen}
-                      aria-controls="artifact-workbench"
-                      onClick={() => {
-                        workbench.show();
-                        void workbench.reload();
-                      }}
-                    >
-                      ▤ 交付成果
-                      {workbench.artifacts.length
-                        ? ` · ${workbench.artifacts.length}`
-                        : ''}
-                      {workbench.noticeId && !workbenchOpen ? ' · 新成果' : ''}
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            </header>
-          }
-
-          {historyLoading ? (
-            <div className={conversationUi.scrollBody}>
-              <div
-                className={styles.historyLoading}
-                role="status"
-                aria-live="polite"
-              >
-                {error || '正在加载会话…'}
-                {error ? (
-                  <button
-                    type="button"
-                    onClick={() =>
-                      void loadHistory(activeId!).catch((cause) =>
-                        setError(
-                          cause instanceof Error
-                            ? cause.message
-                            : '会话加载失败',
-                        ),
-                      )
-                    }
-                  >
-                    重试
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          ) : isEmptyConversation ? (
-            <div className={conversationUi.scrollBody}>
-              <section className={styles.emptyStage}>
-                <div className={styles.heroStack}>
-                  <div className={styles.heroHeadline}>
-                    <span className={styles.heroMark} aria-hidden="true">
-                      {activeEmployeeName.slice(0, 1)}
-                    </span>
-                    <h1>与 {activeEmployeeName} 工作</h1>
-                    <p>
-                      {employeeIntroduction(
-                        activeEmployee,
-                        activeEmployeeProfile,
-                      )}
-                    </p>
-                  </div>
-                  {renderComposer(true)}
-                </div>
-              </section>
-            </div>
-          ) : (
-            <div
-              className={`${conversationUi.scrollBody} ${styles.conversationBody}`}
-              data-conversation-scroll
-              ref={conversationScroll}
-            >
-              <ConversationTurnNavigator
-                streamingOutput={preferences.value.streamingOutput}
-                key={`turns/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
-                messages={history?.messages ?? []}
-                runViews={runViews}
-                scrollRef={conversationScroll}
-                columnRef={transcriptColumn}
-                onNavigateAway={pauseTranscriptFollowing}
-              />
-              <div
-                className={conversationUi.viewArea}
-                onClickCapture={(event) => {
-                  const target = event.target;
-                  if (
-                    target instanceof Element &&
-                    target.closest(transcriptDisclosureSelector)
-                  ) {
-                    // Manual disclosure changes are reading actions, not new
-                    // output. Pause before React/native details resize so the
-                    // bottom-follow observer cannot scroll the trigger away.
-                    pauseTranscriptFollowing();
-                  }
-                }}
-                onKeyDownCapture={(event) => {
-                  // The native DSH row toggles directly on Enter/Space without
-                  // emitting a click, so keyboard expansion needs the same pause.
-                  if (
-                    (event.key === 'Enter' || event.key === ' ') &&
-                    event.target instanceof Element &&
-                    event.target.closest(transcriptDisclosureSelector)
-                  ) {
-                    pauseTranscriptFollowing();
-                  }
-                }}
-              >
-                {workbenchEnabled && activeId ? (
-                  <InteractionStatusPanel
-                    data={interactions.data}
-                    error={interactions.error}
+                  <TaskPlanDock
                     sessionId={activeId}
-                    onArtifact={(id) => {
-                      workbench.show(id);
-                    }}
-                    onOperation={(id) => {
-                      const card = document.getElementById(`operation-${id}`);
-                      if (!card) {
-                        setError(
-                          '动作卡片尚未就绪，请稍候重试；不会代替你批准或重放操作。',
-                        );
-                        return;
-                      }
-                      card.tabIndex = -1;
-                      card.scrollIntoView({
-                        block: 'center',
-                        behavior: 'smooth',
-                      });
-                      card.focus({ preventScroll: true });
-                    }}
-                  />
-                ) : null}
-                {workbenchEnabled && assistants.error ? (
-                  <p role="status">
-                    {assistants.error}{' '}
-                    <button type="button" onClick={assistants.reload}>
-                      重试助手记录
-                    </button>
-                  </p>
-                ) : null}
-                {!workbenchEnabled && interactions.error ? (
-                  <p role="status">{interactions.error}</p>
-                ) : null}
-                {workbenchEnabled && assistants.hasMore ? (
-                  <AssistantHistoryButton
-                    key={activeId}
-                    onLoadMore={assistants.loadMore}
-                  />
-                ) : null}
-                <MessageFeedbackProvider
-                  readOnly={sessionArchived}
-                  key={`feedback/${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}/${activeId}`}
-                  sessionId={activeId!}
-                  workspaceId={workspace.workspaceId}
-                  headers={tenantHeaders}
-                >
-                  <ChatTranscript
-                    onOpenReference={openReference}
-                    streamingOutput={preferences.value.streamingOutput}
-                    employeeName={activeEmployeeName}
-                    atBottom={atTranscriptBottom}
-                    localCommandsEnabled={localCommandsEnabled}
-                    localMcpEnabled={localMcpEnabled}
-                    assistantTrees={assistants.trees}
-                    onResolveArtifactLink={workbench.resolveDownloadLink}
-                    runTimings={interactions.data?.runTimings}
-                    onAssistantChanged={assistants.reload}
-                    messages={transcriptMessages}
-                    messageImages={messageImages}
-                    onLoadRunTrace={loadRunTrace}
-                    onRecoverRun={recoverRun}
-                    onScrollToBottom={scrollToTranscriptBottom}
-                    recoverableRunView={recoverableRunView}
-                    runTraces={runTraces}
+                    history={history}
                     runViews={runViews}
-                    tenantHeaders={tenantHeaders}
-                    transcriptColumn={transcriptColumn}
-                    workspaceId={workspace.workspaceId}
-                    artifacts={workbench.artifacts}
-                    onOpenArtifact={showWorkbench}
+                    runTraces={runTraces}
+                    runTimings={interactions.data?.runTimings}
                   />
-                </MessageFeedbackProvider>
-              </div>
-              <div
-                className={`${conversationUi.composerSeat} ${conversationUi.composerStack} ${styles.composerDock}`}
-                data-composer-seat
-              >
-                <TaskPlanDock
-                  sessionId={activeId}
-                  history={history}
-                  runViews={runViews}
-                  runTraces={runTraces}
-                  runTimings={interactions.data?.runTimings}
-                />
-                <QueuedMessagesDock
-                  key={`${workspace.organizationId}/${activeId}`}
-                  items={sessionArchived ? [] : queuedMessages}
-                  busy={busy}
-                  canEdit={
-                    !hasDraft &&
-                    pendingAttachments.length === 0 &&
-                    sessionReferences.length === 0
-                  }
-                  canSteer={Boolean(
-                    interactions.data?.runtime?.turnId &&
-                    interactions.data.runtime.state === 'running' &&
-                    !pendingUserQuestion,
-                  )}
-                  updateQueue={updateQueue}
-                />
-                {sessionArchived ? (
-                  <div className={archiveCss.readOnly} role="status">
-                    <span>已归档 · 可以查看记录和交付成果</span>
-                    {(!activeSession?.ownerId ||
-                      activeSession.ownerId === workspace.viewerId) && (
-                      <button
-                        type="button"
-                        onClick={() => activeId && archive.restore(activeId)}
-                      >
-                        恢复并继续
-                      </button>
+                  <QueuedMessagesDock
+                    key={`${workspace.organizationId}/${activeId}`}
+                    items={sessionArchived ? [] : queuedMessages}
+                    busy={busy}
+                    canEdit={
+                      !hasDraft &&
+                      pendingAttachments.length === 0 &&
+                      sessionReferences.length === 0
+                    }
+                    canSteer={Boolean(
+                      interactions.data?.runtime?.turnId &&
+                      interactions.data.runtime.state === 'running' &&
+                      !pendingUserQuestion,
                     )}
-                  </div>
-                ) : pendingUserQuestion ? (
-                  <UserQuestionComposer
-                    busy={questionBusy}
-                    error={error}
-                    key={pendingUserQuestion.questionId}
-                    onCancelRun={cancelRun}
-                    onSubmit={answerUserQuestion}
-                    pending={pendingUserQuestion}
+                    updateQueue={updateQueue}
                   />
-                ) : (
-                  renderComposer(false)
-                )}
+                  {sessionArchived ? (
+                    <div className={archiveCss.readOnly} role="status">
+                      <span>已归档 · 可以查看记录和交付成果</span>
+                      {(!activeSession?.ownerId ||
+                        activeSession.ownerId === workspace.viewerId) && (
+                        <button
+                          type="button"
+                          onClick={() => activeId && archive.restore(activeId)}
+                        >
+                          恢复并继续
+                        </button>
+                      )}
+                    </div>
+                  ) : pendingUserQuestion ? (
+                    <UserQuestionComposer
+                      busy={questionBusy}
+                      error={error}
+                      key={pendingUserQuestion.questionId}
+                      onCancelRun={cancelRun}
+                      onSubmit={answerUserQuestion}
+                      pending={pendingUserQuestion}
+                    />
+                  ) : (
+                    renderComposer(false)
+                  )}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
+        )}
       </section>
 
-      {workbenchEnabled && hasWorkbenchContent ? (
+      {(workbenchEnabled || currentAutomationRequest) && hasWorkbenchContent ? (
         <ArtifactWorkbench
           onOpenReference={openReference}
+          taskRequest={currentAutomationRequest}
+          renderTask={(taskId, active) => (
+            <AutomationTaskDetail
+              taskId={taskId}
+              active={active}
+              workspaceId={workspace.workspaceId}
+              scope={settingsScope}
+              headers={tenantHeaders}
+              onOpenSession={openBrandContentSession}
+            />
+          )}
           readOnly={sessionArchived}
           open={workbenchOpen}
           width={resize.width}

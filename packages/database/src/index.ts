@@ -324,3 +324,10 @@ export {
   createNativeRecurringSqlStore,
   type NativeRecurringSqlOptions,
 } from './native-schedule-recurring-sql.ts';
+
+export {
+  listAutomationCatalog,
+  getAutomationCatalogTask,
+  getAutomationCatalogOperation,
+  changeAutomationCatalogTask,
+} from './automation-catalog.ts';

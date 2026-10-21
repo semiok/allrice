@@ -1,0 +1,15 @@
+--- a/packages/client/ui-chat/src/client/chat/TurnTriggerNodeView.tsx
++++ b/packages/client/ui-chat/src/client/chat/TurnTriggerNodeView.tsx
+@@ -6,9 +6,9 @@
+   IconGoalOutlineRegular, IconGlobeOutlineRegular, IconPaperPlaneOutlineRegular, IconQueueOutlineRegular,
+   type IconProps,
+ } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { ChatNodeViewProps } from '../contract/slots.ts'
+-import { formatMessageClock } from './message-chrome.ts'
+-import { NoticeBody } from './ContextBody.tsx'
++import type { ChatNodeViewProps } from './host'
++import { formatMessageClock } from './host'
++import { NoticeBody } from './host'
+ import { turnTriggerDetails, type TurnTriggerIcon } from './turn-trigger.ts'
+ import css from './TurnTriggerNodeView.module.css'
+ 

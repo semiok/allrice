@@ -114,10 +114,10 @@ export const createAutomation: RiceToolHandler = async ({
       }),
       summary:
         task.status === 'preparing'
-          ? '已保存周期任务，等待调度确认；可在当前对话的定时任务中查看。'
+          ? '已保存周期任务，等待调度确认；可在左侧“自动化任务”中查看。'
           : task.nextRunAt
             ? `已保存周期任务，下一次计划于 ${task.nextRunAt} 执行`
-            : '已保存周期任务，可在当前对话的定时任务中查看状态。',
+            : '已保存周期任务，可在左侧“自动化任务”中查看状态。',
       itemCount: 1,
     };
   }
@@ -134,7 +134,10 @@ export const createAutomation: RiceToolHandler = async ({
       status: automation.status,
       prompt: automation.prompt,
     }),
-    summary: `已创建一次性任务，计划于 ${automation.runAt} 执行`,
+    summary:
+      automation.status === 'preparing'
+        ? `已保存一次性任务，等待调度确认；计划于 ${automation.runAt} 执行，可在左侧“自动化任务”中查看。`
+        : `已保存一次性任务，计划于 ${automation.runAt} 执行，可在左侧“自动化任务”中查看。`,
     itemCount: 1,
   };
 };

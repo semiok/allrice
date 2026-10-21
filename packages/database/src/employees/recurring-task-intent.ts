@@ -51,7 +51,7 @@ const deniedInstruction = new RegExp(
 const repeatClock =
   '(?:(?:[0-9]{1,2}[:：][0-9]{2}(?::[0-9]{2})?|[零一二两三四五六七八九十]+点(?:整|钟)?)\\s*)?';
 const nestedSchedule = new RegExp(
-  `(?:并且|并|而且|同时|另外|然后|再|以及|但|不过)\\s*(?:也|还|再|请)?\\s*(?:每隔|每天|每日|每晚|每早|每周|每月)|(?:每天|每日)\\s*(?:早上|早晨|上午|中午|下午|傍晚|晚上|夜间)(?!\\s*的)|每(?:隔)?\\s*${numberPattern}\\s*(?:分钟|小时|天|周|个月|月|年)(?!\\s*的)|(?:每天|每日|每晚|每早|每周[一二三四五六日天]?|每月(?:${numberPattern}日)?)\\s*${repeatClock}(?:请)?(?:只|仅)?${actionPattern}|(?:定期|循环|反复|重复)\\s*${actionPattern}|(?:创建|安排|设置|登记)(?:一个)?(?:周期|定时|重复|循环)任务`,
+  `(?:并且|并|而且|同时|另外|然后|再|以及|但|不过)\\s*(?:也|还|再|请)?\\s*(?:每隔|每天|每日|每晚|每早|每周|每月)|(?:每天|每日)\\s*(?:早上|早晨|上午|中午|下午|傍晚|晚上|夜间)(?!\\s*的)|每(?:隔)?\\s*${numberPattern}\\s*(?:分钟|小时|天|周|个月|月|年)(?!\\s*的)|每(?:隔)?\\s*(?:分钟|小时)\\s*(?:请)?(?:只|仅)?${actionPattern}|(?:每天|每日|每晚|每早|每周[一二三四五六日天]?|每月(?:${numberPattern}日)?)\\s*${repeatClock}(?:请)?(?:只|仅)?${actionPattern}|(?:定期|循环|反复|重复)\\s*${actionPattern}|(?:创建|安排|设置|登记)(?:一个)?(?:周期|定时|重复|循环)任务`,
   'u',
 );
 const exampleScaffolding =
@@ -205,6 +205,24 @@ function explicitWork(text: string): boolean {
   return work;
 }
 
+/** Within an already explicit interval, 就/都 is a frequency adverb and
+ * 提醒我一次 describes one reminder per occurrence, not a total-run limit.
+ * A reminder's object may be the following clause. Keep all existing checks
+ * on that object; conditions, denials and additional schedules stay ambiguous. */
+function recurringWork(text: string): boolean {
+  const body = text.replace(
+    new RegExp(`^(?:就|都)\\s*(?=${actionPattern})`, 'u'),
+    '',
+  );
+  const reminder = body.match(
+    /^(?:请)?提醒(?:我|我们)(?:一次|一下)?\s*[，,]\s*(?:要)?(.+)$/su,
+  );
+  if (reminder) return explicitWork(`提醒我${reminder[1]}`);
+  return explicitWork(
+    body.replace(/^(提醒(?:我|我们))(?:一次|一下)(?=\S)/u, '$1'),
+  );
+}
+
 /** Conservative, deliberately bounded grammar, not general language inference.
  * The caller must supply the server-loaded current human message and separately
  * verify provenance, tenant/frozen/live authority and exact tool-rule equality.
@@ -229,7 +247,9 @@ export function explicitRecurringTaskIntent(
   if (every) {
     const number = positiveInteger(every[1]!);
     const seconds = number === null ? 0 : number * secondsPerUnit[every[2]!]!;
-    return seconds >= 60 && seconds <= maximumSeconds && explicitWork(every[3]!)
+    return seconds >= 60 &&
+      seconds <= maximumSeconds &&
+      recurringWork(every[3]!)
       ? { rule: { kind: 'every', seconds }, authoritativeRequest: text }
       : null;
   }

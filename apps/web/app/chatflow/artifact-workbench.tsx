@@ -80,6 +80,8 @@ type Props = {
   dockScope: string;
   filesRequest?: number;
   selectionRequest?: number;
+  taskRequest?: { id: string; title: string; revision: number };
+  renderTask?: (taskId: string, active: boolean) => ReactNode;
   onBrowseFiles?: () => void;
   sessionId: string | null;
   workspaceId: string;
@@ -158,6 +160,13 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     else if (!props.selectedId && props.selectionRequest)
       dock.open(GUIDE_KIND, pageAddress(GUIDE_KIND), '交付成果');
   });
+  const lastTaskRequest = useRef(0);
+  useEffect(() => {
+    const request = props.taskRequest;
+    if (!request || lastTaskRequest.current === request.revision) return;
+    lastTaskRequest.current = request.revision;
+    dock.open('scheduleTask', request.id, request.title);
+  });
   const lastFilesRequest = useRef(0);
   useEffect(() => {
     if (!props.filesRequest || lastFilesRequest.current === props.filesRequest)
@@ -186,7 +195,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         aria-hidden={!props.open || undefined}
         inert={!props.open}
         role={fullscreen ? 'dialog' : 'complementary'}
-        aria-label="交付成果"
+        aria-label={props.taskRequest ? '任务与交付成果' : '交付成果'}
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}
         onKeyDown={(event) => {
@@ -254,7 +263,14 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           }
           keepMounted={() => true}
           renderTab={(tab) =>
-            tab.kind === 'files' ? (
+            tab.kind === 'scheduleTask' ? (
+              props.renderTask?.(
+                tab.contentId,
+                props.open &&
+                  findTabPane(dock.surface.layout, tab.id).activeTabId ===
+                    tab.id,
+              )
+            ) : tab.kind === 'files' ? (
               <WorkspaceFileTree
                 tabId={tab.id}
                 workspaceId={props.workspaceId}

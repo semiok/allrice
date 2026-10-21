@@ -43,6 +43,7 @@ import { AssistantRunPanel } from './assistant-run-panel';
 import { SteeredWorkProcess } from './steered-work-process';
 import { type ReferenceDraft } from './reference-chips';
 import { TranscriptUserMessage } from './transcript-user-message';
+import { AutomationRunTaskCards } from './automation-run-task-cards';
 import { AssistantMessageActions } from './message-feedback';
 import { presentAssistantTree } from '../../lib/chatflow/assistant-tree-presenter';
 import { isMessageRunActive } from './run-view';
@@ -70,6 +71,7 @@ interface ChatTranscriptProps {
   onScrollToBottom: () => void;
   artifacts?: WorkbenchArtifact[];
   onOpenArtifact?: (id: string) => void;
+  onOpenAutomation?: (id: string) => void;
   onResolveArtifactLink?: (href: string, runId: string) => Promise<boolean>;
 }
 
@@ -96,6 +98,7 @@ export const ChatTranscript = memo(function ChatTranscript({
   onScrollToBottom,
   artifacts = [],
   onOpenArtifact,
+  onOpenAutomation,
   onResolveArtifactLink,
 }: ChatTranscriptProps) {
   const [downloadFiles, setDownloadFiles] = useState<{
@@ -260,6 +263,7 @@ export const ChatTranscript = memo(function ChatTranscript({
                   {message.role === 'user' ? (
                     <TranscriptUserMessage
                       message={message}
+                      onOpenAutomation={onOpenAutomation}
                       messageImages={messageImages}
                       onOpenReference={onOpenReference}
                     />
@@ -510,6 +514,15 @@ export const ChatTranscript = memo(function ChatTranscript({
                             );
                           }}
                         </CloudOperationPanel>
+                        {onOpenAutomation &&
+                        message.automationTaskIds?.length ? (
+                          <AutomationRunTaskCards
+                            taskIds={message.automationTaskIds}
+                            workspaceId={workspaceId}
+                            headers={tenantHeaders}
+                            onOpen={onOpenAutomation}
+                          />
+                        ) : null}
                         {!messageIsRunning && responseText && message.runId ? (
                           <AssistantMessageActions
                             messageId={message.id}

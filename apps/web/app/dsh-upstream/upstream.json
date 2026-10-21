@@ -52,6 +52,12 @@
       "target": "apps/web/app/chatflow/dsh-upstream/turn-navigation/TurnNavigator.tsx",
       "reuse": "Official virtual rail, hover/focus previews, active marks, independent rail scrolling, reduced motion, original stylesheet and bounded preview helper. Component behavior is unchanged; host type imports and a scoped official theme class are adapted.",
       "productChanges": "Map existing Allrice user/assistant messages to loaded turns and Chinese labels; connect transcript anchors, reading position and composer/viewport measurements. Navigating back pauses automatic following. No new endpoint, model call or persisted content."
+    },
+    {
+      "source": "packages/client/ui-chat/src/client/chat/TurnTriggerNodeView.tsx; turn-trigger.ts",
+      "target": "apps/web/app/chatflow/automation-trigger.tsx",
+      "reuse": "Unmodified native trigger layout, glyph selection and disclosure state; host imports recorded in patches.",
+      "productChanges": "Map server-derived AllRice task/occurrence attribution to a schedule source. Plain text notification body and existing clock; no journal mutation, private DSH state or independent scheduler."
     }
   ],
   "componentSets": [
@@ -1194,6 +1200,49 @@
           "sha256": "9618e945bd79fc11f3a87ff02aceb64f4a8114d5ed2ceb5607ae839cfc432e93",
           "upstreamSymbolSha256": "74446ea321c8ae5afbe3f2bb74cedd286eee00cb969e756223aec07a2e649682",
           "requiredDeclaration": "function nextPaint(): Promise<void>"
+        }
+      ]
+    },
+    {
+      "id": "automation-turn-trigger",
+      "version": "0.2.1-rc.2",
+      "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
+      "license": "MIT",
+      "integration": "native-source-with-recorded-host-types-and-plaintext-body-adapter",
+      "files": [
+        {
+          "source": "packages/client/ui-chat/src/client/chat/TurnTriggerNodeView.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/automation/TurnTriggerNodeView.tsx",
+          "upstreamSha256": "52e4d1e567edb65e848bd2e174b68934636631e29350ad044c1d7439ff9e654f",
+          "sha256": "1939c506704a4d16e81e3d1ed18599e81d81929ba0543968659400877ca94877",
+          "patch": "scripts/dsh-ui-patches/automation-TurnTriggerNodeView.tsx.patch",
+          "patchSha256": "4c48e1e9c014d63ba15f28ef7a329433303ccc97a35f781126909f8be6b35dd9"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/TurnTriggerNodeView.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/automation/TurnTriggerNodeView.module.css",
+          "upstreamSha256": "b8bfb0760331cad4e0a98cbf5760abd22e160176e88525b85b266f71a2fd272c",
+          "sha256": "b8bfb0760331cad4e0a98cbf5760abd22e160176e88525b85b266f71a2fd272c"
+        },
+        {
+          "source": "packages/client/ui-chat/src/client/chat/turn-trigger.ts",
+          "target": "apps/web/app/chatflow/dsh-upstream/automation/turn-trigger.ts",
+          "upstreamSha256": "ce9332beb985db4f46ae60f253a83d47994b2e3def108672988546867f77db5a",
+          "sha256": "92ec7e65b486e39d5e5542a253a5b8052408616d198c4d9650653a3343286673",
+          "patch": "scripts/dsh-ui-patches/automation-turn-trigger.ts.patch",
+          "patchSha256": "97dcbe6934aa91f9d207f981ad1f23a87b417cab760c4d7aa2e2422d5d57f822"
+        },
+        {
+          "source": "packages/client/ui-schedule/src/client/TaskManagerPage.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/automation/TaskManagerPage.module.css",
+          "upstreamSha256": "3ad241c8d7ef637d466b148aecde77879498c62c80469b95f423a4a4569e165e",
+          "sha256": "3ad241c8d7ef637d466b148aecde77879498c62c80469b95f423a4a4569e165e"
+        },
+        {
+          "source": "packages/client/ui-schedule/src/client/ScheduleCreateCard.module.css",
+          "target": "apps/web/app/chatflow/dsh-upstream/automation/ScheduleCreateCard.module.css",
+          "upstreamSha256": "05da6b5ba044b07461a7d88c3da9bd516b0018dafc6ba05c76f43b8db3fc7c2e",
+          "sha256": "05da6b5ba044b07461a7d88c3da9bd516b0018dafc6ba05c76f43b8db3fc7c2e"
         }
       ]
     }

@@ -10,9 +10,9 @@ Create a scheduled automation only when the user explicitly asks for a reminder 
 ## Workflow
 
 1. Confirm the intended task, timing, and any important scope from the current conversation.
-2. Convert relative timing into `delayMinutes`. If the requested timing is ambiguous enough to change the outcome, ask the user before creating anything.
-3. Call `automation_create` once with a short name, a self-contained prompt, and the delay.
-4. Return the created automation name and scheduled timing. State any important dependency, such as a Bridge or connector that must remain available.
+2. Use the current tool schema: a one-time delay uses `delayMinutes`; a repeating interval uses `rule: {kind: "every", seconds: ...}`; a daily wall-clock time uses `rule: {kind: "daily", time: "HH:mm:ss", timezone: "Area/Location"}`. For example, every 2 minutes is 120 seconds. Ask only when the requested timing or work is unclear; do not invent a timezone.
+3. Invoke the available `automation.create` capability once, using its exposed native function or Broker envelope and exact schema. Include a short name, a self-contained prompt, and the chosen timing. Do not substitute a one-time delay for a requested repeating rule.
+4. Report the returned task identity and timing accurately. `preparing` means saved and awaiting scheduler confirmation; it is not proof that the task has run. State any important dependency, such as a Bridge or connector that must remain available. The task can be managed from the automation entry and linked to its original conversation.
 
 ## Rules
 

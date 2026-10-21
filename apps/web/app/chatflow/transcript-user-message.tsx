@@ -6,17 +6,22 @@ import { SessionReferenceChips } from './session-reference-picker';
 import { UserQuestionReceipt } from './user-question-receipt';
 import { MessageIconActions } from './dsh-upstream/feedback/MessageIconActions';
 import { feedbackTranslate } from './feedback-labels';
+import { AutomationTrigger } from './automation-trigger';
 import messageUi from './dsh-upstream/MessageItem.module.css';
 import styles from './dsh-saas.module.css';
 export function TranscriptUserMessage({
   message,
   messageImages,
   onOpenReference,
+  onOpenAutomation,
 }: {
   message: Message;
+  onOpenAutomation?: (id: string) => void;
   messageImages?: MessageImageSource;
   onOpenReference?: (reference: ReferenceDraft) => void;
 }) {
+  if (message.role === 'user' && message.source?.kind === 'schedule')
+    return <AutomationTrigger message={message} onOpen={onOpenAutomation} />;
   return (
     <>
       {message.role === 'user' &&
