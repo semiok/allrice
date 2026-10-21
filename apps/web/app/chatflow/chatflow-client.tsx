@@ -1888,7 +1888,7 @@ export function ChatFlowClient({
                     )}
                     <div className={styles.heroHeadline}>
                       <span className={styles.heroMark} aria-hidden="true">
-                        {activeEmployeeName.slice(0, 1)}
+                        {Array.from(activeEmployeeName)[0]}
                       </span>
                       <h1>与 {activeEmployeeName} 工作</h1>
                       <p>

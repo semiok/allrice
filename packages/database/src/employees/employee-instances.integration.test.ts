@@ -7044,13 +7044,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
   it('stores the chosen employee name and palette in the instance, revision and reloaded workspace', async () => {
     const f = await setup();
     const input = {
-      ...f.input('财务助手'),
+      ...f.input('𠮷野财务助手'),
       profile: {
-        name: '财务助手',
+        name: '𠮷野财务助手',
         expressionStyle: 'structured',
         appearance: {
           avatarType: 'initials',
-          avatarValue: '财',
+          avatarValue: '𠮷',
           accentColor: 'coral',
         },
       },

@@ -4151,13 +4151,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it.each([
-    [1440, 1],
-    [390, 1],
-    [1440, 2],
+  it.each<[number, number, string]>([
+    [1440, 1, '财务助手'],
+    [390, 1, '财务助手'],
+    [1440, 2, '🤖文案专家'],
   ])(
-    'creates a named colored employee with one idempotent request at width %s with %s assigned employees',
-    async (width, employeeCount) => {
+    'creates a named colored employee with one idempotent request at width %s with %s assigned employees: %s',
+    async (width, employeeCount, employeeName) => {
       const f = await fixture({ width, touch: width < 600, employeeCount });
       const created = EmployeeInstanceSchema.parse({
         id: id(8100),
@@ -4168,11 +4168,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         kind: 'custom',
         revision: 1,
         profile: {
-          name: '财务助手',
+          name: employeeName,
           expressionStyle: 'structured',
           appearance: {
             avatarType: 'initials',
-            avatarValue: '财',
+            avatarValue: Array.from(employeeName)[0]!,
             accentColor: 'coral',
           },
         },
@@ -4240,7 +4240,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await nameInput.getAttribute('placeholder')).toBe(
           '例如： 文案专家、财务助手、商务分析师',
         );
-        await nameInput.fill('财务助手');
+        await nameInput.fill(employeeName);
         await picker.getByRole('radio', { name: '珊瑚红' }).check();
         await picker.getByRole('button', { name: '创建', exact: true }).click();
         await picker.getByRole('alert').waitFor();
@@ -4262,7 +4262,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         expect(requests[0]).not.toHaveProperty('ownerId');
         const input = f.page.getByRole('textbox', {
-          name: '给 财务助手 的消息',
+          name: `给 ${employeeName} 的消息`,
         });
         await input.fill('请把你的名字改为小禾。以后回答保持简洁。');
         await input.press('Enter');

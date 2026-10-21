@@ -59,7 +59,7 @@ export function EmployeePickerDialog({
       expressionStyle: 'structured',
       appearance: {
         avatarType: 'initials',
-        avatarValue: normalizedName.slice(0, 1),
+        avatarValue: Array.from(normalizedName)[0]!,
         accentColor: color,
       },
     };
@@ -167,7 +167,7 @@ export function EmployeePickerDialog({
             aria-label="员工预览"
           >
             <span className={createCss.avatar} aria-hidden="true">
-              {name.trim().slice(0, 1) || 'A'}
+              {Array.from(name.trim())[0] || 'A'}
             </span>
             <div>
               <strong>{name.trim() || '你的 AI 员工'}</strong>
@@ -232,7 +232,7 @@ export function EmployeePickerDialog({
                   onClick={() => onSelect(employeeChoiceId(employee))}
                 >
                   <span className={css.pickerInitial} aria-hidden="true">
-                    {manifest.name.slice(0, 1)}
+                    {Array.from(manifest.name)[0]}
                   </span>
                   <span className={css.pickerCopy}>
                     <span className={css.pickerHeading}>

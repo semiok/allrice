@@ -33,6 +33,14 @@ const childId = '55555555-5555-4555-8555-555555555555';
 const nextAssignmentId = '77777777-7777-4777-8777-777777777777';
 const nextVersionId = '88888888-8888-4888-8888-888888888888';
 const now = '2026-09-14T00:00:00.000Z';
+async function startNewWork(page: Page) {
+  await page.getByRole('button', { name: '新的工作', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: '选择 AI 员工' })
+    .locator('[data-default-employee="true"]')
+    .click();
+}
+
 type Pending = {
   path: string;
   body: Record<string, unknown>;
@@ -1385,14 +1393,16 @@ suite(
     );
 
     it.each([1440, 390])(
-      'uploads a private ZIP skill package through actual composer at %s px',
+      'uploads a ZIP skill package with workspace visibility through actual composer at %s px',
       async (width) => {
         const f = await fixture({ uploadPending: true, width });
         const bytes = Buffer.from('PK\x03\x04synthetic upload transport');
         try {
-          await f.page
-            .getByRole('combobox', { name: '上传文件可见范围' })
-            .selectOption('private');
+          expect(
+            await f.page
+              .getByRole('combobox', { name: '上传文件可见范围' })
+              .count(),
+          ).toBe(0);
           const input = f.page.locator('input[type=file]');
           expect(await input.getAttribute('accept')).toContain('.zip');
           await input.setInputFiles({
@@ -1406,7 +1416,7 @@ suite(
           expect(f.pending[0]!.body).toMatchObject({
             fileName: 'weekly.zip',
             mediaType: 'application/zip',
-            visibility: 'private',
+            visibility: 'workspace',
           });
           expect(
             Buffer.from(f.pending[0]!.body.contentBase64 as string, 'base64'),
@@ -1468,19 +1478,15 @@ suite(
       15_000,
     );
 
-    it.each([
-      { visibility: 'workspace', selectAfterAdding: false },
-      { visibility: 'private', selectAfterAdding: false },
-      { visibility: 'private', selectAfterAdding: true },
-    ] as const)(
-      'defaults uploads to workspace and honors $visibility (change after adding: $selectAfterAdding)',
-      async ({ visibility, selectAfterAdding }) => {
+    it.each([false, true])(
+      'new uploads always use workspace scope (added before sending: %s)',
+      async (selectAfterAdding) => {
         const f = await fixture({ uploadPending: true });
         try {
           const scope = f.page.getByRole('combobox', {
             name: '上传文件可见范围',
           });
-          expect(await scope.inputValue()).toBe('workspace');
+          expect(await scope.count()).toBe(0);
           if (selectAfterAdding) {
             await f.page.locator('input[type=file]').setInputFiles({
               name: 'scope.txt',
@@ -1488,14 +1494,13 @@ suite(
               buffer: Buffer.from('synthetic visibility check'),
             });
           }
-          if (visibility === 'private') await scope.selectOption('private');
           await f.send(
             '请读取附件',
             selectAfterAdding ? undefined : 'scope.txt',
           );
           await f.waitPending(1);
           expect(f.pending[0]!.path).toContain('/attachments');
-          expect(f.pending[0]!.body.visibility).toBe(visibility);
+          expect(f.pending[0]!.body.visibility).toBe('workspace');
           await f.respond(0);
           await f.waitPending(2);
           await f.respond(1);
@@ -1532,14 +1537,10 @@ suite(
     it('another New click invalidates a pending create without canceling the created server session', async () => {
       const f = await fixture();
       try {
-        await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
-          .click();
+        await startNewWork(f.page);
         await f.send('Create old task');
         await f.waitPending(1);
-        await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
-          .click();
+        await startNewWork(f.page);
         await f.page
           .getByRole('textbox', { name: '给 Rice 的消息' })
           .fill('Keep new draft');
@@ -2117,8 +2118,8 @@ suite(
             exact: true,
           });
           const taskBox = (await taskButton.boundingBox())!;
-          const visibilityBox = (await f.page
-            .getByRole('combobox', { name: '上传文件可见范围' })
+          const addBox = (await f.page
+            .getByRole('button', { name: '添加文件', exact: true })
             .boundingBox())!;
           const sendBox = (await f.page
             .getByRole('button', { name: '发送', exact: true })
@@ -2135,10 +2136,8 @@ suite(
             cardBox.y + cardBox.height,
           );
           if (width === 1440) {
-            expect(taskBox.x).toBeGreaterThan(
-              visibilityBox.x + visibilityBox.width,
-            );
-            expect(Math.abs(taskBox.y - visibilityBox.y)).toBeLessThan(2);
+            expect(taskBox.x).toBeGreaterThan(addBox.x + addBox.width);
+            expect(Math.abs(taskBox.y - addBox.y)).toBeLessThan(2);
           }
           await f.page
             .getByRole('button', { name: '常用任务', exact: true })
@@ -2682,14 +2681,9 @@ suite(
           '从本地上传',
         ]);
         expect(await f.page.locator('[data-compact=mode]').count()).toBe(0);
-        for (const selector of ['[data-compact=visibility]']) {
-          expect(
-            await f.page.locator(selector).evaluate((el) => ({
-              size: getComputedStyle(el).fontSize,
-              weight: getComputedStyle(el).fontWeight,
-            })),
-          ).toEqual({ size: '15px', weight: '400' });
-        }
+        expect(await f.page.locator('[data-compact=visibility]').count()).toBe(
+          0,
+        );
         const surface = await menu.evaluate((el) => ({
           background: getComputedStyle(el).backgroundColor,
           shadow: getComputedStyle(el).boxShadow,
@@ -2891,9 +2885,7 @@ suite(
         workspaceFiles: pickerFiles.slice(0, 2),
       });
       try {
-        await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
-          .click();
+        await startNewWork(f.page);
         const dialog = await openPicker(f.page);
         await dialog.getByRole('checkbox').nth(0).check();
         await dialog.getByRole('checkbox').nth(1).check();
@@ -3206,9 +3198,7 @@ suite(
     it('a normally-created session adopts the sending owner and submits its first attachment/message once', async () => {
       const f = await fixture();
       try {
-        await f.page
-          .getByRole('button', { name: '新的工作', exact: true })
-          .click();
+        await startNewWork(f.page);
         await f.send('First created task', 'first.txt');
         await f.waitPending(1);
         expect(f.pending[0]!.path).toBe('/api/v1/sessions');
