@@ -36,6 +36,7 @@ export interface Session {
   visibility: Visibility;
   updatedAt: string;
   archivedAt: string | null;
+  pinnedAt?: string | null;
   employeeName?: string;
   running?: boolean;
   pendingInteraction?: 'approval' | 'plan-review' | 'question';

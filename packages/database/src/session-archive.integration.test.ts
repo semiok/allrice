@@ -95,6 +95,84 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
       page.sessions,
     );
   });
+  it('persists owner pins, pages older pins before recent work, and restores recency on unpin', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    await fixture.db`update allrice_chat_sessions set updated_at='2026-08-01T00:00:00Z' where id=${f.session.id}`;
+    for (let i = 0; i < 35; i++)
+      await fixture.db`insert into allrice_chat_sessions(organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,title,updated_at)
+        values(${f.org},${f.workspace},${f.user},${f.session.employeeAssignmentId},${f.session.employeeVersionId},${`recent ${i}`},
+          '2026-09-26T00:00:00Z'::timestamptz + ${i} * interval '1 microsecond')`;
+    expect(
+      (await listChatSessions(f.owner, f.workspace)).sessions.some(
+        (s) => s.id === f.session.id,
+      ),
+    ).toBe(false);
+    await expect(
+      updateChatSession(f.neighbor, f.workspace, f.session.id, {
+        pinned: true,
+      }),
+    ).rejects.toBeDefined();
+    const foreign = await createExperienceFixture(fixture.db);
+    await expect(
+      updateChatSession(foreign.owner, f.workspace, f.session.id, {
+        pinned: true,
+      }),
+    ).rejects.toBeDefined();
+    const pinned = await updateChatSession(f.owner, f.workspace, f.session.id, {
+      pinned: true,
+    });
+    expect(pinned.pinnedAt).toBeTruthy();
+    expect(pinned.updatedAt).toBe('2026-08-01T00:00:00.000Z');
+    expect(
+      (await getChatSessionHistory(f.owner, f.workspace, f.session.id)).session
+        .pinnedAt,
+    ).toBe(pinned.pinnedAt);
+    expect(
+      (
+        await updateChatSession(f.owner, f.workspace, f.session.id, {
+          pinned: true,
+        })
+      ).pinnedAt,
+    ).toBe(pinned.pinnedAt);
+    for (const employeeInstanceId of [
+      undefined,
+      f.session.employeeAssignmentId,
+    ]) {
+      const pages: string[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await listChatSessions(f.owner, f.workspace, {
+          limit: 7,
+          cursor,
+          employeeInstanceId,
+        });
+        pages.push(...page.sessions.map((s) => s.id));
+        cursor = page.nextCursor ?? undefined;
+      } while (cursor);
+      expect(pages[0]).toBe(f.session.id);
+      expect(pages).toHaveLength(36);
+      expect(new Set(pages).size).toBe(36);
+    }
+    const unpinned = await updateChatSession(
+      f.owner,
+      f.workspace,
+      f.session.id,
+      { pinned: false },
+    );
+    expect(unpinned.pinnedAt).toBeNull();
+    expect(unpinned.updatedAt).toBe(pinned.updatedAt);
+    expect(
+      (
+        await listChatSessions(f.owner, f.workspace, { limit: 100 })
+      ).sessions.at(-1)?.id,
+    ).toBe(f.session.id);
+    await updateChatSession(f.owner, f.workspace, f.session.id, {
+      archived: true,
+    });
+    await expect(
+      updateChatSession(f.owner, f.workspace, f.session.id, { pinned: true }),
+    ).rejects.toBeDefined();
+  });
   it('archives without deleting history, reads artifacts, rejects sends, restores with owner boundaries', async () => {
     const f = await createExperienceFixture(fixture.db);
     const before = await getChatSessionHistory(

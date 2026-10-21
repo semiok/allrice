@@ -45,7 +45,6 @@ interface ChatSidebarProps {
   bridgeReleases: ReturnType<typeof useBridgeReleases>;
   onCollapsedChange: (collapsed: boolean) => void;
   onNewSession: (assignmentId?: string) => void;
-  onCreateEmployee: () => void;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
   onSelectSession: (sessionId: string) => void;
   onPrepareSession: (sessionId: string) => void;
@@ -72,7 +71,6 @@ export function ChatSidebar({
   bridgeReleases,
   onCollapsedChange,
   onNewSession,
-  onCreateEmployee,
   onOpenEmployeeDetails,
   onSelectSession,
   onPrepareSession,
@@ -224,18 +222,6 @@ export function ChatSidebar({
           >
             <IconClockOutlineRegular size={18} />
             <span className={sidebarUi.newSessionLabel}>自动化任务</span>
-          </button>
-        )}
-        {workspace.employees.length > 0 && (
-          <button
-            className={sidebarUi.newSession}
-            type="button"
-            aria-label="定制小白"
-            title="定制小白"
-            onClick={onCreateEmployee}
-          >
-            <span aria-hidden="true">＋</span>
-            <span className={sidebarUi.newSessionLabel}>定制小白</span>
           </button>
         )}
         {showingArchive && !collapsed && (

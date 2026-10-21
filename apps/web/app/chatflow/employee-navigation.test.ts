@@ -54,6 +54,27 @@ describe('Allrice employee projection into the native DSH tree', () => {
     ).toBe('old');
     expect(employeeChoices(workspace)).toHaveLength(2);
   });
+  it('pins within each employee group and keeps pinned work visible in the five-row preview', () => {
+    const rows = Array.from({ length: 9 }, (_, i) => ({
+      ...session(`a${i}`, 'a'),
+      updatedAt: new Date(Date.UTC(2026, 9, 1, 0, 0, i)).toISOString(),
+      pinnedAt: i === 0 ? '2026-10-21T00:00:00Z' : null,
+    }));
+    const groups = employeeGroups(
+      workspace,
+      [...rows, { ...session('b1', 'b'), pinnedAt: '2026-10-21T00:00:00Z' }],
+      'a8',
+      { a: true, b: true },
+    );
+    expect(groups.map((g) => g.key)).toEqual(['a', 'b']);
+    expect(groups[0]!.sessions[0]!.id).toBe('a0');
+    expect(groups[0]!.sessions[0]!.pinned).toBe(true);
+    expect(groups[1]!.sessions[0]!.id).toBe('b1');
+    const preview = employeeSessionPreview(groups[0]!.sessions, 'a8');
+    expect(preview.rows).toHaveLength(5);
+    expect(preview.rows[0]!.id).toBe('a0');
+    expect(preview.hiddenCount).toBe(4);
+  });
   it('keeps multiple instances of the same assignment separate in selection, counts and session history', () => {
     const assignmentId = '00000000-0000-4000-8000-000000000001';
     const customId = '00000000-0000-4000-8000-000000000002';

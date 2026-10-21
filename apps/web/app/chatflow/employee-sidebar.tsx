@@ -162,7 +162,7 @@ export function EmployeeSidebar({
                 onFocus={() => setRail(group.key)}
                 onClick={() => setRail(group.key)}
               >
-                {group.label.slice(0, 1)}
+                {Array.from(group.label)[0]}
               </button>
               {rail === group.key && (
                 <div
@@ -232,7 +232,7 @@ export function EmployeeSidebar({
                   }
                   leading={
                     <span className={css.initial}>
-                      {group.label.slice(0, 1)}
+                      {Array.from(group.label)[0]}
                     </span>
                   }
                   onToggle={() =>
