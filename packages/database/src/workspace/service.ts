@@ -1,4 +1,5 @@
 import { archivePrivateExperience } from '../experience-runtime.ts';
+import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
 import type { ResourcePrincipal } from '../resource-principal.ts';
 import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
@@ -797,6 +798,17 @@ export async function updateChatSession(
       const [locked] = await transaction<
         { archived_at: Date | null }[]
       >`select archived_at from allrice_chat_sessions where id=${current.id} for update`;
+      if (
+        await nativeContextExecutionRetired(transaction, 'chat', current.id)
+      ) {
+        if (
+          update.archived !== true ||
+          update.title !== undefined ||
+          update.visibility !== undefined
+        )
+          throw new DataAccessError('authorization_denied');
+        return current;
+      }
       if (update.archived === true && !locked?.archived_at) {
         await archiveSessionActivity(
           transaction,

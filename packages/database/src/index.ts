@@ -270,6 +270,13 @@ export {
   type NativeOriginReaderApproval,
   type NativeOriginReaderScope,
 } from './conversation/native-origin-reader.ts';
+export {
+  previewNativeTestChatRetirement,
+  applyNativeTestChatRetirement,
+  readNativeTestChatRetirement,
+  type NativeTestChatRetirementScope,
+  type NativeTestChatRetirementPlan,
+} from './conversation/native-context-retirement.ts';
 
 export * from './brand-content/service.ts';
 
