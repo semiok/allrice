@@ -183,6 +183,7 @@ export const ChatSessionSchema = z
     createdAt: TimestampSchema,
     updatedAt: TimestampSchema,
     archivedAt: TimestampSchema.nullable(),
+    pinnedAt: TimestampSchema.nullable().optional(),
   })
   .strict();
 
@@ -200,6 +201,7 @@ export const UpdateChatSessionInputSchema = z
   .object({
     title: z.string().trim().min(1).max(160).optional(),
     archived: z.boolean().optional(),
+    pinned: z.boolean().optional(),
     stopActivity: z.boolean().optional(),
     visibility: VisibilitySchema.optional(),
   })
@@ -208,6 +210,7 @@ export const UpdateChatSessionInputSchema = z
     (value) =>
       value.title !== undefined ||
       value.archived !== undefined ||
+      value.pinned !== undefined ||
       value.visibility !== undefined,
     'at least one update is required',
   )

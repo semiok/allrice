@@ -2,6 +2,13 @@
 
 import { sessionEmployeeKey } from './employee-instances';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  IconCopyOutlineRegular,
+  IconEditOutlineRegular,
+  IconPinOutlineRegular,
+  MenuItemButton,
+  Toast,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type {
   EmployeeSessionGroup,
   Session,
@@ -11,7 +18,6 @@ import type { ArchivedFilter } from './dsh-upstream/workspace/tree';
 import type { PropsRenderSlots } from './dsh-upstream/workspace/contracts';
 import {
   ArchiveSessionMenuItem,
-  ArchiveSessionRowButton,
   SessionArchiveConfirmDialog,
 } from './dsh-upstream/archive/ArchiveSession';
 import { RowActionToast } from './dsh-upstream/archive/RowActionToast';
@@ -21,6 +27,7 @@ import type {
 } from './dsh-upstream/archive/contracts';
 import { employeeTranslate } from './employee-navigation';
 import { readJson } from './chatflow-utils';
+import { SessionRenameDialog } from './session-rename-dialog';
 
 type Page = {
   sessions: Session[];
@@ -53,6 +60,13 @@ export function useSessionArchive({
   pageRef.current = page;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [editing, setEditing] = useState<string | null>(null);
+  const [rename, setRename] = useState<{
+    scope: string;
+    sessionId: string;
+    title: string;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
   const [loadError, setLoadError] = useState<{
     scope: string;
     filter: ArchivedFilter;
@@ -68,7 +82,7 @@ export function useSessionArchive({
   const toastSeq = useRef(0);
   const workspaceId = workspace?.workspaceId;
   const refreshKey = workspace?.sessions
-    .map((s) => `${s.id}/${s.archivedAt}/${s.updatedAt}`)
+    .map((s) => `${s.id}/${s.archivedAt}/${s.pinnedAt}/${s.updatedAt}`)
     .join(',');
   const load = useCallback(
     async (cursor?: string) => {
@@ -211,6 +225,9 @@ export function useSessionArchive({
   useEffect(() => {
     setPage(null);
     setRequest(null);
+    setRename(null);
+    setEditing(null);
+    setCopied(false);
     setToast(null);
     setError('');
     setLoadError(null);
@@ -407,6 +424,66 @@ export function useSessionArchive({
         setError(cause instanceof Error ? cause.message : '归档操作失败');
     });
   };
+  async function editSession(
+    id: string,
+    update: { pinned?: boolean; title?: string },
+  ) {
+    if (!workspaceId || pending.current.has(id)) return false;
+    const operation = Symbol();
+    pending.current.set(id, operation);
+    setEditing(id);
+    setError('');
+    try {
+      const result = await fetch(
+        `/api/v1/sessions/${id}?workspaceId=${workspaceId}`,
+        {
+          method: 'PATCH',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify(update),
+        },
+      ).then(readJson<{ session: Session }>);
+      if (currentScope.current !== scope) return false;
+      generation.current++;
+      onUpdated(result.session);
+      setPage((old) =>
+        old?.scope === scope
+          ? {
+              ...old,
+              sessions: old.sessions.map((s) =>
+                s.id === id ? { ...s, ...result.session } : s,
+              ),
+            }
+          : old,
+      );
+      await load();
+      return true;
+    } catch (cause) {
+      if (currentScope.current === scope)
+        setError(
+          cause instanceof Error ? cause.message : '会话修改失败，请重试',
+        );
+      return false;
+    } finally {
+      if (
+        currentScope.current === scope &&
+        pending.current.get(id) === operation
+      ) {
+        pending.current.delete(id);
+        setEditing(null);
+      }
+    }
+  }
+  async function copySessionId(id: string) {
+    setError('');
+    setCopied(false);
+    try {
+      await navigator.clipboard.writeText(id);
+      if (currentScope.current === scope) setCopied(true);
+    } catch {
+      if (currentScope.current === scope)
+        setError('复制失败，请检查浏览器剪贴板权限后重试');
+    }
+  }
   const archived = new Set(
     sessions.filter((s) => s.archivedAt).map((s) => s.id),
   );
@@ -425,14 +502,53 @@ export function useSessionArchive({
       unarchiveSession: (id: string) => act(id, false),
       t: employeeTranslate,
     };
-    return name === 'sidebar.workspaces.session.row.action' ? (
-      <ArchiveSessionRowButton {...injected} />
-    ) : context ? (
-      <ArchiveSessionMenuItem
-        {...injected}
-        useMenuOpenState={() => context.hookContext}
-      />
-    ) : null;
+    if (
+      name === 'sidebar.workspaces.session.row.action' ||
+      !context ||
+      !session
+    )
+      return null;
+    const closeMenu = () => context.hookContext[1](false);
+    return (
+      <>
+        {!session.archivedAt ? (
+          <MenuItemButton
+            icon={<IconPinOutlineRegular size={14} />}
+            disabled={editing === session.id}
+            onSelect={() => {
+              closeMenu();
+              void editSession(session.id, { pinned: !session.pinnedAt });
+            }}
+          >
+            {session.pinnedAt ? '取消置顶' : '置顶会话'}
+          </MenuItemButton>
+        ) : null}
+        <MenuItemButton
+          icon={<IconEditOutlineRegular size={14} />}
+          disabled={editing === session.id}
+          onSelect={() => {
+            closeMenu();
+            setError('');
+            setRename({ scope, sessionId: session.id, title: session.title });
+          }}
+        >
+          重命名
+        </MenuItemButton>
+        <ArchiveSessionMenuItem
+          {...injected}
+          useMenuOpenState={() => context.hookContext}
+        />
+        <MenuItemButton
+          icon={<IconCopyOutlineRegular size={14} />}
+          onSelect={() => {
+            closeMenu();
+            void copySessionId(session.id);
+          }}
+        >
+          复制 Session ID
+        </MenuItemButton>
+      </>
+    );
   };
   return {
     sessions,
@@ -456,6 +572,26 @@ export function useSessionArchive({
     renderActions,
     overlays: (
       <>
+        {rename?.scope === scope ? (
+          <SessionRenameDialog
+            key={rename.sessionId}
+            title={rename.title}
+            busy={editing === rename.sessionId}
+            error={error}
+            onClose={() => setRename(null)}
+            onSubmit={async (title) => {
+              if (await editSession(rename.sessionId, { title }))
+                if (currentScope.current === scope) setRename(null);
+            }}
+          />
+        ) : null}
+        {copied ? (
+          <Toast
+            text="已复制 Session ID"
+            tone="success"
+            onDone={() => setCopied(false)}
+          />
+        ) : null}
         <SessionArchiveConfirmDialog
           useArchiveRequest={(select) => select(request)}
           settleSessionArchive={() => setRequest(null)}

@@ -7041,6 +7041,52 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         .revision,
     ).toBe(2);
   });
+  it('stores the chosen employee name and palette in the instance, revision and reloaded workspace', async () => {
+    const f = await setup();
+    const input = {
+      ...f.input('财务助手'),
+      profile: {
+        name: '财务助手',
+        expressionStyle: 'structured',
+        appearance: {
+          avatarType: 'initials',
+          avatarValue: '财',
+          accentColor: 'coral',
+        },
+      },
+    };
+    const created = await createEmployeeInstance(f.a.context, input);
+    expect(created.profile).toEqual(input.profile);
+    expect(
+      (await getEmployeeInstance(f.a.context, created.id)).profile,
+    ).toEqual(input.profile);
+    const [stored] =
+      await fixture.db`select profile from allrice_employee_instances where id=${created.id}`;
+    expect(stored!.profile).toEqual(input.profile);
+    expect(
+      (await getEmployeeInstanceHistory(f.a.context, created.id)).revisions[0]!
+        .profile,
+    ).toEqual(input.profile);
+    const hub = await getEmployeeWorkspace(f.a.context, f.a.workspaceId);
+    expect(
+      hub.employees
+        .flatMap((e) => e.instances ?? [])
+        .find((i) => i.id === created.id)?.profile,
+    ).toEqual(input.profile);
+    expect(await createEmployeeInstance(f.a.context, input)).toEqual(created);
+    await expect(
+      createEmployeeInstance(f.a.context, {
+        ...input,
+        profile: {
+          ...input.profile,
+          appearance: { ...input.profile.appearance, accentColor: 'blue' },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'instance_conflict' });
+    await expect(
+      getEmployeeInstance(f.b.context, created.id),
+    ).rejects.toBeDefined();
+  });
   it('serializes duplicate creation and default mapping; retry returns the original creation after rename', async () => {
     const f = await setup(),
       input = f.input('Original');

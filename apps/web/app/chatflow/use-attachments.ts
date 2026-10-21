@@ -72,7 +72,6 @@ interface UseAttachmentsResult {
   setAttachmentPreview: Dispatch<SetStateAction<PendingAttachment | null>>;
   setFilePickerOpen: Dispatch<SetStateAction<boolean>>;
   setPendingAttachments: Dispatch<SetStateAction<PendingAttachment[]>>;
-  setUploadVisibility: Dispatch<SetStateAction<Visibility>>;
   setVersionHistoryFile: Dispatch<SetStateAction<WorkspaceFile | null>>;
   uploadAttachments: (files: FileList | File[]) => void;
   uploadFromBridge: () => Promise<void>;
@@ -104,8 +103,8 @@ export function useAttachments({
   >([]);
   const [attachmentPreview, setAttachmentPreview] =
     useState<PendingAttachment | null>(null);
-  const [uploadVisibility, setUploadVisibility] =
-    useState<Visibility>('workspace');
+  // New uploads belong to the workspace; stored files keep their original ACL.
+  const uploadVisibility = 'workspace' as const;
   const [bridgeFileCommand, setBridgeFileCommand] =
     useState<LocalFileCommandView | null>(null);
   const bridgeImportKey = useRef<{ scope: string; key: string } | null>(null);
@@ -153,23 +152,6 @@ export function useAttachments({
       setBridgeFileCommand(null);
     },
     [],
-  );
-
-  const changeUploadVisibility = useCallback(
-    (update: SetStateAction<Visibility>) => {
-      const next =
-        typeof update === 'function' ? update(uploadVisibility) : update;
-      setUploadVisibility(next);
-      // The selector applies to this draft. Existing stored files retain their ACL.
-      setPendingAttachments((current) =>
-        current.map((attachment) =>
-          attachment.persistedId
-            ? attachment
-            : { ...attachment, visibility: next },
-        ),
-      );
-    },
-    [uploadVisibility],
   );
 
   const removePendingAttachment = useCallback((target: PendingAttachment) => {
@@ -659,7 +641,6 @@ export function useAttachments({
     setAttachmentPreview,
     setFilePickerOpen,
     setPendingAttachments,
-    setUploadVisibility: changeUploadVisibility,
     setVersionHistoryFile,
     uploadAttachments,
     uploadFromBridge,

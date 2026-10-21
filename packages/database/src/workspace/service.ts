@@ -145,6 +145,7 @@ interface SessionRow {
   created_at: Date;
   updated_at: Date;
   archived_at: Date | null;
+  pinned_at?: Date | null;
 }
 
 interface MessageRow {
@@ -459,6 +460,7 @@ function mapSession(row: SessionRow): ChatSession {
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     archivedAt: row.archived_at?.toISOString() ?? null,
+    pinnedAt: row.pinned_at?.toISOString() ?? null,
   };
 }
 
@@ -679,7 +681,11 @@ function decodeCursor(cursor: string | undefined) {
   if (!cursor) return null;
   try {
     const parsed = z
-      .object({ updatedAt: z.string().datetime(), id: UuidSchema })
+      .object({
+        updatedAt: z.string().datetime(),
+        id: UuidSchema,
+        pinned: z.boolean().default(false),
+      })
       .parse(JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')));
     // PostgreSQL timestamps retain microseconds; JavaScript Date would truncate
     // the cursor and skip sessions updated within the same millisecond.
@@ -732,9 +738,10 @@ export async function listChatSessions(
       and (owner_id = ${requireUser(context)} or visibility <> 'private')
       and (
         ${cursor?.updatedAt ?? null}::text::timestamptz is null
-        or (updated_at, id) < (${cursor?.updatedAt ?? null}::text::timestamptz, ${cursor?.id ?? null}::uuid)
+        or (pinned_at is not null and archived_at is null, updated_at, id)
+          < (${cursor?.pinned ?? false}, ${cursor?.updatedAt ?? null}::text::timestamptz, ${cursor?.id ?? null}::uuid)
       )
-    order by updated_at desc, id desc
+    order by (pinned_at is not null and archived_at is null) desc, updated_at desc, id desc
     limit ${limit + 1}
   `;
   const visible = rows.filter((row) => canReadSession(context, row));
@@ -779,6 +786,7 @@ export async function listChatSessions(
             JSON.stringify({
               updatedAt: last.cursor_updated_at,
               id: last.id,
+              pinned: !!last.pinned_at && !last.archived_at,
             }),
           ).toString('base64url')
         : null,
@@ -808,7 +816,8 @@ export async function updateChatSession(
         if (
           update.archived !== true ||
           update.title !== undefined ||
-          update.visibility !== undefined
+          update.visibility !== undefined ||
+          update.pinned !== undefined
         )
           throw new DataAccessError('authorization_denied');
         return current;
@@ -821,6 +830,12 @@ export async function updateChatSession(
           update.stopActivity === true,
         );
       }
+      if (
+        update.pinned === true &&
+        locked?.archived_at &&
+        update.archived !== false
+      )
+        throw new DataAccessError('authorization_denied');
       if (update.visibility)
         await assertReferenceVisibility(
           transaction,
@@ -836,7 +851,16 @@ export async function updateChatSession(
             when ${update.archived ?? null}::boolean is false then null
             else archived_at
           end,
-          updated_at = now()
+          pinned_at = case
+            when ${update.pinned ?? null}::boolean is true then coalesce(pinned_at, now())
+            when ${update.pinned ?? null}::boolean is false then null
+            else pinned_at
+          end,
+          updated_at = case
+            when ${update.title !== undefined || update.visibility !== undefined || update.archived !== undefined}
+              then now()
+            else updated_at
+          end
       where id = ${current.id}
       returning *
     `;

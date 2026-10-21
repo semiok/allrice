@@ -43,7 +43,6 @@ function render(
     isRunning: false,
     nativeContextStatus: null,
     pendingAttachments: [],
-    uploadVisibility: 'private',
     onAttachmentMenuOpenChange: noop,
     onCancelRun: noop,
     onDraftChange: noop,
@@ -54,7 +53,6 @@ function render(
     onRetryAttachment: noop,
     onSendMessage: noop,
     onUploadAttachments: noop,
-    onUploadVisibilityChange: noop,
     ...view,
     ...overrides,
   };
