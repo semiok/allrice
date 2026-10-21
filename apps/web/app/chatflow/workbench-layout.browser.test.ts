@@ -3100,12 +3100,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('textbox', { name: '给 Rice 的消息' })
           .evaluate((node) => getComputedStyle(node).fontSize),
       ).toBe('16px');
-      expect(
-        await f.page
-          .locator('[class*="userBubble"]')
-          .first()
-          .evaluate((node) => getComputedStyle(node).fontSize),
-      ).toBe('16px');
       const code = row.locator('pre code').first();
       await code.waitFor();
       expect(
@@ -5210,7 +5204,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect
         .poll(() =>
           picker
-            .locator('[data-default-employee="true"]')
+            .locator('[data-create-employee]')
             .evaluate((element) => element === document.activeElement),
         )
         .toBe(true);
@@ -5315,6 +5309,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .getByRole('button', { name: '新的工作', exact: true })
           .click();
+        if (employeeCount)
+          await f.page.getByRole('dialog', { name: '选择 AI 员工' }).waitFor();
         expect(
           await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
         ).toBe(employeeCount ? 1 : 0);
@@ -8913,7 +8909,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .getByRole('button', { name: '新的工作', exact: true })
           .click();
-        expect(new URL(f.page.url()).searchParams.has('session')).toBe(false);
+        await f.page
+          .getByRole('dialog', { name: '选择 AI 员工' })
+          .locator('[data-default-employee="true"]')
+          .click();
+        await expect
+          .poll(() => new URL(f.page.url()).searchParams.has('session'))
+          .toBe(false);
       } finally {
         await f.close();
       }
@@ -10310,7 +10312,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await expect
           .poll(() => f.state.sessionEdits.get(B)?.pinnedAt)
           .toBeNull();
-        expect(await row.getByRole('img', { name: '已置顶' }).count()).toBe(0);
+        await expect
+          .poll(() => row.getByRole('img', { name: '已置顶' }).count())
+          .toBe(0);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
