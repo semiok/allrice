@@ -75,13 +75,14 @@ export async function readScheduleTarget(
   tx: Tx,
   scope: ScheduleScope,
   sessionId: string,
+  includeArchived = false,
 ) {
   const [row] = await tx<ScheduleTarget[]>`
     select id,organization_id,workspace_id,owner_id,employee_assignment_id,
       coalesce(employee_instance_id,employee_assignment_id) employee_instance_id
     from allrice_chat_sessions where id=${UuidSchema.parse(sessionId)}
       and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-      and owner_id=${scope.ownerId} and archived_at is null`;
+      and owner_id=${scope.ownerId} and (${includeArchived} or archived_at is null)`;
   if (!row) throw new DataAccessError('not_found');
   return row;
 }
@@ -115,13 +116,14 @@ export async function readScheduleBrowserScope(
   tx: Tx,
   context: RequestContext,
   sessionId: string,
+  includeArchived = false,
 ) {
   if (context.actor.type !== 'user')
     throw new DataAccessError('authentication_required');
   const [row] = await tx<{ workspace_id: string }[]>`
     select workspace_id from allrice_chat_sessions where id=${UuidSchema.parse(sessionId)}
       and organization_id=${context.organizationId} and owner_id=${context.actor.id}
-      and (${context.workspaceId}::uuid is null or workspace_id=${context.workspaceId}) and archived_at is null`;
+      and (${context.workspaceId}::uuid is null or workspace_id=${context.workspaceId}) and (${includeArchived} or archived_at is null)`;
   if (!row) throw new DataAccessError('not_found');
   return {
     organizationId: context.organizationId,

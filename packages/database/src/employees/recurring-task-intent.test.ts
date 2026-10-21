@@ -4,6 +4,18 @@ import { explicitRecurringTaskIntent as intent } from './recurring-task-intent.t
 
 const accepted: { text: string; rule: RecurringScheduleRule }[] = [
   {
+    text: '每 2 分钟就提醒我一次，要吃药',
+    rule: { kind: 'every', seconds: 120 },
+  },
+  {
+    text: '每两分钟就提醒我喝水。',
+    rule: { kind: 'every', seconds: 120 },
+  },
+  {
+    text: '每两分钟提醒我一次喝水。',
+    rule: { kind: 'every', seconds: 120 },
+  },
+  {
     text: '请每隔两分钟，在当前对话中只回复校验词「RECURRING-NL-A」。请实际创建周期任务，不要现在执行。',
     rule: { kind: 'every', seconds: 120 },
   },
@@ -78,6 +90,19 @@ const accepted: { text: string; rule: RecurringScheduleRule }[] = [
 ];
 
 describe('explicit recurring intent in one complete current human message', () => {
+  it.each([
+    '每两分钟如果我确认就提醒我喝水。',
+    '每两分钟提醒我一次，如果没喝水就提醒我。',
+    '每两分钟只提醒我一次。',
+    '每两分钟提醒我一次，明天开始。',
+    '每两分钟提醒我一次，不要创建任务。',
+    '每两分钟提醒我一次，要每小时提醒我喝水。',
+  ])(
+    'keeps ambiguity and enrollment refusal after reminder normalization: %s',
+    (text) => {
+      expect(intent(text)).toBeNull();
+    },
+  );
   it.each(accepted)('parses the explicit rule: $text', ({ text, rule }) => {
     expect(intent(text)).toEqual({ rule, authoritativeRequest: text });
   });

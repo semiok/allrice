@@ -57,7 +57,7 @@ import {
 } from './brand-content/native-reminder.ts';
 
 type Tx = TransactionSql;
-type Plan = {
+export type OncePlan = {
   id: string;
   organization_id: string;
   workspace_id: string;
@@ -76,6 +76,7 @@ type Plan = {
   deleted_at: Date | null;
   created_at: Date;
 };
+type Plan = OncePlan;
 type ControlRow = {
   partition_id: string;
   control_id: string;
@@ -224,7 +225,10 @@ export async function lockNativeOnceAdmissions(
   return result;
 }
 
-async function readTask(tx: Tx, p: Plan): Promise<OnceTask> {
+export async function readOnceTaskProjection(
+  tx: Tx,
+  p: Plan,
+): Promise<OnceTask> {
   const [state] = await tx<
     {
       command_status: string | null;
@@ -311,7 +315,7 @@ async function enroll(
       old.session_id !== target.id
     )
       throw new NativeOnceProductError('request_conflict');
-    return readTask(tx, old);
+    return readOnceTaskProjection(tx, old);
   }
   const [now] = await tx<{ now: Date }[]>`select clock_timestamp() now`;
   const runAt = new Date(input.runAt).toISOString();
@@ -370,7 +374,7 @@ async function enroll(
       ${control.dispatch.clientMessageId},${json(tx, control)},${json(tx, { control, task: null })})`;
   await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason)
     values(${scope.organizationId},${scope.workspaceId},${scope.ownerId},'automation.create','automation',${p!.id},'allowed','native_once_enrollment')`;
-  return readTask(tx, p!);
+  return readOnceTaskProjection(tx, p!);
 }
 
 export async function createOnceTask(
@@ -456,7 +460,7 @@ export async function listOnceTasks(
     return {
       tasks: await Promise.all(
         page.map(async (p) => {
-          const task = await readTask(tx, p);
+          const task = await readOnceTaskProjection(tx, p);
           return { ...task, canCancel: task.canCancel && principal.writable };
         }),
       ),
@@ -485,11 +489,12 @@ export async function cancelOnceTask(
   contextInput: RequestContext,
   sessionId: string,
   taskId: string,
+  catalogStop = false,
 ) {
   const context = RequestContextSchema.parse(contextInput);
   UuidSchema.parse(taskId);
   return getDatabase().begin(async (tx) => {
-    const scope = await browserScope(tx, context, sessionId);
+    const scope = await browserScope(tx, context, sessionId, catalogStop);
     // Metadata only, then the same principal/settings/plan order as dispatch.
     // The plan row serializes pending cancellation with the atomic handoff.
     const [projection] = await tx<
@@ -505,7 +510,7 @@ export async function cancelOnceTask(
       workspaceId: scope.workspaceId,
     });
     await readWorkAutomation(tx, { ...scope, userId: scope.ownerId });
-    const target = await targetMetadata(tx, scope, sessionId);
+    const target = await targetMetadata(tx, scope, sessionId, catalogStop);
     const [p] = await tx<
       Plan[]
     >`select * from allrice_automations where id=${taskId} and organization_id=${scope.organizationId}
@@ -517,7 +522,7 @@ export async function cancelOnceTask(
         target.employee_instance_id
     )
       throw new DataAccessError('not_found');
-    const task = await readTask(tx, p);
+    const task = await readOnceTaskProjection(tx, p);
     if (task.runId || !task.canCancel) return task;
     const [control] = await tx<
       ControlRow[]
@@ -547,7 +552,7 @@ export async function cancelOnceTask(
     const [updated] = await tx<
       Plan[]
     >`select * from allrice_automations where id=${p.id}`;
-    return readTask(tx, updated!);
+    return readOnceTaskProjection(tx, updated!);
   });
 }
 
@@ -686,7 +691,7 @@ export async function createOnceTaskFromExecutionContext(
         old.session_id !== input.sessionId
       )
         throw new NativeOnceProductError('request_conflict');
-      return readTask(tx, old);
+      return readOnceTaskProjection(tx, old);
     }
     const intent = explicitOnceTaskIntent(current.text);
     if (!intent) throw new NativeOnceProductError('intent_required');

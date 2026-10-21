@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createP27CodexWorkerFixture } from '../../../scripts/acceptance/runtime/p27-codex-worker-fixture.ts';
-import { createChatSession, sendChatMessage } from './workspace/service.ts';
+import {
+  createChatSession,
+  sendChatMessage,
+  getChatSessionHistory,
+} from './workspace/service.ts';
 import {
   createRecurringTask,
   createRecurringTaskFromExecutionContext,
@@ -29,6 +33,12 @@ import { lockNativeOnceJobAdmission } from './native-schedule-once-authority.ts'
 import { updateWorkAutomation } from './work-automation.ts';
 import * as client from './core/client.ts';
 import type { TransactionSql } from 'postgres';
+import {
+  listAutomationCatalog,
+  getAutomationCatalogTask,
+  getAutomationCatalogOperation,
+  changeAutomationCatalogTask,
+} from './automation-catalog.ts';
 import { listAutomations } from './execution/automation.ts';
 import { claimNextJob, startClaimedJob, failJob } from './execution/queue.ts';
 import type { RecurringScheduleRule } from '@allrice/contracts';
@@ -317,6 +327,30 @@ suite(
         ]),
       });
       expect('occurrences' in detail && detail.occurrences).toHaveLength(2);
+      const history = await getChatSessionHistory(
+        f.context,
+        f.workspaceId,
+        t.sessionId,
+      );
+      const wakes = history.messages.filter((m) => m.role === 'user');
+      // The second period waits in the ordinary inbox while the first Run is
+      // pending. Both surfaces must retain the actual non-human attribution.
+      expect(wakes).toHaveLength(1);
+      expect(history.queuedMessages).toHaveLength(1);
+      expect(history.queuedMessages[0]?.source).toMatchObject({
+        kind: 'schedule',
+        taskId: t.id,
+      });
+      for (const wake of wakes) {
+        expect(wake.source).toEqual({
+          kind: 'schedule',
+          taskId: t.id,
+          scheduledAt: expect.any(String),
+          occurrenceId: expect.any(String),
+        });
+        // Presentation attribution must preserve the actual execution input.
+        expect(wake.content.text).toContain('本轮只执行工作');
+      }
       // The legacy management DTO cannot parse native recurring rules. Its
       // unchanged entries remain readable; the new panel owns these rows.
       expect(
@@ -491,6 +525,206 @@ suite(
       await expect(
         f.db`delete from allrice_native_recurring_occurrences where automation_id=${t.id}`,
       ).rejects.toMatchObject({ code: '23514' });
+    });
+    it('catalog reads across sessions without seeding and rejects foreign scope', async () => {
+      const first = await task('MET197 catalog group: first');
+      const second = await task('MET197 catalog group: second');
+      const [before] =
+        await f.db`select count(*)::int n from allrice_automations`;
+      const list = await listAutomationCatalog(f.context, {
+        workspaceId: f.workspaceId,
+        query: 'MET197 catalog group:',
+      });
+      expect(list.tasks.map((t) => t.id).sort()).toEqual(
+        [first.id, second.id].sort(),
+      );
+      expect(new Set(list.tasks.map((t) => t.sessionId)).size).toBe(2);
+      const found = list.tasks[0]!;
+      expect(found.definition).toMatchObject({
+        kind: 'recurring',
+        task: { canManage: true },
+      });
+      expect(
+        (
+          await listAutomationCatalog(f.context, {
+            workspaceId: f.workspaceId,
+            employeeId: found.employeeId!,
+            query: 'MET197 catalog group:',
+          })
+        ).tasks,
+      ).toHaveLength(2);
+      const [after] =
+        await f.db`select count(*)::int n from allrice_automations`;
+      expect(after!.n).toBe(before!.n);
+      await expect(
+        getAutomationCatalogTask(
+          { ...f.context, actor: { type: 'user', id: randomUUID() } },
+          f.workspaceId,
+          first.id,
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        listAutomationCatalog(f.context, { workspaceId: randomUUID() }),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        listAutomationCatalog(f.context, {
+          workspaceId: f.workspaceId,
+          cursor: 'not-a-cursor',
+        }),
+      ).rejects.toThrow();
+    });
+    it('catalog stops an archived source with cloud off, resolves the exact operation and forbids resume', async () => {
+      const t = await task('MET197 archived source');
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${t.sessionId}`;
+      await cloud(false);
+      try {
+        const before = await getAutomationCatalogTask(
+          f.context,
+          f.workspaceId,
+          t.id,
+        );
+        expect(before.task).toMatchObject({
+          sourceArchived: true,
+          canStop: true,
+          definition: { kind: 'recurring', task: { canManage: false } },
+        });
+        const input = {
+          action: 'pause' as const,
+          operationId: randomUUID(),
+          expectedRevision: 1,
+        };
+        expect(
+          await changeAutomationCatalogTask(
+            f.context,
+            f.workspaceId,
+            t.id,
+            input,
+          ),
+        ).toMatchObject({
+          operation: { status: 'applied', task: { status: 'paused' } },
+        });
+        expect(
+          await getAutomationCatalogOperation(
+            f.context,
+            f.workspaceId,
+            t.id,
+            input.operationId,
+          ),
+        ).toMatchObject({ operation: { request: input, status: 'applied' } });
+        await expect(
+          changeAutomationCatalogTask(f.context, f.workspaceId, t.id, {
+            action: 'resume',
+            operationId: randomUUID(),
+            expectedRevision: 2,
+          }),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await changeAutomationCatalogTask(f.context, f.workspaceId, t.id, {
+          action: 'delete',
+          operationId: randomUUID(),
+          expectedRevision: 2,
+        });
+        expect(
+          (
+            await listAutomationCatalog(f.context, {
+              workspaceId: f.workspaceId,
+              query: 'MET197 archived source',
+            })
+          ).tasks,
+        ).toHaveLength(0);
+        expect(
+          (await getAutomationCatalogTask(f.context, f.workspaceId, t.id)).task
+            .definition,
+        ).toMatchObject({ kind: 'recurring', task: { status: 'deleting' } });
+      } finally {
+        await cloud(true);
+      }
+    });
+    it('catalog preserves microsecond pagination across identical millisecond timestamps', async () => {
+      const session = await createChatSession(f.context, {
+        workspaceId: f.workspaceId,
+        employeeAssignmentId: f.assignmentId,
+        title: 'MET197 paging',
+      });
+      const ids: string[] = [];
+      for (let i = 0; i < 52; i++) {
+        const t = await createRecurringTask(f.context, session.id, {
+          clientRequestId: randomUUID(),
+          name: 'MET197 microsecond paging',
+          prompt: 'MET197 microsecond paging',
+          rule: { kind: 'every', seconds: 60 },
+        });
+        ids.push(t.id);
+        await f.db`update allrice_automations set created_at='2026-10-20T01:00:00Z'::timestamptz+${i}*interval '1 microsecond' where id=${t.id}`;
+      }
+      const page = await listAutomationCatalog(f.context, {
+        workspaceId: f.workspaceId,
+        query: 'MET197 microsecond paging',
+      });
+      expect(page.tasks).toHaveLength(50);
+      expect(page.nextCursor).not.toBeNull();
+      const rest = await listAutomationCatalog(f.context, {
+        workspaceId: f.workspaceId,
+        query: 'MET197 microsecond paging',
+        cursor: page.nextCursor!,
+      });
+      expect(rest.tasks).toHaveLength(2);
+      expect(rest.nextCursor).toBeNull();
+      expect([...page.tasks, ...rest.tasks].map((t) => t.id).sort()).toEqual(
+        ids.sort(),
+      );
+    });
+    it('edits existing weekly legacy configuration without replacing its clock and preserves deleted history', async () => {
+      const session = await createChatSession(f.context, {
+        workspaceId: f.workspaceId,
+        employeeAssignmentId: f.assignmentId,
+        title: 'MET197 legacy catalog',
+      });
+      const id = randomUUID(),
+        schedule = {
+          frequency: 'weekly',
+          weekday: 2,
+          time: '09:00',
+          timezone: 'Asia/Shanghai',
+        };
+      await f.db`insert into allrice_automations(id,organization_id,workspace_id,owner_id,name,prompt,trigger_type,schedule,status,conversation_mode,employee_assignment_id,session_id,next_run_at) values(${id},${f.organizationId},${f.workspaceId},${f.ownerId},'MET197 legacy weekly','整理现有周报','schedule',${f.db.json(schedule)},'enabled','reuse',${f.assignmentId},${session.id},'2099-01-01T01:00:00Z')`;
+      expect(
+        (await getAutomationCatalogTask(f.context, f.workspaceId, id)).task
+          .definition,
+      ).toMatchObject({ kind: 'legacy', schedule, revision: 1 });
+      const update = {
+        action: 'update',
+        expectedRevision: 1,
+        name: 'MET197 weekly edited',
+        prompt: '整理原周报',
+        schedule: { ...schedule, time: '10:15' },
+      };
+      await changeAutomationCatalogTask(f.context, f.workspaceId, id, update);
+      await expect(
+        changeAutomationCatalogTask(f.context, f.workspaceId, id, update),
+      ).rejects.toMatchObject({ code: 'grant_invalid' });
+      const [actual] =
+        await f.db`select clock_owner,revision,schedule from allrice_automations where id=${id}`;
+      expect(actual).toMatchObject({
+        clock_owner: 'legacy',
+        revision: 2,
+        schedule: { frequency: 'weekly', weekday: 2, time: '10:15' },
+      });
+      await changeAutomationCatalogTask(f.context, f.workspaceId, id, {
+        action: 'delete',
+        expectedRevision: 2,
+      });
+      expect(
+        (
+          await listAutomationCatalog(f.context, {
+            workspaceId: f.workspaceId,
+            query: 'MET197 weekly edited',
+          })
+        ).tasks,
+      ).toHaveLength(0);
+      expect(
+        (await getAutomationCatalogTask(f.context, f.workspaceId, id)).task
+          .definition,
+      ).toMatchObject({ kind: 'legacy', status: 'deleted', revision: 3 });
     });
     it('PostgreSQL rejects an outbox lease expiring at COMMIT and rolls back the whole Run', async () => {
       const t = await task();

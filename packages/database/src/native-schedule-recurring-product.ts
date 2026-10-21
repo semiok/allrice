@@ -73,7 +73,7 @@ import {
 } from './platform-quality-native.ts';
 
 type Tx = TransactionSql;
-type Plan = {
+export type RecurringPlan = {
   id: string;
   organization_id: string;
   workspace_id: string;
@@ -97,6 +97,7 @@ type Plan = {
   created_at: Date;
   updated_at: Date;
 };
+type Plan = RecurringPlan;
 type ControlRow = {
   partition_id: string;
   control_id: string;
@@ -171,8 +172,18 @@ function reservation(
     ...v,
   });
 }
-async function currentRead(tx: Tx, context: RequestContext, sessionId: string) {
-  const scope = await readScheduleBrowserScope(tx, context, sessionId);
+async function currentRead(
+  tx: Tx,
+  context: RequestContext,
+  sessionId: string,
+  includeArchived = false,
+) {
+  const scope = await readScheduleBrowserScope(
+    tx,
+    context,
+    sessionId,
+    includeArchived,
+  );
   const principal = await readContentPrincipal(
     { ...context, workspaceId: scope.workspaceId },
     tx,
@@ -221,7 +232,7 @@ async function currentWrite(
     throw new NativeRecurringProductError('disabled');
   return { scope, principal, target };
 }
-async function readOccurrenceRows(
+export async function readRecurringOccurrenceRows(
   tx: Tx,
   p: Plan,
   before: ReturnType<typeof cursor>,
@@ -250,9 +261,9 @@ async function readOccurrenceRows(
       ${before ? tx`and (o.scheduled_at,o.occurrence_id)<(${before.at}::text::timestamptz,${before.id}::uuid)` : tx``}
     order by o.scheduled_at desc,o.occurrence_id desc limit ${limit}`;
 }
-function occurrenceDto(
+export function recurringOccurrenceProjection(
   p: Plan,
-  o: Awaited<ReturnType<typeof readOccurrenceRows>>[number],
+  o: Awaited<ReturnType<typeof readRecurringOccurrenceRows>>[number],
 ): RecurringOccurrence {
   const status = o.run_id
     ? o.run_state === 'succeeded'
@@ -286,7 +297,7 @@ function occurrenceDto(
         : o.error_message,
   });
 }
-async function readTask(
+export async function readRecurringTaskProjection(
   tx: Tx,
   p: Plan,
   canManage: boolean,
@@ -307,7 +318,7 @@ async function readTask(
         : control?.command.status !== 'confirmed'
           ? 'preparing'
           : 'enabled';
-  const [latest] = await readOccurrenceRows(tx, p, null, 1);
+  const [latest] = await readRecurringOccurrenceRows(tx, p, null, 1);
   return RecurringTaskSchema.parse({
     id: p.id,
     clientRequestId: p.native_recurring_request_id,
@@ -324,7 +335,7 @@ async function readTask(
     createdAt: p.created_at.toISOString(),
     updatedAt: p.updated_at.toISOString(),
     canManage: canManage && ['enabled', 'paused'].includes(status),
-    latestOccurrence: latest ? occurrenceDto(p, latest) : null,
+    latestOccurrence: latest ? recurringOccurrenceProjection(p, latest) : null,
   });
 }
 async function originalRequest(
@@ -354,7 +365,7 @@ async function readOperation(
     request: op.request,
     status: op.status,
     errorMessage: op.error_message,
-    task: await readTask(tx, p, canManage),
+    task: await readRecurringTaskProjection(tx, p, canManage),
   });
 }
 export async function createRecurringTask(
@@ -398,7 +409,7 @@ async function enrollRecurringTask(
       existing.session_id !== sessionId
     )
       throw new NativeRecurringProductError('request_conflict');
-    return readTask(tx, existing, true);
+    return readRecurringTaskProjection(tx, existing, true);
   }
   validateNew?.();
   const [partition] = await tx<
@@ -451,7 +462,7 @@ async function enrollRecurringTask(
   await tx`insert into allrice_native_recurring_controls(partition_id,control_id,automation_id,control_session_id,immutable_identity,snapshot)
       values(${control.partitionId},${control.controlId},${p!.id},${control.controlSessionId},${json(tx, recurringControlIdentity(control))},${json(tx, { control, task: null })})`;
   await audit(tx, scope, p!.id, 'create');
-  return readTask(tx, p!, true);
+  return readRecurringTaskProjection(tx, p!, true);
 }
 
 export async function createRecurringTaskFromExecutionContext(
@@ -567,7 +578,9 @@ export async function listRecurringTasks(
     const page = rows.slice(0, 50),
       last = page.at(-1);
     return {
-      tasks: await Promise.all(page.map((p) => readTask(tx, p, canManage))),
+      tasks: await Promise.all(
+        page.map((p) => readRecurringTaskProjection(tx, p, canManage)),
+      ),
       request:
         query.clientRequestId && page[0]
           ? await originalRequest(tx, page[0])
@@ -583,13 +596,19 @@ export async function getRecurringTask(
   sessionId: string,
   taskId: string,
   raw: unknown = {},
+  includeArchived = false,
 ) {
   const context = RequestContextSchema.parse(contextInput),
     query = RecurringTaskDetailQuerySchema.parse(raw),
     before = cursor(query.cursor);
   UuidSchema.parse(taskId);
   return getDatabase().begin(async (tx) => {
-    const { scope, canManage } = await currentRead(tx, context, sessionId);
+    const { scope, canManage } = await currentRead(
+      tx,
+      context,
+      sessionId,
+      includeArchived,
+    );
     const [p] = await tx<
       Plan[]
     >`select * from allrice_automations where id=${taskId} and organization_id=${scope.organizationId}
@@ -604,12 +623,12 @@ export async function getRecurringTask(
         operation: op ? await readOperation(tx, op, p, canManage) : null,
       };
     }
-    const rows = await readOccurrenceRows(tx, p, before, 51),
+    const rows = await readRecurringOccurrenceRows(tx, p, before, 51),
       page = rows.slice(0, 50),
       last = page.at(-1);
     return {
-      task: await readTask(tx, p, canManage),
-      occurrences: page.map((o) => occurrenceDto(p, o)),
+      task: await readRecurringTaskProjection(tx, p, canManage),
+      occurrences: page.map((o) => recurringOccurrenceProjection(p, o)),
       nextCursor:
         rows.length > 50 && last
           ? encodeCursor(last.cursor_at, last.occurrence_id)
@@ -622,17 +641,25 @@ export async function changeRecurringTask(
   sessionId: string,
   taskId: string,
   raw: unknown,
+  catalogStop = false,
 ) {
   const context = RequestContextSchema.parse(contextInput),
     input = ChangeRecurringTaskInputSchema.parse(raw);
   UuidSchema.parse(taskId);
   return getDatabase().begin(async (tx) => {
-    const { scope } = await currentWrite(
-      tx,
-      context,
-      sessionId,
-      input.operationId,
-    );
+    // Stopping owned work must remain possible after its source was archived
+    // or cloud execution disabled. This grants no enrollment, edit or resume.
+    const stopping = catalogStop && ['pause', 'delete'].includes(input.action);
+    const scope = stopping
+      ? await readScheduleBrowserScope(tx, context, sessionId, true)
+      : (await currentWrite(tx, context, sessionId, input.operationId)).scope;
+    if (stopping) {
+      await acquireDevAdmission(tx);
+      await lockSchedulePrincipal(tx, scope, input.operationId, {
+        ...context,
+        workspaceId: scope.workspaceId,
+      });
+    }
     const digest = runtimePolicyDigest({ sessionId, taskId, input });
     await tx`select pg_advisory_xact_lock(hashtextextended(${`recurring-operation:${scope.organizationId}:${scope.ownerId}:${input.operationId}`},0))`;
     const [p] = await tx<

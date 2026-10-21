@@ -31,6 +31,11 @@ import {
 } from './native-schedule-once-state.ts';
 import { nativeOnceWorkspaceDigest } from './native-schedule-workspace-state.ts';
 import { lockNativeOnceJobAdmission } from './native-schedule-once-authority.ts';
+import {
+  listAutomationCatalog,
+  getAutomationCatalogTask,
+  changeAutomationCatalogTask,
+} from './automation-catalog.ts';
 import { updateWorkAutomation } from './work-automation.ts';
 import {
   claimNextJob,
@@ -489,6 +494,41 @@ suite(
         expect(
           (await cancelOnceTask(f.context, a.sessionId, a.task.id)).status,
         ).toBe('canceled');
+      } finally {
+        await cloud(true);
+      }
+    });
+    it('unified catalog includes one-off tasks from all chats and cancels after archive', async () => {
+      const a = await task(),
+        b = await task();
+      const list = await listAutomationCatalog(f.context, {
+        workspaceId: f.workspaceId,
+      });
+      expect(
+        list.tasks.some(
+          (t) => t.id === a.task.id && t.definition.kind === 'once',
+        ),
+      ).toBe(true);
+      expect(
+        list.tasks.some(
+          (t) => t.id === b.task.id && t.sessionId === b.sessionId,
+        ),
+      ).toBe(true);
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${a.sessionId}`;
+      await cloud(false);
+      try {
+        expect(
+          (await getAutomationCatalogTask(f.context, f.workspaceId, a.task.id))
+            .task,
+        ).toMatchObject({ sourceArchived: true, canStop: true });
+        expect(
+          await changeAutomationCatalogTask(
+            f.context,
+            f.workspaceId,
+            a.task.id,
+            { action: 'cancel' },
+          ),
+        ).toMatchObject({ task: { id: a.task.id, status: 'canceled' } });
       } finally {
         await cloud(true);
       }

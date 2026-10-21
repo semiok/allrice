@@ -89,18 +89,23 @@ export function QueuedMessagesDock({
         <ul id={listId} className={css.list} hidden={!listVisible}>
           {listVisible &&
             queue.map((row) => {
-              const preview = [
-                row.text,
-                ...(row.companyAssets?.templates ?? []).map(
-                  (r) =>
-                    `范本：${r.revision.content.title} v${r.revision.number}`,
-                ),
-                ...(row.sessionReferences ?? []).map((r) => `＠ ${r.label}`),
-                ...(row.referenceSelections ?? []).map(
-                  (r) => `${r.fileName} · v${r.revision}`,
-                ),
-                ...(row.attachments ?? []).map((a) => `📎 ${a.fileName}`),
-              ].join('　');
+              const scheduled = row.source?.kind === 'schedule';
+              const preview = scheduled
+                ? '自动化任务 · 等待执行'
+                : [
+                    row.text,
+                    ...(row.companyAssets?.templates ?? []).map(
+                      (r) =>
+                        `范本：${r.revision.content.title} v${r.revision.number}`,
+                    ),
+                    ...(row.sessionReferences ?? []).map(
+                      (r) => `＠ ${r.label}`,
+                    ),
+                    ...(row.referenceSelections ?? []).map(
+                      (r) => `${r.fileName} · v${r.revision}`,
+                    ),
+                    ...(row.attachments ?? []).map((a) => `📎 ${a.fileName}`),
+                  ].join('　');
               const steerUnavailable = row.companyAssets?.templates.length
                 ? '选用范本的消息会作为下一轮任务处理'
                 : row.sessionReferences?.length ||
@@ -129,44 +134,46 @@ export function QueuedMessagesDock({
                   <span className={css.preview} title={preview}>
                     {preview}
                   </span>
-                  <div className={css.actions}>
-                    <button
-                      type="button"
-                      className={css.action}
-                      aria-label="立即引导"
-                      title={steerUnavailable ?? '补充／纠正当前回合'}
-                      disabled={
-                        composerBusy ||
-                        busy !== null ||
-                        Boolean(steerUnavailable)
-                      }
-                      onClick={() => void applyAction(row, 'steer')}
-                    >
-                      <IconSendOutline14 />
-                    </button>
-                    <button
-                      type="button"
-                      className={css.action}
-                      aria-label="重新编辑"
-                      title={
-                        canEdit ? '取回输入框编辑' : '请先发送或清空当前草稿'
-                      }
-                      disabled={composerBusy || busy !== null || !canEdit}
-                      onClick={() => void applyAction(row, 'edit')}
-                    >
-                      <IconEditOutline16 size={14} />
-                    </button>
-                    <button
-                      type="button"
-                      className={css.action}
-                      aria-label="撤回消息"
-                      title="撤回，不再执行"
-                      disabled={composerBusy || busy !== null}
-                      onClick={() => void applyAction(row, 'remove')}
-                    >
-                      <IconTrashOutline16 size={14} />
-                    </button>
-                  </div>
+                  {!scheduled && (
+                    <div className={css.actions}>
+                      <button
+                        type="button"
+                        className={css.action}
+                        aria-label="立即引导"
+                        title={steerUnavailable ?? '补充／纠正当前回合'}
+                        disabled={
+                          composerBusy ||
+                          busy !== null ||
+                          Boolean(steerUnavailable)
+                        }
+                        onClick={() => void applyAction(row, 'steer')}
+                      >
+                        <IconSendOutline14 />
+                      </button>
+                      <button
+                        type="button"
+                        className={css.action}
+                        aria-label="重新编辑"
+                        title={
+                          canEdit ? '取回输入框编辑' : '请先发送或清空当前草稿'
+                        }
+                        disabled={composerBusy || busy !== null || !canEdit}
+                        onClick={() => void applyAction(row, 'edit')}
+                      >
+                        <IconEditOutline16 size={14} />
+                      </button>
+                      <button
+                        type="button"
+                        className={css.action}
+                        aria-label="撤回消息"
+                        title="撤回，不再执行"
+                        disabled={composerBusy || busy !== null}
+                        onClick={() => void applyAction(row, 'remove')}
+                      >
+                        <IconTrashOutline16 size={14} />
+                      </button>
+                    </div>
+                  )}
                 </li>
               );
             })}

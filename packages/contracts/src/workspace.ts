@@ -116,8 +116,21 @@ export const ChatMessageContentSchema = z
   })
   .strict();
 
+/** Server-projected attribution, never accepted from a chat submission. */
+export const ChatMessageSourceSchema = z
+  .object({
+    kind: z.literal('schedule'),
+    taskId: UuidSchema,
+    scheduledAt: TimestampSchema,
+    occurrenceId: z.string().min(1).max(160),
+  })
+  .strict();
+export type ChatMessageSource = z.infer<typeof ChatMessageSourceSchema>;
+
 export const ChatMessageSchema = z
   .object({
+    source: ChatMessageSourceSchema.optional(),
+    automationTaskIds: z.array(UuidSchema).optional(),
     steering: z
       .object({
         runId: UuidSchema.nullable(),

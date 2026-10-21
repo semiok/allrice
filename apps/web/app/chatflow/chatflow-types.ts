@@ -1,4 +1,8 @@
-import type { McpFailureKind, EmployeeInstance } from '@allrice/contracts';
+import type {
+  McpFailureKind,
+  EmployeeInstance,
+  ChatMessageSource,
+} from '@allrice/contracts';
 import type {
   ChatFlowEventEnvelope,
   SaasCapabilityManifest,
@@ -89,6 +93,8 @@ export interface Workspace {
 }
 
 export interface Message {
+  automationTaskIds?: string[];
+  source?: ChatMessageSource;
   steering?: {
     runId: string | null;
     turnId: string;
@@ -124,6 +130,7 @@ export interface Message {
 }
 
 export interface QueuedMessage {
+  source?: ChatMessageSource;
   referenceSelections?: ReferenceSelection[];
   companyAssets?: CompanyRunSnapshot;
   sessionReferences?: SessionReference[];

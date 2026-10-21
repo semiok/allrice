@@ -16,6 +16,10 @@ export { SessionReferenceError } from './session-references.ts';
 import { readWorkAutomation } from '../work-automation.ts';
 import { readSessionWorkMethods } from './work-methods.ts';
 import { readSessionSteering } from './steering-history.ts';
+import {
+  readScheduleMessageSources,
+  readCreatedAutomationIds,
+} from './automation-sources.ts';
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { captureReferenceSelections } from '../reference-runtime.ts';
@@ -1053,6 +1057,23 @@ export async function getChatSessionHistory(
               : (nativeRuntime?.dsh_context_observed_at ?? null),
         }
       : null;
+  // The message/Run/dispatch binding is committed together. Read attribution
+  // after the selected messages so a newly visible timer wake is never turned
+  // into an apparent human instruction by an earlier catalog snapshot.
+  const scheduleSources = await readScheduleMessageSources(
+    context,
+    workspaceId,
+    row.id,
+    row.owner_id,
+    sql,
+  );
+  const createdAutomationIds = await readCreatedAutomationIds(
+    context,
+    workspaceId,
+    row.id,
+    row.owner_id,
+    sql,
+  );
   const attachments = await messageAttachments(
     messages.map((message) => message.id),
   );
@@ -1094,6 +1115,9 @@ export async function getChatSessionHistory(
           companyAssets: mapped.content.companyAssets,
           referenceSelections: mapped.content.referenceSelections,
           createdAt: mapped.createdAt,
+          ...(scheduleSources.has(m.id)
+            ? { source: scheduleSources.get(m.id)! }
+            : {}),
         };
       }),
     messages: messages
@@ -1121,12 +1145,17 @@ export async function getChatSessionHistory(
           };
         return {
           ...mapped,
+          ...(message.role === 'user' && scheduleSources.has(message.id)
+            ? { source: scheduleSources.get(message.id)! }
+            : {}),
           ...(steeringByMessage.has(message.id)
             ? { steering: steeringByMessage.get(message.id)! }
             : {}),
           ...(message.role === 'assistant' && message.run_id
             ? {
                 workMethods: workMethods.get(message.run_id) ?? [],
+                automationTaskIds:
+                  createdAutomationIds.get(message.run_id) ?? [],
                 ...(applicationFailures.has(message.run_id)
                   ? {
                       applicationFailure: applicationFailures.get(

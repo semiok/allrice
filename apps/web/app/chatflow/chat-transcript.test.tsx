@@ -58,6 +58,30 @@ function render(
   );
 }
 describe('historical transcript capability gating', () => {
+  it('folds an actual scheduled wake without presenting internal instructions as human prose', () => {
+    const text = '这项周期任务本期已经到期，请现在执行原始要求中的工作。';
+    const wake: Message = {
+      ...messages[0]!,
+      role: 'user',
+      content: { text },
+      source: {
+        kind: 'schedule',
+        taskId: randomUUID(),
+        occurrenceId: randomUUID(),
+        scheduledAt: messages[0]!.createdAt,
+      },
+    };
+    const scheduled = render(false, [wake, messages[0]!]);
+    expect(scheduled).toContain('data-turn-trigger="true"');
+    expect(scheduled).toContain('自动化任务');
+    expect(scheduled).toContain('aria-expanded="false"');
+    expect(scheduled).not.toContain(text);
+    expect(scheduled).toContain('An existing answer');
+    // Identical words from a real human must remain a normal, visible message.
+    const human = render(false, [{ ...wake, source: undefined }]);
+    expect(human).toContain(text);
+    expect(human).not.toContain('data-turn-trigger');
+  });
   it.each(['Rice 暂时无法完成这次请求，请稍后重试。', '已查到四个 PR。'])(
     'explains a masked disconnect while retaining completed content (%s)',
     (text) => {

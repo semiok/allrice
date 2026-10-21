@@ -1,0 +1,11 @@
+--- a/packages/client/ui-chat/src/client/chat/turn-trigger.ts
++++ b/packages/client/ui-chat/src/client/chat/turn-trigger.ts
+@@ -1,6 +1,6 @@
+ /** Presentation of durable non-human messages claimed to begin a Turn. */
+-import type { ContextMessageNode } from '../contract/snapshot.ts'
+-import type { ChatKey } from '../locale.ts'
++import type { ContextMessageNode } from './host'
++import type { ChatKey } from './host'
+ 
+ /** Existing primitive glyph selected for a Turn trigger's source family. */
+ export type TurnTriggerIcon = 'agent' | 'github' | 'goal' | 'job' | 'plugin' | 'request' | 'schedule' | 'subagent' | 'team' | 'webhook'

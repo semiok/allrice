@@ -168,3 +168,5 @@ export * from './brand-content.ts';
 export * from './brand-content-workflow.ts';
 
 export * from './brand-content-templates.ts';
+
+export * from './automation-catalog.ts';

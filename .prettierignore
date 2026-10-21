@@ -60,3 +60,6 @@ apps/web/app/dsh-upstream/ui-radius-tokens.css
 apps/web/app/dsh-upstream/ui-focus-tokens.css
 apps/web/app/dsh-upstream/ui-surface-tokens.css
 apps/web/app/dsh-upstream/ui-content-tokens.css
+
+# Pinned native automation presentation, checked by dsh-ui.
+apps/web/app/chatflow/dsh-upstream/automation/

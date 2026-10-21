@@ -66,6 +66,7 @@ it('rejects an invalid approved-artifact catalog before starting its runtime', a
   });
 });
 it.each([
+  '每 2 分钟就提醒我一次，要吃药',
   '请每隔两分钟提醒我喝水。',
   '请每天09:30，时区Asia/Shanghai，提醒我检查报表。',
 ])(

@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import {
   IconArchiveOutlineRegular,
+  IconClockOutlineRegular,
   IconChevronRightOutlineRegular,
   IconRefreshOutlineRegular,
   Tooltip,
@@ -48,6 +49,8 @@ interface ChatSidebarProps {
   onOpenEmployeeDetails: (assignmentId?: string) => void;
   onSelectSession: (sessionId: string) => void;
   onPrepareSession: (sessionId: string) => void;
+  onOpenAutomations?: () => void;
+  automationsActive?: boolean;
 }
 
 export function ChatSidebar({
@@ -73,6 +76,8 @@ export function ChatSidebar({
   onOpenEmployeeDetails,
   onSelectSession,
   onPrepareSession,
+  onOpenAutomations,
+  automationsActive = false,
 }: ChatSidebarProps) {
   const sidebar = useRef<HTMLElement>(null);
   const showingArchive = archive?.filter === 'only';
@@ -208,6 +213,19 @@ export function ChatSidebar({
             </Tooltip>
           )}
         </div>
+        {onOpenAutomations && (
+          <button
+            className={sidebarUi.newSession}
+            type="button"
+            aria-label="自动化任务"
+            title="自动化任务"
+            aria-current={automationsActive ? 'page' : undefined}
+            onClick={onOpenAutomations}
+          >
+            <IconClockOutlineRegular size={18} />
+            <span className={sidebarUi.newSessionLabel}>自动化任务</span>
+          </button>
+        )}
         {workspace.employees.length > 0 && (
           <button
             className={sidebarUi.newSession}
