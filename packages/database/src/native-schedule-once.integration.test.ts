@@ -42,6 +42,7 @@ import {
   startClaimedJob,
   heartbeatJob,
   failJob,
+  completeJob,
   prepareJobNativeSession,
   bindJobNativeSession,
 } from './execution/queue.ts';
@@ -124,9 +125,13 @@ suite(
         title: 'Isolated once',
       });
     }
-    async function leasedChat(text: string, clientMessageId = randomUUID()) {
+    async function leasedChat(
+      text: string,
+      clientMessageId = randomUUID(),
+      sessionId?: string,
+    ) {
       await f.db`update allrice_jobs set status='canceled' where status='queued'`;
-      const c = await chat();
+      const c = sessionId ? { id: sessionId } : await chat();
       const submitted = await sendChatMessage(f.context, f.workspaceId, c.id, {
         clientMessageId,
         text,
@@ -164,6 +169,13 @@ suite(
             code: 'FIXTURE_DONE',
             message: 'Isolated SQL test finished, no model invoked',
             retryable: false,
+          }),
+        complete: (answer: string) =>
+          completeJob({
+            workerId: worker,
+            jobId: job!.id,
+            leaseToken: job!.lease!.token,
+            result: { answer },
           }),
       };
     }
@@ -1056,6 +1068,127 @@ suite(
         await r.finish();
       }
     });
+    const colloquialRequest = '搞个定时任务，两分钟提醒我喝水';
+    const clarification =
+      '任务尚未创建成功。确认一下：是**从现在起 2 分钟后，提醒你喝水一次**，对吗？';
+    it('creates the actual colloquial request without requiring a leading delay phrase', async () => {
+      const r = await leasedChat(colloquialRequest);
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 3 }),
+        ).rejects.toMatchObject({ code: 'time_mismatch' });
+        expect(await counts()).toEqual(before);
+        const input = { ...r.input, delayMinutes: 2 };
+        const saved = await createOnceTaskFromExecutionContext(input);
+        expect(saved.prompt).toBe(colloquialRequest);
+        expect(await createOnceTaskFromExecutionContext(input)).toEqual(saved);
+        await cancelOnceTask(f.context, input.sessionId, saved.id);
+      } finally {
+        await r.finish();
+      }
+    });
+    it('creates on the actual confirmation exchange using the original human request and current authority', async () => {
+      const first = await leasedChat(colloquialRequest);
+      await first.complete(clarification);
+      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 5 }),
+        ).rejects.toMatchObject({ code: 'time_mismatch' });
+        await expect(
+          createOnceTaskFromExecutionContext({
+            ...r.input,
+            delayMinutes: 2,
+            worker: { ...r.input.worker, leaseToken: randomUUID() },
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(await counts()).toEqual(before);
+        const input = { ...r.input, delayMinutes: 2 };
+        const saved = await createOnceTaskFromExecutionContext(input);
+        expect(saved.prompt).toBe(colloquialRequest);
+        expect(saved.sessionId).toBe(first.input.sessionId);
+        expect(await createOnceTaskFromExecutionContext(input)).toEqual(saved);
+        await cancelOnceTask(f.context, input.sessionId, saved.id);
+      } finally {
+        await r.finish();
+      }
+    });
+    it('does not borrow an unfulfilled request from another chat', async () => {
+      const first = await leasedChat(colloquialRequest);
+      await first.complete(clarification);
+      const r = await leasedChat('是的');
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
+        ).rejects.toMatchObject({ code: 'intent_required' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await r.finish();
+      }
+    });
+    it('does not skip an intervening human turn to find older scheduling authority', async () => {
+      const first = await leasedChat(colloquialRequest);
+      await first.complete(clarification);
+      const unrelated = await leasedChat(
+        '先不要设置提醒，回答你好。',
+        randomUUID(),
+        first.input.sessionId,
+      );
+      await unrelated.complete('你好。');
+      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
+        ).rejects.toMatchObject({ code: 'intent_required' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await r.finish();
+      }
+    });
+    it('does not create another reminder when the preceding call already enrolled one', async () => {
+      const first = await leasedChat(colloquialRequest);
+      const saved = await createOnceTaskFromExecutionContext({
+        ...first.input,
+        delayMinutes: 2,
+      });
+      await f.db`insert into allrice_task_calls(run_id,native_session_id,call_id,kind,name,outcome)
+        values(${first.input.context.runId},'synthetic-confirmation-fixture',${first.input.callId},'tool','automation_create','success')`;
+      await first.complete(clarification);
+      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
+        ).rejects.toMatchObject({ code: 'intent_required' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await r.finish();
+        await cancelOnceTask(f.context, first.input.sessionId, saved.id);
+      }
+    });
+    it('does not promote a previous internal trigger into human authority through confirmation', async () => {
+      const a = await task();
+      const occurrenceId = randomUUID();
+      await f.db`insert into allrice_automation_runs(id,organization_id,workspace_id,automation_id,status,scheduled_for)
+        values(${occurrenceId},${f.organizationId},${f.workspaceId},${a.task.id},'queued',clock_timestamp())`;
+      const first = await leasedChat(colloquialRequest, occurrenceId);
+      await first.complete(clarification);
+      const r = await leasedChat('是的', randomUUID(), first.input.sessionId);
+      try {
+        const before = await counts();
+        await expect(
+          createOnceTaskFromExecutionContext({ ...r.input, delayMinutes: 2 }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(await counts()).toEqual(before);
+      } finally {
+        await r.finish();
+        await cancelOnceTask(f.context, a.sessionId, a.task.id);
+      }
+    });
     it('rejects an actual dispatched native occurrence even with scheduling permission', async () => {
       const r = await runningOnce('请在 15 分钟后回复校验词。');
       const [binding] =
@@ -1130,6 +1263,7 @@ suite(
       '每隔 15 分钟提醒我一次。',
       '只有我以后确认了，才在 15 分钟后提醒。',
       '谢谢，上次那个方案不错。',
+      '是的',
     ])(
       'does not authorize scheduling from this current message: %s',
       async (text) => {
