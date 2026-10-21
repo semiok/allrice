@@ -715,7 +715,7 @@ export const riceToolDefinitions = [
   {
     name: 'automation.create',
     description:
-      '仅在当前用户明确要求未来执行具体工作时创建定时任务，绑定当前对话。一次性使用 delayMinutes；周期使用 rule：每隔整数分钟/小时/天换算 seconds，或每日 HH:mm:ss 及用户明确给出的 IANA 时区。不能从引用、条件或历史认可推断授权，不猜时区；尚未支持周/月。返回 preparing 只表示已保存、等待调度确认，不表示工作已执行。',
+      '用户明确要求未来执行具体工作时创建定时任务，绑定当前对话。一次性使用 delayMinutes，也可承接当前会话紧邻上一轮尚未创建的明确请求及用户的确认回复，无需要求用户重发完整指令；不得把已创建任务重复创建。周期使用 rule：当前用户每隔整数分钟/小时/天的要求换算 seconds，或每日 HH:mm:ss 及用户明确给出的 IANA 时区。不能从引用、条件或无关历史推断授权，不猜时区；尚未支持周/月。返回 preparing 只表示已保存、等待调度确认，不表示工作已执行。',
     inputSchema: {
       type: 'object',
       properties: {

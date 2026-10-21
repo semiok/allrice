@@ -8,7 +8,11 @@ import {
   type ScheduleTarget as Target,
 } from './native-schedule-authority.ts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
-import { explicitOnceTaskIntent } from './employees/once-task-intent.ts';
+import {
+  explicitOnceTaskIntent,
+  confirmedOnceTaskIntent,
+  isOnceTaskConfirmationReply,
+} from './employees/once-task-intent.ts';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat, access } from 'node:fs/promises';
 import { constants } from 'node:fs';
@@ -30,6 +34,7 @@ import {
   RequestContextSchema,
   UuidSchema,
   TimestampSchema,
+  EmployeeExecutionSnapshotSchema,
   type CreateOnceTaskInput,
   type OnceTask,
   type RequestContext,
@@ -618,6 +623,92 @@ export async function initializeNativeOncePartition(
   });
 }
 
+/** Resolve only the immediately preceding unfulfilled human request. Never
+ * search older conversations or promote an assistant's suggested work to an
+ * instruction. The caller has already checked current frozen/live authority.
+ */
+async function readOnceTaskIntent(
+  tx: Tx,
+  input: EmployeeChatCall,
+  current: Awaited<ReturnType<typeof assertEmployeeChatExecution>>,
+) {
+  const { text } = current;
+  const direct = explicitOnceTaskIntent(text);
+  if (direct || !isOnceTaskConfirmationReply(text)) return direct;
+  const ctx = input.context;
+  const [previous] = await tx<
+    {
+      id: string;
+      text: string;
+      question: string;
+      run_id: string;
+      execution_snapshot: unknown;
+    }[]
+  >`select m.id,m.content->>'text' text,a.content->>'text' question,
+      er.run_id,er.execution_snapshot
+    from allrice_messages m
+    join allrice_employee_runs er on er.user_message_id=m.id and er.session_id=m.session_id
+      and er.organization_id=m.organization_id and er.workspace_id=m.workspace_id and er.owner_id=m.owner_id
+    join allrice_runs r on r.id=er.run_id and r.organization_id=er.organization_id
+      and r.workspace_id=er.workspace_id and r.owner_id=er.owner_id and r.state='succeeded'
+    join allrice_messages a on a.id=er.assistant_message_id and a.session_id=m.session_id
+      and a.organization_id=m.organization_id and a.workspace_id=m.workspace_id and a.owner_id=m.owner_id
+      and a.role='assistant' and a.status='completed'
+    where m.id=(select p.id from allrice_messages p
+      join allrice_messages current on current.id=${input.userMessageId}
+      where p.organization_id=${ctx.organizationId} and p.workspace_id=${ctx.workspaceId!}
+        and p.owner_id=${ctx.policySnapshot.subjectId} and p.session_id=${input.sessionId}
+        and p.role='user' and p.created_at<current.created_at
+      order by p.created_at desc,p.id desc limit 1)
+      and er.employee_assignment_id=(select employee_assignment_id from allrice_employee_runs where run_id=${ctx.runId})
+    for share of m,a,er,r nowait`;
+  if (!previous) return null;
+  const snapshot = EmployeeExecutionSnapshotSchema.parse(
+    previous.execution_snapshot,
+  );
+  if (
+    snapshot.schemaVersion !== 2 ||
+    current.snapshot.schemaVersion !== 2 ||
+    snapshot.instance?.id !== current.snapshot.instance?.id
+  )
+    return null;
+  await assertEmployeeChatHumanSource(
+    tx,
+    {
+      ...input,
+      userMessageId: previous.id,
+      context: { ...ctx, runId: previous.run_id },
+    },
+    { text: previous.text, snapshot },
+  );
+  const intent = confirmedOnceTaskIntent(
+    text,
+    previous.text,
+    previous.question,
+  );
+  if (!intent) return null;
+  const calls = await tx<{ call_id: string }[]>`
+    select call_id from allrice_task_calls where run_id=${previous.run_id}
+      and kind='tool'`;
+  const requests = calls.map((c) =>
+    employeeChatUuid(
+      'native-once-call',
+      ctx.organizationId,
+      ctx.workspaceId!,
+      previous.run_id,
+      c.call_id,
+    ),
+  );
+  if (requests.length) {
+    const [created] = await tx`select id from allrice_automations
+      where organization_id=${ctx.organizationId} and workspace_id=${ctx.workspaceId!}
+        and owner_id=${ctx.policySnapshot.subjectId} and session_id=${input.sessionId}
+        and native_once_request_id=any(${requests}::uuid[]) limit 1`;
+    if (created) return null;
+  }
+  return intent;
+}
+
 export async function createOnceTaskFromExecutionContext(
   input: EmployeeChatCall & {
     name: string;
@@ -693,7 +784,7 @@ export async function createOnceTaskFromExecutionContext(
         throw new NativeOnceProductError('request_conflict');
       return readOnceTaskProjection(tx, old);
     }
-    const intent = explicitOnceTaskIntent(current.text);
+    const intent = await readOnceTaskIntent(tx, input, current);
     if (!intent) throw new NativeOnceProductError('intent_required');
     if (intent.delayMinutes !== input.delayMinutes)
       throw new NativeOnceProductError('time_mismatch');

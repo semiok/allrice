@@ -1,6 +1,6 @@
 export type OnceTaskIntent = {
   delayMinutes: number;
-  /** Exact current human message, not model-selected or extracted task text. */
+  /** Exact human request, including the source request of a confirmed exchange. */
   authoritativeRequest: string;
 };
 
@@ -17,8 +17,14 @@ const minuteUnits: Readonly<Record<string, number>> = {
   天: 1_440,
 };
 const numberPattern = '[0-9零〇一二两三四五六七八九十百千万]+';
+const requestPrefix = '(?:请\\s*|麻烦(?:你)?\\s*)?(?:(?:帮我|为我)\\s*)?';
+const schedulePrefix = `(?:${requestPrefix}(?:给我\\s*)?(?:搞|建|创建|设置|设|安排|添加|定)(?:一)?(?:个|条)?(?:定时任务|一次性任务|定时提醒|提醒|任务)\\s*[，,:：。]?\\s*)?`;
 const relativeRequest = new RegExp(
-  `^(?:请\\s*|麻烦(?:你)?\\s*)?(?:帮我\\s*)?(?:在\\s*)?(${numberPattern})\\s*(分钟|小时|天)后\\s*[，,:：]?\\s*(.+)$`,
+  `^${schedulePrefix}${requestPrefix}(?:(?:从现在(?:起|开始)?|现在开始)\\s*)?(?:在\\s*|再?过\\s*)?(${numberPattern})\\s*(分钟|小时|天)(?:之后|以后|后)?\\s*[，,:：]?\\s*(.+)$`,
+  'su',
+);
+const reminderRequest = new RegExp(
+  `^${requestPrefix}(提醒(?:我|我们)|告诉(?:我|我们)|通知(?:我|我们))\\s*(?:在\\s*|再?过\\s*)?(${numberPattern})\\s*(分钟|小时|天)(?:之后|以后|后)\\s*[，,:：]?\\s*(.+)$`,
   'su',
 );
 
@@ -127,7 +133,7 @@ function taskClause(clause: string): boolean {
       '',
     );
   const match = request.match(
-    /^(?:请)?(?:只|仅)?(?:回复|回答|提醒|告诉|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|分成|保持)(.+)$/u,
+    /^(?:请)?(?:只|仅)?(?:回复|回答|提醒|告诉|通知|检查|整理|生成|汇总|查询|查找|总结|读取|列出|编写|执行|完成|发送|翻译|给出|附上|使用|分成|保持)(.+)$/u,
   );
   return Boolean(
     match &&
@@ -135,8 +141,8 @@ function taskClause(clause: string): boolean {
   );
 }
 
-/** Conservative admission, not a general natural-language time parser.
- * Only the current, server-loaded human message may be passed here. Its
+/** Recognize one explicit relative-time request without requiring time-first
+ * wording. Only a server-loaded human message may be passed here. Its
  * provenance, tenant/frozen/live authority and exact tool delay are checked by
  * the caller. Unsupported or uncertain requests need clarification, not a guess.
  */
@@ -154,7 +160,10 @@ export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
     return null;
   const prose = maskQuotedArguments(text);
   if (prose === null) return null;
-  const match = prose.trim().match(relativeRequest);
+  const reminder = prose.trim().match(reminderRequest);
+  const match = reminder
+    ? [reminder[0], reminder[2], reminder[3], `${reminder[1]}${reminder[4]}`]
+    : prose.trim().match(relativeRequest);
   if (!match) return null;
   const number = positiveInteger(match[1]!);
   const minutes =
@@ -182,4 +191,49 @@ export function explicitOnceTaskIntent(text: string): OnceTaskIntent | null {
     work = true;
   }
   return work ? { delayMinutes: minutes, authoritativeRequest: text } : null;
+}
+
+export function isOnceTaskConfirmationReply(text: string): boolean {
+  return /^(?:是(?:的)?|对(?:的)?|确认(?:了)?|没错|好(?:的)?|可以|就这样|就这么办|嗯(?:嗯)?|ok|okay)[。.!！\s]*$/iu.test(
+    text.trim(),
+  );
+}
+
+/** A short answer can confirm the preceding human's complete request. The
+ * assistant question only links the exchange; it never supplies task authority.
+ * SQL callers must verify adjacency, human provenance and no prior enrollment.
+ */
+export function confirmedOnceTaskIntent(
+  reply: string,
+  request: string,
+  question: string,
+): OnceTaskIntent | null {
+  if (
+    !isOnceTaskConfirmationReply(reply) ||
+    !/(?:确认|是否|对吗|对不对|好吗|好不好|可以吗|要不要|是不是)/u.test(
+      question,
+    ) ||
+    !/[?？]/u.test(question)
+  )
+    return null;
+  const intent = explicitOnceTaskIntent(request);
+  if (!intent) return null;
+  // Do not treat agreement with a changed time as agreement with the original.
+  const proposedTimes = question
+    .replace(/[*_]/gu, '')
+    .matchAll(
+      new RegExp(
+        `(${numberPattern})\\s*(分钟|小时|天)(?:之后|以后|后|(?=\\s*(?:提醒|回复|告诉|通知|执行)))`,
+        'gu',
+      ),
+    );
+  for (const time of proposedTimes) {
+    const value = positiveInteger(time[1]!);
+    if (
+      value === null ||
+      value * minuteUnits[time[2]!]! !== intent.delayMinutes
+    )
+      return null;
+  }
+  return intent;
 }
