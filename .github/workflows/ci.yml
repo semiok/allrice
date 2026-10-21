@@ -158,7 +158,9 @@ jobs:
 
   developer-bootstrap:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The complete PostgreSQL migration suite and final real Next/Bridge startup
+    # reached 30m after all tests passed; retain their individual test deadlines.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Capture actual checked-out repository identity
