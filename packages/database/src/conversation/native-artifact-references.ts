@@ -2,6 +2,7 @@ import { posix } from 'node:path';
 import { z } from 'zod';
 import { getDatabase } from '../core/client.ts';
 import { configuredNativeOriginReaders } from './native-origin-reader.ts';
+import { readVerifiedNativeChatRetirements } from './native-context-retirement.ts';
 
 const approval = z
   .object({
@@ -52,7 +53,8 @@ export type NativeOnceControlReference = {
 /** Deployment/startup check, not execution authority. Keep archived and terminal
  * references: neither implies the original journal may be moved or deleted.
  * One read-only snapshot includes pins AND all four first-business origins;
- * an unclaimed or never-bound task must protect its reader too. */
+ * an unclaimed or never-bound task must protect its reader too. Only an exact,
+ * verified terminal test-execution retirement ends that executable dependency. */
 export async function verifyNativeArtifactReferenceCoverage(
   input: readonly NativeArtifactReferenceApproval[],
 ) {
@@ -76,6 +78,7 @@ export async function verifyNativeArtifactReferenceCoverage(
     'isolation level repeatable read read only',
     async (tx) => {
       await tx`set local statement_timeout='5000'`;
+      const retiredContexts = await readVerifiedNativeChatRetirements(tx);
       const references = await tx<
         {
           source: string;
@@ -98,7 +101,10 @@ export async function verifyNativeArtifactReferenceCoverage(
       union all select 'origin:platform_technical',native_root_origin,null,null,null from allrice_platform_technical_tasks
       union all select 'origin:experience_consolidation',native_root_origin,null,null,null from allrice_automation_runs
       union all select 'origin:platform_employee_test',native_root_origin,null,null,null from allrice_platform_employee_test_runs
-    ), refs as (
+    ), retired as (
+      select * from jsonb_to_recordset(${tx.json(retiredContexts)}) as d(
+        "contextKind" text,"contextId" uuid,"organizationId" uuid,"workspaceId" uuid,"ownerId" uuid)
+    ), all_refs as (
       select 'binding' source,artifact_id,distribution_generation generation,profile_id,
         storage_namespace,organization_id,workspace_id,owner_id,storage_context_key,context_kind,context_id,
         null::jsonb origin,root_origin_digest,origin_reader_approval_digest
@@ -107,6 +113,11 @@ export async function verifyNativeArtifactReferenceCoverage(
       select source,origin->>'artifactId',origin->>'distributionGeneration',origin->>'profileId',
         null,organization_id,workspace_id,owner_id,null,origin->>'contextKind',(origin->>'contextId')::uuid,
         origin,null,null from origins where origin is not null
+    ), refs as (
+      select r.* from all_refs r where not exists(select 1 from retired d
+        where d."contextKind"=r.context_kind and d."contextId"=r.context_id
+          and d."organizationId"=r.organization_id and d."workspaceId"=r.workspace_id
+          and d."ownerId"=r.owner_id)
     ) select r.source,r.artifact_id as "artifactId",r.generation,r.profile_id as "profileId",
       count(*)::int records,
       bool_and(coalesce(case
@@ -179,10 +190,10 @@ export async function verifyNativeArtifactReferenceCoverage(
           });
         }
       }
-      return { references, nativeOnceControlReferences };
+      return { references, nativeOnceControlReferences, retiredContexts };
     },
   );
-  const { references, nativeOnceControlReferences } = snapshot;
+  const { references, nativeOnceControlReferences, retiredContexts } = snapshot;
   const missing = references.filter((r) => !r.covered);
   if (missing.length)
     throw Error(
@@ -192,6 +203,7 @@ export async function verifyNativeArtifactReferenceCoverage(
     verified: true as const,
     references,
     nativeOnceControlReferences,
+    ...(retiredContexts.length ? { retiredContexts } : {}),
     ...(readers.length
       ? {
           compatibleOrigins: readers.map(

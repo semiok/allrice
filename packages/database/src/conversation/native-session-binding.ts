@@ -25,6 +25,7 @@ import {
   checkNativeOriginReaderBindings,
   nativeOriginReaderForOrigin,
 } from './native-origin-reader.ts';
+import { nativeContextExecutionRetired } from './native-context-retirement.ts';
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeSessionDescriptorSchema = z
@@ -128,6 +129,8 @@ export async function readChatNativeRootOrigin(
     runId?: string;
   },
 ): Promise<NativeRootOrigin | null> {
+  if (await nativeContextExecutionRetired(tx, 'chat', input.sessionId))
+    return deny();
   const [row] = await tx`select c.native_root_origin,v.manifest,v.id source_id
     from allrice_chat_sessions c
     left join allrice_employee_versions v on v.id::text=c.native_root_origin#>>'{frozenIdentity,sourceId}'
@@ -168,6 +171,7 @@ async function readNativeRootOrigin(
   job: JobRow,
   s: NativeSessionLeaseInput['subject'],
 ): Promise<NativeRootOrigin | null> {
+  if (await nativeContextExecutionRetired(tx, s.kind, s.id)) return deny();
   let row, identity: NativeRootOrigin['frozenIdentity'];
   if (s.kind === 'chat')
     return readChatNativeRootOrigin(tx, {

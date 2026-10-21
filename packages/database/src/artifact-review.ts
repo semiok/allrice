@@ -1,4 +1,5 @@
 import { finalDeliveryRootIsLocked } from './final-delivery-commit.ts';
+import { nativeContextExecutionRetired } from './conversation/native-context-retirement.ts';
 import { runtimeFeatureEnabled } from '@allrice/contracts';
 import { assertProjectOutputParent } from './project-output-parent.ts';
 import { createHash } from 'node:crypto';
@@ -131,6 +132,8 @@ export async function assertWorkbenchSession(
     where id=${sessionId} and organization_id=${context.organizationId} and workspace_id=${context.workspaceId}
       and owner_id=${context.actor.id} and (${!write} or archived_at is null) for update`;
   if (!session) fail('artifact_not_found');
+  if (write && (await nativeContextExecutionRetired(db, 'chat', sessionId)))
+    fail('artifact_not_found');
   // Preserve the existing not-found boundary for a foreign Session/owner.
   // Only the lock acquisition order changed; identity checks still gate access.
   if (

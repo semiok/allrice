@@ -5,6 +5,7 @@ import * as employeeInstances from './employees/employee-instances.ts';
 import * as employeeRuntimeContent from './employees/employee-runtime-content.ts';
 import * as personalSkills from './employees/personal-skills.ts';
 import * as sandboxExecutionPolicy from './sandbox-execution-policy.ts';
+import * as nativeContextRetirement from './conversation/native-context-retirement.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
@@ -191,6 +192,12 @@ integration('subscription incremental migration and cold SQL readers', () => {
     const legacySandboxPolicy = vi
       .spyOn(sandboxExecutionPolicy, 'freezeSandboxExecutionPolicy')
       .mockResolvedValueOnce(undefined as never);
+    // This historical chat predates terminal native execution retirement.
+    // Omit only that future admission read while seeding the 0096 Run; keep
+    // production fail-closed when migration 0199 has not been installed.
+    const legacyRetirement = vi
+      .spyOn(nativeContextRetirement, 'nativeContextExecutionRetired')
+      .mockResolvedValueOnce(false);
     // This synthetic tenant manifest has no platform publication. Its historical
     // seed must not consult the later immutable version-source registry either.
     const legacyPublication = vi
@@ -252,6 +259,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
         task.binding.executionSnapshot.capabilitySnapshot.bindings.toolNames,
       ).not.toContain('workspace.personal_skill.install');
       expect(legacySandboxPolicy).toHaveBeenCalledTimes(1);
+      expect(legacyRetirement).toHaveBeenCalledTimes(1);
       expect(
         JSON.parse(JSON.stringify(task.binding.executionSnapshot)),
       ).not.toHaveProperty('sandboxExecutionPolicy');
@@ -262,6 +270,7 @@ integration('subscription incremental migration and cold SQL readers', () => {
       legacyContent.mockRestore();
       legacyPersonalSkills.mockRestore();
       legacySandboxPolicy.mockRestore();
+      legacyRetirement.mockRestore();
       legacyPublication.mockRestore();
       legacyModels.mockRestore();
       legacyCapabilities.mockRestore();
@@ -467,6 +476,18 @@ integration('subscription incremental migration and cold SQL readers', () => {
       for (const name of remainingMigrations)
         await tx.unsafe(await migration(name));
     });
+    // The seed-only omission is gone: the current reader now uses the actual
+    // newly migrated table, while the original chat and ledger remain intact.
+    expect(
+      vi.isMockFunction(nativeContextRetirement.nativeContextExecutionRetired),
+    ).toBe(false);
+    expect(
+      await nativeContextRetirement.nativeContextExecutionRetired(
+        db,
+        'chat',
+        task.sessionId,
+      ),
+    ).toBe(false);
     expect(await ledgerHistory()).toEqual(history);
     expect(await getCodexProviderStatus()).toMatchObject({
       status: 'connected',
