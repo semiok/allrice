@@ -87,10 +87,10 @@ export async function readCreatedAutomationIds(
       );
   const ids = [...requests.keys()];
   const plans = await sql<{ id: string; request_id: string }[]>`
-    select id,coalesce(native_recurring_request_id,native_once_request_id) request_id
-    from allrice_automations where organization_id=${context.organizationId} and workspace_id=${workspaceId}
+    select id,coalesce(to_jsonb(a)->>'native_recurring_request_id',to_jsonb(a)->>'native_once_request_id') request_id
+    from allrice_automations a where organization_id=${context.organizationId} and workspace_id=${workspaceId}
       and owner_id=${ownerId} and session_id=${sessionId} and trigger_type='schedule'
-      and (native_recurring_request_id=any(${ids}::uuid[]) or native_once_request_id=any(${ids}::uuid[]))
+      and (to_jsonb(a)->>'native_recurring_request_id'=any(${ids}::text[]) or to_jsonb(a)->>'native_once_request_id'=any(${ids}::text[]))
     order by created_at,id`;
   const result = new Map<string, string[]>();
   for (const plan of plans) {
