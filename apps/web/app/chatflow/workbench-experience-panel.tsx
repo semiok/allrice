@@ -2,9 +2,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   EmployeeDetailsSchema,
+  ExperienceDraftBatchSchema,
+  type ExperienceDraftBatch,
   type EmployeeDetails,
 } from '@allrice/contracts';
-import { ExperiencePanel } from '../workspace/experience/experience-panel';
+import {
+  ExperiencePanel,
+  ExperienceDraftCard,
+} from '../workspace/experience/experience-panel';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import { WorkbenchIcon } from './workbench-modules';
 import css from './workbench-experience-panel.module.css';
@@ -122,6 +127,7 @@ export function WorkbenchExperiencePanel(props: {
         </select>
         <select
           aria-label="经验范围"
+          disabled={tab === 'history'}
           value={scope}
           onChange={(event) => setScope(event.target.value)}
         >
@@ -216,7 +222,8 @@ export function WorkbenchExperiencePanel(props: {
                   )}
                 </article>
               ))
-            ) : (
+            ) : props.automatic &&
+              (scope === 'all' || scope === 'personal') ? null : (
               <div className={css.empty}>
                 <WorkbenchIcon kind="experience" size={38} />
                 <p>
@@ -228,6 +235,15 @@ export function WorkbenchExperiencePanel(props: {
                   可以在聊天中说明需要记住、纠正或忘记什么；自动积累及采用结果在“积累与采用记录”中查看。
                 </small>
               </div>
+            )}
+            {props.automatic && (scope === 'all' || scope === 'personal') && (
+              <ActiveExperiences
+                key={key}
+                workspaceId={props.workspaceId}
+                employees={selected}
+                headers={props.headers}
+                query={query}
+              />
             )}
           </>
         ) : (
@@ -246,6 +262,125 @@ export function WorkbenchExperiencePanel(props: {
           ))
         )}
       </div>
+    </section>
+  );
+}
+
+/** Use the existing adoption/provenance response and card; draft rules never
+ * appear as active just because their collection batch succeeded. */
+function ActiveExperiences(props: {
+  workspaceId: string;
+  employees: Array<{ id: string; name: string }>;
+  headers: Record<string, string>;
+  query: string;
+}) {
+  const ids = props.employees.map((employee) => employee.id).join(',');
+  const [snapshot, setSnapshot] = useState<{
+    ids: string;
+    items: Array<{ employeeId: string; batches: ExperienceDraftBatch[] }>;
+    error: boolean;
+  } | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    void Promise.allSettled(
+      ids
+        .split(',')
+        .filter(Boolean)
+        .map(async (employeeId) => {
+          const raw = (await workbenchJson(
+            '/api/v1/experiences?' +
+              new URLSearchParams({
+                workspaceId: props.workspaceId,
+                instanceId: employeeId,
+              }),
+            props.headers,
+            { signal: controller.signal },
+          )) as { draftBatches: unknown[] };
+          return {
+            employeeId,
+            batches: raw.draftBatches.map((value) =>
+              ExperienceDraftBatchSchema.parse(value),
+            ),
+          };
+        }),
+    ).then((results) => {
+      if (!controller.signal.aborted)
+        setSnapshot({
+          ids,
+          items: results.flatMap((result) =>
+            result.status === 'fulfilled' ? [result.value] : [],
+          ),
+          error: results.some((result) => result.status === 'rejected'),
+        });
+    });
+    return () => controller.abort();
+  }, [ids, props.workspaceId, props.headers]);
+  const items =
+    snapshot?.ids === ids
+      ? snapshot.items.flatMap((item) =>
+          item.batches
+            .filter((batch) => batch.sourceState === 'current')
+            .flatMap((batch) => {
+              const adoptions = batch.adoptions?.filter(
+                (adoption) =>
+                  adoption.state === 'active' &&
+                  (!props.query ||
+                    [
+                      batch.drafts[adoption.draftIndex]?.rule,
+                      batch.drafts[adoption.draftIndex]?.applicability,
+                    ]
+                      .join('\n')
+                      .toLocaleLowerCase()
+                      .includes(props.query.toLocaleLowerCase())),
+              );
+              return adoptions?.length
+                ? [{ ...item, batch: { ...batch, adoptions } }]
+                : [];
+            }),
+        )
+      : [];
+  return (
+    <section aria-label="已采用的个人经验">
+      {snapshot?.ids !== ids ? (
+        <p role="status">正在读取已采用的经验…</p>
+      ) : (
+        <>
+          {snapshot.error && (
+            <p role="alert">部分个人经验读取未完成，请刷新重试。</p>
+          )}
+          {items.map((item) => (
+            <section
+              key={item.employeeId + '/' + item.batch.id}
+              className={css.history}
+            >
+              <h3>
+                {
+                  props.employees.find(
+                    (employee) => employee.id === item.employeeId,
+                  )?.name
+                }{' '}
+                · 个人经验
+              </h3>
+              <ExperienceDraftCard
+                activeOnly
+                batch={item.batch}
+                sourceContext={{
+                  workspaceId: props.workspaceId,
+                  headers: props.headers,
+                }}
+              />
+            </section>
+          ))}
+          {!items.length && !snapshot.error && (
+            <div className={css.empty}>
+              <p>暂无符合条件的已采用个人经验。</p>
+              <small>
+                可以在聊天中说明需要记住、纠正或忘记什么；积累与采用记录保留实际处理结果。
+              </small>
+            </div>
+          )}
+        </>
+      )}
     </section>
   );
 }

@@ -28,6 +28,7 @@ import {
   referenceLibraryOptions,
   referenceSourceAccess,
 } from './reference-library.ts';
+import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
 import {
   canSetWorkbenchFileSharing,
@@ -64,6 +65,7 @@ type Facts = {
   file_name: string;
   series_id: string | null;
   artifact_id: string | null;
+  business_deliverable: boolean | null;
   artifact_version: number | null;
   artifact_session_id: string | null;
   artifact_session_owner: string | null;
@@ -82,20 +84,21 @@ function scoped(context: RequestContext, workspaceId: string): RequestContext {
 async function facts(objectId: string, sql: FilePolicyDatabase) {
   const [row] = await sql<Facts[]>`
     select o.*,coalesce(d.file_name,f.file_name,p.file_name,r.file_name,'未命名文件') as file_name,
-      d.series_id,d.id as artifact_id,d.version as artifact_version,
+      d.series_id,d.id as artifact_id,d.version as artifact_version,d.business_deliverable,
       d.session_id as artifact_session_id,d.session_owner as artifact_session_owner,
       r.source_id,r.ownership as source_ownership,r.legacy_company_asset_id
     from allrice_storage_objects o
     join allrice_workspaces w on w.id=o.workspace_id and w.archived_at is null
     left join allrice_workbench_file_policies p on p.object_id=o.id
-    left join lateral (select v.*,s.owner_id as session_owner from allrice_deliverable_versions v
-      left join allrice_chat_sessions s on s.id=v.session_id where v.object_id=o.id order by v.version desc limit 1) d on true
+    left join lateral (select dv.*,s.owner_id as session_owner,${businessDeliverablePredicate(sql)} as business_deliverable from allrice_deliverable_versions dv
+      left join allrice_workbench_artifacts a on a.version_id=dv.id
+      left join allrice_chat_sessions s on s.id=dv.session_id where dv.object_id=o.id order by dv.version desc limit 1) d on true
     left join lateral (select file_name from allrice_file_references where object_id=o.id order by created_at desc limit 1) f on true
     left join lateral (select kr.file_name,s.id as source_id,s.ownership,s.legacy_company_asset_id
       from allrice_knowledge_revisions kr join allrice_knowledge_sources s on s.id=kr.knowledge_source_id
       where kr.file_object_id=o.id and s.ownership is not null and kr.status='published'
       order by kr.revision desc limit 1) r on true
-    where o.id=${UuidSchema.parse(objectId)} and o.state='ready' and o.deleted_at is null
+    where o.id=${UuidSchema.parse(objectId)} and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp())
   `;
   if (!row) throw new DataAccessError('not_found');
   return row;
@@ -132,6 +135,8 @@ export async function readWorkbenchFile(
     canMaintain = policy.canMaintain;
   } else if (row.source_id) {
     const source = await referenceSourceAccess(context, row.source_id, sql);
+    if (source.source.status !== 'active')
+      throw new DataAccessError('not_found');
     canMaintain = source.access.canMaintain;
   } else {
     await getStoredFile(context, objectId, sql);
@@ -656,15 +661,17 @@ export async function readWorkbenchFileCatalog(
             departmentIds,
             departmentNames: departmentRows.map((d) => d.name),
           },
-          category: file.row.artifact_id
-            ? 'artifact'
-            : file.row.source_id
-              ? 'reference'
-              : 'upload',
+          category:
+            file.row.artifact_id && file.row.business_deliverable
+              ? 'artifact'
+              : file.row.source_id
+                ? 'reference'
+                : 'upload',
           sessionIds:
             associated?.present && input.sessionId ? [input.sessionId] : [],
           artifact:
             file.row.artifact_id &&
+            file.row.business_deliverable &&
             file.row.artifact_session_id &&
             file.row.artifact_session_owner === context.actor.id
               ? {

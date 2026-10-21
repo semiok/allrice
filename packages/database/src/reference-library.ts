@@ -372,6 +372,24 @@ export async function prepareReferenceUpload(
       ).canRead
     )
       throw new DataAccessError('authorization_denied');
+    // A prior reader that knows only ContentOwnership must fail closed for a
+    // shared recipient's copy. Its private fallback belongs to the original
+    // file owner, never to the copy creator. The binding grants current reads.
+    let sourceOwnership = ownership;
+    if (binding) {
+      if (v.sourceId || v.scope !== 'personal')
+        throw new ReferenceLibraryError('invalid_content');
+      const [origin] = await tx<
+        { owner_id: string }[]
+      >`select owner_id from allrice_storage_objects
+        where id=${binding.originObjectId} and organization_id=${context.organizationId} for share`;
+      if (!origin) throw new DataAccessError('not_found');
+      sourceOwnership = {
+        scope: 'personal',
+        organizationId: context.organizationId,
+        ownerId: origin.owner_id,
+      };
+    }
     await lockReferenceRequest(tx, context, v.requestId);
     const prior = await findReferenceRequest(
       tx,
@@ -385,7 +403,7 @@ export async function prepareReferenceUpload(
       tx,
       context,
       v,
-      ownership,
+      sourceOwnership,
       checksum,
       bytes.length,
       requestInput,

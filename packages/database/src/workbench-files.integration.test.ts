@@ -5,6 +5,7 @@ import * as client from './core/client.ts';
 import {
   createAssistantFixtureDatabase,
   assistantFixtureStorage,
+  assistantFixture,
 } from './assistant-runtime.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
@@ -20,6 +21,7 @@ import {
   captureWorkbenchFileReference,
   readWorkbenchFile,
   readWorkbenchFileCatalog,
+  listWorkbenchFileVersions,
   updateWorkbenchFile,
   uploadWorkbenchFile,
 } from './workbench-files.ts';
@@ -30,6 +32,8 @@ import {
 import { readReferenceSelection } from './reference-runtime.ts';
 import {
   getStoredFile,
+  createStorageMetadata,
+  markStorageReady,
   saveStorageGrant,
   resolveStorageGrant,
 } from './data.ts';
@@ -44,6 +48,7 @@ suite(
     let fixture: Awaited<ReturnType<typeof createAssistantFixtureDatabase>>;
     let platform: RequestContext;
     beforeAll(async () => {
+      vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       fixture = await createAssistantFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       const principal = await ensureBootstrapPortalPrincipal({
@@ -297,6 +302,14 @@ suite(
         requestId,
         storage(),
       );
+      expect(ref.ownership).toMatchObject({
+        scope: 'personal',
+        ownerId: t.owner.actor.id,
+      });
+      const { getContentAccess } = await import('./content-maintenance.ts');
+      expect(
+        (await getContentAccess(t.a, ref.ownership, fixture.db)).canRead,
+      ).toBe(false);
       expect(
         (
           await captureWorkbenchFileReference(
@@ -430,6 +443,122 @@ suite(
       const [policy] =
         await fixture.db`select revision,reference_enabled from allrice_workbench_file_policies where object_id=${file.objectId}`;
       expect(policy).toMatchObject({ revision: 1, reference_enabled: false });
+    });
+    it('shares a deliverable series without exposing its private chat and retains exact old reference bytes across replacement', async () => {
+      const synthetic = await assistantFixture(fixture.db),
+        owner = {
+          ...(await authenticateSession(
+            (await createSession(synthetic.context.actor.id)).token,
+          ))!,
+          workspaceId: synthetic.context.workspaceId!,
+        };
+      await fixture.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level)
+      values (${owner.organizationId},${owner.actor.id},'Owner','company')`;
+      const readerId = randomUUID();
+      await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values (${readerId},${readerId + '@example.test'},'Reader','not-login')`;
+      await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values (${owner.organizationId},${owner.workspaceId},${readerId},'member')`;
+      const reader = {
+        ...(await authenticateSession((await createSession(readerId)).token))!,
+        workspaceId: owner.workspaceId,
+      };
+      const files = [];
+      for (const text of [
+        'Version one original bytes',
+        'Version two changed bytes',
+      ]) {
+        const bytes = Buffer.from(text),
+          id = randomUUID();
+        const { createHash } = await import('node:crypto');
+        const prepared = await createStorageMetadata(owner, {
+          id,
+          workspaceId: owner.workspaceId,
+          category: 'exports',
+          mediaType: 'text/plain',
+          sizeBytes: bytes.length,
+          checksum:
+            'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+          visibility: 'private',
+          immutable: true,
+          retentionUntil: null,
+        });
+        await storage().put(
+          prepared.object,
+          new Blob([new Uint8Array(bytes)]).stream(),
+        );
+        await markStorageReady(owner, id);
+        files.push(id);
+      }
+      const seriesId = randomUUID(),
+        v1 = randomUUID(),
+        v2 = randomUUID();
+      await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+      values (${v1},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[0]!},${seriesId},1,${synthetic.task.chatSessionId},'Report.txt','text')`;
+      await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,parent_version_id,session_id,file_name,format)
+      values (${v2},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[1]!},${seriesId},2,${v1},${synthetic.task.chatSessionId},'Report.txt','text')`;
+      await change(owner, files[0]!, 0, {
+        sharing: { scope: 'company', departmentIds: [] },
+        isReference: true,
+      });
+      const shared = await readWorkbenchFileCatalog(reader, {
+        workspaceId: reader.workspaceId,
+      });
+      expect(shared.files).toHaveLength(1);
+      expect(shared.files[0]).toMatchObject({
+        objectId: files[1],
+        artifact: null,
+        sessionIds: [],
+      });
+      const originalRef = shared.files[0]!.reference!;
+      expect(originalRef.checksum).not.toBe(shared.files[0]!.checksum);
+      const versions = await listWorkbenchFileVersions(reader, files[1]!);
+      expect(versions.map((v) => v.objectId)).toEqual([files[1], files[0]]);
+      expect(versions[0]).not.toHaveProperty('sessionId');
+      await expect(
+        readWorkbenchFileCatalog(reader, {
+          workspaceId: reader.workspaceId,
+          sessionId: synthetic.task.chatSessionId,
+        }),
+      ).rejects.toMatchObject({ code: 'artifact_not_found' });
+      await change(owner, files[1]!, 1, { isReference: true });
+      const latest = (
+        await readWorkbenchFileCatalog(reader, {
+          workspaceId: reader.workspaceId,
+        })
+      ).files[0]!;
+      expect(latest.reference!.checksum).toBe(latest.checksum);
+      expect(latest.reference!.sourceId).not.toBe(originalRef.sourceId);
+      const old = await getReferenceFile(
+        reader,
+        reader.workspaceId,
+        originalRef.revisionId,
+      );
+      expect(await new Response(await storage().get(old.object)).text()).toBe(
+        'Version one original bytes',
+      );
+      expect(
+        await listReferenceRevisions(reader, reader.workspaceId),
+      ).toHaveLength(1);
+      const changes = await Promise.allSettled([
+        change(owner, files[0]!, 2, {
+          sharing: { scope: 'personal', departmentIds: [] },
+        }),
+        change(owner, files[1]!, 2, {
+          sharing: { scope: 'company', departmentIds: [] },
+        }),
+      ]);
+      expect(
+        changes.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      expect(
+        changes
+          .filter((result) => result.status === 'rejected')
+          .map((result) =>
+            result.status === 'rejected' ? result.reason.code : null,
+          ),
+      ).toEqual(['version_conflict']);
+      const [session] =
+        await fixture.db`select visibility from allrice_chat_sessions where id=${synthetic.task.chatSessionId}`;
+      expect(session?.visibility).toBe('private');
     });
     it('keeps one canonical long-term reference and stops library inclusion when unmarked', async () => {
       const t = await setup(),

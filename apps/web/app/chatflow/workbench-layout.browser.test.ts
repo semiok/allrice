@@ -1867,10 +1867,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '新建标签页', exact: true })
           .count(),
       ).toBe(0);
-      await f.panel.getByRole('tab', { name: /开始/ }).hover();
+      await f.panel.getByRole('tab', { name: /工作区文件/ }).hover();
       await f.panel
+        .getByRole('tab', { name: /工作区文件/ })
         .getByRole('button', { name: '关闭标签', exact: true })
-        .last()
         .click();
       await f.panel.getByRole('tab', { name: /开始/ }).waitFor();
       expect(f.errors).toEqual([]);
@@ -2041,7 +2041,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     let confirmations = 0;
     try {
       const entry = f.page.getByRole('button', {
-        name: '内容工作台',
+        name: '工作流',
         exact: true,
       });
       await entry.waitFor();
@@ -2055,7 +2055,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await dialog.accept();
       });
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
+      const dialog = f.page.getByRole('region', {
         name: '内容工作台',
         exact: true,
       });
@@ -2100,12 +2100,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       );
       await generalGroup.press('ArrowRight');
       const entry = f.page.getByRole('button', {
-        name: '内容工作台',
+        name: '工作流',
         exact: true,
       });
       await entry.waitFor();
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
+      const dialog = f.page.getByRole('region', {
         name: '内容工作台',
         exact: true,
       });
@@ -2153,12 +2153,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     });
     try {
       const entry = f.page.getByRole('button', {
-        name: '内容工作台',
+        name: '工作流',
         exact: true,
       });
       await entry.waitFor();
       await entry.click();
-      const dialog = f.page.getByRole('dialog', {
+      const dialog = f.page.getByRole('region', {
         name: '内容工作台',
         exact: true,
       });
