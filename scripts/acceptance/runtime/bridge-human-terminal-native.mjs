@@ -79,6 +79,8 @@ async function main() {
     version: expectedVersion,
     coreSha256: expectedSha,
     syntheticIdentityOnly: true,
+    streamMode: 'push',
+    perFrameReadCreditsSent: 0,
     realDevAuthorization: 'separate gate',
     checks,
     forcedExit: false,
@@ -100,7 +102,7 @@ async function main() {
         authorizations++;
         response.end(JSON.stringify({ target, deviceName: 'Isolated Mac' }));
       } else if (request.url === '/api/v1/bridge/device/heartbeat') {
-        advertised ||= body.environment?.humanTerminalVersion === 1;
+        advertised ||= body.environment?.humanTerminalVersion === 2;
         response.end('{}');
       } else if (request.url?.endsWith('/runtime-profile'))
         response.end(JSON.stringify({ profile: body }));
@@ -241,10 +243,17 @@ async function main() {
       await delay(10);
     }
   }
-  const send = (frame) => currentSocket.send(JSON.stringify(frame));
+  const send = (frame) => {
+    assert.notEqual(
+      frame.type,
+      'terminal.next',
+      'Native push acceptance must not send per-frame read credits',
+    );
+    currentSocket.send(JSON.stringify(frame));
+  };
   async function open() {
     const id = randomUUID();
-    send({ version: 1, type: 'terminal.open', id, target });
+    send({ version: 1, type: 'terminal.open', id, target, streamMode: 'push' });
     await wait(
       () =>
         frames.find(
@@ -311,12 +320,11 @@ async function main() {
         return sequence;
       },
       async next() {
-        send({ version: 1, type: 'terminal.next', id, requestId });
         let frame = await wait(
           () =>
             frames.slice(cursor).find((value) => value.requestId === requestId),
           Boolean,
-          'stream credit',
+          'native pushed stream frame',
         );
         if (frame.type === 'terminal.fragment') {
           const parts = await wait(
@@ -395,7 +403,7 @@ async function main() {
       45_000,
     );
     checks.push(
-      'exact SEA loaded fixed native runtime and advertised humanTerminalVersion=1',
+      'exact SEA loaded fixed native runtime and advertised humanTerminalVersion=2',
     );
     let channel = await open();
     const terminalId = randomUUID();
