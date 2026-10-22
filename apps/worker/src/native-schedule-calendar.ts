@@ -190,7 +190,9 @@ export function createNativeCalendarGeneration(options: {
   }
   async function fullTaskSet() {
     await options.fence();
-    const records = await options.loadTaskRecords(),
+    const records = Object.fromEntries(
+        Object.entries(await options.loadTaskRecords()),
+      ),
       catalog = await options.host().catalog();
     if (
       !Array.isArray(catalog) ||

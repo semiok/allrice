@@ -4,15 +4,23 @@ import type { TransactionSql as Tx } from 'postgres';
 import { AutomationScheduleSchema } from '@allrice/contracts';
 import { readContentPrincipal } from './content-maintenance.ts';
 import { scheduleIdentity } from './native-schedule-authority.ts';
-import { experienceReviewEnabled } from './experience.ts';
+import { experienceReviewEnabled, ExperienceError } from './experience.ts';
+import { DataAccessError } from './data.ts';
+import { EmployeeInstanceError } from './employees/employee-instances.ts';
+import { PersonalSkillError } from './employees/personal-skills.ts';
+import type { JobRow } from './queue/row-mappers.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 import { nextScheduleAt } from './execution/automation.ts';
 import {
   readExperiencePolicy,
   reserveExperienceOccurrenceInTransaction,
+  getExperienceExecutionInTransaction,
   type ExperienceScheduleRule,
 } from './experience-consolidation.ts';
-import { ExperienceAutomationBindingSchema } from './experience-consolidation-contracts.ts';
+import {
+  ExperienceAutomationBindingSchema,
+  experienceConsolidationJobType,
+} from './experience-consolidation-contracts.ts';
 import {
   NativeCalendarControlSchema,
   NativeCalendarRevisionSchema,
@@ -138,6 +146,64 @@ export async function lockExperienceCalendarAdmissions(
     facts.set(c.controlId, (await lockBusiness(tx, c, purpose)).admission);
   }
   return facts;
+}
+
+/** The original internal experience queue has no employee-chat Session. Keep
+ * its exact durable handoff and its existing current source/policy/Skill gate
+ * before the queue takes its normal root/Job locks. */
+export async function lockExperienceCalendarJobAdmission(
+  tx: Tx,
+  job: JobRow,
+  occurrenceId: string,
+) {
+  const payload = job.payload as {
+    type?: unknown;
+    input?: unknown;
+  } | null;
+  if (
+    !experienceNativeCalendarEnabled() ||
+    payload?.type !== experienceConsolidationJobType
+  )
+    return false;
+  const principal = await readContentPrincipal(
+    {
+      actor: { type: 'user', id: job.owner_id },
+      organizationId: job.organization_id,
+      workspaceId: job.workspace_id,
+    },
+    tx,
+    'update_user',
+  );
+  if (!principal?.writable) return false;
+  const [proof] = await tx<
+    { id: string }[]
+  >`select r.id from allrice_automation_runs r
+    where r.run_id=${job.run_id} and r.organization_id=${job.organization_id} and r.workspace_id=${job.workspace_id}
+      and r.experience_occurrence->>'ownerId'=${job.owner_id} and r.native_recurring_occurrence_id=${occurrenceId}
+      and allrice_experience_calendar_handoff_proved(${occurrenceId}::uuid)`;
+  if (!proof || !isDeepStrictEqual(payload.input, { occurrenceId: proof.id }))
+    return false;
+  try {
+    const { occurrence } = await getExperienceExecutionInTransaction(
+      tx,
+      job.run_id,
+    );
+    return (
+      occurrence.id === proof.id &&
+      occurrence.ownerId === job.owner_id &&
+      occurrence.organizationId === job.organization_id &&
+      occurrence.workspaceId === job.workspace_id
+    );
+  } catch (error) {
+    if (
+      error instanceof ExperienceError ||
+      error instanceof DataAccessError ||
+      error instanceof EmployeeInstanceError ||
+      error instanceof PersonalSkillError
+    )
+      return false;
+    throw error;
+  }
 }
 
 function versionFor(

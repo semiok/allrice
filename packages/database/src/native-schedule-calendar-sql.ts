@@ -1384,9 +1384,32 @@ export function createNativeCalendarSqlStore(
           );
           expected[t.record.id] = t;
         }
-        nativeOnceDigest(input.taskRecords);
+        const prototype =
+          input.taskRecords && Object.getPrototypeOf(input.taskRecords);
         requireCalendar(
-          isDeepStrictEqual(input.taskRecords, expected),
+          input.taskRecords &&
+            !Array.isArray(input.taskRecords) &&
+            (prototype === null || prototype === Object.prototype),
+          'task_set_unproved',
+        );
+        const descriptors = Object.getOwnPropertyDescriptors(input.taskRecords);
+        requireCalendar(
+          Reflect.ownKeys(input.taskRecords).length ===
+            Object.keys(descriptors).length &&
+            Object.values(descriptors).every(
+              (d) => 'value' in d && d.enumerable,
+            ),
+          'task_set_unproved',
+        );
+        const observed = Object.fromEntries(
+          Object.entries(descriptors).map(([id, descriptor]) => [
+            id,
+            descriptor.value,
+          ]),
+        );
+        nativeOnceDigest(observed);
+        requireCalendar(
+          isDeepStrictEqual(observed, expected),
           'task_set_unproved',
         );
         let proof: NativeCalendarArm['absenceProof'];

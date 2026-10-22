@@ -270,7 +270,9 @@ function fixture() {
       fence: async () => {},
       track: async (p) => p,
       mutate: async () => {},
-      loadTaskRecords: async () => structuredClone(records),
+      // The actual combined SQL store returns a null-prototype Task map.
+      loadTaskRecords: async () =>
+        Object.assign(Object.create(null), structuredClone(records)),
       digest: hash,
     }));
   make();

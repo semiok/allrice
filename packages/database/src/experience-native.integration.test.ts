@@ -275,7 +275,7 @@ suite(
         requestDigest: a.requestDigest,
         expectedPeriodVersion: p.version,
         expectedArmVersion: a.snapshotVersion,
-        taskRecords: {},
+        taskRecords: await store.loadTaskRecords(writer),
       });
       p = absent.period;
       a = absent.arm;
