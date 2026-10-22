@@ -355,13 +355,18 @@ function stableUuid(parts: readonly string[]) {
   const h = createHash('sha256').update(JSON.stringify(parts)).digest('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
+/** Reconfiguration can cancel a future period and accept the same wall-clock P
+ * under a new immutable period. Its late old receipt must not occupy the new
+ * period's outbox identity. The original business Run remains unique by P. */
 export function calendarOccurrenceIdentity(
   automationId: string,
+  periodId: string,
   businessScheduledFor: string,
 ) {
   const key = nativeOnceDigest([
-    'calendar',
+    'calendar-period-v1',
     automationId,
+    periodId,
     businessScheduledFor,
   ]);
   return {
@@ -476,6 +481,7 @@ export function prepareNativeCalendarTaskPut(input: {
         // Recovery A and messageId never become the business identity P.
         const identity = calendarOccurrenceIdentity(
           c.automationId,
+          p.periodId,
           p.businessScheduledFor,
         );
         const payload = {

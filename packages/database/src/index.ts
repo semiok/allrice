@@ -362,6 +362,15 @@ export {
   type NativeCalendarMutation,
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
+export {
+  NativeCalendarPlanSchema,
+  NativeCalendarDecisionSchema,
+  calendarPlanDigest,
+  calendarDecisionDigest,
+  type NativeCalendarPlan,
+  type NativeCalendarDecision,
+} from './native-schedule-calendar-business-state.ts';
+export type { NativeRecurringPartitionControl } from './native-schedule-recurring-loader.ts';
 
 export {
   listAutomationCatalog,

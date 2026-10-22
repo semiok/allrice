@@ -6,6 +6,10 @@ import {
 } from './native-schedule-calendar-sql.ts';
 import type { NativeCalendarWrite } from './native-schedule-calendar-state.ts';
 import {
+  loadNativeRecurringPartitionRows,
+  type NativeRecurringPartitionControl,
+} from './native-schedule-recurring-loader.ts';
+import {
   createNativeScheduleControlSqlStore,
   NativeOnceSqlError,
   type NativeScheduleControlSqlOptions,
@@ -30,7 +34,7 @@ import {
 } from './native-schedule-recurring-state.ts';
 
 export type NativeRecurringSqlOptions = Omit<
-  NativeScheduleControlSqlOptions<NativeRecurringControl>,
+  NativeScheduleControlSqlOptions<NativeRecurringPartitionControl>,
   'loadControls'
 > & {
   /** Explicit dormant-protocol opt-in only. Current fixed Workers omit this.
@@ -68,44 +72,27 @@ export function createNativeRecurringSqlStore(
     deny('configuration_invalid');
   const partitionId = options.partitionId,
     reference = structuredClone(options.reference);
+  async function controls(tx: TransactionSql) {
+    return loadNativeRecurringPartitionRows(
+      tx,
+      reference,
+      options.calendar?.enabled === true,
+    );
+  }
+  const base =
+    createNativeScheduleControlSqlStore<NativeRecurringPartitionControl>({
+      ...options,
+      loadControls: async (tx) =>
+        (await controls(tx)).map((r) => structuredClone(r.snapshot.control)),
+    });
   const calendar =
     options.calendar?.enabled === true
-      ? createNativeCalendarSqlStore({ ...options, ...options.calendar })
+      ? createNativeCalendarSqlStore({
+          ...options,
+          ...options.calendar,
+          sharedBase: base,
+        })
       : null;
-  async function controls(tx: TransactionSql) {
-    const rows = await tx<
-      Row[]
-    >`select control_id,immutable_identity,snapshot,snapshot_version from allrice_native_recurring_controls
-      where partition_id=${partitionId} order by control_id limit 10001`;
-    if (rows.length > 10_000) deny('control_limit');
-    const sessions = new Set<string>(),
-      tasks = new Set<string>(),
-      automations = new Set<string>();
-    for (const r of rows) {
-      nativeOnceDigest(r.snapshot);
-      const c = NativeRecurringControlSchema.parse(r.snapshot.control);
-      if (
-        c.partitionId !== partitionId ||
-        c.controlId !== r.control_id ||
-        !isDeepStrictEqual(recurringControlIdentity(c), r.immutable_identity) ||
-        sessions.has(c.controlSessionId) ||
-        automations.has(c.automationId) ||
-        (c.nativeTaskId && tasks.has(c.nativeTaskId)) ||
-        (c.nativeTaskId === null || c.taskDeleted) !==
-          (r.snapshot.task === null)
-      )
-        deny('control_invalid');
-      sessions.add(c.controlSessionId);
-      automations.add(c.automationId);
-      if (c.nativeTaskId) tasks.add(c.nativeTaskId);
-    }
-    return rows;
-  }
-  const base = createNativeScheduleControlSqlStore<NativeRecurringControl>({
-    ...options,
-    loadControls: async (tx) =>
-      (await controls(tx)).map((r) => structuredClone(r.snapshot.control)),
-  });
   async function versions(tx: TransactionSql, c: NativeRecurringControl) {
     const ids = [
       ...new Set(
@@ -363,7 +350,7 @@ export function createNativeRecurringSqlStore(
         await base.requireActive(tx, p, writer);
         const records: Record<string, unknown> = Object.create(null);
         for (const row of await controls(tx))
-          if (row.snapshot.task !== null) {
+          if (row.kind === 'recurring' && row.snapshot.task !== null) {
             const task = validateRecurringTask(
               row.snapshot.control,
               row.snapshot.task,
@@ -389,11 +376,30 @@ export function createNativeRecurringSqlStore(
             }
             records[task.record.id] = structuredClone(task);
           }
+        if (calendar)
+          for (const [id, task] of Object.entries(
+            await calendar.loadTaskRecordsInTransaction(tx),
+          )) {
+            if (Object.hasOwn(records, id)) deny('task_conflict');
+            records[id] = structuredClone(task);
+          }
+        if (Object.keys(records).length > 10_000) deny('task_limit');
         await base.requireActive(tx, p, writer);
         return records;
       });
     },
     commitMutation,
+    /** Format operations only. Lifecycle remains the common base above. */
+    calendar: calendar && {
+      initializeControlInTransaction: calendar.initializeControlInTransaction,
+      prepareCalendarPeriodInTransaction:
+        calendar.prepareCalendarPeriodInTransaction,
+      prepareCalendarArmInTransaction: calendar.prepareCalendarArmInTransaction,
+      beginCalendarArmCreate: calendar.beginCalendarArmCreate,
+      confirmCalendarArmAbsent: calendar.confirmCalendarArmAbsent,
+      prepareCalendarArm: calendar.prepareCalendarArm,
+      readExactCalendarArm: calendar.readExactCalendarArm,
+    },
     async readExactCommit(
       writer: NativeOnceWriter,
       write: NativeRecurringWrite | NativeCalendarWrite,
