@@ -13,6 +13,9 @@ import type {
 } from '../../../worker/node_modules/playwright-core/index.js';
 import {
   CompanyAssetSchema,
+  defaultUserPreferences,
+  UserPreferencesInputSchema,
+  type UserPreferences,
   type ExperienceCandidate,
   type ExperienceDraftBatch,
   ExperienceDraftBatchSchema,
@@ -527,10 +530,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         authorization: 'normal_policy',
       })),
       viewer: user,
-      preferences: { [user]: options.streamingOutput ?? false } as Record<
-        string,
-        boolean
-      >,
+      preferences: {
+        [user]: {
+          ...defaultUserPreferences,
+          streamingOutput: options.streamingOutput ?? false,
+        },
+      } as Record<string, UserPreferences>,
       preferenceError: false,
       preferenceDelay: null as Promise<void> | null,
       workspace,
@@ -968,16 +973,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (state.preferenceError)
           return answer({ error: { message: '保存失败，请重试' } }, 503);
         if (route.request().method() === 'PATCH') {
-          const body = route.request().postDataJSON();
-          expect(Object.keys(body)).toEqual(['streamingOutput']);
-          state.preferences[viewerId] = body.streamingOutput;
+          const body = UserPreferencesInputSchema.parse(
+            route.request().postDataJSON(),
+          );
+          state.preferences[viewerId] = {
+            ...defaultUserPreferences,
+            ...state.preferences[viewerId],
+            ...body,
+            updatedAt: now,
+          };
         }
         return answer({
           viewerId,
-          preferences: {
-            streamingOutput: state.preferences[viewerId] ?? false,
-            updatedAt: now,
-          },
+          preferences: state.preferences[viewerId] ?? defaultUserPreferences,
         });
       }
       if (path.endsWith('/message-feedback')) {
@@ -1342,10 +1350,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             organizationId: org,
             workspaceId: state.workspace,
             viewerId: state.viewer,
-            preferences: {
-              streamingOutput: state.preferences[state.viewer] ?? false,
-              updatedAt: now,
-            },
+            preferences:
+              state.preferences[state.viewer] ?? defaultUserPreferences,
             canAdminister: false,
             sessions: sessionList(),
             sessionModels: [],
@@ -6817,13 +6823,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: '工作过程',
         exact: true,
       });
-      const toggle = process.getByRole('button');
+      const toggle = process.getByRole('button', { name: /^工作过程/ });
       await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
       expect(await toggle.innerText()).toContain('1 次未成功');
       expect(await toggle.getAttribute('aria-expanded')).toBe('false');
       expect(await process.getByRole('list').count()).toBe(0);
       await toggle.focus();
       await f.page.keyboard.press('Enter');
+      await process
+        .getByRole('region', { name: '工作步骤', exact: true })
+        .getByRole('button')
+        .click();
       const groups = process.getByRole('list', { name: '工作步骤' });
       expect(await groups.getByRole('listitem').count()).toBe(10);
       expect(await groups.innerText()).toContain('已查询第 1 个标的的行情');
@@ -7397,6 +7407,132 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([1440, 390, 320])(
+    'MET199 saves the unified personal display list at %ipx, sizes actual body text and keeps code fixed',
+    async (width) => {
+      const f = await fixture({ width, touch: width < 760 });
+      try {
+        f.state.messages = navigationHistory(1);
+        f.state.messages.at(-1)!.runId = run;
+        f.state.messages.at(-1)!.content.text =
+          '正文大小样例\n\n```js\nconst fixedCodeSize = 1;\n```';
+        await f.page.reload();
+        const body = f.page.getByText('正文大小样例', { exact: true });
+        const code = f.page.locator('pre code').first();
+        await body.waitFor();
+        await expect
+          .poll(() => code.evaluate((el) => getComputedStyle(el).fontSize))
+          .toBe('11px');
+        expect(await body.evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+          '14px',
+        );
+        const userBubble = f.page.getByText(f.state.messages[0]!.content.text, {
+          exact: true,
+        });
+        expect(
+          await userBubble.evaluate((el) => getComputedStyle(el).fontSize),
+        ).toBe('14px');
+        const settings = f.page.getByRole('dialog', {
+          name: '设置',
+          exact: true,
+        });
+        const open = async () => {
+          await f.page
+            .getByRole('button', { name: '设置', exact: true })
+            .click();
+          await selectSettings(settings, '个人偏好');
+          await expect
+            .poll(() =>
+              settings
+                .getByRole('spinbutton', { name: '字号大小' })
+                .isEnabled(),
+            )
+            .toBe(true);
+        };
+        await open();
+        expect(
+          await settings
+            .getByRole('button', { name: '经验记录', exact: true })
+            .count(),
+        ).toBe(0);
+        const mobileMenu = settings.getByRole('combobox', { name: '设置页面' });
+        if (await mobileMenu.count())
+          expect(
+            await mobileMenu.locator('option').allTextContents(),
+          ).not.toContain('经验记录');
+        const font = settings.getByRole('spinbutton', { name: '字号大小' });
+        expect(await font.inputValue()).toBe('14');
+        await font.fill('18');
+        await font.press('Enter');
+        await expect.poll(() => font.isEnabled()).toBe(true);
+        expect(f.state.preferences[user]!.fontSize).toBe(18);
+        const view = settings.getByRole('combobox', {
+          name: '工作步骤展示',
+          exact: true,
+        });
+        const timing = settings.getByRole('combobox', {
+          name: '工作步骤收起时机',
+          exact: true,
+        });
+        expect(await view.locator('option').allTextContents()).toEqual([
+          '简洁',
+          '标准',
+          '详细',
+          '完全展开',
+        ]);
+        await timing.selectOption('next-input');
+        await expect.poll(() => view.isEnabled()).toBe(true);
+        await view.selectOption('verbose');
+        await expect.poll(() => timing.isDisabled()).toBe(true);
+        expect(await timing.inputValue()).toBe('next-input');
+        await expect.poll(() => view.isEnabled()).toBe(true);
+        await view.selectOption('standard');
+        await expect.poll(() => timing.isEnabled()).toBe(true);
+        expect(await timing.inputValue()).toBe('next-input');
+        await f.page.screenshot({
+          path: `.local/feedback/met199-preferences-${width}.png`,
+        });
+        await settings.getByRole('button', { name: '关闭设置' }).click();
+        expect(await body.evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+          '18px',
+        );
+        expect(
+          await userBubble.evaluate((el) => getComputedStyle(el).fontSize),
+        ).toBe('18px');
+        await expect
+          .poll(() => code.evaluate((el) => getComputedStyle(el).fontSize))
+          .toBe('11px');
+        await f.page.reload();
+        await body.waitFor();
+        expect(await body.evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+          '18px',
+        );
+        await open();
+        expect(await font.inputValue()).toBe('18');
+        expect(await view.inputValue()).toBe('standard');
+        expect(await timing.inputValue()).toBe('next-input');
+        expect(
+          await f.page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        await settings.getByRole('button', { name: '关闭设置' }).click();
+        f.state.viewer = id(975);
+        await f.page.reload();
+        await body.waitFor();
+        expect(await body.evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+          '14px',
+        );
+        await open();
+        expect(await font.inputValue()).toBe('14');
+        expect(await view.inputValue()).toBe('detailed');
+        expect(await timing.inputValue()).toBe('completion');
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   it('saves the native streaming switch per account, defaults to unified output and never reveals live text while off', async () => {
     const f = await fixture({ running: true });
     try {
@@ -7617,9 +7753,158 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
+  it('MET199 applies all four native display modes and folds only on the next accepted exchange', async () => {
+    const f = await fixture({ running: true, streamingOutput: true });
+    try {
+      const event = (
+        sequence: number,
+        type: ChatFlowEventEnvelope['type'],
+        payload: Record<string, unknown>,
+      ): ChatFlowEventEnvelope => ({
+        schemaVersion: 3,
+        eventId: id(14000 + sequence),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 1,
+        sequence,
+        cursor: `${run}:${sequence}`,
+        harness: 'dsh',
+        occurredAt: now,
+        sourceEvent: null,
+        type,
+        payload,
+      });
+      f.state.messages = navigationHistory(1);
+      const assistant = f.state.messages.at(-1)!;
+      assistant.runId = run;
+      assistant.status = 'pending';
+      assistant.content.text = '';
+      f.state.events = [
+        event(1, 'assistant.text.delta', {
+          replyId: 'start',
+          text: '我先核对本次资料。',
+        }),
+        event(2, 'tool.started', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '核对客户名单',
+        }),
+      ];
+      f.state.streamEvents = f.state.events;
+      f.releaseStream();
+      await f.page.reload();
+      const process = f.page
+        .locator(`#message-${assistant.id}`)
+        .getByRole('region', { name: '工作过程', exact: true });
+      const detail = process.getByText('核对客户名单', { exact: true });
+      await detail.waitFor();
+      const settings = f.page.getByRole('dialog', {
+        name: '设置',
+        exact: true,
+      });
+      const set = async (field: string, value: string) => {
+        await f.page.getByRole('button', { name: '设置', exact: true }).click();
+        await selectSettings(settings, '个人偏好');
+        const input = settings.getByRole('combobox', {
+          name: field,
+          exact: true,
+        });
+        await expect.poll(() => input.isEnabled()).toBe(true);
+        await input.selectOption(value);
+        await expect
+          .poll(() =>
+            settings
+              .getByRole('combobox', { name: '工作步骤展示', exact: true })
+              .isEnabled(),
+          )
+          .toBe(true);
+        await settings.getByRole('button', { name: '关闭设置' }).click();
+      };
+      await set('工作步骤展示', 'compact');
+      expect(
+        await process
+          .getByRole('region', { name: '工作步骤', exact: true })
+          .count(),
+      ).toBe(1);
+      expect(await detail.isVisible()).toBe(false);
+      await set('工作步骤展示', 'standard');
+      await detail.waitFor();
+      expect(
+        await process
+          .getByRole('region', { name: '工作步骤', exact: true })
+          .count(),
+      ).toBe(1);
+      await set('工作步骤展示', 'detailed');
+      await detail.waitFor();
+      expect(
+        await process
+          .getByRole('region', { name: '工作步骤', exact: true })
+          .count(),
+      ).toBe(0);
+      await set('工作步骤展示', 'verbose');
+      f.state.events.push(
+        event(3, 'tool.completed', {
+          toolCallId: 'read',
+          name: 'read',
+          summary: '核对客户名单',
+        }),
+        event(4, 'assistant.text.completed', {
+          replyId: 'answer',
+          text: '本次核对完成。',
+        }),
+      );
+      f.state.messageStatus = 'completed';
+      assistant.status = 'completed';
+      assistant.content.text = '本次核对完成。';
+      await f.page.reload();
+      await process.getByText('本次核对完成。', { exact: true }).waitFor();
+      await process.getByText('我先核对本次资料。', { exact: true }).waitFor();
+      await set('工作步骤展示', 'detailed');
+      expect(
+        await process
+          .getByText('我先核对本次资料。', { exact: true })
+          .isVisible(),
+      ).toBe(false);
+      await set('工作步骤收起时机', 'next-input');
+      await process.getByText('我先核对本次资料。', { exact: true }).waitFor();
+      // Queue records have not entered the transcript and must not close it.
+      f.state.queue.push({
+        id: id(14100),
+        runId: id(14101),
+        text: '排队补充',
+        attachments: [],
+        createdAt: now,
+      });
+      await f.page.reload();
+      await process.getByText('我先核对本次资料。', { exact: true }).waitFor();
+      f.state.messages.push({
+        id: id(14102),
+        role: 'user',
+        runId: null,
+        status: 'completed',
+        content: { text: '下一轮正式工作' },
+        createdAt: now,
+      });
+      await f.page.reload();
+      await process.getByText('本次核对完成。', { exact: true }).waitFor();
+      expect(
+        await process
+          .getByText('我先核对本次资料。', { exact: true })
+          .isVisible(),
+      ).toBe(false);
+    } finally {
+      await f.close();
+    }
+  });
+
   it('interleaves live public replies with tool steps and restores the same process after reload', async () => {
     const f = await fixture({ running: true, streamingOutput: true });
     try {
+      // This regression exercises grouped steps; native detailed now leaves
+      // the current exchange ungrouped, while standard retains these groups.
+      f.state.preferences[user]!.transcriptView = 'standard';
       const event = (
         sequence: number,
         type: ChatFlowEventEnvelope['type'],
@@ -7932,6 +8217,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       streamingOutput: true,
       controlledStream: true,
     });
+    f.state.preferences[user]!.transcriptView = 'standard';
     const operations = ['first', 'second'].map((nativeCallId, index) => ({
       nativeCallId,
       createdAt: now,

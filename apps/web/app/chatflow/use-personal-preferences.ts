@@ -5,6 +5,7 @@ import {
   defaultUserPreferences,
   UserPreferencesSchema,
   type UserPreferences,
+  type UserPreferencesInput,
 } from '@allrice/contracts';
 import type { Workspace } from './chatflow-types';
 import { readJson } from './chatflow-utils';
@@ -26,27 +27,26 @@ export function usePersonalPreferences(
     error?: string;
   } | null>(null);
   const execute = useCallback(
-    async (streamingOutput?: boolean) => {
+    async (update?: UserPreferencesInput) => {
       if (!viewerId || saving.current) return;
       request.current?.abort();
       const controller = new AbortController();
       request.current = controller;
-      saving.current = streamingOutput !== undefined;
+      saving.current = update !== undefined;
       const current = () =>
         currentScope.current === scope && request.current === controller;
       setSnapshot((previous) => ({
         ...(previous?.scope === scope ? previous : {}),
         scope,
         pending: true,
+        error: undefined,
       }));
       const timeout = window.setTimeout(() => controller.abort(), 10_000);
       try {
         const response = await fetch('/api/v1/me/preferences', {
-          method: streamingOutput === undefined ? 'GET' : 'PATCH',
+          method: update === undefined ? 'GET' : 'PATCH',
           headers: { ...headers, 'content-type': 'application/json' },
-          ...(streamingOutput === undefined
-            ? {}
-            : { body: JSON.stringify({ streamingOutput }) }),
+          ...(update === undefined ? {} : { body: JSON.stringify(update) }),
           cache: 'no-store',
           signal: controller.signal,
         });
@@ -90,11 +90,16 @@ export function usePersonalPreferences(
   );
   const own = snapshot?.scope === scope ? snapshot : null;
   return {
-    value: own?.preferences ?? workspace?.preferences ?? defaultUserPreferences,
+    scope,
+    value: own?.preferences ?? {
+      ...defaultUserPreferences,
+      ...workspace?.preferences,
+    },
     pending: own?.pending ?? false,
     error: own?.error,
     available: !!viewerId,
     reload: () => execute(),
-    setStreamingOutput: (value: boolean) => execute(value),
+    setPreferences: (value: UserPreferencesInput) => execute(value),
+    setStreamingOutput: (value: boolean) => execute({ streamingOutput: value }),
   };
 }

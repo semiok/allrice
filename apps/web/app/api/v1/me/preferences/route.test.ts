@@ -55,9 +55,25 @@ describe('authenticated personal preferences', () => {
     { streamingOutput: 'true' },
     { streamingOutput: true, userId: 'other' },
     {},
+    { fontSize: 9 },
+    { fontSize: 23 },
+    { fontSize: 14.5 },
+    { fontSize: '14' },
+    { transcriptView: 'unknown' },
+    { collapseTiming: 'every-message' },
+    { fontSize: 14, organizationId: 'other' },
   ])('rejects invalid or foreign-target settings %j', async (body) => {
     expect((await PATCH(request(body))).status).toBe(400);
     expect(mocks.update).not.toHaveBeenCalled();
+  });
+  it('accepts the native display choices as a partial account update', async () => {
+    const update = {
+      fontSize: 18,
+      transcriptView: 'verbose',
+      collapseTiming: 'next-input',
+    };
+    expect((await PATCH(request(update))).status).toBe(200);
+    expect(mocks.update).toHaveBeenCalledExactlyOnceWith(context, update);
   });
   it('returns failure instead of pretending a failed write was saved', async () => {
     mocks.update.mockRejectedValue(Error('private-sql'));

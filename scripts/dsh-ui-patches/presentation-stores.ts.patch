@@ -1,0 +1,11 @@
+--- a/packages/client/ui-chat/src/client/stores.ts
++++ b/packages/client/ui-chat/src/client/stores.ts
+@@ -1,7 +1,6 @@
+ /** Per-Session Chat view store. */
+ import { defineStore, type EngineStoreHandle } from '@deepseek-ai/dsh-client-store'
+-import type { ChatStoreState, TurnProcessViewEntry } from './contract/store.ts'
+-import type { TurnProcessSpec } from './contract/turn-process.ts'
++import type { ChatStoreState, TurnProcessViewEntry, TurnProcessSpec } from '@deepseek-ai/dsh-client-ui-chat/client'
+ 
+ type ChatActions = {
+   setTurnProcessOpen: (

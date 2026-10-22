@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { defaultUserPreferences } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createAssistantFixtureDatabase } from './assistant-runtime.fixture.ts';
 import { createExperienceFixture } from './experience.fixture.ts';
@@ -23,10 +24,7 @@ suite('account output preferences', () => {
   });
   it('defaults off, persists for a normal member across workspaces, and isolates other users', async () => {
     const f = await createExperienceFixture(fixture.db);
-    expect(await getUserPreferences(f.owner)).toEqual({
-      streamingOutput: false,
-      updatedAt: null,
-    });
+    expect(await getUserPreferences(f.owner)).toEqual(defaultUserPreferences);
     const saved = await updateUserPreferences(f.owner, {
       streamingOutput: true,
     });
@@ -35,10 +33,9 @@ suite('account output preferences', () => {
     expect(await getUserPreferences({ ...f.owner, workspaceId: null })).toEqual(
       saved,
     );
-    expect(await getUserPreferences(f.neighbor)).toEqual({
-      streamingOutput: false,
-      updatedAt: null,
-    });
+    expect(await getUserPreferences(f.neighbor)).toEqual(
+      defaultUserPreferences,
+    );
     await expect(
       updateUserPreferences(f.owner, {
         streamingOutput: false,
@@ -48,5 +45,49 @@ suite('account output preferences', () => {
     expect(await getUserPreferences(f.owner)).toEqual(saved);
     await updateUserPreferences(f.owner, { streamingOutput: false });
     expect((await getUserPreferences(f.owner)).streamingOutput).toBe(false);
+  });
+  it('updates one display preference without resetting other fields, including concurrent saves', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    await updateUserPreferences(f.owner, {
+      streamingOutput: true,
+      collapseTiming: 'next-input',
+    });
+    await Promise.all([
+      updateUserPreferences(f.owner, { fontSize: 18 }),
+      updateUserPreferences(f.owner, { transcriptView: 'compact' }),
+    ]);
+    expect(await getUserPreferences(f.owner)).toMatchObject({
+      streamingOutput: true,
+      fontSize: 18,
+      transcriptView: 'compact',
+      collapseTiming: 'next-input',
+    });
+    // An older client's streaming-only PATCH must keep newer display choices.
+    await updateUserPreferences(f.owner, { streamingOutput: false });
+    expect(
+      await getUserPreferences({ ...f.owner, workspaceId: null }),
+    ).toMatchObject({
+      streamingOutput: false,
+      fontSize: 18,
+      transcriptView: 'compact',
+      collapseTiming: 'next-input',
+    });
+    expect(await getUserPreferences(f.neighbor)).toEqual(
+      defaultUserPreferences,
+    );
+  });
+  it('rejects invalid display values without changing the saved account', async () => {
+    const f = await createExperienceFixture(fixture.db);
+    const saved = await updateUserPreferences(f.owner, { fontSize: 22 });
+    for (const update of [
+      { fontSize: 9 },
+      { fontSize: 23 },
+      { fontSize: 14.5 },
+      { transcriptView: 'all' },
+      { collapseTiming: 'every-message' },
+      { fontSize: 16, userId: f.neighbor.actor.id },
+    ])
+      await expect(updateUserPreferences(f.owner, update)).rejects.toThrow();
+    expect(await getUserPreferences(f.owner)).toEqual(saved);
   });
 });

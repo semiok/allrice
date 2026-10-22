@@ -2201,6 +2201,9 @@ export function ChatFlowClient({
                       onOpenReference={openReference}
                       onOpenAutomation={(id) => openAutomationTask({ id })}
                       streamingOutput={preferences.value.streamingOutput}
+                      fontSize={preferences.value.fontSize}
+                      transcriptView={preferences.value.transcriptView}
+                      collapseTiming={preferences.value.collapseTiming}
                       employeeName={activeEmployeeName}
                       atBottom={atTranscriptBottom}
                       localCommandsEnabled={localCommandsEnabled}

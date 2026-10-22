@@ -1,4 +1,5 @@
 import { brandString } from '@deepseek-ai/dsh-brand';
+import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import type { ChatConversationViewNode } from '@deepseek-ai/dsh-client-ui-chat/client';
 import type {
   NodeKey,
@@ -13,9 +14,16 @@ import type { WorkProgressPart } from './work-progress';
 export function nativeProcessGroups(
   rows: WorkProgressPart[],
   running: boolean,
+  events: readonly ChatFlowEventEnvelope[] = [],
 ): WorkProgressPart[] {
+  const nativeTurn = events.findLast(
+    (event) => typeof event.sourceEvent?.payload.turn === 'number',
+  )?.sourceEvent?.payload.turn;
+  // Only grouping is projected here. Do not fabricate native start/end, step,
+  // or exchange records; the presentation adapter uses accepted AllRice facts.
+  const turnNumber = typeof nativeTurn === 'number' ? nativeTurn : 0;
   const turn: TurnLocation = {
-    turn: 0,
+    turn: turnNumber,
     start: undefined,
     end: undefined,
     status: running ? 'open' : 'closed',
@@ -55,7 +63,7 @@ export function nativeProcessGroups(
   const positions = new Map(
     order.map((key, index) => [
       key,
-      { turn: 0, previous: order[index - 1], next: order[index + 1] },
+      { turn: turnNumber, previous: order[index - 1], next: order[index + 1] },
     ]),
   );
   const state = new ProcessState();
@@ -65,7 +73,10 @@ export function nativeProcessGroups(
     readNode: (key) => nodes.get(key),
     readTurn: () => order,
     readPosition: (key) => positions.get(key),
-    timeline: { turnOrder: [0], turns: new Map([[0, turn]]) },
+    timeline: {
+      turnOrder: [turnNumber],
+      turns: new Map([[turnNumber, turn]]),
+    },
   });
   const result = state.output()!;
   if (result.groups.kind !== 'replace')
