@@ -13,7 +13,7 @@ import {
   type NativeCalendarArm,
   type NativeCalendarControl,
   type NativeCalendarPeriod,
-  type NativeCalendarRevision,
+  type NativeExperienceCalendarRevision,
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import {
@@ -34,7 +34,7 @@ suite(
     let store: ReturnType<typeof createNativeCalendarSqlStore>,
       options: NativeCalendarSqlOptions;
     let c: NativeCalendarControl,
-      v: NativeCalendarRevision,
+      v: NativeExperienceCalendarRevision,
       writer: NativeOnceWriter;
     let p: NativeCalendarPeriod, a: NativeCalendarArm, native: NativeOnceTask;
     const ready = {

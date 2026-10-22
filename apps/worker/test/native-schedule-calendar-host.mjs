@@ -9,6 +9,7 @@ import { setTimeout } from 'node:timers';
 import { URL } from 'node:url';
 import * as database from '@allrice/database';
 import { loadNativeRecurringPartitionRows } from '../../../packages/database/dist/native-schedule-recurring-loader.js';
+import { lockNativeOnceJobAdmission } from '../../../packages/database/dist/native-schedule-once-authority.js';
 import {
   nativeOnceWorkspaceDigest,
   validateNativeOnceWorkspaceSnapshot,
@@ -44,6 +45,12 @@ async function main() {
     `NATIVE_CALENDAR_HOST_CHILD_START ${JSON.stringify({ pid: process.pid, startedAt })}\n`,
   );
   const input = JSON.parse(process.argv[2] ?? 'null');
+  const consumer = input.consumer ?? 'experience-consolidation-v1';
+  assert.ok(
+    ['experience-consolidation-v1', 'ordinary-monthly-v1'].includes(consumer),
+  );
+  const ordinary = consumer === 'ordinary-monthly-v1';
+  if (ordinary) assert.equal(process.env.ALLRICE_RUN_NATIVE_MONTHLY_HOST, '1');
   const url = new URL(process.env.DATABASE_URL),
     authorized = new URL(process.env.ALLRICE_TEST_DATABASE_URL);
   assert.equal(url.pathname, '/allrice_b2');
@@ -94,12 +101,12 @@ async function main() {
     assert.ok(p);
     return p;
   }
-  async function persistence() {
+  async function persistence(expectedControls = ordinary ? 3 : 2) {
     return db.begin('isolation level repeatable read read only', async (tx) => {
       const rows = await loadNativeRecurringPartitionRows(tx, reference, true);
-      assert.equal(rows.length, 2);
+      assert.equal(rows.length, expectedControls);
       assert.deepEqual(rows.map((r) => r.kind).sort(), [
-        'calendar',
+        ...Array(expectedControls - 1).fill('calendar'),
         'recurring',
       ]);
       const controls = rows.map(({ kind, snapshot: { control: c } }) => ({
@@ -139,7 +146,7 @@ async function main() {
   async function cycle() {
     const [p] =
       await db`select p.period_id,p.business_scheduled_for,p.current_arm_id,
-      a.arm_id,a.native_at,a.native_task_id,a.task_snapshot,d.outcome,d.automation_run_id,d.successor_period_id,
+      a.arm_id,a.native_at,a.native_task_id,a.task_snapshot,d.outcome,d.decided_at,d.automation_run_id,d.successor_period_id,
       successor.business_scheduled_for next_p,next_arm.native_task_id next_task_id,retirement.retirement_id
       from allrice_native_calendar_periods p
       join allrice_native_calendar_arms a on a.arm_id=p.current_arm_id and a.period_id=p.period_id
@@ -162,14 +169,16 @@ async function main() {
       `actual_calendar_host_timeout:${JSON.stringify(runtime.status())}`,
     );
   }
-  async function closed(epoch) {
-    assert.equal(runtime.status().state, 'closed');
-    assert.equal(runtime.status().faultCount, 0);
-    assert.equal(runtime.status().controller.stats.adapterCalls, 0);
-    assert.equal((await partition()).closed, true);
+  async function drained(epoch) {
     const [p] =
       await db`select proof from allrice_native_once_close_proofs where partition_id='allrice-recurring-v1' and epoch=${epoch}`;
     assert.equal(p.proof.kind, 'public_host_backend_drained');
+    assert.equal(p.proof.partitionId, 'allrice-recurring-v1');
+    assert.equal(p.proof.epoch, epoch);
+    assert.equal(
+      p.proof.evidence.referenceDigest,
+      database.nativeOnceDigest(reference),
+    );
     for (const key of [
       'publicHostCloseCompletedAt',
       'scheduleBackendDrainCompletedAt',
@@ -179,6 +188,13 @@ async function main() {
     ])
       assert.ok(Number.isFinite(Date.parse(p.proof.evidence[key])));
     return p.proof;
+  }
+  async function closed(epoch) {
+    assert.equal(runtime.status().state, 'closed');
+    assert.equal(runtime.status().faultCount, 0);
+    assert.equal(runtime.status().controller.stats.adapterCalls, 0);
+    assert.equal((await partition()).closed, true);
+    return drained(epoch);
   }
   if (interrupted) throw Error('actual_calendar_host_interrupted_before_open');
   runtime = open();
@@ -192,6 +208,7 @@ async function main() {
     await db`select * from allrice_native_recurring_controls where automation_id=${input.fixedId}`;
   const [calendar] =
     await db`select * from allrice_native_recurring_controls where automation_id=${input.automationId}`;
+  assert.equal(calendar.immutable_identity.dispatch.consumer, consumer);
   assert.ok(fixedBirth.native_task_id);
   const initial = await cycle();
   assert.equal(initial.business_scheduled_for.toISOString(), input.P);
@@ -205,9 +222,162 @@ async function main() {
       [fixedBirth.native_task_id]: fixedBirth.snapshot.task,
     }),
   });
+  let runningEpoch = epoch,
+    liveAddition;
+  if (ordinary) {
+    // The first two actual Sessions and native Tasks already exist. Enrollment
+    // below is a real public business write while this same runtime is active.
+    assert.ok(initial.native_task_id);
+    const before = await persistence(2),
+      initialHistoryCount = await verifyNativeOnceControlHistory(
+        reference,
+        before.controls,
+      );
+    assert.equal(initialHistoryCount, 2);
+    const enrollment = input.lateEnrollment,
+      identity = calendar.immutable_identity;
+    assert.equal(enrollment.context.actor.type, 'user');
+    assert.equal(enrollment.context.actor.id, identity.ownerId);
+    assert.equal(enrollment.context.organizationId, identity.organizationId);
+    assert.equal(enrollment.context.workspaceId, identity.workspaceId);
+    assert.equal(
+      enrollment.employeeAssignmentId,
+      identity.dispatch.employeeAssignmentId,
+    );
+    if (interrupted) throw Error('actual_calendar_host_interrupted');
+    const createdAt = new Date().toISOString(),
+      chat = await database.createChatSession(enrollment.context, {
+        workspaceId: identity.workspaceId,
+        employeeAssignmentId: enrollment.employeeAssignmentId,
+        employeeInstanceId: identity.dispatch.employeeInstanceId,
+        title: 'Added while the real shared Host is active',
+      }),
+      target = new Date(
+        Math.ceil((Date.now() + 14 * 86_400_000) / 1000) * 1000,
+      ),
+      rule = {
+        kind: 'monthly',
+        monthDay: target.getUTCDate(),
+        time: target.toISOString().slice(11, 19),
+        timezone: 'UTC',
+      },
+      requestId = randomUUID(),
+      added = await database.createRecurringTask(enrollment.context, chat.id, {
+        clientRequestId: requestId,
+        name: 'Far future monthly live Session enrollment',
+        prompt: '十四天后的普通月任务；本次验收不执行这项业务。',
+        rule,
+      });
+    assert.equal(added.status, 'preparing');
+    assert.notEqual(added.id, input.automationId);
+    assert.notEqual(added.id, input.fixedId);
+    const [reserved] = await db`select c.control_session_id,c.snapshot,
+        a.next_run_at,(select count(*)::int from allrice_native_calendar_periods p
+          where p.automation_id=a.id) periods
+      from allrice_native_recurring_controls c join allrice_automations a on a.id=c.automation_id
+      where a.id=${added.id}`;
+    assert.equal(reserved.snapshot.control.sessionState, 'reserved');
+    assert.equal(reserved.periods, 0);
+    assert.equal(reserved.next_run_at.toISOString(), target.toISOString());
+    assert.ok(target.getTime() > Date.now() + 7 * 86_400_000);
+    assert.ok(
+      before.controls.every(
+        (c) => c.controlSessionId !== reserved.control_session_id,
+      ),
+    );
+    assert.equal(runtime.status().state, 'active');
+    assert.equal(Number((await partition()).epoch), epoch);
+    // No stop()/open() here: production refresh must drain its old generation.
+    await runtime.tick();
+    assert.equal(runtime.status().state, 'cold');
+    assert.equal(runtime.status().faultCount, 0);
+    assert.equal(runtime.status().controller.fault, undefined);
+    const released = await partition();
+    assert.equal(Number(released.epoch), epoch);
+    assert.equal(released.closed, true);
+    const refreshClose = await drained(epoch);
+    assert.equal(refreshClose.ownerId, writer.owner_id);
+    assert.equal(refreshClose.tokenDigest, writer.token_digest);
+    const rebound = await waitFor(
+      async () => {
+        const [r] = await db`select c.control_session_id,c.snapshot,
+            np.period_id,arm.arm_id,arm.request_digest,arm.native_at,arm.native_task_id,arm.task_snapshot
+          from allrice_native_recurring_controls c
+          join allrice_native_calendar_plans b on b.control_id=c.control_id and b.closed_decision_id is null
+          join allrice_native_calendar_periods np on np.plan_id=b.period_id
+          join allrice_native_calendar_arms arm on arm.arm_id=np.current_arm_id and arm.period_id=np.period_id
+          where c.automation_id=${added.id}`;
+        return r;
+      },
+      (r) =>
+        runtime.status().state === 'active' &&
+        r.snapshot.control.sessionState === 'ready' &&
+        r.native_task_id,
+      30_000,
+    );
+    const reopened = await partition();
+    runningEpoch = Number(reopened.epoch);
+    assert.equal(runningEpoch, epoch + 1);
+    assert.equal(reopened.owner_id, writer.owner_id);
+    assert.notEqual(reopened.token_digest, writer.token_digest);
+    assert.equal(runtime.status().faultCount, 0);
+    assert.equal(runtime.status().controller.fault, undefined);
+    assert.equal(runtime.status().controller.stats.adapterCalls, 0);
+    assert.equal(rebound.control_session_id, reserved.control_session_id);
+    assert.equal(rebound.native_at.toISOString(), target.toISOString());
+    assert.equal(rebound.task_snapshot.sessionId, reserved.control_session_id);
+    assert.equal(rebound.task_snapshot.record.id, rebound.native_task_id);
+    assert.equal(rebound.task_snapshot.record.kind, 'at');
+    assert.equal(rebound.task_snapshot.status, 'active');
+    const after = await persistence(),
+      historyCount = await verifyNativeOnceControlHistory(
+        reference,
+        after.controls,
+      );
+    assert.equal(historyCount, 3); // public JSONL stat/header, no UI registry claim
+    assert.deepEqual(
+      after.controls.map((c) => c.controlSessionId).sort(),
+      [
+        ...before.controls.map((c) => c.controlSessionId),
+        reserved.control_session_id,
+      ].sort(),
+    );
+    const projection = await database.getRecurringTask(
+      enrollment.context,
+      chat.id,
+      added.id,
+    );
+    assert.equal(projection.task.status, 'enabled');
+    assert.equal(projection.task.nextRunAt, target.toISOString());
+    assert.deepEqual(projection.task.rule, rule);
+    liveAddition = {
+      pid: process.pid,
+      createdAt,
+      requestId,
+      automationId: added.id,
+      sessionId: chat.id,
+      controlSessionId: rebound.control_session_id,
+      P: target.toISOString(),
+      periodId: rebound.period_id,
+      armId: rebound.arm_id,
+      requestDigest: rebound.request_digest,
+      nativeTaskId: rebound.native_task_id,
+      task: rebound.task_snapshot,
+      originalEpoch: epoch,
+      reopenedEpoch: runningEpoch,
+      initialHistoryCount,
+      historyCount,
+      before,
+      after,
+      refreshClose,
+    };
+  }
   const complete = await waitFor(
     cycle,
-    (p) => p.outcome === 'empty' && p.next_task_id && p.retirement_id,
+    (p) =>
+      p.outcome === (ordinary ? 'queued' : 'empty') &&
+      p.next_task_id &&
+      p.retirement_id,
     30_000,
   );
   assert.notEqual(complete.native_task_id, complete.next_task_id);
@@ -218,18 +388,55 @@ async function main() {
     complete.native_at.toISOString(),
   );
   assert.ok(complete.task_snapshot.lastDelivery.messageId);
-  const [empty] =
+  const [business] =
     await db`select * from allrice_automation_runs where id=${complete.automation_run_id}`;
-  assert.equal(empty.status, 'succeeded');
-  assert.equal(empty.run_id, null);
-  assert.equal(empty.error_code, 'EXPERIENCE_NO_NEW_EVIDENCE');
-  assert.equal(empty.scheduled_for.toISOString(), input.P);
-  assert.equal(
-    (
-      await db`select id from allrice_jobs where payload->>'type'='allrice.experience.consolidate'`
-    ).length,
-    0,
-  );
+  assert.equal(business.scheduled_for.toISOString(), input.P);
+  let ordinaryJobId;
+  if (ordinary) {
+    assert.equal(business.status, 'queued');
+    assert.ok(business.run_id);
+    assert.equal(business.manual_request_id, null);
+    assert.equal(business.folder_event_id, null);
+    const [job] =
+      await db`select id from allrice_jobs where run_id=${business.run_id}`;
+    ordinaryJobId = job.id;
+    assert.deepEqual(
+      await db.begin((tx) => lockNativeOnceJobAdmission(tx, job.id)),
+      { scheduled: true, allowed: true, runId: business.run_id },
+    );
+    const workerId = randomUUID(),
+      claimed = await database.claimNextJob(workerId, 120000);
+    assert.equal(claimed.id, job.id);
+    assert.ok(
+      await database.startClaimedJob(workerId, claimed.id, claimed.lease.token),
+    );
+    const [current] =
+      await db`select a.prompt,er.prompt_snapshot from allrice_automations a
+      join allrice_employee_runs er on er.run_id=${business.run_id} where a.id=${input.automationId}`;
+    assert.ok(current.prompt_snapshot.userRequest.endsWith(current.prompt));
+    const [next] =
+      await db`select allrice_ordinary_monthly_next(v.configuration->'rule',${complete.decided_at}) target
+      from allrice_native_recurring_versions v where v.automation_id=${input.automationId} and v.revision=1`;
+    assert.equal(complete.next_p.toISOString(), next.target.toISOString());
+    await database.failJob({
+      workerId,
+      jobId: claimed.id,
+      leaseToken: claimed.lease.token,
+      code: 'HOST_FIXTURE_NO_MODEL',
+      message: 'Original admission/preparation proved; provider not invoked',
+      retryable: false,
+    });
+  } else {
+    assert.equal(business.status, 'succeeded');
+    assert.equal(business.run_id, null);
+    assert.equal(business.error_code, 'EXPERIENCE_NO_NEW_EVIDENCE');
+    assert.equal(
+      (
+        await db`select id from allrice_jobs where payload->>'type'='allrice.experience.consolidate'`
+      ).length,
+      0,
+    );
+  }
   const modules = await source.loadModules();
   // Readback only: never acquire/renew/release another writer or open a Host.
   const observer = database.createNativeRecurringSqlStore({
@@ -248,7 +455,7 @@ async function main() {
     lockAdmission: database.lockNativeRecurringAdmissions,
     calendar: {
       enabled: true,
-      lockAdmission: database.lockExperienceCalendarAdmissions,
+      lockAdmission: database.lockNativeCalendarAdmissions,
     },
     proveClosed: async () => null,
   });
@@ -267,6 +474,15 @@ async function main() {
     await observer.calendar.readExactCalendarRetirement(complete.retirement_id),
     'committed',
   );
+  if (liveAddition) {
+    const exact = await observer.calendar.readExactCalendarArm(
+      liveAddition.armId,
+      liveAddition.requestDigest,
+    );
+    assert.equal(exact.state, 'bound');
+    assert.equal(exact.arm.nativeTaskId, liveAddition.nativeTaskId);
+    assert.deepEqual(exact.fullTask, liveAddition.task);
+  }
   const fixedRun = await waitFor(
     async () => {
       const [r] =
@@ -285,8 +501,24 @@ async function main() {
       Date.parse(fixedBirth.snapshot.task.record.scheduledAt),
   );
   const running = await partition();
-  assert.equal(Number(running.epoch), epoch);
+  assert.equal(Number(running.epoch), runningEpoch);
   assert.equal(running.owner_id, writer.owner_id);
+  async function unusedLateBusiness() {
+    if (!liveAddition) return;
+    assert.equal(
+      (
+        await db`select id from allrice_automation_runs where automation_id=${liveAddition.automationId}`
+      ).length,
+      0,
+    );
+    assert.equal(
+      (
+        await db`select run_id from allrice_employee_runs where session_id=${liveAddition.sessionId}`
+      ).length,
+      0,
+    );
+  }
+  await unusedLateBusiness();
   // The SDK control path persists Sessions to JSONL, without registering them
   // in workspace.sessionIds. Preserve the entire actual workspace/journal,
   // and prove Session durability through its real public persistence reader.
@@ -294,15 +526,16 @@ async function main() {
   const sessions = durable.controls.map((c) => c.controlSessionId);
   assert.ok(sessions.includes(fixedBirth.control_session_id));
   assert.ok(sessions.includes(calendar.control_session_id));
+  if (liveAddition) assert.ok(sessions.includes(liveAddition.controlSessionId));
   await runtime.stop();
-  const firstClose = await closed(epoch),
+  const firstClose = await closed(runningEpoch),
     firstStats = runtime.status().controller.stats;
   assert.deepEqual(await persistence(), durable);
   const firstHistoryCount = await verifyNativeOnceControlHistory(
     reference,
     durable.controls,
   );
-  assert.equal(firstHistoryCount, 2);
+  assert.equal(firstHistoryCount, ordinary ? 3 : 2);
   if (interrupted) throw Error('actual_calendar_host_interrupted');
   runtime = open();
   if (interrupted) throw Error('actual_calendar_host_interrupted_before_tick');
@@ -312,12 +545,22 @@ async function main() {
   const resumed = await partition(),
     resumedCycle = await cycle();
   assert.deepEqual(await persistence(), durable);
-  assert.equal(Number(resumed.epoch), epoch + 1);
+  assert.equal(Number(resumed.epoch), runningEpoch + 1);
   assert.equal(resumedCycle.native_task_id, complete.native_task_id);
   assert.equal(resumedCycle.next_task_id, complete.next_task_id);
   const [fixedResumed] =
     await db`select native_task_id from allrice_native_recurring_controls where automation_id=${input.fixedId}`;
   assert.equal(fixedResumed.native_task_id, fixedBirth.native_task_id);
+  if (liveAddition) {
+    const exact = await observer.calendar.readExactCalendarArm(
+      liveAddition.armId,
+      liveAddition.requestDigest,
+    );
+    assert.equal(exact.state, 'bound');
+    assert.equal(exact.arm.nativeTaskId, liveAddition.nativeTaskId);
+    assert.deepEqual(exact.fullTask, liveAddition.task);
+    await unusedLateBusiness();
+  }
   assert.equal(
     (
       await db`select decision_id from allrice_native_calendar_decisions where period_id=${complete.period_id}`
@@ -329,13 +572,13 @@ async function main() {
     'committed',
   );
   await runtime.stop();
-  const secondClose = await closed(epoch + 1);
+  const secondClose = await closed(runningEpoch + 1);
   assert.deepEqual(await persistence(), durable);
   const coldHistoryCount = await verifyNativeOnceControlHistory(
     reference,
     durable.controls,
   );
-  assert.equal(coldHistoryCount, 2);
+  assert.equal(coldHistoryCount, ordinary ? 3 : 2);
   process.stdout.write(
     `NATIVE_CALENDAR_HOST_EVIDENCE ${JSON.stringify({
       artifactId: reference.artifactId,
@@ -343,6 +586,9 @@ async function main() {
       startedAt,
       profileId: reference.profileId,
       models: 0,
+      consumer,
+      businessRunId: business.run_id,
+      ordinaryJobId,
       P: input.P,
       A: complete.native_at.toISOString(),
       N: complete.next_p.toISOString(),
@@ -354,7 +600,9 @@ async function main() {
       fixedTaskId: fixedBirth.native_task_id,
       fixedRunId: fixedRun.run_id,
       firstEpoch: epoch,
+      runningEpoch,
       coldEpoch: Number(resumed.epoch),
+      liveAddition,
       firstStats,
       coldStats: runtime.status().controller.stats,
       firstHistoryCount,

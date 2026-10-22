@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { ChangeRecurringTaskInputSchema } from '@allrice/contracts';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 import type {
   AutomationCatalogTask,
@@ -607,6 +608,168 @@ suite(
             await f.page.getByLabel('周一', { exact: true }).isChecked(),
           ).toBe(false);
           expect(f.task.definition.task.rule.time).toBe('09:30:05');
+          expect(
+            await f.page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          ).toBe(true);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      },
+    );
+    it.each([1440, 390])(
+      'reads and edits monthly in the unified right panel with exact CAS and unchanged history at %ipx',
+      async (width) => {
+        const f = await fixture(width);
+        try {
+          if (f.task.definition.kind !== 'recurring')
+            throw Error('fixture kind');
+          const current = f.task.definition.task;
+          current.rule = {
+            kind: 'monthly',
+            monthDay: 31,
+            time: '02:30:17',
+            timezone: 'America/New_York',
+          };
+          current.revision = 7;
+          f.task.revision = 7;
+          const original = structuredClone(current);
+          // Refresh the list too: the initial fixture loads before this rule is set.
+          await f.page.reload();
+          await f.page
+            .getByText('每月 31 日 02:30:17 · America/New_York', {
+              exact: true,
+            })
+            .waitFor();
+          const isDetailRead = (response: {
+            url(): string;
+            request(): { method(): string };
+          }) => {
+            const url = new URL(response.url());
+            return (
+              response.request().method() === 'GET' &&
+              url.pathname === '/api/v1/scheduled-tasks/' + TASK &&
+              !url.searchParams.has('operationId')
+            );
+          };
+          const beforeRead = f.page.waitForResponse(isDetailRead);
+          await f.open();
+          const before = await (await beforeRead).json();
+          const detail = f.page.getByRole('region', {
+              name: '自动化任务详情：喝水',
+              exact: true,
+            }),
+            frequency = detail.getByRole('combobox', {
+              name: '重复',
+              exact: true,
+            });
+          expect(await frequency.inputValue()).toBe('monthly');
+          expect(await frequency.isEnabled()).toBe(true);
+          // isDisabled on a labeled option can retarget to its select in PW.
+          expect(
+            await frequency.evaluate((select) => {
+              if (!(select instanceof HTMLSelectElement))
+                throw Error('expected monthly select');
+              return [...select.options].map((option) => ({
+                value: option.value,
+                disabled: option.disabled,
+              }));
+            }),
+          ).toEqual([
+            { value: 'every', disabled: true },
+            { value: 'daily', disabled: true },
+            { value: 'weekly', disabled: true },
+            { value: 'monthly', disabled: false },
+          ]);
+          expect(
+            await detail.getByLabel('每月日期', { exact: true }).inputValue(),
+          ).toBe('31');
+          expect(
+            await detail.getByLabel('执行时间', { exact: true }).inputValue(),
+          ).toBe('02:30');
+          expect(
+            await detail.getByLabel('时区', { exact: true }).inputValue(),
+          ).toBe('America/New_York');
+          await detail
+            .getByText(
+              /不存在的日期按当月最后一天；夏令时缺失时间顺延，重复时间只执行一次；停机后只处理最近一期。原时间含秒，未修改分钟时保留原秒数。/,
+            )
+            .waitFor();
+          expect(before.occurrences).toEqual([
+            {
+              id: OCCURRENCE,
+              taskId: TASK,
+              revision: 1,
+              scheduledAt: '2026-10-21T01:00:00.000Z',
+              status: 'succeeded',
+              runId: RUN,
+              sessionId: CHAT,
+              errorMessage: null,
+            },
+          ]);
+          await detail.getByRole('tab', { name: '任务运行记录' }).click();
+          await detail.getByText('已完成', { exact: true }).waitFor();
+          const historyText = await detail.locator('article').innerText();
+          await detail.getByRole('tab', { name: '规则', exact: true }).click();
+          await detail.getByLabel('每月日期', { exact: true }).fill('30');
+          const afterRead = f.page.waitForResponse(isDetailRead);
+          await detail
+            .getByRole('button', { name: '保存修改', exact: true })
+            .click();
+          await detail.getByText('设置已更新。', { exact: true }).waitFor();
+          const after = await (await afterRead).json(),
+            edits = f.requests.filter((request) => request.method === 'PATCH');
+          expect(edits).toHaveLength(1);
+          const edit = edits[0]!,
+            input = ChangeRecurringTaskInputSchema.parse(edit.body),
+            editUrl = new URL(edit.url);
+          expect(editUrl.pathname).toBe('/api/v1/scheduled-tasks/' + TASK);
+          expect(editUrl.searchParams.get('workspaceId')).toBe(WORKSPACE);
+          expect(edit.principalScope).toBe([ORG, WORKSPACE, VIEWER].join('/'));
+          expect(input).toEqual({
+            operationId: input.operationId,
+            expectedRevision: 7,
+            action: 'update',
+            name: original.name,
+            prompt: original.prompt,
+            rule: {
+              kind: 'monthly',
+              monthDay: 30,
+              time: '02:30:17',
+              timezone: 'America/New_York',
+            },
+          });
+          expect(after.task.id).toBe(TASK);
+          expect(after.task.sessionId).toBe(CHAT);
+          expect(after.task.definition.task.clientRequestId).toBe(
+            original.clientRequestId,
+          );
+          expect(after.task.definition.task.revision).toBe(8);
+          expect(after.occurrences).toEqual(before.occurrences);
+          await f.page.reload();
+          await f.page
+            .getByText('每月 30 日 02:30:17 · America/New_York', {
+              exact: true,
+            })
+            .waitFor();
+          await f.open();
+          expect(
+            await detail.getByLabel('每月日期', { exact: true }).inputValue(),
+          ).toBe('30');
+          expect(await frequency.inputValue()).toBe('monthly');
+          await detail.getByRole('tab', { name: '任务运行记录' }).click();
+          await detail.getByText('已完成', { exact: true }).waitFor();
+          expect(await detail.locator('article').innerText()).toBe(historyText);
+          await detail
+            .getByRole('button', { name: '查看本轮结果 ↗', exact: true })
+            .click();
+          expect(await f.page.getByLabel('原会话').textContent()).toBe(CHAT);
+          expect(f.requests.filter((r) => r.method === 'PATCH')).toHaveLength(
+            1,
+          );
+          expect(f.requests.filter((r) => r.method === 'POST')).toHaveLength(0);
           expect(
             await f.page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,

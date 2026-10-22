@@ -432,7 +432,11 @@ function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
         !c.controlSessionId ||
         !Number.isSafeInteger(c.revision) ||
         c.revision < 1 ||
-        c.dispatch.consumer !== 'experience-consolidation-v1' ||
+        !['experience-consolidation-v1', 'ordinary-monthly-v1'].includes(
+          c.dispatch.consumer,
+        ) ||
+        (c.dispatch.consumer === 'ordinary-monthly-v1' &&
+          !c.dispatch.businessSessionId) ||
         !c.dispatch.employeeAssignmentId ||
         !c.dispatch.employeeInstanceId ||
         map.has(c.controlId) ||
@@ -517,6 +521,13 @@ function controlIdentity(c: NativeScheduleAnyControl) {
     controlSessionId: c.controlSessionId,
     at: c.at,
   };
+}
+function controlSetIdentity(rows: Map<string, NativeScheduleAnyControl>) {
+  return digest(
+    [...rows.values()]
+      .map(controlIdentity)
+      .sort((a, b) => a.controlId.localeCompare(b.controlId)),
+  );
 }
 const WORKSPACE_SNAPSHOT_BYTES = 2 * 1024 * 1024;
 const WORKSPACE_WRITE_BYTES = 4 * 1024 * 1024;
@@ -1445,13 +1456,7 @@ export function createNativeScheduleOnceController(
         if (!(await track(g, options.store.calendar.materialize(g.writer))))
           break;
     const fresh = controlsMap(await options.store.loadControls(g.writer));
-    const keys = (rows: Map<string, NativeScheduleAnyControl>) =>
-      digest(
-        [...rows.values()]
-          .map(controlIdentity)
-          .sort((a, b) => a.controlId.localeCompare(b.controlId)),
-      );
-    if (keys(fresh) !== keys(g.controls)) {
+    if (controlSetIdentity(fresh) !== controlSetIdentity(g.controls)) {
       await closeGeneration(g);
       current = undefined;
       return false;
@@ -1475,7 +1480,13 @@ export function createNativeScheduleOnceController(
           !(await track(g, options.store.calendar.materialize(g.writer, false)))
         )
           break;
-      g.controls = controlsMap(await options.store.loadControls(g.writer));
+      const fresh = controlsMap(await options.store.loadControls(g.writer));
+      if (controlSetIdentity(fresh) !== controlSetIdentity(g.controls)) {
+        await closeGeneration(g);
+        current = undefined;
+        return;
+      }
+      g.controls = fresh;
       await g.calendar?.reload();
     }
     for (const c of [...g.controls.values()]) {

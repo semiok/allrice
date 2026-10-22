@@ -118,6 +118,45 @@ class MemoryStorage {
 }
 
 describe('recurring task form parameters', () => {
+  it('preserves monthly day, explicit timezone, nonzero seconds and the whole original work through editing/readback', () => {
+    const monthly = task({
+      rule: {
+        kind: 'monthly',
+        monthDay: 31,
+        time: '02:30:17',
+        timezone: 'America/New_York',
+      },
+      prompt: '核对完整月报，分别列出异常。保留所有原始要求。',
+    });
+    const form = recurringDraft(monthly);
+    expect(form).toMatchObject({
+      kind: 'monthly',
+      monthDay: '31',
+      time: '02:30',
+      timezone: 'America/New_York',
+    });
+    expect(recurringContent(form, monthly.rule)).toMatchObject({
+      prompt: monthly.prompt,
+      rule: monthly.rule,
+    });
+    const content = recurringContent({ ...form, monthDay: '30' }, monthly.rule);
+    expect(content.rule).toEqual({ ...monthly.rule, monthDay: 30 });
+    const intent = {
+      ...createIntent(),
+      body: { clientRequestId: REQUEST, ...content },
+    };
+    const storage = new MemoryStorage();
+    saveRecurringIntent(storage, intent);
+    expect(parseRecurringIntent(storage.getItem(KEY)!, KEY)).toEqual(intent);
+  });
+  it.each(['', '0', '32', '1.5', 'Infinity'])(
+    'rejects an invalid monthly day %j before persisting a request',
+    (monthDay) => {
+      expect(() =>
+        recurringContent(draft({ kind: 'monthly', monthDay })),
+      ).toThrow();
+    },
+  );
   it('preserves weekly execution days, timezone and seconds through editing and recovery', () => {
     const weekly = task({
       rule: {

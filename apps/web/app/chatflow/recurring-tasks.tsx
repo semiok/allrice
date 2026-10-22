@@ -75,6 +75,8 @@ function ruleLabel(task: RecurringTask): string {
     return `每天 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
   if (rule.kind === 'weekly')
     return `每周${rule.weekdays.map((day) => '一二三四五六日'[day - 1]).join('、')} ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
+  if (rule.kind === 'monthly')
+    return `每月${rule.monthDay}日 ${rule.time.endsWith(':00') ? rule.time.slice(0, 5) : rule.time} · ${rule.timezone}`;
   return rule.seconds % 60 === 0
     ? `每 ${rule.seconds / 60} 分钟`
     : `每 ${Math.floor(rule.seconds / 60)} 分 ${rule.seconds % 60} 秒`;
@@ -828,9 +830,24 @@ function RecurringTasksContent({
                 })
               }
             >
-              <option value="every">每隔一段时间</option>
-              <option value="daily">每天</option>
-              <option value="weekly">每周</option>
+              <option value="every" disabled={editing?.rule.kind === 'monthly'}>
+                每隔一段时间
+              </option>
+              <option value="daily" disabled={editing?.rule.kind === 'monthly'}>
+                每天
+              </option>
+              <option
+                value="weekly"
+                disabled={editing?.rule.kind === 'monthly'}
+              >
+                每周
+              </option>
+              <option
+                value="monthly"
+                disabled={!!editing && editing.rule.kind !== 'monthly'}
+              >
+                每月
+              </option>
             </select>
           </label>
           {draft.kind === 'every' ? (
@@ -852,7 +869,7 @@ function RecurringTasksContent({
           ) : (
             <div className={css.daily}>
               <label>
-                {draft.kind === 'weekly' ? '执行时间' : '每天时间'}
+                {draft.kind === 'daily' ? '每天时间' : '执行时间'}
                 <input
                   type="time"
                   step="60"
@@ -898,9 +915,28 @@ function RecurringTasksContent({
               onChange={(weekdays) => updateDraft({ weekdays })}
             />
           )}
+          {draft.kind === 'monthly' && (
+            <label>
+              每月日期
+              <input
+                type="number"
+                min="1"
+                max="31"
+                step="1"
+                required
+                value={draft.monthDay}
+                disabled={locked}
+                onChange={(event) =>
+                  updateDraft({ monthDay: event.target.value })
+                }
+              />
+            </label>
+          )}
           {draft.kind !== 'every' && (
             <p className={css.hint}>
-              按所选时区执行。夏令时跳过不存在的当地时间，重复时间只执行一次；停机后只处理最近一期。
+              {draft.kind === 'monthly'
+                ? '按所选时区执行；不存在的日期按当月最后一天。夏令时缺失时间顺延，重复时间只执行一次；停机后只处理最近一期。'
+                : '按所选时区执行。夏令时跳过不存在的当地时间，重复时间只执行一次；停机后只处理最近一期。'}
             </p>
           )}
           {editing && (

@@ -52,7 +52,7 @@ import {
   failJob,
   maintainQueue,
 } from './execution/queue.ts';
-import type { RecurringScheduleRule } from '@allrice/contracts';
+import type { FixedRecurringScheduleRule as RecurringScheduleRule } from '@allrice/contracts';
 import { employeeChatUuid } from './employees/employee-chat-authority.ts';
 import {
   employeeManifest,

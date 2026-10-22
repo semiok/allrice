@@ -376,6 +376,10 @@ export {
   materializeExperienceNativeCalendar,
 } from './experience-native.ts';
 export type { NativeRecurringPartitionControl } from './native-schedule-recurring-loader.ts';
+export {
+  lockNativeCalendarAdmissions,
+  materializeNativeCalendar,
+} from './native-schedule-calendar-consumers.ts';
 
 export {
   listAutomationCatalog,

@@ -24,12 +24,22 @@ export const NativeCalendarPlanSchema = z
     createdAt: Instant,
     cause: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('handoff') }).strict(),
+      z.object({ kind: z.literal('request'), requestId: UuidSchema }).strict(),
+      z
+        .object({ kind: z.literal('operation'), operationId: UuidSchema })
+        .strict(),
       z
         .object({ kind: z.literal('policy'), policyRevision: Revision })
         .strict(),
       z
         .object({
           kind: z.literal('successor'),
+          predecessorPeriodId: UuidSchema,
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('coalesced'),
           predecessorPeriodId: UuidSchema,
         })
         .strict(),
@@ -59,12 +69,13 @@ export const NativeCalendarDecisionSchema = z
   .object({
     decisionId: UuidSchema,
     periodId: UuidSchema,
-    kind: z.enum(['receipt', 'policy', 'authority']),
+    kind: z.enum(['receipt', 'policy', 'authority', 'operation']),
     outcome: z.enum([
       'queued',
       'empty',
       'budget',
       'already_claimed',
+      'coalesced',
       'canceled',
       'authority_blocked',
     ]),
@@ -75,13 +86,18 @@ export const NativeCalendarDecisionSchema = z
     successorPeriodId: UuidSchema.nullable(),
     lease: Lease.nullable(),
     budget: Budget.nullable(),
+    operationId: UuidSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
     const receipt = v.kind === 'receipt';
-    const advances = ['queued', 'empty', 'budget', 'already_claimed'].includes(
-      v.outcome,
-    );
+    const advances = [
+      'queued',
+      'empty',
+      'budget',
+      'already_claimed',
+      'coalesced',
+    ].includes(v.outcome);
     const hasRun = ['queued', 'empty', 'already_claimed'].includes(v.outcome);
     if (
       receipt !== (v.receiptOccurrenceId !== null) ||
@@ -92,6 +108,8 @@ export const NativeCalendarDecisionSchema = z
       (advances && !receipt) ||
       (receipt && v.outcome === 'canceled') ||
       (v.kind === 'policy' && v.outcome !== 'canceled') ||
+      (v.kind === 'operation' && v.outcome !== 'canceled') ||
+      (v.kind === 'operation') !== (v.operationId !== undefined) ||
       (v.kind === 'authority' && v.outcome !== 'authority_blocked') ||
       v.successorPeriodId === v.periodId
     )

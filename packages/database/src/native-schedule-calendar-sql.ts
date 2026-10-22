@@ -18,6 +18,7 @@ import {
   NativeCalendarRevisionSchema,
   NativeCalendarStateError,
   calendarAdmissionReason,
+  calendarRevisionAdmissionMatches,
   calendarArmIdentity,
   calendarArmRequestDigest,
   calendarControlIdentity,
@@ -264,6 +265,7 @@ export function createNativeCalendarSqlStore(
       where automation_id=${c.automationId} and revision=${n}`;
     requireCalendar(r, 'revision_missing');
     const v = NativeCalendarRevisionSchema.parse(r.configuration);
+    requireCalendar(v.consumer === c.dispatch.consumer, 'consumer_invalid');
     requireCalendar(v.revision === n, 'revision_missing');
     return v;
   }
@@ -720,8 +722,7 @@ export function createNativeCalendarSqlStore(
                 calendarPlanDigest(planned.plan) === m.planDigest &&
                 locked.admission?.allowed &&
                 locked.admission.currentRevision === m.revision &&
-                locked.admission.policyRevision === v.policyRevision &&
-                locked.admission.policyDigest === v.policyDigest,
+                calendarRevisionAdmissionMatches(v, locked.admission),
               'revision_changed',
             );
             next.control.revision = m.revision;
@@ -840,6 +841,14 @@ export function createNativeCalendarSqlStore(
     const v = NativeCalendarRevisionSchema.parse(
       structuredClone(input.revision),
     );
+    // This initializer retains the original experience handoff contract.
+    // Ordinary product enrollment reserves its own parent/version/P intent in
+    // the authenticated Web transaction, without a native writer token.
+    requireCalendar(
+      c.dispatch.consumer === 'experience-consolidation-v1' &&
+        v.consumer === 'experience-consolidation-v1',
+      'initializer_consumer_invalid',
+    );
     requireCalendar(
       c.sessionState === 'reserved' &&
         c.revision === v.revision &&
@@ -852,8 +861,7 @@ export function createNativeCalendarSqlStore(
       a?.allowed &&
         a.status === 'enabled' &&
         a.currentRevision === v.revision &&
-        a.policyRevision === v.policyRevision &&
-        a.policyDigest === v.policyDigest,
+        calendarRevisionAdmissionMatches(v, a),
       'authority_changed',
     );
     const [business] = await tx<

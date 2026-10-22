@@ -292,7 +292,10 @@ type Receipt = {
 export async function dispatchPlatformQualityNative(
   tx: Tx,
   control: NativeRecurringControl,
-  receipt: Receipt,
+  // The shared claim also carries calendar receipts. Treat its raw payload as
+  // untrusted here; the locked quality row, digest and exact control/revision
+  // comparisons below establish the fixed quality binding before enqueue.
+  receipt: Omit<Receipt, 'payload'> & { payload: unknown },
   workerId: string,
   tokenDigest: string,
 ) {
