@@ -1,6 +1,7 @@
 import {
   NativeQuestionCheckpointSchema,
   UserQuestionAnswerSubmissionSchema,
+  UuidSchema,
   type ExecutionContext,
   type NativeQuestionCheckpoint,
 } from '@allrice/contracts';
@@ -155,14 +156,174 @@ export async function beginNativeTask(
 ) {
   return db.begin(async (tx) => {
     await lockOwner(tx, input);
-    const prior =
-      await tx`select 1 from allrice_native_task_dispatches where run_id=${input.context.runId} and state='started'`;
-    if (prior.length) return false;
-    const inserted =
-      await tx`insert into allrice_native_task_dispatches(run_id,attempt,state)
-      values(${input.context.runId},${input.attempt},'started') on conflict do nothing returning run_id`;
-    return inserted.length === 1;
+    return insertNativeTaskDispatch(tx, input);
   });
+}
+
+async function insertNativeTaskDispatch(
+  tx: TransactionSql,
+  input: Owner & { attempt: number },
+) {
+  const prior =
+    await tx`select 1 from allrice_native_task_dispatches where run_id=${input.context.runId} and state='started'`;
+  if (prior.length) return false;
+  const inserted =
+    await tx`insert into allrice_native_task_dispatches(run_id,attempt,state)
+    values(${input.context.runId},${input.attempt},'started') on conflict do nothing returning run_id`;
+  return inserted.length === 1;
+}
+
+/** Private Worker port, minted while the exact original execution is authorized.
+ * Its closure cannot be reconstructed from a stored error, tool result or JSON.
+ * Receiving an already observed stop is separate from admitting new execution:
+ * a canceled Job may have released its lease before its host finishes closing.
+ * No historical/replacement worker can mint this port after that release. */
+export async function beginNativeTaskWithStopReceipt(
+  input: Owner & { attempt: number; sessionId: string },
+  db = getDatabase(),
+) {
+  const scope = Object.freeze({
+    organizationId: UuidSchema.parse(input.context.organizationId),
+    workspaceId: UuidSchema.parse(input.context.workspaceId),
+    ownerId: UuidSchema.parse(input.context.delegatedBy.id),
+    runId: UuidSchema.parse(input.context.runId),
+    jobId: UuidSchema.parse(input.worker.jobId),
+    workerId: UuidSchema.parse(input.worker.workerId),
+    leaseToken: UuidSchema.parse(input.worker.leaseToken),
+    sessionId: UuidSchema.parse(input.sessionId),
+    attempt: input.attempt,
+  });
+  if (!Number.isSafeInteger(scope.attempt) || scope.attempt < 1)
+    throw Error('native_stop_attempt_invalid');
+  const started = await db.begin(async (tx) => {
+    await lockOwner(tx, input);
+    const [job] = await tx<{ attempt: number; session_id: string }[]>`
+      select j.attempt,e.session_id from allrice_jobs j
+      join allrice_employee_runs e on e.run_id=j.run_id
+      where j.id=${scope.jobId} and j.run_id=${scope.runId}`;
+    if (job?.attempt !== scope.attempt || job.session_id !== scope.sessionId)
+      throw Error('native_stop_attempt_changed');
+    return insertNativeTaskDispatch(tx, input);
+  });
+  if (!started) return { started: false as const };
+
+  let firstReceipt: { nativeSessionId: string; runtimeId: string } | undefined;
+  let confirmation: Promise<{ completed: true; reused: boolean }> | undefined;
+  return {
+    started: true as const,
+    /** Called only after the adapter awaited this exact child's close event.
+     * Completion here never changes route/model usage or any wait/Run/Job. */
+    confirmStopped(receipt: { nativeSessionId: string; runtimeId: string }) {
+      const nativeSessionId = receipt.nativeSessionId;
+      const runtimeId = UuidSchema.parse(receipt.runtimeId);
+      if (
+        typeof nativeSessionId !== 'string' ||
+        !nativeSessionId.length ||
+        nativeSessionId.length > 240
+      )
+        throw Error('native_stop_session_invalid');
+      if (firstReceipt) {
+        if (
+          firstReceipt.nativeSessionId !== nativeSessionId ||
+          firstReceipt.runtimeId !== runtimeId
+        )
+          throw Error('native_stop_instance_changed');
+        // An unknown write is never automatically retried, even by this port.
+        return confirmation!;
+      }
+      firstReceipt = { nativeSessionId, runtimeId };
+      confirmation = db.begin(async (tx) => {
+        // Keep the normal root -> clock -> job order without refreshing a
+        // deadline or clock: receipt cleanup does not resume execution.
+        await tx`select root_run_id from allrice_runtime_roots where root_run_id=${scope.runId} for update`;
+        await tx`select run_id from allrice_task_clocks where run_id=${scope.runId} for update`;
+        const [job] = await tx<
+          {
+            status: string;
+            run_state: string;
+            attempt: number;
+            worker_id: string | null;
+            lease_token: string | null;
+            claimed_at: Date | null;
+            heartbeat_at: Date | null;
+            lease_expires_at: Date | null;
+            cancel_requested_at: Date | null;
+            drain_reason: string | null;
+            completed_at: Date | null;
+            run_completed_at: Date | null;
+            session_id: string;
+          }[]
+        >`select j.status,r.state run_state,j.attempt,j.worker_id,j.lease_token,
+          j.claimed_at,j.heartbeat_at,j.lease_expires_at,j.cancel_requested_at,j.drain_reason,
+          j.completed_at,r.completed_at run_completed_at,e.session_id
+          from allrice_jobs j join allrice_runs r on r.id=j.run_id
+          join allrice_employee_runs e on e.run_id=r.id
+          where j.id=${scope.jobId} and j.run_id=${scope.runId}
+            and j.organization_id=${scope.organizationId} and j.workspace_id=${scope.workspaceId} and j.owner_id=${scope.ownerId}
+            and r.organization_id=${scope.organizationId} and r.workspace_id=${scope.workspaceId} and r.owner_id=${scope.ownerId}
+            and e.organization_id=${scope.organizationId} and e.workspace_id=${scope.workspaceId} and e.owner_id=${scope.ownerId}
+            and j.payload->>'type'='allrice.employee.run'
+            and j.payload->'input'->>'sessionId'=${scope.sessionId}
+          for update of j,r`;
+        if (
+          !job ||
+          job.attempt !== scope.attempt ||
+          job.session_id !== scope.sessionId ||
+          !job.cancel_requested_at ||
+          job.drain_reason !== 'cancel'
+        )
+          throw Error('native_stop_cancellation_changed');
+        const stillOwned =
+          job.status === 'running' &&
+          job.run_state === 'running' &&
+          job.worker_id === scope.workerId &&
+          job.lease_token === scope.leaseToken;
+        const terminalCanceled =
+          job.status === 'canceled' &&
+          job.run_state === 'canceled' &&
+          !!job.completed_at &&
+          !!job.run_completed_at &&
+          job.worker_id === null &&
+          job.lease_token === null &&
+          job.claimed_at === null &&
+          job.heartbeat_at === null &&
+          job.lease_expires_at === null;
+        if (!stillOwned && !terminalCanceled)
+          throw Error('native_stop_incarnation_changed');
+        const [binding] = await tx`
+          select 1 from allrice_native_session_bindings
+          where context_kind='chat' and context_id=${scope.sessionId}
+            and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+            and native_session_id=${nativeSessionId}`;
+        if (!binding) throw Error('native_stop_binding_changed');
+        const [dispatch] = await tx<{ state: string }[]>`
+          select state from allrice_native_task_dispatches
+          where run_id=${scope.runId} and attempt=${scope.attempt} for update`;
+        if (dispatch?.state === 'completed')
+          return { completed: true as const, reused: true };
+        if (dispatch?.state !== 'started')
+          throw Error('native_stop_dispatch_changed');
+        await tx`update allrice_native_task_dispatches set state='completed'
+          where run_id=${scope.runId} and attempt=${scope.attempt} and state='started'`;
+        await tx`insert into allrice_audit_events
+          (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
+          values(${scope.organizationId},${scope.workspaceId},null,'native_task.dispatch.stop_confirmed','run',${scope.runId},
+            'recorded','confirmed_native_host_closed_after_cancel',null,${tx.json(
+              {
+                jobId: scope.jobId,
+                attempt: scope.attempt,
+                nativeSessionId,
+                runtimeId,
+                originalWorkerId: scope.workerId,
+                terminalCanceledReceiptOnly: terminalCanceled,
+                usageUnchanged: true,
+              },
+            )})`;
+        return { completed: true as const, reused: false };
+      });
+      return confirmation;
+    },
+  };
 }
 
 export async function completeNativeTask(

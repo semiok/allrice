@@ -153,6 +153,115 @@ function executionInput(input: {
   };
 }
 
+describe('confirmed native dispatch stop receipt', () => {
+  function stoppedExecution(close: () => Promise<void>) {
+    const adapter = createAdapter();
+    const original = Object.freeze(
+      new HandlerError('NATIVE_SESSION_ADMISSION_DENIED', 'original', false),
+    );
+    const input = executionInput({ prompt: 'never prompt a canceled attempt' });
+    const prompt = vi.fn();
+    const confirmStopped = vi.fn().mockResolvedValue({ completed: true });
+    input.questionWait = {
+      park: vi.fn(),
+      adopted: vi.fn(),
+      confirmStopped,
+    };
+    input.onEvent = async (event) => {
+      if (event.sourceEventType === 'allrice/runtime-preparation')
+        throw original;
+    };
+    const runtime = {
+      id: randomUUID(),
+      sessionId: `dsh-${input.kernel.sessionId}`,
+      nativeTools: [],
+      client: {
+        prompt,
+        setRequestHandler: vi.fn(),
+        subscribe: vi.fn(() => () => {}),
+      },
+    } as unknown as DshRuntime;
+    vi.spyOn(
+      DshRuntimePool.prototype,
+      'hasApprovedNativeLaunch',
+    ).mockReturnValue(false);
+    vi.spyOn(DshRuntimePool.prototype, 'describeNativeSession').mockReturnValue(
+      null,
+    );
+    vi.spyOn(DshRuntimePool.prototype, 'acquire').mockResolvedValue({
+      runtime,
+      fresh: false,
+      preparation: {
+        cache: 'hit',
+        reason: 'reused',
+        changedFields: [],
+        credentialResolutionMs: 0,
+        previousRuntimeCloseMs: 0,
+        initializeMs: 0,
+        skillRegistrationMs: null,
+        acquireMs: 0,
+      },
+    });
+    vi.spyOn(DshRuntimePool.prototype, 'touch').mockImplementation(() => {});
+    vi.spyOn(DshRuntimePool.prototype, 'clearInputDelivery').mockImplementation(
+      () => {},
+    );
+    const drop = vi
+      .spyOn(DshRuntimePool.prototype, 'closeOwned')
+      .mockImplementation(close);
+    return { adapter, input, original, runtime, prompt, confirmStopped, drop };
+  }
+
+  it('waits for the exact close acknowledgement and preserves the original failure', async () => {
+    let closed!: () => void;
+    const close = new Promise<void>((resolve) => {
+      closed = resolve;
+    });
+    const f = stoppedExecution(() => close);
+    const result = f.adapter.execute(f.input).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(f.drop).toHaveBeenCalledOnce());
+    expect(f.drop).toHaveBeenCalledWith(f.runtime);
+    expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.prompt).not.toHaveBeenCalled();
+    closed();
+    expect(await result).toBe(f.original);
+    expect(f.confirmStopped).toHaveBeenCalledExactlyOnceWith({
+      nativeSessionId: f.runtime.sessionId,
+      runtimeId: f.runtime.id,
+    });
+  });
+
+  it('does not fabricate a stop receipt when close is unconfirmed', async () => {
+    const unknown = Error('exact child close unconfirmed');
+    const f = stoppedExecution(() => Promise.reject(unknown));
+    expect(await f.adapter.execute(f.input).catch((e: unknown) => e)).toBe(
+      unknown,
+    );
+    expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.prompt).not.toHaveBeenCalled();
+  });
+
+  it('does not retry an unknown/rejected receipt write or replace the original error', async () => {
+    const f = stoppedExecution(async () => {});
+    f.confirmStopped.mockRejectedValue(Error('commit outcome unknown'));
+    expect(await f.adapter.execute(f.input).catch((e: unknown) => e)).toBe(
+      f.original,
+    );
+    expect(f.confirmStopped).toHaveBeenCalledOnce();
+    expect(f.drop).toHaveBeenCalledOnce();
+  });
+
+  it('keeps callers without the private receipt port unchanged', async () => {
+    const f = stoppedExecution(async () => {});
+    delete f.input.questionWait!.confirmStopped;
+    expect(await f.adapter.execute(f.input).catch((e: unknown) => e)).toBe(
+      f.original,
+    );
+    expect(f.confirmStopped).not.toHaveBeenCalled();
+    expect(f.drop).toHaveBeenCalledOnce();
+  });
+});
+
 /** Actual native Host and its persisted Session; the HTTP peer is synthetic. */
 async function schedulingRuntime(
   replies: readonly (

@@ -62,6 +62,7 @@ export {
   readNativeQuestionWait,
   continueNativeQuestion,
   beginNativeTask,
+  beginNativeTaskWithStopReceipt,
   completeNativeTask,
   readParkedNativeUsage,
   NativeWaitAuthorityError,
